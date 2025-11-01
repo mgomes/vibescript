@@ -14,6 +14,7 @@ Representative `.vibe` programs now live under `examples/` and remain grouped by
 - `examples/collections/` – array, hash, and symbol usage including mutation and lookups.
 - `examples/control_flow/` – conditionals and recursion examples.
 - `examples/blocks/` – block-friendly transformations (map/select/reduce) over collections.
+- `examples/hashes/` – symbol-keyed hash manipulation, merging, and reporting helpers.
 - `examples/loops/` – range iteration, collection loops, and accumulation helpers.
 - `examples/ranges/` – range literals, ascending/descending iteration, and filtered collection helpers.
 - `examples/money/` – exercises for the `money` and `money_cents` built-ins.

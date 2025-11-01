@@ -1,0 +1,35 @@
+# vibe: 0.2
+
+def rename_keys(record, mapping)
+  result = {}
+  record.keys.each do |key|
+    new_key = mapping[key]
+    if new_key == nil
+      new_key = key
+    end
+    result[new_key] = record[key]
+  end
+  result
+end
+
+def compact_hash(record)
+  result = {}
+  record.keys.each do |key|
+    value = record[key]
+    if value != nil
+      result[key] = value
+    end
+  end
+  result
+end
+
+def select_keys(record, keys)
+  result = {}
+  keys.each do |key|
+    value = record[key]
+    if value != nil
+      result[key] = value
+    end
+  end
+  result
+end

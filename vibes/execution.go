@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 type ScriptFunction struct {
@@ -522,7 +523,11 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		if val, ok := obj.Hash()[property]; ok {
 			return val, nil
 		}
-		return NewNil(), nil
+		member, err := hashMember(obj, property)
+		if err != nil {
+			return NewNil(), err
+		}
+		return member, nil
 	case KindMoney:
 		return moneyMember(obj.Money(), property)
 	case KindDuration:
@@ -560,6 +565,48 @@ func moneyMember(m Money, property string) (Value, error) {
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown money member %s", property)
+	}
+}
+
+func hashMember(obj Value, property string) (Value, error) {
+	switch property {
+	case "keys":
+		entries := obj.Hash()
+		keys := make([]string, 0, len(entries))
+		for k := range entries {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		values := make([]Value, len(keys))
+		for i, k := range keys {
+			values[i] = NewSymbol(k)
+		}
+		return NewArray(values), nil
+	case "values":
+		entries := obj.Hash()
+		values := make([]Value, 0, len(entries))
+		for _, v := range entries {
+			values = append(values, v)
+		}
+		return NewArray(values), nil
+	case "merge":
+		return NewBuiltin("hash.merge", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 || args[0].Kind() != KindHash {
+				return NewNil(), fmt.Errorf("hash.merge expects a single hash argument")
+			}
+			base := receiver.Hash()
+			addition := args[0].Hash()
+			out := make(map[string]Value, len(base)+len(addition))
+			for k, v := range base {
+				out[k] = v
+			}
+			for k, v := range addition {
+				out[k] = v
+			}
+			return NewHash(out), nil
+		}), nil
+	default:
+		return NewNil(), nil
 	}
 }
 
@@ -744,10 +791,10 @@ func (e *Execution) engineConfig() Config {
 
 func valueToHashKey(val Value) (string, error) {
 	switch val.Kind() {
-	case KindString, KindSymbol:
+	case KindSymbol:
 		return val.String(), nil
-	case KindInt:
-		return fmt.Sprintf("%d", val.Int()), nil
+	case KindString:
+		return val.String(), nil
 	default:
 		return "", fmt.Errorf("unsupported hash key type %v", val.Kind())
 	}

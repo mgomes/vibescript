@@ -448,12 +448,16 @@ func (p *parser) parseHashLiteral() Expression {
 	}
 
 	p.nextToken()
-	pairs = append(pairs, p.parseHashPair())
+	if pair := p.parseHashPair(); pair.Key != nil {
+		pairs = append(pairs, pair)
+	}
 
 	for p.peekToken.Type == tokenComma {
 		p.nextToken()
 		p.nextToken()
-		pairs = append(pairs, p.parseHashPair())
+		if pair := p.parseHashPair(); pair.Key != nil {
+			pairs = append(pairs, pair)
+		}
 	}
 
 	if !p.expectPeek(tokenRBrace) {
@@ -464,24 +468,17 @@ func (p *parser) parseHashLiteral() Expression {
 }
 
 func (p *parser) parseHashPair() HashPair {
-	var key Expression
-
-	if p.curToken.Type == tokenIdent && p.peekToken.Type == tokenColon {
-		key = &SymbolLiteral{Name: p.curToken.Literal, position: p.curToken.Pos}
-		p.nextToken()
-		p.nextToken()
-	} else {
-		key = p.parseExpression(lowestPrec)
-		if key == nil {
-			return HashPair{}
-		}
-		if !(p.peekToken.Type == tokenArrow || p.peekToken.Type == tokenColon) {
-			p.errorExpected(p.peekToken, "hash key separator")
-			return HashPair{}
-		}
-		p.nextToken()
-		p.nextToken()
+	if !(p.curToken.Type == tokenIdent && p.peekToken.Type == tokenColon) {
+		p.errors = append(p.errors, &parseError{
+			pos: p.curToken.Pos,
+			msg: "hash keys must use symbol shorthand (name:)",
+		})
+		return HashPair{}
 	}
+
+	key := &SymbolLiteral{Name: p.curToken.Literal, position: p.curToken.Pos}
+	p.nextToken()
+	p.nextToken()
 
 	value := p.parseExpression(lowestPrec)
 	return HashPair{Key: key, Value: value}

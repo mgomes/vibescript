@@ -678,6 +678,175 @@ func TestExamples(t *testing.T) {
 			want: boolVal(true),
 		},
 		{
+			name:     "hashes/merge_defaults",
+			file:     "hashes/operations.vibe",
+			function: "merge_defaults",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name":   strVal("Alex"),
+					"raised": mustMoney("25.00 USD"),
+				}),
+				hashVal(map[string]Value{
+					"name":   strVal("Unknown"),
+					"goal":   intVal(1000),
+					"raised": mustMoney("0.00 USD"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("Alex"),
+				"goal":   intVal(1000),
+				"raised": mustMoney("25.00 USD"),
+			}),
+		},
+		{
+			name:     "hashes/merge_with_override",
+			file:     "hashes/operations.vibe",
+			function: "merge_with_override",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name":   strVal("Alex"),
+					"raised": mustMoney("25.00 USD"),
+				}),
+				hashVal(map[string]Value{
+					"raised": mustMoney("40.00 USD"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("Alex"),
+				"raised": mustMoney("40.00 USD"),
+			}),
+		},
+		{
+			name:     "hashes/symbolize_report",
+			file:     "hashes/operations.vibe",
+			function: "symbolize_report",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{
+						"id":     strVal("p1"),
+						"name":   strVal("Alex"),
+						"raised": mustMoney("50.00 USD"),
+					}),
+					hashVal(map[string]Value{
+						"id":     strVal("p2"),
+						"name":   strVal("Maya"),
+						"raised": mustMoney("75.00 USD"),
+					}),
+				),
+			},
+			want: hashVal(map[string]Value{
+				"p1": hashVal(map[string]Value{
+					"name":   strVal("Alex"),
+					"raised": mustMoney("50.00 USD"),
+				}),
+				"p2": hashVal(map[string]Value{
+					"name":   strVal("Maya"),
+					"raised": mustMoney("75.00 USD"),
+				}),
+			}),
+		},
+		{
+			name:     "hashes/deep_fetch_or_existing",
+			file:     "hashes/operations.vibe",
+			function: "deep_fetch_or",
+			args: []Value{
+				hashVal(map[string]Value{
+					"p1": hashVal(map[string]Value{
+						"name":   strVal("Alex"),
+						"raised": mustMoney("30.00 USD"),
+						"meta": hashVal(map[string]Value{
+							"display_name": strVal("Alex P."),
+						}),
+					}),
+				}),
+				strVal("p1"),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("Alex P."),
+				"raised": mustMoney("30.00 USD"),
+			}),
+		},
+		{
+			name:     "hashes/deep_fetch_or_missing",
+			file:     "hashes/operations.vibe",
+			function: "deep_fetch_or",
+			args: []Value{
+				hashVal(map[string]Value{}),
+				strVal("p9"),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("unknown"),
+				"raised": mustMoney("0.00 USD"),
+			}),
+		},
+		{
+			name:     "hashes/tally_statuses",
+			file:     "hashes/operations.vibe",
+			function: "tally_statuses",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"status": strVal("active")}),
+					hashVal(map[string]Value{"status": strVal("active")}),
+					hashVal(map[string]Value{"status": strVal("complete")}),
+				),
+			},
+			want: hashVal(map[string]Value{
+				"active":   intVal(2),
+				"complete": intVal(1),
+			}),
+		},
+		{
+			name:     "hashes/rename_keys",
+			file:     "hashes/transformations.vibe",
+			function: "rename_keys",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name":   strVal("Alex"),
+					"raised": mustMoney("20.00 USD"),
+				}),
+				hashVal(map[string]Value{
+					"name": symbolVal("full_name"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"full_name": strVal("Alex"),
+				"raised":    mustMoney("20.00 USD"),
+			}),
+		},
+		{
+			name:     "hashes/compact_hash",
+			file:     "hashes/transformations.vibe",
+			function: "compact_hash",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name":   strVal("Alex"),
+					"goal":   nilVal(),
+					"raised": mustMoney("20.00 USD"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("Alex"),
+				"raised": mustMoney("20.00 USD"),
+			}),
+		},
+		{
+			name:     "hashes/select_keys",
+			file:     "hashes/transformations.vibe",
+			function: "select_keys",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name":   strVal("Alex"),
+					"goal":   intVal(500),
+					"raised": mustMoney("20.00 USD"),
+				}),
+				arrayVal(symbolVal("name"), symbolVal("raised")),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("Alex"),
+				"raised": mustMoney("20.00 USD"),
+			}),
+		},
+		{
 			name:     "blocks/total_raised_by_currency",
 			file:     "blocks/enumerable_reports.vibe",
 			function: "total_raised_by_currency",
