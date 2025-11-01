@@ -1,0 +1,10 @@
+# vibe: 0.2
+# uses: ctx
+
+def can_edit_player?(player)
+  ctx.user.role == "coach" || ctx.user.id == player[:created_by]
+end
+
+def can_view_player?(player)
+  player[:status] != "archived"
+end
