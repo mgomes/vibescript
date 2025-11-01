@@ -131,8 +131,15 @@ func (l *lexer) NextToken() Token {
 		tok = l.makeToken(tokenColon, ":")
 		l.readRune()
 	case '.':
-		tok = l.makeToken(tokenDot, ".")
-		l.readRune()
+		if l.peekRune() == '.' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(tokenRange, string(first)+string(l.ch))
+			l.readRune()
+		} else {
+			tok = l.makeToken(tokenDot, ".")
+			l.readRune()
+		}
 	case '!':
 		if l.peekRune() == '=' {
 			first := l.ch
@@ -196,7 +203,7 @@ func (l *lexer) NextToken() Token {
 			tok = l.makeToken(tokenOr, string(first)+string(l.ch))
 			l.readRune()
 		} else {
-			tok = l.makeToken(tokenIllegal, string(l.ch))
+			tok = l.makeToken(tokenPipe, "|")
 			l.readRune()
 		}
 	case '"':
@@ -347,6 +354,12 @@ func lookupIdent(ident string) TokenType {
 		return tokenEnd
 	case "return":
 		return tokenReturn
+	case "do":
+		return tokenDo
+	case "for":
+		return tokenFor
+	case "in":
+		return tokenIn
 	case "if":
 		return tokenIf
 	case "elsif":

@@ -8,6 +8,7 @@ import (
 )
 
 type builtinAdapter func([]Value, map[string]Value) (Value, error)
+type builtinBlockAdapter func(*Execution, []Value, map[string]Value, Value) (Value, error)
 
 type callRecord struct {
 	args   []Value
@@ -20,11 +21,15 @@ type dbMock struct {
 	queryFunc  builtinAdapter
 	updateFunc builtinAdapter
 	sumFunc    builtinAdapter
+	eachFunc   builtinBlockAdapter
 
 	findCalls   []callRecord
 	queryCalls  []callRecord
 	updateCalls []callRecord
 	sumCalls    []callRecord
+	eachCalls   []callRecord
+
+	eachRows []Value
 }
 
 func newDBMock(t *testing.T) *dbMock {
@@ -60,6 +65,22 @@ func (m *dbMock) Value() Value {
 				m.t.Fatalf("unexpected call to db.sum")
 			}
 			return m.sumFunc(args, kwargs)
+		}),
+		"each": NewBuiltin("db.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			m.eachCalls = append(m.eachCalls, callRecord{cloneValues(args), cloneKwargs(kwargs)})
+			if m.eachFunc != nil {
+				return m.eachFunc(exec, args, kwargs, block)
+			}
+			if block.Block() == nil {
+				m.t.Fatalf("db.each requires a block")
+			}
+			rows := cloneValues(m.eachRows)
+			for _, row := range rows {
+				if _, err := exec.callBlock(block, []Value{row}); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewNil(), nil
 		}),
 	})
 }
@@ -404,6 +425,279 @@ func TestExamples(t *testing.T) {
 			function: "fibonacci",
 			args:     []Value{intVal(1)},
 			want:     intVal(1),
+		},
+		{
+			name:     "loops/sum_range",
+			file:     "loops/iteration.vibe",
+			function: "sum_range",
+			args:     []Value{intVal(5)},
+			want:     intVal(15),
+		},
+		{
+			name:     "loops/product_range",
+			file:     "loops/iteration.vibe",
+			function: "product_range",
+			args:     []Value{intVal(4)},
+			want:     intVal(24),
+		},
+		{
+			name:     "loops/countdown_total",
+			file:     "loops/iteration.vibe",
+			function: "countdown_total",
+			args:     []Value{intVal(5)},
+			want:     intVal(15),
+		},
+		{
+			name:     "loops/total_with_each",
+			file:     "loops/iteration.vibe",
+			function: "total_with_each",
+			args: []Value{
+				arrayVal(intVal(1), intVal(3), intVal(5)),
+			},
+			want: intVal(9),
+		},
+		{
+			name:     "loops/double_values",
+			file:     "loops/iteration.vibe",
+			function: "double_values",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3)),
+			},
+			want: arrayVal(intVal(2), intVal(4), intVal(6)),
+		},
+		{
+			name:     "loops/select_above",
+			file:     "loops/iteration.vibe",
+			function: "select_above",
+			args: []Value{
+				arrayVal(intVal(8), intVal(11), intVal(15)),
+				intVal(10),
+			},
+			want: arrayVal(intVal(11), intVal(15)),
+		},
+		{
+			name:     "loops/reduce_sum",
+			file:     "loops/iteration.vibe",
+			function: "reduce_sum",
+			args: []Value{
+				arrayVal(intVal(4), intVal(6), intVal(11)),
+			},
+			want: intVal(21),
+		},
+		{
+			name:     "loops/sum_of_products",
+			file:     "loops/advanced.vibe",
+			function: "sum_of_products",
+			args: []Value{
+				intVal(2),
+				intVal(3),
+			},
+			want: intVal(18),
+		},
+		{
+			name:     "loops/accumulate_until",
+			file:     "loops/advanced.vibe",
+			function: "accumulate_until",
+			args: []Value{
+				intVal(10),
+				intVal(12),
+			},
+			want: intVal(15),
+		},
+		{
+			name:     "loops/find_first_divisible",
+			file:     "loops/advanced.vibe",
+			function: "find_first_divisible",
+			args: []Value{
+				intVal(10),
+				intVal(4),
+			},
+			want: intVal(4),
+		},
+		{
+			name:     "loops/find_first_divisible_none",
+			file:     "loops/advanced.vibe",
+			function: "find_first_divisible",
+			args: []Value{
+				intVal(5),
+				intVal(7),
+			},
+			want: nilVal(),
+		},
+		{
+			name:     "ranges/inclusive_range_sum",
+			file:     "ranges/usage.vibe",
+			function: "inclusive_range_sum",
+			args: []Value{
+				intVal(3),
+				intVal(6),
+			},
+			want: intVal(18),
+		},
+		{
+			name:     "ranges/descending_range_collect",
+			file:     "ranges/usage.vibe",
+			function: "descending_range_collect",
+			args: []Value{
+				intVal(5),
+				intVal(2),
+			},
+			want: strVal("5,4,3,2"),
+		},
+		{
+			name:     "ranges/range_even_numbers",
+			file:     "ranges/usage.vibe",
+			function: "range_even_numbers",
+			args: []Value{
+				intVal(1),
+				intVal(10),
+			},
+			want: strVal("2,4,6,8,10"),
+		},
+		{
+			name:     "loops/sum_matrix",
+			file:     "loops/advanced.vibe",
+			function: "sum_matrix",
+			args: []Value{
+				arrayVal(
+					arrayVal(intVal(1), intVal(2), intVal(3)),
+					arrayVal(intVal(4), intVal(5), intVal(6)),
+				),
+			},
+			want: intVal(21),
+		},
+		{
+			name:     "loops/fizzbuzz",
+			file:     "loops/fizzbuzz.vibe",
+			function: "fizzbuzz",
+			args:     []Value{intVal(5)},
+			want:     strVal("1\n2\nFizz\n4\nBuzz\n"),
+		},
+		{
+			name:     "blocks/double_each",
+			file:     "blocks/transformations.vibe",
+			function: "double_each",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3)),
+			},
+			want: arrayVal(intVal(2), intVal(4), intVal(6)),
+		},
+		{
+			name:     "blocks/select_large_donations",
+			file:     "blocks/transformations.vibe",
+			function: "select_large_donations",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"amount": mustMoney("25.00 USD")}),
+					hashVal(map[string]Value{"amount": mustMoney("75.00 USD")}),
+					hashVal(map[string]Value{"amount": mustMoney("120.00 USD")}),
+				),
+			},
+			want: arrayVal(
+				hashVal(map[string]Value{"amount": mustMoney("75.00 USD")}),
+				hashVal(map[string]Value{"amount": mustMoney("120.00 USD")}),
+			),
+		},
+		{
+			name:     "blocks/total_scores",
+			file:     "blocks/transformations.vibe",
+			function: "total_scores",
+			args: []Value{
+				arrayVal(intVal(10), intVal(5), intVal(7)),
+			},
+			want: intVal(22),
+		},
+		{
+			name:     "blocks/count_active",
+			file:     "blocks/advanced.vibe",
+			function: "count_active",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{
+						"name":   strVal("alpha"),
+						"active": boolVal(true),
+					}),
+					hashVal(map[string]Value{
+						"name":   strVal("beta"),
+						"active": boolVal(false),
+					}),
+					hashVal(map[string]Value{
+						"name":   strVal("gamma"),
+						"active": boolVal(true),
+					}),
+				),
+			},
+			want: intVal(2),
+		},
+		{
+			name:     "blocks/normalize_donations",
+			file:     "blocks/advanced.vibe",
+			function: "normalize_donations",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{
+						"id":     strVal("p1"),
+						"amount": mustMoney("25.00 USD"),
+					}),
+					hashVal(map[string]Value{
+						"id":     strVal("p2"),
+						"amount": mustMoney("40.50 USD"),
+					}),
+				),
+			},
+			want: arrayVal(
+				hashVal(map[string]Value{
+					"id":        strVal("p1"),
+					"cents":     intVal(2500),
+					"formatted": strVal("25.00 USD"),
+				}),
+				hashVal(map[string]Value{
+					"id":        strVal("p2"),
+					"cents":     intVal(4050),
+					"formatted": strVal("40.50 USD"),
+				}),
+			),
+		},
+		{
+			name:     "blocks/max_score",
+			file:     "blocks/advanced.vibe",
+			function: "max_score",
+			args: []Value{
+				arrayVal(intVal(7), intVal(12), intVal(9)),
+			},
+			want: intVal(12),
+		},
+		{
+			name:     "blocks/any_large_predicate",
+			file:     "blocks/advanced.vibe",
+			function: "any_large?",
+			args: []Value{
+				arrayVal(intVal(3), intVal(15), intVal(8)),
+				intVal(10),
+			},
+			want: boolVal(true),
+		},
+		{
+			name:     "blocks/total_raised_by_currency",
+			file:     "blocks/enumerable_reports.vibe",
+			function: "total_raised_by_currency",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{
+						"amount": mustMoney("10.00 USD"),
+					}),
+					hashVal(map[string]Value{
+						"amount": mustMoney("5.50 USD"),
+					}),
+					hashVal(map[string]Value{
+						"amount": mustMoney("7.25 EUR"),
+					}),
+				),
+			},
+			want: hashVal(map[string]Value{
+				"USD": mustMoney("15.50 USD"),
+				"EUR": mustMoney("7.25 EUR"),
+			}),
 		},
 		{
 			name:     "durations/reminder_delay_seconds",
@@ -874,9 +1168,31 @@ func TestExamples(t *testing.T) {
 			},
 		},
 		{
-			name: "future/iteration_total_raised_for_player",
-			file: "future/iteration.vibe",
-			skip: true,
+			name:     "future/iteration_total_raised_for_player",
+			file:     "future/iteration.vibe",
+			function: "total_raised_for_player",
+			prepare: func(t *testing.T) *exampleEnv {
+				db := newDBMock(t)
+				db.eachRows = []Value{
+					hashVal(map[string]Value{"amount": mustMoney("10.00 USD")}),
+					hashVal(map[string]Value{"amount": mustMoney("15.50 USD")}),
+					hashVal(map[string]Value{"amount": mustMoney("5.25 USD")}),
+				}
+				return &exampleEnv{
+					Globals: map[string]Value{"db": db.Value()},
+					db:      db,
+				}
+			},
+			args: []Value{strVal("player-99")},
+			want: mustMoney("30.75 USD"),
+			after: func(t *testing.T, env *exampleEnv, _ Value, err error) {
+				if err != nil {
+					return
+				}
+				if len(env.db.eachCalls) != 1 {
+					t.Fatalf("expected 1 each call, got %d", len(env.db.eachCalls))
+				}
+			},
 		},
 	}
 
@@ -938,7 +1254,7 @@ func compileExample(t *testing.T, rel string) *Script {
 }
 
 func makeBuiltin(name string, fn builtinAdapter) Value {
-	return NewBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value) (Value, error) {
+	return NewBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		return fn(args, kwargs)
 	})
 }
@@ -1082,7 +1398,7 @@ func valueToString(t *testing.T, v Value) string {
 	case KindString:
 		return v.String()
 	case KindBuiltin:
-		out, err := v.Builtin().Fn(nil, NewNil(), nil, nil)
+		out, err := v.Builtin().Fn(nil, NewNil(), nil, nil, NewNil())
 		if err != nil {
 			t.Fatalf("format builtin failed: %v", err)
 		}

@@ -110,6 +110,8 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			return exec.evalStatements(s.Alternate, env)
 		}
 		return NewNil(), false, nil
+	case *ForStmt:
+		return exec.evalForStatement(s, env)
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement")
 	}
@@ -241,6 +243,8 @@ func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) 
 		}
 	case *BinaryExpr:
 		return exec.evalBinaryExpr(e, env)
+	case *RangeExpr:
+		return exec.evalRangeExpr(e, env)
 	case *MemberExpr:
 		obj, err := exec.evalExpression(e.Object, env)
 		if err != nil {
@@ -282,6 +286,8 @@ func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) 
 		}
 	case *CallExpr:
 		return exec.evalCallExpr(e, env)
+	case *BlockLiteral:
+		return exec.evalBlockLiteral(e, env)
 	default:
 		return NewNil(), exec.errorAt(expr.Pos(), "unsupported expression")
 	}
@@ -368,11 +374,23 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		kwargs[kw.Name] = val
 	}
 
+	block := NewNil()
+	if call.Block != nil {
+		var err error
+		block, err = exec.evalBlockLiteral(call.Block, env)
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+
 	switch callee.Kind() {
 	case KindFunction:
 		fn := callee.Function()
 		if len(args) != len(fn.Params) {
 			return NewNil(), exec.errorAt(call.Pos(), "expected %d arguments, got %d", len(fn.Params), len(args))
+		}
+		if call.Block != nil {
+			return NewNil(), exec.errorAt(call.Pos(), "blocks are not supported for this function")
 		}
 		callEnv := newEnv(fn.Env)
 		for i, param := range fn.Params {
@@ -388,10 +406,114 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		return val, nil
 	case KindBuiltin:
 		builtin := callee.Builtin()
-		return builtin.Fn(exec, receiver, args, kwargs)
+		return builtin.Fn(exec, receiver, args, kwargs, block)
 	default:
 		return NewNil(), exec.errorAt(call.Pos(), "attempted to call non-callable value")
 	}
+}
+
+func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
+	return NewBlock(block.Params, block.Body, env), nil
+}
+
+func (exec *Execution) callBlock(block Value, args []Value) (Value, error) {
+	blk := block.Block()
+	if blk == nil {
+		return NewNil(), fmt.Errorf("block required")
+	}
+	blockEnv := newEnv(blk.Env)
+	for i, param := range blk.Params {
+		var val Value
+		if i < len(args) {
+			val = args[i]
+		} else {
+			val = NewNil()
+		}
+		blockEnv.Define(param, val)
+	}
+	val, returned, err := exec.evalStatements(blk.Body, blockEnv)
+	if err != nil {
+		return NewNil(), err
+	}
+	if returned {
+		return val, nil
+	}
+	return val, nil
+}
+
+func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
+	startVal, err := exec.evalExpression(expr.Start, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	endVal, err := exec.evalExpression(expr.End, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	start, err := valueToInt64(startVal)
+	if err != nil {
+		return NewNil(), exec.errorAt(expr.Start.Pos(), "%s", err.Error())
+	}
+	end, err := valueToInt64(endVal)
+	if err != nil {
+		return NewNil(), exec.errorAt(expr.End.Pos(), "%s", err.Error())
+	}
+	return NewRange(Range{Start: start, End: end}), nil
+}
+
+func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, error) {
+	iterable, err := exec.evalExpression(stmt.Iterable, env)
+	if err != nil {
+		return NewNil(), false, err
+	}
+	last := NewNil()
+
+	switch iterable.Kind() {
+	case KindArray:
+		arr := iterable.Array()
+		for _, item := range arr {
+			env.Assign(stmt.Iterator, item)
+			val, returned, err := exec.evalStatements(stmt.Body, env)
+			if err != nil {
+				return NewNil(), false, err
+			}
+			if returned {
+				return val, true, nil
+			}
+			last = val
+		}
+	case KindRange:
+		r := iterable.Range()
+		if r.Start <= r.End {
+			for i := r.Start; i <= r.End; i++ {
+				env.Assign(stmt.Iterator, NewInt(i))
+				val, returned, err := exec.evalStatements(stmt.Body, env)
+				if err != nil {
+					return NewNil(), false, err
+				}
+				if returned {
+					return val, true, nil
+				}
+				last = val
+			}
+		} else {
+			for i := r.Start; i >= r.End; i-- {
+				env.Assign(stmt.Iterator, NewInt(i))
+				val, returned, err := exec.evalStatements(stmt.Body, env)
+				if err != nil {
+					return NewNil(), false, err
+				}
+				if returned {
+					return val, true, nil
+				}
+				last = val
+			}
+		}
+	default:
+		return NewNil(), false, exec.errorAt(stmt.Pos(), "cannot iterate over %s", iterable.Kind())
+	}
+
+	return last, false, nil
 }
 
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {
@@ -410,6 +532,8 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		default:
 			return NewNil(), fmt.Errorf("unknown duration method %s", property)
 		}
+	case KindArray:
+		return arrayMember(obj, property)
 	case KindInt:
 		switch property {
 		case "seconds", "second", "minutes", "minute", "hours", "hour", "days", "day":
@@ -431,11 +555,93 @@ func moneyMember(m Money, property string) (Value, error) {
 	case "amount":
 		return NewString(m.String()), nil
 	case "format":
-		return NewBuiltin("money.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value) (Value, error) {
+		return NewBuiltin("money.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return NewString(m.String()), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown money member %s", property)
+	}
+}
+
+func arrayMember(array Value, property string) (Value, error) {
+	switch property {
+	case "each":
+		return NewBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if block.Block() == nil {
+				return NewNil(), fmt.Errorf("array.each requires a block")
+			}
+			for _, item := range receiver.Array() {
+				if _, err := exec.callBlock(block, []Value{item}); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
+	case "map":
+		return NewBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if block.Block() == nil {
+				return NewNil(), fmt.Errorf("array.map requires a block")
+			}
+			arr := receiver.Array()
+			result := make([]Value, len(arr))
+			for i, item := range arr {
+				val, err := exec.callBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				result[i] = val
+			}
+			return NewArray(result), nil
+		}), nil
+	case "select":
+		return NewBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if block.Block() == nil {
+				return NewNil(), fmt.Errorf("array.select requires a block")
+			}
+			arr := receiver.Array()
+			out := make([]Value, 0, len(arr))
+			for _, item := range arr {
+				val, err := exec.callBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				if val.Truthy() {
+					out = append(out, item)
+				}
+			}
+			return NewArray(out), nil
+		}), nil
+	case "reduce":
+		return NewBuiltin("array.reduce", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if block.Block() == nil {
+				return NewNil(), fmt.Errorf("array.reduce requires a block")
+			}
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.reduce accepts at most one initial value")
+			}
+			arr := receiver.Array()
+			if len(arr) == 0 && len(args) == 0 {
+				return NewNil(), fmt.Errorf("array.reduce on empty array requires an initial value")
+			}
+			var acc Value
+			start := 0
+			if len(args) == 1 {
+				acc = args[0]
+			} else {
+				acc = arr[0]
+				start = 1
+			}
+			for i := start; i < len(arr); i++ {
+				next, err := exec.callBlock(block, []Value{acc, arr[i]})
+				if err != nil {
+					return NewNil(), err
+				}
+				acc = next
+			}
+			return acc, nil
+		}), nil
+	default:
+		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
 }
 
@@ -544,6 +750,17 @@ func valueToHashKey(val Value) (string, error) {
 		return fmt.Sprintf("%d", val.Int()), nil
 	default:
 		return "", fmt.Errorf("unsupported hash key type %v", val.Kind())
+	}
+}
+
+func valueToInt64(val Value) (int64, error) {
+	switch val.Kind() {
+	case KindInt:
+		return val.Int(), nil
+	case KindFloat:
+		return int64(val.Float()), nil
+	default:
+		return 0, fmt.Errorf("expected integer value")
 	}
 }
 

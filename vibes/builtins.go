@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value) (Value, error) {
+func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) == 0 {
 		return NewNil(), fmt.Errorf("assert requires a condition argument")
 	}
@@ -22,7 +22,7 @@ func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[str
 	return NewNil(), errors.New(message)
 }
 
-func builtinMoney(exec *Execution, receiver Value, args []Value, kwargs map[string]Value) (Value, error) {
+func builtinMoney(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 1 {
 		return NewNil(), fmt.Errorf("money expects a single string literal")
 	}
@@ -37,14 +37,14 @@ func builtinMoney(exec *Execution, receiver Value, args []Value, kwargs map[stri
 	return NewMoney(parsed), nil
 }
 
-func builtinMoneyCents(exec *Execution, receiver Value, args []Value, kwargs map[string]Value) (Value, error) {
+func builtinMoneyCents(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 2 {
 		return NewNil(), fmt.Errorf("money_cents expects cents and currency")
 	}
 	centsVal := args[0]
 	currencyVal := args[1]
 
-	cents, err := valueToInt(centsVal)
+	cents, err := valueToInt64(centsVal)
 	if err != nil {
 		return NewNil(), fmt.Errorf("money_cents expects integer cents")
 	}
@@ -52,7 +52,7 @@ func builtinMoneyCents(exec *Execution, receiver Value, args []Value, kwargs map
 		return NewNil(), fmt.Errorf("money_cents expects currency string")
 	}
 
-	money, err := newMoneyFromCents(int64(cents), currencyVal.String())
+	money, err := newMoneyFromCents(cents, currencyVal.String())
 	if err != nil {
 		return NewNil(), err
 	}

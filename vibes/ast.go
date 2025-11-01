@@ -71,6 +71,16 @@ type IfStmt struct {
 func (s *IfStmt) stmtNode()     {}
 func (s *IfStmt) Pos() Position { return s.position }
 
+type ForStmt struct {
+	Iterator string
+	Iterable Expression
+	Body     []Statement
+	position Position
+}
+
+func (s *ForStmt) stmtNode()     {}
+func (s *ForStmt) Pos() Position { return s.position }
+
 type Identifier struct {
 	Name     string
 	position Position
@@ -151,6 +161,7 @@ type CallExpr struct {
 	Callee   Expression
 	Args     []Expression
 	KwArgs   []KeywordArg
+	Block    *BlockLiteral
 	position Position
 }
 
@@ -198,6 +209,24 @@ type BinaryExpr struct {
 
 func (e *BinaryExpr) exprNode()     {}
 func (e *BinaryExpr) Pos() Position { return e.position }
+
+type RangeExpr struct {
+	Start    Expression
+	End      Expression
+	position Position
+}
+
+func (e *RangeExpr) exprNode()     {}
+func (e *RangeExpr) Pos() Position { return e.position }
+
+type BlockLiteral struct {
+	Params   []string
+	Body     []Statement
+	position Position
+}
+
+func (b *BlockLiteral) exprNode()     {}
+func (b *BlockLiteral) Pos() Position { return b.position }
 
 type InterpolatedString struct {
 	Parts    []StringPart

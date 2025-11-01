@@ -13,6 +13,9 @@ Representative `.vibe` programs now live under `examples/` and remain grouped by
 - `examples/basics/` – literals, arithmetic, and simple function composition.
 - `examples/collections/` – array, hash, and symbol usage including mutation and lookups.
 - `examples/control_flow/` – conditionals and recursion examples.
+- `examples/blocks/` – block-friendly transformations (map/select/reduce) over collections.
+- `examples/loops/` – range iteration, collection loops, and accumulation helpers.
+- `examples/ranges/` – range literals, ascending/descending iteration, and filtered collection helpers.
 - `examples/money/` – exercises for the `money` and `money_cents` built-ins.
 - `examples/durations/` – duration literals and derived values in seconds.
 - `examples/errors/` – patterns that rely on `assert` for validation.

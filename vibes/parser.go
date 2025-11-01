@@ -57,6 +57,7 @@ func newParser(input string) *parser {
 	p.infixFns[tokenSlash] = p.parseInfixExpression
 	p.infixFns[tokenAsterisk] = p.parseInfixExpression
 	p.infixFns[tokenPercent] = p.parseInfixExpression
+	p.infixFns[tokenRange] = p.parseRangeExpression
 	p.infixFns[tokenEQ] = p.parseInfixExpression
 	p.infixFns[tokenNotEQ] = p.parseInfixExpression
 	p.infixFns[tokenLT] = p.parseInfixExpression
@@ -106,6 +107,8 @@ func (p *parser) parseStatement() Statement {
 		return p.parseReturnStatement()
 	case tokenIf:
 		return p.parseIfStatement()
+	case tokenFor:
+		return p.parseForStatement()
 	case tokenIdent:
 		if p.curToken.Literal == "assert" {
 			return p.parseAssertStatement()
@@ -206,6 +209,30 @@ func (p *parser) parseIfStatement() Statement {
 	return &IfStmt{Condition: condition, Consequent: consequent, ElseIf: elseifClauses, Alternate: alternate, position: pos}
 }
 
+func (p *parser) parseForStatement() Statement {
+	pos := p.curToken.Pos
+	if !p.expectPeek(tokenIdent) {
+		return nil
+	}
+	iterator := p.curToken.Literal
+
+	if !p.expectPeek(tokenIn) {
+		return nil
+	}
+
+	p.nextToken()
+	iterable := p.parseExpression(lowestPrec)
+
+	p.nextToken()
+	body := p.parseBlock(tokenEnd)
+
+	if p.curToken.Type != tokenEnd {
+		p.errorExpected(p.curToken, "end")
+	}
+
+	return &ForStmt{Iterator: iterator, Iterable: iterable, Body: body, position: pos}
+}
+
 func (p *parser) parseBlock(stop ...TokenType) []Statement {
 	stmts := []Statement{}
 	stopSet := make(map[TokenType]struct{}, len(stop))
@@ -229,6 +256,19 @@ func (p *parser) parseExpressionOrAssignStatement() Statement {
 	expr := p.parseExpression(lowestPrec)
 	if expr == nil {
 		return nil
+	}
+
+	if p.peekToken.Type == tokenDo {
+		p.nextToken()
+		block := p.parseBlockLiteral()
+		var call *CallExpr
+		if existing, ok := expr.(*CallExpr); ok {
+			call = existing
+		} else {
+			call = &CallExpr{Callee: expr, position: expr.Pos()}
+		}
+		call.Block = block
+		expr = call
 	}
 
 	if p.peekToken.Type == tokenAssign && isAssignable(expr) {
@@ -278,6 +318,7 @@ const (
 	precAnd
 	precEquality
 	precComparison
+	precRange
 	precSum
 	precProduct
 	precPrefix
@@ -293,6 +334,7 @@ var precedences = map[TokenType]int{
 	tokenLTE:      precComparison,
 	tokenGT:       precComparison,
 	tokenGTE:      precComparison,
+	tokenRange:    precRange,
 	tokenPlus:     precSum,
 	tokenMinus:    precSum,
 	tokenSlash:    precProduct,
@@ -462,6 +504,14 @@ func (p *parser) parseInfixExpression(left Expression) Expression {
 	return &BinaryExpr{Left: left, Operator: operator, Right: right, position: pos}
 }
 
+func (p *parser) parseRangeExpression(left Expression) Expression {
+	pos := p.curToken.Pos
+	precedence := p.curPrecedence()
+	p.nextToken()
+	right := p.parseExpression(precedence)
+	return &RangeExpr{Start: left, End: right, position: pos}
+}
+
 func (p *parser) parseCallExpression(function Expression) Expression {
 	expr := &CallExpr{Callee: function, position: function.Pos()}
 	args := []Expression{}
@@ -489,6 +539,10 @@ func (p *parser) parseCallExpression(function Expression) Expression {
 
 	expr.Args = args
 	expr.KwArgs = kwargs
+	if p.peekToken.Type == tokenDo {
+		p.nextToken()
+		expr.Block = p.parseBlockLiteral()
+	}
 	return expr
 }
 
@@ -506,6 +560,58 @@ func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
 	if expr != nil {
 		*args = append(*args, expr)
 	}
+}
+
+func (p *parser) parseBlockLiteral() *BlockLiteral {
+	pos := p.curToken.Pos
+	params := []string{}
+
+	p.nextToken()
+	if p.curToken.Type == tokenPipe {
+		var ok bool
+		params, ok = p.parseBlockParameters()
+		if !ok {
+			return nil
+		}
+		p.nextToken()
+	}
+
+	body := p.parseBlock(tokenEnd)
+	if p.curToken.Type != tokenEnd {
+		p.errorExpected(p.curToken, "end")
+	}
+
+	return &BlockLiteral{Params: params, Body: body, position: pos}
+}
+
+func (p *parser) parseBlockParameters() ([]string, bool) {
+	params := []string{}
+	p.nextToken()
+	if p.curToken.Type == tokenPipe {
+		return params, true
+	}
+
+	if p.curToken.Type != tokenIdent {
+		p.errorExpected(p.curToken, "block parameter")
+		return nil, false
+	}
+	params = append(params, p.curToken.Literal)
+
+	for p.peekToken.Type == tokenComma {
+		p.nextToken()
+		p.nextToken()
+		if p.curToken.Type != tokenIdent {
+			p.errorExpected(p.curToken, "block parameter")
+			return nil, false
+		}
+		params = append(params, p.curToken.Literal)
+	}
+
+	if !p.expectPeek(tokenPipe) {
+		return nil, false
+	}
+
+	return params, true
 }
 
 func (p *parser) parseMemberExpression(object Expression) Expression {

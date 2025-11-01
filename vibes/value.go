@@ -21,6 +21,8 @@ const (
 	KindDuration
 	KindSymbol
 	KindObject
+	KindRange
+	KindBlock
 )
 
 func (k ValueKind) String() string {
@@ -51,6 +53,10 @@ func (k ValueKind) String() string {
 		return "symbol"
 	case KindObject:
 		return "object"
+	case KindRange:
+		return "range"
+	case KindBlock:
+		return "block"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
@@ -132,6 +138,9 @@ func (v Value) String() string {
 			parts = append(parts, fmt.Sprintf("%s: %s", k, val.String()))
 		}
 		return fmt.Sprintf("{%s}", strings.Join(parts, ", "))
+	case KindRange:
+		r := v.data.(Range)
+		return fmt.Sprintf("%d..%d", r.Start, r.End)
 	default:
 		return fmt.Sprintf("<%v>", v.kind)
 	}
@@ -177,6 +186,8 @@ func (v Value) Equal(other Value) bool {
 		return v.data.(Money) == other.data.(Money)
 	case KindDuration:
 		return v.data.(Duration) == other.data.(Duration)
+	case KindRange:
+		return v.data.(Range) == other.data.(Range)
 	default:
 		return v.data == other.data
 	}
@@ -197,13 +208,17 @@ func NewSymbol(name string) Value  { return Value{kind: KindSymbol, data: name} 
 func NewObject(attrs map[string]Value) Value {
 	return Value{kind: KindObject, data: attrs}
 }
+func NewRange(r Range) Value { return Value{kind: KindRange, data: r} }
+func NewBlock(params []string, body []Statement, env *Env) Value {
+	return Value{kind: KindBlock, data: &Block{Params: params, Body: body, Env: env}}
+}
 
 type Builtin struct {
 	Name string
 	Fn   BuiltinFunc
 }
 
-type BuiltinFunc func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value) (Value, error)
+type BuiltinFunc func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error)
 
 func NewBuiltin(name string, fn BuiltinFunc) Value {
 	return Value{kind: KindBuiltin, data: &Builtin{Name: name, Fn: fn}}
@@ -241,6 +256,13 @@ func (v Value) Duration() Duration {
 	return v.data.(Duration)
 }
 
+func (v Value) Range() Range {
+	if v.kind != KindRange {
+		return Range{}
+	}
+	return v.data.(Range)
+}
+
 func (v Value) Function() *ScriptFunction {
 	if v.kind != KindFunction {
 		return nil
@@ -253,4 +275,22 @@ func (v Value) Builtin() *Builtin {
 		return nil
 	}
 	return v.data.(*Builtin)
+}
+
+func (v Value) Block() *Block {
+	if v.kind != KindBlock {
+		return nil
+	}
+	return v.data.(*Block)
+}
+
+type Range struct {
+	Start int64
+	End   int64
+}
+
+type Block struct {
+	Params []string
+	Body   []Statement
+	Env    *Env
 }
