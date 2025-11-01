@@ -22,3 +22,7 @@ Representative `.vibe` programs now live under `examples/` and remain grouped by
 - `examples/future/` – stretch goals that require planned language features (blocks, iteration, effectful DB streaming).
 
 Some scripts (notably in `examples/background/` and `examples/future/`) require features that are not yet implemented. Keeping them in the tree makes it easy to track interpreter progress—enable them one by one as functionality lands.
+
+## Development
+
+- Run the full test suite with `just test`, which fixes a local Go build cache and executes `go test ./...`.

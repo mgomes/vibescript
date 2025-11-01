@@ -5,6 +5,6 @@ def current_user_id()
   ctx.user.id
 end
 
-def coach?
+def coach?()
   ctx.user.role == "coach"
 end

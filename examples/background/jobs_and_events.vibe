@@ -6,7 +6,7 @@ def queue_recalc(player_id)
     "recalc_player_total",
     { player_id: player_id },
     delay: 2.seconds,
-    key: "recalc:" + player_id,
+    key: "recalc:" + player_id
   )
 end
 
@@ -15,8 +15,8 @@ def publish_update(player)
     "players_totals",
     {
       id: player[:id],
-      total: player[:raised].format,
-    },
+      total: player[:raised].format()
+    }
   )
 end
 
