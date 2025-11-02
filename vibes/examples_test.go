@@ -268,6 +268,84 @@ func TestExamples(t *testing.T) {
 			),
 		},
 		{
+			name:     "arrays/first_two",
+			file:     "arrays/extras.vibe",
+			function: "first_two",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3), intVal(4)),
+			},
+			want: arrayVal(intVal(1), intVal(2)),
+		},
+		{
+			name:     "arrays/last_three",
+			file:     "arrays/extras.vibe",
+			function: "last_three",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3), intVal(4)),
+			},
+			want: arrayVal(intVal(2), intVal(3), intVal(4)),
+		},
+		{
+			name:     "arrays/numeric_sum",
+			file:     "arrays/extras.vibe",
+			function: "numeric_sum",
+			args: []Value{
+				arrayVal(intVal(2), intVal(3), intVal(5)),
+			},
+			want: intVal(10),
+		},
+		{
+			name:     "arrays/double_sum",
+			file:     "arrays/extras.vibe",
+			function: "double_sum",
+			args: []Value{
+				arrayVal(intVal(2), intVal(3)),
+			},
+			want: intVal(10),
+		},
+		{
+			name:     "arrays/push_and_pop",
+			file:     "arrays/extras.vibe",
+			function: "push_and_pop",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3)),
+				intVal(4),
+			},
+			want: hashVal(map[string]Value{
+				"array":  arrayVal(intVal(1), intVal(2), intVal(3)),
+				"popped": intVal(4),
+			}),
+		},
+		{
+			name:     "arrays/uniq_values",
+			file:     "arrays/extras.vibe",
+			function: "uniq_values",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(1), intVal(3)),
+			},
+			want: arrayVal(intVal(1), intVal(2), intVal(3)),
+		},
+		{
+			name:     "arrays/concat_values",
+			file:     "arrays/extras.vibe",
+			function: "concat_values",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2)),
+				arrayVal(intVal(3), intVal(4)),
+			},
+			want: arrayVal(intVal(1), intVal(2), intVal(3), intVal(4)),
+		},
+		{
+			name:     "arrays/subtract_values",
+			file:     "arrays/extras.vibe",
+			function: "subtract_values",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3), intVal(2)),
+				arrayVal(intVal(2)),
+			},
+			want: arrayVal(intVal(1), intVal(3)),
+		},
+		{
 			name:     "collections/make_player",
 			file:     "collections/hashes.vibe",
 			function: "make_player",

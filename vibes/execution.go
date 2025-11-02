@@ -687,6 +687,138 @@ func arrayMember(array Value, property string) (Value, error) {
 			}
 			return acc, nil
 		}), nil
+	case "push":
+		return NewBuiltin("array.push", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) == 0 {
+				return NewNil(), fmt.Errorf("array.push expects at least one argument")
+			}
+			base := receiver.Array()
+			out := make([]Value, len(base)+len(args))
+			copy(out, base)
+			copy(out[len(base):], args)
+			return NewArray(out), nil
+		}), nil
+	case "pop":
+		return NewBuiltin("array.pop", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.pop accepts at most one argument")
+			}
+			count := 1
+			if len(args) == 1 {
+				n, err := valueToInt(args[0])
+				if err != nil || n < 0 {
+					return NewNil(), fmt.Errorf("array.pop expects non-negative integer")
+				}
+				count = n
+			}
+			arr := receiver.Array()
+			if count == 0 {
+				return NewHash(map[string]Value{
+					"array":  NewArray(arr),
+					"popped": NewNil(),
+				}), nil
+			}
+			if len(arr) == 0 {
+				popped := NewNil()
+				if len(args) == 1 {
+					popped = NewArray([]Value{})
+				}
+				return NewHash(map[string]Value{
+					"array":  NewArray([]Value{}),
+					"popped": popped,
+				}), nil
+			}
+			if count > len(arr) {
+				count = len(arr)
+			}
+			remaining := make([]Value, len(arr)-count)
+			copy(remaining, arr[:len(arr)-count])
+			removed := make([]Value, count)
+			copy(removed, arr[len(arr)-count:])
+			result := map[string]Value{
+				"array": NewArray(remaining),
+			}
+			if count == 1 && len(args) == 0 {
+				result["popped"] = removed[0]
+			} else {
+				result["popped"] = NewArray(removed)
+			}
+			return NewHash(result), nil
+		}), nil
+	case "uniq":
+		return NewBuiltin("array.uniq", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.uniq does not take arguments")
+			}
+			arr := receiver.Array()
+			unique := make([]Value, 0, len(arr))
+			for _, item := range arr {
+				found := false
+				for _, existing := range unique {
+					if item.Equal(existing) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					unique = append(unique, item)
+				}
+			}
+			return NewArray(unique), nil
+		}), nil
+	case "first":
+		return NewBuiltin("array.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			arr := receiver.Array()
+			if len(arr) == 0 {
+				return NewNil(), nil
+			}
+			if len(args) == 0 {
+				return arr[0], nil
+			}
+			n, err := valueToInt(args[0])
+			if err != nil || n < 0 {
+				return NewNil(), fmt.Errorf("array.first expects non-negative integer")
+			}
+			if n > len(arr) {
+				n = len(arr)
+			}
+			out := make([]Value, n)
+			copy(out, arr[:n])
+			return NewArray(out), nil
+		}), nil
+	case "last":
+		return NewBuiltin("array.last", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			arr := receiver.Array()
+			if len(arr) == 0 {
+				return NewNil(), nil
+			}
+			if len(args) == 0 {
+				return arr[len(arr)-1], nil
+			}
+			n, err := valueToInt(args[0])
+			if err != nil || n < 0 {
+				return NewNil(), fmt.Errorf("array.last expects non-negative integer")
+			}
+			if n > len(arr) {
+				n = len(arr)
+			}
+			out := make([]Value, n)
+			copy(out, arr[len(arr)-n:])
+			return NewArray(out), nil
+		}), nil
+	case "sum":
+		return NewBuiltin("array.sum", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			arr := receiver.Array()
+			total := NewInt(0)
+			for _, item := range arr {
+				sum, err := addValues(total, item)
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.sum supports numeric values")
+				}
+				total = sum
+			}
+			return total, nil
+		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
@@ -828,6 +960,13 @@ func addValues(left, right Value) (Value, error) {
 		return NewInt(left.Int() + right.Int()), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() + right.Float()), nil
+	case left.Kind() == KindArray && right.Kind() == KindArray:
+		lArr := left.Array()
+		rArr := right.Array()
+		out := make([]Value, len(lArr)+len(rArr))
+		copy(out, lArr)
+		copy(out[len(lArr):], rArr)
+		return NewArray(out), nil
 	case left.Kind() == KindString || right.Kind() == KindString:
 		return NewString(left.String() + right.String()), nil
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
@@ -847,6 +986,23 @@ func subtractValues(left, right Value) (Value, error) {
 		return NewInt(left.Int() - right.Int()), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() - right.Float()), nil
+	case left.Kind() == KindArray && right.Kind() == KindArray:
+		lArr := left.Array()
+		rArr := right.Array()
+		out := make([]Value, 0, len(lArr))
+		for _, item := range lArr {
+			found := false
+			for _, remove := range rArr {
+				if item.Equal(remove) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				out = append(out, item)
+			}
+		}
+		return NewArray(out), nil
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		diff, err := left.Money().sub(right.Money())
 		if err != nil {
