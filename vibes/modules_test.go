@@ -110,7 +110,7 @@ func TestRequireRejectsAbsolutePaths(t *testing.T) {
 	}
 
 	source := fmt.Sprintf(`def run()
-  require("%s")
+  require(%q)
 end`, absPath)
 
 	script, err := engine.Compile(source)
