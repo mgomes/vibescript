@@ -3,6 +3,8 @@ package vibes
 import (
 	"context"
 	"fmt"
+	"os"
+	"sync"
 )
 
 // Config controls interpreter execution bounds and enforcement modes.
@@ -10,12 +12,17 @@ type Config struct {
 	StepQuota        int
 	MemoryQuotaBytes int
 	StrictEffects    bool
+	ModulePaths      []string
+	MaxCachedModules int
 }
 
 // Engine executes VibeScript programs with deterministic limits.
 type Engine struct {
 	config   Config
 	builtins map[string]Value
+	modules  map[string]moduleEntry
+	modPaths []string
+	modMu    sync.RWMutex
 }
 
 // NewEngine constructs an Engine with sane defaults and registers built-ins.
@@ -26,15 +33,29 @@ func NewEngine(cfg Config) *Engine {
 	if cfg.MemoryQuotaBytes <= 0 {
 		cfg.MemoryQuotaBytes = 64 * 1024
 	}
+	if cfg.MaxCachedModules == 0 {
+		cfg.MaxCachedModules = 1000
+	}
+
+	for _, path := range cfg.ModulePaths {
+		if stat, err := os.Stat(path); err != nil {
+			panic(fmt.Sprintf("vibes: invalid module path %q: %v", path, err))
+		} else if !stat.IsDir() {
+			panic(fmt.Sprintf("vibes: module path %q is not a directory", path))
+		}
+	}
 
 	engine := &Engine{
 		config:   cfg,
 		builtins: make(map[string]Value),
+		modules:  make(map[string]moduleEntry),
+		modPaths: append([]string(nil), cfg.ModulePaths...),
 	}
 
 	engine.RegisterBuiltin("assert", builtinAssert)
 	engine.RegisterBuiltin("money", builtinMoney)
 	engine.RegisterBuiltin("money_cents", builtinMoneyCents)
+	engine.RegisterBuiltin("require", builtinRequire)
 
 	return engine
 }

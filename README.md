@@ -45,7 +45,7 @@ func main() {
 }
 ```
 
-Scripts can live in `.vibe` files or be embedded inline. Host applications expose capabilities by seeding `CallOptions.Globals` before invoking functions.
+Scripts can live in `.vibe` files or be embedded inline. Host applications expose capabilities by seeding `CallOptions.Globals` or registering typed adapters through `CallOptions.Capabilities` before invoking functions.
 
 ## Examples
 
@@ -78,7 +78,7 @@ Long-form guides live in `docs/`:
 - `docs/control-flow.md` – conditionals, loops, and ranges.
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
 - `docs/integration.md` – integrating the interpreter in Go applications.
-- `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, and more).
+- `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).
 
 ## Development
 

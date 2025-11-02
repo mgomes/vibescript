@@ -42,9 +42,57 @@ func main() {
 ```
 
 Host applications can expose capabilities by seeding `CallOptions.Globals` with
-values (hashes, builtins, arrays) before invoking script functions. Review
+values (hashes, builtins, arrays) or, for richer integrations, by supplying
+typed adapters via `CallOptions.Capabilities`. Review
 `examples/capabilities/` and the test harness in `vibes/examples_test.go` for
 mocks you can repurpose.
+
+### Module Search Paths
+
+Set `Config.ModulePaths` to the directories that contain re-usable `.vibe`
+files. Scripts can then call `require("module_name")` to load another file.
+The `require` builtin returns an object containing the module's functions and
+also defines any non-conflicting functions on the global scope for convenient
+access.
+
+```go
+engine := vibes.NewEngine(vibes.Config{ModulePaths: []string{"/app/workflows"}})
+
+script, err := engine.Compile(`def total(amount)
+  helpers = require("fees")
+  helpers.apply_fee(amount)
+end`)
+```
+
+The interpreter searches each configured directory for `<module>.vibe` and
+caches compiled modules so subsequent calls to `require` are inexpensive.
+
+### Capability Adapters
+
+Use `CallOptions.Capabilities` to install first-class, typed integrations. The
+`vibes.NewJobQueueCapability` helper wraps a host `JobQueue` implementation and
+exposes `enqueue` (and `retry` when supported) with automatic argument parsing
+and context propagation.
+
+```go
+type jobQueue struct{}
+
+func (jobQueue) Enqueue(ctx context.Context, job vibes.JobQueueJob) (vibes.Value, error) {
+    log.Printf("queue %s with payload %+v", job.Name, job.Payload)
+    return vibes.NewString("queued"), nil
+}
+
+cap := vibes.NewJobQueueCapability("jobs", jobQueue{})
+
+result, err := script.Call(ctx, "queue_recalc", nil, vibes.CallOptions{
+    Capabilities: []vibes.CapabilityAdapter{cap},
+})
+
+```
+
+Adapters receive the invocation `context.Context`, making it straightforward to
+apply deadlines, tracing spans, or other host-specific policy without hand
+wiring builtins.
 
 ### Handling Dynamic Types
 

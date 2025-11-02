@@ -21,15 +21,19 @@ type Script struct {
 }
 
 type CallOptions struct {
-	Globals map[string]Value
+	Globals      map[string]Value
+	Capabilities []CapabilityAdapter
 }
 
 type Execution struct {
-	engine *Engine
-	script *Script
-	ctx    context.Context
-	quota  int
-	steps  int
+	engine         *Engine
+	script         *Script
+	ctx            context.Context
+	quota          int
+	steps          int
+	root           *Env
+	modules        map[string]Value
+	moduleLoading  map[string]bool
 }
 
 func (exec *Execution) step() error {
@@ -891,17 +895,37 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	for n, fnDecl := range s.functions {
 		root.Define(n, NewFunction(fnDecl))
 	}
-	for n, val := range opts.Globals {
-		root.Define(n, val)
-	}
 
 	fn.Env = root
 
 	exec := &Execution{
-		engine: s.engine,
-		script: s,
-		ctx:    ctx,
-		quota:  s.engine.config.StepQuota,
+		engine:        s.engine,
+		script:        s,
+		ctx:           ctx,
+		quota:         s.engine.config.StepQuota,
+		root:          root,
+		modules:       make(map[string]Value),
+		moduleLoading: make(map[string]bool),
+	}
+
+	if len(opts.Capabilities) > 0 {
+		binding := CapabilityBinding{Context: exec.ctx, Engine: s.engine}
+		for _, adapter := range opts.Capabilities {
+			if adapter == nil {
+				continue
+			}
+			globals, err := adapter.Bind(binding)
+			if err != nil {
+				return NewNil(), err
+			}
+			for name, val := range globals {
+				root.Define(name, val)
+			}
+		}
+	}
+
+	for n, val := range opts.Globals {
+		root.Define(n, val)
 	}
 
 	callEnv := newEnv(root)

@@ -18,3 +18,5 @@ dives on specific topics.
 - `blocks.md` – using block literals for map/select/reduce style patterns.
 - `integration.md` – host integration patterns showing how Go services can
   expose capabilities to scripts.
+- `examples/module_require.md` – practical example showing how to share
+  helpers with `require` and module search paths.
