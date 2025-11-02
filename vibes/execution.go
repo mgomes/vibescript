@@ -811,6 +811,11 @@ func arrayMember(array Value, property string) (Value, error) {
 			arr := receiver.Array()
 			total := NewInt(0)
 			for _, item := range arr {
+				switch item.Kind() {
+				case KindInt, KindFloat:
+				default:
+					return NewNil(), fmt.Errorf("array.sum supports numeric values")
+				}
 				sum, err := addValues(total, item)
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.sum supports numeric values")
