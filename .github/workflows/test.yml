@@ -21,6 +21,7 @@ jobs:
           go-version: stable
 
       - name: Install Just
+        if: runner.os != 'Windows'
         uses: taiki-e/install-action@v2
         with:
           tool: just
@@ -31,8 +32,30 @@ jobs:
           version: latest
           install-only: true
 
-      - name: Run tests
+      - name: Run tests (Just)
+        if: runner.os != 'Windows'
         run: just test
 
-      - name: Run lint
+      - name: Run lint (Just)
+        if: runner.os != 'Windows'
         run: just lint
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go test ./...
+
+      - name: Check formatting (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $fmt = gofmt -l .
+          if ($fmt) {
+            Write-Host $fmt
+            exit 1
+          }
+
+      - name: Run golangci-lint (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: golangci-lint run --timeout=5m --out-format colored-line-number
