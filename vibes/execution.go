@@ -26,14 +26,14 @@ type CallOptions struct {
 }
 
 type Execution struct {
-	engine         *Engine
-	script         *Script
-	ctx            context.Context
-	quota          int
-	steps          int
-	root           *Env
-	modules        map[string]Value
-	moduleLoading  map[string]bool
+	engine        *Engine
+	script        *Script
+	ctx           context.Context
+	quota         int
+	steps         int
+	root          *Env
+	modules       map[string]Value
+	moduleLoading map[string]bool
 }
 
 func (exec *Execution) step() error {
