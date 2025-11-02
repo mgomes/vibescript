@@ -946,10 +946,6 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	return val, nil
 }
 
-func (e *Execution) engineConfig() Config {
-	return e.engine.config
-}
-
 func valueToHashKey(val Value) (string, error) {
 	switch val.Kind() {
 	case KindSymbol:
