@@ -6,6 +6,46 @@ The `vibes/` directory contains the public Go package that hosts the VibeScript 
 import "vibescript/vibes"
 ```
 
+### Quick Start Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    "vibescript/vibes"
+)
+
+func main() {
+    engine := vibes.NewEngine(vibes.Config{})
+
+    script, err := engine.Compile(`
+    def total_with_fee(amount)
+      amount + 1
+    end
+    `)
+    if err != nil {
+        panic(err)
+    }
+
+    result, err := script.Call(
+        context.Background(),
+        "total_with_fee",
+        []vibes.Value{vibes.NewInt(99)},
+        vibes.CallOptions{},
+    )
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Println("total:", result.Int())
+}
+```
+
+Save the script as `.vibe` or embed it in your application. Expose host capabilities by providing values in `CallOptions.Globals` before invoking functions.
+
 ## Examples
 
 Representative `.vibe` programs now live under `examples/` and remain grouped by feature area for quick lookup:
@@ -26,6 +66,18 @@ Representative `.vibe` programs now live under `examples/` and remain grouped by
 - `examples/future/` – stretch goals that require planned language features (blocks, iteration, effectful DB streaming).
 
 Some scripts (notably in `examples/background/` and `examples/future/`) require features that are not yet implemented. Keeping them in the tree makes it easy to track interpreter progress—enable them one by one as functionality lands.
+
+## Documentation
+
+Long-form guides live in `docs/`:
+
+- `docs/introduction.md` – overview and table of contents.
+- `docs/arrays.md` – array helpers including map/select/reduce, first/last, push/pop, sum, and set-like operations.
+- `docs/hashes.md` – symbol-keyed hashes, merge, and iteration helpers.
+- `docs/control-flow.md` – conditionals, loops, and ranges.
+- `docs/blocks.md` – working with block literals for enumerable-style operations.
+- `docs/integration.md` – integrating the interpreter in Go applications.
+- `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, and more).
 
 ## Development
 
