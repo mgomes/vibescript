@@ -107,7 +107,7 @@ func (exec *Execution) newRuntimeError(message string, pos Position) error {
 		// Remaining frames: the call stack (where each function was called from)
 		for i := len(exec.callStack) - 1; i >= 0; i-- {
 			cf := exec.callStack[i]
-			frames = append(frames, StackFrame{Function: cf.Function, Pos: cf.Pos})
+			frames = append(frames, StackFrame(cf))
 		}
 	} else {
 		// No call stack means error at script top level
