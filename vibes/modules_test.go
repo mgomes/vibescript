@@ -3,6 +3,7 @@ package vibes
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -98,9 +99,21 @@ end`)
 func TestRequireRejectsAbsolutePaths(t *testing.T) {
 	engine := NewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
-	script, err := engine.Compile(`def run()
-  require("/etc/passwd")
-end`)
+	absPath := "/etc/passwd"
+	if filepath.Separator == '\\' {
+		drive := os.Getenv("SYSTEMDRIVE")
+		if drive == "" {
+			drive = "C:"
+		}
+		drive = drive + string(filepath.Separator)
+		absPath = filepath.Join(drive, "Windows", "system32")
+	}
+
+	source := fmt.Sprintf(`def run()
+  require(%q)
+end`, absPath)
+
+	script, err := engine.Compile(source)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}

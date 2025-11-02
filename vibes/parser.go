@@ -468,7 +468,7 @@ func (p *parser) parseHashLiteral() Expression {
 }
 
 func (p *parser) parseHashPair() HashPair {
-	if !(p.curToken.Type == tokenIdent && p.peekToken.Type == tokenColon) {
+	if p.curToken.Type != tokenIdent || p.peekToken.Type != tokenColon {
 		p.errors = append(p.errors, &parseError{
 			pos: p.curToken.Pos,
 			msg: "hash keys must use symbol shorthand (name:)",
