@@ -2,6 +2,7 @@ package vibes
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,7 +140,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected error for invalid payload")
 	}
-	if got := err.Error(); got != "jobs.enqueue expects payload hash" {
+	if got := err.Error(); !strings.Contains(got, "jobs.enqueue expects payload hash") {
 		t.Fatalf("unexpected error: %s", got)
 	}
 }
@@ -184,7 +185,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected error for negative delay")
 	}
-	if got := err.Error(); got != "jobs.enqueue delay must be non-negative" {
+	if got := err.Error(); !strings.Contains(got, "jobs.enqueue delay must be non-negative") {
 		t.Fatalf("unexpected error: %s", got)
 	}
 }
@@ -205,7 +206,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected error for empty key")
 	}
-	if got := err.Error(); got != "jobs.enqueue key must be non-empty" {
+	if got := err.Error(); !strings.Contains(got, "jobs.enqueue key must be non-empty") {
 		t.Fatalf("unexpected error: %s", got)
 	}
 }

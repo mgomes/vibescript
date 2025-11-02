@@ -2,6 +2,8 @@ package vibes
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -157,5 +159,107 @@ func TestArraySumRejectsNonNumeric(t *testing.T) {
 	_, err = script.Call(context.Background(), "bad", nil, CallOptions{})
 	if err == nil {
 		t.Fatalf("expected runtime error for non-numeric sum")
+	}
+}
+
+func TestRuntimeErrorStackTrace(t *testing.T) {
+	script := compileScript(t, `
+    def inner()
+      assert false, "boom"
+    end
+
+    def middle()
+      inner()
+    end
+
+    def outer()
+      middle()
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "outer", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected runtime error")
+	}
+
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if !strings.Contains(rtErr.Message, "boom") {
+		t.Fatalf("message mismatch: %v", rtErr.Message)
+	}
+	if len(rtErr.Frames) < 4 {
+		t.Fatalf("expected at least 4 frames, got %d", len(rtErr.Frames))
+	}
+	if rtErr.Frames[0].Function != "inner" {
+		t.Fatalf("expected inner frame first, got %s", rtErr.Frames[0].Function)
+	}
+	if rtErr.Frames[1].Function != "inner" {
+		t.Fatalf("expected inner call site second, got %s", rtErr.Frames[1].Function)
+	}
+	if rtErr.Frames[2].Function != "middle" {
+		t.Fatalf("expected middle frame third, got %s", rtErr.Frames[2].Function)
+	}
+	if rtErr.Frames[3].Function != "outer" {
+		t.Fatalf("expected outer frame fourth, got %s", rtErr.Frames[3].Function)
+	}
+}
+
+func TestRuntimeErrorFromBuiltin(t *testing.T) {
+	script := compileScript(t, `
+    def divide(a, b)
+      a / b
+    end
+
+    def calculate()
+      divide(10, 0)
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "calculate", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected runtime error for division by zero")
+	}
+
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if !strings.Contains(rtErr.Message, "division by zero") {
+		t.Fatalf("expected division by zero error, got: %v", rtErr.Message)
+	}
+
+	// Should have stack frames showing where the error occurred
+	if len(rtErr.Frames) < 2 {
+		t.Fatalf("expected at least 2 frames, got %d", len(rtErr.Frames))
+	}
+
+	// Error occurred in divide function
+	if rtErr.Frames[0].Function != "divide" {
+		t.Fatalf("expected divide frame first, got %s", rtErr.Frames[0].Function)
+	}
+}
+
+func TestRuntimeErrorNoCallStack(t *testing.T) {
+	script := compileScript(t, `
+    def test()
+      1 / 0
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "test", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected runtime error")
+	}
+
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+
+	// Should have at least the error location
+	if len(rtErr.Frames) == 0 {
+		t.Fatalf("expected at least one frame")
 	}
 }
