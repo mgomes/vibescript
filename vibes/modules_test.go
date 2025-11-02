@@ -105,6 +105,7 @@ func TestRequireRejectsAbsolutePaths(t *testing.T) {
 		if drive == "" {
 			drive = "C:"
 		}
+		drive = drive + string(filepath.Separator)
 		absPath = filepath.Join(drive, "Windows", "system32")
 	}
 
