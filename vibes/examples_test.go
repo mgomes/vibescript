@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -1469,8 +1470,8 @@ func TestExamples(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error %q, got nil", tc.wantErr)
 				}
-				if err.Error() != tc.wantErr {
-					t.Fatalf("expected error %q, got %q", tc.wantErr, err.Error())
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %q", tc.wantErr, err.Error())
 				}
 			} else {
 				if err != nil {

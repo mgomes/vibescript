@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 type ScriptFunction struct {
@@ -31,9 +32,49 @@ type Execution struct {
 	ctx           context.Context
 	quota         int
 	steps         int
+	callStack     []callFrame
 	root          *Env
 	modules       map[string]Value
 	moduleLoading map[string]bool
+}
+
+type callFrame struct {
+	Function string
+	Pos      Position
+}
+
+type StackFrame struct {
+	Function string
+	Pos      Position
+}
+
+type RuntimeError struct {
+	Message string
+	Frames  []StackFrame
+}
+
+func (re *RuntimeError) Error() string {
+	var b strings.Builder
+	b.WriteString(re.Message)
+	for _, frame := range re.Frames {
+		// Show position if line number is valid (1-based)
+		if frame.Pos.Line > 0 && frame.Pos.Column > 0 {
+			fmt.Fprintf(&b, "\n  at %s (%d:%d)", frame.Function, frame.Pos.Line, frame.Pos.Column)
+		} else if frame.Pos.Line > 0 {
+			// Line valid but column missing
+			fmt.Fprintf(&b, "\n  at %s (line %d)", frame.Function, frame.Pos.Line)
+		} else {
+			// No position information available
+			fmt.Fprintf(&b, "\n  at %s", frame.Function)
+		}
+	}
+	return b.String()
+}
+
+// Unwrap returns nil to satisfy the error unwrapping interface.
+// RuntimeError is a terminal error that wraps the original error message but not the error itself.
+func (re *RuntimeError) Unwrap() error {
+	return nil
 }
 
 func (exec *Execution) step() error {
@@ -52,11 +93,48 @@ func (exec *Execution) step() error {
 }
 
 func (exec *Execution) errorAt(pos Position, format string, args ...any) error {
-	msg := fmt.Sprintf(format, args...)
-	if pos.Line > 0 {
-		return fmt.Errorf("%s at %d:%d", msg, pos.Line, pos.Column)
+	return exec.newRuntimeError(fmt.Sprintf(format, args...), pos)
+}
+
+func (exec *Execution) newRuntimeError(message string, pos Position) error {
+	frames := make([]StackFrame, 0, len(exec.callStack)+1)
+
+	if len(exec.callStack) > 0 {
+		// First frame: where the error occurred (within the current function)
+		current := exec.callStack[len(exec.callStack)-1]
+		frames = append(frames, StackFrame{Function: current.Function, Pos: pos})
+
+		// Remaining frames: the call stack (where each function was called from)
+		for i := len(exec.callStack) - 1; i >= 0; i-- {
+			cf := exec.callStack[i]
+			frames = append(frames, StackFrame(cf))
+		}
+	} else {
+		// No call stack means error at script top level
+		frames = append(frames, StackFrame{Function: "<script>", Pos: pos})
 	}
-	return errors.New(msg)
+	return &RuntimeError{Message: message, Frames: frames}
+}
+
+func (exec *Execution) wrapError(err error, pos Position) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := err.(*RuntimeError); ok {
+		return err
+	}
+	return exec.newRuntimeError(err.Error(), pos)
+}
+
+func (exec *Execution) pushFrame(function string, pos Position) {
+	exec.callStack = append(exec.callStack, callFrame{Function: function, Pos: pos})
+}
+
+func (exec *Execution) popFrame() {
+	if len(exec.callStack) == 0 {
+		return
+	}
+	exec.callStack = exec.callStack[:len(exec.callStack)-1]
 }
 
 func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool, error) {
@@ -308,17 +386,18 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		return NewNil(), err
 	}
 
+	var result Value
 	switch expr.Operator {
 	case tokenPlus:
-		return addValues(left, right)
+		result, err = addValues(left, right)
 	case tokenMinus:
-		return subtractValues(left, right)
+		result, err = subtractValues(left, right)
 	case tokenAsterisk:
-		return multiplyValues(left, right)
+		result, err = multiplyValues(left, right)
 	case tokenSlash:
-		return divideValues(left, right)
+		result, err = divideValues(left, right)
 	case tokenPercent:
-		return moduloValues(left, right)
+		result, err = moduloValues(left, right)
 	case tokenEQ:
 		return NewBool(left.Equal(right)), nil
 	case tokenNotEQ:
@@ -338,6 +417,11 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	default:
 		return NewNil(), exec.errorAt(expr.Pos(), "unsupported operator")
 	}
+
+	if err != nil {
+		return NewNil(), exec.wrapError(err, expr.Pos())
+	}
+	return result, nil
 }
 
 func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
@@ -401,7 +485,9 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		for i, param := range fn.Params {
 			callEnv.Define(param, args[i])
 		}
+		exec.pushFrame(fn.Name, call.Pos())
 		val, returned, err := exec.evalStatements(fn.Body, callEnv)
+		exec.popFrame()
 		if err != nil {
 			return NewNil(), err
 		}
@@ -411,7 +497,11 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		return val, nil
 	case KindBuiltin:
 		builtin := callee.Builtin()
-		return builtin.Fn(exec, receiver, args, kwargs, block)
+		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
+		if err != nil {
+			return NewNil(), exec.wrapError(err, call.Pos())
+		}
+		return result, nil
 	default:
 		return NewNil(), exec.errorAt(call.Pos(), "attempted to call non-callable value")
 	}
@@ -903,6 +993,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		script:        s,
 		ctx:           ctx,
 		quota:         s.engine.config.StepQuota,
+		callStack:     make([]callFrame, 0, 8),
 		root:          root,
 		modules:       make(map[string]Value),
 		moduleLoading: make(map[string]bool),
@@ -936,7 +1027,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		callEnv.Define(param, args[i])
 	}
 
+	exec.pushFrame(fn.Name, fn.Pos)
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	exec.popFrame()
 	if err != nil {
 		return NewNil(), err
 	}

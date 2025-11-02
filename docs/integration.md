@@ -118,3 +118,40 @@ default:
 
 Because the interpreter is dynamic, there is no compile-time guarantee about
 return values—always branch on `Kind()` when you need type safety.
+
+### Error Handling and Stack Traces
+
+Runtime errors arrive as `*vibes.RuntimeError`, which includes a stack trace
+with line and column information for debugging. Use `errors.As()` to check for
+runtime errors:
+
+```go
+result, err := script.Call(ctx, "process", args, opts)
+if err != nil {
+    var rtErr *vibes.RuntimeError
+    if errors.As(err, &rtErr) {
+        // Runtime error with stack trace
+        log.Printf("Script error: %v", rtErr)
+        // Access individual frames if needed
+        for _, frame := range rtErr.Frames {
+            log.Printf("  %s at %d:%d", frame.Function, frame.Pos.Line, frame.Pos.Column)
+        }
+    } else {
+        // Other error (compilation, etc.)
+        return err
+    }
+}
+```
+
+Example error output:
+
+```
+assertion failed: amount must be positive
+  at validate_amount (3:7)
+  at validate_amount (8:3)
+  at process_payment (8:3)
+  at process_payment (12:5)
+```
+
+The first frame shows where the error occurred, followed by the call stack
+showing where each function was called from.
