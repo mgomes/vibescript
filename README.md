@@ -6,6 +6,9 @@ Even in these constrained environments, non-technical users still need a way to 
 
 ### Quick Start Example
 
+> [!WARNING]
+> This project is in active development. Expect breaking changes until it reaches a tagged 1.0 release.
+
 ```go
 package main
 
@@ -42,11 +45,11 @@ func main() {
 }
 ```
 
-Save the script as `.vibe` or embed it in your application. Expose host capabilities by providing values in `CallOptions.Globals` before invoking functions.
+Scripts can live in `.vibe` files or be embedded inline. Host applications expose capabilities by seeding `CallOptions.Globals` before invoking functions.
 
 ## Examples
 
-Representative `.vibe` programs now live under `examples/` and remain grouped by feature area for quick lookup:
+Representative `.vibe` programs are grouped under `examples/`:
 
 - `examples/basics/` – literals, arithmetic, and simple function composition.
 - `examples/collections/` – array, hash, and symbol usage including mutation and lookups.
@@ -59,11 +62,11 @@ Representative `.vibe` programs now live under `examples/` and remain grouped by
 - `examples/durations/` – duration literals and derived values in seconds.
 - `examples/errors/` – patterns that rely on `assert` for validation.
 - `examples/capabilities/` – samples that touch `ctx`, `db`, and other declared capabilities.
-- `examples/background/` – jobs and events workflows that will pass once those effects are wired in.
+- `examples/background/` – jobs and events workflows that land as host integrations mature.
 - `examples/policies/` – authorization helpers consulted by manifest policies.
-- `examples/future/` – stretch goals that require planned language features (blocks, iteration, effectful DB streaming).
+- `examples/future/` – stretch goals for planned language features.
 
-Some scripts (notably in `examples/background/` and `examples/future/`) require features that are not yet implemented. Keeping them in the tree makes it easy to track interpreter progress—enable them one by one as functionality lands.
+Some scripts (notably in `examples/background/` and `examples/future/`) reference features that are still under development; they remain in the tree to track interpreter progress.
 
 ## Documentation
 
@@ -79,4 +82,9 @@ Long-form guides live in `docs/`:
 
 ## Development
 
-- Run the full test suite with `just test`, which fixes a local Go build cache and executes `go test ./...`.
+This repository uses [Just](https://github.com/casey/just) for common tasks:
+
+- `just test` runs the full Go test suite (`go test ./...`).
+- Add new recipes in the `Justfile` as workflows grow.
+
+Contributions should run `just test` (or `go test ./...`) before submitting patches.
