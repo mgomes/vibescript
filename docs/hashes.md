@@ -16,6 +16,7 @@ or string notation: `player[:name]` or `player["name"]`.
 ## Helpers
 
 - `merge` returns a new hash combining receiver and argument.
+- `compact` removes keys whose values are `nil`.
 - `keys` / `values` produce arrays for iteration.
 - `deep_fetch_or` (see examples) shows how to supply defaults.
 

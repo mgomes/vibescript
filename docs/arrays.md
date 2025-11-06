@@ -16,6 +16,9 @@ Common enumerable helpers include:
 - `first(n)` / `last(n)` to slice without mutating.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `sum` to total numeric arrays.
+- `compact` to drop `nil` entries.
+- `flatten(depth = nil)` to collapse nested arrays (defaults to fully flattening).
+- `join(sep = "")` to produce a string.
 
 Example:
 
@@ -35,7 +38,7 @@ Use `+` to concatenate and `-` to subtract values:
 
 ```vibe
 def unique_participants(core, late)
-  (core + late).uniq()
+  (core + late).uniq().compact()
 end
 
 def without_dropouts(participants, dropouts)

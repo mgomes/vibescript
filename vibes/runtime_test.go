@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func compileScript(t *testing.T, source string) *Script {
@@ -203,6 +204,201 @@ func TestRuntimeErrorStackTrace(t *testing.T) {
 	}
 	if rtErr.Frames[3].Function != "outer" {
 		t.Fatalf("expected outer frame fourth, got %s", rtErr.Frames[3].Function)
+	}
+}
+
+func TestArrayAndHashHelpers(t *testing.T) {
+	script := compileScript(t, `
+    def array_helpers()
+      [1, nil, 2, nil].compact()
+    end
+
+    def array_flatten()
+      [[1], [2, [3]]].flatten()
+    end
+
+    def array_flatten_depth()
+      [[1], [2, [3, [4]]]].flatten(1)
+    end
+
+    def array_join()
+      ["a", "b", "c"].join("-")
+    end
+
+    def hash_compact()
+      { a: 1, b: nil, c: 3 }.compact()
+    end
+    `)
+
+	compact := callFunc(t, script, "array_helpers", nil)
+	compareArrays(t, compact, []Value{NewInt(1), NewInt(2)})
+
+	flatten := callFunc(t, script, "array_flatten", nil)
+	compareArrays(t, flatten, []Value{NewInt(1), NewInt(2), NewInt(3)})
+
+	flattenDepth := callFunc(t, script, "array_flatten_depth", nil)
+	// flatten(1) flattens one level: [[1], [2, [3, [4]]]] -> [1, 2, [3, [4]]]
+	if flattenDepth.Kind() != KindArray {
+		t.Fatalf("expected array, got %v", flattenDepth.Kind())
+	}
+	arr := flattenDepth.Array()
+	if len(arr) != 3 {
+		t.Fatalf("expected 3 elements after flatten(1), got %d", len(arr))
+	}
+	if arr[0].Int() != 1 || arr[1].Int() != 2 {
+		t.Fatalf("unexpected first two elements: %v, %v", arr[0], arr[1])
+	}
+	// Third element should still be nested: [3, [4]]
+	if arr[2].Kind() != KindArray {
+		t.Fatalf("expected third element to be array, got %v", arr[2].Kind())
+	}
+
+	joined := callFunc(t, script, "array_join", nil)
+	if joined.Kind() != KindString || joined.String() != "a-b-c" {
+		t.Fatalf("unexpected join result: %#v", joined)
+	}
+
+	hashResult := callFunc(t, script, "hash_compact", nil)
+	if hashResult.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", hashResult.Kind())
+	}
+	h := hashResult.Hash()
+	if len(h) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(h))
+	}
+	if _, ok := h["b"]; ok {
+		t.Fatalf("expected key b to be removed")
+	}
+}
+
+func TestStringHelpers(t *testing.T) {
+	script := compileScript(t, `
+    def helpers()
+      ["  hello  ".strip(), "hi".upcase(), "BYE".downcase(), "a b c".split()]
+    end
+
+    def split_custom()
+      "a,b,c".split(",")
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindArray {
+		t.Fatalf("expected array, got %v", result.Kind())
+	}
+	arr := result.Array()
+	if len(arr) != 4 {
+		t.Fatalf("unexpected length: %d", len(arr))
+	}
+	if arr[0].String() != "hello" {
+		t.Fatalf("strip mismatch: %s", arr[0].String())
+	}
+	if arr[1].String() != "HI" {
+		t.Fatalf("upcase mismatch: %s", arr[1].String())
+	}
+	if arr[2].String() != "bye" {
+		t.Fatalf("downcase mismatch: %s", arr[2].String())
+	}
+	compareArrays(t, arr[3], []Value{NewString("a"), NewString("b"), NewString("c")})
+
+	customSplit := callFunc(t, script, "split_custom", nil)
+	compareArrays(t, customSplit, []Value{NewString("a"), NewString("b"), NewString("c")})
+}
+
+func TestDurationHelpers(t *testing.T) {
+	script := compileScript(t, `
+    def minutes()
+      (90.seconds).minutes
+    end
+
+    def hours()
+      (7200.seconds).hours
+    end
+
+    def format()
+      (2.hours).format
+    end
+    `)
+
+	minutes := callFunc(t, script, "minutes", nil)
+	if !minutes.Equal(NewInt(1)) {
+		t.Fatalf("minutes mismatch: %#v", minutes)
+	}
+	hours := callFunc(t, script, "hours", nil)
+	if !hours.Equal(NewInt(2)) {
+		t.Fatalf("hours mismatch: %#v", hours)
+	}
+	formatted := callFunc(t, script, "format", nil)
+	if formatted.Kind() != KindString || formatted.String() != "7200s" {
+		t.Fatalf("format mismatch: %#v", formatted)
+	}
+}
+
+func TestNowBuiltin(t *testing.T) {
+	script := compileScript(t, `
+    def current()
+      now()
+    end
+    `)
+
+	result := callFunc(t, script, "current", nil)
+	if result.Kind() != KindString {
+		t.Fatalf("expected string, got %v", result.Kind())
+	}
+	if _, err := time.Parse(time.RFC3339, result.String()); err != nil {
+		t.Fatalf("now() output not RFC3339: %v", err)
+	}
+}
+
+func TestMethodErrorHandling(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+		errMsg string
+	}{
+		{
+			name:   "string.split with non-string separator",
+			script: `def run() "hello".split(123) end`,
+			errMsg: "separator must be string",
+		},
+		{
+			name:   "array.flatten with negative depth",
+			script: `def run() [[1, 2]].flatten(-1) end`,
+			errMsg: "must be non-negative",
+		},
+		{
+			name:   "array.join with non-string separator",
+			script: `def run() [1, 2, 3].join(123) end`,
+			errMsg: "separator must be string",
+		},
+		{
+			name:   "string unknown method",
+			script: `def run() "hello".unknown_method() end`,
+			errMsg: "unknown string method",
+		},
+		{
+			name:   "hash unknown method",
+			script: `def run() {a: 1}.unknown_method() end`,
+			errMsg: "unknown hash method",
+		},
+		{
+			name:   "array unknown method",
+			script: `def run() [1, 2].unknown_method() end`,
+			errMsg: "unknown array method",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script := compileScript(t, tt.script)
+			_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err == nil {
+				t.Fatalf("expected error containing %q", tt.errMsg)
+			}
+			if !strings.Contains(err.Error(), tt.errMsg) {
+				t.Fatalf("expected error containing %q, got: %v", tt.errMsg, err)
+			}
+		})
 	}
 }
 

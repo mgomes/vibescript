@@ -628,11 +628,21 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		switch property {
 		case "seconds":
 			return NewInt(obj.Duration().Seconds()), nil
+		case "minutes":
+			// Truncates to whole minutes (e.g., 90 seconds = 1 minute)
+			return NewInt(obj.Duration().Seconds() / 60), nil
+		case "hours":
+			// Truncates to whole hours (e.g., 7200 seconds = 2 hours)
+			return NewInt(obj.Duration().Seconds() / 3600), nil
+		case "format":
+			return NewString(obj.Duration().String()), nil
 		default:
 			return NewNil(), fmt.Errorf("unknown duration method %s", property)
 		}
 	case KindArray:
 		return arrayMember(obj, property)
+	case KindString:
+		return stringMember(obj, property)
 	case KindInt:
 		switch property {
 		case "seconds", "second", "minutes", "minute", "hours", "hour", "days", "day":
@@ -699,8 +709,71 @@ func hashMember(obj Value, property string) (Value, error) {
 			}
 			return NewHash(out), nil
 		}), nil
+	case "compact":
+		return NewBuiltin("hash.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.compact does not take arguments")
+			}
+			entries := receiver.Hash()
+			out := make(map[string]Value, len(entries))
+			for k, v := range entries {
+				if v.Kind() != KindNil {
+					out[k] = v
+				}
+			}
+			return NewHash(out), nil
+		}), nil
 	default:
-		return NewNil(), nil
+		return NewNil(), fmt.Errorf("unknown hash method %s", property)
+	}
+}
+
+func stringMember(str Value, property string) (Value, error) {
+	switch property {
+	case "strip":
+		return NewBuiltin("string.strip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.strip does not take arguments")
+			}
+			return NewString(strings.TrimSpace(receiver.String())), nil
+		}), nil
+	case "upcase":
+		return NewBuiltin("string.upcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.upcase does not take arguments")
+			}
+			return NewString(strings.ToUpper(receiver.String())), nil
+		}), nil
+	case "downcase":
+		return NewBuiltin("string.downcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.downcase does not take arguments")
+			}
+			return NewString(strings.ToLower(receiver.String())), nil
+		}), nil
+	case "split":
+		return NewBuiltin("string.split", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("string.split accepts at most one separator")
+			}
+			text := receiver.String()
+			var parts []string
+			if len(args) == 0 {
+				parts = strings.Fields(text)
+			} else {
+				if args[0].Kind() != KindString {
+					return NewNil(), fmt.Errorf("string.split separator must be string")
+				}
+				parts = strings.Split(text, args[0].String())
+			}
+			values := make([]Value, len(parts))
+			for i, part := range parts {
+				values[i] = NewString(part)
+			}
+			return NewArray(values), nil
+		}), nil
+	default:
+		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
 }
 
@@ -918,6 +991,64 @@ func arrayMember(array Value, property string) (Value, error) {
 			}
 			return total, nil
 		}), nil
+	case "compact":
+		return NewBuiltin("array.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.compact does not take arguments")
+			}
+			arr := receiver.Array()
+			out := make([]Value, 0, len(arr))
+			for _, item := range arr {
+				if item.Kind() != KindNil {
+					out = append(out, item)
+				}
+			}
+			return NewArray(out), nil
+		}), nil
+	case "flatten":
+		return NewBuiltin("array.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			// depth=-1 is a sentinel value meaning "flatten fully" (no depth limit)
+			depth := -1
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.flatten accepts at most one depth argument")
+			}
+			if len(args) == 1 {
+				n, err := valueToInt(args[0])
+				if err != nil || n < 0 {
+					return NewNil(), fmt.Errorf("array.flatten depth must be non-negative integer")
+				}
+				depth = n
+			}
+			arr := receiver.Array()
+			out := flattenValues(arr, depth)
+			return NewArray(out), nil
+		}), nil
+	case "join":
+		return NewBuiltin("array.join", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.join accepts at most one separator")
+			}
+			sep := ""
+			if len(args) == 1 {
+				if args[0].Kind() != KindString {
+					return NewNil(), fmt.Errorf("array.join separator must be string")
+				}
+				sep = args[0].String()
+			}
+			arr := receiver.Array()
+			if len(arr) == 0 {
+				return NewString(""), nil
+			}
+			// Use strings.Builder for efficient concatenation
+			var b strings.Builder
+			for i, item := range arr {
+				if i > 0 {
+					b.WriteString(sep)
+				}
+				b.WriteString(item.String())
+			}
+			return NewString(b.String()), nil
+		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
@@ -1070,6 +1201,26 @@ func valueToInt(val Value) (int, error) {
 	default:
 		return 0, fmt.Errorf("expected integer index")
 	}
+}
+
+// flattenValues recursively flattens nested arrays up to the specified depth.
+// depth=-1 means flatten completely (no limit).
+// depth=0 means don't flatten at all.
+// depth=1 means flatten one level, etc.
+func flattenValues(values []Value, depth int) []Value {
+	out := make([]Value, 0, len(values))
+	for _, v := range values {
+		if v.Kind() == KindArray && depth != 0 {
+			nextDepth := depth
+			if nextDepth > 0 {
+				nextDepth--
+			}
+			out = append(out, flattenValues(v.Array(), nextDepth)...)
+		} else {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func addValues(left, right Value) (Value, error) {
