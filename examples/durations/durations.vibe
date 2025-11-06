@@ -1,10 +1,10 @@
 # vibe: 0.2
 
-def reminder_delay_seconds()
+def reminder_delay_seconds
   (5.minutes).seconds
 end
 
-def event_window()
+def event_window
   2.hours
 end
 

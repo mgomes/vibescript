@@ -255,15 +255,23 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 }
 
 func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) {
+	return exec.evalExpressionWithAuto(expr, env, true)
+}
+
+func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCall bool) (Value, error) {
 	if err := exec.step(); err != nil {
 		return NewNil(), err
 	}
 	switch e := expr.(type) {
 	case *Identifier:
-		if val, ok := env.Get(e.Name); ok {
-			return val, nil
+		val, ok := env.Get(e.Name)
+		if !ok {
+			return NewNil(), exec.errorAt(e.Pos(), "undefined variable %s", e.Name)
 		}
-		return NewNil(), exec.errorAt(e.Pos(), "undefined variable %s", e.Name)
+		if autoCall {
+			return exec.autoInvokeIfNeeded(e, val, NewNil())
+		}
+		return val, nil
 	case *IntegerLiteral:
 		return NewInt(e.Value), nil
 	case *FloatLiteral:
@@ -279,7 +287,7 @@ func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) 
 	case *ArrayLiteral:
 		elems := make([]Value, len(e.Elements))
 		for i, el := range e.Elements {
-			val, err := exec.evalExpression(el, env)
+			val, err := exec.evalExpressionWithAuto(el, env, true)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -289,7 +297,7 @@ func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) 
 	case *HashLiteral:
 		entries := make(map[string]Value)
 		for _, pair := range e.Pairs {
-			keyVal, err := exec.evalExpression(pair.Key, env)
+			keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -297,7 +305,7 @@ func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) 
 			if err != nil {
 				return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 			}
-			val, err := exec.evalExpression(pair.Value, env)
+			val, err := exec.evalExpressionWithAuto(pair.Value, env, true)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -305,7 +313,7 @@ func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) 
 		}
 		return NewHash(entries), nil
 	case *UnaryExpr:
-		right, err := exec.evalExpression(e.Right, env)
+		right, err := exec.evalExpressionWithAuto(e.Right, env, true)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -329,17 +337,24 @@ func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) 
 	case *RangeExpr:
 		return exec.evalRangeExpr(e, env)
 	case *MemberExpr:
-		obj, err := exec.evalExpression(e.Object, env)
+		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
 		if err != nil {
 			return NewNil(), err
 		}
-		return exec.getMember(obj, e.Property, e.Pos())
+		member, err := exec.getMember(obj, e.Property, e.Pos())
+		if err != nil {
+			return NewNil(), err
+		}
+		if autoCall {
+			return exec.autoInvokeIfNeeded(e, member, obj)
+		}
+		return member, nil
 	case *IndexExpr:
-		obj, err := exec.evalExpression(e.Object, env)
+		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
 		if err != nil {
 			return NewNil(), err
 		}
-		idx, err := exec.evalExpression(e.Index, env)
+		idx, err := exec.evalExpressionWithAuto(e.Index, env, true)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -373,6 +388,57 @@ func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) 
 		return exec.evalBlockLiteral(e, env)
 	default:
 		return NewNil(), exec.errorAt(expr.Pos(), "unsupported expression")
+	}
+}
+
+func (exec *Execution) autoInvokeIfNeeded(expr Expression, val Value, receiver Value) (Value, error) {
+	switch val.Kind() {
+	case KindFunction:
+		fn := val.Function()
+		if fn != nil && len(fn.Params) == 0 {
+			return exec.invokeCallable(val, receiver, nil, nil, NewNil(), expr.Pos())
+		}
+	case KindBuiltin:
+		builtin := val.Builtin()
+		if builtin != nil && builtin.AutoInvoke {
+			return exec.invokeCallable(val, receiver, nil, nil, NewNil(), expr.Pos())
+		}
+	}
+	return val, nil
+}
+
+func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
+	switch callee.Kind() {
+	case KindFunction:
+		fn := callee.Function()
+		if len(args) != len(fn.Params) {
+			return NewNil(), exec.errorAt(pos, "expected %d arguments, got %d", len(fn.Params), len(args))
+		}
+		if block.Kind() == KindBlock {
+			return NewNil(), exec.errorAt(pos, "blocks are not supported for this function")
+		}
+		callEnv := newEnv(fn.Env)
+		for i, param := range fn.Params {
+			callEnv.Define(param, args[i])
+		}
+		exec.pushFrame(fn.Name, pos)
+		val, returned, err := exec.evalStatements(fn.Body, callEnv)
+		exec.popFrame()
+		if err != nil {
+			return NewNil(), err
+		}
+		if returned {
+			return val, nil
+		}
+		return val, nil
+	case KindBuiltin:
+		result, err := callee.Builtin().Fn(exec, receiver, args, kwargs, block)
+		if err != nil {
+			return NewNil(), exec.wrapError(err, pos)
+		}
+		return result, nil
+	default:
+		return NewNil(), exec.errorAt(pos, "attempted to call non-callable value")
 	}
 }
 
@@ -439,7 +505,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 			return NewNil(), err
 		}
 	} else {
-		callee, err = exec.evalExpression(call.Callee, env)
+		callee, err = exec.evalExpressionWithAuto(call.Callee, env, false)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -447,7 +513,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 
 	args := make([]Value, len(call.Args))
 	for i, arg := range call.Args {
-		val, err := exec.evalExpression(arg, env)
+		val, err := exec.evalExpressionWithAuto(arg, env, true)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -456,7 +522,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kw := range call.KwArgs {
-		val, err := exec.evalExpression(kw.Value, env)
+		val, err := exec.evalExpressionWithAuto(kw.Value, env, true)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -465,46 +531,14 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 
 	block := NewNil()
 	if call.Block != nil {
-		var err error
-		block, err = exec.evalBlockLiteral(call.Block, env)
-		if err != nil {
-			return NewNil(), err
+		var blockErr error
+		block, blockErr = exec.evalBlockLiteral(call.Block, env)
+		if blockErr != nil {
+			return NewNil(), blockErr
 		}
 	}
 
-	switch callee.Kind() {
-	case KindFunction:
-		fn := callee.Function()
-		if len(args) != len(fn.Params) {
-			return NewNil(), exec.errorAt(call.Pos(), "expected %d arguments, got %d", len(fn.Params), len(args))
-		}
-		if call.Block != nil {
-			return NewNil(), exec.errorAt(call.Pos(), "blocks are not supported for this function")
-		}
-		callEnv := newEnv(fn.Env)
-		for i, param := range fn.Params {
-			callEnv.Define(param, args[i])
-		}
-		exec.pushFrame(fn.Name, call.Pos())
-		val, returned, err := exec.evalStatements(fn.Body, callEnv)
-		exec.popFrame()
-		if err != nil {
-			return NewNil(), err
-		}
-		if returned {
-			return val, nil
-		}
-		return val, nil
-	case KindBuiltin:
-		builtin := callee.Builtin()
-		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
-		if err != nil {
-			return NewNil(), exec.wrapError(err, call.Pos())
-		}
-		return result, nil
-	default:
-		return NewNil(), exec.errorAt(call.Pos(), "attempted to call non-callable value")
-	}
+	return exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
 }
 
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
@@ -664,7 +698,7 @@ func moneyMember(m Money, property string) (Value, error) {
 	case "amount":
 		return NewString(m.String()), nil
 	case "format":
-		return NewBuiltin("money.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("money.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return NewString(m.String()), nil
 		}), nil
 	default:
@@ -710,7 +744,7 @@ func hashMember(obj Value, property string) (Value, error) {
 			return NewHash(out), nil
 		}), nil
 	case "compact":
-		return NewBuiltin("hash.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("hash.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.compact does not take arguments")
 			}
@@ -731,28 +765,28 @@ func hashMember(obj Value, property string) (Value, error) {
 func stringMember(str Value, property string) (Value, error) {
 	switch property {
 	case "strip":
-		return NewBuiltin("string.strip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("string.strip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.strip does not take arguments")
 			}
 			return NewString(strings.TrimSpace(receiver.String())), nil
 		}), nil
 	case "upcase":
-		return NewBuiltin("string.upcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("string.upcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.upcase does not take arguments")
 			}
 			return NewString(strings.ToUpper(receiver.String())), nil
 		}), nil
 	case "downcase":
-		return NewBuiltin("string.downcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("string.downcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.downcase does not take arguments")
 			}
 			return NewString(strings.ToLower(receiver.String())), nil
 		}), nil
 	case "split":
-		return NewBuiltin("string.split", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("string.split", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 1 {
 				return NewNil(), fmt.Errorf("string.split accepts at most one separator")
 			}
@@ -866,7 +900,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "pop":
-		return NewBuiltin("array.pop", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.pop", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 1 {
 				return NewNil(), fmt.Errorf("array.pop accepts at most one argument")
 			}
@@ -913,7 +947,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewHash(result), nil
 		}), nil
 	case "uniq":
-		return NewBuiltin("array.uniq", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.uniq", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.uniq does not take arguments")
 			}
@@ -934,7 +968,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(unique), nil
 		}), nil
 	case "first":
-		return NewBuiltin("array.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			arr := receiver.Array()
 			if len(arr) == 0 {
 				return NewNil(), nil
@@ -954,7 +988,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "last":
-		return NewBuiltin("array.last", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.last", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			arr := receiver.Array()
 			if len(arr) == 0 {
 				return NewNil(), nil
@@ -974,7 +1008,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "sum":
-		return NewBuiltin("array.sum", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.sum", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			arr := receiver.Array()
 			total := NewInt(0)
 			for _, item := range arr {
@@ -992,7 +1026,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return total, nil
 		}), nil
 	case "compact":
-		return NewBuiltin("array.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.compact does not take arguments")
 			}
@@ -1006,7 +1040,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "flatten":
-		return NewBuiltin("array.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			// depth=-1 is a sentinel value meaning "flatten fully" (no depth limit)
 			depth := -1
 			if len(args) > 1 {
@@ -1024,7 +1058,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "join":
-		return NewBuiltin("array.join", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.join", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 1 {
 				return NewNil(), fmt.Errorf("array.join accepts at most one separator")
 			}

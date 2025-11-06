@@ -20,7 +20,7 @@ def truth_table(flag)
   end
 end
 
-def mix_literals()
+def mix_literals
   {
     answer: 42,
     ratio: 3.75,

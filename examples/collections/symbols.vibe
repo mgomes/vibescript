@@ -1,6 +1,6 @@
 # vibe: 0.2
 
-def permission_keys()
+def permission_keys
   [:read, :write, :delete]
 end
 

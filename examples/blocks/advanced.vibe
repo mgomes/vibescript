@@ -15,7 +15,7 @@ def normalize_donations(donations)
     {
       id: donation[:id],
       cents: donation[:amount].cents,
-      formatted: donation[:amount].format()
+      formatted: donation[:amount].format
     }
   end
 end

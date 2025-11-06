@@ -9,7 +9,7 @@ def last_three(values)
 end
 
 def numeric_sum(values)
-  values.sum()
+  values.sum
 end
 
 def double_sum(values)
@@ -20,7 +20,7 @@ end
 
 def push_and_pop(values, extra)
   pushed = values.push(extra)
-  result = pushed.pop()
+  result = pushed.pop
   {
     array: result[:array],
     popped: result[:popped]
@@ -28,7 +28,7 @@ def push_and_pop(values, extra)
 end
 
 def uniq_values(values)
-  values.uniq()
+  values.uniq
 end
 
 def concat_values(first, second)

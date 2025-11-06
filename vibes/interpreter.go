@@ -56,7 +56,7 @@ func NewEngine(cfg Config) *Engine {
 	engine.RegisterBuiltin("money", builtinMoney)
 	engine.RegisterBuiltin("money_cents", builtinMoneyCents)
 	engine.RegisterBuiltin("require", builtinRequire)
-	engine.RegisterBuiltin("now", builtinNow)
+	engine.RegisterZeroArgBuiltin("now", builtinNow)
 
 	return engine
 }
@@ -64,6 +64,11 @@ func NewEngine(cfg Config) *Engine {
 // RegisterBuiltin registers a callable global available to scripts.
 func (e *Engine) RegisterBuiltin(name string, fn BuiltinFunc) {
 	e.builtins[name] = NewBuiltin(name, fn)
+}
+
+// RegisterZeroArgBuiltin registers a builtin that can be invoked without arguments or parentheses.
+func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
+	e.builtins[name] = NewAutoBuiltin(name, fn)
 }
 
 // Builtins returns a copy of the registered builtin map.
