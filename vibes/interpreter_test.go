@@ -141,3 +141,93 @@ end`)
 		t.Fatalf("expected 42, got %v", result)
 	}
 }
+
+func TestNestedZeroArgCalls(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`def inner
+  10
+end
+
+def middle
+  inner + 5
+end
+
+def outer
+  middle * 2
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "outer", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 30 {
+		t.Fatalf("expected 30, got %v", result)
+	}
+}
+
+func TestMixedZeroArgAndRegularCalls(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`def zero_arg
+  5
+end
+
+def with_args(x, y)
+  x + y
+end
+
+def run
+  zero_arg + with_args(10, 20)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 35 {
+		t.Fatalf("expected 35, got %v", result)
+	}
+}
+
+func TestMethodChainingWithZeroArgMethods(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`def run
+  values = [1, 2, 3, 4, 5]
+  values.sum
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 15 {
+		t.Fatalf("expected 15, got %v", result)
+	}
+}
+
+func TestZeroArgMethodChaining(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`def run
+  values = [1, 2, 2, 3, 3, 3]
+  values.uniq.sum
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 6 {
+		t.Fatalf("expected 6 (1+2+3), got %v", result)
+	}
+}
