@@ -214,14 +214,23 @@ func NewBlock(params []string, body []Statement, env *Env) Value {
 }
 
 type Builtin struct {
-	Name string
-	Fn   BuiltinFunc
+	Name       string
+	Fn         BuiltinFunc
+	AutoInvoke bool
 }
 
 type BuiltinFunc func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error)
 
+func newBuiltin(name string, fn BuiltinFunc, autoInvoke bool) Value {
+	return Value{kind: KindBuiltin, data: &Builtin{Name: name, Fn: fn, AutoInvoke: autoInvoke}}
+}
+
 func NewBuiltin(name string, fn BuiltinFunc) Value {
-	return Value{kind: KindBuiltin, data: &Builtin{Name: name, Fn: fn}}
+	return newBuiltin(name, fn, false)
+}
+
+func NewAutoBuiltin(name string, fn BuiltinFunc) Value {
+	return newBuiltin(name, fn, true)
 }
 
 func NewFunction(fn *ScriptFunction) Value {

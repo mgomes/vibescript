@@ -125,37 +125,36 @@ func (p *parser) parseFunctionStatement() Statement {
 		return nil
 	}
 	name := p.curToken.Literal
-
-	if !p.expectPeek(tokenLParen) {
-		return nil
-	}
-
 	params := []string{}
-	if p.peekToken.Type == tokenRParen {
+	if p.peekToken.Type == tokenLParen && p.peekToken.Pos.Line == p.curToken.Pos.Line {
 		p.nextToken()
-	} else {
-		p.nextToken()
-		if p.curToken.Type != tokenIdent {
-			p.errorExpected(p.curToken, "parameter name")
-			return nil
-		}
-		params = append(params, p.curToken.Literal)
-		for p.peekToken.Type == tokenComma {
+		if p.peekToken.Type == tokenRParen {
 			p.nextToken()
+		} else {
 			p.nextToken()
 			if p.curToken.Type != tokenIdent {
 				p.errorExpected(p.curToken, "parameter name")
 				return nil
 			}
 			params = append(params, p.curToken.Literal)
+			for p.peekToken.Type == tokenComma {
+				p.nextToken()
+				p.nextToken()
+				if p.curToken.Type != tokenIdent {
+					p.errorExpected(p.curToken, "parameter name")
+					return nil
+				}
+				params = append(params, p.curToken.Literal)
+			}
+			if !p.expectPeek(tokenRParen) {
+				return nil
+			}
 		}
-		if !p.expectPeek(tokenRParen) {
-			return nil
-		}
+		p.nextToken()
+	} else {
+		p.nextToken()
 	}
-
 	body := []Statement{}
-	p.nextToken()
 	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
 		stmt := p.parseStatement()
 		if stmt != nil {

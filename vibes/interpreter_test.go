@@ -25,7 +25,7 @@ end`)
 
 func TestMoneyBuiltin(t *testing.T) {
 	engine := NewEngine(Config{})
-	script, err := engine.Compile(`def total()
+	script, err := engine.Compile(`def total
   money("10.00 USD") + money("5.00 USD")
 end`)
 	if err != nil {
@@ -47,7 +47,7 @@ end`)
 
 func TestGlobalsAccess(t *testing.T) {
 	engine := NewEngine(Config{})
-	script, err := engine.Compile(`def user_id()
+	script, err := engine.Compile(`def user_id
   ctx.user.id
 end`)
 	if err != nil {
@@ -71,7 +71,7 @@ end`)
 
 func TestAssertFailure(t *testing.T) {
 	engine := NewEngine(Config{})
-	script, err := engine.Compile(`def check()
+	script, err := engine.Compile(`def check
   assert false, "boom"
 end`)
 	if err != nil {
@@ -104,7 +104,7 @@ end`)
 
 func TestDurationLiteral(t *testing.T) {
 	engine := NewEngine(Config{})
-	script, err := engine.Compile(`def seconds()
+	script, err := engine.Compile(`def seconds
   (2.minutes).seconds
 end`)
 	if err != nil {
@@ -117,5 +117,27 @@ end`)
 	}
 	if result.Kind() != KindInt || result.Int() != 120 {
 		t.Fatalf("expected 120 seconds, got %v", result)
+	}
+}
+
+func TestZeroArgCallWithoutParens(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`def helper
+  7
+end
+
+def run
+  helper * 6
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 42 {
+		t.Fatalf("expected 42, got %v", result)
 	}
 }
