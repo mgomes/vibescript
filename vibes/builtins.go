@@ -3,6 +3,7 @@ package vibes
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -57,4 +58,11 @@ func builtinMoneyCents(exec *Execution, receiver Value, args []Value, kwargs map
 		return NewNil(), err
 	}
 	return NewMoney(money), nil
+}
+
+func builtinNow(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("now does not take arguments")
+	}
+	return NewString(time.Now().UTC().Format(time.RFC3339)), nil
 }

@@ -56,6 +56,7 @@ func NewEngine(cfg Config) *Engine {
 	engine.RegisterBuiltin("money", builtinMoney)
 	engine.RegisterBuiltin("money_cents", builtinMoneyCents)
 	engine.RegisterBuiltin("require", builtinRequire)
+	engine.RegisterBuiltin("now", builtinNow)
 
 	return engine
 }

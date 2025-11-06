@@ -11,9 +11,12 @@ dives on specific topics.
 
 ## Table of Contents
 
+- `builtins.md` – built-in functions like `assert`, `money`, `now`, and `require`.
+- `strings.md` – string manipulation methods like `strip`, `upcase`, and `split`.
 - `arrays.md` – working with arrays, including iteration helpers and
   transformations.
 - `hashes.md` – symbol-keyed hashes and the merging/lookup helpers we provide.
+- `durations.md` – duration literals and time-based helper methods.
 - `control-flow.md` – conditionals, loops, and ranges.
 - `blocks.md` – using block literals for map/select/reduce style patterns.
 - `integration.md` – host integration patterns showing how Go services can
