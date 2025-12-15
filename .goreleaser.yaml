@@ -1,0 +1,26 @@
+version: 2
+
+project_name: vibescript
+
+builds: []
+
+archives: []
+
+checksum:
+  disable: true
+
+release:
+  github:
+    owner: mgomes
+    name: vibescript
+  prerelease: auto
+
+changelog:
+  sort: desc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - '^Merge pull request'
