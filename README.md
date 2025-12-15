@@ -79,6 +79,7 @@ Long-form guides live in `docs/`:
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
 - `docs/integration.md` – integrating the interpreter in Go applications.
 - `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).
+- `docs/releasing.md` – GoReleaser workflow for changelog and GitHub release automation.
 
 ## Development
 
