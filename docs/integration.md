@@ -10,7 +10,7 @@ import (
     "context"
     "fmt"
 
-    "vibescript/vibes"
+    "github.com/mgomes/vibescript/vibes"
 )
 
 func main() {

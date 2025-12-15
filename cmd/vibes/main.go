@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"vibescript/vibes"
+	"github.com/mgomes/vibescript/vibes"
 )
 
 func main() {
