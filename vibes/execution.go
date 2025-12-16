@@ -31,6 +31,7 @@ type Execution struct {
 	script        *Script
 	ctx           context.Context
 	quota         int
+	recursionCap  int
 	steps         int
 	callStack     []callFrame
 	root          *Env
@@ -126,8 +127,12 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	return exec.newRuntimeError(err.Error(), pos)
 }
 
-func (exec *Execution) pushFrame(function string, pos Position) {
+func (exec *Execution) pushFrame(function string, pos Position) error {
+	if exec.recursionCap > 0 && len(exec.callStack) >= exec.recursionCap {
+		return exec.errorAt(pos, "recursion depth exceeded (limit %d)", exec.recursionCap)
+	}
 	exec.callStack = append(exec.callStack, callFrame{Function: function, Pos: pos})
+	return nil
 }
 
 func (exec *Execution) popFrame() {
@@ -421,7 +426,9 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 		for i, param := range fn.Params {
 			callEnv.Define(param, args[i])
 		}
-		exec.pushFrame(fn.Name, pos)
+		if err := exec.pushFrame(fn.Name, pos); err != nil {
+			return NewNil(), err
+		}
 		val, returned, err := exec.evalStatements(fn.Body, callEnv)
 		exec.popFrame()
 		if err != nil {
@@ -1158,6 +1165,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		script:        s,
 		ctx:           ctx,
 		quota:         s.engine.config.StepQuota,
+		recursionCap:  s.engine.config.RecursionLimit,
 		callStack:     make([]callFrame, 0, 8),
 		root:          root,
 		modules:       make(map[string]Value),
@@ -1192,7 +1200,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		callEnv.Define(param, args[i])
 	}
 
-	exec.pushFrame(fn.Name, fn.Pos)
+	if err := exec.pushFrame(fn.Name, fn.Pos); err != nil {
+		return NewNil(), err
+	}
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
 	exec.popFrame()
 	if err != nil {
