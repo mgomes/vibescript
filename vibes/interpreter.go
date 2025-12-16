@@ -12,6 +12,7 @@ type Config struct {
 	StepQuota        int
 	MemoryQuotaBytes int
 	StrictEffects    bool
+	RecursionLimit   int
 	ModulePaths      []string
 	MaxCachedModules int
 }
@@ -32,6 +33,9 @@ func NewEngine(cfg Config) *Engine {
 	}
 	if cfg.MemoryQuotaBytes <= 0 {
 		cfg.MemoryQuotaBytes = 64 * 1024
+	}
+	if cfg.RecursionLimit <= 0 {
+		cfg.RecursionLimit = 64
 	}
 	if cfg.MaxCachedModules == 0 {
 		cfg.MaxCachedModules = 1000
@@ -96,5 +100,5 @@ func (e *Engine) Execute(ctx context.Context, script string) error {
 
 // ConfigSummary provides a human-readable description of the interpreter limits.
 func (e *Engine) ConfigSummary() string {
-	return fmt.Sprintf("steps=%d memory=%dB strict_effects=%t", e.config.StepQuota, e.config.MemoryQuotaBytes, e.config.StrictEffects)
+	return fmt.Sprintf("steps=%d memory=%dB recursion=%d strict_effects=%t", e.config.StepQuota, e.config.MemoryQuotaBytes, e.config.RecursionLimit, e.config.StrictEffects)
 }
