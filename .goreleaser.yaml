@@ -2,9 +2,17 @@ version: 2
 
 project_name: vibescript
 
-builds: []
+builds:
+  - id: vibes
+    main: ./cmd/vibes
+    binary: vibes
+    env:
+      - CGO_ENABLED=0
 
-archives: []
+archives:
+  - id: vibes
+    builds:
+      - vibes
 
 checksum:
   disable: true
