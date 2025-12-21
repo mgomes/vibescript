@@ -26,6 +26,8 @@ func runCLI(args []string) error {
 	switch args[1] {
 	case "run":
 		return runCommand(args[2:])
+	case "repl":
+		return runREPL()
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
@@ -90,8 +92,13 @@ func usageError() error {
 
 func printUsage() {
 	prog := filepath.Base(os.Args[0])
-	fmt.Fprintf(os.Stderr, "Usage: %s run [flags] <script> [args...]\n", prog)
-	fmt.Fprintln(os.Stderr, "Flags:")
+	fmt.Fprintf(os.Stderr, "Usage: %s <command> [flags] [args...]\n\n", prog)
+	fmt.Fprintln(os.Stderr, "Commands:")
+	fmt.Fprintln(os.Stderr, "  run <script>    Execute a script file")
+	fmt.Fprintln(os.Stderr, "  repl            Start interactive REPL")
+	fmt.Fprintln(os.Stderr, "  help            Show this help message")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Run flags:")
 	fmt.Fprintln(os.Stderr, "  -function string")
 	fmt.Fprintln(os.Stderr, "    function to invoke after compilation (default \"run\")")
 	fmt.Fprintln(os.Stderr, "  -check")

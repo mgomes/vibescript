@@ -47,6 +47,36 @@ func main() {
 
 Scripts can live in `.vibe` files or be embedded inline. Host applications expose capabilities by seeding `CallOptions.Globals` or registering typed adapters through `CallOptions.Capabilities` before invoking functions.
 
+### Interactive REPL
+
+The `vibes` CLI includes an interactive REPL for experimenting with the language:
+
+```bash
+vibes repl
+```
+
+The REPL maintains a persistent environment, so variables assigned in one expression are available in subsequent ones. It also provides command history (navigate with up/down arrows) and tab completion for built-in functions, keywords, and defined variables.
+
+#### Commands
+
+| Command   | Description              |
+|-----------|--------------------------|
+| `:help`   | Toggle help panel        |
+| `:vars`   | Toggle variables panel   |
+| `:clear`  | Clear output history     |
+| `:reset`  | Reset the environment    |
+| `:quit`   | Exit the REPL            |
+
+#### Keyboard Shortcuts
+
+| Key       | Action                   |
+|-----------|--------------------------|
+| `ctrl+k`  | Toggle help              |
+| `ctrl+v`  | Toggle variables panel   |
+| `ctrl+l`  | Clear history            |
+| `ctrl+c`  | Quit                     |
+| `Tab`     | Autocomplete             |
+
 ## Examples
 
 Representative `.vibe` programs are grouped under `examples/`:
