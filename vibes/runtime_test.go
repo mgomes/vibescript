@@ -271,11 +271,11 @@ func TestDurationMethods(t *testing.T) {
     end
 
     def duration_after(base)
-      60.seconds.after(base)
+      60.seconds.after(base).to_s
     end
 
     def duration_ago(base)
-      60.seconds.ago(base)
+      60.seconds.ago(base).to_s
     end
 
     def duration_parse_iso()

@@ -669,6 +669,8 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		return moneyMember(obj.Money(), property)
 	case KindDuration:
 		return durationMember(obj.Duration(), property, pos)
+	case KindTime:
+		return timeMember(obj.Time(), property)
 	case KindArray:
 		return arrayMember(obj, property)
 	case KindString:
@@ -887,7 +889,7 @@ func durationMember(d Duration, property string, pos Position) (Value, error) {
 				return NewNil(), err
 			}
 			result := start.Add(time.Duration(d.Seconds()) * time.Second).UTC()
-			return NewString(result.Format(time.RFC3339)), nil
+			return NewTime(result), nil
 		}), nil
 	case "ago", "before", "until":
 		return NewBuiltin("duration.before", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -896,7 +898,7 @@ func durationMember(d Duration, property string, pos Position) (Value, error) {
 				return NewNil(), err
 			}
 			result := start.Add(-time.Duration(d.Seconds()) * time.Second).UTC()
-			return NewString(result.Format(time.RFC3339)), nil
+			return NewTime(result), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown duration method %s", property)
@@ -914,14 +916,18 @@ func durationTimeArg(args []Value, allowEmpty bool, name string) (time.Time, err
 		return time.Time{}, fmt.Errorf("%s expects at most one time argument", name)
 	}
 	val := args[0]
-	if val.Kind() != KindString {
-		return time.Time{}, fmt.Errorf("%s expects an RFC3339 time string", name)
+	switch val.Kind() {
+	case KindString:
+		t, err := time.Parse(time.RFC3339, val.String())
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid time: %v", err)
+		}
+		return t.UTC(), nil
+	case KindTime:
+		return val.Time(), nil
+	default:
+		return time.Time{}, fmt.Errorf("%s expects a Time or RFC3339 string", name)
 	}
-	t, err := time.Parse(time.RFC3339, val.String())
-	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid time: %v", err)
-	}
-	return t.UTC(), nil
 }
 
 func arrayMember(array Value, property string) (Value, error) {
@@ -1379,6 +1385,10 @@ func addValues(left, right Value) (Value, error) {
 		return NewInt(left.Int() + right.Int()), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() + right.Float()), nil
+	case left.Kind() == KindTime && right.Kind() == KindDuration:
+		return NewTime(left.Time().Add(time.Duration(right.Duration().Seconds()) * time.Second)), nil
+	case right.Kind() == KindTime && left.Kind() == KindDuration:
+		return NewTime(right.Time().Add(time.Duration(left.Duration().Seconds()) * time.Second)), nil
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
 		return NewDuration(Duration{seconds: left.Duration().Seconds() + right.Duration().Seconds()}), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
@@ -1419,6 +1429,11 @@ func subtractValues(left, right Value) (Value, error) {
 		return NewInt(left.Int() - right.Int()), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() - right.Float()), nil
+	case left.Kind() == KindTime && right.Kind() == KindDuration:
+		return NewTime(left.Time().Add(-time.Duration(right.Duration().Seconds()) * time.Second)), nil
+	case left.Kind() == KindTime && right.Kind() == KindTime:
+		diff := left.Time().Sub(right.Time())
+		return NewDuration(Duration{seconds: int64(diff / time.Second)}), nil
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
 		return NewDuration(Duration{seconds: left.Duration().Seconds() - right.Duration().Seconds()}), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
@@ -1580,6 +1595,15 @@ func compareValues(expr *BinaryExpr, left, right Value, cmp func(int) bool) (Val
 		case diff < 0:
 			return NewBool(cmp(-1)), nil
 		case diff > 0:
+			return NewBool(cmp(1)), nil
+		default:
+			return NewBool(cmp(0)), nil
+		}
+	case left.Kind() == KindTime && right.Kind() == KindTime:
+		switch {
+		case left.Time().Before(right.Time()):
+			return NewBool(cmp(-1)), nil
+		case left.Time().After(right.Time()):
 			return NewBool(cmp(1)), nil
 		default:
 			return NewBool(cmp(0)), nil

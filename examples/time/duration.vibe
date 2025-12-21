@@ -1,11 +1,11 @@
 # vibe: 0.2
 
 def after_time(base)
-  5.minutes.after(base)
+  5.minutes.after(base).to_s
 end
 
 def ago_time(base)
-  2.hours.ago(base)
+  2.hours.ago(base).to_s
 end
 
 def duration_parts
@@ -25,7 +25,7 @@ def duration_to_i
 end
 
 def duration_until(base)
-  90.minutes.until(base)
+  90.minutes.until(base).to_s
 end
 
 def duration_math

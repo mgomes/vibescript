@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 )
 
 // Config controls interpreter execution bounds and enforcement modes.
@@ -126,6 +127,87 @@ func NewEngine(cfg Config) *Engine {
 				return NewNil(), err
 			}
 			return NewDuration(parsed), nil
+		}),
+	})
+	engine.builtins["Time"] = NewObject(map[string]Value{
+		"new": NewBuiltin("Time.new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			loc := time.Local
+			if zone, ok := kwargs["in"]; ok {
+				parsed, err := parseLocation(zone)
+				if err != nil {
+					return NewNil(), err
+				}
+				if parsed != nil {
+					loc = parsed
+				}
+			}
+			t, err := timeFromParts(args, loc)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewTime(t), nil
+		}),
+		"local": NewBuiltin("Time.local", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			t, err := timeFromParts(args, time.Local)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewTime(t), nil
+		}),
+		"mktime": NewAutoBuiltin("Time.mktime", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			t, err := timeFromParts(args, time.Local)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewTime(t), nil
+		}),
+		"utc": NewBuiltin("Time.utc", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			t, err := timeFromParts(args, time.UTC)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewTime(t), nil
+		}),
+		"gm": NewAutoBuiltin("Time.gm", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			t, err := timeFromParts(args, time.UTC)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewTime(t), nil
+		}),
+		"at": NewBuiltin("Time.at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("Time.at expects seconds since epoch")
+			}
+			var loc *time.Location
+			if in, ok := kwargs["in"]; ok {
+				parsed, err := parseLocation(in)
+				if err != nil {
+					return NewNil(), err
+				}
+				loc = parsed
+			}
+			t, err := timeFromEpoch(args[0], loc)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewTime(t), nil
+		}),
+		"now": NewAutoBuiltin("Time.now", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("Time.now does not take positional arguments")
+			}
+			loc := time.Local
+			if in, ok := kwargs["in"]; ok {
+				parsed, err := parseLocation(in)
+				if err != nil {
+					return NewNil(), err
+				}
+				if parsed != nil {
+					loc = parsed
+				}
+			}
+			return NewTime(time.Now().In(loc)), nil
 		}),
 	})
 
