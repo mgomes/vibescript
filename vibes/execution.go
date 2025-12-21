@@ -677,6 +677,8 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		switch property {
 		case "seconds", "second", "minutes", "minute", "hours", "hour", "days", "day":
 			return NewDuration(secondsDuration(obj.Int(), property)), nil
+		case "weeks", "week":
+			return NewDuration(secondsDuration(obj.Int(), property)), nil
 		case "times":
 			return NewAutoBuiltin("int.times", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 				if len(args) > 0 {
