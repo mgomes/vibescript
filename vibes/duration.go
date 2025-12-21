@@ -100,6 +100,10 @@ func parseDurationString(input string) (Duration, error) {
 	}
 	s = strings.TrimPrefix(s, "P")
 
+	if s == "" || s == "T" {
+		return Duration{}, fmt.Errorf("invalid duration format")
+	}
+
 	if strings.ContainsRune(s, 'W') {
 		if strings.ContainsRune(s, 'T') || strings.ContainsAny(s, "DHMS") {
 			return Duration{}, fmt.Errorf("invalid mixed week duration")

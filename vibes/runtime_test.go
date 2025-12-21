@@ -289,6 +289,10 @@ func TestDurationMethods(t *testing.T) {
     def duration_parse_invalid()
       Duration.parse("P1DT1HXYZ")
     end
+
+    def duration_parse_empty()
+      Duration.parse("P")
+    end
     `)
 
 	result := callFunc(t, script, "duration_helpers", nil)
@@ -358,6 +362,16 @@ func TestDurationMethods(t *testing.T) {
 	_, err = badOrder.Call(context.Background(), "run", nil, CallOptions{})
 	if err == nil {
 		t.Fatalf("expected parse error for out-of-order duration")
+	}
+
+	empty := compileScript(t, `
+    def run()
+      Duration.parse("P")
+    end
+    `)
+	_, err = empty.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected parse error for empty duration")
 	}
 }
 
