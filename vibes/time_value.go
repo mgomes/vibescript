@@ -101,4 +101,3 @@ func timeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
 	}
 	return time.Unix(seconds, nanos).In(loc), nil
 }
-
