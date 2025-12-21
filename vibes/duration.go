@@ -127,53 +127,58 @@ func parseDurationString(input string) (Duration, error) {
 		datePart = s
 	}
 
-	parseNumber := func(segment, suffix string) (int64, string, bool) {
-		if segment == "" {
-			return 0, segment, false
+	parseOrdered := func(segment string, units []string) (map[string]int64, error) {
+		values := make(map[string]int64, len(units))
+		for _, unit := range units {
+			if segment == "" {
+				continue
+			}
+			if len(segment) == 0 {
+				break
+			}
+			if segment[0] < '0' || segment[0] > '9' {
+				return nil, fmt.Errorf("invalid duration format")
+			}
+			i := 0
+			for i < len(segment) && segment[i] >= '0' && segment[i] <= '9' {
+				i++
+			}
+			if i == 0 || i >= len(segment) {
+				return nil, fmt.Errorf("invalid duration format")
+			}
+			if strings.HasPrefix(segment[i:], unit) {
+				val, err := strconv.ParseInt(segment[:i], 10, 64)
+				if err != nil {
+					return nil, fmt.Errorf("invalid duration number")
+				}
+				values[unit] = val
+				segment = segment[i+len(unit):]
+				continue
+			}
+			// digits present but not for this unit; allow later units to try
 		}
-		idx := strings.Index(segment, suffix)
-		if idx == -1 {
-			return 0, segment, false
+		if segment != "" {
+			return nil, fmt.Errorf("invalid duration format")
 		}
-		numPart := segment[:idx]
-		rest := segment[idx+len(suffix):]
-		val, err := strconv.ParseInt(numPart, 10, 64)
+		return values, nil
+	}
+
+	if datePart != "" {
+		dateVals, err := parseOrdered(datePart, []string{"D"})
 		if err != nil {
-			return 0, segment, false
+			return Duration{}, err
 		}
-		return val, rest, true
+		days = dateVals["D"]
 	}
 
-	for {
-		val, rest, ok := parseNumber(datePart, "D")
-		if !ok {
-			break
+	if timePart != "" {
+		timeVals, err := parseOrdered(timePart, []string{"H", "M", "S"})
+		if err != nil {
+			return Duration{}, err
 		}
-		days += val
-		datePart = rest
-	}
-
-	for timePart != "" {
-		if val, rest, ok := parseNumber(timePart, "H"); ok {
-			hours += val
-			timePart = rest
-			continue
-		}
-		if val, rest, ok := parseNumber(timePart, "M"); ok {
-			minutes += val
-			timePart = rest
-			continue
-		}
-		if val, rest, ok := parseNumber(timePart, "S"); ok {
-			seconds += val
-			timePart = rest
-			continue
-		}
-		break
-	}
-
-	if datePart != "" || timePart != "" {
-		return Duration{}, fmt.Errorf("invalid duration format")
+		hours = timeVals["H"]
+		minutes = timeVals["M"]
+		seconds = timeVals["S"]
 	}
 
 	total := days*86400 + hours*3600 + minutes*60 + seconds

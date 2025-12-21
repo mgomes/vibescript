@@ -349,6 +349,16 @@ func TestDurationMethods(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected parse error for invalid duration")
 	}
+
+	badOrder := compileScript(t, `
+    def run()
+      Duration.parse("PT1S30M")
+    end
+    `)
+	_, err = badOrder.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected parse error for out-of-order duration")
+	}
 }
 
 func TestArrayAndHashHelpers(t *testing.T) {
