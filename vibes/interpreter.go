@@ -76,6 +76,19 @@ func NewEngine(cfg Config) *Engine {
 			if len(kwargs) == 0 {
 				return NewNil(), fmt.Errorf("Duration.build expects seconds or named parts") //nolint:staticcheck // class.method reference
 			}
+			allowed := map[string]struct{}{
+				"weeks":   {},
+				"days":    {},
+				"hours":   {},
+				"minutes": {},
+				"seconds": {},
+			}
+			for key := range kwargs {
+				if _, ok := allowed[key]; !ok {
+					return NewNil(), fmt.Errorf("Duration.build unknown part %q", key) //nolint:staticcheck // class.method reference
+				}
+			}
+
 			parsePart := func(name string) (int64, error) {
 				if v, ok := kwargs[name]; ok {
 					return numericToSeconds(v)
