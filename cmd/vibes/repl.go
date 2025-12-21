@@ -374,12 +374,14 @@ func isValidIdentifier(s string) bool {
 		return false
 	}
 	for i, r := range s {
+		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
 		if i == 0 {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_') {
+			if !isLetter && r != '_' {
 				return false
 			}
 		} else {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			if !isLetter && !isDigit && r != '_' {
 				return false
 			}
 		}
