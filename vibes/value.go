@@ -3,6 +3,7 @@ package vibes
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type ValueKind int
@@ -19,6 +20,7 @@ const (
 	KindBuiltin
 	KindMoney
 	KindDuration
+	KindTime
 	KindSymbol
 	KindObject
 	KindRange
@@ -49,6 +51,8 @@ func (k ValueKind) String() string {
 		return "money"
 	case KindDuration:
 		return "duration"
+	case KindTime:
+		return "time"
 	case KindSymbol:
 		return "symbol"
 	case KindObject:
@@ -121,6 +125,8 @@ func (v Value) String() string {
 		return v.data.(Money).String()
 	case KindDuration:
 		return v.data.(Duration).String()
+	case KindTime:
+		return v.data.(time.Time).Format(time.RFC3339Nano)
 	case KindArray:
 		elems := v.data.([]Value)
 		parts := make([]string, len(elems))
@@ -186,6 +192,8 @@ func (v Value) Equal(other Value) bool {
 		return v.data.(Money) == other.data.(Money)
 	case KindDuration:
 		return v.data.(Duration) == other.data.(Duration)
+	case KindTime:
+		return v.data.(time.Time).Equal(other.data.(time.Time))
 	case KindRange:
 		return v.data.(Range) == other.data.(Range)
 	default:
@@ -204,6 +212,7 @@ func NewHash(h map[string]Value) Value {
 }
 func NewMoney(m Money) Value       { return Value{kind: KindMoney, data: m} }
 func NewDuration(d Duration) Value { return Value{kind: KindDuration, data: d} }
+func NewTime(t time.Time) Value    { return Value{kind: KindTime, data: t} }
 func NewSymbol(name string) Value  { return Value{kind: KindSymbol, data: name} }
 func NewObject(attrs map[string]Value) Value {
 	return Value{kind: KindObject, data: attrs}
@@ -263,6 +272,13 @@ func (v Value) Duration() Duration {
 		return Duration{}
 	}
 	return v.data.(Duration)
+}
+
+func (v Value) Time() time.Time {
+	if v.kind != KindTime {
+		return time.Time{}
+	}
+	return v.data.(time.Time)
 }
 
 func (v Value) Range() Range {
