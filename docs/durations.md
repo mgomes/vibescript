@@ -82,16 +82,12 @@ For precise calendar math, prefer working with exact dates.
 Durations support basic arithmetic operations:
 
 ```vibe
-# Addition
-total = 1.hour + 30.minutes  # 5400 seconds
-
-# Subtraction
-remaining = 2.hours - 15.minutes  # 6300 seconds
-
-# Comparison
-if delay > 5.minutes
-  # ...
-end
+total = 1.hour + 30.minutes      # 5400 seconds
+remaining = 2.hours - 15.minutes # 6300 seconds
+scaled = 10.seconds * 3          # 30 seconds
+divided = 10.seconds / 2         # 5 seconds
+ratio = 10.seconds / 4.seconds   # 2.5
+mod = 10.seconds % 4.seconds     # 2 seconds
 ```
 
 ## Example: Scheduling
