@@ -460,6 +460,37 @@ func TestFunctionDefinitionWithoutParens(t *testing.T) {
 	}
 }
 
+func TestTimeFormatUsesGoLayout(t *testing.T) {
+	script := compileScript(t, `
+    def run()
+      t = Time.utc(2000, 1, 1, 20, 15, 1)
+      {
+        y2: t.format("06"),
+        y4: t.format("2006"),
+        date: t.format("2006-01-02"),
+        time: t.format("15:04:05")
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "run", nil)
+	want := hashVal(map[string]Value{
+		"y2":   NewString("00"),
+		"y4":   NewString("2000"),
+		"date": NewString("2000-01-01"),
+		"time": NewString("20:15:01"),
+	})
+	if result.Kind() != KindHash {
+		t.Fatalf("unexpected format output: %#v", result)
+	}
+	got := result.Hash()
+	for key, expected := range want.Hash() {
+		if val, ok := got[key]; !ok || !val.Equal(expected) {
+			t.Fatalf("unexpected format output %s: got %v want %v", key, val, expected)
+		}
+	}
+}
+
 func TestArrayAndHashHelpers(t *testing.T) {
 	script := compileScript(t, `
     def array_helpers()

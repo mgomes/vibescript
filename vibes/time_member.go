@@ -85,13 +85,15 @@ func timeMember(t time.Time, property string) (Value, error) {
 		}), nil
 	case "to_s":
 		return NewString(t.Format(time.RFC3339Nano)), nil
-	case "strftime":
-		return NewBuiltin("time.strftime", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	case "format":
+		return NewBuiltin("time.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 || args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("strftime expects a format string")
+				return NewNil(), fmt.Errorf("format expects a Go layout string")
 			}
 			return NewString(t.Format(args[0].String())), nil
 		}), nil
+	case "strftime":
+		return NewNil(), fmt.Errorf("strftime is not supported; use format with Go layouts instead")
 	case "getutc", "getgm":
 		return NewTime(t.UTC()), nil
 	case "getlocal":
