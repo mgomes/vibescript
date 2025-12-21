@@ -17,6 +17,7 @@ dives on specific topics.
   transformations.
 - `hashes.md` – symbol-keyed hashes and the merging/lookup helpers we provide.
 - `durations.md` – duration literals and time-based helper methods.
+- `time.md` – Time creation, formatting, accessors, and time/duration math.
 - `control-flow.md` – conditionals, loops, and ranges.
 - `blocks.md` – using block literals for map/select/reduce style patterns.
 - `integration.md` – host integration patterns showing how Go services can
