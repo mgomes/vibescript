@@ -255,6 +255,140 @@ func TestIntTimes(t *testing.T) {
 	}
 }
 
+func TestDurationMethods(t *testing.T) {
+	script := compileScript(t, `
+    def duration_helpers()
+      d = Duration.build(3600)
+      {
+        iso: d.iso8601,
+        parts: d.parts,
+        in_hours: d.in_hours,
+        seconds: d.seconds,
+        to_i: d.to_i,
+        eql: d.eql?(Duration.parse("PT1H")),
+        months: Duration.build(2592000).in_months
+      }
+    end
+
+    def duration_after(base)
+      60.seconds.after(base)
+    end
+
+    def duration_ago(base)
+      60.seconds.ago(base)
+    end
+
+    def duration_parse_iso()
+      Duration.parse("P1DT1H1M1S").to_i
+    end
+
+    def duration_parse_week()
+      Duration.parse("P2W").to_i
+    end
+
+    def duration_parse_invalid()
+      Duration.parse("P1DT1HXYZ")
+    end
+
+    def duration_parse_empty()
+      Duration.parse("P")
+    end
+
+    def duration_parse_fractional()
+      Duration.parse("1.5s")
+    end
+    `)
+
+	result := callFunc(t, script, "duration_helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	parts := result.Hash()
+	if got, want := parts["iso"].String(), "PT1H"; got != want {
+		t.Fatalf("iso8601 mismatch: got %s want %s", got, want)
+	}
+	if got, want := parts["to_i"], NewInt(3600); !got.Equal(want) {
+		t.Fatalf("to_i mismatch: got %v want %v", got, want)
+	}
+	if got, want := parts["seconds"], NewInt(3600); !got.Equal(want) {
+		t.Fatalf("seconds mismatch: got %v want %v", got, want)
+	}
+	if got := parts["in_hours"]; got.Kind() != KindFloat || got.Float() != 1 {
+		t.Fatalf("in_hours mismatch: %v", got)
+	}
+	if got := parts["months"]; got.Kind() != KindFloat || got.Float() != 1 {
+		t.Fatalf("in_months mismatch: %v", got)
+	}
+	if got := parts["eql"]; got.Kind() != KindBool || !got.Bool() {
+		t.Fatalf("expected eql? to be true, got %v", got)
+	}
+
+	partsVal := parts["parts"]
+	if partsVal.Kind() != KindHash {
+		t.Fatalf("parts should be hash, got %v", partsVal.Kind())
+	}
+	partsMap := partsVal.Hash()
+	if partsMap["hours"] != NewInt(1) || partsMap["minutes"] != NewInt(0) || partsMap["seconds"] != NewInt(0) {
+		t.Fatalf("parts unexpected: %#v", partsMap)
+	}
+
+	base := NewString("2024-01-01T00:00:00Z")
+	after := callFunc(t, script, "duration_after", []Value{base})
+	if got := after.String(); got != "2024-01-01T00:01:00Z" {
+		t.Fatalf("after mismatch: %s", got)
+	}
+
+	before := callFunc(t, script, "duration_ago", []Value{NewString("2024-01-01T00:01:00Z")})
+	if got := before.String(); got != "2024-01-01T00:00:00Z" {
+		t.Fatalf("ago mismatch: %s", got)
+	}
+
+	parsed := callFunc(t, script, "duration_parse_iso", nil)
+	if !parsed.Equal(NewInt(90061)) {
+		t.Fatalf("parse iso mismatch: got %v want 90061", parsed)
+	}
+
+	weeks := callFunc(t, script, "duration_parse_week", nil)
+	if !weeks.Equal(NewInt(1209600)) {
+		t.Fatalf("parse weeks mismatch: got %v", weeks)
+	}
+
+	_, err := script.Call(context.Background(), "duration_parse_invalid", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected parse error for invalid duration")
+	}
+
+	badOrder := compileScript(t, `
+    def run()
+      Duration.parse("PT1S30M")
+    end
+    `)
+	_, err = badOrder.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected parse error for out-of-order duration")
+	}
+
+	empty := compileScript(t, `
+    def run()
+      Duration.parse("P")
+    end
+    `)
+	_, err = empty.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected parse error for empty duration")
+	}
+
+	fractional := compileScript(t, `
+    def run()
+      Duration.parse("1.5s")
+    end
+    `)
+	_, err = fractional.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected parse error for fractional duration")
+	}
+}
+
 func TestArrayAndHashHelpers(t *testing.T) {
 	script := compileScript(t, `
     def array_helpers()

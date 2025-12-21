@@ -13,7 +13,7 @@ delay = 30.seconds
 long_wait = 7.days
 ```
 
-Supported units: `second`/`seconds`, `minute`/`minutes`, `hour`/`hours`, `day`/`days`
+Supported units: `second`/`seconds`, `minute`/`minutes`, `hour`/`hours`, `day`/`days`, `week`/`weeks`
 
 ## Duration Methods
 
@@ -56,6 +56,26 @@ Returns a string representation of the duration:
 (2.hours).format    # "7200s"
 (30.seconds).format # "30s"
 ```
+
+### `weeks`
+
+Returns the duration converted to weeks, truncated to a whole number:
+
+```vibe
+(14.days).weeks   # 2
+(20.days).weeks   # 2 (truncated from 2.857)
+```
+
+### `in_months`, `in_years`
+
+These helpers return floating-point approximations using 30-day months and 365-day years:
+
+```vibe
+(30.days).in_months  # 1.0
+(365.days).in_years  # 1.0
+```
+
+For precise calendar math, prefer working with exact dates.
 
 ## Arithmetic
 

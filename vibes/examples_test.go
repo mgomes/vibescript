@@ -634,6 +634,53 @@ func TestExamples(t *testing.T) {
 			want: strVal("2,4,6,8,10"),
 		},
 		{
+			name:     "time/after_time",
+			file:     "time/duration.vibe",
+			function: "after_time",
+			args:     []Value{strVal("2024-01-01T00:00:00Z")},
+			want:     strVal("2024-01-01T00:05:00Z"),
+		},
+		{
+			name:     "time/ago_time",
+			file:     "time/duration.vibe",
+			function: "ago_time",
+			args:     []Value{strVal("2024-01-01T02:00:00Z")},
+			want:     strVal("2024-01-01T00:00:00Z"),
+		},
+		{
+			name:     "time/duration_parts",
+			file:     "time/duration.vibe",
+			function: "duration_parts",
+			want: hashVal(map[string]Value{
+				"iso": strVal("P1DT1H1M1S"),
+				"parts": hashVal(map[string]Value{
+					"days":    intVal(1),
+					"hours":   intVal(1),
+					"minutes": intVal(1),
+					"seconds": intVal(1),
+				}),
+			}),
+		},
+		{
+			name:     "time/duration_parse_build",
+			file:     "time/duration.vibe",
+			function: "duration_parse_build",
+			want:     strVal("PT1M30S"),
+		},
+		{
+			name:     "time/duration_to_i",
+			file:     "time/duration.vibe",
+			function: "duration_to_i",
+			want:     intVal(88200),
+		},
+		{
+			name:     "time/duration_until",
+			file:     "time/duration.vibe",
+			function: "duration_until",
+			args:     []Value{strVal("2024-01-01T01:30:00Z")},
+			want:     strVal("2024-01-01T00:00:00Z"),
+		},
+		{
 			name:     "loops/sum_matrix",
 			file:     "loops/advanced.vibe",
 			function: "sum_matrix",

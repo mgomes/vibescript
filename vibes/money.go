@@ -60,11 +60,11 @@ func parseMoneyLiteral(input string) (Money, error) {
 	}
 	amount, currency := parts[0], strings.ToUpper(parts[1])
 	negative := false
-	if strings.HasPrefix(amount, "-") {
+	if trimmed, ok := strings.CutPrefix(amount, "-"); ok {
 		negative = true
-		amount = strings.TrimPrefix(amount, "-")
-	} else if strings.HasPrefix(amount, "+") {
-		amount = strings.TrimPrefix(amount, "+")
+		amount = trimmed
+	} else if trimmed, ok := strings.CutPrefix(amount, "+"); ok {
+		amount = trimmed
 	}
 
 	whole := amount
@@ -110,32 +110,4 @@ func newMoneyFromCents(cents int64, currency string) (Money, error) {
 		return Money{}, fmt.Errorf("currency must be 3 letters, got %q", currency)
 	}
 	return Money{cents: cents, currency: strings.ToUpper(currency)}, nil
-}
-
-// Duration stores an integer number of seconds for now.
-type Duration struct {
-	seconds int64
-}
-
-func (d Duration) Seconds() int64 { return d.seconds }
-
-func (d Duration) String() string {
-	return fmt.Sprintf("%ds", d.seconds)
-}
-
-func secondsDuration(value int64, unit string) Duration {
-	factor := map[string]int64{
-		"seconds": 1,
-		"second":  1,
-		"minutes": 60,
-		"minute":  60,
-		"hours":   3600,
-		"hour":    3600,
-		"days":    86400,
-		"day":     86400,
-	}[unit]
-	if factor == 0 {
-		factor = 1
-	}
-	return Duration{seconds: value * factor}
 }

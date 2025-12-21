@@ -1,0 +1,29 @@
+# vibe: 0.2
+
+def after_time(base)
+  5.minutes.after(base)
+end
+
+def ago_time(base)
+  2.hours.ago(base)
+end
+
+def duration_parts()
+  d = Duration.parse("P1DT1H1M1S")
+  {
+    iso: d.iso8601,
+    parts: d.parts
+  }
+end
+
+def duration_parse_build()
+  Duration.build(90).iso8601
+end
+
+def duration_to_i()
+  Duration.parse("P1DT30M").to_i
+end
+
+def duration_until(base)
+  90.minutes.until(base)
+end
