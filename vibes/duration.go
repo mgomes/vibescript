@@ -100,6 +100,24 @@ func parseDurationString(input string) (Duration, error) {
 	}
 	s = strings.TrimPrefix(s, "P")
 
+	if strings.ContainsRune(s, 'W') {
+		if strings.ContainsRune(s, 'T') || strings.ContainsAny(s, "DHMS") {
+			return Duration{}, fmt.Errorf("invalid mixed week duration")
+		}
+		if !strings.HasSuffix(s, "W") {
+			return Duration{}, fmt.Errorf("invalid week duration format")
+		}
+		weeksStr := strings.TrimSuffix(s, "W")
+		if weeksStr == "" {
+			return Duration{}, fmt.Errorf("invalid week duration format")
+		}
+		weeks, err := strconv.ParseInt(weeksStr, 10, 64)
+		if err != nil {
+			return Duration{}, fmt.Errorf("invalid week duration")
+		}
+		return Duration{seconds: weeks * 7 * 86400 * sign}, nil
+	}
+
 	var days, hours, minutes, seconds int64
 	var timePart, datePart string
 	if idx := strings.IndexRune(s, 'T'); idx != -1 {
@@ -152,6 +170,10 @@ func parseDurationString(input string) (Duration, error) {
 			continue
 		}
 		break
+	}
+
+	if datePart != "" || timePart != "" {
+		return Duration{}, fmt.Errorf("invalid duration format")
 	}
 
 	total := days*86400 + hours*3600 + minutes*60 + seconds

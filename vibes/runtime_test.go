@@ -281,6 +281,14 @@ func TestDurationMethods(t *testing.T) {
     def duration_parse_iso()
       Duration.parse("P1DT1H1M1S").to_i
     end
+
+    def duration_parse_week()
+      Duration.parse("P2W").to_i
+    end
+
+    def duration_parse_invalid()
+      Duration.parse("P1DT1HXYZ")
+    end
     `)
 
 	result := callFunc(t, script, "duration_helpers", nil)
@@ -330,6 +338,16 @@ func TestDurationMethods(t *testing.T) {
 	parsed := callFunc(t, script, "duration_parse_iso", nil)
 	if !parsed.Equal(NewInt(90061)) {
 		t.Fatalf("parse iso mismatch: got %v want 90061", parsed)
+	}
+
+	weeks := callFunc(t, script, "duration_parse_week", nil)
+	if !weeks.Equal(NewInt(1209600)) {
+		t.Fatalf("parse weeks mismatch: got %v", weeks)
+	}
+
+	_, err := script.Call(context.Background(), "duration_parse_invalid", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected parse error for invalid duration")
 	}
 }
 
