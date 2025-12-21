@@ -681,6 +681,31 @@ func TestExamples(t *testing.T) {
 			want:     strVal("2024-01-01T00:00:00Z"),
 		},
 		{
+			name:     "time/duration_math",
+			file:     "time/duration.vibe",
+			function: "duration_math",
+			want: hashVal(map[string]Value{
+				"add":             strVal("PT2H4S"),
+				"subtract":        strVal("PT1H59M56S"),
+				"multiply":        strVal("PT30S"),
+				"multiply_left":   strVal("PT30S"),
+				"divide":          strVal("PT5S"),
+				"divide_duration": floatVal(2.5),
+				"modulo":          strVal("PT2S"),
+				"compare": hashVal(map[string]Value{
+					"lt": boolVal(true),
+					"eq": boolVal(true),
+					"gt": boolVal(true),
+				}),
+			}),
+		},
+		{
+			name:     "time/duration_to_i_math",
+			file:     "time/duration.vibe",
+			function: "duration_to_i_math",
+			want:     intVal(8),
+		},
+		{
 			name:     "loops/sum_matrix",
 			file:     "loops/advanced.vibe",
 			function: "sum_matrix",

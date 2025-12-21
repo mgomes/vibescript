@@ -1379,6 +1379,20 @@ func addValues(left, right Value) (Value, error) {
 		return NewInt(left.Int() + right.Int()), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() + right.Float()), nil
+	case left.Kind() == KindDuration && right.Kind() == KindDuration:
+		return NewDuration(Duration{seconds: left.Duration().Seconds() + right.Duration().Seconds()}), nil
+	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		secs, err := valueToInt64(right)
+		if err != nil {
+			return NewNil(), fmt.Errorf("unsupported addition operands")
+		}
+		return NewDuration(Duration{seconds: left.Duration().Seconds() + secs}), nil
+	case right.Kind() == KindDuration && (left.Kind() == KindInt || left.Kind() == KindFloat):
+		secs, err := valueToInt64(left)
+		if err != nil {
+			return NewNil(), fmt.Errorf("unsupported addition operands")
+		}
+		return NewDuration(Duration{seconds: right.Duration().Seconds() + secs}), nil
 	case left.Kind() == KindArray && right.Kind() == KindArray:
 		lArr := left.Array()
 		rArr := right.Array()
@@ -1405,6 +1419,14 @@ func subtractValues(left, right Value) (Value, error) {
 		return NewInt(left.Int() - right.Int()), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() - right.Float()), nil
+	case left.Kind() == KindDuration && right.Kind() == KindDuration:
+		return NewDuration(Duration{seconds: left.Duration().Seconds() - right.Duration().Seconds()}), nil
+	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		secs, err := valueToInt64(right)
+		if err != nil {
+			return NewNil(), fmt.Errorf("unsupported subtraction operands")
+		}
+		return NewDuration(Duration{seconds: left.Duration().Seconds() - secs}), nil
 	case left.Kind() == KindArray && right.Kind() == KindArray:
 		lArr := left.Array()
 		rArr := right.Array()
@@ -1439,6 +1461,18 @@ func multiplyValues(left, right Value) (Value, error) {
 		return NewInt(left.Int() * right.Int()), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() * right.Float()), nil
+	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		secs, err := valueToInt64(right)
+		if err != nil {
+			return NewNil(), fmt.Errorf("unsupported multiplication operands")
+		}
+		return NewDuration(Duration{seconds: left.Duration().Seconds() * secs}), nil
+	case right.Kind() == KindDuration && (left.Kind() == KindInt || left.Kind() == KindFloat):
+		secs, err := valueToInt64(left)
+		if err != nil {
+			return NewNil(), fmt.Errorf("unsupported multiplication operands")
+		}
+		return NewDuration(Duration{seconds: right.Duration().Seconds() * secs}), nil
 	case left.Kind() == KindMoney && right.Kind() == KindInt:
 		return NewMoney(left.Money().mulInt(right.Int())), nil
 	case left.Kind() == KindInt && right.Kind() == KindMoney:
@@ -1455,6 +1489,20 @@ func divideValues(left, right Value) (Value, error) {
 			return NewNil(), errors.New("division by zero")
 		}
 		return NewFloat(left.Float() / right.Float()), nil
+	case left.Kind() == KindDuration && right.Kind() == KindDuration:
+		if right.Duration().Seconds() == 0 {
+			return NewNil(), errors.New("division by zero")
+		}
+		return NewFloat(float64(left.Duration().Seconds()) / float64(right.Duration().Seconds())), nil
+	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		secs, err := valueToInt64(right)
+		if err != nil {
+			return NewNil(), fmt.Errorf("unsupported division operands")
+		}
+		if secs == 0 {
+			return NewNil(), errors.New("division by zero")
+		}
+		return NewDuration(Duration{seconds: left.Duration().Seconds() / secs}), nil
 	case left.Kind() == KindMoney && right.Kind() == KindInt:
 		res, err := left.Money().divInt(right.Int())
 		if err != nil {
@@ -1472,6 +1520,12 @@ func moduloValues(left, right Value) (Value, error) {
 			return NewNil(), errors.New("modulo by zero")
 		}
 		return NewInt(left.Int() % right.Int()), nil
+	}
+	if left.Kind() == KindDuration && right.Kind() == KindDuration {
+		if right.Duration().Seconds() == 0 {
+			return NewNil(), errors.New("modulo by zero")
+		}
+		return NewDuration(Duration{seconds: left.Duration().Seconds() % right.Duration().Seconds()}), nil
 	}
 	return NewNil(), fmt.Errorf("unsupported modulo operands")
 }
@@ -1512,6 +1566,16 @@ func compareValues(expr *BinaryExpr, left, right Value, cmp func(int) bool) (Val
 			return NewNil(), fmt.Errorf("money currency mismatch for comparison")
 		}
 		diff := left.Money().Cents() - right.Money().Cents()
+		switch {
+		case diff < 0:
+			return NewBool(cmp(-1)), nil
+		case diff > 0:
+			return NewBool(cmp(1)), nil
+		default:
+			return NewBool(cmp(0)), nil
+		}
+	case left.Kind() == KindDuration && right.Kind() == KindDuration:
+		diff := left.Duration().Seconds() - right.Duration().Seconds()
 		switch {
 		case diff < 0:
 			return NewBool(cmp(-1)), nil
