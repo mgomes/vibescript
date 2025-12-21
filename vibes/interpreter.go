@@ -177,7 +177,7 @@ func NewEngine(cfg Config) *Engine {
 		}),
 		"at": NewBuiltin("Time.at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 {
-				return NewNil(), fmt.Errorf("Time.at expects seconds since epoch")
+				return NewNil(), fmt.Errorf("Time.at expects seconds since epoch") //nolint:staticcheck // class.method reference
 			}
 			var loc *time.Location
 			if in, ok := kwargs["in"]; ok {
@@ -195,7 +195,7 @@ func NewEngine(cfg Config) *Engine {
 		}),
 		"now": NewAutoBuiltin("Time.now", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("Time.now does not take positional arguments")
+				return NewNil(), fmt.Errorf("Time.now does not take positional arguments") //nolint:staticcheck // class.method reference
 			}
 			loc := time.Local
 			if in, ok := kwargs["in"]; ok {
