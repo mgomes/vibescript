@@ -447,6 +447,19 @@ func TestDurationMethods(t *testing.T) {
 	compareArrays(t, comp, wantComp.Array())
 }
 
+func TestFunctionDefinitionWithoutParens(t *testing.T) {
+	script := compileScript(t, `
+    def greeting
+      "hi"
+    end
+    `)
+
+	result := callFunc(t, script, "greeting", nil)
+	if result.Kind() != KindString || result.String() != "hi" {
+		t.Fatalf("unexpected result: %v", result)
+	}
+}
+
 func TestArrayAndHashHelpers(t *testing.T) {
 	script := compileScript(t, `
     def array_helpers()
