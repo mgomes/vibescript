@@ -8,7 +8,7 @@ def ago_time(base)
   2.hours.ago(base)
 end
 
-def duration_parts()
+def duration_parts
   d = Duration.parse("P1DT1H1M1S")
   {
     iso: d.iso8601,
@@ -16,11 +16,11 @@ def duration_parts()
   }
 end
 
-def duration_parse_build()
+def duration_parse_build
   Duration.build(90).iso8601
 end
 
-def duration_to_i()
+def duration_to_i
   Duration.parse("P1DT30M").to_i
 end
 
@@ -28,7 +28,7 @@ def duration_until(base)
   90.minutes.until(base)
 end
 
-def duration_math()
+def duration_math
   d1 = 4.seconds + 2.hours
   d2 = 2.hours - 4.seconds
   d3 = 10.seconds * 3
@@ -54,6 +54,6 @@ def duration_math()
   }
 end
 
-def duration_to_i_math()
+def duration_to_i_math
   (3.seconds + 5.seconds).to_i
 end
