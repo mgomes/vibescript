@@ -19,3 +19,6 @@ coverage.out
 .vscode/
 *.swp
 *.swo
+
+# Local binaries
+/vibes-cli
