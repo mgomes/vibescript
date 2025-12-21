@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -688,6 +689,28 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		switch property {
 		case "seconds", "second", "minutes", "minute", "hours", "hour", "days", "day":
 			return NewDuration(secondsDuration(obj.Int(), property)), nil
+		case "times":
+			return NewAutoBuiltin("int.times", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				if len(args) > 0 {
+					return NewNil(), fmt.Errorf("int.times does not take arguments")
+				}
+				if block.Block() == nil {
+					return NewNil(), fmt.Errorf("int.times requires a block")
+				}
+				count := receiver.Int()
+				if count <= 0 {
+					return receiver, nil
+				}
+				if count > int64(math.MaxInt) {
+					return NewNil(), fmt.Errorf("int.times value too large")
+				}
+				for i := range int(count) {
+					if _, err := exec.callBlock(block, []Value{NewInt(int64(i))}); err != nil {
+						return NewNil(), err
+					}
+				}
+				return receiver, nil
+			}), nil
 		default:
 			return NewNil(), exec.errorAt(pos, "unknown int member %s", property)
 		}
