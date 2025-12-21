@@ -207,6 +207,54 @@ func TestRuntimeErrorStackTrace(t *testing.T) {
 	}
 }
 
+func TestIntTimes(t *testing.T) {
+	script := compileScript(t, `
+    def collect(n)
+      out = []
+      n.times do |i|
+        out = out + [i]
+      end
+      out
+    end
+
+    def times_returns_receiver(n)
+      n.times do |i|
+        i
+      end
+    end
+
+    def times_negative(n)
+      count = 0
+      n.times do |i|
+        count = count + 1
+      end
+      count
+    end
+
+    def times_without_block(n)
+      n.times
+    end
+    `)
+
+	collected := callFunc(t, script, "collect", []Value{NewInt(4)})
+	compareArrays(t, collected, []Value{NewInt(0), NewInt(1), NewInt(2), NewInt(3)})
+
+	ret := callFunc(t, script, "times_returns_receiver", []Value{NewInt(3)})
+	if !ret.Equal(NewInt(3)) {
+		t.Fatalf("times return value mismatch: got %v want %v", ret, NewInt(3))
+	}
+
+	neg := callFunc(t, script, "times_negative", []Value{NewInt(-2)})
+	if !neg.Equal(NewInt(0)) {
+		t.Fatalf("negative times loop mismatch: got %v want 0", neg)
+	}
+
+	_, err := script.Call(context.Background(), "times_without_block", []Value{NewInt(1)}, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected error for times without block")
+	}
+}
+
 func TestArrayAndHashHelpers(t *testing.T) {
 	script := compileScript(t, `
     def array_helpers()
