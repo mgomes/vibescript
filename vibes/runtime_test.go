@@ -297,6 +297,38 @@ func TestDurationMethods(t *testing.T) {
     def duration_parse_fractional()
       Duration.parse("1.5s")
     end
+
+    def duration_add()
+      (4.seconds + 2.hours).to_i
+    end
+
+    def duration_subtract()
+      (2.hours - 4.seconds).to_i
+    end
+
+    def duration_multiply()
+      (10.seconds * 3).to_i
+    end
+
+    def duration_multiply_left()
+      (3 * 10.seconds).to_i
+    end
+
+    def duration_divide()
+      (10.seconds / 2).to_i
+    end
+
+    def duration_divide_duration()
+      10.seconds / 4.seconds
+    end
+
+    def duration_modulo()
+      (10.seconds % 4.seconds).to_i
+    end
+
+    def duration_compare()
+      [2.seconds < 3.seconds, 5.seconds == 5.seconds, 10.seconds > 3.seconds]
+    end
     `)
 
 	result := callFunc(t, script, "duration_helpers", nil)
@@ -387,6 +419,32 @@ func TestDurationMethods(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected parse error for fractional duration")
 	}
+
+	if got := callFunc(t, script, "duration_add", nil); !got.Equal(NewInt(7204)) {
+		t.Fatalf("duration add mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "duration_subtract", nil); !got.Equal(NewInt(7196)) {
+		t.Fatalf("duration subtract mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "duration_multiply", nil); !got.Equal(NewInt(30)) {
+		t.Fatalf("duration multiply mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "duration_multiply_left", nil); !got.Equal(NewInt(30)) {
+		t.Fatalf("duration multiply (left) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "duration_divide", nil); !got.Equal(NewInt(5)) {
+		t.Fatalf("duration divide mismatch: %v", got)
+	}
+	divDur := callFunc(t, script, "duration_divide_duration", nil)
+	if divDur.Kind() != KindFloat || divDur.Float() != 2.5 {
+		t.Fatalf("duration divide duration mismatch: %v", divDur)
+	}
+	if got := callFunc(t, script, "duration_modulo", nil); !got.Equal(NewInt(2)) {
+		t.Fatalf("duration modulo mismatch: %v", got)
+	}
+	comp := callFunc(t, script, "duration_compare", nil)
+	wantComp := arrayVal(boolVal(true), boolVal(true), boolVal(true))
+	compareArrays(t, comp, wantComp.Array())
 }
 
 func TestArrayAndHashHelpers(t *testing.T) {

@@ -27,3 +27,29 @@ end
 def duration_until(base)
   90.minutes.until(base)
 end
+
+def duration_math()
+  d1 = 4.seconds + 2.hours
+  d2 = 2.hours - 4.seconds
+  d3 = 10.seconds * 3
+  d4 = 3 * 10.seconds
+  d5 = 10.seconds / 2
+  ratio = 10.seconds / 4.seconds
+  mod = 10.seconds % 4.seconds
+  compare = {
+    lt: 2.seconds < 3.seconds,
+    eq: 5.seconds == 5.seconds,
+    gt: 10.seconds > 3.seconds
+  }
+
+  {
+    add: d1.iso8601,
+    subtract: d2.iso8601,
+    multiply: d3.iso8601,
+    multiply_left: d4.iso8601,
+    divide: d5.iso8601,
+    divide_duration: ratio,
+    modulo: mod.iso8601,
+    compare: compare
+  }
+end
