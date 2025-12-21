@@ -140,9 +140,6 @@ func parseDurationString(input string) (Duration, error) {
 			if segment == "" {
 				continue
 			}
-			if len(segment) == 0 {
-				break
-			}
 			if segment[0] < '0' || segment[0] > '9' {
 				return nil, fmt.Errorf("invalid duration format")
 			}
