@@ -700,6 +700,12 @@ func TestExamples(t *testing.T) {
 			}),
 		},
 		{
+			name:     "time/duration_to_i_math",
+			file:     "time/duration.vibe",
+			function: "duration_to_i_math",
+			want:     intVal(8),
+		},
+		{
 			name:     "loops/sum_matrix",
 			file:     "loops/advanced.vibe",
 			function: "sum_matrix",

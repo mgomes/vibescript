@@ -53,3 +53,7 @@ def duration_math()
     compare: compare
   }
 end
+
+def duration_to_i_math()
+  (3.seconds + 5.seconds).to_i
+end
