@@ -83,7 +83,10 @@ func parseDurationString(input string) (Duration, error) {
 	}
 
 	if dur, err := time.ParseDuration(input); err == nil {
-		return Duration{seconds: int64(dur.Seconds())}, nil
+		if dur%time.Second != 0 {
+			return Duration{}, fmt.Errorf("duration must be whole seconds")
+		}
+		return Duration{seconds: int64(dur / time.Second)}, nil
 	}
 
 	sign := int64(1)

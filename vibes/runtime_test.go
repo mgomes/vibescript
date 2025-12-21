@@ -293,6 +293,10 @@ func TestDurationMethods(t *testing.T) {
     def duration_parse_empty()
       Duration.parse("P")
     end
+
+    def duration_parse_fractional()
+      Duration.parse("1.5s")
+    end
     `)
 
 	result := callFunc(t, script, "duration_helpers", nil)
@@ -372,6 +376,16 @@ func TestDurationMethods(t *testing.T) {
 	_, err = empty.Call(context.Background(), "run", nil, CallOptions{})
 	if err == nil {
 		t.Fatalf("expected parse error for empty duration")
+	}
+
+	fractional := compileScript(t, `
+    def run()
+      Duration.parse("1.5s")
+    end
+    `)
+	_, err = fractional.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected parse error for fractional duration")
 	}
 }
 
