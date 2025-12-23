@@ -64,4 +64,5 @@ end
 def in_two_hours
   2.hours.after(Time.now)
 end
+
 ```

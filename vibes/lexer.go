@@ -83,8 +83,15 @@ func (l *lexer) NextToken() Token {
 		tok = l.makeToken(tokenPlus, "+")
 		l.readRune()
 	case '-':
-		tok = l.makeToken(tokenMinus, "-")
-		l.readRune()
+		if l.peekRune() == '>' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(tokenArrow, string(first)+string(l.ch))
+			l.readRune()
+		} else {
+			tok = l.makeToken(tokenMinus, "-")
+			l.readRune()
+		}
 	case '*':
 		tok = l.makeToken(tokenAsterisk, "*")
 		l.readRune()
