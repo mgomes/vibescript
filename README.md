@@ -13,6 +13,30 @@ Even in these constrained environments, non-technical users still need a way to 
 - Embeddable in Go with capabilities and `require`-style modules.
 - Interactive REPL with history, autocomplete, help/vars panels.
 
+```vibe
+# Quick leaderboard report with typing, time math, and blocks
+def leaderboard(players: array, since: time? = nil, limit: int = 5) -> array
+  cutoff = since || 7.days.ago(Time.now)
+  recent = players.select do |p|
+    Time.parse(p[:last_seen]) >= cutoff
+  end
+
+  recent
+    .map { |p| { name: p[:name], score: p[:score], last_seen: Time.parse(p[:last_seen]) } }
+    .sort do |a, b|
+      b[:score] <=> a[:score]
+    end
+    .first(limit)
+    .map do |entry|
+      {
+        name: entry[:name],
+        score: entry[:score],
+        last_seen: entry[:last_seen].format("2006-01-02 15:04:05"),
+      }
+    end
+end
+```
+
 ### Quick Start Example
 
 > [!WARNING]
