@@ -4,6 +4,15 @@ As [vibe coding](https://en.wikipedia.org/wiki/Vibe_coding) grows in popularity,
 
 Even in these constrained environments, non-technical users still need a way to express custom logic. That’s where Vibescript comes in. It’s a Ruby-like scripting language designed to be easy to read, and easy for AI to vibe code. The interpreter is written in Go and can be embedded directly into any Go application.
 
+**Key Features**
+
+- Ruby-like syntax: blocks, ranges, zero-paren defs, symbol hashes.
+- Gradual typing: optional annotations, nullable `?`, positional/keyword args, return checks.
+- Time & Duration helpers: literals, math, offsets (`ago`/`after`), Go-layout `format`.
+- Money type and helpers.
+- Embeddable in Go with capabilities and `require`-style modules.
+- Interactive REPL with history, autocomplete, help/vars panels.
+
 ### Quick Start Example
 
 > [!WARNING]
