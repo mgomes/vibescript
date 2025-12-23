@@ -89,7 +89,8 @@ Representative `.vibe` programs are grouped under `examples/`:
 - `examples/loops/` – range iteration, collection loops, and accumulation helpers.
 - `examples/ranges/` – range literals, ascending/descending iteration, and filtered collection helpers.
 - `examples/money/` – exercises for the `money` and `money_cents` built-ins.
-- `examples/durations/` – duration literals and derived values in seconds.
+- `examples/durations/` – duration literals, math (add/sub/mul/div/mod), and time offsets.
+- `examples/time/` – Time creation, formatting (Go layouts), and duration/time math.
 - `examples/errors/` – patterns that rely on `assert` for validation.
 - `examples/capabilities/` – samples that touch `ctx`, `db`, and other declared capabilities.
 - `examples/background/` – jobs and events workflows that land as host integrations mature.
@@ -108,6 +109,9 @@ Long-form guides live in `docs/`:
 - `docs/control-flow.md` – conditionals, loops, and ranges.
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
 - `docs/integration.md` – integrating the interpreter in Go applications.
+- `docs/durations.md` – duration literals, conversions, and arithmetic.
+- `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
+- `docs/typing.md` – gradual typing: annotations, nullable `?`, positional/keyword binding, and return checks.
 - `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).
 - `docs/releasing.md` – GoReleaser workflow for changelog and GitHub release automation.
 
