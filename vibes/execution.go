@@ -11,11 +11,12 @@ import (
 )
 
 type ScriptFunction struct {
-	Name   string
-	Params []string
-	Body   []Statement
-	Pos    Position
-	Env    *Env
+	Name     string
+	Params   []Param
+	ReturnTy *TypeExpr
+	Body     []Statement
+	Pos      Position
+	Env      *Env
 }
 
 type Script struct {
@@ -26,6 +27,7 @@ type Script struct {
 type CallOptions struct {
 	Globals      map[string]Value
 	Capabilities []CapabilityAdapter
+	Keywords     map[string]Value
 }
 
 type Execution struct {
@@ -418,15 +420,12 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 	switch callee.Kind() {
 	case KindFunction:
 		fn := callee.Function()
-		if len(args) != len(fn.Params) {
-			return NewNil(), exec.errorAt(pos, "expected %d arguments, got %d", len(fn.Params), len(args))
-		}
+		callEnv := newEnv(fn.Env)
 		if block.Kind() == KindBlock {
 			return NewNil(), exec.errorAt(pos, "blocks are not supported for this function")
 		}
-		callEnv := newEnv(fn.Env)
-		for i, param := range fn.Params {
-			callEnv.Define(param, args[i])
+		if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
+			return NewNil(), err
 		}
 		if err := exec.pushFrame(fn.Name, pos); err != nil {
 			return NewNil(), err
@@ -435,6 +434,11 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 		exec.popFrame()
 		if err != nil {
 			return NewNil(), err
+		}
+		if fn.ReturnTy != nil {
+			if err := checkValueType(val, fn.ReturnTy.Name); err != nil {
+				return NewNil(), exec.errorAt(pos, "%s", err.Error())
+			}
 		}
 		if returned {
 			return val, nil
@@ -1223,7 +1227,7 @@ func (e *Engine) Compile(source string) (*Script, error) {
 		if _, exists := functions[fn.Name]; exists {
 			return nil, fmt.Errorf("duplicate function %s", fn.Name)
 		}
-		functions[fn.Name] = &ScriptFunction{Name: fn.Name, Params: fn.Params, Body: fn.Body, Pos: fn.Pos()}
+		functions[fn.Name] = &ScriptFunction{Name: fn.Name, Params: fn.Params, ReturnTy: fn.ReturnTy, Body: fn.Body, Pos: fn.Pos()}
 	}
 
 	return &Script{engine: e, functions: functions}, nil
@@ -1241,6 +1245,124 @@ func combineErrors(errs []error) error {
 		msg += err.Error()
 	}
 	return errors.New(msg)
+}
+
+func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Value, kwargs map[string]Value, pos Position) error {
+	usedKw := make(map[string]bool, len(kwargs))
+	argIdx := 0
+
+	for _, param := range fn.Params {
+		var val Value
+		if argIdx < len(args) {
+			val = args[argIdx]
+			argIdx++
+		} else if kw, ok := kwargs[param.Name]; ok {
+			val = kw
+			usedKw[param.Name] = true
+		} else if param.DefaultVal != nil {
+			defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
+			if err != nil {
+				return err
+			}
+			val = defaultVal
+		} else {
+			return exec.errorAt(pos, "missing argument %s", param.Name)
+		}
+
+		if param.Type != nil {
+			if err := checkValueType(val, param.Type.Name); err != nil {
+				return exec.errorAt(pos, "%s", err.Error())
+			}
+		}
+		env.Define(param.Name, val)
+	}
+
+	if argIdx < len(args) {
+		return exec.errorAt(pos, "unexpected positional arguments")
+	}
+	for name := range kwargs {
+		if !usedKw[name] {
+			return exec.errorAt(pos, "unexpected keyword argument %s", name)
+		}
+	}
+	return nil
+}
+
+func checkValueType(val Value, typeName string) error {
+	nullable := false
+	if strings.HasSuffix(typeName, "?") {
+		nullable = true
+		typeName = strings.TrimSuffix(typeName, "?")
+	}
+	if nullable && val.Kind() == KindNil {
+		return nil
+	}
+	switch strings.ToLower(typeName) {
+	case "any":
+		return nil
+	case "int":
+		if val.Kind() == KindInt {
+			return nil
+		}
+		return fmt.Errorf("expected int")
+	case "float":
+		if val.Kind() == KindFloat {
+			return nil
+		}
+		return fmt.Errorf("expected float")
+	case "number":
+		if val.Kind() == KindInt || val.Kind() == KindFloat {
+			return nil
+		}
+		return fmt.Errorf("expected number")
+	case "string":
+		if val.Kind() == KindString {
+			return nil
+		}
+		return fmt.Errorf("expected string")
+	case "bool":
+		if val.Kind() == KindBool {
+			return nil
+		}
+		return fmt.Errorf("expected bool")
+	case "nil":
+		if val.Kind() == KindNil {
+			return nil
+		}
+		return fmt.Errorf("expected nil")
+	case "duration":
+		if val.Kind() == KindDuration {
+			return nil
+		}
+		return fmt.Errorf("expected duration")
+	case "time":
+		if val.Kind() == KindTime {
+			return nil
+		}
+		return fmt.Errorf("expected time")
+	case "money":
+		if val.Kind() == KindMoney {
+			return nil
+		}
+		return fmt.Errorf("expected money")
+	case "array":
+		if val.Kind() == KindArray {
+			return nil
+		}
+		return fmt.Errorf("expected array")
+	case "hash", "object":
+		if val.Kind() == KindHash || val.Kind() == KindObject {
+			return nil
+		}
+		return fmt.Errorf("expected hash")
+	case "function":
+		if val.Kind() == KindFunction {
+			return nil
+		}
+		return fmt.Errorf("expected function")
+	default:
+		return fmt.Errorf("unknown type %s", typeName)
+	}
 }
 
 // Function looks up a compiled function by name.
@@ -1305,11 +1427,8 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 
 	callEnv := newEnv(root)
-	if len(args) != len(fn.Params) {
-		return NewNil(), fmt.Errorf("function %s expects %d arguments, got %d", name, len(fn.Params), len(args))
-	}
-	for i, param := range fn.Params {
-		callEnv.Define(param, args[i])
+	if err := exec.bindFunctionArgs(fn, callEnv, args, opts.Keywords, fn.Pos); err != nil {
+		return NewNil(), err
 	}
 
 	if err := exec.pushFrame(fn.Name, fn.Pos); err != nil {
@@ -1319,6 +1438,11 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	exec.popFrame()
 	if err != nil {
 		return NewNil(), err
+	}
+	if fn.ReturnTy != nil {
+		if err := checkValueType(val, fn.ReturnTy.Name); err != nil {
+			return NewNil(), err
+		}
 	}
 	if returned {
 		return val, nil

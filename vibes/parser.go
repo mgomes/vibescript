@@ -125,33 +125,30 @@ func (p *parser) parseFunctionStatement() Statement {
 		return nil
 	}
 	name := p.curToken.Literal
-	params := []string{}
+	params := []Param{}
+	var returnTy *TypeExpr
 	if p.peekToken.Type == tokenLParen && p.peekToken.Pos.Line == p.curToken.Pos.Line {
 		p.nextToken()
 		if p.peekToken.Type == tokenRParen {
 			p.nextToken()
 		} else {
 			p.nextToken()
-			if p.curToken.Type != tokenIdent {
-				p.errorExpected(p.curToken, "parameter name")
-				return nil
-			}
-			params = append(params, p.curToken.Literal)
-			for p.peekToken.Type == tokenComma {
-				p.nextToken()
-				p.nextToken()
-				if p.curToken.Type != tokenIdent {
-					p.errorExpected(p.curToken, "parameter name")
-					return nil
-				}
-				params = append(params, p.curToken.Literal)
-			}
+			params = p.parseParams()
 			if !p.expectPeek(tokenRParen) {
 				return nil
 			}
 		}
 		p.nextToken()
 	} else {
+		p.nextToken()
+	}
+	if p.curToken.Type == tokenArrow {
+		p.nextToken()
+		if p.curToken.Type != tokenIdent && p.curToken.Type != tokenNil {
+			p.errorExpected(p.curToken, "return type")
+			return nil
+		}
+		returnTy = &TypeExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
 		p.nextToken()
 	}
 	body := []Statement{}
@@ -167,7 +164,39 @@ func (p *parser) parseFunctionStatement() Statement {
 		p.errorExpected(p.curToken, "end")
 	}
 
-	return &FunctionStmt{Name: name, Params: params, Body: body, position: pos}
+	return &FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, position: pos}
+}
+
+func (p *parser) parseParams() []Param {
+	params := []Param{}
+	for {
+		if p.curToken.Type != tokenIdent {
+			p.errorExpected(p.curToken, "parameter name")
+			return params
+		}
+		param := Param{Name: p.curToken.Literal}
+		if p.peekToken.Type == tokenColon {
+			p.nextToken()
+			p.nextToken()
+			if p.curToken.Type != tokenIdent {
+				p.errorExpected(p.curToken, "type name")
+				return params
+			}
+			param.Type = &TypeExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
+		}
+		if p.peekToken.Type == tokenAssign {
+			p.nextToken()
+			p.nextToken()
+			param.DefaultVal = p.parseExpression(lowestPrec)
+		}
+		params = append(params, param)
+		if p.peekToken.Type != tokenComma {
+			break
+		}
+		p.nextToken()
+		p.nextToken()
+	}
+	return params
 }
 
 func (p *parser) parseReturnStatement() Statement {

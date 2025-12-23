@@ -491,6 +491,87 @@ func TestTimeFormatUsesGoLayout(t *testing.T) {
 	}
 }
 
+func TestTypedFunctions(t *testing.T) {
+	script := compileScript(t, `
+    def pick_second(n: int, m: int) -> int
+      m
+    end
+
+    def pick_maybe(n: int, m: int = 0) -> int
+      m
+    end
+
+    def nil_result() -> nil
+      nil
+    end
+
+    def kw_only(n: int, m: int)
+      m
+    end
+
+    def mixed(n: int, m: int) -> int
+      n + m
+    end
+
+    def bad_return(n: int) -> int
+      "oops"
+    end
+
+    def pick_optional(s: string? = nil) -> string?
+      s
+    end
+    `)
+
+	if fn, ok := script.Function("bad_return"); !ok || fn.ReturnTy == nil {
+		t.Fatalf("expected bad_return to have return type")
+	} else if fn.ReturnTy.Name != "int" {
+		t.Fatalf("unexpected return type name: %s", fn.ReturnTy.Name)
+	}
+
+	if got := callFunc(t, script, "pick_second", []Value{NewInt(1), NewInt(2)}); !got.Equal(NewInt(2)) {
+		t.Fatalf("pick_second mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "pick_maybe", []Value{NewInt(1)}); !got.Equal(NewInt(0)) {
+		t.Fatalf("pick_maybe default mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "pick_optional", nil); !got.Equal(NewNil()) {
+		t.Fatalf("pick_optional nil mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "nil_result", nil); !got.Equal(NewNil()) {
+		t.Fatalf("nil_result mismatch: %v", got)
+	}
+
+	kwPos := callFunc(t, script, "kw_only", []Value{NewInt(1), NewInt(2)})
+	if !kwPos.Equal(NewInt(2)) {
+		t.Fatalf("kw_only positional mismatch: %v", kwPos)
+	}
+	_, err := script.Call(context.Background(), "kw_only", []Value{NewInt(1)}, CallOptions{
+		Globals: map[string]Value{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing argument m") {
+		t.Fatalf("expected kw_only missing arg error, got %v", err)
+	}
+
+	mixedResult := callFunc(t, script, "mixed", []Value{NewInt(1), NewInt(2)})
+	if !mixedResult.Equal(NewInt(3)) {
+		t.Fatalf("mixed result mismatch: %v", mixedResult)
+	}
+
+	_, err = script.Call(context.Background(), "pick_second", []Value{NewString("bad"), NewInt(2)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expected int") {
+		t.Fatalf("expected type error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
+	if err == nil {
+		res, _ := script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
+		t.Fatalf("expected return type error, got value %v (%v)", res, res.Kind())
+	}
+	if !strings.Contains(err.Error(), "expected int") {
+		t.Fatalf("expected return type error, got %v", err)
+	}
+}
+
 func TestArrayAndHashHelpers(t *testing.T) {
 	script := compileScript(t, `
     def array_helpers()

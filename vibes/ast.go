@@ -27,13 +27,25 @@ func (p *Program) Pos() Position {
 
 type FunctionStmt struct {
 	Name     string
-	Params   []string
+	Params   []Param
+	ReturnTy *TypeExpr
 	Body     []Statement
 	position Position
 }
 
 func (s *FunctionStmt) stmtNode()     {}
 func (s *FunctionStmt) Pos() Position { return s.position }
+
+type Param struct {
+	Name       string
+	Type       *TypeExpr
+	DefaultVal Expression
+}
+
+type TypeExpr struct {
+	Name     string
+	position Position
+}
 
 type ReturnStmt struct {
 	Value    Expression
