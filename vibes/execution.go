@@ -368,6 +368,16 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 			return NewNil(), err
 		}
 		switch obj.Kind() {
+		case KindString:
+			i, err := valueToInt(idx)
+			if err != nil {
+				return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
+			}
+			runes := []rune(obj.String())
+			if i < 0 || i >= len(runes) {
+				return NewNil(), exec.errorAt(e.Index.Pos(), "string index out of bounds")
+			}
+			return NewString(string(runes[i])), nil
 		case KindArray:
 			i, err := valueToInt(idx)
 			if err != nil {
