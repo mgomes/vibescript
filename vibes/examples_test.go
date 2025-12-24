@@ -1559,13 +1559,17 @@ func TestExamples(t *testing.T) {
 }
 
 func compileExample(t *testing.T, rel string) *Script {
+	return compileExampleWithConfig(t, rel, Config{})
+}
+
+func compileExampleWithConfig(t *testing.T, rel string, cfg Config) *Script {
 	t.Helper()
 	path := filepath.Join("..", "examples", rel)
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", rel, err)
 	}
-	engine := NewEngine(Config{})
+	engine := NewEngine(cfg)
 	script, err := engine.Compile(string(source))
 	if err != nil {
 		t.Fatalf("compile %s: %v", rel, err)
@@ -1664,6 +1668,10 @@ func assertValueEqual(t *testing.T, got, want Value) {
 	case KindDuration:
 		if got.Duration().Seconds() != want.Duration().Seconds() {
 			t.Fatalf("duration mismatch: got %d want %d", got.Duration().Seconds(), want.Duration().Seconds())
+		}
+	case KindTime:
+		if !got.Time().Equal(want.Time()) {
+			t.Fatalf("time mismatch: got %s want %s", got.Time(), want.Time())
 		}
 	case KindArray:
 		gArr := got.Array()

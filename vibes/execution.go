@@ -368,6 +368,16 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 			return NewNil(), err
 		}
 		switch obj.Kind() {
+		case KindString:
+			i, err := valueToInt(idx)
+			if err != nil {
+				return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
+			}
+			runes := []rune(obj.String())
+			if i < 0 || i >= len(runes) {
+				return NewNil(), exec.errorAt(e.Index.Pos(), "string index out of bounds")
+			}
+			return NewString(string(runes[i])), nil
 		case KindArray:
 			i, err := valueToInt(idx)
 			if err != nil {
@@ -790,6 +800,13 @@ func hashMember(obj Value, property string) (Value, error) {
 
 func stringMember(str Value, property string) (Value, error) {
 	switch property {
+	case "size":
+		return NewAutoBuiltin("string.size", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.size does not take arguments")
+			}
+			return NewInt(int64(len([]rune(receiver.String())))), nil
+		}), nil
 	case "strip":
 		return NewAutoBuiltin("string.strip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -936,6 +953,13 @@ func durationTimeArg(args []Value, allowEmpty bool, name string) (time.Time, err
 
 func arrayMember(array Value, property string) (Value, error) {
 	switch property {
+	case "size":
+		return NewAutoBuiltin("array.size", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.size does not take arguments")
+			}
+			return NewInt(int64(len(receiver.Array()))), nil
+		}), nil
 	case "each":
 		return NewBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {
@@ -1093,10 +1117,10 @@ func arrayMember(array Value, property string) (Value, error) {
 	case "first":
 		return NewAutoBuiltin("array.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			arr := receiver.Array()
-			if len(arr) == 0 {
-				return NewNil(), nil
-			}
 			if len(args) == 0 {
+				if len(arr) == 0 {
+					return NewNil(), nil
+				}
 				return arr[0], nil
 			}
 			n, err := valueToInt(args[0])
@@ -1113,10 +1137,10 @@ func arrayMember(array Value, property string) (Value, error) {
 	case "last":
 		return NewAutoBuiltin("array.last", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			arr := receiver.Array()
-			if len(arr) == 0 {
-				return NewNil(), nil
-			}
 			if len(args) == 0 {
+				if len(arr) == 0 {
+					return NewNil(), nil
+				}
 				return arr[len(arr)-1], nil
 			}
 			n, err := valueToInt(args[0])

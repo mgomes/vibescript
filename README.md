@@ -92,23 +92,23 @@ The REPL maintains a persistent environment, so variables assigned in one expres
 
 #### Commands
 
-| Command   | Description              |
-|-----------|--------------------------|
-| `:help`   | Toggle help panel        |
-| `:vars`   | Toggle variables panel   |
-| `:clear`  | Clear output history     |
-| `:reset`  | Reset the environment    |
-| `:quit`   | Exit the REPL            |
+| Command  | Description            |
+| -------- | ---------------------- |
+| `:help`  | Toggle help panel      |
+| `:vars`  | Toggle variables panel |
+| `:clear` | Clear output history   |
+| `:reset` | Reset the environment  |
+| `:quit`  | Exit the REPL          |
 
 #### Keyboard Shortcuts
 
-| Key       | Action                   |
-|-----------|--------------------------|
-| `ctrl+k`  | Toggle help              |
-| `ctrl+v`  | Toggle variables panel   |
-| `ctrl+l`  | Clear history            |
-| `ctrl+c`  | Quit                     |
-| `Tab`     | Autocomplete             |
+| Key      | Action                 |
+| -------- | ---------------------- |
+| `ctrl+k` | Toggle help            |
+| `ctrl+v` | Toggle variables panel |
+| `ctrl+l` | Clear history          |
+| `ctrl+c` | Quit                   |
+| `Tab`    | Autocomplete           |
 
 ## Examples
 
