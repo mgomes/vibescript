@@ -790,6 +790,13 @@ func hashMember(obj Value, property string) (Value, error) {
 
 func stringMember(str Value, property string) (Value, error) {
 	switch property {
+	case "size":
+		return NewAutoBuiltin("string.size", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.size does not take arguments")
+			}
+			return NewInt(int64(len([]rune(receiver.String())))), nil
+		}), nil
 	case "strip":
 		return NewAutoBuiltin("string.strip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -936,6 +943,13 @@ func durationTimeArg(args []Value, allowEmpty bool, name string) (time.Time, err
 
 func arrayMember(array Value, property string) (Value, error) {
 	switch property {
+	case "size":
+		return NewAutoBuiltin("array.size", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.size does not take arguments")
+			}
+			return NewInt(int64(len(receiver.Array()))), nil
+		}), nil
 	case "each":
 		return NewBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {

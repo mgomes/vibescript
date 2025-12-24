@@ -1803,6 +1803,18 @@ func TestComplexExamplesRun(t *testing.T) {
 			),
 		},
 		{
+			name:     "analytics/average_score",
+			file:     "complex/analytics.vibe",
+			function: "average_score",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"score": intVal(10)}),
+					hashVal(map[string]Value{"score": intVal(20)}),
+				),
+			},
+			want: floatVal(15),
+		},
+		{
 			name:     "durations/shift_series",
 			file:     "complex/durations.vibe",
 			function: "shift_series",
@@ -1831,6 +1843,16 @@ func TestComplexExamplesRun(t *testing.T) {
 			function: "slugify",
 			args:     []Value{strVal(" Hello World ")},
 			want:     strVal("hello-world"),
+		},
+		{
+			name:     "strings/wrap",
+			file:     "complex/strings.vibe",
+			function: "wrap",
+			args: []Value{
+				strVal("one two three four"),
+				intVal(7),
+			},
+			want: arrayVal(strVal("one two"), strVal("three"), strVal("four")),
 		},
 		{
 			name:     "loops/sum_matrix",
