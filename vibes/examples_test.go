@@ -1728,3 +1728,31 @@ func valueToString(t *testing.T, v Value) string {
 		return ""
 	}
 }
+
+func TestComplexExamplesCompile(t *testing.T) {
+	engine := NewEngine(Config{})
+	files := []string{
+		"examples/complex/analytics.vibe",
+		"examples/complex/durations.vibe",
+		"examples/complex/finance.vibe",
+		"examples/complex/strings.vibe",
+		"examples/complex/loops.vibe",
+		"examples/complex/typed.vibe",
+		"examples/complex/pipeline.vibe",
+		"examples/complex/massive.vibe",
+		"examples/complex/chudnovsky.vibe",
+	}
+	for _, path := range files {
+		path := path
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			full := filepath.Join("..", path)
+			data, err := os.ReadFile(full)
+			if err != nil {
+				t.Fatalf("read %s: %v", full, err)
+			}
+			if _, err := engine.Compile(string(data)); err != nil {
+				t.Fatalf("compile %s: %v", path, err)
+			}
+		})
+	}
+}

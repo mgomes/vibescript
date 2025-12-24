@@ -1,0 +1,42 @@
+# Aggregations over player hashes
+
+def total_scores(players)
+  players.reduce(0) do |acc, player|
+    acc + player[:score]
+  end
+end
+
+def top_score(players)
+  max = 0
+  players.each do |p|
+    if p[:score] > max
+      max = p[:score]
+    end
+  end
+  max
+end
+
+def names(players)
+  players.map do |p|
+    p[:name]
+  end
+end
+
+def average_score(players)
+  if players.size == 0
+    0
+  else
+    total_scores(players) / players.size
+  end
+end
+
+def active_since(players, cutoff)
+  players.select do |p|
+    Time.parse(p[:last_seen]) >= cutoff
+  end
+end
+
+def leaderboard(players, limit)
+  list = active_since(players, 30.days.ago(Time.now))
+  list.first(limit)
+end

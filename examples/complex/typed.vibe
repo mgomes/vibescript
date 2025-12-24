@@ -1,0 +1,22 @@
+# Typed examples with keywords
+
+def announce(name: string, score: int, label: string? = nil) -> string
+  prefix = label || "score"
+  "#{prefix}: #{name} => #{score}"
+end
+
+def adjust_time(base: time, delta: duration) -> time
+  base + delta
+end
+
+def maybe_increment(value: int?, step: int = 1) -> int?
+  if value == nil
+    nil
+  else
+    value + step
+  end
+end
+
+def user_hash(name: string, active: bool) -> hash
+  { name: name, active: active }
+end

@@ -1,0 +1,25 @@
+# Duration-heavy helpers
+
+def window_start(days_back)
+  days_back.days.ago(Time.now)
+end
+
+def window_end(hours_forward)
+  hours_forward.hours.after(Time.now)
+end
+
+def span_seconds(start, finish)
+  (finish - start).to_i
+end
+
+def readable_window(days_back, hours_forward)
+  start = window_start(days_back)
+  finish = window_end(hours_forward)
+  "#{start.format("2006-01-02 15:04:05")} -> #{finish.format("2006-01-02 15:04:05")}"
+end
+
+def shift_series(timestamps, delta)
+  timestamps.map do |ts|
+    Time.parse(ts).format("2006-01-02T15:04:05Z")
+  end
+end
