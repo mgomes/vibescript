@@ -40,3 +40,20 @@ def leaderboard(players, limit)
   list = active_since(players, 30.days.ago(Time.now))
   list.first(limit)
 end
+
+def run
+  players = [
+    { name: "alex", score: 5, last_seen: 100 },
+    { name: "bea", score: 9, last_seen: 50 },
+    { name: "cam", score: 7, last_seen: 120 }
+  ]
+  cutoff = Time.at(90)
+  {
+    total: total_scores(players),
+    top: top_score(players),
+    names: names(players),
+    average: average_score(players),
+    active: active_since(players, cutoff),
+    leaders: leaderboard(players, 2)
+  }
+end

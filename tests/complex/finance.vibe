@@ -17,3 +17,12 @@ def average_amount(amounts)
   end
   { total: total, count: amounts.size }
 end
+
+def run
+  amounts = [money("2.00 USD"), money("3.50 USD")]
+  {
+    fee: add_fee(money("10.00 USD"), money("1.00 USD")),
+    applied: apply_fees(amounts),
+    average: average_amount(amounts)
+  }
+end

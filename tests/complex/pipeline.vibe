@@ -26,3 +26,16 @@ def top_n(records, n: int)
   ordered = sorted(filtered)
   ordered.first(n)
 end
+
+def run
+  records = [
+    { name: "a", score: 120 },
+    { name: "b", score: 80 },
+    { name: "c", score: 40 }
+  ]
+  {
+    normalized: normalize_scores(records),
+    filtered: filter_min(records, min: 50),
+    top: top_n(records, 2)
+  }
+end

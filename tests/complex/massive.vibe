@@ -998,3 +998,57 @@ def f250
   250
 end
 
+def run
+  total = 0
+  total = total + f001 + f002 + f003 + f004 + f005
+  total = total + f006 + f007 + f008 + f009 + f010
+  total = total + f011 + f012 + f013 + f014 + f015
+  total = total + f016 + f017 + f018 + f019 + f020
+  total = total + f021 + f022 + f023 + f024 + f025
+  total = total + f026 + f027 + f028 + f029 + f030
+  total = total + f031 + f032 + f033 + f034 + f035
+  total = total + f036 + f037 + f038 + f039 + f040
+  total = total + f041 + f042 + f043 + f044 + f045
+  total = total + f046 + f047 + f048 + f049 + f050
+  total = total + f051 + f052 + f053 + f054 + f055
+  total = total + f056 + f057 + f058 + f059 + f060
+  total = total + f061 + f062 + f063 + f064 + f065
+  total = total + f066 + f067 + f068 + f069 + f070
+  total = total + f071 + f072 + f073 + f074 + f075
+  total = total + f076 + f077 + f078 + f079 + f080
+  total = total + f081 + f082 + f083 + f084 + f085
+  total = total + f086 + f087 + f088 + f089 + f090
+  total = total + f091 + f092 + f093 + f094 + f095
+  total = total + f096 + f097 + f098 + f099 + f100
+  total = total + f101 + f102 + f103 + f104 + f105
+  total = total + f106 + f107 + f108 + f109 + f110
+  total = total + f111 + f112 + f113 + f114 + f115
+  total = total + f116 + f117 + f118 + f119 + f120
+  total = total + f121 + f122 + f123 + f124 + f125
+  total = total + f126 + f127 + f128 + f129 + f130
+  total = total + f131 + f132 + f133 + f134 + f135
+  total = total + f136 + f137 + f138 + f139 + f140
+  total = total + f141 + f142 + f143 + f144 + f145
+  total = total + f146 + f147 + f148 + f149 + f150
+  total = total + f151 + f152 + f153 + f154 + f155
+  total = total + f156 + f157 + f158 + f159 + f160
+  total = total + f161 + f162 + f163 + f164 + f165
+  total = total + f166 + f167 + f168 + f169 + f170
+  total = total + f171 + f172 + f173 + f174 + f175
+  total = total + f176 + f177 + f178 + f179 + f180
+  total = total + f181 + f182 + f183 + f184 + f185
+  total = total + f186 + f187 + f188 + f189 + f190
+  total = total + f191 + f192 + f193 + f194 + f195
+  total = total + f196 + f197 + f198 + f199 + f200
+  total = total + f201 + f202 + f203 + f204 + f205
+  total = total + f206 + f207 + f208 + f209 + f210
+  total = total + f211 + f212 + f213 + f214 + f215
+  total = total + f216 + f217 + f218 + f219 + f220
+  total = total + f221 + f222 + f223 + f224 + f225
+  total = total + f226 + f227 + f228 + f229 + f230
+  total = total + f231 + f232 + f233 + f234 + f235
+  total = total + f236 + f237 + f238 + f239 + f240
+  total = total + f241 + f242 + f243 + f244 + f245
+  total = total + f246 + f247 + f248 + f249 + f250
+  total
+end

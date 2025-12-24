@@ -29,3 +29,10 @@ end
 def pi_approx_precise(iterations: int) -> float
   chudnovsky_pi(iterations)
 end
+
+def run
+  {
+    coarse: pi_approx(),
+    precise: pi_approx_precise(1000)
+  }
+end

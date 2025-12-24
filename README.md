@@ -92,23 +92,23 @@ The REPL maintains a persistent environment, so variables assigned in one expres
 
 #### Commands
 
-| Command   | Description              |
-|-----------|--------------------------|
-| `:help`   | Toggle help panel        |
-| `:vars`   | Toggle variables panel   |
-| `:clear`  | Clear output history     |
-| `:reset`  | Reset the environment    |
-| `:quit`   | Exit the REPL            |
+| Command  | Description            |
+| -------- | ---------------------- |
+| `:help`  | Toggle help panel      |
+| `:vars`  | Toggle variables panel |
+| `:clear` | Clear output history   |
+| `:reset` | Reset the environment  |
+| `:quit`  | Exit the REPL          |
 
 #### Keyboard Shortcuts
 
-| Key       | Action                   |
-|-----------|--------------------------|
-| `ctrl+k`  | Toggle help              |
-| `ctrl+v`  | Toggle variables panel   |
-| `ctrl+l`  | Clear history            |
-| `ctrl+c`  | Quit                     |
-| `Tab`     | Autocomplete             |
+| Key      | Action                 |
+| -------- | ---------------------- |
+| `ctrl+k` | Toggle help            |
+| `ctrl+v` | Toggle variables panel |
+| `ctrl+l` | Clear history          |
+| `ctrl+c` | Quit                   |
+| `Tab`    | Autocomplete           |
 
 ## Examples
 
@@ -124,7 +124,6 @@ Representative `.vibe` programs are grouped under `examples/`:
 - `examples/money/` – exercises for the `money` and `money_cents` built-ins.
 - `examples/durations/` – duration literals, math (add/sub/mul/div/mod), and time offsets.
 - `examples/time/` – Time creation, formatting (Go layouts), and duration/time math.
-- `examples/complex/` – large, stress-oriented programs (including ~1000-line scripts).
 - `examples/errors/` – patterns that rely on `assert` for validation.
 - `examples/capabilities/` – samples that touch `ctx`, `db`, and other declared capabilities.
 - `examples/background/` – jobs and events workflows that land as host integrations mature.
