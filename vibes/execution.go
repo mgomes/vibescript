@@ -1117,10 +1117,10 @@ func arrayMember(array Value, property string) (Value, error) {
 	case "first":
 		return NewAutoBuiltin("array.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			arr := receiver.Array()
-			if len(arr) == 0 {
-				return NewNil(), nil
-			}
 			if len(args) == 0 {
+				if len(arr) == 0 {
+					return NewNil(), nil
+				}
 				return arr[0], nil
 			}
 			n, err := valueToInt(args[0])
@@ -1137,10 +1137,10 @@ func arrayMember(array Value, property string) (Value, error) {
 	case "last":
 		return NewAutoBuiltin("array.last", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			arr := receiver.Array()
-			if len(arr) == 0 {
-				return NewNil(), nil
-			}
 			if len(args) == 0 {
+				if len(arr) == 0 {
+					return NewNil(), nil
+				}
 				return arr[len(arr)-1], nil
 			}
 			n, err := valueToInt(args[0])

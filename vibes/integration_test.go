@@ -95,7 +95,7 @@ func TestComplexExamplesRun(t *testing.T) {
 					hashVal(map[string]Value{"name": strVal("alex"), "score": intVal(5), "last_seen": intVal(100)}),
 					hashVal(map[string]Value{"name": strVal("cam"), "score": intVal(7), "last_seen": intVal(120)}),
 				),
-				"leaders": nilVal(),
+				"leaders": arrayVal(),
 			}),
 		},
 		{
