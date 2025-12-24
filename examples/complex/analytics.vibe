@@ -32,7 +32,7 @@ end
 
 def active_since(players, cutoff)
   players.select do |p|
-    Time.parse(p[:last_seen]) >= cutoff
+    Time.at(p[:last_seen]) >= cutoff
   end
 end
 
