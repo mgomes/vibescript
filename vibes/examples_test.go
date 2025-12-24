@@ -2,10 +2,13 @@ package vibes
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type builtinAdapter func([]Value, map[string]Value) (Value, error)
@@ -1559,13 +1562,17 @@ func TestExamples(t *testing.T) {
 }
 
 func compileExample(t *testing.T, rel string) *Script {
+	return compileExampleWithConfig(t, rel, Config{})
+}
+
+func compileExampleWithConfig(t *testing.T, rel string, cfg Config) *Script {
 	t.Helper()
 	path := filepath.Join("..", "examples", rel)
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", rel, err)
 	}
-	engine := NewEngine(Config{})
+	engine := NewEngine(cfg)
 	script, err := engine.Compile(string(source))
 	if err != nil {
 		t.Fatalf("compile %s: %v", rel, err)
@@ -1754,5 +1761,219 @@ func TestComplexExamplesCompile(t *testing.T) {
 				t.Fatalf("compile %s: %v", path, err)
 			}
 		})
+	}
+}
+
+func TestComplexExamplesRun(t *testing.T) {
+	cases := []struct {
+		name     string
+		file     string
+		function string
+		args     []Value
+		globals  map[string]Value
+		want     Value
+		check    func(*testing.T, Value)
+	}{
+		{
+			name:     "analytics/total_scores",
+			file:     "complex/analytics.vibe",
+			function: "total_scores",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"score": intVal(5)}),
+					hashVal(map[string]Value{"score": intVal(4)}),
+					hashVal(map[string]Value{"score": intVal(6)}),
+				),
+			},
+			want: intVal(15),
+		},
+		{
+			name:     "analytics/active_since",
+			file:     "complex/analytics.vibe",
+			function: "active_since",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"name": strVal("recent"), "last_seen": intVal(100)}),
+					hashVal(map[string]Value{"name": strVal("old"), "last_seen": intVal(50)}),
+				),
+				NewTime(time.Unix(75, 0).UTC()),
+			},
+			want: arrayVal(
+				hashVal(map[string]Value{"name": strVal("recent"), "last_seen": intVal(100)}),
+			),
+		},
+		{
+			name:     "durations/shift_series",
+			file:     "complex/durations.vibe",
+			function: "shift_series",
+			args: []Value{
+				arrayVal(intVal(0), intVal(3_600)),
+				durationVal(3_600),
+			},
+			want: arrayVal(
+				strVal("1970-01-01T01:00:00Z"),
+				strVal("1970-01-01T02:00:00Z"),
+			),
+		},
+		{
+			name:     "finance/add_fee",
+			file:     "complex/finance.vibe",
+			function: "add_fee",
+			args: []Value{
+				mustMoney("10.00 USD"),
+				mustMoney("1.00 USD"),
+			},
+			want: mustMoney("11.00 USD"),
+		},
+		{
+			name:     "strings/slugify",
+			file:     "complex/strings.vibe",
+			function: "slugify",
+			args:     []Value{strVal(" Hello World ")},
+			want:     strVal("hello-world"),
+		},
+		{
+			name:     "loops/sum_matrix",
+			file:     "complex/loops.vibe",
+			function: "sum_matrix",
+			args: []Value{
+				arrayVal(
+					arrayVal(intVal(1), intVal(2)),
+					arrayVal(intVal(3), intVal(4)),
+				),
+			},
+			want: intVal(10),
+		},
+		{
+			name:     "typed/user_hash",
+			file:     "complex/typed.vibe",
+			function: "user_hash",
+			args: []Value{
+				strVal("alex"),
+				boolVal(true),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("alex"),
+				"active": boolVal(true),
+			}),
+		},
+		{
+			name:     "typed/maybe_increment_nil",
+			file:     "complex/typed.vibe",
+			function: "maybe_increment",
+			args: []Value{
+				nilVal(),
+			},
+			want: nilVal(),
+		},
+		{
+			name:     "typed/adjust_time",
+			file:     "complex/typed.vibe",
+			function: "adjust_time",
+			args: []Value{
+				NewTime(time.Unix(0, 0).UTC()),
+				durationVal(90),
+			},
+			check: func(t *testing.T, got Value) {
+				t.Helper()
+				if got.Kind() != KindTime {
+					t.Fatalf("expected time, got %v", got.Kind())
+				}
+				want := time.Unix(90, 0).UTC()
+				if !got.Time().Equal(want) {
+					t.Fatalf("time mismatch: got %s want %s", got.Time(), want)
+				}
+			},
+		},
+		{
+			name:     "pipeline/top_n",
+			file:     "complex/pipeline.vibe",
+			function: "top_n",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"name": strVal("a"), "score": intVal(120)}),
+					hashVal(map[string]Value{"name": strVal("b"), "score": intVal(80)}),
+					hashVal(map[string]Value{"name": strVal("c"), "score": intVal(40)}),
+				),
+				intVal(2),
+			},
+			want: arrayVal(
+				hashVal(map[string]Value{"name": strVal("a"), "score": intVal(100)}),
+				hashVal(map[string]Value{"name": strVal("b"), "score": intVal(80)}),
+			),
+		},
+		{
+			name:     "chudnovsky/pi_approx",
+			file:     "complex/chudnovsky.vibe",
+			function: "pi_approx",
+			check: func(t *testing.T, got Value) {
+				t.Helper()
+				if got.Kind() != KindFloat {
+					t.Fatalf("expected float, got %v", got.Kind())
+				}
+				const tol = 1e-6
+				diff := math.Abs(got.Float() - math.Pi)
+				if diff > tol {
+					t.Fatalf("pi approximation diff too high: got %g want %g (|diff|=%g)", got.Float(), math.Pi, diff)
+				}
+			},
+		},
+		{
+			name:     "massive/f250",
+			file:     "complex/massive.vibe",
+			function: "f250",
+			want:     intVal(250),
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			script := compileExample(t, tc.file)
+			result, err := script.Call(context.Background(), tc.function, tc.args, CallOptions{Globals: tc.globals})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.check != nil {
+				tc.check(t, result)
+				return
+			}
+			assertValueEqual(t, result, tc.want)
+		})
+	}
+}
+
+func TestComplexExamplesStress(t *testing.T) {
+	// Stress-call many functions to exercise runtime paths.
+	highQuota := Config{StepQuota: 5_000_000}
+	massive := compileExampleWithConfig(t, "complex/massive.vibe", highQuota)
+	var sum int64
+	for i := 1; i <= 250; i++ {
+		name := fmt.Sprintf("f%03d", i)
+		val, err := massive.Call(context.Background(), name, nil, CallOptions{})
+		if err != nil {
+			t.Fatalf("call %s failed: %v", name, err)
+		}
+		if val.Kind() != KindInt || val.Int() != int64(i) {
+			t.Fatalf("unexpected return for %s: %v", name, val)
+		}
+		sum += val.Int()
+	}
+	if sum != 31375 {
+		t.Fatalf("unexpected sum of massive functions: %d", sum)
+	}
+
+	piScript := compileExampleWithConfig(t, "complex/chudnovsky.vibe", highQuota)
+	for i := 0; i < 50; i++ {
+		val, err := piScript.Call(context.Background(), "pi_approx_precise", []Value{intVal(5_000)}, CallOptions{})
+		if err != nil {
+			t.Fatalf("pi_approx_precise run %d failed: %v", i, err)
+		}
+		if val.Kind() != KindFloat {
+			t.Fatalf("pi_approx_precise returned non-float: %v", val.Kind())
+		}
+		if math.Abs(val.Float()-math.Pi) > 1e-6 {
+			t.Fatalf("pi approximation off: %g", val.Float())
+		}
 	}
 }

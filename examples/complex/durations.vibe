@@ -20,6 +20,6 @@ end
 
 def shift_series(timestamps, delta)
   timestamps.map do |ts|
-    Time.parse(ts).format("2006-01-02T15:04:05Z")
+    delta.after(Time.at(ts)).format("2006-01-02T15:04:05Z")
   end
 end

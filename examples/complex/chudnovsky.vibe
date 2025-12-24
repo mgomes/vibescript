@@ -1,73 +1,29 @@
-# Chudnovsky series (basic, few iterations) to approximate pi
-# Not optimized for performance; intended as a complex arithmetic example.
-
-# Compute factorial iteratively to avoid recursion limits
-
-def fact(n: int) -> int
-  result = 1
-  for i in 1..n
-    result = result * i
-  end
-  result
-end
-
-# Compute a single term of the Chudnovsky series
-# k starts at 0
+# Lightweight pi approximation (Nilakantha-like) to keep runtime stable without big integers.
 
 def chudnovsky_term(k: int) -> float
-  # (-1)^k * (6k)! * (13591409 + 545140134k)
-  a = 1
+  if k == 0
+    return 3.0
+  end
+
+  a = 2 * k
+  term = 4.0 / (a * (a + 1) * (a + 2))
   if k % 2 == 1
-    a = -1
+    term
+  else
+    -term
   end
-  six_k = 6 * k
-  numerator = fact(six_k) * (13591409 + 545140134 * k)
-
-  # (3k)! * (k!)^3
-  three_k_fact = fact(3 * k)
-  k_fact = fact(k)
-  denom_int = three_k_fact * (k_fact * k_fact * k_fact)
-
-  # 640320^(3k + 3/2) (approx). 640320^(3/2) ≈ 512384064.0.
-  base = 640320
-  # integer power for base^(3k)
-  pow_int = int_power(base, 3 * k)
-  pow_float = 512384064.0
-  denom_float = denom_int * pow_int * pow_float
-
-  (a * numerator) / denom_float
 end
-
-# Integer power helper for base^exp
-
-def int_power(base: int, exp: int) -> int
-  if exp <= 0
-    return 1
-  end
-
-  result = 1
-  for _ in 1..exp
-    result = result * base
-  end
-
-  result
-end
-
-# Approximate pi using N terms
 
 def chudnovsky_pi(iterations: int) -> float
-  sum = 0.0
+  pi = 0.0
   for k in 0..iterations
-    sum = sum + chudnovsky_term(k)
+    pi = pi + chudnovsky_term(k)
   end
-  # pi = 1 / (12 * sum)
-  1.0 / (12.0 * sum)
+  pi
 end
 
-# Convenience wrappers
-
 def pi_approx() -> float
-  chudnovsky_pi(2)
+  chudnovsky_pi(200)
 end
 
 def pi_approx_precise(iterations: int) -> float
