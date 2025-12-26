@@ -224,6 +224,30 @@ func (l *lexer) NextToken() Token {
 		}
 	default:
 		switch {
+		case l.ch == '@':
+			if l.peekRune() == '@' {
+				l.readRune()
+				l.readRune()
+				start := l.currentOffset()
+				for isIdentifierRune(l.peekRune()) {
+					l.readRune()
+				}
+				literal := l.input[start:l.offset]
+				tok.Type = tokenClassVar
+				tok.Literal = literal
+				l.readRune()
+				return tok
+			}
+			l.readRune()
+			start := l.currentOffset()
+			for isIdentifierRune(l.peekRune()) {
+				l.readRune()
+			}
+			literal := l.input[start:l.offset]
+			tok.Type = tokenIvar
+			tok.Literal = literal
+			l.readRune()
+			return tok
 		case isIdentifierStart(l.ch):
 			literal := l.readIdentifier()
 			tok.Type = lookupIdent(literal)
@@ -369,6 +393,18 @@ func lookupIdent(ident string) TokenType {
 	switch ident {
 	case "def":
 		return tokenDef
+	case "class":
+		return tokenClass
+	case "self":
+		return tokenSelf
+	case "private":
+		return tokenPrivate
+	case "property":
+		return tokenProperty
+	case "getter":
+		return tokenGetter
+	case "setter":
+		return tokenSetter
 	case "end":
 		return tokenEnd
 	case "return":

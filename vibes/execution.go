@@ -17,11 +17,13 @@ type ScriptFunction struct {
 	Body     []Statement
 	Pos      Position
 	Env      *Env
+	Private  bool
 }
 
 type Script struct {
 	engine    *Engine
 	functions map[string]*ScriptFunction
+	classes   map[string]*ClassDef
 }
 
 type CallOptions struct {
@@ -41,6 +43,7 @@ type Execution struct {
 	root          *Env
 	modules       map[string]Value
 	moduleLoading map[string]bool
+	receiverStack []Value
 }
 
 type callFrame struct {
@@ -129,6 +132,36 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 		return err
 	}
 	return exec.newRuntimeError(err.Error(), pos)
+}
+
+func (exec *Execution) pushReceiver(v Value) {
+	exec.receiverStack = append(exec.receiverStack, v)
+}
+
+func (exec *Execution) popReceiver() {
+	if len(exec.receiverStack) == 0 {
+		return
+	}
+	exec.receiverStack = exec.receiverStack[:len(exec.receiverStack)-1]
+}
+
+func (exec *Execution) currentReceiver() Value {
+	if len(exec.receiverStack) == 0 {
+		return NewNil()
+	}
+	return exec.receiverStack[len(exec.receiverStack)-1]
+}
+
+func (exec *Execution) isCurrentReceiver(v Value) bool {
+	cur := exec.currentReceiver()
+	switch {
+	case v.Kind() == KindInstance && cur.Kind() == KindInstance:
+		return v.Instance() == cur.Instance()
+	case v.Kind() == KindClass && cur.Kind() == KindClass:
+		return v.Class() == cur.Class()
+	default:
+		return false
+	}
 }
 
 func (exec *Execution) pushFrame(function string, pos Position) error {
@@ -224,8 +257,59 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 			m := obj.Hash()
 			m[t.Property] = value
 			return nil
+		case KindInstance:
+			setterName := t.Property + "="
+			if fn, ok := obj.Instance().Class.Methods[setterName]; ok {
+				if fn.Private && !exec.isCurrentReceiver(obj) {
+					return exec.errorAt(t.Pos(), "private method %s", setterName)
+				}
+				_, err := exec.callFunction(fn, obj, []Value{value}, nil, t.Pos())
+				return err
+			}
+			if _, hasGetter := obj.Instance().Class.Methods[t.Property]; hasGetter {
+				return exec.errorAt(t.Pos(), "cannot assign to read-only property %s", t.Property)
+			}
+			obj.Instance().Ivars[t.Property] = value
+			return nil
+		case KindClass:
+			setterName := t.Property + "="
+			cl := obj.Class()
+			if fn, ok := cl.ClassMethods[setterName]; ok {
+				if fn.Private && !exec.isCurrentReceiver(obj) {
+					return exec.errorAt(t.Pos(), "private method %s", setterName)
+				}
+				_, err := exec.callFunction(fn, obj, []Value{value}, nil, t.Pos())
+				return err
+			}
+			if _, hasGetter := cl.ClassMethods[t.Property]; hasGetter {
+				return exec.errorAt(t.Pos(), "cannot assign to read-only property %s", t.Property)
+			}
+			cl.ClassVars[t.Property] = value
+			return nil
 		default:
 			return exec.errorAt(target.Pos(), "cannot assign to %s", obj.Kind())
+		}
+	case *IvarExpr:
+		self, ok := env.Get("self")
+		if !ok || self.Kind() != KindInstance {
+			return exec.errorAt(target.Pos(), "no instance context for ivar")
+		}
+		self.Instance().Ivars[t.Name] = value
+		return nil
+	case *ClassVarExpr:
+		self, ok := env.Get("self")
+		if !ok {
+			return exec.errorAt(target.Pos(), "no class context for class var")
+		}
+		switch self.Kind() {
+		case KindInstance:
+			self.Instance().Class.ClassVars[t.Name] = value
+			return nil
+		case KindClass:
+			self.Class().ClassVars[t.Name] = value
+			return nil
+		default:
+			return exec.errorAt(target.Pos(), "no class context for class var")
 		}
 	case *IndexExpr:
 		obj, err := exec.evalExpression(t.Object, env)
@@ -275,6 +359,17 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *Identifier:
 		val, ok := env.Get(e.Name)
 		if !ok {
+			// allow implicit self method lookup
+			if self, hasSelf := env.Get("self"); hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+				member, err := exec.getMember(self, e.Name, e.Pos())
+				if err != nil {
+					return NewNil(), err
+				}
+				if autoCall {
+					return exec.autoInvokeIfNeeded(e, member, self)
+				}
+				return member, nil
+			}
 			return NewNil(), exec.errorAt(e.Pos(), "undefined variable %s", e.Name)
 		}
 		if autoCall {
@@ -401,6 +496,37 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		default:
 			return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
 		}
+	case *IvarExpr:
+		self, ok := env.Get("self")
+		if !ok || self.Kind() != KindInstance {
+			return NewNil(), exec.errorAt(e.Pos(), "no instance context for ivar")
+		}
+		val, ok := self.Instance().Ivars[e.Name]
+		if !ok {
+			return NewNil(), nil
+		}
+		return val, nil
+	case *ClassVarExpr:
+		self, ok := env.Get("self")
+		if !ok {
+			return NewNil(), exec.errorAt(e.Pos(), "no class context")
+		}
+		switch self.Kind() {
+		case KindInstance:
+			val, ok := self.Instance().Class.ClassVars[e.Name]
+			if !ok {
+				return NewNil(), nil
+			}
+			return val, nil
+		case KindClass:
+			val, ok := self.Class().ClassVars[e.Name]
+			if !ok {
+				return NewNil(), nil
+			}
+			return val, nil
+		default:
+			return NewNil(), exec.errorAt(e.Pos(), "no class context")
+		}
 	case *CallExpr:
 		return exec.evalCallExpr(e, env)
 	case *BlockLiteral:
@@ -430,30 +556,10 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 	switch callee.Kind() {
 	case KindFunction:
 		fn := callee.Function()
-		callEnv := newEnv(fn.Env)
-		if block.Kind() == KindBlock {
-			return NewNil(), exec.errorAt(pos, "blocks are not supported for this function")
+		if block.Kind() != KindNil {
+			return NewNil(), exec.errorAt(pos, "script functions do not accept blocks")
 		}
-		if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
-			return NewNil(), err
-		}
-		if err := exec.pushFrame(fn.Name, pos); err != nil {
-			return NewNil(), err
-		}
-		val, returned, err := exec.evalStatements(fn.Body, callEnv)
-		exec.popFrame()
-		if err != nil {
-			return NewNil(), err
-		}
-		if fn.ReturnTy != nil {
-			if err := checkValueType(val, fn.ReturnTy.Name); err != nil {
-				return NewNil(), exec.errorAt(pos, "%s", err.Error())
-			}
-		}
-		if returned {
-			return val, nil
-		}
-		return val, nil
+		return exec.callFunction(fn, receiver, args, kwargs, pos)
 	case KindBuiltin:
 		result, err := callee.Builtin().Fn(exec, receiver, args, kwargs, block)
 		if err != nil {
@@ -463,6 +569,36 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 	default:
 		return NewNil(), exec.errorAt(pos, "attempted to call non-callable value")
 	}
+}
+
+func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, pos Position) (Value, error) {
+	callEnv := newEnv(fn.Env)
+	if receiver.Kind() != KindNil {
+		callEnv.Define("self", receiver)
+	}
+	if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
+		return NewNil(), err
+	}
+	if err := exec.pushFrame(fn.Name, pos); err != nil {
+		return NewNil(), err
+	}
+	// Always push receiver (even nil) to prevent privacy leaks from caller context
+	exec.pushReceiver(receiver)
+	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	exec.popReceiver()
+	exec.popFrame()
+	if err != nil {
+		return NewNil(), err
+	}
+	if fn.ReturnTy != nil {
+		if err := checkValueType(val, fn.ReturnTy.Name); err != nil {
+			return NewNil(), exec.errorAt(pos, "%s", err.Error())
+		}
+	}
+	if returned {
+		return val, nil
+	}
+	return val, nil
 }
 
 func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error) {
@@ -689,6 +825,58 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		return arrayMember(obj, property)
 	case KindString:
 		return stringMember(obj, property)
+	case KindClass:
+		cl := obj.Class()
+		if property == "new" {
+			return NewAutoBuiltin(cl.Name+".new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				if block.Kind() != KindNil {
+					return NewNil(), fmt.Errorf("script functions do not accept blocks")
+				}
+				inst := &Instance{Class: cl, Ivars: make(map[string]Value)}
+				instVal := NewInstance(inst)
+				if initFn, ok := cl.Methods["initialize"]; ok {
+					if _, err := exec.callFunction(initFn, instVal, args, kwargs, pos); err != nil {
+						return NewNil(), err
+					}
+				}
+				return instVal, nil
+			}), nil
+		}
+		if fn, ok := cl.ClassMethods[property]; ok {
+			if fn.Private && !exec.isCurrentReceiver(obj) {
+				return NewNil(), exec.errorAt(pos, "private method %s", property)
+			}
+			return NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				if block.Kind() != KindNil {
+					return NewNil(), fmt.Errorf("script functions do not accept blocks")
+				}
+				return exec.callFunction(fn, obj, args, kwargs, pos)
+			}), nil
+		}
+		if val, ok := cl.ClassVars[property]; ok {
+			return val, nil
+		}
+		return NewNil(), exec.errorAt(pos, "unknown class member %s", property)
+	case KindInstance:
+		inst := obj.Instance()
+		if property == "class" {
+			return NewClass(inst.Class), nil
+		}
+		if fn, ok := inst.Class.Methods[property]; ok {
+			if fn.Private && !exec.isCurrentReceiver(obj) {
+				return NewNil(), exec.errorAt(pos, "private method %s", property)
+			}
+			return NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				if block.Kind() != KindNil {
+					return NewNil(), fmt.Errorf("script functions do not accept blocks")
+				}
+				return exec.callFunction(fn, obj, args, kwargs, pos)
+			}), nil
+		}
+		if val, ok := inst.Ivars[property]; ok {
+			return val, nil
+		}
+		return NewNil(), exec.errorAt(pos, "unknown member %s", property)
 	case KindInt:
 		switch property {
 		case "seconds", "second", "minutes", "minute", "hours", "hour", "days", "day":
@@ -1243,18 +1431,69 @@ func (e *Engine) Compile(source string) (*Script, error) {
 	}
 
 	functions := make(map[string]*ScriptFunction)
+	classes := make(map[string]*ClassDef)
+
 	for _, stmt := range program.Statements {
-		fn, ok := stmt.(*FunctionStmt)
-		if !ok {
-			return nil, fmt.Errorf("only function definitions are allowed at top level (found %T)", stmt)
+		switch s := stmt.(type) {
+		case *FunctionStmt:
+			if _, exists := functions[s.Name]; exists {
+				return nil, fmt.Errorf("duplicate function %s", s.Name)
+			}
+			functions[s.Name] = &ScriptFunction{Name: s.Name, Params: s.Params, ReturnTy: s.ReturnTy, Body: s.Body, Pos: s.Pos()}
+		case *ClassStmt:
+			if _, exists := classes[s.Name]; exists {
+				return nil, fmt.Errorf("duplicate class %s", s.Name)
+			}
+			classDef := &ClassDef{
+				Name:         s.Name,
+				Methods:      make(map[string]*ScriptFunction),
+				ClassMethods: make(map[string]*ScriptFunction),
+				ClassVars:    make(map[string]Value),
+				Body:         s.Body,
+			}
+			for _, prop := range s.Properties {
+				for _, name := range prop.Names {
+					if prop.Kind == "property" || prop.Kind == "getter" {
+						getter := &ScriptFunction{
+							Name: name,
+							Body: []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, position: prop.position}, position: prop.position}},
+							Pos:  prop.position,
+						}
+						classDef.Methods[name] = getter
+					}
+					if prop.Kind == "property" || prop.Kind == "setter" {
+						setter := &ScriptFunction{
+							Name: name + "=",
+							Params: []Param{{
+								Name: "value",
+							}},
+							Body: []Statement{
+								&AssignStmt{
+									Target:   &IvarExpr{Name: name, position: prop.position},
+									Value:    &Identifier{Name: "value", position: prop.position},
+									position: prop.position,
+								},
+								&ReturnStmt{Value: &Identifier{Name: "value", position: prop.position}, position: prop.position},
+							},
+							Pos: prop.position,
+						}
+						classDef.Methods[name+"="] = setter
+					}
+				}
+			}
+			for _, fn := range s.Methods {
+				classDef.Methods[fn.Name] = &ScriptFunction{Name: fn.Name, Params: fn.Params, ReturnTy: fn.ReturnTy, Body: fn.Body, Pos: fn.Pos(), Private: fn.Private}
+			}
+			for _, fn := range s.ClassMethods {
+				classDef.ClassMethods[fn.Name] = &ScriptFunction{Name: fn.Name, Params: fn.Params, ReturnTy: fn.ReturnTy, Body: fn.Body, Pos: fn.Pos(), Private: fn.Private}
+			}
+			classes[s.Name] = classDef
+		default:
+			return nil, fmt.Errorf("unsupported top-level statement %T", stmt)
 		}
-		if _, exists := functions[fn.Name]; exists {
-			return nil, fmt.Errorf("duplicate function %s", fn.Name)
-		}
-		functions[fn.Name] = &ScriptFunction{Name: fn.Name, Params: fn.Params, ReturnTy: fn.ReturnTy, Body: fn.Body, Pos: fn.Pos()}
 	}
 
-	return &Script{engine: e, functions: functions}, nil
+	return &Script{engine: e, functions: functions, classes: classes}, nil
 }
 
 func combineErrors(errs []error) error {
@@ -1299,6 +1538,14 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 			}
 		}
 		env.Define(param.Name, val)
+		if param.IsIvar {
+			if selfVal, ok := env.Get("self"); ok && selfVal.Kind() == KindInstance {
+				inst := selfVal.Instance()
+				if inst != nil {
+					inst.Ivars[param.Name] = val
+				}
+			}
+		}
 	}
 
 	if argIdx < len(args) {
@@ -1416,6 +1663,19 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		root.Define(n, NewFunction(fnDecl))
 	}
 
+	for n, classDef := range s.classes {
+		// reset class vars to avoid state leakage between calls
+		classDef.ClassVars = make(map[string]Value)
+		// attach env to methods
+		for _, m := range classDef.Methods {
+			m.Env = root
+		}
+		for _, m := range classDef.ClassMethods {
+			m.Env = root
+		}
+		root.Define(n, NewClass(classDef))
+	}
+
 	fn.Env = root
 
 	exec := &Execution{
@@ -1428,6 +1688,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		root:          root,
 		modules:       make(map[string]Value),
 		moduleLoading: make(map[string]bool),
+		receiverStack: make([]Value, 0, 8),
 	}
 
 	if len(opts.Capabilities) > 0 {
@@ -1448,6 +1709,22 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	for n, val := range opts.Globals {
 		root.Define(n, val)
+	}
+
+	// initialize class bodies (class vars)
+	for name, classDef := range s.classes {
+		if len(classDef.Body) == 0 {
+			continue
+		}
+		classVal, _ := root.Get(name)
+		env := newEnv(root)
+		env.Define("self", classVal)
+		exec.pushReceiver(classVal)
+		_, _, err := exec.evalStatements(classDef.Body, env)
+		exec.popReceiver()
+		if err != nil {
+			return NewNil(), err
+		}
 	}
 
 	callEnv := newEnv(root)

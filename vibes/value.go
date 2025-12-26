@@ -25,6 +25,8 @@ const (
 	KindObject
 	KindRange
 	KindBlock
+	KindClass
+	KindInstance
 )
 
 func (k ValueKind) String() string {
@@ -147,6 +149,12 @@ func (v Value) String() string {
 	case KindRange:
 		r := v.data.(Range)
 		return fmt.Sprintf("%d..%d", r.Start, r.End)
+	case KindClass:
+		cl := v.data.(*ClassDef)
+		return fmt.Sprintf("<Class %s>", cl.Name)
+	case KindInstance:
+		inst := v.data.(*Instance)
+		return fmt.Sprintf("<%s instance>", inst.Class.Name)
 	default:
 		return fmt.Sprintf("<%v>", v.kind)
 	}
@@ -168,6 +176,8 @@ func (v Value) Truthy() bool {
 		return len(v.data.([]Value)) > 0
 	case KindHash:
 		return len(v.data.(map[string]Value)) > 0
+	case KindClass, KindInstance:
+		return true
 	default:
 		return true
 	}
@@ -196,6 +206,10 @@ func (v Value) Equal(other Value) bool {
 		return v.data.(time.Time).Equal(other.data.(time.Time))
 	case KindRange:
 		return v.data.(Range) == other.data.(Range)
+	case KindClass:
+		return v.data.(*ClassDef) == other.data.(*ClassDef)
+	case KindInstance:
+		return v.data.(*Instance) == other.data.(*Instance)
 	default:
 		return v.data == other.data
 	}
@@ -221,6 +235,9 @@ func NewRange(r Range) Value { return Value{kind: KindRange, data: r} }
 func NewBlock(params []string, body []Statement, env *Env) Value {
 	return Value{kind: KindBlock, data: &Block{Params: params, Body: body, Env: env}}
 }
+
+func NewClass(def *ClassDef) Value     { return Value{kind: KindClass, data: def} }
+func NewInstance(inst *Instance) Value { return Value{kind: KindInstance, data: inst} }
 
 type Builtin struct {
 	Name       string
@@ -258,6 +275,20 @@ func (v Value) Hash() map[string]Value {
 		return nil
 	}
 	return v.data.(map[string]Value)
+}
+
+func (v Value) Class() *ClassDef {
+	if v.kind != KindClass {
+		return nil
+	}
+	return v.data.(*ClassDef)
+}
+
+func (v Value) Instance() *Instance {
+	if v.kind != KindInstance {
+		return nil
+	}
+	return v.data.(*Instance)
 }
 
 func (v Value) Money() Money {

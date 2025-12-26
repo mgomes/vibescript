@@ -26,11 +26,13 @@ func (p *Program) Pos() Position {
 }
 
 type FunctionStmt struct {
-	Name     string
-	Params   []Param
-	ReturnTy *TypeExpr
-	Body     []Statement
-	position Position
+	Name          string
+	Params        []Param
+	ReturnTy      *TypeExpr
+	Body          []Statement
+	IsClassMethod bool
+	Private       bool
+	position      Position
 }
 
 func (s *FunctionStmt) stmtNode()     {}
@@ -40,6 +42,7 @@ type Param struct {
 	Name       string
 	Type       *TypeExpr
 	DefaultVal Expression
+	IsIvar     bool
 }
 
 type TypeExpr struct {
@@ -200,6 +203,22 @@ type IndexExpr struct {
 	position Position
 }
 
+type IvarExpr struct {
+	Name     string
+	position Position
+}
+
+func (e *IvarExpr) exprNode()     {}
+func (e *IvarExpr) Pos() Position { return e.position }
+
+type ClassVarExpr struct {
+	Name     string
+	position Position
+}
+
+func (e *ClassVarExpr) exprNode()     {}
+func (e *ClassVarExpr) Pos() Position { return e.position }
+
 func (e *IndexExpr) exprNode()     {}
 func (e *IndexExpr) Pos() Position { return e.position }
 
@@ -239,6 +258,24 @@ type BlockLiteral struct {
 
 func (b *BlockLiteral) exprNode()     {}
 func (b *BlockLiteral) Pos() Position { return b.position }
+
+type PropertyDecl struct {
+	Names    []string
+	Kind     string // property/getter/setter
+	position Position
+}
+
+type ClassStmt struct {
+	Name         string
+	Methods      []*FunctionStmt
+	ClassMethods []*FunctionStmt
+	Properties   []PropertyDecl
+	Body         []Statement
+	position     Position
+}
+
+func (s *ClassStmt) stmtNode()     {}
+func (s *ClassStmt) Pos() Position { return s.position }
 
 type InterpolatedString struct {
 	Parts    []StringPart
