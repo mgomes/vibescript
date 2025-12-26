@@ -1652,6 +1652,8 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 
 	for n, classDef := range s.classes {
+		// reset class vars to avoid state leakage between calls
+		classDef.ClassVars = make(map[string]Value)
 		// attach env to methods
 		for _, m := range classDef.Methods {
 			m.Env = root
