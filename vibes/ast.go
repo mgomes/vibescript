@@ -26,13 +26,13 @@ func (p *Program) Pos() Position {
 }
 
 type FunctionStmt struct {
-	Name     string
-	Params   []Param
-	ReturnTy *TypeExpr
-	Body     []Statement
+	Name          string
+	Params        []Param
+	ReturnTy      *TypeExpr
+	Body          []Statement
 	IsClassMethod bool
 	Private       bool
-	position Position
+	position      Position
 }
 
 func (s *FunctionStmt) stmtNode()     {}
@@ -266,12 +266,12 @@ type PropertyDecl struct {
 }
 
 type ClassStmt struct {
-	Name          string
-	Methods       []*FunctionStmt
-	ClassMethods  []*FunctionStmt
-	Properties    []PropertyDecl
-	Body          []Statement
-	position      Position
+	Name         string
+	Methods      []*FunctionStmt
+	ClassMethods []*FunctionStmt
+	Properties   []PropertyDecl
+	Body         []Statement
+	position     Position
 }
 
 func (s *ClassStmt) stmtNode()     {}
