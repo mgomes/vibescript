@@ -266,6 +266,9 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 				_, err := exec.callFunction(fn, obj, []Value{value}, nil, t.Pos())
 				return err
 			}
+			if _, hasGetter := obj.Instance().Class.Methods[t.Property]; hasGetter {
+				return exec.errorAt(t.Pos(), "cannot assign to read-only property %s", t.Property)
+			}
 			obj.Instance().Ivars[t.Property] = value
 			return nil
 		case KindClass:
@@ -277,6 +280,9 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 				}
 				_, err := exec.callFunction(fn, obj, []Value{value}, nil, t.Pos())
 				return err
+			}
+			if _, hasGetter := cl.ClassMethods[t.Property]; hasGetter {
+				return exec.errorAt(t.Pos(), "cannot assign to read-only property %s", t.Property)
 			}
 			cl.ClassVars[t.Property] = value
 			return nil
