@@ -268,6 +268,18 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 			}
 			obj.Instance().Ivars[t.Property] = value
 			return nil
+		case KindClass:
+			setterName := t.Property + "="
+			cl := obj.Class()
+			if fn, ok := cl.ClassMethods[setterName]; ok {
+				if fn.Private && !exec.isCurrentReceiver(obj) {
+					return exec.errorAt(t.Pos(), "private method %s", setterName)
+				}
+				_, err := exec.callFunction(fn, obj, []Value{value}, nil, t.Pos())
+				return err
+			}
+			cl.ClassVars[t.Property] = value
+			return nil
 		default:
 			return exec.errorAt(target.Pos(), "cannot assign to %s", obj.Kind())
 		}
