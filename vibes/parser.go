@@ -267,10 +267,11 @@ func (p *parser) parseClassStatement() Statement {
 	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
 		switch p.curToken.Type {
 		case tokenDef:
-			fn := p.parseFunctionStatement().(*FunctionStmt)
-			if fn == nil {
+			fnStmt := p.parseFunctionStatement()
+			if fnStmt == nil {
 				return nil
 			}
+			fn := fnStmt.(*FunctionStmt)
 			if fn.IsClassMethod {
 				stmt.ClassMethods = append(stmt.ClassMethods, fn)
 			} else {
