@@ -259,6 +259,14 @@ type BlockLiteral struct {
 func (b *BlockLiteral) exprNode()     {}
 func (b *BlockLiteral) Pos() Position { return b.position }
 
+type YieldExpr struct {
+	Args     []Expression
+	position Position
+}
+
+func (y *YieldExpr) exprNode()     {}
+func (y *YieldExpr) Pos() Position { return y.position }
+
 type PropertyDecl struct {
 	Names    []string
 	Kind     string // property/getter/setter

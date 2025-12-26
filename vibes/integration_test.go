@@ -229,6 +229,36 @@ func TestComplexExamplesRun(t *testing.T) {
 			function: "run",
 			want:     intVal(31_375),
 		},
+		{
+			name:     "yield_basics/run",
+			file:     "yield_basics.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"count":   intVal(2),
+				"doubled": intVal(42),
+				"sum":     intVal(70),
+			}),
+		},
+		{
+			name:     "with_blocks/run",
+			file:     "with_blocks.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"sum":        intVal(15),
+				"doubled":    arrayVal(intVal(2), intVal(4), intVal(6), intVal(8), intVal(10)),
+				"first_even": intVal(2),
+			}),
+		},
+		{
+			name:     "advanced_blocks/run",
+			file:     "advanced_blocks.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"captured":  arrayVal(intVal(1), intVal(2)),
+				"nested":    intVal(36),
+				"defaulted": intVal(7),
+			}),
+		},
 	}
 
 	for _, tc := range cases {
@@ -372,6 +402,31 @@ func TestClassPrivacyEnforced(t *testing.T) {
 	if !strings.Contains(err.Error(), "private method secret") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestBlockErrorCases(t *testing.T) {
+	script := compileTestProgram(t, "blocks/error_cases.vibe")
+
+	checkErr := func(fn, contains string) {
+		t.Helper()
+		_, err := script.Call(context.Background(), fn, nil, CallOptions{})
+		if err == nil {
+			t.Fatalf("%s: expected error", fn)
+		}
+		if !strings.Contains(err.Error(), contains) {
+			t.Fatalf("%s: unexpected error %v", fn, err)
+		}
+	}
+
+	checkErr("each_without_block", "requires a block")
+	checkErr("map_without_block", "requires a block")
+	checkErr("reduce_empty_without_init", "requires an initial value")
+
+	val, err := script.Call(context.Background(), "reduce_empty_with_init", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("reduce_empty_with_init: unexpected error %v", err)
+	}
+	assertValueEqual(t, val, intVal(10))
 }
 
 func TestComplexExamplesStress(t *testing.T) {
