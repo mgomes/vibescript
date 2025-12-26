@@ -294,6 +294,60 @@ func TestProgramFixtures(t *testing.T) {
 				}),
 			}),
 		},
+		{
+			name:     "classes/people",
+			file:     "classes/people.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"name":   strVal("John"),
+				"age":    intVal(1),
+				"reveal": strVal("shh"),
+			}),
+		},
+		{
+			name:     "classes/counter",
+			file:     "classes/counter.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"before": intVal(0),
+				"after":  intVal(3),
+			}),
+		},
+		{
+			name:     "classes/point",
+			file:     "classes/point.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"before": hashVal(map[string]Value{"x": intVal(2), "y": intVal(3)}),
+				"after":  hashVal(map[string]Value{"x": intVal(9), "y": intVal(3)}),
+			}),
+		},
+		{
+			name:     "classes/privacy",
+			file:     "classes/privacy.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"internal": intVal(42),
+			}),
+		},
+		{
+			name:     "classes/self_calls",
+			file:     "classes/self_calls.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"class_call":    intVal(10),
+				"instance_call": intVal(14),
+			}),
+		},
+		{
+			name:     "classes/setter",
+			file:     "classes/setter.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"before": intVal(0),
+				"after":  intVal(5),
+			}),
+		},
 	}
 
 	for _, tc := range cases {
@@ -306,6 +360,17 @@ func TestProgramFixtures(t *testing.T) {
 			}
 			assertValueEqual(t, result, tc.want)
 		})
+	}
+}
+
+func TestClassPrivacyEnforced(t *testing.T) {
+	script := compileTestProgram(t, "classes/privacy.vibe")
+	_, err := script.Call(context.Background(), "violate", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected privacy violation")
+	}
+	if !strings.Contains(err.Error(), "private method secret") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package vibes
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 type parseError struct {
@@ -29,6 +30,9 @@ type parser struct {
 
 	prefixFns map[TokenType]prefixParseFn
 	infixFns  map[TokenType]infixParseFn
+
+	insideClass bool
+	privateNext bool
 }
 
 func newParser(input string) *parser {
@@ -46,6 +50,9 @@ func newParser(input string) *parser {
 	p.registerPrefix(tokenFalse, p.parseBooleanLiteral)
 	p.registerPrefix(tokenNil, p.parseNilLiteral)
 	p.registerPrefix(tokenSymbol, p.parseSymbolLiteral)
+	p.registerPrefix(tokenIvar, p.parseIvarLiteral)
+	p.registerPrefix(tokenClassVar, p.parseClassVarLiteral)
+	p.registerPrefix(tokenSelf, p.parseSelfLiteral)
 	p.registerPrefix(tokenLParen, p.parseGroupedExpression)
 	p.registerPrefix(tokenLBracket, p.parseArrayLiteral)
 	p.registerPrefix(tokenLBrace, p.parseHashLiteral)
@@ -103,6 +110,8 @@ func (p *parser) parseStatement() Statement {
 	switch p.curToken.Type {
 	case tokenDef:
 		return p.parseFunctionStatement()
+	case tokenClass:
+		return p.parseClassStatement()
 	case tokenReturn:
 		return p.parseReturnStatement()
 	case tokenIf:
@@ -121,15 +130,38 @@ func (p *parser) parseStatement() Statement {
 
 func (p *parser) parseFunctionStatement() Statement {
 	pos := p.curToken.Pos
-	if !p.expectPeek(tokenIdent) {
-		return nil
+	p.nextToken()
+
+	isClassMethod := false
+	var name string
+	if p.curToken.Type == tokenSelf && p.peekToken.Type == tokenDot {
+		isClassMethod = true
+		p.nextToken() // consume dot
+		if !p.expectPeek(tokenIdent) {
+			return nil
+		}
+		name = p.curToken.Literal
+		p.nextToken()
+	} else {
+		if p.curToken.Type != tokenIdent {
+			p.errorExpected(p.curToken, "function name")
+			return nil
+		}
+		name = p.curToken.Literal
+		p.nextToken()
 	}
-	name := p.curToken.Literal
+
+	if p.curToken.Type == tokenAssign {
+		name += "="
+		p.nextToken()
+	}
+
 	params := []Param{}
 	var returnTy *TypeExpr
-	if p.peekToken.Type == tokenLParen && p.peekToken.Pos.Line == p.curToken.Pos.Line {
-		p.nextToken()
+	// Optional parens on the same line
+	if p.curToken.Type == tokenLParen && p.curToken.Pos.Line == pos.Line {
 		if p.peekToken.Type == tokenRParen {
+			p.nextToken() // consume ')'
 			p.nextToken()
 		} else {
 			p.nextToken()
@@ -137,10 +169,8 @@ func (p *parser) parseFunctionStatement() Statement {
 			if !p.expectPeek(tokenRParen) {
 				return nil
 			}
+			p.nextToken()
 		}
-		p.nextToken()
-	} else {
-		p.nextToken()
 	}
 	if p.curToken.Type == tokenArrow {
 		p.nextToken()
@@ -164,17 +194,27 @@ func (p *parser) parseFunctionStatement() Statement {
 		p.errorExpected(p.curToken, "end")
 	}
 
-	return &FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, position: pos}
+	private := false
+	if p.insideClass && p.privateNext {
+		private = true
+		p.privateNext = false
+	}
+
+	return &FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, IsClassMethod: isClassMethod, Private: private, position: pos}
 }
 
 func (p *parser) parseParams() []Param {
 	params := []Param{}
 	for {
-		if p.curToken.Type != tokenIdent {
+		if p.curToken.Type != tokenIdent && p.curToken.Type != tokenIvar {
 			p.errorExpected(p.curToken, "parameter name")
 			return params
 		}
 		param := Param{Name: p.curToken.Literal}
+		if p.curToken.Type == tokenIvar {
+			param.IsIvar = true
+			param.Name = strings.TrimPrefix(param.Name, "@")
+		}
 		if p.peekToken.Type == tokenColon {
 			p.nextToken()
 			p.nextToken()
@@ -204,6 +244,84 @@ func (p *parser) parseReturnStatement() Statement {
 	p.nextToken()
 	value := p.parseExpression(lowestPrec)
 	return &ReturnStmt{Value: value, position: pos}
+}
+
+func (p *parser) parseClassStatement() Statement {
+	pos := p.curToken.Pos
+	if !p.expectPeek(tokenIdent) {
+		return nil
+	}
+	name := p.curToken.Literal
+	p.nextToken()
+
+	stmt := &ClassStmt{
+		Name:     name,
+		position: pos,
+	}
+
+	prevInside := p.insideClass
+	prevPrivate := p.privateNext
+	p.insideClass = true
+	p.privateNext = false
+
+	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
+		switch p.curToken.Type {
+		case tokenDef:
+			fn := p.parseFunctionStatement().(*FunctionStmt)
+			if fn == nil {
+				return nil
+			}
+			if fn.IsClassMethod {
+				stmt.ClassMethods = append(stmt.ClassMethods, fn)
+			} else {
+				stmt.Methods = append(stmt.Methods, fn)
+			}
+		case tokenPrivate:
+			if p.peekToken.Type == tokenDef {
+				p.privateNext = true
+				p.nextToken()
+				continue
+			}
+			p.privateNext = true
+		case tokenProperty, tokenGetter, tokenSetter:
+			decl := p.parsePropertyDecl(p.curToken.Type)
+			stmt.Properties = append(stmt.Properties, decl)
+		default:
+			s := p.parseStatement()
+			if s != nil {
+				stmt.Body = append(stmt.Body, s)
+			}
+		}
+		p.nextToken()
+	}
+
+	p.insideClass = prevInside
+	p.privateNext = prevPrivate
+
+	if p.curToken.Type != tokenEnd {
+		p.errorExpected(p.curToken, "end")
+	}
+
+	return stmt
+}
+
+func (p *parser) parsePropertyDecl(kind TokenType) PropertyDecl {
+	pos := p.curToken.Pos
+	names := []string{}
+	p.nextToken()
+	if p.curToken.Type == tokenIdent {
+		names = append(names, p.curToken.Literal)
+		for p.peekToken.Type == tokenComma {
+			p.nextToken()
+			p.nextToken()
+			if p.curToken.Type != tokenIdent {
+				p.errorExpected(p.curToken, "property name")
+				break
+			}
+			names = append(names, p.curToken.Literal)
+		}
+	}
+	return PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), position: pos}
 }
 
 func (p *parser) parseIfStatement() Statement {
@@ -332,7 +450,7 @@ func (p *parser) parseAssertStatement() Statement {
 
 func isAssignable(expr Expression) bool {
 	switch expr.(type) {
-	case *Identifier, *MemberExpr, *IndexExpr:
+	case *Identifier, *MemberExpr, *IndexExpr, *IvarExpr, *ClassVarExpr:
 		return true
 	default:
 		return false
@@ -430,6 +548,18 @@ func (p *parser) parseNilLiteral() Expression {
 
 func (p *parser) parseSymbolLiteral() Expression {
 	return &SymbolLiteral{Name: p.curToken.Literal, position: p.curToken.Pos}
+}
+
+func (p *parser) parseIvarLiteral() Expression {
+	return &IvarExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
+}
+
+func (p *parser) parseClassVarLiteral() Expression {
+	return &ClassVarExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
+}
+
+func (p *parser) parseSelfLiteral() Expression {
+	return &Identifier{Name: "self", position: p.curToken.Pos}
 }
 
 func (p *parser) parseGroupedExpression() Expression {
@@ -640,11 +770,10 @@ func (p *parser) parseBlockParameters() ([]string, bool) {
 }
 
 func (p *parser) parseMemberExpression(object Expression) Expression {
-	p.nextToken()
-	if p.curToken.Type != tokenIdent {
-		p.errorExpected(p.curToken, "identifier after .")
+	if object == nil {
 		return nil
 	}
+	p.nextToken()
 	return &MemberExpr{Object: object, Property: p.curToken.Literal, position: object.Pos()}
 }
 
