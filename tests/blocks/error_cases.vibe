@@ -1,9 +1,9 @@
 def each_without_block
-  [1, 2, 3].each()
+  [1, 2, 3].each
 end
 
 def map_without_block
-  [1, 2, 3].map()
+  [1, 2, 3].map
 end
 
 def reduce_empty_without_init

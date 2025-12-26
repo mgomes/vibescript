@@ -1156,7 +1156,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewInt(int64(len(receiver.Array()))), nil
 		}), nil
 	case "each":
-		return NewBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {
 				return NewNil(), fmt.Errorf("array.each requires a block")
 			}
@@ -1168,7 +1168,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return receiver, nil
 		}), nil
 	case "map":
-		return NewBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {
 				return NewNil(), fmt.Errorf("array.map requires a block")
 			}
@@ -1184,7 +1184,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(result), nil
 		}), nil
 	case "select":
-		return NewBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {
 				return NewNil(), fmt.Errorf("array.select requires a block")
 			}
@@ -1202,7 +1202,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "reduce":
-		return NewBuiltin("array.reduce", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.reduce", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {
 				return NewNil(), fmt.Errorf("array.reduce requires a block")
 			}
