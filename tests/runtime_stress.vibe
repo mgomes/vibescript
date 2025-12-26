@@ -31,7 +31,7 @@ def run
   nums = [1, 2, 3, 4, 5]
   delta = delta_info()
   {
-    total: sum_range(100),
+    total: sum_range(1_000),
     square_sum: sum_squares(nums),
     iso: delta[:iso],
     shifted: delta[:shifted],

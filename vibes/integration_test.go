@@ -264,7 +264,7 @@ func TestProgramFixtures(t *testing.T) {
 			file:     "runtime_stress.vibe",
 			function: "run",
 			want: hashVal(map[string]Value{
-				"total":      intVal(5_050),
+				"total":      intVal(500_500),
 				"square_sum": intVal(55),
 				"iso":        strVal("PT3M30S"),
 				"shifted":    strVal("1970-01-01T00:03:30Z"),

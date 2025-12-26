@@ -287,27 +287,39 @@ func (l *lexer) readIdentifier() string {
 }
 
 func (l *lexer) readNumber() (string, bool) {
-	start := l.currentOffset()
+	var sb strings.Builder
 	hasDot := false
+
+	// current rune is part of the number
+	sb.WriteRune(l.ch)
 
 	for {
 		r := l.peekRune()
-		if r == '.' && !hasDot {
-			next := l.peekRuneN(1)
-			if unicode.IsDigit(next) {
-				hasDot = true
+		switch {
+		case r == '_':
+			// Allow underscores as visual separators; ignore them in the literal.
+			// Only consume if surrounded by digits.
+			beforeDigit := unicode.IsDigit(l.ch)
+			afterDigit := unicode.IsDigit(l.peekRuneN(1))
+			if beforeDigit && afterDigit {
 				l.readRune()
 				continue
 			}
-			break
+			goto done
+		case r == '.' && !hasDot && unicode.IsDigit(l.peekRuneN(1)):
+			hasDot = true
+			l.readRune()
+			sb.WriteRune('.')
+		case unicode.IsDigit(r):
+			l.readRune()
+			sb.WriteRune(r)
+		default:
+			goto done
 		}
-		if !unicode.IsDigit(r) {
-			break
-		}
-		l.readRune()
 	}
 
-	literal := l.input[start:l.offset]
+done:
+	literal := sb.String()
 	l.readRune()
 	return literal, hasDot
 }
