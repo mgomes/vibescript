@@ -260,6 +260,9 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		case KindInstance:
 			setterName := t.Property + "="
 			if fn, ok := obj.Instance().Class.Methods[setterName]; ok {
+				if fn.Private && !exec.isCurrentReceiver(obj) {
+					return exec.errorAt(t.Pos(), "private method %s", setterName)
+				}
 				_, err := exec.callFunction(fn, obj, []Value{value}, nil, t.Pos())
 				return err
 			}
@@ -535,6 +538,9 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 	switch callee.Kind() {
 	case KindFunction:
 		fn := callee.Function()
+		if block.Kind() != KindNil {
+			return NewNil(), exec.errorAt(pos, "script functions do not accept blocks")
+		}
 		return exec.callFunction(fn, receiver, args, kwargs, pos)
 	case KindBuiltin:
 		result, err := callee.Builtin().Fn(exec, receiver, args, kwargs, block)
@@ -551,9 +557,6 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	callEnv := newEnv(fn.Env)
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
-	}
-	if block := kwargs; block != nil {
-		// blocks not supported for now
 	}
 	if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
 		return NewNil(), err
