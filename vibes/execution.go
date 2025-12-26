@@ -1722,7 +1722,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		classVal, _ := root.Get(name)
 		env := newEnv(root)
 		env.Define("self", classVal)
-		if _, _, err := exec.evalStatements(classDef.Body, env); err != nil {
+		exec.pushReceiver(classVal)
+		_, _, err := exec.evalStatements(classDef.Body, env)
+		exec.popReceiver()
+		if err != nil {
 			return NewNil(), err
 		}
 	}
