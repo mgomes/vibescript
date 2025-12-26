@@ -582,13 +582,10 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	if err := exec.pushFrame(fn.Name, pos); err != nil {
 		return NewNil(), err
 	}
-	if receiver.Kind() != KindNil {
-		exec.pushReceiver(receiver)
-	}
+	// Always push receiver (even nil) to prevent privacy leaks from caller context
+	exec.pushReceiver(receiver)
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
-	if receiver.Kind() != KindNil {
-		exec.popReceiver()
-	}
+	exec.popReceiver()
 	exec.popFrame()
 	if err != nil {
 		return NewNil(), err
