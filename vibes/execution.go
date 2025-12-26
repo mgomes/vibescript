@@ -841,9 +841,6 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		if property == "class" {
 			return NewClass(inst.Class), nil
 		}
-		if val, ok := inst.Ivars[property]; ok {
-			return val, nil
-		}
 		if fn, ok := inst.Class.Methods[property]; ok {
 			if fn.Private && !exec.isCurrentReceiver(obj) {
 				return NewNil(), exec.errorAt(pos, "private method %s", property)
@@ -851,6 +848,9 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 			return NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 				return exec.callFunction(fn, obj, args, kwargs, pos)
 			}), nil
+		}
+		if val, ok := inst.Ivars[property]; ok {
+			return val, nil
 		}
 		return NewNil(), exec.errorAt(pos, "unknown member %s", property)
 	case KindInt:
