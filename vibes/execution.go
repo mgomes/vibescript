@@ -826,6 +826,9 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		cl := obj.Class()
 		if property == "new" {
 			return NewAutoBuiltin(cl.Name+".new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				if block.Kind() != KindNil {
+					return NewNil(), fmt.Errorf("script functions do not accept blocks")
+				}
 				inst := &Instance{Class: cl, Ivars: make(map[string]Value)}
 				instVal := NewInstance(inst)
 				if initFn, ok := cl.Methods["initialize"]; ok {
@@ -841,6 +844,9 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 				return NewNil(), exec.errorAt(pos, "private method %s", property)
 			}
 			return NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				if block.Kind() != KindNil {
+					return NewNil(), fmt.Errorf("script functions do not accept blocks")
+				}
 				return exec.callFunction(fn, obj, args, kwargs, pos)
 			}), nil
 		}
@@ -858,6 +864,9 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 				return NewNil(), exec.errorAt(pos, "private method %s", property)
 			}
 			return NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				if block.Kind() != KindNil {
+					return NewNil(), fmt.Errorf("script functions do not accept blocks")
+				}
 				return exec.callFunction(fn, obj, args, kwargs, pos)
 			}), nil
 		}
