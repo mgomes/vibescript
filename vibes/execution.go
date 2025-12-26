@@ -1429,12 +1429,14 @@ func (e *Engine) Compile(source string) (*Script, error) {
 			}
 			for _, prop := range s.Properties {
 				for _, name := range prop.Names {
-					getter := &ScriptFunction{
-						Name: name,
-						Body: []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, position: prop.position}, position: prop.position}},
-						Pos:  prop.position,
+					if prop.Kind == "property" || prop.Kind == "getter" {
+						getter := &ScriptFunction{
+							Name: name,
+							Body: []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, position: prop.position}, position: prop.position}},
+							Pos:  prop.position,
+						}
+						classDef.Methods[name] = getter
 					}
-					classDef.Methods[name] = getter
 					if prop.Kind == "property" || prop.Kind == "setter" {
 						setter := &ScriptFunction{
 							Name: name + "=",
