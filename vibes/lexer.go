@@ -409,6 +409,8 @@ func lookupIdent(ident string) TokenType {
 		return tokenEnd
 	case "return":
 		return tokenReturn
+	case "yield":
+		return tokenYield
 	case "do":
 		return tokenDo
 	case "for":

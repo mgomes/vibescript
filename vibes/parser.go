@@ -58,6 +58,7 @@ func newParser(input string) *parser {
 	p.registerPrefix(tokenLBrace, p.parseHashLiteral)
 	p.registerPrefix(tokenBang, p.parsePrefixExpression)
 	p.registerPrefix(tokenMinus, p.parsePrefixExpression)
+	p.registerPrefix(tokenYield, p.parseYieldExpression)
 
 	p.infixFns[tokenPlus] = p.parseInfixExpression
 	p.infixFns[tokenMinus] = p.parseInfixExpression
@@ -422,11 +423,31 @@ func (p *parser) parseExpressionOrAssignStatement() Statement {
 		pos := expr.Pos()
 		p.nextToken()
 		p.nextToken()
-		value := p.parseExpression(lowestPrec)
+		value := p.parseExpressionWithBlock()
 		return &AssignStmt{Target: expr, Value: value, position: pos}
 	}
 
 	return &ExprStmt{Expr: expr, position: expr.Pos()}
+}
+
+func (p *parser) parseExpressionWithBlock() Expression {
+	expr := p.parseExpression(lowestPrec)
+	if expr == nil {
+		return nil
+	}
+	if p.peekToken.Type == tokenDo {
+		p.nextToken()
+		block := p.parseBlockLiteral()
+		var call *CallExpr
+		if existing, ok := expr.(*CallExpr); ok {
+			call = existing
+		} else {
+			call = &CallExpr{Callee: expr, position: expr.Pos()}
+		}
+		call.Block = block
+		return call
+	}
+	return expr
 }
 func (p *parser) parseAssertStatement() Statement {
 	pos := p.curToken.Pos
@@ -561,6 +582,30 @@ func (p *parser) parseClassVarLiteral() Expression {
 
 func (p *parser) parseSelfLiteral() Expression {
 	return &Identifier{Name: "self", position: p.curToken.Pos}
+}
+
+func (p *parser) parseYieldExpression() Expression {
+	pos := p.curToken.Pos
+	var args []Expression
+	if p.peekToken.Type == tokenLParen {
+		p.nextToken()
+		p.nextToken()
+		if p.curToken.Type != tokenRParen {
+			args = append(args, p.parseExpression(lowestPrec))
+			for p.peekToken.Type == tokenComma {
+				p.nextToken()
+				p.nextToken()
+				args = append(args, p.parseExpression(lowestPrec))
+			}
+			if !p.expectPeek(tokenRParen) {
+				return nil
+			}
+		}
+	} else if p.prefixFns[p.peekToken.Type] != nil {
+		p.nextToken()
+		args = append(args, p.parseExpression(lowestPrec))
+	}
+	return &YieldExpr{Args: args, position: pos}
 }
 
 func (p *parser) parseGroupedExpression() Expression {

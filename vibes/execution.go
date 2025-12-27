@@ -263,7 +263,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 				if fn.Private && !exec.isCurrentReceiver(obj) {
 					return exec.errorAt(t.Pos(), "private method %s", setterName)
 				}
-				_, err := exec.callFunction(fn, obj, []Value{value}, nil, t.Pos())
+				_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), t.Pos())
 				return err
 			}
 			if _, hasGetter := obj.Instance().Class.Methods[t.Property]; hasGetter {
@@ -278,7 +278,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 				if fn.Private && !exec.isCurrentReceiver(obj) {
 					return exec.errorAt(t.Pos(), "private method %s", setterName)
 				}
-				_, err := exec.callFunction(fn, obj, []Value{value}, nil, t.Pos())
+				_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), t.Pos())
 				return err
 			}
 			if _, hasGetter := cl.ClassMethods[t.Property]; hasGetter {
@@ -531,6 +531,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalCallExpr(e, env)
 	case *BlockLiteral:
 		return exec.evalBlockLiteral(e, env)
+	case *YieldExpr:
+		return exec.evalYield(e, env)
 	default:
 		return NewNil(), exec.errorAt(expr.Pos(), "unsupported expression")
 	}
@@ -556,10 +558,7 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 	switch callee.Kind() {
 	case KindFunction:
 		fn := callee.Function()
-		if block.Kind() != KindNil {
-			return NewNil(), exec.errorAt(pos, "script functions do not accept blocks")
-		}
-		return exec.callFunction(fn, receiver, args, kwargs, pos)
+		return exec.callFunction(fn, receiver, args, kwargs, block, pos)
 	case KindBuiltin:
 		result, err := callee.Builtin().Fn(exec, receiver, args, kwargs, block)
 		if err != nil {
@@ -571,11 +570,12 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 	}
 }
 
-func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, pos Position) (Value, error) {
+func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	callEnv := newEnv(fn.Env)
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
 	}
+	callEnv.Define("__block__", block)
 	if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
 		return NewNil(), err
 	}
@@ -729,6 +729,22 @@ func (exec *Execution) callBlock(block Value, args []Value) (Value, error) {
 	return val, nil
 }
 
+func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
+	block, ok := env.Get("__block__")
+	if !ok || block.Kind() == KindNil {
+		return NewNil(), exec.errorAt(expr.Pos(), "no block given")
+	}
+	var args []Value
+	for _, arg := range expr.Args {
+		val, err := exec.evalExpression(arg, env)
+		if err != nil {
+			return NewNil(), err
+		}
+		args = append(args, val)
+	}
+	return exec.callBlock(block, args)
+}
+
 func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 	startVal, err := exec.evalExpression(expr.Start, env)
 	if err != nil {
@@ -829,13 +845,10 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		cl := obj.Class()
 		if property == "new" {
 			return NewAutoBuiltin(cl.Name+".new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-				if block.Kind() != KindNil {
-					return NewNil(), fmt.Errorf("script functions do not accept blocks")
-				}
 				inst := &Instance{Class: cl, Ivars: make(map[string]Value)}
 				instVal := NewInstance(inst)
 				if initFn, ok := cl.Methods["initialize"]; ok {
-					if _, err := exec.callFunction(initFn, instVal, args, kwargs, pos); err != nil {
+					if _, err := exec.callFunction(initFn, instVal, args, kwargs, block, pos); err != nil {
 						return NewNil(), err
 					}
 				}
@@ -847,10 +860,7 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 				return NewNil(), exec.errorAt(pos, "private method %s", property)
 			}
 			return NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-				if block.Kind() != KindNil {
-					return NewNil(), fmt.Errorf("script functions do not accept blocks")
-				}
-				return exec.callFunction(fn, obj, args, kwargs, pos)
+				return exec.callFunction(fn, obj, args, kwargs, block, pos)
 			}), nil
 		}
 		if val, ok := cl.ClassVars[property]; ok {
@@ -867,10 +877,7 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 				return NewNil(), exec.errorAt(pos, "private method %s", property)
 			}
 			return NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-				if block.Kind() != KindNil {
-					return NewNil(), fmt.Errorf("script functions do not accept blocks")
-				}
-				return exec.callFunction(fn, obj, args, kwargs, pos)
+				return exec.callFunction(fn, obj, args, kwargs, block, pos)
 			}), nil
 		}
 		if val, ok := inst.Ivars[property]; ok {
@@ -1149,7 +1156,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewInt(int64(len(receiver.Array()))), nil
 		}), nil
 	case "each":
-		return NewBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {
 				return NewNil(), fmt.Errorf("array.each requires a block")
 			}
@@ -1161,7 +1168,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return receiver, nil
 		}), nil
 	case "map":
-		return NewBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {
 				return NewNil(), fmt.Errorf("array.map requires a block")
 			}
@@ -1177,7 +1184,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(result), nil
 		}), nil
 	case "select":
-		return NewBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {
 				return NewNil(), fmt.Errorf("array.select requires a block")
 			}
@@ -1195,7 +1202,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "reduce":
-		return NewBuiltin("array.reduce", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewAutoBuiltin("array.reduce", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if block.Block() == nil {
 				return NewNil(), fmt.Errorf("array.reduce requires a block")
 			}

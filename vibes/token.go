@@ -53,6 +53,7 @@ const (
 	tokenSetter   TokenType = "SETTER"
 	tokenEnd      TokenType = "END"
 	tokenReturn   TokenType = "RETURN"
+	tokenYield    TokenType = "YIELD"
 	tokenDo       TokenType = "DO"
 	tokenFor      TokenType = "FOR"
 	tokenIn       TokenType = "IN"
