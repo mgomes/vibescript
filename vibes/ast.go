@@ -45,8 +45,29 @@ type Param struct {
 	IsIvar     bool
 }
 
+type TypeKind int
+
+const (
+	TypeAny TypeKind = iota
+	TypeInt
+	TypeFloat
+	TypeNumber
+	TypeString
+	TypeBool
+	TypeNil
+	TypeDuration
+	TypeTime
+	TypeMoney
+	TypeArray
+	TypeHash
+	TypeFunction
+	TypeUnknown
+)
+
 type TypeExpr struct {
 	Name     string
+	Kind     TypeKind
+	Nullable bool
 	position Position
 }
 
