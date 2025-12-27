@@ -242,6 +242,38 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	}
 }
 
+func (exec *Execution) assignToMember(obj Value, property string, value Value, pos Position) error {
+	setterName := property + "="
+	var methods map[string]*ScriptFunction
+	var vars map[string]Value
+
+	switch obj.Kind() {
+	case KindInstance:
+		methods = obj.Instance().Class.Methods
+		vars = obj.Instance().Ivars
+	case KindClass:
+		methods = obj.Class().ClassMethods
+		vars = obj.Class().ClassVars
+	default:
+		return exec.errorAt(pos, "cannot assign to %s", obj.Kind())
+	}
+
+	if fn, ok := methods[setterName]; ok {
+		if fn.Private && !exec.isCurrentReceiver(obj) {
+			return exec.errorAt(pos, "private method %s", setterName)
+		}
+		_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), pos)
+		return err
+	}
+
+	if _, hasGetter := methods[property]; hasGetter {
+		return exec.errorAt(pos, "cannot assign to read-only property %s", property)
+	}
+
+	vars[property] = value
+	return nil
+}
+
 func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	switch t := target.(type) {
 	case *Identifier:
@@ -257,35 +289,8 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 			m := obj.Hash()
 			m[t.Property] = value
 			return nil
-		case KindInstance:
-			setterName := t.Property + "="
-			if fn, ok := obj.Instance().Class.Methods[setterName]; ok {
-				if fn.Private && !exec.isCurrentReceiver(obj) {
-					return exec.errorAt(t.Pos(), "private method %s", setterName)
-				}
-				_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), t.Pos())
-				return err
-			}
-			if _, hasGetter := obj.Instance().Class.Methods[t.Property]; hasGetter {
-				return exec.errorAt(t.Pos(), "cannot assign to read-only property %s", t.Property)
-			}
-			obj.Instance().Ivars[t.Property] = value
-			return nil
-		case KindClass:
-			setterName := t.Property + "="
-			cl := obj.Class()
-			if fn, ok := cl.ClassMethods[setterName]; ok {
-				if fn.Private && !exec.isCurrentReceiver(obj) {
-					return exec.errorAt(t.Pos(), "private method %s", setterName)
-				}
-				_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), t.Pos())
-				return err
-			}
-			if _, hasGetter := cl.ClassMethods[t.Property]; hasGetter {
-				return exec.errorAt(t.Pos(), "cannot assign to read-only property %s", t.Property)
-			}
-			cl.ClassVars[t.Property] = value
-			return nil
+		case KindInstance, KindClass:
+			return exec.assignToMember(obj, t.Property, value, t.Pos())
 		default:
 			return exec.errorAt(target.Pos(), "cannot assign to %s", obj.Kind())
 		}
@@ -417,25 +422,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		}
 		return NewHash(entries), nil
 	case *UnaryExpr:
-		right, err := exec.evalExpressionWithAuto(e.Right, env, true)
-		if err != nil {
-			return NewNil(), err
-		}
-		switch e.Operator {
-		case tokenMinus:
-			switch right.Kind() {
-			case KindInt:
-				return NewInt(-right.Int()), nil
-			case KindFloat:
-				return NewFloat(-right.Float()), nil
-			default:
-				return NewNil(), exec.errorAt(e.Pos(), "unsupported unary - operand")
-			}
-		case tokenBang:
-			return NewBool(!right.Truthy()), nil
-		default:
-			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary operator")
-		}
+		return exec.evalUnaryExpr(e, env)
 	case *BinaryExpr:
 		return exec.evalBinaryExpr(e, env)
 	case *RangeExpr:
@@ -454,48 +441,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		}
 		return member, nil
 	case *IndexExpr:
-		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
-		if err != nil {
-			return NewNil(), err
-		}
-		idx, err := exec.evalExpressionWithAuto(e.Index, env, true)
-		if err != nil {
-			return NewNil(), err
-		}
-		switch obj.Kind() {
-		case KindString:
-			i, err := valueToInt(idx)
-			if err != nil {
-				return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
-			}
-			runes := []rune(obj.String())
-			if i < 0 || i >= len(runes) {
-				return NewNil(), exec.errorAt(e.Index.Pos(), "string index out of bounds")
-			}
-			return NewString(string(runes[i])), nil
-		case KindArray:
-			i, err := valueToInt(idx)
-			if err != nil {
-				return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
-			}
-			arr := obj.Array()
-			if i < 0 || i >= len(arr) {
-				return NewNil(), exec.errorAt(e.Index.Pos(), "array index out of bounds")
-			}
-			return arr[i], nil
-		case KindHash, KindObject:
-			key, err := valueToHashKey(idx)
-			if err != nil {
-				return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
-			}
-			val, ok := obj.Hash()[key]
-			if !ok {
-				return NewNil(), nil
-			}
-			return val, nil
-		default:
-			return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
-		}
+		return exec.evalIndexExpr(e, env)
 	case *IvarExpr:
 		self, ok := env.Get("self")
 		if !ok || self.Kind() != KindInstance {
@@ -589,7 +535,7 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 		return NewNil(), err
 	}
 	if fn.ReturnTy != nil {
-		if err := checkValueType(val, fn.ReturnTy.Name); err != nil {
+		if err := checkValueType(val, fn.ReturnTy); err != nil {
 			return NewNil(), exec.errorAt(pos, "%s", err.Error())
 		}
 	}
@@ -597,6 +543,73 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 		return val, nil
 	}
 	return val, nil
+}
+
+func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
+	right, err := exec.evalExpressionWithAuto(e.Right, env, true)
+	if err != nil {
+		return NewNil(), err
+	}
+	switch e.Operator {
+	case tokenMinus:
+		switch right.Kind() {
+		case KindInt:
+			return NewInt(-right.Int()), nil
+		case KindFloat:
+			return NewFloat(-right.Float()), nil
+		default:
+			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary - operand")
+		}
+	case tokenBang:
+		return NewBool(!right.Truthy()), nil
+	default:
+		return NewNil(), exec.errorAt(e.Pos(), "unsupported unary operator")
+	}
+}
+
+func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
+	obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
+	if err != nil {
+		return NewNil(), err
+	}
+	idx, err := exec.evalExpressionWithAuto(e.Index, env, true)
+	if err != nil {
+		return NewNil(), err
+	}
+	switch obj.Kind() {
+	case KindString:
+		i, err := valueToInt(idx)
+		if err != nil {
+			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
+		}
+		runes := []rune(obj.String())
+		if i < 0 || i >= len(runes) {
+			return NewNil(), exec.errorAt(e.Index.Pos(), "string index out of bounds")
+		}
+		return NewString(string(runes[i])), nil
+	case KindArray:
+		i, err := valueToInt(idx)
+		if err != nil {
+			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
+		}
+		arr := obj.Array()
+		if i < 0 || i >= len(arr) {
+			return NewNil(), exec.errorAt(e.Index.Pos(), "array index out of bounds")
+		}
+		return arr[i], nil
+	case KindHash, KindObject:
+		key, err := valueToHashKey(idx)
+		if err != nil {
+			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
+		}
+		val, ok := obj.Hash()[key]
+		if !ok {
+			return NewNil(), nil
+		}
+		return val, nil
+	default:
+		return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
+	}
 }
 
 func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error) {
@@ -1549,7 +1562,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 		}
 
 		if param.Type != nil {
-			if err := checkValueType(val, param.Type.Name); err != nil {
+			if err := checkValueType(val, param.Type); err != nil {
 				return exec.errorAt(pos, "%s", err.Error())
 			}
 		}
@@ -1575,81 +1588,75 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 	return nil
 }
 
-func checkValueType(val Value, typeName string) error {
-	nullable := false
-	if strings.HasSuffix(typeName, "?") {
-		nullable = true
-		typeName = strings.TrimSuffix(typeName, "?")
-	}
-	typeName = strings.ToLower(typeName)
-	if nullable && val.Kind() == KindNil {
+func checkValueType(val Value, ty *TypeExpr) error {
+	if ty.Nullable && val.Kind() == KindNil {
 		return nil
 	}
-	switch typeName {
-	case "any":
+	switch ty.Kind {
+	case TypeAny:
 		return nil
-	case "int":
+	case TypeInt:
 		if val.Kind() == KindInt {
 			return nil
 		}
 		return fmt.Errorf("expected int")
-	case "float":
+	case TypeFloat:
 		if val.Kind() == KindFloat {
 			return nil
 		}
 		return fmt.Errorf("expected float")
-	case "number":
+	case TypeNumber:
 		if val.Kind() == KindInt || val.Kind() == KindFloat {
 			return nil
 		}
 		return fmt.Errorf("expected number")
-	case "string":
+	case TypeString:
 		if val.Kind() == KindString {
 			return nil
 		}
 		return fmt.Errorf("expected string")
-	case "bool":
+	case TypeBool:
 		if val.Kind() == KindBool {
 			return nil
 		}
 		return fmt.Errorf("expected bool")
-	case "nil":
+	case TypeNil:
 		if val.Kind() == KindNil {
 			return nil
 		}
 		return fmt.Errorf("expected nil")
-	case "duration":
+	case TypeDuration:
 		if val.Kind() == KindDuration {
 			return nil
 		}
 		return fmt.Errorf("expected duration")
-	case "time":
+	case TypeTime:
 		if val.Kind() == KindTime {
 			return nil
 		}
 		return fmt.Errorf("expected time")
-	case "money":
+	case TypeMoney:
 		if val.Kind() == KindMoney {
 			return nil
 		}
 		return fmt.Errorf("expected money")
-	case "array":
+	case TypeArray:
 		if val.Kind() == KindArray {
 			return nil
 		}
 		return fmt.Errorf("expected array")
-	case "hash", "object":
+	case TypeHash:
 		if val.Kind() == KindHash || val.Kind() == KindObject {
 			return nil
 		}
 		return fmt.Errorf("expected hash")
-	case "function":
+	case TypeFunction:
 		if val.Kind() == KindFunction {
 			return nil
 		}
 		return fmt.Errorf("expected function")
 	default:
-		return fmt.Errorf("unknown type %s", typeName)
+		return fmt.Errorf("unknown type %s", ty.Name)
 	}
 }
 
@@ -1758,7 +1765,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), err
 	}
 	if fn.ReturnTy != nil {
-		if err := checkValueType(val, fn.ReturnTy.Name); err != nil {
+		if err := checkValueType(val, fn.ReturnTy); err != nil {
 			return NewNil(), err
 		}
 	}

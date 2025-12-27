@@ -180,6 +180,9 @@ func (p *parser) parseFunctionStatement() Statement {
 			return nil
 		}
 		returnTy = &TypeExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
+		kind, nullable := resolveType(p.curToken.Literal)
+		returnTy.Kind = kind
+		returnTy.Nullable = nullable
 		p.nextToken()
 	}
 	body := []Statement{}
@@ -224,6 +227,9 @@ func (p *parser) parseParams() []Param {
 				return params
 			}
 			param.Type = &TypeExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
+			kind, nullable := resolveType(p.curToken.Literal)
+			param.Type.Kind = kind
+			param.Type.Nullable = nullable
 		}
 		if p.peekToken.Type == tokenAssign {
 			p.nextToken()
@@ -862,4 +868,41 @@ func (p *parser) errorExpected(tok Token, expected string) {
 
 func (p *parser) errorUnexpected(tok Token) {
 	p.errors = append(p.errors, &parseError{pos: tok.Pos, msg: fmt.Sprintf("unexpected token %s", tok.Type)})
+}
+
+func resolveType(name string) (TypeKind, bool) {
+	nullable := false
+	if strings.HasSuffix(name, "?") {
+		nullable = true
+		name = strings.TrimSuffix(name, "?")
+	}
+	switch strings.ToLower(name) {
+	case "any":
+		return TypeAny, nullable
+	case "int":
+		return TypeInt, nullable
+	case "float":
+		return TypeFloat, nullable
+	case "number":
+		return TypeNumber, nullable
+	case "string":
+		return TypeString, nullable
+	case "bool":
+		return TypeBool, nullable
+	case "nil":
+		return TypeNil, nullable
+	case "duration":
+		return TypeDuration, nullable
+	case "time":
+		return TypeTime, nullable
+	case "money":
+		return TypeMoney, nullable
+	case "array":
+		return TypeArray, nullable
+	case "hash", "object":
+		return TypeHash, nullable
+	case "function":
+		return TypeFunction, nullable
+	}
+	return TypeUnknown, nullable
 }
