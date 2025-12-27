@@ -20,10 +20,7 @@ func newEnv(parent *Env) *Env {
 func borrowEnv(parent *Env) *Env {
 	env := envPool.Get().(*Env)
 	env.parent = parent
-	// clear any previous values
-	for k := range env.values {
-		delete(env.values, k)
-	}
+	clear(env.values)
 	return env
 }
 
