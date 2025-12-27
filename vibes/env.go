@@ -1,32 +1,12 @@
 package vibes
 
-import "sync"
-
 type Env struct {
 	parent *Env
 	values map[string]Value
 }
 
-var envPool = sync.Pool{
-	New: func() any {
-		return &Env{values: make(map[string]Value)}
-	},
-}
-
 func newEnv(parent *Env) *Env {
 	return &Env{parent: parent, values: make(map[string]Value)}
-}
-
-func borrowEnv(parent *Env) *Env {
-	env := envPool.Get().(*Env)
-	env.parent = parent
-	clear(env.values)
-	return env
-}
-
-func releaseEnv(env *Env) {
-	env.parent = nil
-	envPool.Put(env)
 }
 
 func (e *Env) Get(name string) (Value, bool) {

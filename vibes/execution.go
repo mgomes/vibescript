@@ -730,8 +730,7 @@ func (exec *Execution) callBlock(block Value, args []Value) (Value, error) {
 		return NewNil(), err
 	}
 	blk := block.Block()
-	blockEnv := borrowEnv(blk.Env)
-	defer releaseEnv(blockEnv)
+	blockEnv := newEnv(blk.Env)
 	for i, param := range blk.Params {
 		var val Value
 		if i < len(args) {
