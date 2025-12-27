@@ -157,3 +157,34 @@ This repository uses [Just](https://github.com/casey/just) for common tasks:
 - Add new recipes in the `Justfile` as workflows grow.
 
 Contributions should run `just test` and `just lint` (or the equivalent `go` and `golangci-lint` commands) before submitting patches.
+
+## Runtime Sandbox & Limits
+
+Vibescript runs inside a constrained interpreter to help host applications enforce safety guarantees:
+
+- **Step quota:** Every `Execution` tracks steps (expressions/statements). `Config.StepQuota` caps how much code can run before aborting (default 50k). Useful to prevent unbounded loops; bump for heavy workloads.
+- **Recursion limit:** `Config.RecursionLimit` bounds call depth (default 64) to avoid stack blowups from runaway recursion.
+- **Memory quota:** `Config.MemoryQuotaBytes` limits interpreter allocations (default 64 KiB). Exceeding the limit raises a runtime error instead of consuming host memory.
+- **Effects control:** `Config.StrictEffects` can be set to require explicit capabilities for side-effecting operations (e.g., modules or host adapters), letting embedders keep the sandbox tight.
+- **Module search paths:** `Config.ModulePaths` controls where `require` may load modules from. Only approved directories are searched; invalid paths panic at engine construction time.
+- **Capability gating:** Host code injects safe adapters via `CallOptions.Capabilities`, so scripts can only touch what you expose. Globals can be seeded via `CallOptions.Globals` for per-call isolation.
+
+Example with explicit limits:
+
+```go
+engine := vibes.NewEngine(vibes.Config{
+    StepQuota:        10_000,   // abort after 10k steps
+    MemoryQuotaBytes: 256 << 10, // 256 KiB heap cap inside the interpreter
+    RecursionLimit:   32,       // shallow recursion allowed
+    StrictEffects:    true,     // require capabilities for side effects
+    ModulePaths:      []string{"/opt/vibes/modules"},
+})
+
+script, _ := engine.Compile(source)
+result, err := script.Call(ctx, "run", nil, vibes.CallOptions{
+    Capabilities: []vibes.CapabilityAdapter{mySafeAdapter{}},
+    Globals:      map[string]vibes.Value{"tenant": vibes.NewString("acme")},
+})
+```
+
+These knobs keep embedded Vibescript code in a defensive sandbox while still allowing host-approved capabilities. Adjust quotas per use case; the defaults favor safety over throughput.
