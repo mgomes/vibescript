@@ -557,8 +557,7 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val Value, receiver V
 func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	switch callee.Kind() {
 	case KindFunction:
-		fn := callee.Function()
-		return exec.callFunction(fn, receiver, args, kwargs, block, pos)
+		return exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
 	case KindBuiltin:
 		result, err := callee.Builtin().Fn(exec, receiver, args, kwargs, block)
 		if err != nil {
@@ -582,10 +581,13 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	if err := exec.pushFrame(fn.Name, pos); err != nil {
 		return NewNil(), err
 	}
-	// Always push receiver (even nil) to prevent privacy leaks from caller context
-	exec.pushReceiver(receiver)
+	if receiver.Kind() != KindNil {
+		exec.pushReceiver(receiver)
+	}
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
-	exec.popReceiver()
+	if receiver.Kind() != KindNil {
+		exec.popReceiver()
+	}
 	exec.popFrame()
 	if err != nil {
 		return NewNil(), err
@@ -704,12 +706,23 @@ func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, e
 	return NewBlock(block.Params, block.Body, env), nil
 }
 
-func (exec *Execution) callBlock(block Value, args []Value) (Value, error) {
-	blk := block.Block()
-	if blk == nil {
-		return NewNil(), fmt.Errorf("block required")
+func ensureBlock(block Value, name string) error {
+	if block.Block() == nil {
+		if name != "" {
+			return fmt.Errorf("%s requires a block", name)
+		}
+		return fmt.Errorf("block required")
 	}
-	blockEnv := newEnv(blk.Env)
+	return nil
+}
+
+func (exec *Execution) callBlock(block Value, args []Value) (Value, error) {
+	if err := ensureBlock(block, ""); err != nil {
+		return NewNil(), err
+	}
+	blk := block.Block()
+	blockEnv := borrowEnv(blk.Env)
+	defer releaseEnv(blockEnv)
 	for i, param := range blk.Params {
 		var val Value
 		if i < len(args) {
@@ -1157,8 +1170,8 @@ func arrayMember(array Value, property string) (Value, error) {
 		}), nil
 	case "each":
 		return NewAutoBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if block.Block() == nil {
-				return NewNil(), fmt.Errorf("array.each requires a block")
+			if err := ensureBlock(block, "array.each"); err != nil {
+				return NewNil(), err
 			}
 			for _, item := range receiver.Array() {
 				if _, err := exec.callBlock(block, []Value{item}); err != nil {
@@ -1169,8 +1182,8 @@ func arrayMember(array Value, property string) (Value, error) {
 		}), nil
 	case "map":
 		return NewAutoBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if block.Block() == nil {
-				return NewNil(), fmt.Errorf("array.map requires a block")
+			if err := ensureBlock(block, "array.map"); err != nil {
+				return NewNil(), err
 			}
 			arr := receiver.Array()
 			result := make([]Value, len(arr))
@@ -1185,8 +1198,8 @@ func arrayMember(array Value, property string) (Value, error) {
 		}), nil
 	case "select":
 		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if block.Block() == nil {
-				return NewNil(), fmt.Errorf("array.select requires a block")
+			if err := ensureBlock(block, "array.select"); err != nil {
+				return NewNil(), err
 			}
 			arr := receiver.Array()
 			out := make([]Value, 0, len(arr))
@@ -1203,8 +1216,8 @@ func arrayMember(array Value, property string) (Value, error) {
 		}), nil
 	case "reduce":
 		return NewAutoBuiltin("array.reduce", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if block.Block() == nil {
-				return NewNil(), fmt.Errorf("array.reduce requires a block")
+			if err := ensureBlock(block, "array.reduce"); err != nil {
+				return NewNil(), err
 			}
 			if len(args) > 1 {
 				return NewNil(), fmt.Errorf("array.reduce accepts at most one initial value")
@@ -1572,10 +1585,11 @@ func checkValueType(val Value, typeName string) error {
 		nullable = true
 		typeName = strings.TrimSuffix(typeName, "?")
 	}
+	typeName = strings.ToLower(typeName)
 	if nullable && val.Kind() == KindNil {
 		return nil
 	}
-	switch strings.ToLower(typeName) {
+	switch typeName {
 	case "any":
 		return nil
 	case "int":
