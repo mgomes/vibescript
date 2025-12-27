@@ -1,0 +1,23 @@
+def div_by_zero
+  1 / 0
+end
+
+def mod_by_zero
+  1 % 0
+end
+
+def array_index_out_of_bounds
+  [1][5]
+end
+
+def string_index_out_of_bounds
+  "hello"[10]
+end
+
+def method_missing
+  1.non_existent_method
+end
+
+def nil_method
+  nil.foo
+end
