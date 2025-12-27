@@ -712,3 +712,65 @@ func TestArgumentErrorCases(t *testing.T) {
 		t.Fatalf("run: b mismatch: %v", h["b"])
 	}
 }
+
+func TestBlockEnvironmentIsolation(t *testing.T) {
+	source := `
+def run
+  results = []
+  nums = [1, 2, 3]
+  nums.each do |x|
+    local = x * 10
+    results = results.push(local)
+  end
+  results
+end
+`
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(source)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	for i := 0; i < 100; i++ {
+		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		want := arrayVal(intVal(10), intVal(20), intVal(30))
+		assertValueEqual(t, result, want)
+	}
+}
+
+func TestBlockEnvironmentNoLeakBetweenCalls(t *testing.T) {
+	source := `
+def transform(items)
+  items.map do |x|
+    temp = x + 100
+    temp * 2
+  end
+end
+
+def run
+  a = transform([1, 2, 3])
+  b = transform([10, 20, 30])
+  { a: a, b: b }
+end
+`
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(source)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		h := result.Hash()
+		wantA := arrayVal(intVal(202), intVal(204), intVal(206))
+		wantB := arrayVal(intVal(220), intVal(240), intVal(260))
+		assertValueEqual(t, h["a"], wantA)
+		assertValueEqual(t, h["b"], wantB)
+	}
+}
