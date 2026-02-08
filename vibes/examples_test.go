@@ -77,7 +77,7 @@ func (m *dbMock) Value() Value {
 			}
 			rows := cloneValues(m.eachRows)
 			for _, row := range rows {
-				if _, err := exec.callBlock(block, []Value{row}); err != nil {
+				if _, err := exec.CallBlock(block, []Value{row}); err != nil {
 					return NewNil(), err
 				}
 			}
