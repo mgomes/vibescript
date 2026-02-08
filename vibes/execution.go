@@ -725,7 +725,10 @@ func ensureBlock(block Value, name string) error {
 	return nil
 }
 
-func (exec *Execution) callBlock(block Value, args []Value) (Value, error) {
+// CallBlock invokes a block value with the provided arguments.
+// This is the public entry point for capability adapters that need to
+// call user-supplied blocks (e.g. db.each, db.tx).
+func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	if err := ensureBlock(block, ""); err != nil {
 		return NewNil(), err
 	}
@@ -763,7 +766,7 @@ func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
 		}
 		args = append(args, val)
 	}
-	return exec.callBlock(block, args)
+	return exec.CallBlock(block, args)
 }
 
 func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
@@ -927,7 +930,7 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 					return NewNil(), fmt.Errorf("int.times value too large")
 				}
 				for i := range int(count) {
-					if _, err := exec.callBlock(block, []Value{NewInt(int64(i))}); err != nil {
+					if _, err := exec.CallBlock(block, []Value{NewInt(int64(i))}); err != nil {
 						return NewNil(), err
 					}
 				}
@@ -1182,7 +1185,7 @@ func arrayMember(array Value, property string) (Value, error) {
 				return NewNil(), err
 			}
 			for _, item := range receiver.Array() {
-				if _, err := exec.callBlock(block, []Value{item}); err != nil {
+				if _, err := exec.CallBlock(block, []Value{item}); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -1196,7 +1199,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			arr := receiver.Array()
 			result := make([]Value, len(arr))
 			for i, item := range arr {
-				val, err := exec.callBlock(block, []Value{item})
+				val, err := exec.CallBlock(block, []Value{item})
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1212,7 +1215,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			arr := receiver.Array()
 			out := make([]Value, 0, len(arr))
 			for _, item := range arr {
-				val, err := exec.callBlock(block, []Value{item})
+				val, err := exec.CallBlock(block, []Value{item})
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1243,7 +1246,7 @@ func arrayMember(array Value, property string) (Value, error) {
 				start = 1
 			}
 			for i := start; i < len(arr); i++ {
-				next, err := exec.callBlock(block, []Value{acc, arr[i]})
+				next, err := exec.CallBlock(block, []Value{acc, arr[i]})
 				if err != nil {
 					return NewNil(), err
 				}
