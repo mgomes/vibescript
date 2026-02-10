@@ -614,8 +614,14 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkMemoryWith(obj); err != nil {
+		return NewNil(), err
+	}
 	idx, err := exec.evalExpressionWithAuto(e.Index, env, true)
 	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(idx); err != nil {
 		return NewNil(), err
 	}
 	switch obj.Kind() {

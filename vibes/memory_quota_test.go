@@ -369,3 +369,59 @@ func TestTransientExpressionAllocationsAreChecked(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestIndexedTransientAllocationsAreChecked(t *testing.T) {
+	pos := Position{Line: 1, Column: 1}
+	elements := make([]Expression, 1200)
+	for i := range elements {
+		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+	}
+
+	stmt := &ExprStmt{
+		Expr: &IndexExpr{
+			Object:   &ArrayLiteral{Elements: elements, position: pos},
+			Index:    &IntegerLiteral{Value: 0, position: pos},
+			position: pos,
+		},
+		position: pos,
+	}
+
+	probeExec := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+	}
+	probeEnv := newEnv(nil)
+	result, _, err := probeExec.evalStatements([]Statement{stmt}, probeEnv)
+	if err != nil {
+		t.Fatalf("probe execution failed: %v", err)
+	}
+
+	probeExec.pushEnv(probeEnv)
+	base := probeExec.estimateMemoryUsage(result)
+	probeExec.popEnv()
+
+	transientValues := make([]Value, len(elements))
+	for i := range transientValues {
+		transientValues[i] = NewString("abcdefghij")
+	}
+	transient := newMemoryEstimator().value(NewArray(transientValues))
+	quota := base + transient/2
+	if quota <= base {
+		quota = base + 1
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	_, _, err = exec.evalStatements([]Statement{stmt}, env)
+	if err == nil {
+		t.Fatalf("expected memory quota error for indexed transient allocation")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
