@@ -183,3 +183,29 @@ end`)
 		t.Fatalf("unexpected keyword arg error: %v", err)
 	}
 }
+
+func TestMemoryQuotaCountsIndependentEmptySlices(t *testing.T) {
+	engine := NewEngine(Config{
+		StepQuota:        20000,
+		MemoryQuotaBytes: 4096,
+	})
+
+	script, err := engine.Compile(`def run
+  items = []
+  for i in 1..400
+    items = items.push([])
+  end
+  items.size
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected memory quota error for many independent empty slices")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
