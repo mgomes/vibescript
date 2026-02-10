@@ -144,3 +144,42 @@ end`
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestMemoryQuotaExceededForBoundArguments(t *testing.T) {
+	engine := NewEngine(Config{
+		StepQuota:        20000,
+		MemoryQuotaBytes: 2048,
+	})
+
+	script, err := engine.Compile(`def run(payload)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	parts := make([]Value, 2000)
+	for i := range parts {
+		parts[i] = NewString("abcdefghij")
+	}
+	largeArg := NewArray(parts)
+
+	_, err = script.Call(context.Background(), "run", []Value{largeArg}, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected memory quota error for positional arg")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected positional arg error: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Keywords: map[string]Value{
+			"payload": largeArg,
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected memory quota error for keyword arg")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected keyword arg error: %v", err)
+	}
+}

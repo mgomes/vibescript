@@ -551,6 +551,12 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
 		return NewNil(), err
 	}
+	exec.pushEnv(callEnv)
+	if err := exec.checkMemory(); err != nil {
+		exec.popEnv()
+		return NewNil(), err
+	}
+	exec.popEnv()
 	if err := exec.pushFrame(fn.Name, pos); err != nil {
 		return NewNil(), err
 	}
@@ -1790,6 +1796,12 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	if err := exec.bindFunctionArgs(fn, callEnv, args, opts.Keywords, fn.Pos); err != nil {
 		return NewNil(), err
 	}
+	exec.pushEnv(callEnv)
+	if err := exec.checkMemory(); err != nil {
+		exec.popEnv()
+		return NewNil(), err
+	}
+	exec.popEnv()
 
 	if err := exec.pushFrame(fn.Name, fn.Pos); err != nil {
 		return NewNil(), err
