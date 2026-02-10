@@ -255,7 +255,54 @@ func TestAssignmentPostCheckDoesNotDoubleCountAssignedValue(t *testing.T) {
 	exec.pushEnv(env)
 	err := exec.checkMemoryWith(val)
 	exec.popEnv()
+	if err != nil {
+		t.Fatalf("aliased explicit extra-root check should not exceed quota: %v", err)
+	}
+
+	payloadCopy := string(append([]byte(nil), payload...))
+	exec.pushEnv(env)
+	err = exec.checkMemoryWith(NewString(payloadCopy))
+	exec.popEnv()
 	if err == nil {
-		t.Fatalf("expected explicit extra-root check to exceed quota")
+		t.Fatalf("expected non-aliased extra-root check to exceed quota")
+	}
+}
+
+func TestExpressionAliasPostCheckDoesNotDoubleCountString(t *testing.T) {
+	payload := strings.Repeat("abcdefghij", 300)
+	stmt := &ExprStmt{
+		Expr:     &Identifier{Name: "payload", position: Position{Line: 1, Column: 1}},
+		position: Position{Line: 1, Column: 1},
+	}
+
+	probeExec := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+	}
+	probeEnv := newEnv(nil)
+	probeEnv.Define("payload", NewString(payload))
+	if _, _, err := probeExec.evalStatements([]Statement{stmt}, probeEnv); err != nil {
+		t.Fatalf("probe execution failed: %v", err)
+	}
+
+	probeExec.pushEnv(probeEnv)
+	base := probeExec.estimateMemoryUsage()
+	probeExec.popEnv()
+	extra := newMemoryEstimator().value(NewString(payload))
+	quota := base + extra/2
+	if quota <= base {
+		quota = base + 1
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	env.Define("payload", NewString(payload))
+	if _, _, err := exec.evalStatements([]Statement{stmt}, env); err != nil {
+		t.Fatalf("aliased expression result should fit quota without payload double counting: %v", err)
 	}
 }

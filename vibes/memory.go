@@ -3,6 +3,7 @@ package vibes
 import (
 	"fmt"
 	"reflect"
+	"unsafe"
 )
 
 const (
@@ -21,9 +22,15 @@ type memoryEstimator struct {
 	seenEnvs      map[*Env]struct{}
 	seenMaps      map[uintptr]struct{}
 	seenSlices    map[uintptr]struct{}
+	seenStrings   map[stringIdentity]struct{}
 	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
 	seenBlocks    map[*Block]struct{}
+}
+
+type stringIdentity struct {
+	ptr uintptr
+	len int
 }
 
 func newMemoryEstimator() *memoryEstimator {
@@ -31,6 +38,7 @@ func newMemoryEstimator() *memoryEstimator {
 		seenEnvs:      make(map[*Env]struct{}),
 		seenMaps:      make(map[uintptr]struct{}),
 		seenSlices:    make(map[uintptr]struct{}),
+		seenStrings:   make(map[stringIdentity]struct{}),
 		seenClasses:   make(map[*ClassDef]struct{}),
 		seenInstances: make(map[*Instance]struct{}),
 		seenBlocks:    make(map[*Block]struct{}),
@@ -101,7 +109,9 @@ func (est *memoryEstimator) value(val Value) int {
 
 	switch val.Kind() {
 	case KindString, KindSymbol:
-		size += estimatedStringHeaderBytes + len(val.String())
+		str := val.String()
+		size += estimatedStringHeaderBytes
+		size += est.stringPayloadSize(str)
 	case KindArray:
 		size += est.slice(val.Array())
 	case KindHash, KindObject:
@@ -146,6 +156,22 @@ func (est *memoryEstimator) value(val Value) int {
 	}
 
 	return size
+}
+
+func (est *memoryEstimator) stringPayloadSize(str string) int {
+	if len(str) == 0 {
+		return 0
+	}
+
+	key := stringIdentity{
+		ptr: uintptr(unsafe.Pointer(unsafe.StringData(str))),
+		len: len(str),
+	}
+	if _, seen := est.seenStrings[key]; seen {
+		return 0
+	}
+	est.seenStrings[key] = struct{}{}
+	return len(str)
 }
 
 func (est *memoryEstimator) slice(values []Value) int {

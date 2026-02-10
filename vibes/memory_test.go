@@ -1,6 +1,9 @@
 package vibes
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMemoryEstimatorDeduplicatesAliasedEmptySlices(t *testing.T) {
 	backing := make([]Value, 0, 8)
@@ -29,5 +32,18 @@ func TestMemoryEstimatorDoesNotDeduplicateIndependentZeroCapSlices(t *testing.T)
 
 	if first == 0 || second == 0 {
 		t.Fatalf("expected both independent zero-cap slices to contribute memory, got %d and %d", first, second)
+	}
+}
+
+func TestMemoryEstimatorDeduplicatesAliasedStringPayload(t *testing.T) {
+	payload := strings.Repeat("abcdefghij", 200)
+
+	est := newMemoryEstimator()
+	first := est.value(NewString(payload))
+	second := est.value(NewString(payload))
+
+	wantSecond := estimatedValueBytes + estimatedStringHeaderBytes
+	if second != wantSecond {
+		t.Fatalf("expected second aliased string to only add descriptor cost %d, got %d (first=%d)", wantSecond, second, first)
 	}
 }
