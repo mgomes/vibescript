@@ -37,6 +37,7 @@ type Execution struct {
 	script        *Script
 	ctx           context.Context
 	quota         int
+	memoryQuota   int
 	recursionCap  int
 	steps         int
 	callStack     []callFrame
@@ -44,6 +45,7 @@ type Execution struct {
 	modules       map[string]Value
 	moduleLoading map[string]bool
 	receiverStack []Value
+	envStack      []*Env
 }
 
 type callFrame struct {
@@ -89,6 +91,11 @@ func (exec *Execution) step() error {
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {
 		return fmt.Errorf("step quota exceeded (%d)", exec.quota)
+	}
+	if exec.memoryQuota > 0 && (exec.steps&15) == 0 {
+		if err := exec.checkMemory(); err != nil {
+			return err
+		}
 	}
 	if exec.ctx != nil {
 		select {
@@ -179,7 +186,21 @@ func (exec *Execution) popFrame() {
 	exec.callStack = exec.callStack[:len(exec.callStack)-1]
 }
 
+func (exec *Execution) pushEnv(env *Env) {
+	exec.envStack = append(exec.envStack, env)
+}
+
+func (exec *Execution) popEnv() {
+	if len(exec.envStack) == 0 {
+		return
+	}
+	exec.envStack = exec.envStack[:len(exec.envStack)-1]
+}
+
 func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool, error) {
+	exec.pushEnv(env)
+	defer exec.popEnv()
+
 	result := NewNil()
 	for _, stmt := range stmts {
 		if err := exec.step(); err != nil {
@@ -1709,12 +1730,14 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		script:        s,
 		ctx:           ctx,
 		quota:         s.engine.config.StepQuota,
+		memoryQuota:   s.engine.config.MemoryQuotaBytes,
 		recursionCap:  s.engine.config.RecursionLimit,
 		callStack:     make([]callFrame, 0, 8),
 		root:          root,
 		modules:       make(map[string]Value),
 		moduleLoading: make(map[string]bool),
 		receiverStack: make([]Value, 0, 8),
+		envStack:      make([]*Env, 0, 8),
 	}
 
 	if len(opts.Capabilities) > 0 {
@@ -1735,6 +1758,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	for n, val := range opts.Globals {
 		root.Define(n, val)
+	}
+
+	if err := exec.checkMemory(); err != nil {
+		return NewNil(), err
 	}
 
 	// initialize class bodies (class vars)
