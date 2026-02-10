@@ -21,6 +21,7 @@ type memoryEstimator struct {
 	seenEnvs      map[*Env]struct{}
 	seenMaps      map[uintptr]struct{}
 	seenSlices    map[uintptr]struct{}
+	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
 	seenBlocks    map[*Block]struct{}
 }
@@ -30,6 +31,7 @@ func newMemoryEstimator() *memoryEstimator {
 		seenEnvs:      make(map[*Env]struct{}),
 		seenMaps:      make(map[uintptr]struct{}),
 		seenSlices:    make(map[uintptr]struct{}),
+		seenClasses:   make(map[*ClassDef]struct{}),
 		seenInstances: make(map[*Instance]struct{}),
 		seenBlocks:    make(map[*Block]struct{}),
 	}
@@ -104,6 +106,16 @@ func (est *memoryEstimator) value(val Value) int {
 		size += est.slice(val.Array())
 	case KindHash, KindObject:
 		size += est.hash(val.Hash())
+	case KindClass:
+		cl := val.Class()
+		if cl == nil {
+			return size
+		}
+		if _, seen := est.seenClasses[cl]; seen {
+			return size
+		}
+		est.seenClasses[cl] = struct{}{}
+		size += est.hash(cl.ClassVars)
 	case KindInstance:
 		inst := val.Instance()
 		if inst == nil {
@@ -129,8 +141,8 @@ func (est *memoryEstimator) value(val Value) int {
 			size += len(param)
 		}
 		size += est.env(blk.Env)
-	case KindFunction, KindBuiltin, KindClass:
-		// Functions, builtins, and classes are compile-time/static artifacts for memory quotas.
+	case KindFunction, KindBuiltin:
+		// Functions and builtins are compile-time/static artifacts for memory quotas.
 	}
 
 	return size
