@@ -484,3 +484,125 @@ func TestTransientMethodCallReceiverAllocationsAreChecked(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestIfConditionTransientAllocationsAreChecked(t *testing.T) {
+	pos := Position{Line: 1, Column: 1}
+	elements := make([]Expression, 1200)
+	for i := range elements {
+		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+	}
+
+	stmt := &IfStmt{
+		Condition: &ArrayLiteral{Elements: elements, position: pos},
+		Consequent: []Statement{
+			&ExprStmt{
+				Expr:     &IntegerLiteral{Value: 1, position: pos},
+				position: pos,
+			},
+		},
+		position: pos,
+	}
+
+	probeExec := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+	}
+	probeEnv := newEnv(nil)
+	result, _, err := probeExec.evalStatements([]Statement{stmt}, probeEnv)
+	if err != nil {
+		t.Fatalf("probe execution failed: %v", err)
+	}
+
+	probeExec.pushEnv(probeEnv)
+	base := probeExec.estimateMemoryUsage(result)
+	probeExec.popEnv()
+
+	transientValues := make([]Value, len(elements))
+	for i := range transientValues {
+		transientValues[i] = NewString("abcdefghij")
+	}
+	transient := newMemoryEstimator().value(NewArray(transientValues))
+	quota := base + transient/2
+	if quota <= base {
+		quota = base + 1
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	_, _, err = exec.evalStatements([]Statement{stmt}, env)
+	if err == nil {
+		t.Fatalf("expected memory quota error for if-condition transient allocation")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
+	pos := Position{Line: 1, Column: 1}
+	payloadA := strings.Repeat("a", 3000)
+	payloadB := strings.Repeat("b", 3000)
+
+	stmt := &ExprStmt{
+		Expr: &CallExpr{
+			Callee: &Identifier{Name: "assert", position: pos},
+			Args: []Expression{
+				&StringLiteral{Value: payloadA, position: pos},
+				&StringLiteral{Value: payloadB, position: pos},
+			},
+			position: pos,
+		},
+		position: pos,
+	}
+
+	probeExec := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+	}
+	probeEnv := newEnv(nil)
+	probeEnv.Define("assert", NewBuiltin("assert", builtinAssert))
+	result, _, err := probeExec.evalStatements([]Statement{stmt}, probeEnv)
+	if err != nil {
+		t.Fatalf("probe execution failed: %v", err)
+	}
+
+	probeExec.pushEnv(probeEnv)
+	base := probeExec.estimateMemoryUsage(result)
+	probeExec.popEnv()
+
+	argA := newMemoryEstimator().value(NewString(payloadA))
+	argB := newMemoryEstimator().value(NewString(payloadB))
+	single := argA
+	if argB > single {
+		single = argB
+	}
+	combined := argA + argB
+	quota := base + single + (combined-single)/2
+	if quota <= base+single {
+		quota = base + single + 1
+	}
+	if quota >= base+combined {
+		quota = base + combined - 1
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	env.Define("assert", NewBuiltin("assert", builtinAssert))
+	_, _, err = exec.evalStatements([]Statement{stmt}, env)
+	if err == nil {
+		t.Fatalf("expected memory quota error for aggregate builtin arguments")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

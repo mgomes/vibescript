@@ -252,12 +252,18 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		if err != nil {
 			return NewNil(), false, err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), false, err
+		}
 		if val.Truthy() {
 			return exec.evalStatements(s.Consequent, env)
 		}
 		for _, clause := range s.ElseIf {
 			condVal, err := exec.evalExpression(clause.Condition, env)
 			if err != nil {
+				return NewNil(), false, err
+			}
+			if err := exec.checkMemoryWith(condVal); err != nil {
 				return NewNil(), false, err
 			}
 			if condVal.Truthy() {
@@ -764,6 +770,22 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 			return NewNil(), blockErr
 		}
 	}
+	combined := make([]Value, 0, len(args)+len(kwargs)+2)
+	if receiver.Kind() != KindNil {
+		combined = append(combined, receiver)
+	}
+	combined = append(combined, args...)
+	for _, kwVal := range kwargs {
+		combined = append(combined, kwVal)
+	}
+	if !block.IsNil() {
+		combined = append(combined, block)
+	}
+	if len(combined) > 0 {
+		if err := exec.checkMemoryWith(combined...); err != nil {
+			return NewNil(), err
+		}
+	}
 
 	result, callErr := exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
 	if callErr != nil {
@@ -856,6 +878,9 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, error) {
 	iterable, err := exec.evalExpression(stmt.Iterable, env)
 	if err != nil {
+		return NewNil(), false, err
+	}
+	if err := exec.checkMemoryWith(iterable); err != nil {
 		return NewNil(), false, err
 	}
 	last := NewNil()
