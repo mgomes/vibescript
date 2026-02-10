@@ -718,6 +718,9 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := exec.checkMemoryWith(receiver); err != nil {
+			return NewNil(), err
+		}
 		callee, err = exec.getMember(receiver, member.Property, member.Pos())
 		if err != nil {
 			return NewNil(), err
