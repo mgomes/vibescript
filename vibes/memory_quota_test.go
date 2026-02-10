@@ -209,3 +209,53 @@ end`)
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestAssignmentPostCheckDoesNotDoubleCountAssignedValue(t *testing.T) {
+	payload := strings.Repeat("abcdefghij", 300)
+
+	stmt := &AssignStmt{
+		Target:   &Identifier{Name: "x", position: Position{Line: 1, Column: 1}},
+		Value:    &StringLiteral{Value: payload, position: Position{Line: 1, Column: 5}},
+		position: Position{Line: 1, Column: 1},
+	}
+
+	probeExec := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+	}
+	probeEnv := newEnv(nil)
+	if _, _, err := probeExec.evalStatements([]Statement{stmt}, probeEnv); err != nil {
+		t.Fatalf("probe execution failed: %v", err)
+	}
+
+	probeExec.pushEnv(probeEnv)
+	base := probeExec.estimateMemoryUsage()
+	probeExec.popEnv()
+	extra := newMemoryEstimator().value(NewString(payload))
+	quota := base + extra/2
+	if quota <= base {
+		quota = base + 1
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	if _, _, err := exec.evalStatements([]Statement{stmt}, env); err != nil {
+		t.Fatalf("assignment should fit quota without double counting: %v", err)
+	}
+
+	val, ok := env.Get("x")
+	if !ok {
+		t.Fatalf("expected x to be assigned")
+	}
+	exec.pushEnv(env)
+	err := exec.checkMemoryWith(val)
+	exec.popEnv()
+	if err == nil {
+		t.Fatalf("expected explicit extra-root check to exceed quota")
+	}
+}

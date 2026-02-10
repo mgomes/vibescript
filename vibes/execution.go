@@ -210,15 +210,21 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		if err != nil {
 			return NewNil(), false, err
 		}
-		if err := exec.checkMemoryWith(val); err != nil {
-			return NewNil(), false, err
+		if _, isAssign := stmt.(*AssignStmt); isAssign {
+			if err := exec.checkMemory(); err != nil {
+				return NewNil(), false, err
+			}
+		} else {
+			if err := exec.checkMemoryWith(val); err != nil {
+				return NewNil(), false, err
+			}
 		}
 		if returned {
 			return val, true, nil
 		}
 		result = val
 	}
-	if err := exec.checkMemoryWith(result); err != nil {
+	if err := exec.checkMemory(); err != nil {
 		return NewNil(), false, err
 	}
 	return result, false, nil
