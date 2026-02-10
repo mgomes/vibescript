@@ -149,17 +149,17 @@ func (est *memoryEstimator) value(val Value) int {
 }
 
 func (est *memoryEstimator) slice(values []Value) int {
-	size := estimatedSliceBaseBytes + cap(values)*estimatedValueBytes
-	if len(values) == 0 {
-		return size
-	}
-
 	id := reflect.ValueOf(values).Pointer()
 	if id != 0 {
 		if _, seen := est.seenSlices[id]; seen {
 			return 0
 		}
 		est.seenSlices[id] = struct{}{}
+	}
+
+	size := estimatedSliceBaseBytes + cap(values)*estimatedValueBytes
+	if len(values) == 0 {
+		return size
 	}
 
 	for _, val := range values {
