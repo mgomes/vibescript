@@ -218,6 +218,9 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		}
 		result = val
 	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), false, err
+	}
 	return result, false, nil
 }
 

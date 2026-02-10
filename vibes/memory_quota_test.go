@@ -120,3 +120,27 @@ func TestMemoryQuotaExceededOnCompletion(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestMemoryQuotaExceededForEmptyBodyDefaultArg(t *testing.T) {
+	engine := NewEngine(Config{
+		StepQuota:        20000,
+		MemoryQuotaBytes: 2048,
+	})
+
+	largeCSV := strings.Repeat("abcdefghij,", 1500)
+	source := `def run(payload = "` + largeCSV + `".split(","))
+end`
+
+	script, err := engine.Compile(source)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected memory quota error")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
