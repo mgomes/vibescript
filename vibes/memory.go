@@ -36,18 +36,22 @@ func newMemoryEstimator() *memoryEstimator {
 }
 
 func (exec *Execution) checkMemory() error {
+	return exec.checkMemoryWith()
+}
+
+func (exec *Execution) checkMemoryWith(extras ...Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	used := exec.estimateMemoryUsage()
+	used := exec.estimateMemoryUsage(extras...)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("memory quota exceeded (%d bytes)", exec.memoryQuota)
 	}
 	return nil
 }
 
-func (exec *Execution) estimateMemoryUsage() int {
+func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	est := newMemoryEstimator()
 	total := 0
 
@@ -64,6 +68,9 @@ func (exec *Execution) estimateMemoryUsage() int {
 	total += estimatedMapBaseBytes + len(exec.moduleLoading)*estimatedMapEntryBytes
 	for name := range exec.moduleLoading {
 		total += estimatedStringHeaderBytes + len(name)
+	}
+	for _, extra := range extras {
+		total += est.value(extra)
 	}
 
 	return total

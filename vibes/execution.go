@@ -210,6 +210,9 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		if err != nil {
 			return NewNil(), false, err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), false, err
+		}
 		if returned {
 			return val, true, nil
 		}
@@ -1797,6 +1800,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		if err := checkValueType(val, fn.ReturnTy); err != nil {
 			return NewNil(), err
 		}
+	}
+	if err := exec.checkMemoryWith(val); err != nil {
+		return NewNil(), err
 	}
 	if returned {
 		return val, nil

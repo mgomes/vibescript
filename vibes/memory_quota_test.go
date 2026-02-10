@@ -16,6 +16,12 @@ def run()
 end
 `
 
+const splitFixture = `
+def run(input)
+  input.split(",")
+end
+`
+
 func TestMemoryQuotaExceeded(t *testing.T) {
 	engine := NewEngine(Config{
 		StepQuota:        20000,
@@ -53,5 +59,26 @@ func TestMemoryQuotaAllowsExecution(t *testing.T) {
 	}
 	if result.Kind() != KindInt || result.Int() != 200 {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestMemoryQuotaExceededOnCompletion(t *testing.T) {
+	engine := NewEngine(Config{
+		StepQuota:        20000,
+		MemoryQuotaBytes: 2048,
+	})
+
+	script, err := engine.Compile(splitFixture)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	input := strings.Repeat("a,", 4000)
+	_, err = script.Call(context.Background(), "run", []Value{NewString(input)}, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected memory quota error")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
