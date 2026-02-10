@@ -306,3 +306,66 @@ func TestExpressionAliasPostCheckDoesNotDoubleCountString(t *testing.T) {
 		t.Fatalf("aliased expression result should fit quota without payload double counting: %v", err)
 	}
 }
+
+func TestTransientExpressionAllocationsAreChecked(t *testing.T) {
+	pos := Position{Line: 1, Column: 1}
+	stmt := &ExprStmt{
+		Expr: &MemberExpr{
+			Object: &CallExpr{
+				Callee: &MemberExpr{
+					Object:   &Identifier{Name: "input", position: pos},
+					Property: "split",
+					position: pos,
+				},
+				Args:     []Expression{&StringLiteral{Value: ",", position: pos}},
+				position: pos,
+			},
+			Property: "size",
+			position: pos,
+		},
+		position: pos,
+	}
+
+	input := strings.Repeat("a,", 1500)
+	probeExec := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+	}
+	probeEnv := newEnv(nil)
+	probeEnv.Define("input", NewString(input))
+	result, _, err := probeExec.evalStatements([]Statement{stmt}, probeEnv)
+	if err != nil {
+		t.Fatalf("probe execution failed: %v", err)
+	}
+
+	probeExec.pushEnv(probeEnv)
+	base := probeExec.estimateMemoryUsage(result)
+	probeExec.popEnv()
+
+	parts := strings.Split(input, ",")
+	partValues := make([]Value, len(parts))
+	for i, part := range parts {
+		partValues[i] = NewString(part)
+	}
+	transient := newMemoryEstimator().value(NewArray(partValues))
+	quota := base + transient/2
+	if quota <= base {
+		quota = base + 1
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	env.Define("input", NewString(input))
+	_, _, err = exec.evalStatements([]Statement{stmt}, env)
+	if err == nil {
+		t.Fatalf("expected memory quota error for transient expression allocation")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

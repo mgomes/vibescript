@@ -465,6 +465,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := exec.checkMemoryWith(obj); err != nil {
+			return NewNil(), err
+		}
 		member, err := exec.getMember(obj, e.Property, e.Pos())
 		if err != nil {
 			return NewNil(), err
@@ -726,6 +729,9 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), err
+		}
 		args[i] = val
 	}
 
@@ -733,6 +739,9 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	for _, kw := range call.KwArgs {
 		val, err := exec.evalExpressionWithAuto(kw.Value, env, true)
 		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(val); err != nil {
 			return NewNil(), err
 		}
 		kwargs[kw.Name] = val
@@ -747,7 +756,14 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		}
 	}
 
-	return exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
+	result, callErr := exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
+	if callErr != nil {
+		return NewNil(), callErr
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
 }
 
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
