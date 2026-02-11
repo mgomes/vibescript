@@ -9,7 +9,7 @@ type callFunctionRebinder struct {
 	seenFunctions map[*ScriptFunction]*ScriptFunction
 	seenInstances map[*Instance]Value
 	seenArrays    map[sliceIdentity]Value
-	seenMaps      map[uintptr]Value
+	seenMaps      map[uintptr]map[string]Value
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef) *callFunctionRebinder {
@@ -20,7 +20,7 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 		seenFunctions: make(map[*ScriptFunction]*ScriptFunction),
 		seenInstances: make(map[*Instance]Value),
 		seenArrays:    make(map[sliceIdentity]Value),
-		seenMaps:      make(map[uintptr]Value),
+		seenMaps:      make(map[uintptr]map[string]Value),
 	}
 }
 
@@ -85,29 +85,27 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	case KindHash:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
-		if clone, seen := r.seenMaps[ptr]; seen {
-			return clone
+		if cloneMap, seen := r.seenMaps[ptr]; seen {
+			return NewHash(cloneMap)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
-		clonedHash := NewHash(clonedEntries)
-		r.seenMaps[ptr] = clonedHash
+		r.seenMaps[ptr] = clonedEntries
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
 		}
-		return clonedHash
+		return NewHash(clonedEntries)
 	case KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
-		if clone, seen := r.seenMaps[ptr]; seen {
-			return clone
+		if cloneMap, seen := r.seenMaps[ptr]; seen {
+			return NewObject(cloneMap)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
-		clonedObject := NewObject(clonedEntries)
-		r.seenMaps[ptr] = clonedObject
+		r.seenMaps[ptr] = clonedEntries
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
 		}
-		return clonedObject
+		return NewObject(clonedEntries)
 	default:
 		return val
 	}

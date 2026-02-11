@@ -469,3 +469,31 @@ end`)
 		t.Fatalf("escaped instance lost ivars during rebinding: %#v", name)
 	}
 }
+
+func TestScriptCallRebindingPreservesHashAndObjectKindsForAliasedMaps(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`def run(a, b)
+  [a, b]
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	shared := map[string]Value{"x": NewInt(1)}
+	hashVal := NewHash(shared)
+	objectVal := NewObject(shared)
+
+	result, err := script.Call(context.Background(), "run", []Value{objectVal, hashVal}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindArray || len(result.Array()) != 2 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if result.Array()[0].Kind() != KindObject {
+		t.Fatalf("expected first value to stay object, got %v", result.Array()[0].Kind())
+	}
+	if result.Array()[1].Kind() != KindHash {
+		t.Fatalf("expected second value to stay hash, got %v", result.Array()[1].Kind())
+	}
+}
