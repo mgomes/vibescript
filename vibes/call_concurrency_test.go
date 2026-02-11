@@ -408,3 +408,64 @@ end`)
 		t.Fatalf("escaped class reused stale class var state: %#v", count)
 	}
 }
+
+func TestScriptCallRebindsEscapedInstancesToCurrentCallState(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`class Bucket
+  @@count = 0
+
+  def initialize(name)
+    @name = name
+    @@count = @@count + 1
+  end
+
+  def report
+    { tenant: tenant, count: @@count, name: @name }
+  end
+end
+
+def export_instance(name)
+  Bucket.new(name)
+end
+
+def run_with(bucket)
+  bucket.report
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	exportedInstance, err := script.Call(context.Background(), "export_instance", []Value{NewString("seed")}, CallOptions{
+		Globals: map[string]Value{
+			"tenant": NewString("first"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("export_instance failed: %v", err)
+	}
+	if exportedInstance.Kind() != KindInstance {
+		t.Fatalf("expected instance result, got %#v", exportedInstance)
+	}
+
+	result, err := script.Call(context.Background(), "run_with", []Value{exportedInstance}, CallOptions{
+		Globals: map[string]Value{
+			"tenant": NewString("second"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("run_with failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %#v", result)
+	}
+	got := result.Hash()
+	if tenant := got["tenant"]; tenant.Kind() != KindString || tenant.String() != "second" {
+		t.Fatalf("escaped instance used stale env: %#v", tenant)
+	}
+	if count := got["count"]; count.Kind() != KindInt || count.Int() != 0 {
+		t.Fatalf("escaped instance reused stale class var state: %#v", count)
+	}
+	if name := got["name"]; name.Kind() != KindString || name.String() != "seed" {
+		t.Fatalf("escaped instance lost ivars during rebinding: %#v", name)
+	}
+}

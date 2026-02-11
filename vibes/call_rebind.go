@@ -7,6 +7,7 @@ type callFunctionRebinder struct {
 	root          *Env
 	callClasses   map[string]*ClassDef
 	seenFunctions map[*ScriptFunction]*ScriptFunction
+	seenInstances map[*Instance]Value
 	seenArrays    map[sliceIdentity]Value
 	seenMaps      map[uintptr]Value
 }
@@ -17,6 +18,7 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 		root:          root,
 		callClasses:   callClasses,
 		seenFunctions: make(map[*ScriptFunction]*ScriptFunction),
+		seenInstances: make(map[*Instance]Value),
 		seenArrays:    make(map[sliceIdentity]Value),
 		seenMaps:      make(map[uintptr]Value),
 	}
@@ -24,6 +26,25 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 
 func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	switch val.Kind() {
+	case KindInstance:
+		inst := val.Instance()
+		if inst == nil || inst.Class == nil || inst.Class.owner != r.script {
+			return val
+		}
+		if clone, ok := r.seenInstances[inst]; ok {
+			return clone
+		}
+		reboundClass, ok := r.callClasses[inst.Class.Name]
+		if !ok {
+			return val
+		}
+		clonedIvars := make(map[string]Value, len(inst.Ivars))
+		cloned := NewInstance(&Instance{Class: reboundClass, Ivars: clonedIvars})
+		r.seenInstances[inst] = cloned
+		for name, ivar := range inst.Ivars {
+			clonedIvars[name] = r.rebindValue(ivar)
+		}
+		return cloned
 	case KindClass:
 		classDef := val.Class()
 		if classDef == nil || classDef.owner != r.script {
