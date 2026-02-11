@@ -109,6 +109,9 @@ func cloneFunctionForEnv(fn *ScriptFunction, env *Env) *ScriptFunction {
 }
 
 func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if exec.strictEffects && !exec.allowRequire {
+		return NewNil(), fmt.Errorf("strict effects: require is disabled without CallOptions.AllowRequire")
+	}
 	if len(args) != 1 {
 		return NewNil(), fmt.Errorf("require expects a single module name argument")
 	}

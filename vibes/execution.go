@@ -29,6 +29,7 @@ type Script struct {
 type CallOptions struct {
 	Globals      map[string]Value
 	Capabilities []CapabilityAdapter
+	AllowRequire bool
 	Keywords     map[string]Value
 }
 
@@ -46,6 +47,8 @@ type Execution struct {
 	moduleLoading map[string]bool
 	receiverStack []Value
 	envStack      []*Env
+	strictEffects bool
+	allowRequire  bool
 }
 
 type callFrame struct {
@@ -1832,6 +1835,8 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		moduleLoading: make(map[string]bool),
 		receiverStack: make([]Value, 0, 8),
 		envStack:      make([]*Env, 0, 8),
+		strictEffects: s.engine.config.StrictEffects,
+		allowRequire:  opts.AllowRequire,
 	}
 
 	if len(opts.Capabilities) > 0 {
@@ -1847,6 +1852,12 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 			for name, val := range globals {
 				root.Define(name, val)
 			}
+		}
+	}
+
+	if exec.strictEffects {
+		if err := validateStrictGlobals(opts.Globals); err != nil {
+			return NewNil(), err
 		}
 	}
 
