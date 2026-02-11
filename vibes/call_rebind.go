@@ -5,16 +5,16 @@ import "reflect"
 type callFunctionRebinder struct {
 	root          *Env
 	seenFunctions map[*ScriptFunction]*ScriptFunction
-	seenArrays    map[sliceIdentity]struct{}
-	seenMaps      map[uintptr]struct{}
+	seenArrays    map[sliceIdentity]Value
+	seenMaps      map[uintptr]Value
 }
 
 func newCallFunctionRebinder(root *Env) *callFunctionRebinder {
 	return &callFunctionRebinder{
 		root:          root,
 		seenFunctions: make(map[*ScriptFunction]*ScriptFunction),
-		seenArrays:    make(map[sliceIdentity]struct{}),
-		seenMaps:      make(map[uintptr]struct{}),
+		seenArrays:    make(map[sliceIdentity]Value),
+		seenMaps:      make(map[uintptr]Value),
 	}
 }
 
@@ -38,25 +38,42 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			len: len(items),
 			cap: cap(items),
 		}
-		if _, seen := r.seenArrays[id]; seen {
-			return val
+		if clone, seen := r.seenArrays[id]; seen {
+			return clone
 		}
-		r.seenArrays[id] = struct{}{}
+		clonedItems := make([]Value, len(items))
+		clonedArray := NewArray(clonedItems)
+		r.seenArrays[id] = clonedArray
 		for i := range items {
-			items[i] = r.rebindValue(items[i])
+			clonedItems[i] = r.rebindValue(items[i])
 		}
-		return val
-	case KindHash, KindObject:
+		return clonedArray
+	case KindHash:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
-		if _, seen := r.seenMaps[ptr]; seen {
-			return val
+		if clone, seen := r.seenMaps[ptr]; seen {
+			return clone
 		}
-		r.seenMaps[ptr] = struct{}{}
+		clonedEntries := make(map[string]Value, len(entries))
+		clonedHash := NewHash(clonedEntries)
+		r.seenMaps[ptr] = clonedHash
 		for key, item := range entries {
-			entries[key] = r.rebindValue(item)
+			clonedEntries[key] = r.rebindValue(item)
 		}
-		return val
+		return clonedHash
+	case KindObject:
+		entries := val.Hash()
+		ptr := reflect.ValueOf(entries).Pointer()
+		if clone, seen := r.seenMaps[ptr]; seen {
+			return clone
+		}
+		clonedEntries := make(map[string]Value, len(entries))
+		clonedObject := NewObject(clonedEntries)
+		r.seenMaps[ptr] = clonedObject
+		for key, item := range entries {
+			clonedEntries[key] = r.rebindValue(item)
+		}
+		return clonedObject
 	default:
 		return val
 	}

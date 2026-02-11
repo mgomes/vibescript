@@ -221,3 +221,89 @@ end`)
 		t.Fatalf("escaped function used stale call env: %#v", result)
 	}
 }
+
+func TestScriptCallRebindingDoesNotMutateSharedArgMaps(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`def format_tenant(value)
+  tenant + "-" + value
+end
+
+def export_fn
+  format_tenant
+end
+
+def run(ctx)
+  sync.wait()
+  ctx.fn("value")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	exported, err := script.Call(context.Background(), "export_fn", nil, CallOptions{
+		Globals: map[string]Value{
+			"tenant": NewString("bootstrap"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("export_fn failed: %v", err)
+	}
+	if exported.Kind() != KindFunction {
+		t.Fatalf("expected function result, got %#v", exported)
+	}
+
+	sharedCtx := NewObject(map[string]Value{
+		"fn": exported,
+	})
+
+	barrier := &blockingSync{
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	firstDone := make(chan callResult, 1)
+	go func() {
+		val, callErr := script.Call(ctx, "run", []Value{sharedCtx}, CallOptions{
+			Globals: map[string]Value{
+				"sync":   barrier.value(),
+				"tenant": NewString("first"),
+			},
+		})
+		firstDone <- callResult{value: val, err: callErr}
+	}()
+
+	select {
+	case <-barrier.entered:
+	case <-ctx.Done():
+		t.Fatalf("first call did not reach sync.wait: %v", ctx.Err())
+	}
+
+	second, err := script.Call(ctx, "run", []Value{sharedCtx}, CallOptions{
+		Globals: map[string]Value{
+			"sync":   noopSyncValue(),
+			"tenant": NewString("second"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	if second.Kind() != KindString || second.String() != "second-value" {
+		t.Fatalf("unexpected second call result: %#v", second)
+	}
+
+	close(barrier.release)
+
+	select {
+	case first := <-firstDone:
+		if first.err != nil {
+			t.Fatalf("first call failed: %v", first.err)
+		}
+		if first.value.Kind() != KindString || first.value.String() != "first-value" {
+			t.Fatalf("shared arg map mutation leaked env across calls: %#v", first.value)
+		}
+	case <-ctx.Done():
+		t.Fatalf("first call did not complete: %v", ctx.Err())
+	}
+}
