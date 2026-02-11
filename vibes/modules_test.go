@@ -202,3 +202,50 @@ end`)
 		t.Fatalf("expected 1 cached module after concurrent access, got %d", len(engine.modules))
 	}
 }
+
+func TestRequireStrictEffectsRequiresAllowRequire(t *testing.T) {
+	engine := NewEngine(Config{
+		StrictEffects: true,
+		ModulePaths:   []string{filepath.Join("testdata", "modules")},
+	})
+
+	script, err := engine.Compile(`def run()
+  require("helper")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected strict effects require error")
+	}
+	if got := err.Error(); !strings.Contains(got, "strict effects: require is disabled") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireStrictEffectsAllowsRequireWhenOptedIn(t *testing.T) {
+	engine := NewEngine(Config{
+		StrictEffects: true,
+		ModulePaths:   []string{filepath.Join("testdata", "modules")},
+	})
+
+	script, err := engine.Compile(`def run(v)
+  helpers = require("helper")
+  helpers.triple(v)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(4)}, CallOptions{
+		AllowRequire: true,
+	})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 12 {
+		t.Fatalf("expected 12, got %#v", result)
+	}
+}
