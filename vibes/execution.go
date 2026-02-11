@@ -18,6 +18,7 @@ type ScriptFunction struct {
 	Pos      Position
 	Env      *Env
 	Private  bool
+	owner    *Script
 }
 
 type Script struct {
@@ -1642,7 +1643,9 @@ func (e *Engine) Compile(source string) (*Script, error) {
 		}
 	}
 
-	return &Script{engine: e, functions: functions, classes: classes}, nil
+	script := &Script{engine: e, functions: functions, classes: classes}
+	script.bindFunctionOwnership()
+	return script, nil
 }
 
 func combineErrors(errs []error) error {
@@ -1786,6 +1789,20 @@ func (s *Script) Function(name string) (*ScriptFunction, bool) {
 	return fn, ok
 }
 
+func (s *Script) bindFunctionOwnership() {
+	for _, fn := range s.functions {
+		fn.owner = s
+	}
+	for _, classDef := range s.classes {
+		for _, fn := range classDef.Methods {
+			fn.owner = s
+		}
+		for _, fn := range classDef.ClassMethods {
+			fn.owner = s
+		}
+	}
+}
+
 func cloneFunctionsForCall(functions map[string]*ScriptFunction, env *Env) map[string]*ScriptFunction {
 	cloned := make(map[string]*ScriptFunction, len(functions))
 	for name, fn := range functions {
@@ -1829,7 +1846,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	for n, builtin := range s.engine.builtins {
 		root.Define(n, builtin)
 	}
-	rebinder := newCallFunctionRebinder(root)
+	rebinder := newCallFunctionRebinder(s, root)
 
 	callFunctions := cloneFunctionsForCall(s.functions, root)
 	fn, ok := callFunctions[name]

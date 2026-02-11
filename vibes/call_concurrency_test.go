@@ -307,3 +307,45 @@ end`)
 		t.Fatalf("first call did not complete: %v", ctx.Err())
 	}
 }
+
+func TestScriptCallPreservesForeignFunctionEnv(t *testing.T) {
+	engine := NewEngine(Config{})
+
+	producer, err := engine.Compile(`def helper(value)
+  "foreign-" + value
+end
+
+def wrapper(value)
+  helper(value)
+end
+
+def export_fn
+  wrapper
+end`)
+	if err != nil {
+		t.Fatalf("compile producer failed: %v", err)
+	}
+
+	consumer, err := engine.Compile(`def run_with(fn, value)
+  fn(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile consumer failed: %v", err)
+	}
+
+	foreignFn, err := producer.Call(context.Background(), "export_fn", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("export_fn failed: %v", err)
+	}
+	if foreignFn.Kind() != KindFunction {
+		t.Fatalf("expected exported function, got %#v", foreignFn)
+	}
+
+	result, err := consumer.Call(context.Background(), "run_with", []Value{foreignFn, NewString("value")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("consumer call failed: %v", err)
+	}
+	if result.Kind() != KindString || result.String() != "foreign-value" {
+		t.Fatalf("foreign function env was not preserved: %#v", result)
+	}
+}

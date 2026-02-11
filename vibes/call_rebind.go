@@ -3,14 +3,16 @@ package vibes
 import "reflect"
 
 type callFunctionRebinder struct {
+	script        *Script
 	root          *Env
 	seenFunctions map[*ScriptFunction]*ScriptFunction
 	seenArrays    map[sliceIdentity]Value
 	seenMaps      map[uintptr]Value
 }
 
-func newCallFunctionRebinder(root *Env) *callFunctionRebinder {
+func newCallFunctionRebinder(script *Script, root *Env) *callFunctionRebinder {
 	return &callFunctionRebinder{
+		script:        script,
 		root:          root,
 		seenFunctions: make(map[*ScriptFunction]*ScriptFunction),
 		seenArrays:    make(map[sliceIdentity]Value),
@@ -22,7 +24,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	switch val.Kind() {
 	case KindFunction:
 		fn := val.Function()
-		if fn == nil || fn.Env == r.root {
+		if fn == nil || fn.owner != r.script || fn.Env == r.root {
 			return val
 		}
 		if clone, ok := r.seenFunctions[fn]; ok {
