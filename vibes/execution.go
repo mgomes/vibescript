@@ -243,6 +243,9 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		if err != nil {
 			return NewNil(), false, err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), false, err
+		}
 		if err := exec.assign(s.Target, val, env); err != nil {
 			return NewNil(), false, err
 		}

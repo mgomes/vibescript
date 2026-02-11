@@ -606,3 +606,74 @@ func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestTransientAssignmentValueIsCheckedBeforeAssign(t *testing.T) {
+	pos := Position{Line: 1, Column: 1}
+	elements := make([]Expression, 1200)
+	for i := range elements {
+		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+	}
+
+	assignStmt := &AssignStmt{
+		Target: &IndexExpr{
+			Object: &CallExpr{
+				Callee:   &Identifier{Name: "mk", position: pos},
+				position: pos,
+			},
+			Index:    &StringLiteral{Value: "x", position: pos},
+			position: pos,
+		},
+		Value:    &ArrayLiteral{Elements: elements, position: pos},
+		position: pos,
+	}
+	returnStmt := &ExprStmt{
+		Expr:     &IntegerLiteral{Value: 1, position: pos},
+		position: pos,
+	}
+	stmts := []Statement{assignStmt, returnStmt}
+
+	mk := NewBuiltin("mk", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewHash(map[string]Value{}), nil
+	})
+
+	probeExec := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+	}
+	probeEnv := newEnv(nil)
+	probeEnv.Define("mk", mk)
+	result, _, err := probeExec.evalStatements(stmts, probeEnv)
+	if err != nil {
+		t.Fatalf("probe execution failed: %v", err)
+	}
+
+	probeExec.pushEnv(probeEnv)
+	base := probeExec.estimateMemoryUsage(result)
+	probeExec.popEnv()
+
+	transientValues := make([]Value, len(elements))
+	for i := range transientValues {
+		transientValues[i] = NewString("abcdefghij")
+	}
+	transient := newMemoryEstimator().value(NewArray(transientValues))
+	quota := base + transient/2
+	if quota <= base {
+		quota = base + 1
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	env.Define("mk", mk)
+	_, _, err = exec.evalStatements(stmts, env)
+	if err == nil {
+		t.Fatalf("expected memory quota error for transient assignment value")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
