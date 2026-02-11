@@ -349,3 +349,62 @@ end`)
 		t.Fatalf("foreign function env was not preserved: %#v", result)
 	}
 }
+
+func TestScriptCallRebindsEscapedClassValuesToCurrentCall(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`class Bucket
+  @@count = 0
+
+  def self.bump
+    @@count = @@count + 1
+  end
+
+  def self.snapshot
+    { tenant: tenant, count: @@count }
+  end
+end
+
+def export_class
+  Bucket.bump
+  Bucket
+end
+
+def run_with(klass)
+  klass.bump
+  klass.snapshot
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	exportedClass, err := script.Call(context.Background(), "export_class", nil, CallOptions{
+		Globals: map[string]Value{
+			"tenant": NewString("first"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("export_class failed: %v", err)
+	}
+	if exportedClass.Kind() != KindClass {
+		t.Fatalf("expected class result, got %#v", exportedClass)
+	}
+
+	result, err := script.Call(context.Background(), "run_with", []Value{exportedClass}, CallOptions{
+		Globals: map[string]Value{
+			"tenant": NewString("second"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("run_with failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %#v", result)
+	}
+	got := result.Hash()
+	if tenant := got["tenant"]; tenant.Kind() != KindString || tenant.String() != "second" {
+		t.Fatalf("escaped class used stale env: %#v", tenant)
+	}
+	if count := got["count"]; count.Kind() != KindInt || count.Int() != 1 {
+		t.Fatalf("escaped class reused stale class var state: %#v", count)
+	}
+}

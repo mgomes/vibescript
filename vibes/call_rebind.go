@@ -5,15 +5,17 @@ import "reflect"
 type callFunctionRebinder struct {
 	script        *Script
 	root          *Env
+	callClasses   map[string]*ClassDef
 	seenFunctions map[*ScriptFunction]*ScriptFunction
 	seenArrays    map[sliceIdentity]Value
 	seenMaps      map[uintptr]Value
 }
 
-func newCallFunctionRebinder(script *Script, root *Env) *callFunctionRebinder {
+func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef) *callFunctionRebinder {
 	return &callFunctionRebinder{
 		script:        script,
 		root:          root,
+		callClasses:   callClasses,
 		seenFunctions: make(map[*ScriptFunction]*ScriptFunction),
 		seenArrays:    make(map[sliceIdentity]Value),
 		seenMaps:      make(map[uintptr]Value),
@@ -22,6 +24,15 @@ func newCallFunctionRebinder(script *Script, root *Env) *callFunctionRebinder {
 
 func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	switch val.Kind() {
+	case KindClass:
+		classDef := val.Class()
+		if classDef == nil || classDef.owner != r.script {
+			return val
+		}
+		if rebound, ok := r.callClasses[classDef.Name]; ok {
+			return NewClass(rebound)
+		}
+		return val
 	case KindFunction:
 		fn := val.Function()
 		if fn == nil || fn.owner != r.script || fn.Env == r.root {

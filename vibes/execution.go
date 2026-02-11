@@ -1794,6 +1794,7 @@ func (s *Script) bindFunctionOwnership() {
 		fn.owner = s
 	}
 	for _, classDef := range s.classes {
+		classDef.owner = s
 		for _, fn := range classDef.Methods {
 			fn.owner = s
 		}
@@ -1820,6 +1821,7 @@ func cloneClassesForCall(classes map[string]*ClassDef, env *Env) map[string]*Cla
 			ClassMethods: make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
 			ClassVars:    make(map[string]Value),
 			Body:         classDef.Body,
+			owner:        classDef.owner,
 		}
 		for methodName, method := range classDef.Methods {
 			classClone.Methods[methodName] = cloneFunctionForEnv(method, env)
@@ -1846,7 +1848,6 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	for n, builtin := range s.engine.builtins {
 		root.Define(n, builtin)
 	}
-	rebinder := newCallFunctionRebinder(s, root)
 
 	callFunctions := cloneFunctionsForCall(s.functions, root)
 	fn, ok := callFunctions[name]
@@ -1861,6 +1862,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	for n, classDef := range callClasses {
 		root.Define(n, NewClass(classDef))
 	}
+	rebinder := newCallFunctionRebinder(s, root, callClasses)
 
 	exec := &Execution{
 		engine:        s.engine,
