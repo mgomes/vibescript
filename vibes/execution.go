@@ -37,6 +37,7 @@ type Execution struct {
 	script        *Script
 	ctx           context.Context
 	quota         int
+	memoryQuota   int
 	recursionCap  int
 	steps         int
 	callStack     []callFrame
@@ -44,6 +45,7 @@ type Execution struct {
 	modules       map[string]Value
 	moduleLoading map[string]bool
 	receiverStack []Value
+	envStack      []*Env
 }
 
 type callFrame struct {
@@ -89,6 +91,11 @@ func (exec *Execution) step() error {
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {
 		return fmt.Errorf("step quota exceeded (%d)", exec.quota)
+	}
+	if exec.memoryQuota > 0 && (exec.steps&15) == 0 {
+		if err := exec.checkMemory(); err != nil {
+			return err
+		}
 	}
 	if exec.ctx != nil {
 		select {
@@ -179,7 +186,21 @@ func (exec *Execution) popFrame() {
 	exec.callStack = exec.callStack[:len(exec.callStack)-1]
 }
 
+func (exec *Execution) pushEnv(env *Env) {
+	exec.envStack = append(exec.envStack, env)
+}
+
+func (exec *Execution) popEnv() {
+	if len(exec.envStack) == 0 {
+		return
+	}
+	exec.envStack = exec.envStack[:len(exec.envStack)-1]
+}
+
 func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool, error) {
+	exec.pushEnv(env)
+	defer exec.popEnv()
+
 	result := NewNil()
 	for _, stmt := range stmts {
 		if err := exec.step(); err != nil {
@@ -189,10 +210,22 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		if err != nil {
 			return NewNil(), false, err
 		}
+		if _, isAssign := stmt.(*AssignStmt); isAssign {
+			if err := exec.checkMemory(); err != nil {
+				return NewNil(), false, err
+			}
+		} else {
+			if err := exec.checkMemoryWith(val); err != nil {
+				return NewNil(), false, err
+			}
+		}
 		if returned {
 			return val, true, nil
 		}
 		result = val
+	}
+	if err := exec.checkMemory(); err != nil {
+		return NewNil(), false, err
 	}
 	return result, false, nil
 }
@@ -210,6 +243,9 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		if err != nil {
 			return NewNil(), false, err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), false, err
+		}
 		if err := exec.assign(s.Target, val, env); err != nil {
 			return NewNil(), false, err
 		}
@@ -219,12 +255,18 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		if err != nil {
 			return NewNil(), false, err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), false, err
+		}
 		if val.Truthy() {
 			return exec.evalStatements(s.Consequent, env)
 		}
 		for _, clause := range s.ElseIf {
 			condVal, err := exec.evalExpression(clause.Condition, env)
 			if err != nil {
+				return NewNil(), false, err
+			}
+			if err := exec.checkMemoryWith(condVal); err != nil {
 				return NewNil(), false, err
 			}
 			if condVal.Truthy() {
@@ -284,6 +326,9 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
+		if err := exec.checkMemoryWith(obj); err != nil {
+			return err
+		}
 		switch obj.Kind() {
 		case KindHash, KindObject:
 			m := obj.Hash()
@@ -321,8 +366,14 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
+		if err := exec.checkMemoryWith(obj); err != nil {
+			return err
+		}
 		idx, err := exec.evalExpression(t.Index, env)
 		if err != nil {
+			return err
+		}
+		if err := exec.checkMemoryWith(idx); err != nil {
 			return err
 		}
 		switch obj.Kind() {
@@ -432,6 +483,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := exec.checkMemoryWith(obj); err != nil {
+			return NewNil(), err
+		}
 		member, err := exec.getMember(obj, e.Property, e.Pos())
 		if err != nil {
 			return NewNil(), err
@@ -524,6 +578,12 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
 		return NewNil(), err
 	}
+	exec.pushEnv(callEnv)
+	if err := exec.checkMemory(); err != nil {
+		exec.popEnv()
+		return NewNil(), err
+	}
+	exec.popEnv()
 	if err := exec.pushFrame(fn.Name, pos); err != nil {
 		return NewNil(), err
 	}
@@ -550,6 +610,9 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkMemoryWith(right); err != nil {
+		return NewNil(), err
+	}
 	switch e.Operator {
 	case tokenMinus:
 		switch right.Kind() {
@@ -572,8 +635,14 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkMemoryWith(obj); err != nil {
+		return NewNil(), err
+	}
 	idx, err := exec.evalExpressionWithAuto(e.Index, env, true)
 	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(idx); err != nil {
 		return NewNil(), err
 	}
 	switch obj.Kind() {
@@ -619,6 +688,9 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	}
 	right, err := exec.evalExpression(expr.Right, env)
 	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(left, right); err != nil {
 		return NewNil(), err
 	}
 
@@ -670,6 +742,9 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := exec.checkMemoryWith(receiver); err != nil {
+			return NewNil(), err
+		}
 		callee, err = exec.getMember(receiver, member.Property, member.Pos())
 		if err != nil {
 			return NewNil(), err
@@ -687,6 +762,9 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), err
+		}
 		args[i] = val
 	}
 
@@ -694,6 +772,9 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	for _, kw := range call.KwArgs {
 		val, err := exec.evalExpressionWithAuto(kw.Value, env, true)
 		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(val); err != nil {
 			return NewNil(), err
 		}
 		kwargs[kw.Name] = val
@@ -707,8 +788,31 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 			return NewNil(), blockErr
 		}
 	}
+	combined := make([]Value, 0, len(args)+len(kwargs)+2)
+	if receiver.Kind() != KindNil {
+		combined = append(combined, receiver)
+	}
+	combined = append(combined, args...)
+	for _, kwVal := range kwargs {
+		combined = append(combined, kwVal)
+	}
+	if !block.IsNil() {
+		combined = append(combined, block)
+	}
+	if len(combined) > 0 {
+		if err := exec.checkMemoryWith(combined...); err != nil {
+			return NewNil(), err
+		}
+	}
 
-	return exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
+	result, callErr := exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
+	if callErr != nil {
+		return NewNil(), callErr
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
 }
 
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
@@ -764,7 +868,15 @@ func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), err
+		}
 		args = append(args, val)
+	}
+	if len(args) > 0 {
+		if err := exec.checkMemoryWith(args...); err != nil {
+			return NewNil(), err
+		}
 	}
 	return exec.CallBlock(block, args)
 }
@@ -792,6 +904,9 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, error) {
 	iterable, err := exec.evalExpression(stmt.Iterable, env)
 	if err != nil {
+		return NewNil(), false, err
+	}
+	if err := exec.checkMemoryWith(iterable); err != nil {
 		return NewNil(), false, err
 	}
 	last := NewNil()
@@ -1709,12 +1824,14 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		script:        s,
 		ctx:           ctx,
 		quota:         s.engine.config.StepQuota,
+		memoryQuota:   s.engine.config.MemoryQuotaBytes,
 		recursionCap:  s.engine.config.RecursionLimit,
 		callStack:     make([]callFrame, 0, 8),
 		root:          root,
 		modules:       make(map[string]Value),
 		moduleLoading: make(map[string]bool),
 		receiverStack: make([]Value, 0, 8),
+		envStack:      make([]*Env, 0, 8),
 	}
 
 	if len(opts.Capabilities) > 0 {
@@ -1737,6 +1854,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		root.Define(n, val)
 	}
 
+	if err := exec.checkMemory(); err != nil {
+		return NewNil(), err
+	}
+
 	// initialize class bodies (class vars)
 	for name, classDef := range s.classes {
 		if len(classDef.Body) == 0 {
@@ -1757,6 +1878,12 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	if err := exec.bindFunctionArgs(fn, callEnv, args, opts.Keywords, fn.Pos); err != nil {
 		return NewNil(), err
 	}
+	exec.pushEnv(callEnv)
+	if err := exec.checkMemory(); err != nil {
+		exec.popEnv()
+		return NewNil(), err
+	}
+	exec.popEnv()
 
 	if err := exec.pushFrame(fn.Name, fn.Pos); err != nil {
 		return NewNil(), err
@@ -1770,6 +1897,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		if err := checkValueType(val, fn.ReturnTy); err != nil {
 			return NewNil(), err
 		}
+	}
+	if err := exec.checkMemoryWith(val); err != nil {
+		return NewNil(), err
 	}
 	if returned {
 		return val, nil
