@@ -326,6 +326,9 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
+		if err := exec.checkMemoryWith(obj); err != nil {
+			return err
+		}
 		switch obj.Kind() {
 		case KindHash, KindObject:
 			m := obj.Hash()
@@ -363,8 +366,14 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err != nil {
 			return err
 		}
+		if err := exec.checkMemoryWith(obj); err != nil {
+			return err
+		}
 		idx, err := exec.evalExpression(t.Index, env)
 		if err != nil {
+			return err
+		}
+		if err := exec.checkMemoryWith(idx); err != nil {
 			return err
 		}
 		switch obj.Kind() {
@@ -601,6 +610,9 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkMemoryWith(right); err != nil {
+		return NewNil(), err
+	}
 	switch e.Operator {
 	case tokenMinus:
 		switch right.Kind() {
@@ -676,6 +688,9 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	}
 	right, err := exec.evalExpression(expr.Right, env)
 	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(left, right); err != nil {
 		return NewNil(), err
 	}
 
@@ -853,7 +868,15 @@ func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), err
+		}
 		args = append(args, val)
+	}
+	if len(args) > 0 {
+		if err := exec.checkMemoryWith(args...); err != nil {
+			return NewNil(), err
+		}
 	}
 	return exec.CallBlock(block, args)
 }
