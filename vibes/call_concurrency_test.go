@@ -179,3 +179,45 @@ end`)
 		t.Fatalf("first call did not complete: %v", ctx.Err())
 	}
 }
+
+func TestScriptCallRebindsEscapedFunctionsToCurrentCallEnv(t *testing.T) {
+	engine := NewEngine(Config{})
+	script, err := engine.Compile(`def format_tenant(value)
+  tenant + "-" + value
+end
+
+def export_fn
+  format_tenant
+end
+
+def run_with(fn, value)
+  fn(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	exported, err := script.Call(context.Background(), "export_fn", nil, CallOptions{
+		Globals: map[string]Value{
+			"tenant": NewString("first"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("export_fn failed: %v", err)
+	}
+	if exported.Kind() != KindFunction {
+		t.Fatalf("expected function result, got %#v", exported)
+	}
+
+	result, err := script.Call(context.Background(), "run_with", []Value{exported, NewString("value")}, CallOptions{
+		Globals: map[string]Value{
+			"tenant": NewString("second"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("run_with failed: %v", err)
+	}
+	if result.Kind() != KindString || result.String() != "second-value" {
+		t.Fatalf("escaped function used stale call env: %#v", result)
+	}
+}

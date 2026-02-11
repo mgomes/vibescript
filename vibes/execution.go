@@ -1829,6 +1829,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	for n, builtin := range s.engine.builtins {
 		root.Define(n, builtin)
 	}
+	rebinder := newCallFunctionRebinder(root)
 
 	callFunctions := cloneFunctionsForCall(s.functions, root)
 	fn, ok := callFunctions[name]
@@ -1872,7 +1873,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 				return NewNil(), err
 			}
 			for name, val := range globals {
-				root.Define(name, val)
+				root.Define(name, rebinder.rebindValue(val))
 			}
 		}
 	}
@@ -1884,7 +1885,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 
 	for n, val := range opts.Globals {
-		root.Define(n, val)
+		root.Define(n, rebinder.rebindValue(val))
 	}
 
 	if err := exec.checkMemory(); err != nil {
@@ -1908,7 +1909,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 
 	callEnv := newEnv(root)
-	if err := exec.bindFunctionArgs(fn, callEnv, args, opts.Keywords, fn.Pos); err != nil {
+	callArgs := rebinder.rebindValues(args)
+	callKeywords := rebinder.rebindKeywords(opts.Keywords)
+	if err := exec.bindFunctionArgs(fn, callEnv, callArgs, callKeywords, fn.Pos); err != nil {
 		return NewNil(), err
 	}
 	exec.pushEnv(callEnv)
