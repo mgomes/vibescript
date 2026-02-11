@@ -1786,12 +1786,41 @@ func (s *Script) Function(name string) (*ScriptFunction, bool) {
 	return fn, ok
 }
 
+func cloneFunctionsForCall(functions map[string]*ScriptFunction, env *Env) map[string]*ScriptFunction {
+	cloned := make(map[string]*ScriptFunction, len(functions))
+	for name, fn := range functions {
+		cloned[name] = cloneFunctionForEnv(fn, env)
+	}
+	return cloned
+}
+
+func cloneClassesForCall(classes map[string]*ClassDef, env *Env) map[string]*ClassDef {
+	cloned := make(map[string]*ClassDef, len(classes))
+	for name, classDef := range classes {
+		classClone := &ClassDef{
+			Name:         classDef.Name,
+			Methods:      make(map[string]*ScriptFunction, len(classDef.Methods)),
+			ClassMethods: make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
+			ClassVars:    make(map[string]Value),
+			Body:         classDef.Body,
+		}
+		for methodName, method := range classDef.Methods {
+			classClone.Methods[methodName] = cloneFunctionForEnv(method, env)
+		}
+		for methodName, method := range classDef.ClassMethods {
+			classClone.ClassMethods[methodName] = cloneFunctionForEnv(method, env)
+		}
+		cloned[name] = classClone
+	}
+	return cloned
+}
+
 func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallOptions) (Value, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	fn, ok := s.functions[name]
+	_, ok := s.functions[name]
 	if !ok {
 		return NewNil(), fmt.Errorf("function %s not found", name)
 	}
@@ -1800,27 +1829,20 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	for n, builtin := range s.engine.builtins {
 		root.Define(n, builtin)
 	}
-	for _, fnDecl := range s.functions {
-		fnDecl.Env = root
+
+	callFunctions := cloneFunctionsForCall(s.functions, root)
+	fn, ok := callFunctions[name]
+	if !ok {
+		return NewNil(), fmt.Errorf("function %s not found", name)
 	}
-	for n, fnDecl := range s.functions {
+	for n, fnDecl := range callFunctions {
 		root.Define(n, NewFunction(fnDecl))
 	}
 
-	for n, classDef := range s.classes {
-		// reset class vars to avoid state leakage between calls
-		classDef.ClassVars = make(map[string]Value)
-		// attach env to methods
-		for _, m := range classDef.Methods {
-			m.Env = root
-		}
-		for _, m := range classDef.ClassMethods {
-			m.Env = root
-		}
+	callClasses := cloneClassesForCall(s.classes, root)
+	for n, classDef := range callClasses {
 		root.Define(n, NewClass(classDef))
 	}
-
-	fn.Env = root
 
 	exec := &Execution{
 		engine:        s.engine,
@@ -1870,7 +1892,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 
 	// initialize class bodies (class vars)
-	for name, classDef := range s.classes {
+	for name, classDef := range callClasses {
 		if len(classDef.Body) == 0 {
 			continue
 		}
