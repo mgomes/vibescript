@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type ScriptFunction struct {
@@ -1162,6 +1163,16 @@ func hashMember(obj Value, property string) (Value, error) {
 	}
 }
 
+func chompDefault(text string) string {
+	if strings.HasSuffix(text, "\r\n") {
+		return text[:len(text)-2]
+	}
+	if strings.HasSuffix(text, "\n") || strings.HasSuffix(text, "\r") {
+		return text[:len(text)-1]
+	}
+	return text
+}
+
 func stringMember(str Value, property string) (Value, error) {
 	switch property {
 	case "size":
@@ -1211,6 +1222,61 @@ func stringMember(str Value, property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.strip does not take arguments")
 			}
 			return NewString(strings.TrimSpace(receiver.String())), nil
+		}), nil
+	case "lstrip":
+		return NewAutoBuiltin("string.lstrip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.lstrip does not take arguments")
+			}
+			return NewString(strings.TrimLeftFunc(receiver.String(), unicode.IsSpace)), nil
+		}), nil
+	case "rstrip":
+		return NewAutoBuiltin("string.rstrip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.rstrip does not take arguments")
+			}
+			return NewString(strings.TrimRightFunc(receiver.String(), unicode.IsSpace)), nil
+		}), nil
+	case "chomp":
+		return NewAutoBuiltin("string.chomp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("string.chomp accepts at most one separator")
+			}
+			text := receiver.String()
+			if len(args) == 0 {
+				return NewString(chompDefault(text)), nil
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.chomp separator must be string")
+			}
+			sep := args[0].String()
+			if sep == "" {
+				return NewString(strings.TrimRight(text, "\r\n")), nil
+			}
+			if strings.HasSuffix(text, sep) {
+				return NewString(text[:len(text)-len(sep)]), nil
+			}
+			return NewString(text), nil
+		}), nil
+	case "delete_prefix":
+		return NewAutoBuiltin("string.delete_prefix", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.delete_prefix expects exactly one prefix")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.delete_prefix prefix must be string")
+			}
+			return NewString(strings.TrimPrefix(receiver.String(), args[0].String())), nil
+		}), nil
+	case "delete_suffix":
+		return NewAutoBuiltin("string.delete_suffix", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.delete_suffix expects exactly one suffix")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.delete_suffix suffix must be string")
+			}
+			return NewString(strings.TrimSuffix(receiver.String(), args[0].String())), nil
 		}), nil
 	case "upcase":
 		return NewAutoBuiltin("string.upcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
