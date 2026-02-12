@@ -1631,22 +1631,18 @@ func stringMember(str Value, property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.chomp! accepts at most one separator")
 			}
 			original := receiver.String()
-			updated := original
 			if len(args) == 0 {
-				updated = chompDefault(original)
-				return stringBangResult(original, updated), nil
+				return stringBangResult(original, chompDefault(original)), nil
 			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.chomp! separator must be string")
 			}
 			sep := args[0].String()
 			if sep == "" {
-				updated = strings.TrimRight(original, "\r\n")
-				return stringBangResult(original, updated), nil
+				return stringBangResult(original, strings.TrimRight(original, "\r\n")), nil
 			}
 			if strings.HasSuffix(original, sep) {
-				updated = original[:len(original)-len(sep)]
-				return stringBangResult(original, updated), nil
+				return stringBangResult(original, original[:len(original)-len(sep)]), nil
 			}
 			return NewNil(), nil
 		}), nil
