@@ -3,6 +3,9 @@ set shell := ["bash", "-lc"]
 test:
 	go test ./...
 
+bench:
+	go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem
+
 lint:
 	gofmt -l . | (! read)
 	golangci-lint run --timeout=10m
