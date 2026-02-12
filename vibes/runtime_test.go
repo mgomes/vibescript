@@ -717,6 +717,61 @@ func TestStringPredicatesAndLength(t *testing.T) {
 	}
 }
 
+func TestStringBoundaryHelpers(t *testing.T) {
+	script := compileScript(t, `
+    def helpers()
+      {
+        lstrip: "  hello\t".lstrip,
+        rstrip: "\thello  ".rstrip,
+        chomp_nl: "line\n".chomp,
+        chomp_none: "line".chomp,
+        chomp_custom: "path///".chomp("/"),
+        chomp_empty_sep: "line\n\n".chomp(""),
+        delete_prefix_hit: "unhappy".delete_prefix("un"),
+        delete_prefix_miss: "happy".delete_prefix("un"),
+        delete_suffix_hit: "report.csv".delete_suffix(".csv"),
+        delete_suffix_miss: "report.csv".delete_suffix(".txt")
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if got["lstrip"].String() != "hello\t" {
+		t.Fatalf("lstrip mismatch: %q", got["lstrip"].String())
+	}
+	if got["rstrip"].String() != "\thello" {
+		t.Fatalf("rstrip mismatch: %q", got["rstrip"].String())
+	}
+	if got["chomp_nl"].String() != "line" {
+		t.Fatalf("chomp_nl mismatch: %q", got["chomp_nl"].String())
+	}
+	if got["chomp_none"].String() != "line" {
+		t.Fatalf("chomp_none mismatch: %q", got["chomp_none"].String())
+	}
+	if got["chomp_custom"].String() != "path//" {
+		t.Fatalf("chomp_custom mismatch: %q", got["chomp_custom"].String())
+	}
+	if got["chomp_empty_sep"].String() != "line" {
+		t.Fatalf("chomp_empty_sep mismatch: %q", got["chomp_empty_sep"].String())
+	}
+	if got["delete_prefix_hit"].String() != "happy" {
+		t.Fatalf("delete_prefix_hit mismatch: %q", got["delete_prefix_hit"].String())
+	}
+	if got["delete_prefix_miss"].String() != "happy" {
+		t.Fatalf("delete_prefix_miss mismatch: %q", got["delete_prefix_miss"].String())
+	}
+	if got["delete_suffix_hit"].String() != "report" {
+		t.Fatalf("delete_suffix_hit mismatch: %q", got["delete_suffix_hit"].String())
+	}
+	if got["delete_suffix_miss"].String() != "report.csv" {
+		t.Fatalf("delete_suffix_miss mismatch: %q", got["delete_suffix_miss"].String())
+	}
+}
+
 func TestDurationHelpers(t *testing.T) {
 	script := compileScript(t, `
     def minutes()
@@ -801,6 +856,26 @@ func TestMethodErrorHandling(t *testing.T) {
 		{
 			name:   "string.end_with? with missing suffix",
 			script: `def run() "hello".end_with? end`,
+			errMsg: "expects exactly one suffix",
+		},
+		{
+			name:   "string.lstrip with argument",
+			script: `def run() " hello".lstrip(1) end`,
+			errMsg: "string.lstrip does not take arguments",
+		},
+		{
+			name:   "string.chomp with non-string separator",
+			script: `def run() "line\n".chomp(123) end`,
+			errMsg: "separator must be string",
+		},
+		{
+			name:   "string.delete_prefix with non-string prefix",
+			script: `def run() "hello".delete_prefix(123) end`,
+			errMsg: "prefix must be string",
+		},
+		{
+			name:   "string.delete_suffix with missing suffix",
+			script: `def run() "hello".delete_suffix end`,
 			errMsg: "expects exactly one suffix",
 		},
 		{

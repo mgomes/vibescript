@@ -21,37 +21,62 @@ Returns true when the string has no characters:
 "hello".empty? # false
 ```
 
-### `strip()`
+### `strip`
 
 Removes leading and trailing whitespace:
 
 ```vibe
 def clean_input(text)
-  text.strip()
+  text.strip
 end
 
 clean_input("  hello  ")  # "hello"
 ```
 
-### `upcase()`
+### `lstrip`
+
+Removes leading whitespace:
+
+```vibe
+"  hello  ".lstrip  # "hello  "
+```
+
+### `rstrip`
+
+Removes trailing whitespace:
+
+```vibe
+"  hello  ".rstrip  # "  hello"
+```
+
+### `chomp(separator = "\n")`
+
+Removes a trailing separator (default newline):
+
+```vibe
+"line\n".chomp      # "line"
+"path///".chomp("/") # "path//"
+```
+
+### `upcase`
 
 Converts the string to uppercase:
 
 ```vibe
 def shout(message)
-  message.upcase()
+  message.upcase
 end
 
 shout("hello")  # "HELLO"
 ```
 
-### `downcase()`
+### `downcase`
 
 Converts the string to lowercase:
 
 ```vibe
 def normalize(email)
-  email.downcase()
+  email.downcase
 end
 
 normalize("USER@EXAMPLE.COM")  # "user@example.com"
@@ -73,6 +98,22 @@ Returns true if the string ends with `suffix`:
 "vibescript".end_with?("script") # true
 ```
 
+### `delete_prefix(prefix)`
+
+Removes the prefix when present:
+
+```vibe
+"unhappy".delete_prefix("un") # "happy"
+```
+
+### `delete_suffix(suffix)`
+
+Removes the suffix when present:
+
+```vibe
+"report.csv".delete_suffix(".csv") # "report"
+```
+
 ## Splitting
 
 ### `split(separator = nil)`
@@ -82,7 +123,7 @@ Splits a string into an array of strings.
 **Without arguments:** Splits on whitespace and removes empty entries:
 
 ```vibe
-"one two  three".split()  # ["one", "two", "three"]
+"one two  three".split  # ["one", "two", "three"]
 ```
 
 **With separator:** Splits on the specified string:
@@ -96,11 +137,13 @@ Splits a string into an array of strings.
 
 ```vibe
 def parse_tags(input)
-  input.strip()
-       .downcase()
-       .split(",")
-       .map { |tag| tag.strip() }
-       .select { |tag| tag != "" }
+  tags = input.strip.downcase.split(",")
+  tags = tags.map do |tag|
+    tag.strip
+  end
+  tags.select do |tag|
+    tag != ""
+  end
 end
 
 parse_tags("  Ruby, Go,  Python  ")
