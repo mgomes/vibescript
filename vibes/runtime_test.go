@@ -772,6 +772,70 @@ func TestStringBoundaryHelpers(t *testing.T) {
 	}
 }
 
+func TestStringSearchAndSlice(t *testing.T) {
+	script := compileScript(t, `
+    def helpers()
+      text = "héllo hello"
+      {
+        include_true: text.include?("llo"),
+        include_false: text.include?("zzz"),
+        index_hit: text.index("llo"),
+        index_offset_hit: text.index("llo", 6),
+        index_miss: text.index("zzz"),
+        rindex_hit: text.rindex("llo"),
+        rindex_offset_hit: text.rindex("llo", 4),
+        rindex_miss: text.rindex("zzz"),
+        slice_char: text.slice(1),
+        slice_range: text.slice(1, 4),
+        slice_oob: text.slice(99),
+        slice_negative_len: text.slice(1, -1)
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if !got["include_true"].Bool() {
+		t.Fatalf("include_true mismatch")
+	}
+	if got["include_false"].Bool() {
+		t.Fatalf("include_false mismatch")
+	}
+	if got["index_hit"].Int() != 2 {
+		t.Fatalf("index_hit mismatch: %v", got["index_hit"])
+	}
+	if got["index_offset_hit"].Int() != 8 {
+		t.Fatalf("index_offset_hit mismatch: %v", got["index_offset_hit"])
+	}
+	if got["index_miss"].Kind() != KindNil {
+		t.Fatalf("index_miss expected nil, got %v", got["index_miss"])
+	}
+	if got["rindex_hit"].Int() != 8 {
+		t.Fatalf("rindex_hit mismatch: %v", got["rindex_hit"])
+	}
+	if got["rindex_offset_hit"].Int() != 2 {
+		t.Fatalf("rindex_offset_hit mismatch: %v", got["rindex_offset_hit"])
+	}
+	if got["rindex_miss"].Kind() != KindNil {
+		t.Fatalf("rindex_miss expected nil, got %v", got["rindex_miss"])
+	}
+	if got["slice_char"].String() != "é" {
+		t.Fatalf("slice_char mismatch: %q", got["slice_char"].String())
+	}
+	if got["slice_range"].String() != "éllo" {
+		t.Fatalf("slice_range mismatch: %q", got["slice_range"].String())
+	}
+	if got["slice_oob"].Kind() != KindNil {
+		t.Fatalf("slice_oob expected nil, got %v", got["slice_oob"])
+	}
+	if got["slice_negative_len"].Kind() != KindNil {
+		t.Fatalf("slice_negative_len expected nil, got %v", got["slice_negative_len"])
+	}
+}
+
 func TestDurationHelpers(t *testing.T) {
 	script := compileScript(t, `
     def minutes()
@@ -877,6 +941,26 @@ func TestMethodErrorHandling(t *testing.T) {
 			name:   "string.delete_suffix with missing suffix",
 			script: `def run() "hello".delete_suffix end`,
 			errMsg: "expects exactly one suffix",
+		},
+		{
+			name:   "string.include? with non-string substring",
+			script: `def run() "hello".include?(123) end`,
+			errMsg: "substring must be string",
+		},
+		{
+			name:   "string.index with invalid offset",
+			script: `def run() "hello".index("e", -1) end`,
+			errMsg: "offset must be non-negative integer",
+		},
+		{
+			name:   "string.rindex with too many args",
+			script: `def run() "hello".rindex("l", 0, 1) end`,
+			errMsg: "expects substring and optional offset",
+		},
+		{
+			name:   "string.slice with non-int length",
+			script: `def run() "hello".slice(1, "x") end`,
+			errMsg: "length must be integer",
 		},
 		{
 			name:   "hash unknown method",

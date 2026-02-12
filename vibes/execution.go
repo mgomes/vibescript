@@ -1173,6 +1173,84 @@ func chompDefault(text string) string {
 	return text
 }
 
+func stringRuneIndex(text, needle string, offset int) int {
+	hayRunes := []rune(text)
+	needleRunes := []rune(needle)
+	if offset < 0 || offset > len(hayRunes) {
+		return -1
+	}
+	if len(needleRunes) == 0 {
+		return offset
+	}
+	limit := len(hayRunes) - len(needleRunes)
+	if limit < offset {
+		return -1
+	}
+	for i := offset; i <= limit; i++ {
+		match := true
+		for j := range len(needleRunes) {
+			if hayRunes[i+j] != needleRunes[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+func stringRuneRIndex(text, needle string, offset int) int {
+	hayRunes := []rune(text)
+	needleRunes := []rune(needle)
+	if offset < 0 {
+		return -1
+	}
+	if offset > len(hayRunes) {
+		offset = len(hayRunes)
+	}
+	if len(needleRunes) == 0 {
+		return offset
+	}
+	if len(needleRunes) > len(hayRunes) {
+		return -1
+	}
+	start := offset
+	maxStart := len(hayRunes) - len(needleRunes)
+	if start > maxStart {
+		start = maxStart
+	}
+	for i := start; i >= 0; i-- {
+		match := true
+		for j := range len(needleRunes) {
+			if hayRunes[i+j] != needleRunes[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+func stringRuneSlice(text string, start, length int) (string, bool) {
+	runes := []rune(text)
+	if start < 0 || start >= len(runes) {
+		return "", false
+	}
+	if length < 0 {
+		return "", false
+	}
+	end := start + length
+	if end > len(runes) {
+		end = len(runes)
+	}
+	return string(runes[start:end]), true
+}
+
 func stringMember(str Value, property string) (Value, error) {
 	switch property {
 	case "size":
@@ -1215,6 +1293,86 @@ func stringMember(str Value, property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.end_with? suffix must be string")
 			}
 			return NewBool(strings.HasSuffix(receiver.String(), args[0].String())), nil
+		}), nil
+	case "include?":
+		return NewAutoBuiltin("string.include?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.include? expects exactly one substring")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.include? substring must be string")
+			}
+			return NewBool(strings.Contains(receiver.String(), args[0].String())), nil
+		}), nil
+	case "index":
+		return NewAutoBuiltin("string.index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) < 1 || len(args) > 2 {
+				return NewNil(), fmt.Errorf("string.index expects substring and optional offset")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.index substring must be string")
+			}
+			offset := 0
+			if len(args) == 2 {
+				i, err := valueToInt(args[1])
+				if err != nil || i < 0 {
+					return NewNil(), fmt.Errorf("string.index offset must be non-negative integer")
+				}
+				offset = i
+			}
+			index := stringRuneIndex(receiver.String(), args[0].String(), offset)
+			if index < 0 {
+				return NewNil(), nil
+			}
+			return NewInt(int64(index)), nil
+		}), nil
+	case "rindex":
+		return NewAutoBuiltin("string.rindex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) < 1 || len(args) > 2 {
+				return NewNil(), fmt.Errorf("string.rindex expects substring and optional offset")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.rindex substring must be string")
+			}
+			offset := len([]rune(receiver.String()))
+			if len(args) == 2 {
+				i, err := valueToInt(args[1])
+				if err != nil || i < 0 {
+					return NewNil(), fmt.Errorf("string.rindex offset must be non-negative integer")
+				}
+				offset = i
+			}
+			index := stringRuneRIndex(receiver.String(), args[0].String(), offset)
+			if index < 0 {
+				return NewNil(), nil
+			}
+			return NewInt(int64(index)), nil
+		}), nil
+	case "slice":
+		return NewAutoBuiltin("string.slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) < 1 || len(args) > 2 {
+				return NewNil(), fmt.Errorf("string.slice expects index and optional length")
+			}
+			start, err := valueToInt(args[0])
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.slice index must be integer")
+			}
+			runes := []rune(receiver.String())
+			if len(args) == 1 {
+				if start < 0 || start >= len(runes) {
+					return NewNil(), nil
+				}
+				return NewString(string(runes[start])), nil
+			}
+			length, err := valueToInt(args[1])
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.slice length must be integer")
+			}
+			substr, ok := stringRuneSlice(receiver.String(), start, length)
+			if !ok {
+				return NewNil(), nil
+			}
+			return NewString(substr), nil
 		}), nil
 	case "strip":
 		return NewAutoBuiltin("string.strip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

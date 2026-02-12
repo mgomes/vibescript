@@ -98,6 +98,43 @@ Returns true if the string ends with `suffix`:
 "vibescript".end_with?("script") # true
 ```
 
+### `include?(substring)`
+
+Returns true when `substring` appears in the string:
+
+```vibe
+"vibescript".include?("script") # true
+```
+
+### `index(substring, offset = 0)`
+
+Returns the first character index for `substring`, or `nil` when not found:
+
+```vibe
+"héllo hello".index("llo")    # 2
+"héllo hello".index("llo", 6) # 8
+"héllo hello".index("zzz")    # nil
+```
+
+### `rindex(substring, offset = size)`
+
+Returns the last character index for `substring`, or `nil` when not found:
+
+```vibe
+"héllo hello".rindex("llo")    # 8
+"héllo hello".rindex("llo", 4) # 2
+```
+
+### `slice(index, length = nil)`
+
+Returns a character or substring; returns `nil` when out of bounds:
+
+```vibe
+"héllo".slice(1)    # "é"
+"héllo".slice(1, 3) # "éll"
+"héllo".slice(99)   # nil
+```
+
 ### `delete_prefix(prefix)`
 
 Removes the prefix when present:

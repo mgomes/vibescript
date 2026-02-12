@@ -16,6 +16,7 @@ end
 
 def run
   sample = "  Vibescript Example  "
+  indexed = "héllo hello"
   {
     normalized: normalize(sample),
     upper: sample.strip.upcase,
@@ -33,6 +34,11 @@ def run
     empty_false: "x".empty?,
     starts: "vibescript".start_with?("vibe"),
     ends: "vibescript".end_with?("script"),
+    include: indexed.include?("llo"),
+    index: indexed.index("llo"),
+    rindex: indexed.rindex("llo"),
+    slice_char: indexed.slice(1),
+    slice_range: indexed.slice(1, 4),
     length: "héllo".length
   }
 end
