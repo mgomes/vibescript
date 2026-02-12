@@ -1448,6 +1448,9 @@ func stringMember(str Value, property string) (Value, error) {
 		}), nil
 	case "match":
 		return NewAutoBuiltin("string.match", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.match does not take keyword arguments")
+			}
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("string.match expects exactly one pattern")
 			}
@@ -1459,18 +1462,28 @@ func stringMember(str Value, property string) (Value, error) {
 			if err != nil {
 				return NewNil(), fmt.Errorf("string.match invalid regex: %v", err)
 			}
-			match := re.FindStringSubmatch(receiver.String())
-			if match == nil {
+			text := receiver.String()
+			indices := re.FindStringSubmatchIndex(text)
+			if indices == nil {
 				return NewNil(), nil
 			}
-			values := make([]Value, len(match))
-			for i, m := range match {
-				values[i] = NewString(m)
+			values := make([]Value, len(indices)/2)
+			for i := range values {
+				start := indices[i*2]
+				end := indices[i*2+1]
+				if start < 0 || end < 0 {
+					values[i] = NewNil()
+					continue
+				}
+				values[i] = NewString(text[start:end])
 			}
 			return NewArray(values), nil
 		}), nil
 	case "scan":
 		return NewAutoBuiltin("string.scan", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.scan does not take keyword arguments")
+			}
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("string.scan expects exactly one pattern")
 			}

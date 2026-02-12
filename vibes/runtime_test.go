@@ -872,6 +872,7 @@ func TestStringTransforms(t *testing.T) {
         gsub_bang_nochange: "bananas".gsub!("zz", "NA"),
         gsub_regex: ids.gsub("ID-[0-9]+", "X", regex: true),
         match: ids.match("ID-([0-9]+)"),
+        match_optional_nil: "ID".match("(ID)(-([0-9]+))?"),
         match_miss: ids.match("ZZZ"),
         scan: ids.scan("ID-[0-9]+"),
         clear: "hello".clear,
@@ -966,6 +967,7 @@ func TestStringTransforms(t *testing.T) {
 		t.Fatalf("gsub_regex mismatch: %q", got["gsub_regex"].String())
 	}
 	compareArrays(t, got["match"], []Value{NewString("ID-12"), NewString("12")})
+	compareArrays(t, got["match_optional_nil"], []Value{NewString("ID"), NewString("ID"), NewNil(), NewNil()})
 	if got["match_miss"].Kind() != KindNil {
 		t.Fatalf("match_miss expected nil, got %v", got["match_miss"])
 	}
@@ -1143,6 +1145,16 @@ func TestMethodErrorHandling(t *testing.T) {
 			name:   "string.scan with non-string pattern",
 			script: `def run() "hello".scan(1) end`,
 			errMsg: "pattern must be string",
+		},
+		{
+			name:   "string.match with keyword argument",
+			script: `def run() "hello".match("h", foo: true) end`,
+			errMsg: "does not take keyword arguments",
+		},
+		{
+			name:   "string.scan with keyword argument",
+			script: `def run() "hello".scan("h", foo: true) end`,
+			errMsg: "does not take keyword arguments",
 		},
 		{
 			name:   "string.ord on empty string",
