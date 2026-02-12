@@ -1309,12 +1309,12 @@ func stringSub(text, pattern, replacement string, regex bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	loc := re.FindStringIndex(text)
+	loc := re.FindStringSubmatchIndex(text)
 	if loc == nil {
 		return text, nil
 	}
-	replaced := re.ReplaceAllString(text[loc[0]:loc[1]], replacement)
-	return text[:loc[0]] + replaced + text[loc[1]:], nil
+	replaced := re.ExpandString(nil, replacement, text, loc[:2])
+	return text[:loc[0]] + string(replaced) + text[loc[1]:], nil
 }
 
 func stringGSub(text, pattern, replacement string, regex bool) (string, error) {

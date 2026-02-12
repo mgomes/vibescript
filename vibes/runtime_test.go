@@ -863,6 +863,7 @@ func TestStringTransforms(t *testing.T) {
         sub_bang_nochange: "bananas".sub!("zz", "NA"),
         sub_miss: "bananas".sub("zz", "NA"),
         sub_regex: ids.sub("ID-[0-9]+", "X", regex: true),
+        sub_regex_boundary: "foo".sub("\\Boo", "X", regex: true),
         gsub_all: "bananas".gsub("na", "NA"),
         gsub_bang: "bananas".gsub!("na", "NA"),
         gsub_bang_nochange: "bananas".gsub!("zz", "NA"),
@@ -936,6 +937,9 @@ func TestStringTransforms(t *testing.T) {
 	}
 	if got["sub_regex"].String() != "X ID-34" {
 		t.Fatalf("sub_regex mismatch: %q", got["sub_regex"].String())
+	}
+	if got["sub_regex_boundary"].String() != "fX" {
+		t.Fatalf("sub_regex_boundary mismatch: %q", got["sub_regex_boundary"].String())
 	}
 	if got["gsub_all"].String() != "baNANAs" {
 		t.Fatalf("gsub_all mismatch: %q", got["gsub_all"].String())
