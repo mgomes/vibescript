@@ -120,6 +120,7 @@ Representative `.vibe` programs are grouped under `examples/`:
 - `examples/basics/` – literals, arithmetic, and simple function composition.
 - `examples/collections/` – array, hash, and symbol usage including mutation and lookups.
 - `examples/control_flow/` – conditionals and recursion examples.
+- `examples/strings/` – string normalization, predicates, and splitting helpers.
 - `examples/blocks/` – block-friendly transformations (map/select/reduce) over collections.
 - `examples/hashes/` – symbol-keyed hash manipulation, merging, and reporting helpers.
 - `examples/loops/` – range iteration, collection loops, and accumulation helpers.
@@ -141,6 +142,7 @@ Long-form guides live in `docs/`:
 
 - `docs/introduction.md` – overview and table of contents.
 - `docs/arrays.md` – array helpers including map/select/reduce, first/last, push/pop, sum, and set-like operations.
+- `docs/strings.md` – string helpers like strip/upcase/downcase/split and related utilities.
 - `docs/hashes.md` – symbol-keyed hashes, merge, and iteration helpers.
 - `docs/control-flow.md` – conditionals, loops, and ranges.
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
