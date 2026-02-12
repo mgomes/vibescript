@@ -1,0 +1,32 @@
+# vibe: 0.2
+
+def normalize(text)
+  text.strip.downcase
+end
+
+def split_tags(input)
+  tags = normalize(input).split(",")
+  tags = tags.map do |tag|
+    tag.strip
+  end
+  tags.select do |tag|
+    tag != ""
+  end
+end
+
+def run
+  sample = "  Vibescript Example  "
+  {
+    normalized: normalize(sample),
+    upper: sample.strip.upcase,
+    lower: sample.strip.downcase,
+    split_default: "one two  three".split,
+    split_custom: "a,b,c".split(","),
+    tags: split_tags(" Ruby, Go,  VibeScript  "),
+    empty_true: "".empty?,
+    empty_false: "x".empty?,
+    starts: "vibescript".start_with?("vibe"),
+    ends: "vibescript".end_with?("script"),
+    length: "héllo".length
+  }
+end

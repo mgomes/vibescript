@@ -1514,6 +1514,24 @@ func TestExamples(t *testing.T) {
 				}
 			},
 		},
+		{
+			name:     "strings/operations_run",
+			file:     "strings/operations.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"normalized":    strVal("vibescript example"),
+				"upper":         strVal("VIBESCRIPT EXAMPLE"),
+				"lower":         strVal("vibescript example"),
+				"split_default": arrayVal(strVal("one"), strVal("two"), strVal("three")),
+				"split_custom":  arrayVal(strVal("a"), strVal("b"), strVal("c")),
+				"tags":          arrayVal(strVal("ruby"), strVal("go"), strVal("vibescript")),
+				"empty_true":    boolVal(true),
+				"empty_false":   boolVal(false),
+				"starts":        boolVal(true),
+				"ends":          boolVal(true),
+				"length":        intVal(5),
+			}),
+		},
 	}
 
 	for _, tc := range cases {

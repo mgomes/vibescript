@@ -4,6 +4,23 @@ VibeScript provides several methods for string manipulation.
 
 ## Basic Methods
 
+### `length`
+
+Alias for `size`, returns the number of characters:
+
+```vibe
+"héllo".length  # 5
+```
+
+### `empty?`
+
+Returns true when the string has no characters:
+
+```vibe
+"".empty?      # true
+"hello".empty? # false
+```
+
 ### `strip()`
 
 Removes leading and trailing whitespace:
@@ -38,6 +55,22 @@ def normalize(email)
 end
 
 normalize("USER@EXAMPLE.COM")  # "user@example.com"
+```
+
+### `start_with?(prefix)`
+
+Returns true if the string starts with `prefix`:
+
+```vibe
+"vibescript".start_with?("vibe") # true
+```
+
+### `end_with?(suffix)`
+
+Returns true if the string ends with `suffix`:
+
+```vibe
+"vibescript".end_with?("script") # true
 ```
 
 ## Splitting
