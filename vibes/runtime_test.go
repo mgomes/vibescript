@@ -844,23 +844,43 @@ func TestStringTransforms(t *testing.T) {
 	script := compileScript(t, `
     def helpers()
       original = "  hello  "
+      ids = "ID-12 ID-34"
       {
+        bytesize: "hé".bytesize,
+        ord: "hé".ord,
+        chr: "hé".chr,
+        chr_empty: "".chr,
         capitalize: "hÉLLo wORLD".capitalize,
         capitalize_bang: "hÉLLo wORLD".capitalize!,
+        capitalize_bang_nochange: "Hello".capitalize!,
         swapcase: "Hello VIBE".swapcase,
         swapcase_bang: "Hello VIBE".swapcase!,
+        upcase_bang_nochange: "HELLO".upcase!,
         reverse: "héllo".reverse,
         reverse_bang: "héllo".reverse!,
         sub_one: "bananas".sub("na", "NA"),
         sub_bang: "bananas".sub!("na", "NA"),
+        sub_bang_nochange: "bananas".sub!("zz", "NA"),
         sub_miss: "bananas".sub("zz", "NA"),
+        sub_regex: ids.sub("ID-[0-9]+", "X", regex: true),
+        sub_regex_capture: ids.sub("ID-([0-9]+)", "X-$1", regex: true),
+        sub_regex_boundary_short: "ba".sub("\\Ba", "X", regex: true),
+        sub_regex_boundary: "foo".sub("\\Boo", "X", regex: true),
+        sub_regex_boundary_full: "xfooy".sub("\\Bfoo\\B", "X", regex: true),
         gsub_all: "bananas".gsub("na", "NA"),
         gsub_bang: "bananas".gsub!("na", "NA"),
+        gsub_bang_nochange: "bananas".gsub!("zz", "NA"),
+        gsub_regex: ids.gsub("ID-[0-9]+", "X", regex: true),
+        match: ids.match("ID-([0-9]+)"),
+        match_optional_nil: "ID".match("(ID)(-([0-9]+))?"),
+        match_miss: ids.match("ZZZ"),
+        scan: ids.scan("ID-[0-9]+"),
         clear: "hello".clear,
         concat: "he".concat("llo", "!"),
         concat_noop: "hello".concat,
         replace: "old".replace("new"),
         strip_bang: original.strip!,
+        strip_bang_nochange: "hello".strip!,
         original_unchanged: original
       }
     end
@@ -871,17 +891,35 @@ func TestStringTransforms(t *testing.T) {
 		t.Fatalf("expected hash, got %v", result.Kind())
 	}
 	got := result.Hash()
+	if got["bytesize"].Int() != 3 {
+		t.Fatalf("bytesize mismatch: %v", got["bytesize"])
+	}
+	if got["ord"].Int() != 104 {
+		t.Fatalf("ord mismatch: %v", got["ord"])
+	}
+	if got["chr"].String() != "h" {
+		t.Fatalf("chr mismatch: %q", got["chr"].String())
+	}
+	if got["chr_empty"].Kind() != KindNil {
+		t.Fatalf("chr_empty expected nil, got %v", got["chr_empty"])
+	}
 	if got["capitalize"].String() != "Héllo world" {
 		t.Fatalf("capitalize mismatch: %q", got["capitalize"].String())
 	}
 	if got["capitalize_bang"].String() != "Héllo world" {
 		t.Fatalf("capitalize_bang mismatch: %q", got["capitalize_bang"].String())
 	}
+	if got["capitalize_bang_nochange"].Kind() != KindNil {
+		t.Fatalf("capitalize_bang_nochange expected nil, got %v", got["capitalize_bang_nochange"])
+	}
 	if got["swapcase"].String() != "hELLO vibe" {
 		t.Fatalf("swapcase mismatch: %q", got["swapcase"].String())
 	}
 	if got["swapcase_bang"].String() != "hELLO vibe" {
 		t.Fatalf("swapcase_bang mismatch: %q", got["swapcase_bang"].String())
+	}
+	if got["upcase_bang_nochange"].Kind() != KindNil {
+		t.Fatalf("upcase_bang_nochange expected nil, got %v", got["upcase_bang_nochange"])
 	}
 	if got["reverse"].String() != "olléh" {
 		t.Fatalf("reverse mismatch: %q", got["reverse"].String())
@@ -895,8 +933,26 @@ func TestStringTransforms(t *testing.T) {
 	if got["sub_bang"].String() != "baNAnas" {
 		t.Fatalf("sub_bang mismatch: %q", got["sub_bang"].String())
 	}
+	if got["sub_bang_nochange"].Kind() != KindNil {
+		t.Fatalf("sub_bang_nochange expected nil, got %v", got["sub_bang_nochange"])
+	}
 	if got["sub_miss"].String() != "bananas" {
 		t.Fatalf("sub_miss mismatch: %q", got["sub_miss"].String())
+	}
+	if got["sub_regex"].String() != "X ID-34" {
+		t.Fatalf("sub_regex mismatch: %q", got["sub_regex"].String())
+	}
+	if got["sub_regex_capture"].String() != "X-12 ID-34" {
+		t.Fatalf("sub_regex_capture mismatch: %q", got["sub_regex_capture"].String())
+	}
+	if got["sub_regex_boundary_short"].String() != "bX" {
+		t.Fatalf("sub_regex_boundary_short mismatch: %q", got["sub_regex_boundary_short"].String())
+	}
+	if got["sub_regex_boundary"].String() != "fX" {
+		t.Fatalf("sub_regex_boundary mismatch: %q", got["sub_regex_boundary"].String())
+	}
+	if got["sub_regex_boundary_full"].String() != "xXy" {
+		t.Fatalf("sub_regex_boundary_full mismatch: %q", got["sub_regex_boundary_full"].String())
 	}
 	if got["gsub_all"].String() != "baNANAs" {
 		t.Fatalf("gsub_all mismatch: %q", got["gsub_all"].String())
@@ -904,6 +960,18 @@ func TestStringTransforms(t *testing.T) {
 	if got["gsub_bang"].String() != "baNANAs" {
 		t.Fatalf("gsub_bang mismatch: %q", got["gsub_bang"].String())
 	}
+	if got["gsub_bang_nochange"].Kind() != KindNil {
+		t.Fatalf("gsub_bang_nochange expected nil, got %v", got["gsub_bang_nochange"])
+	}
+	if got["gsub_regex"].String() != "X X" {
+		t.Fatalf("gsub_regex mismatch: %q", got["gsub_regex"].String())
+	}
+	compareArrays(t, got["match"], []Value{NewString("ID-12"), NewString("12")})
+	compareArrays(t, got["match_optional_nil"], []Value{NewString("ID"), NewString("ID"), NewNil(), NewNil()})
+	if got["match_miss"].Kind() != KindNil {
+		t.Fatalf("match_miss expected nil, got %v", got["match_miss"])
+	}
+	compareArrays(t, got["scan"], []Value{NewString("ID-12"), NewString("ID-34")})
 	if got["clear"].String() != "" {
 		t.Fatalf("clear mismatch: %q", got["clear"].String())
 	}
@@ -918,6 +986,9 @@ func TestStringTransforms(t *testing.T) {
 	}
 	if got["strip_bang"].String() != "hello" {
 		t.Fatalf("strip_bang mismatch: %q", got["strip_bang"].String())
+	}
+	if got["strip_bang_nochange"].Kind() != KindNil {
+		t.Fatalf("strip_bang_nochange expected nil, got %v", got["strip_bang_nochange"])
 	}
 	if got["original_unchanged"].String() != "  hello  " {
 		t.Fatalf("original_unchanged mismatch: %q", got["original_unchanged"].String())
@@ -1064,6 +1135,41 @@ func TestMethodErrorHandling(t *testing.T) {
 			name:   "string.gsub with missing argument",
 			script: `def run() "hello".gsub("l") end`,
 			errMsg: "expects pattern and replacement",
+		},
+		{
+			name:   "string.match with invalid regex",
+			script: `def run() "hello".match("[") end`,
+			errMsg: "invalid regex",
+		},
+		{
+			name:   "string.scan with non-string pattern",
+			script: `def run() "hello".scan(1) end`,
+			errMsg: "pattern must be string",
+		},
+		{
+			name:   "string.match with keyword argument",
+			script: `def run() "hello".match("h", foo: true) end`,
+			errMsg: "does not take keyword arguments",
+		},
+		{
+			name:   "string.scan with keyword argument",
+			script: `def run() "hello".scan("h", foo: true) end`,
+			errMsg: "does not take keyword arguments",
+		},
+		{
+			name:   "string.ord on empty string",
+			script: `def run() "".ord end`,
+			errMsg: "requires non-empty string",
+		},
+		{
+			name:   "string.sub with non-bool regex keyword",
+			script: `def run() "ID-12".sub("ID-[0-9]+", "X", regex: 1) end`,
+			errMsg: "regex keyword must be bool",
+		},
+		{
+			name:   "string.gsub with unknown keyword",
+			script: `def run() "ID-12".gsub("ID-[0-9]+", "X", foo: true) end`,
+			errMsg: "supports only regex keyword",
 		},
 		{
 			name:   "string.concat with non-string argument",

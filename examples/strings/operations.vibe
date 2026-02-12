@@ -18,8 +18,12 @@ def run
   sample = "  Vibescript Example  "
   indexed = "héllo hello"
   immutable = "  hello  "
+  ids = "ID-12 ID-34"
   {
     normalized: normalize(sample),
+    bytesize: "hé".bytesize,
+    ord: "hé".ord,
+    chr: "hé".chr,
     upper: sample.strip.upcase,
     lower: sample.strip.downcase,
     capitalize: "hÉLLo wORLD".capitalize,
@@ -27,7 +31,12 @@ def run
     reverse: "héllo".reverse,
     sub: "bananas".sub("na", "NA"),
     gsub: "bananas".gsub("na", "NA"),
+    sub_regex: ids.sub("ID-[0-9]+", "X", regex: true),
+    gsub_regex: ids.gsub("ID-[0-9]+", "X", regex: true),
+    match: ids.match("ID-([0-9]+)"),
+    scan: ids.scan("ID-[0-9]+"),
     strip_bang: immutable.strip!,
+    strip_bang_nochange: "hello".strip!,
     immutable_after: immutable,
     clear: "hello".clear,
     concat: "he".concat("llo", "!"),
