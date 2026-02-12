@@ -6,6 +6,7 @@ type ClassDef struct {
 	ClassMethods map[string]*ScriptFunction
 	ClassVars    map[string]Value
 	Body         []Statement
+	owner        *Script
 }
 
 type Instance struct {

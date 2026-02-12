@@ -18,6 +18,7 @@ type ScriptFunction struct {
 	Pos      Position
 	Env      *Env
 	Private  bool
+	owner    *Script
 }
 
 type Script struct {
@@ -1642,7 +1643,9 @@ func (e *Engine) Compile(source string) (*Script, error) {
 		}
 	}
 
-	return &Script{engine: e, functions: functions, classes: classes}, nil
+	script := &Script{engine: e, functions: functions, classes: classes}
+	script.bindFunctionOwnership()
+	return script, nil
 }
 
 func combineErrors(errs []error) error {
@@ -1786,12 +1789,57 @@ func (s *Script) Function(name string) (*ScriptFunction, bool) {
 	return fn, ok
 }
 
+func (s *Script) bindFunctionOwnership() {
+	for _, fn := range s.functions {
+		fn.owner = s
+	}
+	for _, classDef := range s.classes {
+		classDef.owner = s
+		for _, fn := range classDef.Methods {
+			fn.owner = s
+		}
+		for _, fn := range classDef.ClassMethods {
+			fn.owner = s
+		}
+	}
+}
+
+func cloneFunctionsForCall(functions map[string]*ScriptFunction, env *Env) map[string]*ScriptFunction {
+	cloned := make(map[string]*ScriptFunction, len(functions))
+	for name, fn := range functions {
+		cloned[name] = cloneFunctionForEnv(fn, env)
+	}
+	return cloned
+}
+
+func cloneClassesForCall(classes map[string]*ClassDef, env *Env) map[string]*ClassDef {
+	cloned := make(map[string]*ClassDef, len(classes))
+	for name, classDef := range classes {
+		classClone := &ClassDef{
+			Name:         classDef.Name,
+			Methods:      make(map[string]*ScriptFunction, len(classDef.Methods)),
+			ClassMethods: make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
+			ClassVars:    make(map[string]Value),
+			Body:         classDef.Body,
+			owner:        classDef.owner,
+		}
+		for methodName, method := range classDef.Methods {
+			classClone.Methods[methodName] = cloneFunctionForEnv(method, env)
+		}
+		for methodName, method := range classDef.ClassMethods {
+			classClone.ClassMethods[methodName] = cloneFunctionForEnv(method, env)
+		}
+		cloned[name] = classClone
+	}
+	return cloned
+}
+
 func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallOptions) (Value, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	fn, ok := s.functions[name]
+	_, ok := s.functions[name]
 	if !ok {
 		return NewNil(), fmt.Errorf("function %s not found", name)
 	}
@@ -1800,27 +1848,21 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	for n, builtin := range s.engine.builtins {
 		root.Define(n, builtin)
 	}
-	for _, fnDecl := range s.functions {
-		fnDecl.Env = root
+
+	callFunctions := cloneFunctionsForCall(s.functions, root)
+	fn, ok := callFunctions[name]
+	if !ok {
+		return NewNil(), fmt.Errorf("function %s not found", name)
 	}
-	for n, fnDecl := range s.functions {
+	for n, fnDecl := range callFunctions {
 		root.Define(n, NewFunction(fnDecl))
 	}
 
-	for n, classDef := range s.classes {
-		// reset class vars to avoid state leakage between calls
-		classDef.ClassVars = make(map[string]Value)
-		// attach env to methods
-		for _, m := range classDef.Methods {
-			m.Env = root
-		}
-		for _, m := range classDef.ClassMethods {
-			m.Env = root
-		}
+	callClasses := cloneClassesForCall(s.classes, root)
+	for n, classDef := range callClasses {
 		root.Define(n, NewClass(classDef))
 	}
-
-	fn.Env = root
+	rebinder := newCallFunctionRebinder(s, root, callClasses)
 
 	exec := &Execution{
 		engine:        s.engine,
@@ -1850,7 +1892,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 				return NewNil(), err
 			}
 			for name, val := range globals {
-				root.Define(name, val)
+				root.Define(name, rebinder.rebindValue(val))
 			}
 		}
 	}
@@ -1862,7 +1904,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 
 	for n, val := range opts.Globals {
-		root.Define(n, val)
+		root.Define(n, rebinder.rebindValue(val))
 	}
 
 	if err := exec.checkMemory(); err != nil {
@@ -1870,7 +1912,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 
 	// initialize class bodies (class vars)
-	for name, classDef := range s.classes {
+	for name, classDef := range callClasses {
 		if len(classDef.Body) == 0 {
 			continue
 		}
@@ -1886,7 +1928,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 
 	callEnv := newEnv(root)
-	if err := exec.bindFunctionArgs(fn, callEnv, args, opts.Keywords, fn.Pos); err != nil {
+	callArgs := rebinder.rebindValues(args)
+	callKeywords := rebinder.rebindKeywords(opts.Keywords)
+	if err := exec.bindFunctionArgs(fn, callEnv, callArgs, callKeywords, fn.Pos); err != nil {
 		return NewNil(), err
 	}
 	exec.pushEnv(callEnv)
