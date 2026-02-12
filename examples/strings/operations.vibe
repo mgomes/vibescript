@@ -17,6 +17,7 @@ end
 def run
   sample = "  Vibescript Example  "
   indexed = "héllo hello"
+  immutable = "  hello  "
   {
     normalized: normalize(sample),
     upper: sample.strip.upcase,
@@ -26,6 +27,14 @@ def run
     reverse: "héllo".reverse,
     sub: "bananas".sub("na", "NA"),
     gsub: "bananas".gsub("na", "NA"),
+    strip_bang: immutable.strip!,
+    immutable_after: immutable,
+    clear: "hello".clear,
+    concat: "he".concat("llo", "!"),
+    concat_noop: "hello".concat,
+    replace: "old".replace("new"),
+    sub_bang: "bananas".sub!("na", "NA"),
+    gsub_bang: "bananas".gsub!("na", "NA"),
     lstrip: "  hello\t".lstrip,
     rstrip: "\thello  ".rstrip,
     chomp_default: "line\n".chomp,

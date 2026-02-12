@@ -191,6 +191,44 @@ Removes the suffix when present:
 "report.csv".delete_suffix(".csv") # "report"
 ```
 
+## Compatibility Methods
+
+VibeScript strings are immutable, so mutating-style Ruby methods return a new string.
+
+### `clear`
+
+Returns an empty string:
+
+```vibe
+"hello".clear # ""
+```
+
+### `concat(*strings)`
+
+Appends one or more strings:
+
+```vibe
+"hello".concat           # "hello"
+"he".concat("llo", "!") # "hello!"
+```
+
+### `replace(replacement)`
+
+Returns `replacement`:
+
+```vibe
+"old".replace("new") # "new"
+```
+
+### Bang aliases
+
+The following methods are supported as aliases and return transformed strings:
+
+- `strip!`, `lstrip!`, `rstrip!`, `chomp!`
+- `delete_prefix!`, `delete_suffix!`
+- `upcase!`, `downcase!`, `capitalize!`, `swapcase!`, `reverse!`
+- `sub!`, `gsub!`
+
 ## Splitting
 
 ### `split(separator = nil)`
