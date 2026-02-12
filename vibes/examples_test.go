@@ -1531,6 +1531,7 @@ func TestExamples(t *testing.T) {
 				"immutable_after": strVal("  hello  "),
 				"clear":           strVal(""),
 				"concat":          strVal("hello!"),
+				"concat_noop":     strVal("hello"),
 				"replace":         strVal("new"),
 				"sub_bang":        strVal("baNAnas"),
 				"gsub_bang":       strVal("baNANAs"),

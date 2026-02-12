@@ -31,6 +31,7 @@ def run
     immutable_after: immutable,
     clear: "hello".clear,
     concat: "he".concat("llo", "!"),
+    concat_noop: "hello".concat,
     replace: "old".replace("new"),
     sub_bang: "bananas".sub!("na", "NA"),
     gsub_bang: "bananas".gsub!("na", "NA"),

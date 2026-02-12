@@ -1318,9 +1318,6 @@ func stringMember(str Value, property string) (Value, error) {
 		}), nil
 	case "concat":
 		return NewAutoBuiltin("string.concat", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) == 0 {
-				return NewNil(), fmt.Errorf("string.concat expects at least one string")
-			}
 			var b strings.Builder
 			b.WriteString(receiver.String())
 			for _, arg := range args {

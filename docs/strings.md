@@ -208,6 +208,7 @@ Returns an empty string:
 Appends one or more strings:
 
 ```vibe
+"hello".concat           # "hello"
 "he".concat("llo", "!") # "hello!"
 ```
 

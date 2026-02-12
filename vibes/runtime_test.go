@@ -858,6 +858,7 @@ func TestStringTransforms(t *testing.T) {
         gsub_bang: "bananas".gsub!("na", "NA"),
         clear: "hello".clear,
         concat: "he".concat("llo", "!"),
+        concat_noop: "hello".concat,
         replace: "old".replace("new"),
         strip_bang: original.strip!,
         original_unchanged: original
@@ -908,6 +909,9 @@ func TestStringTransforms(t *testing.T) {
 	}
 	if got["concat"].String() != "hello!" {
 		t.Fatalf("concat mismatch: %q", got["concat"].String())
+	}
+	if got["concat_noop"].String() != "hello" {
+		t.Fatalf("concat_noop mismatch: %q", got["concat_noop"].String())
 	}
 	if got["replace"].String() != "new" {
 		t.Fatalf("replace mismatch: %q", got["replace"].String())
@@ -1060,11 +1064,6 @@ func TestMethodErrorHandling(t *testing.T) {
 			name:   "string.gsub with missing argument",
 			script: `def run() "hello".gsub("l") end`,
 			errMsg: "expects pattern and replacement",
-		},
-		{
-			name:   "string.concat with no arguments",
-			script: `def run() "hello".concat end`,
-			errMsg: "expects at least one string",
 		},
 		{
 			name:   "string.concat with non-string argument",
