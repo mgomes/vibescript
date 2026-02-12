@@ -1313,7 +1313,7 @@ func stringSub(text, pattern, replacement string, regex bool) (string, error) {
 	if loc == nil {
 		return text, nil
 	}
-	replaced := re.ExpandString(nil, replacement, text, loc[:2])
+	replaced := re.ExpandString(nil, replacement, text, loc)
 	return text[:loc[0]] + string(replaced) + text[loc[1]:], nil
 }
 
