@@ -840,6 +840,45 @@ func TestStringSearchAndSlice(t *testing.T) {
 	}
 }
 
+func TestStringTransforms(t *testing.T) {
+	script := compileScript(t, `
+    def helpers()
+      {
+        capitalize: "hÉLLo wORLD".capitalize,
+        swapcase: "Hello VIBE".swapcase,
+        reverse: "héllo".reverse,
+        sub_one: "bananas".sub("na", "NA"),
+        sub_miss: "bananas".sub("zz", "NA"),
+        gsub_all: "bananas".gsub("na", "NA")
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if got["capitalize"].String() != "Héllo world" {
+		t.Fatalf("capitalize mismatch: %q", got["capitalize"].String())
+	}
+	if got["swapcase"].String() != "hELLO vibe" {
+		t.Fatalf("swapcase mismatch: %q", got["swapcase"].String())
+	}
+	if got["reverse"].String() != "olléh" {
+		t.Fatalf("reverse mismatch: %q", got["reverse"].String())
+	}
+	if got["sub_one"].String() != "baNAnas" {
+		t.Fatalf("sub_one mismatch: %q", got["sub_one"].String())
+	}
+	if got["sub_miss"].String() != "bananas" {
+		t.Fatalf("sub_miss mismatch: %q", got["sub_miss"].String())
+	}
+	if got["gsub_all"].String() != "baNANAs" {
+		t.Fatalf("gsub_all mismatch: %q", got["gsub_all"].String())
+	}
+}
+
 func TestDurationHelpers(t *testing.T) {
 	script := compileScript(t, `
     def minutes()
@@ -965,6 +1004,21 @@ func TestMethodErrorHandling(t *testing.T) {
 			name:   "string.slice with non-int length",
 			script: `def run() "hello".slice(1, "x") end`,
 			errMsg: "length must be integer",
+		},
+		{
+			name:   "string.capitalize with argument",
+			script: `def run() "hello".capitalize(1) end`,
+			errMsg: "string.capitalize does not take arguments",
+		},
+		{
+			name:   "string.sub with non-string replacement",
+			script: `def run() "hello".sub("l", 1) end`,
+			errMsg: "replacement must be string",
+		},
+		{
+			name:   "string.gsub with missing argument",
+			script: `def run() "hello".gsub("l") end`,
+			errMsg: "expects pattern and replacement",
 		},
 		{
 			name:   "hash unknown method",

@@ -82,6 +82,30 @@ end
 normalize("USER@EXAMPLE.COM")  # "user@example.com"
 ```
 
+### `capitalize`
+
+Uppercases the first character and lowercases the rest:
+
+```vibe
+"hÉLLo wORLD".capitalize # "Héllo world"
+```
+
+### `swapcase`
+
+Flips letter casing for each character:
+
+```vibe
+"Hello VIBE".swapcase # "hELLO vibe"
+```
+
+### `reverse`
+
+Reverses characters:
+
+```vibe
+"héllo".reverse # "olléh"
+```
+
 ### `start_with?(prefix)`
 
 Returns true if the string starts with `prefix`:
@@ -133,6 +157,22 @@ Returns a character or substring; returns `nil` when out of bounds:
 "héllo".slice(1)    # "é"
 "héllo".slice(1, 3) # "éll"
 "héllo".slice(99)   # nil
+```
+
+### `sub(pattern, replacement)`
+
+Replaces the first occurrence of `pattern` (string-only):
+
+```vibe
+"bananas".sub("na", "NA") # "baNAnas"
+```
+
+### `gsub(pattern, replacement)`
+
+Replaces all occurrences of `pattern` (string-only):
+
+```vibe
+"bananas".gsub("na", "NA") # "baNANAs"
 ```
 
 ### `delete_prefix(prefix)`
