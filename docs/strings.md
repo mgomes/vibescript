@@ -12,6 +12,31 @@ Alias for `size`, returns the number of characters:
 "héllo".length  # 5
 ```
 
+### `bytesize`
+
+Returns the number of bytes in UTF-8 encoding:
+
+```vibe
+"hé".bytesize  # 3
+```
+
+### `ord`
+
+Returns the codepoint of the first character:
+
+```vibe
+"hé".ord  # 104
+```
+
+### `chr`
+
+Returns the first character (or `nil` for empty strings):
+
+```vibe
+"hé".chr  # "h"
+"".chr    # nil
+```
+
 ### `empty?`
 
 Returns true when the string has no characters:
@@ -130,6 +155,22 @@ Returns true when `substring` appears in the string:
 "vibescript".include?("script") # true
 ```
 
+### `match(pattern)`
+
+Regex match returning `[full, capture1, ...]` or `nil`:
+
+```vibe
+"ID-12 ID-34".match("ID-([0-9]+)") # ["ID-12", "12"]
+```
+
+### `scan(pattern)`
+
+Regex scan returning all full matches:
+
+```vibe
+"ID-12 ID-34".scan("ID-[0-9]+") # ["ID-12", "ID-34"]
+```
+
 ### `index(substring, offset = 0)`
 
 Returns the first character index for `substring`, or `nil` when not found:
@@ -159,20 +200,22 @@ Returns a character or substring; returns `nil` when out of bounds:
 "héllo".slice(99)   # nil
 ```
 
-### `sub(pattern, replacement)`
+### `sub(pattern, replacement, regex: false)`
 
-Replaces the first occurrence of `pattern` (string-only):
+Replaces the first occurrence of `pattern`:
 
 ```vibe
 "bananas".sub("na", "NA") # "baNAnas"
+"ID-12 ID-34".sub("ID-[0-9]+", "X", regex: true) # "X ID-34"
 ```
 
-### `gsub(pattern, replacement)`
+### `gsub(pattern, replacement, regex: false)`
 
-Replaces all occurrences of `pattern` (string-only):
+Replaces all occurrences of `pattern`:
 
 ```vibe
 "bananas".gsub("na", "NA") # "baNANAs"
+"ID-12 ID-34".gsub("ID-[0-9]+", "X", regex: true) # "X X"
 ```
 
 ### `delete_prefix(prefix)`
@@ -222,7 +265,8 @@ Returns `replacement`:
 
 ### Bang aliases
 
-The following methods are supported as aliases and return transformed strings:
+The following methods are supported as aliases and return transformed strings.
+When there is no change, bang methods return `nil`.
 
 - `strip!`, `lstrip!`, `rstrip!`, `chomp!`
 - `delete_prefix!`, `delete_suffix!`

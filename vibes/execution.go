@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -1286,6 +1287,54 @@ func stringReverse(text string) string {
 	return string(runes)
 }
 
+func stringRegexOption(method string, kwargs map[string]Value) (bool, error) {
+	if len(kwargs) == 0 {
+		return false, nil
+	}
+	regexVal, ok := kwargs["regex"]
+	if !ok || len(kwargs) > 1 {
+		return false, fmt.Errorf("string.%s supports only regex keyword", method)
+	}
+	if regexVal.Kind() != KindBool {
+		return false, fmt.Errorf("string.%s regex keyword must be bool", method)
+	}
+	return regexVal.Bool(), nil
+}
+
+func stringSub(text, pattern, replacement string, regex bool) (string, error) {
+	if !regex {
+		return strings.Replace(text, pattern, replacement, 1), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return "", err
+	}
+	loc := re.FindStringIndex(text)
+	if loc == nil {
+		return text, nil
+	}
+	replaced := re.ReplaceAllString(text[loc[0]:loc[1]], replacement)
+	return text[:loc[0]] + replaced + text[loc[1]:], nil
+}
+
+func stringGSub(text, pattern, replacement string, regex bool) (string, error) {
+	if !regex {
+		return strings.ReplaceAll(text, pattern, replacement), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return "", err
+	}
+	return re.ReplaceAllString(text, replacement), nil
+}
+
+func stringBangResult(original, updated string) Value {
+	if updated == original {
+		return NewNil()
+	}
+	return NewString(updated)
+}
+
 func stringMember(str Value, property string) (Value, error) {
 	switch property {
 	case "size":
@@ -1301,6 +1350,35 @@ func stringMember(str Value, property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.length does not take arguments")
 			}
 			return NewInt(int64(len([]rune(receiver.String())))), nil
+		}), nil
+	case "bytesize":
+		return NewAutoBuiltin("string.bytesize", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.bytesize does not take arguments")
+			}
+			return NewInt(int64(len(receiver.String()))), nil
+		}), nil
+	case "ord":
+		return NewAutoBuiltin("string.ord", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.ord does not take arguments")
+			}
+			runes := []rune(receiver.String())
+			if len(runes) == 0 {
+				return NewNil(), fmt.Errorf("string.ord requires non-empty string")
+			}
+			return NewInt(int64(runes[0])), nil
+		}), nil
+	case "chr":
+		return NewAutoBuiltin("string.chr", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.chr does not take arguments")
+			}
+			runes := []rune(receiver.String())
+			if len(runes) == 0 {
+				return NewNil(), nil
+			}
+			return NewString(string(runes[0])), nil
 		}), nil
 	case "empty?":
 		return NewAutoBuiltin("string.empty?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1367,6 +1445,49 @@ func stringMember(str Value, property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.include? substring must be string")
 			}
 			return NewBool(strings.Contains(receiver.String(), args[0].String())), nil
+		}), nil
+	case "match":
+		return NewAutoBuiltin("string.match", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.match expects exactly one pattern")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.match pattern must be string")
+			}
+			pattern := args[0].String()
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.match invalid regex: %v", err)
+			}
+			match := re.FindStringSubmatch(receiver.String())
+			if match == nil {
+				return NewNil(), nil
+			}
+			values := make([]Value, len(match))
+			for i, m := range match {
+				values[i] = NewString(m)
+			}
+			return NewArray(values), nil
+		}), nil
+	case "scan":
+		return NewAutoBuiltin("string.scan", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.scan expects exactly one pattern")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.scan pattern must be string")
+			}
+			pattern := args[0].String()
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.scan invalid regex: %v", err)
+			}
+			matches := re.FindAllString(receiver.String(), -1)
+			values := make([]Value, len(matches))
+			for i, m := range matches {
+				values[i] = NewString(m)
+			}
+			return NewArray(values), nil
 		}), nil
 	case "index":
 		return NewAutoBuiltin("string.index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1450,7 +1571,8 @@ func stringMember(str Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.strip! does not take arguments")
 			}
-			return NewString(strings.TrimSpace(receiver.String())), nil
+			updated := strings.TrimSpace(receiver.String())
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "lstrip":
 		return NewAutoBuiltin("string.lstrip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1464,7 +1586,8 @@ func stringMember(str Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.lstrip! does not take arguments")
 			}
-			return NewString(strings.TrimLeftFunc(receiver.String(), unicode.IsSpace)), nil
+			updated := strings.TrimLeftFunc(receiver.String(), unicode.IsSpace)
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "rstrip":
 		return NewAutoBuiltin("string.rstrip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1478,7 +1601,8 @@ func stringMember(str Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.rstrip! does not take arguments")
 			}
-			return NewString(strings.TrimRightFunc(receiver.String(), unicode.IsSpace)), nil
+			updated := strings.TrimRightFunc(receiver.String(), unicode.IsSpace)
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "chomp":
 		return NewAutoBuiltin("string.chomp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1506,21 +1630,25 @@ func stringMember(str Value, property string) (Value, error) {
 			if len(args) > 1 {
 				return NewNil(), fmt.Errorf("string.chomp! accepts at most one separator")
 			}
-			text := receiver.String()
+			original := receiver.String()
+			updated := original
 			if len(args) == 0 {
-				return NewString(chompDefault(text)), nil
+				updated = chompDefault(original)
+				return stringBangResult(original, updated), nil
 			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.chomp! separator must be string")
 			}
 			sep := args[0].String()
 			if sep == "" {
-				return NewString(strings.TrimRight(text, "\r\n")), nil
+				updated = strings.TrimRight(original, "\r\n")
+				return stringBangResult(original, updated), nil
 			}
-			if strings.HasSuffix(text, sep) {
-				return NewString(text[:len(text)-len(sep)]), nil
+			if strings.HasSuffix(original, sep) {
+				updated = original[:len(original)-len(sep)]
+				return stringBangResult(original, updated), nil
 			}
-			return NewString(text), nil
+			return NewNil(), nil
 		}), nil
 	case "delete_prefix":
 		return NewAutoBuiltin("string.delete_prefix", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1540,7 +1668,8 @@ func stringMember(str Value, property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_prefix! prefix must be string")
 			}
-			return NewString(strings.TrimPrefix(receiver.String(), args[0].String())), nil
+			updated := strings.TrimPrefix(receiver.String(), args[0].String())
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "delete_suffix":
 		return NewAutoBuiltin("string.delete_suffix", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1560,7 +1689,8 @@ func stringMember(str Value, property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.delete_suffix! suffix must be string")
 			}
-			return NewString(strings.TrimSuffix(receiver.String(), args[0].String())), nil
+			updated := strings.TrimSuffix(receiver.String(), args[0].String())
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "upcase":
 		return NewAutoBuiltin("string.upcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1574,7 +1704,8 @@ func stringMember(str Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.upcase! does not take arguments")
 			}
-			return NewString(strings.ToUpper(receiver.String())), nil
+			updated := strings.ToUpper(receiver.String())
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "downcase":
 		return NewAutoBuiltin("string.downcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1588,7 +1719,8 @@ func stringMember(str Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.downcase! does not take arguments")
 			}
-			return NewString(strings.ToLower(receiver.String())), nil
+			updated := strings.ToLower(receiver.String())
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "capitalize":
 		return NewAutoBuiltin("string.capitalize", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1602,7 +1734,8 @@ func stringMember(str Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.capitalize! does not take arguments")
 			}
-			return NewString(stringCapitalize(receiver.String())), nil
+			updated := stringCapitalize(receiver.String())
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "swapcase":
 		return NewAutoBuiltin("string.swapcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1616,7 +1749,8 @@ func stringMember(str Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.swapcase! does not take arguments")
 			}
-			return NewString(stringSwapCase(receiver.String())), nil
+			updated := stringSwapCase(receiver.String())
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "reverse":
 		return NewAutoBuiltin("string.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1630,12 +1764,17 @@ func stringMember(str Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.reverse! does not take arguments")
 			}
-			return NewString(stringReverse(receiver.String())), nil
+			updated := stringReverse(receiver.String())
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "sub":
 		return NewAutoBuiltin("string.sub", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 2 {
 				return NewNil(), fmt.Errorf("string.sub expects pattern and replacement")
+			}
+			regex, err := stringRegexOption("sub", kwargs)
+			if err != nil {
+				return NewNil(), err
 			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.sub pattern must be string")
@@ -1643,12 +1782,20 @@ func stringMember(str Value, property string) (Value, error) {
 			if args[1].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.sub replacement must be string")
 			}
-			return NewString(strings.Replace(receiver.String(), args[0].String(), args[1].String(), 1)), nil
+			updated, err := stringSub(receiver.String(), args[0].String(), args[1].String(), regex)
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.sub invalid regex: %v", err)
+			}
+			return NewString(updated), nil
 		}), nil
 	case "sub!":
 		return NewAutoBuiltin("string.sub!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 2 {
 				return NewNil(), fmt.Errorf("string.sub! expects pattern and replacement")
+			}
+			regex, err := stringRegexOption("sub!", kwargs)
+			if err != nil {
+				return NewNil(), err
 			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.sub! pattern must be string")
@@ -1656,12 +1803,20 @@ func stringMember(str Value, property string) (Value, error) {
 			if args[1].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.sub! replacement must be string")
 			}
-			return NewString(strings.Replace(receiver.String(), args[0].String(), args[1].String(), 1)), nil
+			updated, err := stringSub(receiver.String(), args[0].String(), args[1].String(), regex)
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.sub! invalid regex: %v", err)
+			}
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "gsub":
 		return NewAutoBuiltin("string.gsub", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 2 {
 				return NewNil(), fmt.Errorf("string.gsub expects pattern and replacement")
+			}
+			regex, err := stringRegexOption("gsub", kwargs)
+			if err != nil {
+				return NewNil(), err
 			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.gsub pattern must be string")
@@ -1669,12 +1824,20 @@ func stringMember(str Value, property string) (Value, error) {
 			if args[1].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.gsub replacement must be string")
 			}
-			return NewString(strings.ReplaceAll(receiver.String(), args[0].String(), args[1].String())), nil
+			updated, err := stringGSub(receiver.String(), args[0].String(), args[1].String(), regex)
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.gsub invalid regex: %v", err)
+			}
+			return NewString(updated), nil
 		}), nil
 	case "gsub!":
 		return NewAutoBuiltin("string.gsub!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 2 {
 				return NewNil(), fmt.Errorf("string.gsub! expects pattern and replacement")
+			}
+			regex, err := stringRegexOption("gsub!", kwargs)
+			if err != nil {
+				return NewNil(), err
 			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.gsub! pattern must be string")
@@ -1682,7 +1845,11 @@ func stringMember(str Value, property string) (Value, error) {
 			if args[1].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.gsub! replacement must be string")
 			}
-			return NewString(strings.ReplaceAll(receiver.String(), args[0].String(), args[1].String())), nil
+			updated, err := stringGSub(receiver.String(), args[0].String(), args[1].String(), regex)
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.gsub! invalid regex: %v", err)
+			}
+			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "split":
 		return NewAutoBuiltin("string.split", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
