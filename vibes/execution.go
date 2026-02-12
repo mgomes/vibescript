@@ -1252,6 +1252,40 @@ func stringRuneSlice(text string, start, length int) (string, bool) {
 	return string(runes[start:end]), true
 }
 
+func stringCapitalize(text string) string {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return ""
+	}
+	runes[0] = unicode.ToUpper(runes[0])
+	for i := 1; i < len(runes); i++ {
+		runes[i] = unicode.ToLower(runes[i])
+	}
+	return string(runes)
+}
+
+func stringSwapCase(text string) string {
+	runes := []rune(text)
+	for i, r := range runes {
+		if unicode.IsUpper(r) {
+			runes[i] = unicode.ToLower(r)
+			continue
+		}
+		if unicode.IsLower(r) {
+			runes[i] = unicode.ToUpper(r)
+		}
+	}
+	return string(runes)
+}
+
+func stringReverse(text string) string {
+	runes := []rune(text)
+	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+		runes[i], runes[j] = runes[j], runes[i]
+	}
+	return string(runes)
+}
+
 func stringMember(str Value, property string) (Value, error) {
 	switch property {
 	case "size":
@@ -1450,6 +1484,53 @@ func stringMember(str Value, property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.downcase does not take arguments")
 			}
 			return NewString(strings.ToLower(receiver.String())), nil
+		}), nil
+	case "capitalize":
+		return NewAutoBuiltin("string.capitalize", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.capitalize does not take arguments")
+			}
+			return NewString(stringCapitalize(receiver.String())), nil
+		}), nil
+	case "swapcase":
+		return NewAutoBuiltin("string.swapcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.swapcase does not take arguments")
+			}
+			return NewString(stringSwapCase(receiver.String())), nil
+		}), nil
+	case "reverse":
+		return NewAutoBuiltin("string.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.reverse does not take arguments")
+			}
+			return NewString(stringReverse(receiver.String())), nil
+		}), nil
+	case "sub":
+		return NewAutoBuiltin("string.sub", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 2 {
+				return NewNil(), fmt.Errorf("string.sub expects pattern and replacement")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.sub pattern must be string")
+			}
+			if args[1].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.sub replacement must be string")
+			}
+			return NewString(strings.Replace(receiver.String(), args[0].String(), args[1].String(), 1)), nil
+		}), nil
+	case "gsub":
+		return NewAutoBuiltin("string.gsub", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 2 {
+				return NewNil(), fmt.Errorf("string.gsub expects pattern and replacement")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.gsub pattern must be string")
+			}
+			if args[1].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.gsub replacement must be string")
+			}
+			return NewString(strings.ReplaceAll(receiver.String(), args[0].String(), args[1].String())), nil
 		}), nil
 	case "split":
 		return NewAutoBuiltin("string.split", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
