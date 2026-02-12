@@ -8,7 +8,10 @@ import (
 )
 
 func TestUpdateQuitCommandReturnsQuit(t *testing.T) {
-	m := newREPLModel()
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
 	m.textInput.SetValue(":quit")
 
 	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -34,7 +37,10 @@ func TestUpdateQuitCommandReturnsQuit(t *testing.T) {
 }
 
 func TestUpdateNonQuitCommandDoesNotReturnCmd(t *testing.T) {
-	m := newREPLModel()
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
 	m.textInput.SetValue(":help")
 
 	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -58,7 +64,10 @@ func TestUpdateNonQuitCommandDoesNotReturnCmd(t *testing.T) {
 }
 
 func TestEvaluateAssignmentStoresVariable(t *testing.T) {
-	m := newREPLModel()
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
 
 	output, isErr := m.evaluate("score = 42")
 	if isErr {
@@ -75,7 +84,10 @@ func TestEvaluateAssignmentStoresVariable(t *testing.T) {
 }
 
 func TestEvaluateEqualityDoesNotOverwriteVariable(t *testing.T) {
-	m := newREPLModel()
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
 	m.env["a"] = vibes.NewInt(5)
 
 	output, isErr := m.evaluate("a == 5")

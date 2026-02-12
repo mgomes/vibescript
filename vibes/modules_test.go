@@ -10,7 +10,7 @@ import (
 )
 
 func TestRequireProvidesExports(t *testing.T) {
-	engine := NewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run(value)
   helpers = require("helper")
@@ -30,7 +30,7 @@ end`)
 }
 
 func TestRequirePreservesModuleLocalResolution(t *testing.T) {
-	engine := NewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def rate()
   100
@@ -54,7 +54,7 @@ end`)
 }
 
 func TestRequireMissingModule(t *testing.T) {
-	engine := NewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run()
   require("missing")
@@ -71,7 +71,7 @@ end`)
 }
 
 func TestRequireCachesModules(t *testing.T) {
-	engine := NewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run()
   require("helper")
@@ -97,7 +97,7 @@ end`)
 }
 
 func TestRequireRejectsAbsolutePaths(t *testing.T) {
-	engine := NewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	absPath := "/etc/passwd"
 	if filepath.Separator == '\\' {
@@ -126,7 +126,7 @@ end`, absPath)
 }
 
 func TestRequireRejectsPathTraversal(t *testing.T) {
-	engine := NewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run()
   require("../../etc/passwd")
@@ -143,7 +143,7 @@ end`)
 }
 
 func TestRequireModuleCachePreventsRecursion(t *testing.T) {
-	engine := NewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run()
   require("circular_a")
@@ -164,7 +164,7 @@ end`)
 }
 
 func TestRequireConcurrentLoading(t *testing.T) {
-	engine := NewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run()
   require("helper")
@@ -204,7 +204,7 @@ end`)
 }
 
 func TestRequireStrictEffectsRequiresAllowRequire(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		StrictEffects: true,
 		ModulePaths:   []string{filepath.Join("testdata", "modules")},
 	})
@@ -226,7 +226,7 @@ end`)
 }
 
 func TestRequireStrictEffectsAllowsRequireWhenOptedIn(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		StrictEffects: true,
 		ModulePaths:   []string{filepath.Join("testdata", "modules")},
 	})

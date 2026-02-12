@@ -2,11 +2,81 @@ package vibes
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
+func TestNewEngineRejectsMissingModulePath(t *testing.T) {
+	_, err := NewEngine(Config{ModulePaths: []string{"./definitely-missing-mod-path"}})
+	if err == nil {
+		t.Fatalf("expected NewEngine to reject missing module path")
+	}
+	if !strings.Contains(err.Error(), "invalid module path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewEngineRejectsFileModulePath(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "module.vibe")
+	if writeErr := os.WriteFile(filePath, []byte("def run\n  1\nend"), 0o644); writeErr != nil {
+		t.Fatalf("write temp file: %v", writeErr)
+	}
+
+	_, err := NewEngine(Config{ModulePaths: []string{filePath}})
+	if err == nil {
+		t.Fatalf("expected NewEngine to reject file module path")
+	}
+	if !strings.Contains(err.Error(), "is not a directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewEngineAcceptsValidModulePaths(t *testing.T) {
+	dir := t.TempDir()
+	engine, err := NewEngine(Config{ModulePaths: []string{dir}})
+	if err != nil {
+		t.Fatalf("expected valid module path to succeed: %v", err)
+	}
+	if engine == nil {
+		t.Fatalf("expected non-nil engine")
+	}
+}
+
+func TestNewEngineValidatesConfiguredModulePathAsProvided(t *testing.T) {
+	root := t.TempDir()
+	mods := filepath.Join(root, "mods")
+	if err := os.Mkdir(mods, 0o755); err != nil {
+		t.Fatalf("mkdir mods: %v", err)
+	}
+
+	weirdPath := fmt.Sprintf("%s%cmissing%c..%cmods", root, os.PathSeparator, os.PathSeparator, os.PathSeparator)
+	_, statErr := os.Stat(weirdPath)
+
+	engine, err := NewEngine(Config{ModulePaths: []string{weirdPath}})
+	if statErr != nil {
+		if err == nil {
+			t.Fatalf("expected NewEngine to reject module path that os.Stat rejects")
+		}
+		if !strings.Contains(err.Error(), "invalid module path") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return
+	}
+
+	if err != nil {
+		t.Fatalf("expected NewEngine to accept module path that os.Stat accepts: %v", err)
+	}
+	if engine == nil {
+		t.Fatalf("expected non-nil engine")
+	}
+}
+
 func TestCompileAndCallAdd(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def add(a, b)
   a + b
 end`)
@@ -24,7 +94,7 @@ end`)
 }
 
 func TestMoneyBuiltin(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def total
   money("10.00 USD") + money("5.00 USD")
 end`)
@@ -46,7 +116,7 @@ end`)
 }
 
 func TestGlobalsAccess(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def user_id
   ctx.user.id
 end`)
@@ -70,7 +140,7 @@ end`)
 }
 
 func TestAssertFailure(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def check
   assert false, "boom"
 end`)
@@ -84,7 +154,7 @@ end`)
 }
 
 func TestSymbolIndex(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def amount(row)
   row[:amount]
 end`)
@@ -103,7 +173,7 @@ end`)
 }
 
 func TestDurationLiteral(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def seconds
   (2.minutes).seconds
 end`)
@@ -121,7 +191,7 @@ end`)
 }
 
 func TestZeroArgCallWithoutParens(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def helper
   7
 end
@@ -143,7 +213,7 @@ end`)
 }
 
 func TestNestedZeroArgCalls(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def inner
   10
 end
@@ -169,7 +239,7 @@ end`)
 }
 
 func TestMixedZeroArgAndRegularCalls(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def zero_arg
   5
 end
@@ -195,7 +265,7 @@ end`)
 }
 
 func TestMethodChainingWithZeroArgMethods(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run
   values = [1, 2, 3, 4, 5]
   values.sum
@@ -214,7 +284,7 @@ end`)
 }
 
 func TestZeroArgMethodChaining(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run
   values = [1, 2, 2, 3, 3, 3]
   values.uniq.sum

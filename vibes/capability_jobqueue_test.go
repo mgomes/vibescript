@@ -28,7 +28,7 @@ func (s *jobQueueStub) Retry(ctx context.Context, req JobQueueRetryRequest) (Val
 
 func TestJobQueueCapabilityEnqueue(t *testing.T) {
 	stub := &jobQueueStub{}
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
   jobs.enqueue("demo", { foo: "bar" }, delay: 2.seconds, key: "abc", queue: "standard")
 end`)
@@ -40,7 +40,7 @@ end`)
 	ctx := context.WithValue(context.Background(), ctxKey("trace"), "on")
 
 	result, err := script.Call(ctx, "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{NewJobQueueCapability("jobs", stub)},
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", stub)},
 	})
 	if err != nil {
 		t.Fatalf("call failed: %v", err)
@@ -88,7 +88,7 @@ end`)
 
 func TestJobQueueCapabilityRetry(t *testing.T) {
 	stub := &jobQueueStub{}
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
   jobs.retry("job-7", attempts: 3, priority: "high")
 end`)
@@ -97,7 +97,7 @@ end`)
 	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{NewJobQueueCapability("jobs", stub)},
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", stub)},
 	})
 	if err != nil {
 		t.Fatalf("call failed: %v", err)
@@ -126,7 +126,7 @@ end`)
 
 func TestJobQueueCapabilityRejectsInvalidPayload(t *testing.T) {
 	stub := &jobQueueStub{}
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
   jobs.enqueue("demo", 42)
 end`)
@@ -135,7 +135,7 @@ end`)
 	}
 
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{NewJobQueueCapability("jobs", stub)},
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", stub)},
 	})
 	if err == nil {
 		t.Fatalf("expected error for invalid payload")
@@ -147,7 +147,7 @@ end`)
 
 func TestNilCapabilityAdapterFiltering(t *testing.T) {
 	stub := &jobQueueStub{}
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
   jobs.enqueue("test", { foo: "bar" })
 end`)
@@ -156,7 +156,7 @@ end`)
 	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{nil, NewJobQueueCapability("jobs", stub), nil},
+		Capabilities: []CapabilityAdapter{nil, MustNewJobQueueCapability("jobs", stub), nil},
 	})
 	if err != nil {
 		t.Fatalf("call failed: %v", err)
@@ -171,7 +171,7 @@ end`)
 
 func TestJobQueueRejectsNegativeDelay(t *testing.T) {
 	stub := &jobQueueStub{}
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
   jobs.enqueue("demo", { foo: "bar" }, delay: -5)
 end`)
@@ -180,7 +180,7 @@ end`)
 	}
 
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{NewJobQueueCapability("jobs", stub)},
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", stub)},
 	})
 	if err == nil {
 		t.Fatalf("expected error for negative delay")
@@ -192,7 +192,7 @@ end`)
 
 func TestJobQueueRejectsEmptyKey(t *testing.T) {
 	stub := &jobQueueStub{}
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
   jobs.enqueue("demo", { foo: "bar" }, key: "")
 end`)
@@ -201,12 +201,34 @@ end`)
 	}
 
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{NewJobQueueCapability("jobs", stub)},
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", stub)},
 	})
 	if err == nil {
 		t.Fatalf("expected error for empty key")
 	}
 	if got := err.Error(); !strings.Contains(got, "jobs.enqueue key must be non-empty") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
+func TestNewJobQueueCapabilityRejectsEmptyName(t *testing.T) {
+	stub := &jobQueueStub{}
+	_, err := NewJobQueueCapability("", stub)
+	if err == nil {
+		t.Fatalf("expected empty capability name to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "name must be non-empty") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
+func TestNewJobQueueCapabilityRejectsNilQueue(t *testing.T) {
+	var queue JobQueue
+	_, err := NewJobQueueCapability("jobs", queue)
+	if err == nil {
+		t.Fatalf("expected nil queue to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "requires a non-nil implementation") {
 		t.Fatalf("unexpected error: %s", got)
 	}
 }

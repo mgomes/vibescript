@@ -42,7 +42,7 @@ type callResult struct {
 }
 
 func TestScriptCallOverlappingCallsKeepFunctionEnvIsolated(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def helper
   tenant
 end
@@ -108,7 +108,7 @@ end`)
 }
 
 func TestScriptCallOverlappingCallsKeepClassVarsIsolated(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`class Counter
   @@count = 0
 
@@ -181,7 +181,7 @@ end`)
 }
 
 func TestScriptCallRebindsEscapedFunctionsToCurrentCallEnv(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def format_tenant(value)
   tenant + "-" + value
 end
@@ -223,7 +223,7 @@ end`)
 }
 
 func TestScriptCallRebindingDoesNotMutateSharedArgMaps(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def format_tenant(value)
   tenant + "-" + value
 end
@@ -309,7 +309,7 @@ end`)
 }
 
 func TestScriptCallPreservesForeignFunctionEnv(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 
 	producer, err := engine.Compile(`def helper(value)
   "foreign-" + value
@@ -351,7 +351,7 @@ end`)
 }
 
 func TestScriptCallRebindsEscapedClassValuesToCurrentCall(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`class Bucket
   @@count = 0
 
@@ -410,7 +410,7 @@ end`)
 }
 
 func TestScriptCallRebindsEscapedInstancesToCurrentCallState(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`class Bucket
   @@count = 0
 
@@ -471,7 +471,7 @@ end`)
 }
 
 func TestScriptCallRebindingPreservesHashAndObjectKindsForAliasedMaps(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run(a, b)
   [a, b]
 end`)

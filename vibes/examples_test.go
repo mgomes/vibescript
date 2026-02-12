@@ -1569,7 +1569,7 @@ func compileExampleWithConfig(t *testing.T, rel string, cfg Config) *Script {
 	if err != nil {
 		t.Fatalf("read %s: %v", rel, err)
 	}
-	engine := NewEngine(cfg)
+	engine := MustNewEngine(cfg)
 	script, err := engine.Compile(string(source))
 	if err != nil {
 		t.Fatalf("compile %s: %v", rel, err)

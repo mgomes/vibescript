@@ -14,7 +14,10 @@ import (
 )
 
 func main() {
-    engine := vibes.NewEngine(vibes.Config{})
+    engine, err := vibes.NewEngine(vibes.Config{})
+    if err != nil {
+        panic(err)
+    }
 
     scriptSource := `
     def total_with_bonus(base, bonus)
@@ -56,7 +59,10 @@ also defines any non-conflicting functions on the global scope for convenient
 access.
 
 ```go
-engine := vibes.NewEngine(vibes.Config{ModulePaths: []string{"/app/workflows"}})
+engine, err := vibes.NewEngine(vibes.Config{ModulePaths: []string{"/app/workflows"}})
+if err != nil {
+    panic(err)
+}
 
 script, err := engine.Compile(`def total(amount)
   helpers = require("fees")
@@ -82,7 +88,10 @@ func (jobQueue) Enqueue(ctx context.Context, job vibes.JobQueueJob) (vibes.Value
     return vibes.NewString("queued"), nil
 }
 
-cap := vibes.NewJobQueueCapability("jobs", jobQueue{})
+cap, err := vibes.NewJobQueueCapability("jobs", jobQueue{})
+if err != nil {
+    panic(err)
+}
 
 result, err := script.Call(ctx, "queue_recalc", nil, vibes.CallOptions{
     Capabilities: []vibes.CapabilityAdapter{cap},

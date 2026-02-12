@@ -53,7 +53,10 @@ import (
 )
 
 func main() {
-    engine := vibes.NewEngine(vibes.Config{})
+    engine, err := vibes.NewEngine(vibes.Config{})
+    if err != nil {
+        panic(err)
+    }
 
     script, err := engine.Compile(`
     def total_with_fee(amount)
@@ -166,19 +169,22 @@ Vibescript runs inside a constrained interpreter to help host applications enfor
 - **Recursion limit:** `Config.RecursionLimit` bounds call depth (default 64) to avoid stack blowups from runaway recursion.
 - **Memory quota:** `Config.MemoryQuotaBytes` limits interpreter allocations (default 64 KiB). Exceeding the limit raises a runtime error instead of consuming host memory.
 - **Effects control:** `Config.StrictEffects` can be set to require explicit capabilities for side-effecting operations (e.g., modules or host adapters), letting embedders keep the sandbox tight.
-- **Module search paths:** `Config.ModulePaths` controls where `require` may load modules from. Only approved directories are searched; invalid paths panic at engine construction time.
+- **Module search paths:** `Config.ModulePaths` controls where `require` may load modules from. Only approved directories are searched; invalid paths return an error from `NewEngine`.
 - **Capability gating:** Host code injects safe adapters via `CallOptions.Capabilities`, so scripts can only touch what you expose. Globals can be seeded via `CallOptions.Globals` for per-call isolation.
 
 Example with explicit limits:
 
 ```go
-engine := vibes.NewEngine(vibes.Config{
+engine, err := vibes.NewEngine(vibes.Config{
     StepQuota:        10_000,   // abort after 10k steps
     MemoryQuotaBytes: 256 << 10, // 256 KiB heap cap inside the interpreter
     RecursionLimit:   32,       // shallow recursion allowed
     StrictEffects:    true,     // require capabilities for side effects
     ModulePaths:      []string{"/opt/vibes/modules"},
 })
+if err != nil {
+    return err
+}
 
 script, _ := engine.Compile(source)
 result, err := script.Call(ctx, "run", nil, vibes.CallOptions{

@@ -22,7 +22,7 @@ func (c strictEffectsCapability) Bind(binding CapabilityBinding) (map[string]Val
 }
 
 func TestStrictEffectsRejectsCallableGlobals(t *testing.T) {
-	engine := NewEngine(Config{StrictEffects: true})
+	engine := MustNewEngine(Config{StrictEffects: true})
 	script, err := engine.Compile(`def run()
   db.save("player-1")
 end`)
@@ -53,7 +53,7 @@ end`)
 }
 
 func TestStrictEffectsAllowsDataGlobals(t *testing.T) {
-	engine := NewEngine(Config{StrictEffects: true})
+	engine := MustNewEngine(Config{StrictEffects: true})
 	script, err := engine.Compile(`def run()
   tenant
 end`)
@@ -75,7 +75,7 @@ end`)
 }
 
 func TestStrictEffectsAllowsCapabilities(t *testing.T) {
-	engine := NewEngine(Config{StrictEffects: true})
+	engine := MustNewEngine(Config{StrictEffects: true})
 	script, err := engine.Compile(`def run()
   db.save("player-1")
 end`)

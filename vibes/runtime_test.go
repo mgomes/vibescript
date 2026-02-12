@@ -10,7 +10,7 @@ import (
 
 func compileScript(t *testing.T, source string) *Script {
 	t.Helper()
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(source)
 	if err != nil {
 		t.Fatalf("compile error: %v", err)
@@ -135,7 +135,7 @@ func TestArrayConcatAndSubtract(t *testing.T) {
 }
 
 func TestHashLiteralSyntaxRestriction(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	_, err := engine.Compile(`
     def broken()
       { "name" => "alex" }
@@ -147,7 +147,7 @@ func TestHashLiteralSyntaxRestriction(t *testing.T) {
 }
 
 func TestArraySumRejectsNonNumeric(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`
     def bad()
       ["a"].sum()

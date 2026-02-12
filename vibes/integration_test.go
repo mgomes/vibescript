@@ -17,7 +17,7 @@ func compileTestProgram(t *testing.T, rel string) *Script {
 	if err != nil {
 		t.Fatalf("read %s: %v", rel, err)
 	}
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(string(source))
 	if err != nil {
 		t.Fatalf("compile %s: %v", rel, err)
@@ -36,7 +36,7 @@ func compileComplexExampleWithConfig(t *testing.T, rel string, cfg Config) *Scri
 	if err != nil {
 		t.Fatalf("read %s: %v", rel, err)
 	}
-	engine := NewEngine(cfg)
+	engine := MustNewEngine(cfg)
 	script, err := engine.Compile(string(source))
 	if err != nil {
 		t.Fatalf("compile %s: %v", rel, err)
@@ -45,7 +45,7 @@ func compileComplexExampleWithConfig(t *testing.T, rel string, cfg Config) *Scri
 }
 
 func TestComplexExamplesCompile(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	files := []string{
 		"tests/complex/analytics.vibe",
 		"tests/complex/durations.vibe",
@@ -527,7 +527,7 @@ func TestAllVibeFilesCompileAndRun(t *testing.T) {
 		t.Fatal("no .vibe files found in tests/")
 	}
 
-	engine := NewEngine(Config{StepQuota: 5_000_000})
+	engine := MustNewEngine(Config{StepQuota: 5_000_000})
 	for _, path := range files {
 		path := path
 		rel, _ := filepath.Rel(testsDir, path)
@@ -725,7 +725,7 @@ def run
   results
 end
 `
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(source)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -756,7 +756,7 @@ def run
   { a: a, b: b }
 end
 `
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(source)
 	if err != nil {
 		t.Fatalf("compile: %v", err)

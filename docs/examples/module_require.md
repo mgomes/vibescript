@@ -5,9 +5,12 @@ from another script. The host application whitelists module directories via
 `Config.ModulePaths`.
 
 ```go
-engine := vibes.NewEngine(vibes.Config{
+engine, err := vibes.NewEngine(vibes.Config{
     ModulePaths: []string{"/app/workflows/modules"},
 })
+if err != nil {
+    panic(err)
+}
 ```
 
 Place `modules/fees.vibe` on disk:

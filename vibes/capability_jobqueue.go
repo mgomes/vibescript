@@ -38,17 +38,26 @@ type JobQueueRetryRequest struct {
 }
 
 // NewJobQueueCapability constructs a capability adapter bound to the provided name.
-func NewJobQueueCapability(name string, queue JobQueue) CapabilityAdapter {
+func NewJobQueueCapability(name string, queue JobQueue) (CapabilityAdapter, error) {
 	if name == "" {
-		panic("vibes: job queue capability name must be non-empty")
+		return nil, fmt.Errorf("vibes: job queue capability name must be non-empty")
 	}
 	if queue == nil {
-		panic("vibes: job queue capability requires a non-nil implementation")
+		return nil, fmt.Errorf("vibes: job queue capability requires a non-nil implementation")
 	}
 
 	cap := &jobQueueCapability{name: name, queue: queue}
 	if retry, ok := queue.(JobQueueWithRetry); ok {
 		cap.retry = retry
+	}
+	return cap, nil
+}
+
+// MustNewJobQueueCapability constructs a capability adapter or panics on invalid arguments.
+func MustNewJobQueueCapability(name string, queue JobQueue) CapabilityAdapter {
+	cap, err := NewJobQueueCapability(name, queue)
+	if err != nil {
+		panic(err)
 	}
 	return cap
 }
