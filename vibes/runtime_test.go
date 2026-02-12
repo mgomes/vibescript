@@ -843,13 +843,24 @@ func TestStringSearchAndSlice(t *testing.T) {
 func TestStringTransforms(t *testing.T) {
 	script := compileScript(t, `
     def helpers()
+      original = "  hello  "
       {
         capitalize: "hÉLLo wORLD".capitalize,
+        capitalize_bang: "hÉLLo wORLD".capitalize!,
         swapcase: "Hello VIBE".swapcase,
+        swapcase_bang: "Hello VIBE".swapcase!,
         reverse: "héllo".reverse,
+        reverse_bang: "héllo".reverse!,
         sub_one: "bananas".sub("na", "NA"),
+        sub_bang: "bananas".sub!("na", "NA"),
         sub_miss: "bananas".sub("zz", "NA"),
-        gsub_all: "bananas".gsub("na", "NA")
+        gsub_all: "bananas".gsub("na", "NA"),
+        gsub_bang: "bananas".gsub!("na", "NA"),
+        clear: "hello".clear,
+        concat: "he".concat("llo", "!"),
+        replace: "old".replace("new"),
+        strip_bang: original.strip!,
+        original_unchanged: original
       }
     end
     `)
@@ -862,20 +873,50 @@ func TestStringTransforms(t *testing.T) {
 	if got["capitalize"].String() != "Héllo world" {
 		t.Fatalf("capitalize mismatch: %q", got["capitalize"].String())
 	}
+	if got["capitalize_bang"].String() != "Héllo world" {
+		t.Fatalf("capitalize_bang mismatch: %q", got["capitalize_bang"].String())
+	}
 	if got["swapcase"].String() != "hELLO vibe" {
 		t.Fatalf("swapcase mismatch: %q", got["swapcase"].String())
+	}
+	if got["swapcase_bang"].String() != "hELLO vibe" {
+		t.Fatalf("swapcase_bang mismatch: %q", got["swapcase_bang"].String())
 	}
 	if got["reverse"].String() != "olléh" {
 		t.Fatalf("reverse mismatch: %q", got["reverse"].String())
 	}
+	if got["reverse_bang"].String() != "olléh" {
+		t.Fatalf("reverse_bang mismatch: %q", got["reverse_bang"].String())
+	}
 	if got["sub_one"].String() != "baNAnas" {
 		t.Fatalf("sub_one mismatch: %q", got["sub_one"].String())
+	}
+	if got["sub_bang"].String() != "baNAnas" {
+		t.Fatalf("sub_bang mismatch: %q", got["sub_bang"].String())
 	}
 	if got["sub_miss"].String() != "bananas" {
 		t.Fatalf("sub_miss mismatch: %q", got["sub_miss"].String())
 	}
 	if got["gsub_all"].String() != "baNANAs" {
 		t.Fatalf("gsub_all mismatch: %q", got["gsub_all"].String())
+	}
+	if got["gsub_bang"].String() != "baNANAs" {
+		t.Fatalf("gsub_bang mismatch: %q", got["gsub_bang"].String())
+	}
+	if got["clear"].String() != "" {
+		t.Fatalf("clear mismatch: %q", got["clear"].String())
+	}
+	if got["concat"].String() != "hello!" {
+		t.Fatalf("concat mismatch: %q", got["concat"].String())
+	}
+	if got["replace"].String() != "new" {
+		t.Fatalf("replace mismatch: %q", got["replace"].String())
+	}
+	if got["strip_bang"].String() != "hello" {
+		t.Fatalf("strip_bang mismatch: %q", got["strip_bang"].String())
+	}
+	if got["original_unchanged"].String() != "  hello  " {
+		t.Fatalf("original_unchanged mismatch: %q", got["original_unchanged"].String())
 	}
 }
 
@@ -1018,6 +1059,31 @@ func TestMethodErrorHandling(t *testing.T) {
 		{
 			name:   "string.gsub with missing argument",
 			script: `def run() "hello".gsub("l") end`,
+			errMsg: "expects pattern and replacement",
+		},
+		{
+			name:   "string.concat with no arguments",
+			script: `def run() "hello".concat end`,
+			errMsg: "expects at least one string",
+		},
+		{
+			name:   "string.concat with non-string argument",
+			script: `def run() "hello".concat(1) end`,
+			errMsg: "expects string arguments",
+		},
+		{
+			name:   "string.replace with non-string replacement",
+			script: `def run() "hello".replace(1) end`,
+			errMsg: "replacement must be string",
+		},
+		{
+			name:   "string.strip! with argument",
+			script: `def run() "hello".strip!(1) end`,
+			errMsg: "string.strip! does not take arguments",
+		},
+		{
+			name:   "string.gsub! with missing argument",
+			script: `def run() "hello".gsub!("l") end`,
 			errMsg: "expects pattern and replacement",
 		},
 		{
