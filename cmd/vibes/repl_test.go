@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mgomes/vibescript/vibes"
 )
 
 func TestUpdateQuitCommandReturnsQuit(t *testing.T) {
@@ -53,5 +54,37 @@ func TestUpdateNonQuitCommandDoesNotReturnCmd(t *testing.T) {
 	}
 	if rm.textInput.Value() != "" {
 		t.Fatalf("input not cleared after command")
+	}
+}
+
+func TestEvaluateAssignmentStoresVariable(t *testing.T) {
+	m := newREPLModel()
+
+	output, isErr := m.evaluate("score = 42")
+	if isErr {
+		t.Fatalf("unexpected eval error: %s", output)
+	}
+
+	score, ok := m.env["score"]
+	if !ok {
+		t.Fatalf("expected score to be stored in repl env")
+	}
+	if score.Kind() != vibes.KindInt || score.Int() != 42 {
+		t.Fatalf("unexpected score value: %#v", score)
+	}
+}
+
+func TestEvaluateEqualityDoesNotOverwriteVariable(t *testing.T) {
+	m := newREPLModel()
+	m.env["a"] = vibes.NewInt(5)
+
+	output, isErr := m.evaluate("a == 5")
+	if isErr {
+		t.Fatalf("unexpected eval error: %s", output)
+	}
+
+	a := m.env["a"]
+	if a.Kind() != vibes.KindInt || a.Int() != 5 {
+		t.Fatalf("variable a was clobbered by equality expression: %#v", a)
 	}
 }

@@ -349,7 +349,7 @@ func (m replModel) evaluate(input string) (string, bool) {
 		return err.Error(), true
 	}
 
-	m.extractAssignments(input, result)
+	m.extractAssignments(script, result)
 
 	m.env["_"] = result
 
@@ -359,34 +359,27 @@ func (m replModel) evaluate(input string) (string, bool) {
 	return formatValue(result), false
 }
 
-func (m *replModel) extractAssignments(input string, result vibes.Value) {
-	parts := strings.SplitN(input, "=", 2)
-	if len(parts) == 2 {
-		name := strings.TrimSpace(parts[0])
-		if isValidIdentifier(name) && !result.IsNil() {
-			m.env[name] = result
-		}
+func (m *replModel) extractAssignments(script *vibes.Script, result vibes.Value) {
+	if result.IsNil() || script == nil {
+		return
 	}
-}
 
-func isValidIdentifier(s string) bool {
-	if s == "" {
-		return false
+	fn, ok := script.Function("__repl__")
+	if !ok || len(fn.Body) != 1 {
+		return
 	}
-	for i, r := range s {
-		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		isDigit := r >= '0' && r <= '9'
-		if i == 0 {
-			if !isLetter && r != '_' {
-				return false
-			}
-		} else {
-			if !isLetter && !isDigit && r != '_' {
-				return false
-			}
-		}
+
+	assign, ok := fn.Body[0].(*vibes.AssignStmt)
+	if !ok {
+		return
 	}
-	return true
+
+	ident, ok := assign.Target.(*vibes.Identifier)
+	if !ok {
+		return
+	}
+
+	m.env[ident.Name] = result
 }
 
 func formatValue(v vibes.Value) string {
