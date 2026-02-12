@@ -8,7 +8,7 @@ import (
 )
 
 func TestRecursionLimitExceeded(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		RecursionLimit: 3,
 	})
 
@@ -38,7 +38,7 @@ end`)
 }
 
 func TestRecursionLimitAllowsWithinBound(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		RecursionLimit: 5,
 	})
 
@@ -63,7 +63,7 @@ end`)
 }
 
 func TestRecursionLimitDefaultApplies(t *testing.T) {
-	engine := NewEngine(Config{})
+	engine := MustNewEngine(Config{})
 
 	script, err := engine.Compile(`def recurse(n)
   if n <= 0
@@ -86,7 +86,7 @@ end`)
 }
 
 func TestMutualRecursionRespectsLimit(t *testing.T) {
-	engine := NewEngine(Config{RecursionLimit: 4})
+	engine := MustNewEngine(Config{RecursionLimit: 4})
 
 	script, err := engine.Compile(`def a(n)
   if n <= 0
@@ -117,7 +117,7 @@ end`)
 }
 
 func TestRecursionLimitWinsOverStepQuota(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		RecursionLimit: 3,
 		StepQuota:      1_000_000,
 	})
@@ -143,7 +143,7 @@ end`)
 }
 
 func TestRecursionLimitNoLeakAfterError(t *testing.T) {
-	engine := NewEngine(Config{RecursionLimit: 4})
+	engine := MustNewEngine(Config{RecursionLimit: 4})
 
 	script, err := engine.Compile(`def ping(n)
   if n <= 0

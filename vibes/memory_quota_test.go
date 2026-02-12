@@ -41,7 +41,7 @@ end
 `
 
 func TestMemoryQuotaExceeded(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		StepQuota:        20000,
 		MemoryQuotaBytes: 2048,
 	})
@@ -61,7 +61,7 @@ func TestMemoryQuotaExceeded(t *testing.T) {
 }
 
 func TestMemoryQuotaCountsClassVars(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		StepQuota:        20000,
 		MemoryQuotaBytes: 3072,
 	})
@@ -81,7 +81,7 @@ func TestMemoryQuotaCountsClassVars(t *testing.T) {
 }
 
 func TestMemoryQuotaAllowsExecution(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		StepQuota:        20000,
 		MemoryQuotaBytes: 1 << 20,
 	})
@@ -101,7 +101,7 @@ func TestMemoryQuotaAllowsExecution(t *testing.T) {
 }
 
 func TestMemoryQuotaExceededOnCompletion(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		StepQuota:        20000,
 		MemoryQuotaBytes: 2048,
 	})
@@ -122,7 +122,7 @@ func TestMemoryQuotaExceededOnCompletion(t *testing.T) {
 }
 
 func TestMemoryQuotaExceededForEmptyBodyDefaultArg(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		StepQuota:        20000,
 		MemoryQuotaBytes: 2048,
 	})
@@ -146,7 +146,7 @@ end`
 }
 
 func TestMemoryQuotaExceededForBoundArguments(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		StepQuota:        20000,
 		MemoryQuotaBytes: 2048,
 	})
@@ -185,7 +185,7 @@ end`)
 }
 
 func TestMemoryQuotaCountsIndependentEmptySlices(t *testing.T) {
-	engine := NewEngine(Config{
+	engine := MustNewEngine(Config{
 		StepQuota:        20000,
 		MemoryQuotaBytes: 4096,
 	})

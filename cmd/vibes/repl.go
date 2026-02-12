@@ -129,7 +129,7 @@ var keys = keyMap{
 	),
 }
 
-func newREPLModel() replModel {
+func newREPLModel() (replModel, error) {
 	ti := textinput.New()
 	ti.Placeholder = "type an expression..."
 	ti.Focus()
@@ -138,7 +138,10 @@ func newREPLModel() replModel {
 	ti.PromptStyle = promptStyle
 	ti.Prompt = "vibes> "
 
-	engine := vibes.NewEngine(vibes.Config{})
+	engine, err := vibes.NewEngine(vibes.Config{})
+	if err != nil {
+		return replModel{}, err
+	}
 
 	return replModel{
 		textInput:  ti,
@@ -149,7 +152,7 @@ func newREPLModel() replModel {
 		historyIdx: -1,
 		showHelp:   false,
 		showVars:   false,
-	}
+	}, nil
 }
 
 func (m replModel) Init() tea.Cmd {
@@ -493,7 +496,11 @@ func renderHelpPanel(width int) string {
 }
 
 func runREPL() error {
-	p := tea.NewProgram(newREPLModel(), tea.WithAltScreen())
-	_, err := p.Run()
+	model, err := newREPLModel()
+	if err != nil {
+		return err
+	}
+	p := tea.NewProgram(model, tea.WithAltScreen())
+	_, err = p.Run()
 	return err
 }

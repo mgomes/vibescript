@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,7 +30,7 @@ type Engine struct {
 }
 
 // NewEngine constructs an Engine with sane defaults and registers built-ins.
-func NewEngine(cfg Config) *Engine {
+func NewEngine(cfg Config) (*Engine, error) {
 	if cfg.StepQuota <= 0 {
 		cfg.StepQuota = 50000
 	}
@@ -42,12 +44,8 @@ func NewEngine(cfg Config) *Engine {
 		cfg.MaxCachedModules = 1000
 	}
 
-	for _, path := range cfg.ModulePaths {
-		if stat, err := os.Stat(path); err != nil {
-			panic(fmt.Sprintf("vibes: invalid module path %q: %v", path, err))
-		} else if !stat.IsDir() {
-			panic(fmt.Sprintf("vibes: module path %q is not a directory", path))
-		}
+	if err := validateModulePaths(cfg.ModulePaths); err != nil {
+		return nil, err
 	}
 
 	engine := &Engine{
@@ -211,6 +209,32 @@ func NewEngine(cfg Config) *Engine {
 		}),
 	})
 
+	return engine, nil
+}
+
+func validateModulePaths(paths []string) error {
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("vibes: module path cannot be empty")
+		}
+		clean := filepath.Clean(path)
+		stat, err := os.Stat(clean)
+		if err != nil {
+			return fmt.Errorf("vibes: invalid module path %q: %w", path, err)
+		}
+		if !stat.IsDir() {
+			return fmt.Errorf("vibes: module path %q is not a directory", path)
+		}
+	}
+	return nil
+}
+
+// MustNewEngine constructs an Engine or panics if the config is invalid.
+func MustNewEngine(cfg Config) *Engine {
+	engine, err := NewEngine(cfg)
+	if err != nil {
+		panic(err)
+	}
 	return engine
 }
 

@@ -63,7 +63,10 @@ func runCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	engine := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs})
+	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs})
+	if err != nil {
+		return err
+	}
 	script, err := engine.Compile(string(input))
 	if err != nil {
 		return fmt.Errorf("compile failed: %w", err)
