@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -217,8 +216,7 @@ func validateModulePaths(paths []string) error {
 		if strings.TrimSpace(path) == "" {
 			return fmt.Errorf("vibes: module path cannot be empty")
 		}
-		clean := filepath.Clean(path)
-		stat, err := os.Stat(clean)
+		stat, err := os.Stat(path)
 		if err != nil {
 			return fmt.Errorf("vibes: invalid module path %q: %w", path, err)
 		}

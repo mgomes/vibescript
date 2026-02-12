@@ -2,6 +2,7 @@ package vibes
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,23 @@ func TestNewEngineAcceptsValidModulePaths(t *testing.T) {
 	}
 	if engine == nil {
 		t.Fatalf("expected non-nil engine")
+	}
+}
+
+func TestNewEngineRejectsUntraversableNonCanonicalModulePath(t *testing.T) {
+	root := t.TempDir()
+	mods := filepath.Join(root, "mods")
+	if err := os.Mkdir(mods, 0o755); err != nil {
+		t.Fatalf("mkdir mods: %v", err)
+	}
+
+	weirdPath := fmt.Sprintf("%s%cmissing%c..%cmods", root, os.PathSeparator, os.PathSeparator, os.PathSeparator)
+	_, err := NewEngine(Config{ModulePaths: []string{weirdPath}})
+	if err == nil {
+		t.Fatalf("expected NewEngine to reject untraversable non-canonical path")
+	}
+	if !strings.Contains(err.Error(), "invalid module path") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
