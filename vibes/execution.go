@@ -1244,10 +1244,11 @@ func stringRuneSlice(text string, start, length int) (string, bool) {
 	if length < 0 {
 		return "", false
 	}
-	end := start + length
-	if end > len(runes) {
-		end = len(runes)
+	remaining := len(runes) - start
+	if length >= remaining {
+		return string(runes[start:]), true
 	}
+	end := start + length
 	return string(runes[start:end]), true
 }
 

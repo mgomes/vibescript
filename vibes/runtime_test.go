@@ -788,7 +788,8 @@ func TestStringSearchAndSlice(t *testing.T) {
         slice_char: text.slice(1),
         slice_range: text.slice(1, 4),
         slice_oob: text.slice(99),
-        slice_negative_len: text.slice(1, -1)
+        slice_negative_len: text.slice(1, -1),
+        slice_huge_len: text.slice(1, 9223372036854775807)
       }
     end
     `)
@@ -833,6 +834,9 @@ func TestStringSearchAndSlice(t *testing.T) {
 	}
 	if got["slice_negative_len"].Kind() != KindNil {
 		t.Fatalf("slice_negative_len expected nil, got %v", got["slice_negative_len"])
+	}
+	if got["slice_huge_len"].String() != "éllo hello" {
+		t.Fatalf("slice_huge_len mismatch: %q", got["slice_huge_len"].String())
 	}
 }
 
