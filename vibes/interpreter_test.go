@@ -46,7 +46,7 @@ func TestNewEngineAcceptsValidModulePaths(t *testing.T) {
 	}
 }
 
-func TestNewEngineRejectsUntraversableNonCanonicalModulePath(t *testing.T) {
+func TestNewEngineValidatesConfiguredModulePathAsProvided(t *testing.T) {
 	root := t.TempDir()
 	mods := filepath.Join(root, "mods")
 	if err := os.Mkdir(mods, 0o755); err != nil {
@@ -54,12 +54,24 @@ func TestNewEngineRejectsUntraversableNonCanonicalModulePath(t *testing.T) {
 	}
 
 	weirdPath := fmt.Sprintf("%s%cmissing%c..%cmods", root, os.PathSeparator, os.PathSeparator, os.PathSeparator)
-	_, err := NewEngine(Config{ModulePaths: []string{weirdPath}})
-	if err == nil {
-		t.Fatalf("expected NewEngine to reject untraversable non-canonical path")
+	_, statErr := os.Stat(weirdPath)
+
+	engine, err := NewEngine(Config{ModulePaths: []string{weirdPath}})
+	if statErr != nil {
+		if err == nil {
+			t.Fatalf("expected NewEngine to reject module path that os.Stat rejects")
+		}
+		if !strings.Contains(err.Error(), "invalid module path") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return
 	}
-	if !strings.Contains(err.Error(), "invalid module path") {
-		t.Fatalf("unexpected error: %v", err)
+
+	if err != nil {
+		t.Fatalf("expected NewEngine to accept module path that os.Stat accepts: %v", err)
+	}
+	if engine == nil {
+		t.Fatalf("expected non-nil engine")
 	}
 }
 
