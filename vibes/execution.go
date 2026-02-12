@@ -1171,6 +1171,40 @@ func stringMember(str Value, property string) (Value, error) {
 			}
 			return NewInt(int64(len([]rune(receiver.String())))), nil
 		}), nil
+	case "length":
+		return NewAutoBuiltin("string.length", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.length does not take arguments")
+			}
+			return NewInt(int64(len([]rune(receiver.String())))), nil
+		}), nil
+	case "empty?":
+		return NewAutoBuiltin("string.empty?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.empty? does not take arguments")
+			}
+			return NewBool(len(receiver.String()) == 0), nil
+		}), nil
+	case "start_with?":
+		return NewAutoBuiltin("string.start_with?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.start_with? expects exactly one prefix")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.start_with? prefix must be string")
+			}
+			return NewBool(strings.HasPrefix(receiver.String(), args[0].String())), nil
+		}), nil
+	case "end_with?":
+		return NewAutoBuiltin("string.end_with?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.end_with? expects exactly one suffix")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.end_with? suffix must be string")
+			}
+			return NewBool(strings.HasSuffix(receiver.String(), args[0].String())), nil
+		}), nil
 	case "strip":
 		return NewAutoBuiltin("string.strip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {

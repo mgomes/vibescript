@@ -670,6 +670,53 @@ func TestStringHelpers(t *testing.T) {
 	compareArrays(t, customSplit, []Value{NewString("a"), NewString("b"), NewString("c")})
 }
 
+func TestStringPredicatesAndLength(t *testing.T) {
+	script := compileScript(t, `
+    def helpers()
+      {
+        empty_true: "".empty?(),
+        empty_false: "hello".empty?(),
+        starts_true: "hello".start_with?("he"),
+        starts_false: "hello".start_with?("lo"),
+        ends_true: "hello".end_with?("lo"),
+        ends_false: "hello".end_with?("he"),
+        length_alias: "héllo".length(),
+        size: "héllo".size()
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if !got["empty_true"].Bool() {
+		t.Fatalf("expected empty_true to be true")
+	}
+	if got["empty_false"].Bool() {
+		t.Fatalf("expected empty_false to be false")
+	}
+	if !got["starts_true"].Bool() {
+		t.Fatalf("expected starts_true to be true")
+	}
+	if got["starts_false"].Bool() {
+		t.Fatalf("expected starts_false to be false")
+	}
+	if !got["ends_true"].Bool() {
+		t.Fatalf("expected ends_true to be true")
+	}
+	if got["ends_false"].Bool() {
+		t.Fatalf("expected ends_false to be false")
+	}
+	if got["length_alias"].Int() != 5 {
+		t.Fatalf("length mismatch: %v", got["length_alias"])
+	}
+	if got["size"].Int() != 5 {
+		t.Fatalf("size mismatch: %v", got["size"])
+	}
+}
+
 func TestDurationHelpers(t *testing.T) {
 	script := compileScript(t, `
     def minutes()
@@ -740,6 +787,21 @@ func TestMethodErrorHandling(t *testing.T) {
 			name:   "string unknown method",
 			script: `def run() "hello".unknown_method() end`,
 			errMsg: "unknown string method",
+		},
+		{
+			name:   "string.empty? with argument",
+			script: `def run() "hello".empty?(1) end`,
+			errMsg: "string.empty? does not take arguments",
+		},
+		{
+			name:   "string.start_with? with non-string prefix",
+			script: `def run() "hello".start_with?(123) end`,
+			errMsg: "prefix must be string",
+		},
+		{
+			name:   "string.end_with? with missing suffix",
+			script: `def run() "hello".end_with?() end`,
+			errMsg: "expects exactly one suffix",
 		},
 		{
 			name:   "hash unknown method",
