@@ -674,14 +674,14 @@ func TestStringPredicatesAndLength(t *testing.T) {
 	script := compileScript(t, `
     def helpers()
       {
-        empty_true: "".empty?(),
-        empty_false: "hello".empty?(),
+        empty_true: "".empty?,
+        empty_false: "hello".empty?,
         starts_true: "hello".start_with?("he"),
         starts_false: "hello".start_with?("lo"),
         ends_true: "hello".end_with?("lo"),
         ends_false: "hello".end_with?("he"),
-        length_alias: "héllo".length(),
-        size: "héllo".size()
+        length_alias: "héllo".length,
+        size: "héllo".size
       }
     end
     `)
@@ -800,7 +800,7 @@ func TestMethodErrorHandling(t *testing.T) {
 		},
 		{
 			name:   "string.end_with? with missing suffix",
-			script: `def run() "hello".end_with?() end`,
+			script: `def run() "hello".end_with? end`,
 			errMsg: "expects exactly one suffix",
 		},
 		{

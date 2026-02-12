@@ -4,21 +4,21 @@ VibeScript provides several methods for string manipulation.
 
 ## Basic Methods
 
-### `length()`
+### `length`
 
-Alias for `size()`, returns the number of characters:
+Alias for `size`, returns the number of characters:
 
 ```vibe
-"héllo".length()  # 5
+"héllo".length  # 5
 ```
 
-### `empty?()`
+### `empty?`
 
 Returns true when the string has no characters:
 
 ```vibe
-"".empty?()      # true
-"hello".empty?() # false
+"".empty?      # true
+"hello".empty? # false
 ```
 
 ### `strip()`
