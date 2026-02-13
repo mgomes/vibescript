@@ -633,19 +633,20 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	if err := exec.pushFrame(fn.Name, pos); err != nil {
 		return NewNil(), err
 	}
-	if fn.owner != nil && fn.owner.moduleKey != "" {
-		exec.pushModuleContext(moduleContext{
+
+	ctx := moduleContext{}
+	if fn.owner != nil {
+		ctx = moduleContext{
 			key:  fn.owner.moduleKey,
 			path: fn.owner.modulePath,
 			root: fn.owner.moduleRoot,
-		})
+		}
 	}
+	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
 	exec.popReceiver()
-	if fn.owner != nil && fn.owner.moduleKey != "" {
-		exec.popModuleContext()
-	}
+	exec.popModuleContext()
 	exec.popFrame()
 	if err != nil {
 		return NewNil(), err

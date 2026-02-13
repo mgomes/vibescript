@@ -159,6 +159,28 @@ end`)
 	}
 }
 
+func TestRequireRelativePathDoesNotLeakFromModuleIntoHostFunction(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def host_relative()
+  require("./helper")
+end
+
+def run()
+  mod = require("module_calls_host")
+  mod.invoke_host_relative()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected relative caller error from host function")
+	} else if !strings.Contains(err.Error(), "requires a module caller") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRequireSupportsRelativePathsWithinModuleRoot(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
