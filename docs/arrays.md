@@ -12,6 +12,7 @@ Common enumerable helpers include:
 
 - `map` to transform elements.
 - `select` to filter items.
+- `find` / `find_index` to locate the first matching item.
 - `reduce` to accumulate values.
 - `first(n)` / `last(n)` to slice without mutating.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
@@ -29,6 +30,42 @@ def total_by_multiplier(values, multiplier)
       value * multiplier
     end
     .sum()
+end
+```
+
+## Search and predicates
+
+- `include?(value)` for membership checks.
+- `index(value, offset = 0)` / `rindex(value, offset = last_index)` for positional lookup.
+- `count`, `count(value)`, or `count { ... }`.
+- `any?`, `all?`, `none?` with optional blocks.
+
+```vibe
+def health_checks(values)
+  {
+    has_zero: values.include?(0),
+    first_large_idx: values.index(100),
+    all_non_negative: values.all? { |v| v >= 0 }
+  }
+end
+```
+
+## Ordering and grouping
+
+- `reverse`, `sort`, and `sort_by`.
+- `partition` to split into matching and non-matching arrays.
+- `group_by` to collect values by key.
+- `tally` to count symbol/string occurrences.
+
+```vibe
+def summarize(players)
+  grouped = players.group_by { |p| p[:status] }
+  counts = players.map { |p| p[:status] }.tally
+
+  {
+    by_status: grouped,
+    totals: counts
+  }
 end
 ```
 

@@ -347,6 +347,151 @@ func TestExamples(t *testing.T) {
 			want: arrayVal(intVal(1), intVal(3)),
 		},
 		{
+			name:     "arrays/include_value_true",
+			file:     "arrays/extras.vibe",
+			function: "include_value",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3)),
+				intVal(2),
+			},
+			want: boolVal(true),
+		},
+		{
+			name:     "arrays/include_value_false",
+			file:     "arrays/extras.vibe",
+			function: "include_value",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3)),
+				intVal(9),
+			},
+			want: boolVal(false),
+		},
+		{
+			name:     "arrays/first_match",
+			file:     "arrays/extras.vibe",
+			function: "first_match",
+			args: []Value{
+				arrayVal(intVal(2), intVal(5), intVal(7)),
+				intVal(4),
+			},
+			want: intVal(5),
+		},
+		{
+			name:     "arrays/first_match_index",
+			file:     "arrays/extras.vibe",
+			function: "first_match_index",
+			args: []Value{
+				arrayVal(intVal(2), intVal(5), intVal(7)),
+				intVal(4),
+			},
+			want: intVal(1),
+		},
+		{
+			name:     "arrays/count_value",
+			file:     "arrays/extras.vibe",
+			function: "count_value",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(1), intVal(3)),
+				intVal(1),
+			},
+			want: intVal(2),
+		},
+		{
+			name:     "arrays/count_large",
+			file:     "arrays/extras.vibe",
+			function: "count_large",
+			args: []Value{
+				arrayVal(intVal(1), intVal(5), intVal(6)),
+				intVal(4),
+			},
+			want: intVal(2),
+		},
+		{
+			name:     "arrays/predicate_snapshot",
+			file:     "arrays/extras.vibe",
+			function: "predicate_snapshot",
+			args: []Value{
+				arrayVal(intVal(2), intVal(11), intVal(4)),
+			},
+			want: hashVal(map[string]Value{
+				"any_large":     boolVal(true),
+				"all_positive":  boolVal(true),
+				"none_negative": boolVal(true),
+			}),
+		},
+		{
+			name:     "arrays/sort_values",
+			file:     "arrays/extras.vibe",
+			function: "sort_values",
+			args: []Value{
+				arrayVal(intVal(3), intVal(1), intVal(2)),
+			},
+			want: arrayVal(intVal(1), intVal(2), intVal(3)),
+		},
+		{
+			name:     "arrays/sort_desc",
+			file:     "arrays/extras.vibe",
+			function: "sort_desc",
+			args: []Value{
+				arrayVal(intVal(3), intVal(1), intVal(2)),
+			},
+			want: arrayVal(intVal(3), intVal(2), intVal(1)),
+		},
+		{
+			name:     "arrays/sort_words_by_length",
+			file:     "arrays/extras.vibe",
+			function: "sort_words_by_length",
+			args: []Value{
+				arrayVal(strVal("bbb"), strVal("a"), strVal("cc")),
+			},
+			want: arrayVal(strVal("a"), strVal("cc"), strVal("bbb")),
+		},
+		{
+			name:     "arrays/partition_even",
+			file:     "arrays/extras.vibe",
+			function: "partition_even",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3), intVal(4)),
+			},
+			want: arrayVal(
+				arrayVal(intVal(2), intVal(4)),
+				arrayVal(intVal(1), intVal(3)),
+			),
+		},
+		{
+			name:     "arrays/group_by_status",
+			file:     "arrays/extras.vibe",
+			function: "group_by_status",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"id": strVal("p1"), "status": strVal("active")}),
+					hashVal(map[string]Value{"id": strVal("p2"), "status": strVal("complete")}),
+					hashVal(map[string]Value{"id": strVal("p3"), "status": strVal("active")}),
+				),
+			},
+			want: hashVal(map[string]Value{
+				"active": arrayVal(
+					hashVal(map[string]Value{"id": strVal("p1"), "status": strVal("active")}),
+					hashVal(map[string]Value{"id": strVal("p3"), "status": strVal("active")}),
+				),
+				"complete": arrayVal(
+					hashVal(map[string]Value{"id": strVal("p2"), "status": strVal("complete")}),
+				),
+			}),
+		},
+		{
+			name:     "arrays/tally_statuses",
+			file:     "arrays/extras.vibe",
+			function: "tally_statuses",
+			args: []Value{
+				arrayVal(strVal("active"), strVal("active"), strVal("complete")),
+			},
+			want: hashVal(map[string]Value{
+				"active":   intVal(2),
+				"complete": intVal(1),
+			}),
+		},
+		{
 			name:     "collections/make_player",
 			file:     "collections/hashes.vibe",
 			function: "make_player",

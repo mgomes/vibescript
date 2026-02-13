@@ -334,6 +334,177 @@ func TestArrayPushPopAndSum(t *testing.T) {
 	}
 }
 
+func TestArrayPhaseTwoHelpers(t *testing.T) {
+	script := compileScript(t, `
+    def helpers()
+      values = [3, 1, 2, 1]
+      truthy = [nil, false, 0]
+
+      find_hit = values.find do |v|
+        v > 2
+      end
+      find_miss = values.find do |v|
+        v > 9
+      end
+      find_index_hit = values.find_index do |v|
+        v % 2 == 0
+      end
+      find_index_miss = values.find_index do |v|
+        v > 9
+      end
+      count_block = values.count do |v|
+        v > 1
+      end
+      any_block = values.any? do |v|
+        v > 2
+      end
+      all_block = values.all? do |v|
+        v >= 1
+      end
+      none_block = values.none? do |v|
+        v < 0
+      end
+      sort_block_desc = values.sort do |a, b|
+        b - a
+      end
+      sort_by_words = ["bbb", "a", "cc"].sort_by do |v|
+        v.length
+      end
+      partitioned = values.partition do |v|
+        v % 2 == 0
+      end
+      grouped = values.group_by do |v|
+        if v % 2 == 0
+          :even
+        else
+          :odd
+        end
+      end
+      tally_block = [1, 2, 3, 4].tally do |v|
+        if v % 2 == 0
+          :even
+        else
+          :odd
+        end
+      end
+
+      {
+        include_hit: values.include?(2),
+        include_miss: values.include?(9),
+        index_hit: values.index(1),
+        index_offset_hit: values.index(1, 2),
+        index_miss: values.index(9),
+        rindex_hit: values.rindex(1),
+        rindex_offset_hit: values.rindex(1, 2),
+        rindex_miss: values.rindex(9),
+        find_hit: find_hit,
+        find_miss: find_miss,
+        find_index_hit: find_index_hit,
+        find_index_miss: find_index_miss,
+        count_all: values.count,
+        count_value: values.count(1),
+        count_block: count_block,
+        any_block: any_block,
+        any_plain: truthy.any?,
+        all_block: all_block,
+        all_plain: [1, 2, 3].all?,
+        none_block: none_block,
+        none_plain: [nil, false].none?,
+        reverse: values.reverse,
+        sort_default: values.sort,
+        sort_block_desc: sort_block_desc,
+        sort_by_words: sort_by_words,
+        partition: partitioned,
+        group_by_parity: grouped,
+        tally_plain: ["a", "b", "a", "a"].tally,
+        tally_block: tally_block,
+        original: values
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if !got["include_hit"].Bool() || got["include_miss"].Bool() {
+		t.Fatalf("include? mismatch: %#v", got)
+	}
+	if !got["index_hit"].Equal(NewInt(1)) || !got["index_offset_hit"].Equal(NewInt(3)) {
+		t.Fatalf("index mismatch: hit=%v offset=%v", got["index_hit"], got["index_offset_hit"])
+	}
+	if got["index_miss"].Kind() != KindNil {
+		t.Fatalf("index_miss expected nil, got %v", got["index_miss"])
+	}
+	if !got["rindex_hit"].Equal(NewInt(3)) || !got["rindex_offset_hit"].Equal(NewInt(1)) {
+		t.Fatalf("rindex mismatch: hit=%v offset=%v", got["rindex_hit"], got["rindex_offset_hit"])
+	}
+	if got["rindex_miss"].Kind() != KindNil {
+		t.Fatalf("rindex_miss expected nil, got %v", got["rindex_miss"])
+	}
+	if !got["find_hit"].Equal(NewInt(3)) || got["find_miss"].Kind() != KindNil {
+		t.Fatalf("find mismatch: hit=%v miss=%v", got["find_hit"], got["find_miss"])
+	}
+	if !got["find_index_hit"].Equal(NewInt(2)) || got["find_index_miss"].Kind() != KindNil {
+		t.Fatalf("find_index mismatch: hit=%v miss=%v", got["find_index_hit"], got["find_index_miss"])
+	}
+	if !got["count_all"].Equal(NewInt(4)) || !got["count_value"].Equal(NewInt(2)) || !got["count_block"].Equal(NewInt(2)) {
+		t.Fatalf("count mismatch: %#v", got)
+	}
+	if !got["any_block"].Bool() || got["any_plain"].Bool() {
+		t.Fatalf("any? mismatch: block=%v plain=%v", got["any_block"], got["any_plain"])
+	}
+	if !got["all_block"].Bool() || !got["all_plain"].Bool() {
+		t.Fatalf("all? mismatch: block=%v plain=%v", got["all_block"], got["all_plain"])
+	}
+	if !got["none_block"].Bool() || !got["none_plain"].Bool() {
+		t.Fatalf("none? mismatch: block=%v plain=%v", got["none_block"], got["none_plain"])
+	}
+	compareArrays(t, got["reverse"], []Value{NewInt(1), NewInt(2), NewInt(1), NewInt(3)})
+	compareArrays(t, got["sort_default"], []Value{NewInt(1), NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, got["sort_block_desc"], []Value{NewInt(3), NewInt(2), NewInt(1), NewInt(1)})
+	compareArrays(t, got["sort_by_words"], []Value{NewString("a"), NewString("cc"), NewString("bbb")})
+
+	if got["partition"].Kind() != KindArray {
+		t.Fatalf("partition expected array, got %v", got["partition"].Kind())
+	}
+	partition := got["partition"].Array()
+	if len(partition) != 2 {
+		t.Fatalf("partition length mismatch: %d", len(partition))
+	}
+	compareArrays(t, partition[0], []Value{NewInt(2)})
+	compareArrays(t, partition[1], []Value{NewInt(3), NewInt(1), NewInt(1)})
+
+	grouped := got["group_by_parity"]
+	if grouped.Kind() != KindHash {
+		t.Fatalf("group_by_parity expected hash, got %v", grouped.Kind())
+	}
+	groupedHash := grouped.Hash()
+	compareArrays(t, groupedHash["odd"], []Value{NewInt(3), NewInt(1), NewInt(1)})
+	compareArrays(t, groupedHash["even"], []Value{NewInt(2)})
+
+	tallyPlain := got["tally_plain"]
+	if tallyPlain.Kind() != KindHash {
+		t.Fatalf("tally_plain expected hash, got %v", tallyPlain.Kind())
+	}
+	compareHash(t, tallyPlain.Hash(), map[string]Value{
+		"a": NewInt(3),
+		"b": NewInt(1),
+	})
+
+	tallyBlock := got["tally_block"]
+	if tallyBlock.Kind() != KindHash {
+		t.Fatalf("tally_block expected hash, got %v", tallyBlock.Kind())
+	}
+	compareHash(t, tallyBlock.Hash(), map[string]Value{
+		"odd":  NewInt(2),
+		"even": NewInt(2),
+	})
+
+	compareArrays(t, got["original"], []Value{NewInt(3), NewInt(1), NewInt(2), NewInt(1)})
+}
+
 func TestArrayConcatAndSubtract(t *testing.T) {
 	script := compileScript(t, `
     def concat(first, second)
@@ -1281,6 +1452,101 @@ func TestMethodErrorHandling(t *testing.T) {
 			name:   "array.join with non-string separator",
 			script: `def run() [1, 2, 3].join(123) end`,
 			errMsg: "separator must be string",
+		},
+		{
+			name:   "array.find without block",
+			script: `def run() [1, 2, 3].find end`,
+			errMsg: "array.find requires a block",
+		},
+		{
+			name:   "array.find_index with argument",
+			script: `def run() [1, 2, 3].find_index(1) end`,
+			errMsg: "array.find_index does not take arguments",
+		},
+		{
+			name:   "array.index with invalid offset",
+			script: `def run() [1, 2, 3].index(2, -1) end`,
+			errMsg: "offset must be non-negative integer",
+		},
+		{
+			name:   "array.rindex with too many args",
+			script: `def run() [1, 2, 3].rindex(2, 1, 0) end`,
+			errMsg: "expects value and optional offset",
+		},
+		{
+			name:   "array.rindex validates offset on empty array",
+			script: `def run() [].rindex(1, -1) end`,
+			errMsg: "offset must be non-negative integer",
+		},
+		{
+			name: "array.count with argument and block",
+			script: `def run()
+  [1, 1].count(1) do |v|
+    v == 1
+  end
+end`,
+			errMsg: "does not accept both argument and block",
+		},
+		{
+			name:   "array.any? with argument",
+			script: `def run() [1].any?(1) end`,
+			errMsg: "array.any? does not take arguments",
+		},
+		{
+			name:   "array.sort with incomparable values",
+			script: `def run() [1, "a"].sort end`,
+			errMsg: "values are not comparable",
+		},
+		{
+			name: "array.sort with non-numeric comparator",
+			script: `def run()
+  [2, 1].sort do |a, b|
+    a > b
+  end
+end`,
+			errMsg: "block must return numeric comparator",
+		},
+		{
+			name:   "array.sort_by without block",
+			script: `def run() [1, 2].sort_by end`,
+			errMsg: "array.sort_by requires a block",
+		},
+		{
+			name: "array.sort_by with incomparable keys",
+			script: `def run()
+  [1, 2].sort_by do |v|
+    if v == 1
+      "one"
+    else
+      2
+    end
+  end
+end`,
+			errMsg: "block values are not comparable",
+		},
+		{
+			name:   "array.partition without block",
+			script: `def run() [1, 2].partition end`,
+			errMsg: "array.partition requires a block",
+		},
+		{
+			name: "array.group_by with unsupported group key",
+			script: `def run()
+  [1, 2].group_by do |v|
+    v
+  end
+end`,
+			errMsg: "block must return symbol or string",
+		},
+		{
+			name:   "array.tally with unsupported values",
+			script: `def run() [1, 2].tally end`,
+			errMsg: "values must be symbol or string",
+		},
+		{
+			name:   "array.tally with argument",
+			script: `def run() ["a"].tally(1) end`,
+			errMsg: "array.tally does not take arguments",
 		},
 		{
 			name:   "string unknown method",

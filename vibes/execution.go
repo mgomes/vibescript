@@ -2292,6 +2292,44 @@ func arrayMember(array Value, property string) (Value, error) {
 			}
 			return NewArray(out), nil
 		}), nil
+	case "find":
+		return NewAutoBuiltin("array.find", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.find does not take arguments")
+			}
+			if err := ensureBlock(block, "array.find"); err != nil {
+				return NewNil(), err
+			}
+			for _, item := range receiver.Array() {
+				match, err := exec.CallBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				if match.Truthy() {
+					return item, nil
+				}
+			}
+			return NewNil(), nil
+		}), nil
+	case "find_index":
+		return NewAutoBuiltin("array.find_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.find_index does not take arguments")
+			}
+			if err := ensureBlock(block, "array.find_index"); err != nil {
+				return NewNil(), err
+			}
+			for idx, item := range receiver.Array() {
+				match, err := exec.CallBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				if match.Truthy() {
+					return NewInt(int64(idx)), nil
+				}
+			}
+			return NewNil(), nil
+		}), nil
 	case "reduce":
 		return NewAutoBuiltin("array.reduce", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if err := ensureBlock(block, "array.reduce"); err != nil {
@@ -2320,6 +2358,171 @@ func arrayMember(array Value, property string) (Value, error) {
 				acc = next
 			}
 			return acc, nil
+		}), nil
+	case "include?":
+		return NewAutoBuiltin("array.include?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.include? expects exactly one value")
+			}
+			for _, item := range receiver.Array() {
+				if item.Equal(args[0]) {
+					return NewBool(true), nil
+				}
+			}
+			return NewBool(false), nil
+		}), nil
+	case "index":
+		return NewAutoBuiltin("array.index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) < 1 || len(args) > 2 {
+				return NewNil(), fmt.Errorf("array.index expects value and optional offset")
+			}
+			offset := 0
+			if len(args) == 2 {
+				n, err := valueToInt(args[1])
+				if err != nil || n < 0 {
+					return NewNil(), fmt.Errorf("array.index offset must be non-negative integer")
+				}
+				offset = n
+			}
+			arr := receiver.Array()
+			if offset >= len(arr) {
+				return NewNil(), nil
+			}
+			for idx := offset; idx < len(arr); idx++ {
+				if arr[idx].Equal(args[0]) {
+					return NewInt(int64(idx)), nil
+				}
+			}
+			return NewNil(), nil
+		}), nil
+	case "rindex":
+		return NewAutoBuiltin("array.rindex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) < 1 || len(args) > 2 {
+				return NewNil(), fmt.Errorf("array.rindex expects value and optional offset")
+			}
+			offset := -1
+			if len(args) == 2 {
+				n, err := valueToInt(args[1])
+				if err != nil || n < 0 {
+					return NewNil(), fmt.Errorf("array.rindex offset must be non-negative integer")
+				}
+				offset = n
+			}
+			arr := receiver.Array()
+			if len(arr) == 0 {
+				return NewNil(), nil
+			}
+			if offset < 0 {
+				offset = len(arr) - 1
+			}
+			if offset >= len(arr) {
+				offset = len(arr) - 1
+			}
+			for idx := offset; idx >= 0; idx-- {
+				if arr[idx].Equal(args[0]) {
+					return NewInt(int64(idx)), nil
+				}
+			}
+			return NewNil(), nil
+		}), nil
+	case "count":
+		return NewAutoBuiltin("array.count", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.count accepts at most one value argument")
+			}
+			arr := receiver.Array()
+			if len(args) == 1 {
+				if block.Block() != nil {
+					return NewNil(), fmt.Errorf("array.count does not accept both argument and block")
+				}
+				total := int64(0)
+				for _, item := range arr {
+					if item.Equal(args[0]) {
+						total++
+					}
+				}
+				return NewInt(total), nil
+			}
+			if block.Block() == nil {
+				return NewInt(int64(len(arr))), nil
+			}
+			total := int64(0)
+			for _, item := range arr {
+				include, err := exec.CallBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				if include.Truthy() {
+					total++
+				}
+			}
+			return NewInt(total), nil
+		}), nil
+	case "any?":
+		return NewAutoBuiltin("array.any?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.any? does not take arguments")
+			}
+			for _, item := range receiver.Array() {
+				if block.Block() != nil {
+					val, err := exec.CallBlock(block, []Value{item})
+					if err != nil {
+						return NewNil(), err
+					}
+					if val.Truthy() {
+						return NewBool(true), nil
+					}
+					continue
+				}
+				if item.Truthy() {
+					return NewBool(true), nil
+				}
+			}
+			return NewBool(false), nil
+		}), nil
+	case "all?":
+		return NewAutoBuiltin("array.all?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.all? does not take arguments")
+			}
+			for _, item := range receiver.Array() {
+				if block.Block() != nil {
+					val, err := exec.CallBlock(block, []Value{item})
+					if err != nil {
+						return NewNil(), err
+					}
+					if !val.Truthy() {
+						return NewBool(false), nil
+					}
+					continue
+				}
+				if !item.Truthy() {
+					return NewBool(false), nil
+				}
+			}
+			return NewBool(true), nil
+		}), nil
+	case "none?":
+		return NewAutoBuiltin("array.none?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.none? does not take arguments")
+			}
+			for _, item := range receiver.Array() {
+				if block.Block() != nil {
+					val, err := exec.CallBlock(block, []Value{item})
+					if err != nil {
+						return NewNil(), err
+					}
+					if val.Truthy() {
+						return NewBool(false), nil
+					}
+					continue
+				}
+				if item.Truthy() {
+					return NewBool(false), nil
+				}
+			}
+			return NewBool(true), nil
 		}), nil
 	case "push":
 		return NewBuiltin("array.push", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2515,6 +2718,179 @@ func arrayMember(array Value, property string) (Value, error) {
 				b.WriteString(item.String())
 			}
 			return NewString(b.String()), nil
+		}), nil
+	case "reverse":
+		return NewAutoBuiltin("array.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.reverse does not take arguments")
+			}
+			arr := receiver.Array()
+			out := make([]Value, len(arr))
+			for i, item := range arr {
+				out[len(arr)-1-i] = item
+			}
+			return NewArray(out), nil
+		}), nil
+	case "sort":
+		return NewAutoBuiltin("array.sort", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.sort does not take arguments")
+			}
+			arr := receiver.Array()
+			out := make([]Value, len(arr))
+			copy(out, arr)
+			var sortErr error
+			sort.SliceStable(out, func(i, j int) bool {
+				if sortErr != nil {
+					return false
+				}
+				if block.Block() != nil {
+					cmpValue, err := exec.CallBlock(block, []Value{out[i], out[j]})
+					if err != nil {
+						sortErr = err
+						return false
+					}
+					cmp, err := sortComparisonResult(cmpValue)
+					if err != nil {
+						sortErr = fmt.Errorf("array.sort block must return numeric comparator")
+						return false
+					}
+					return cmp < 0
+				}
+				cmp, err := arraySortCompareValues(out[i], out[j])
+				if err != nil {
+					sortErr = fmt.Errorf("array.sort values are not comparable")
+					return false
+				}
+				return cmp < 0
+			})
+			if sortErr != nil {
+				return NewNil(), sortErr
+			}
+			return NewArray(out), nil
+		}), nil
+	case "sort_by":
+		return NewAutoBuiltin("array.sort_by", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.sort_by does not take arguments")
+			}
+			if err := ensureBlock(block, "array.sort_by"); err != nil {
+				return NewNil(), err
+			}
+			type itemWithSortKey struct {
+				item  Value
+				key   Value
+				index int
+			}
+			arr := receiver.Array()
+			withKeys := make([]itemWithSortKey, len(arr))
+			for i, item := range arr {
+				sortKey, err := exec.CallBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				withKeys[i] = itemWithSortKey{item: item, key: sortKey, index: i}
+			}
+			var sortErr error
+			sort.SliceStable(withKeys, func(i, j int) bool {
+				if sortErr != nil {
+					return false
+				}
+				cmp, err := arraySortCompareValues(withKeys[i].key, withKeys[j].key)
+				if err != nil {
+					sortErr = fmt.Errorf("array.sort_by block values are not comparable")
+					return false
+				}
+				if cmp == 0 {
+					return withKeys[i].index < withKeys[j].index
+				}
+				return cmp < 0
+			})
+			if sortErr != nil {
+				return NewNil(), sortErr
+			}
+			out := make([]Value, len(withKeys))
+			for i, item := range withKeys {
+				out[i] = item.item
+			}
+			return NewArray(out), nil
+		}), nil
+	case "partition":
+		return NewAutoBuiltin("array.partition", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.partition does not take arguments")
+			}
+			if err := ensureBlock(block, "array.partition"); err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			left := make([]Value, 0, len(arr))
+			right := make([]Value, 0, len(arr))
+			for _, item := range arr {
+				match, err := exec.CallBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				if match.Truthy() {
+					left = append(left, item)
+				} else {
+					right = append(right, item)
+				}
+			}
+			return NewArray([]Value{NewArray(left), NewArray(right)}), nil
+		}), nil
+	case "group_by":
+		return NewAutoBuiltin("array.group_by", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.group_by does not take arguments")
+			}
+			if err := ensureBlock(block, "array.group_by"); err != nil {
+				return NewNil(), err
+			}
+			groups := make(map[string][]Value)
+			for _, item := range receiver.Array() {
+				groupValue, err := exec.CallBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				key, err := valueToHashKey(groupValue)
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.group_by block must return symbol or string")
+				}
+				groups[key] = append(groups[key], item)
+			}
+			result := make(map[string]Value, len(groups))
+			for key, items := range groups {
+				result[key] = NewArray(items)
+			}
+			return NewHash(result), nil
+		}), nil
+	case "tally":
+		return NewAutoBuiltin("array.tally", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.tally does not take arguments")
+			}
+			counts := make(map[string]int64)
+			for _, item := range receiver.Array() {
+				keyValue := item
+				if block.Block() != nil {
+					mapped, err := exec.CallBlock(block, []Value{item})
+					if err != nil {
+						return NewNil(), err
+					}
+					keyValue = mapped
+				}
+				key, err := valueToHashKey(keyValue)
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.tally values must be symbol or string")
+				}
+				counts[key]++
+			}
+			result := make(map[string]Value, len(counts))
+			for key, count := range counts {
+				result[key] = NewInt(count)
+			}
+			return NewHash(result), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
@@ -2940,6 +3316,115 @@ func valueToInt(val Value) (int, error) {
 		return int(val.Float()), nil
 	default:
 		return 0, fmt.Errorf("expected integer index")
+	}
+}
+
+func sortComparisonResult(val Value) (int, error) {
+	switch val.Kind() {
+	case KindInt:
+		switch {
+		case val.Int() < 0:
+			return -1, nil
+		case val.Int() > 0:
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case KindFloat:
+		switch {
+		case val.Float() < 0:
+			return -1, nil
+		case val.Float() > 0:
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	default:
+		return 0, fmt.Errorf("comparator must be numeric")
+	}
+}
+
+func arraySortCompareValues(left, right Value) (int, error) {
+	switch {
+	case left.Kind() == KindInt && right.Kind() == KindInt:
+		switch {
+		case left.Int() < right.Int():
+			return -1, nil
+		case left.Int() > right.Int():
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		switch {
+		case left.Float() < right.Float():
+			return -1, nil
+		case left.Float() > right.Float():
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case left.Kind() == KindString && right.Kind() == KindString:
+		switch {
+		case left.String() < right.String():
+			return -1, nil
+		case left.String() > right.String():
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case left.Kind() == KindSymbol && right.Kind() == KindSymbol:
+		switch {
+		case left.String() < right.String():
+			return -1, nil
+		case left.String() > right.String():
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case left.Kind() == KindBool && right.Kind() == KindBool:
+		switch {
+		case !left.Bool() && right.Bool():
+			return -1, nil
+		case left.Bool() && !right.Bool():
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case left.Kind() == KindDuration && right.Kind() == KindDuration:
+		switch {
+		case left.Duration().Seconds() < right.Duration().Seconds():
+			return -1, nil
+		case left.Duration().Seconds() > right.Duration().Seconds():
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case left.Kind() == KindTime && right.Kind() == KindTime:
+		switch {
+		case left.Time().Before(right.Time()):
+			return -1, nil
+		case left.Time().After(right.Time()):
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case left.Kind() == KindMoney && right.Kind() == KindMoney:
+		if left.Money().Currency() != right.Money().Currency() {
+			return 0, fmt.Errorf("money values with different currencies")
+		}
+		switch {
+		case left.Money().Cents() < right.Money().Cents():
+			return -1, nil
+		case left.Money().Cents() > right.Money().Cents():
+			return 1, nil
+		default:
+			return 0, nil
+		}
+	case left.Kind() == KindNil && right.Kind() == KindNil:
+		return 0, nil
+	default:
+		return 0, fmt.Errorf("values are not comparable")
 	}
 }
 
