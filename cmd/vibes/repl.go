@@ -62,6 +62,7 @@ type replModel struct {
 	history     []historyEntry
 	cmdHistory  []string
 	historyIdx  int
+	lastError   string
 	width       int
 	height      int
 	showHelp    bool
@@ -266,6 +267,18 @@ func (m replModel) handleCommand(input string) (replModel, tea.Cmd) {
 			output: "Environment reset",
 			isErr:  false,
 		})
+	case ":last_error", ":le":
+		output := "No previous error"
+		isErr := false
+		if m.lastError != "" {
+			output = m.lastError
+			isErr = true
+		}
+		m.history = append(m.history, historyEntry{
+			input:  input,
+			output: output,
+			isErr:  isErr,
+		})
 	case ":quit", ":q":
 		m.quitting = true
 		return m, tea.Quit
@@ -335,12 +348,13 @@ func (m replModel) handleAutocomplete() replModel {
 	return m
 }
 
-func (m replModel) evaluate(input string) (string, bool) {
+func (m *replModel) evaluate(input string) (string, bool) {
 	wrapped := fmt.Sprintf("def __repl__()\n  %s\nend", input)
 
 	script, err := m.engine.Compile(wrapped)
 	if err != nil {
-		return err.Error(), true
+		m.lastError = "compile error: " + err.Error()
+		return m.lastError, true
 	}
 
 	opts := vibes.CallOptions{
@@ -349,7 +363,8 @@ func (m replModel) evaluate(input string) (string, bool) {
 
 	result, err := script.Call(context.Background(), "__repl__", nil, opts)
 	if err != nil {
-		return err.Error(), true
+		m.lastError = "runtime error: " + err.Error()
+		return m.lastError, true
 	}
 
 	m.extractAssignments(script, result)
@@ -480,6 +495,7 @@ func renderHelpPanel(width int) string {
 		{":vars", "Toggle variables panel"},
 		{":clear", "Clear history"},
 		{":reset", "Reset environment"},
+		{":last_error", "Show previous error"},
 		{":quit", "Exit REPL"},
 	}
 

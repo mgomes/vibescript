@@ -111,6 +111,7 @@ The REPL maintains a persistent environment, so variables assigned in one expres
 | -------- | ---------------------- |
 | `:help`  | Toggle help panel      |
 | `:vars`  | Toggle variables panel |
+| `:last_error` | Show previous error |
 | `:clear` | Clear output history   |
 | `:reset` | Reset the environment  |
 | `:quit`  | Exit the REPL          |
@@ -156,6 +157,7 @@ Long-form guides live in `docs/`:
 - `docs/arrays.md` – array helpers including map/select/reduce, first/last, push/pop, sum, and set-like operations.
 - `docs/strings.md` – string helpers like strip/upcase/downcase/split and related utilities.
 - `docs/hashes.md` – symbol-keyed hashes, merge, and iteration helpers.
+- `docs/errors.md` – parse/runtime error formatting and debugging patterns.
 - `docs/control-flow.md` – conditionals, loops, and ranges.
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
 - `docs/integration.md` – integrating the interpreter in Go applications.
