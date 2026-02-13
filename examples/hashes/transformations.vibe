@@ -1,26 +1,18 @@
 # vibe: 0.2
 
 def rename_keys(record, mapping)
-  result = {}
-  record.keys.each do |key|
-    new_key = mapping[key]
-    if new_key == nil
-      new_key = key
+  record.transform_keys do |key|
+    mapped = mapping.fetch(key)
+    if mapped == nil
+      key
+    else
+      mapped
     end
-    result[new_key] = record[key]
   end
-  result
 end
 
 def compact_hash(record)
-  result = {}
-  record.keys.each do |key|
-    value = record[key]
-    if value != nil
-      result[key] = value
-    end
-  end
-  result
+  record.compact
 end
 
 def select_keys(record, keys)
@@ -32,4 +24,34 @@ def select_keys(record, keys)
     end
   end
   result
+end
+
+def public_fields(record)
+  record.slice(:name, :raised, :goal)
+end
+
+def without_private(record)
+  record.except(:internal, "token")
+end
+
+def normalize_values(record)
+  record.transform_values do |value|
+    if value == nil
+      0
+    else
+      value
+    end
+  end
+end
+
+def active_only(record)
+  record.select do |key, value|
+    value == "active"
+  end
+end
+
+def non_zero(record)
+  record.reject do |key, value|
+    value == 0
+  end
 end

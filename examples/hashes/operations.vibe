@@ -1,14 +1,7 @@
 # vibe: 0.2
 
 def merge_defaults(player, defaults)
-  merged = {}
-  defaults.keys.each do |key|
-    merged[key] = defaults[key]
-  end
-  player.keys.each do |key|
-    merged[key] = player[key]
-  end
-  merged
+  defaults.merge(player)
 end
 
 def merge_with_override(base, override)
@@ -27,22 +20,19 @@ def symbolize_report(records)
 end
 
 def deep_fetch_or(records, player_id)
-  record = records[player_id]
+  record = records.fetch(player_id)
   if record == nil
     return {
       name: "unknown",
       raised: money("0.00 USD")
     }
   end
-  meta = record[:meta]
-  if meta == nil
-    return {
-      name: record[:name],
-      raised: record[:raised]
-    }
+  display_name = records.dig(player_id, :meta, :display_name)
+  if display_name == nil
+    display_name = record[:name]
   end
   {
-    name: meta[:display_name],
+    name: display_name,
     raised: record[:raised]
   }
 end
@@ -51,11 +41,18 @@ def tally_statuses(players)
   counts = {}
   players.each do |player|
     status = player[:status]
-    current = counts[status]
-    if current == nil
-      current = 0
-    end
-    counts[status] = current + 1
+    counts[status] = counts.fetch(status, 0) + 1
   end
   counts
+end
+
+def hash_flags(record)
+  {
+    size: record.size,
+    length: record.length,
+    empty: record.empty?,
+    has_name: record.key?(:name),
+    has_goal: record.has_key?(:goal),
+    includes_raised: record.include?("raised")
+  }
 end

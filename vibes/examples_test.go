@@ -947,6 +947,25 @@ func TestExamples(t *testing.T) {
 			}),
 		},
 		{
+			name:     "hashes/hash_flags",
+			file:     "hashes/operations.vibe",
+			function: "hash_flags",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name":   strVal("Alex"),
+					"raised": mustMoney("20.00 USD"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"size":            intVal(2),
+				"length":          intVal(2),
+				"empty":           boolVal(false),
+				"has_name":        boolVal(true),
+				"has_goal":        boolVal(false),
+				"includes_raised": boolVal(true),
+			}),
+		},
+		{
 			name:     "hashes/rename_keys",
 			file:     "hashes/transformations.vibe",
 			function: "rename_keys",
@@ -995,6 +1014,87 @@ func TestExamples(t *testing.T) {
 			want: hashVal(map[string]Value{
 				"name":   strVal("Alex"),
 				"raised": mustMoney("20.00 USD"),
+			}),
+		},
+		{
+			name:     "hashes/public_fields",
+			file:     "hashes/transformations.vibe",
+			function: "public_fields",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name":     strVal("Alex"),
+					"goal":     intVal(500),
+					"raised":   mustMoney("20.00 USD"),
+					"internal": strVal("sensitive"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("Alex"),
+				"goal":   intVal(500),
+				"raised": mustMoney("20.00 USD"),
+			}),
+		},
+		{
+			name:     "hashes/without_private",
+			file:     "hashes/transformations.vibe",
+			function: "without_private",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name":     strVal("Alex"),
+					"token":    strVal("secret"),
+					"internal": strVal("sensitive"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"name": strVal("Alex"),
+			}),
+		},
+		{
+			name:     "hashes/normalize_values",
+			file:     "hashes/transformations.vibe",
+			function: "normalize_values",
+			args: []Value{
+				hashVal(map[string]Value{
+					"active":   intVal(1),
+					"complete": nilVal(),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"active":   intVal(1),
+				"complete": intVal(0),
+			}),
+		},
+		{
+			name:     "hashes/active_only",
+			file:     "hashes/transformations.vibe",
+			function: "active_only",
+			args: []Value{
+				hashVal(map[string]Value{
+					"p1": strVal("active"),
+					"p2": strVal("complete"),
+					"p3": strVal("active"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"p1": strVal("active"),
+				"p3": strVal("active"),
+			}),
+		},
+		{
+			name:     "hashes/non_zero",
+			file:     "hashes/transformations.vibe",
+			function: "non_zero",
+			args: []Value{
+				hashVal(map[string]Value{
+					"a": intVal(0),
+					"b": intVal(2),
+					"c": intVal(0),
+					"d": intVal(3),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"b": intVal(2),
+				"d": intVal(3),
 			}),
 		},
 		{

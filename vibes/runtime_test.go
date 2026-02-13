@@ -58,6 +58,211 @@ func TestHashMergeAndKeys(t *testing.T) {
 	compareArrays(t, keys, wantKeys)
 }
 
+func TestHashExpandedHelpers(t *testing.T) {
+	script := compileScript(t, `
+    def helpers()
+      record = { b: 2, a: 1, c: 3 }
+      with_nil = { a: 1, b: nil, c: 3 }
+      nested = { user: { profile: { name: "Alex" } } }
+
+      each_pairs = []
+      record.each do |k, v|
+        each_pairs = each_pairs.push(k + "=" + v)
+      end
+
+      each_keys = []
+      record.each_key do |k|
+        each_keys = each_keys.push(k)
+      end
+
+	      each_values = []
+	      record.each_value do |v|
+	        each_values = each_values.push(v)
+	      end
+
+	      select_gt1 = record.select do |k, v|
+	        v > 1
+	      end
+
+	      reject_even = record.reject do |k, v|
+	        v % 2 == 0
+	      end
+
+	      transform_keys = record.transform_keys do |k|
+	        "x_" + k
+	      end
+
+	      transform_values = record.transform_values do |v|
+	        v * 10
+	      end
+
+	      collision = { b: 2, a: 1 }.transform_keys do |k|
+	        "same"
+	      end
+
+	      {
+	        size: record.size,
+	        length: record.length,
+        empty_false: record.empty?,
+        empty_true: {}.empty?,
+        key_symbol: record.key?(:a),
+        key_string: record.has_key?("b"),
+        include_symbol: record.include?(:c),
+        missing_key: record.key?(:missing),
+        keys: record.keys,
+        values: record.values,
+        fetch_hit: record.fetch(:a),
+        fetch_default: record.fetch(:missing, 99),
+        fetch_nil: record.fetch(:missing),
+        dig_hit: nested.dig(:user, :profile, :name),
+        dig_miss: nested.dig(:user, :profile, :missing),
+        dig_through_scalar: nested.dig(:user, :profile, :name, :length),
+        slice: record.slice(:a, "c"),
+	        except: record.except(:b),
+	        each_pairs: each_pairs,
+	        each_keys: each_keys,
+	        each_values: each_values,
+	        select_gt1: select_gt1,
+	        reject_even: reject_even,
+	        transform_keys: transform_keys,
+	        transform_values: transform_values,
+	        compact: with_nil.compact(),
+	        collision: collision
+	      }
+	    end
+	    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if !got["size"].Equal(NewInt(3)) {
+		t.Fatalf("size mismatch: %v", got["size"])
+	}
+	if !got["length"].Equal(NewInt(3)) {
+		t.Fatalf("length mismatch: %v", got["length"])
+	}
+	if got["empty_false"].Bool() {
+		t.Fatalf("expected empty_false to be false")
+	}
+	if !got["empty_true"].Bool() {
+		t.Fatalf("expected empty_true to be true")
+	}
+	if !got["key_symbol"].Bool() || !got["key_string"].Bool() || !got["include_symbol"].Bool() {
+		t.Fatalf("key/include mismatch: %#v", got)
+	}
+	if got["missing_key"].Bool() {
+		t.Fatalf("missing_key should be false")
+	}
+	compareArrays(t, got["keys"], []Value{NewSymbol("a"), NewSymbol("b"), NewSymbol("c")})
+	compareArrays(t, got["values"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+
+	if !got["fetch_hit"].Equal(NewInt(1)) {
+		t.Fatalf("fetch_hit mismatch: %v", got["fetch_hit"])
+	}
+	if !got["fetch_default"].Equal(NewInt(99)) {
+		t.Fatalf("fetch_default mismatch: %v", got["fetch_default"])
+	}
+	if got["fetch_nil"].Kind() != KindNil {
+		t.Fatalf("fetch_nil expected nil, got %v", got["fetch_nil"])
+	}
+	if got["dig_hit"].Kind() != KindString || got["dig_hit"].String() != "Alex" {
+		t.Fatalf("dig_hit mismatch: %v", got["dig_hit"])
+	}
+	if got["dig_miss"].Kind() != KindNil {
+		t.Fatalf("dig_miss expected nil, got %v", got["dig_miss"])
+	}
+	if got["dig_through_scalar"].Kind() != KindNil {
+		t.Fatalf("dig_through_scalar expected nil, got %v", got["dig_through_scalar"])
+	}
+
+	slice := got["slice"]
+	if slice.Kind() != KindHash {
+		t.Fatalf("slice expected hash, got %v", slice.Kind())
+	}
+	compareHash(t, slice.Hash(), map[string]Value{"a": NewInt(1), "c": NewInt(3)})
+
+	except := got["except"]
+	if except.Kind() != KindHash {
+		t.Fatalf("except expected hash, got %v", except.Kind())
+	}
+	compareHash(t, except.Hash(), map[string]Value{"a": NewInt(1), "c": NewInt(3)})
+
+	compareArrays(t, got["each_pairs"], []Value{NewString("a=1"), NewString("b=2"), NewString("c=3")})
+	compareArrays(t, got["each_keys"], []Value{NewSymbol("a"), NewSymbol("b"), NewSymbol("c")})
+	compareArrays(t, got["each_values"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+
+	selectGT1 := got["select_gt1"]
+	if selectGT1.Kind() != KindHash {
+		t.Fatalf("select_gt1 expected hash, got %v", selectGT1.Kind())
+	}
+	compareHash(t, selectGT1.Hash(), map[string]Value{"b": NewInt(2), "c": NewInt(3)})
+
+	rejectEven := got["reject_even"]
+	if rejectEven.Kind() != KindHash {
+		t.Fatalf("reject_even expected hash, got %v", rejectEven.Kind())
+	}
+	compareHash(t, rejectEven.Hash(), map[string]Value{"a": NewInt(1), "c": NewInt(3)})
+
+	transformedKeys := got["transform_keys"]
+	if transformedKeys.Kind() != KindHash {
+		t.Fatalf("transform_keys expected hash, got %v", transformedKeys.Kind())
+	}
+	compareHash(t, transformedKeys.Hash(), map[string]Value{"x_a": NewInt(1), "x_b": NewInt(2), "x_c": NewInt(3)})
+
+	transformedValues := got["transform_values"]
+	if transformedValues.Kind() != KindHash {
+		t.Fatalf("transform_values expected hash, got %v", transformedValues.Kind())
+	}
+	compareHash(t, transformedValues.Hash(), map[string]Value{"a": NewInt(10), "b": NewInt(20), "c": NewInt(30)})
+
+	compacted := got["compact"]
+	if compacted.Kind() != KindHash {
+		t.Fatalf("compact expected hash, got %v", compacted.Kind())
+	}
+	compareHash(t, compacted.Hash(), map[string]Value{"a": NewInt(1), "c": NewInt(3)})
+
+	collision := got["collision"]
+	if collision.Kind() != KindHash {
+		t.Fatalf("collision expected hash, got %v", collision.Kind())
+	}
+	compareHash(t, collision.Hash(), map[string]Value{"same": NewInt(2)})
+}
+
+func TestHashHelpersSupportObjectReceiver(t *testing.T) {
+	script := compileScript(t, `
+	    def lookup(record)
+	      {
+	        fetch: record.fetch(:name),
+	        has_key: record.key?(:name),
+	        dig: record.dig(:meta, :title)
+	      }
+	    end
+	    `)
+
+	arg := NewObject(map[string]Value{
+		"name": NewString("Alex"),
+		"meta": NewHash(map[string]Value{
+			"title": NewString("Captain"),
+		}),
+	})
+	result := callFunc(t, script, "lookup", []Value{arg})
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if !got["fetch"].Equal(NewString("Alex")) {
+		t.Fatalf("fetch mismatch: %v", got["fetch"])
+	}
+	if got["has_key"].Kind() != KindBool || !got["has_key"].Bool() {
+		t.Fatalf("has_key mismatch: %v", got["has_key"])
+	}
+	if !got["dig"].Equal(NewString("Captain")) {
+		t.Fatalf("dig mismatch: %v", got["dig"])
+	}
+}
+
 func mustMoneyValue(t *testing.T, literal string) Value {
 	t.Helper()
 	money, err := parseMoneyLiteral(literal)
@@ -79,6 +284,22 @@ func compareArrays(t *testing.T, value Value, want []Value) {
 	for i := range arr {
 		if !arr[i].Equal(want[i]) {
 			t.Fatalf("element %d mismatch: got %v want %v", i, arr[i], want[i])
+		}
+	}
+}
+
+func compareHash(t *testing.T, got map[string]Value, want map[string]Value) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("hash length mismatch: got %d want %d", len(got), len(want))
+	}
+	for key, wantValue := range want {
+		gotValue, ok := got[key]
+		if !ok {
+			t.Fatalf("missing key %q", key)
+		}
+		if !gotValue.Equal(wantValue) {
+			t.Fatalf("key %q mismatch: got %v want %v", key, gotValue, wantValue)
 		}
 	}
 }
@@ -1190,6 +1411,55 @@ func TestMethodErrorHandling(t *testing.T) {
 			name:   "string.gsub! with missing argument",
 			script: `def run() "hello".gsub!("l") end`,
 			errMsg: "expects pattern and replacement",
+		},
+		{
+			name:   "hash.size with argument",
+			script: `def run() {a: 1}.size(1) end`,
+			errMsg: "hash.size does not take arguments",
+		},
+		{
+			name:   "hash.key? with unsupported key type",
+			script: `def run() {a: 1}.key?(1) end`,
+			errMsg: "key must be symbol or string",
+		},
+		{
+			name:   "hash.fetch with too many args",
+			script: `def run() {a: 1}.fetch(:a, 1, 2) end`,
+			errMsg: "expects key and optional default",
+		},
+		{
+			name:   "hash.dig without keys",
+			script: `def run() {a: 1}.dig end`,
+			errMsg: "expects at least one key",
+		},
+		{
+			name:   "hash.dig with unsupported key type",
+			script: `def run() {a: 1}.dig(1) end`,
+			errMsg: "path keys must be symbol or string",
+		},
+		{
+			name:   "hash.each without block",
+			script: `def run() {a: 1}.each end`,
+			errMsg: "hash.each requires a block",
+		},
+		{
+			name:   "hash.select without block",
+			script: `def run() {a: 1}.select end`,
+			errMsg: "hash.select requires a block",
+		},
+		{
+			name:   "hash.slice with unsupported key type",
+			script: `def run() {a: 1}.slice(1) end`,
+			errMsg: "keys must be symbol or string",
+		},
+		{
+			name: "hash.transform_keys invalid return type",
+			script: `def run()
+  {a: 1}.transform_keys do |k|
+    1
+  end
+end`,
+			errMsg: "block must return symbol or string",
 		},
 		{
 			name:   "hash unknown method",
