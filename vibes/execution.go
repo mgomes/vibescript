@@ -27,6 +27,7 @@ type Script struct {
 	engine    *Engine
 	functions map[string]*ScriptFunction
 	classes   map[string]*ClassDef
+	source    string
 }
 
 type CallOptions struct {
@@ -65,13 +66,18 @@ type StackFrame struct {
 }
 
 type RuntimeError struct {
-	Message string
-	Frames  []StackFrame
+	Message   string
+	CodeFrame string
+	Frames    []StackFrame
 }
 
 func (re *RuntimeError) Error() string {
 	var b strings.Builder
 	b.WriteString(re.Message)
+	if re.CodeFrame != "" {
+		b.WriteString("\n")
+		b.WriteString(re.CodeFrame)
+	}
 	for _, frame := range re.Frames {
 		// Show position if line number is valid (1-based)
 		if frame.Pos.Line > 0 && frame.Pos.Column > 0 {
@@ -134,7 +140,11 @@ func (exec *Execution) newRuntimeError(message string, pos Position) error {
 		// No call stack means error at script top level
 		frames = append(frames, StackFrame{Function: "<script>", Pos: pos})
 	}
-	return &RuntimeError{Message: message, Frames: frames}
+	codeFrame := ""
+	if exec.script != nil {
+		codeFrame = formatCodeFrame(exec.script.source, pos)
+	}
+	return &RuntimeError{Message: message, CodeFrame: codeFrame, Frames: frames}
 }
 
 func (exec *Execution) wrapError(err error, pos Position) error {
@@ -3087,7 +3097,7 @@ func (e *Engine) Compile(source string) (*Script, error) {
 		}
 	}
 
-	script := &Script{engine: e, functions: functions, classes: classes}
+	script := &Script{engine: e, functions: functions, classes: classes, source: source}
 	script.bindFunctionOwnership()
 	return script, nil
 }
@@ -3099,7 +3109,7 @@ func combineErrors(errs []error) error {
 	msg := ""
 	for _, err := range errs {
 		if msg != "" {
-			msg += "; "
+			msg += "\n\n"
 		}
 		msg += err.Error()
 	}

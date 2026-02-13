@@ -150,6 +150,55 @@ func TestEvaluateRuntimeErrorReturnsError(t *testing.T) {
 	if !strings.Contains(output, "undefined variable") {
 		t.Fatalf("unexpected runtime error: %s", output)
 	}
+	if m.lastError == "" {
+		t.Fatalf("expected last error to be captured")
+	}
+	if !strings.Contains(m.lastError, "runtime error:") {
+		t.Fatalf("expected runtime error prefix, got %q", m.lastError)
+	}
+}
+
+func TestLastErrorCommandShowsPreviousError(t *testing.T) {
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
+
+	_, isErr := m.evaluate("unknown_var")
+	if !isErr {
+		t.Fatalf("expected runtime error")
+	}
+
+	m, _ = m.handleCommand(":last_error")
+	if len(m.history) == 0 {
+		t.Fatalf("expected history entry for :last_error")
+	}
+	last := m.history[len(m.history)-1]
+	if !last.isErr {
+		t.Fatalf("expected :last_error to render as error entry")
+	}
+	if !strings.Contains(last.output, "runtime error:") {
+		t.Fatalf("expected runtime error output, got %q", last.output)
+	}
+}
+
+func TestLastErrorCommandWhenNoError(t *testing.T) {
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
+
+	m, _ = m.handleCommand(":last_error")
+	if len(m.history) == 0 {
+		t.Fatalf("expected history entry for :last_error")
+	}
+	last := m.history[len(m.history)-1]
+	if last.isErr {
+		t.Fatalf("expected non-error status when there is no previous error")
+	}
+	if last.output != "No previous error" {
+		t.Fatalf("unexpected output: %q", last.output)
+	}
 }
 
 func TestAutocompleteSingleCompletion(t *testing.T) {

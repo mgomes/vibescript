@@ -538,6 +538,36 @@ func TestHashLiteralSyntaxRestriction(t *testing.T) {
 	}
 }
 
+func TestParseErrorIncludesCodeFrameAndKeywordMessage(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	_, err := engine.Compile("def broken()\n  call(foo: )\nend\n")
+	if err == nil {
+		t.Fatalf("expected compile error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "missing value for keyword argument foo") {
+		t.Fatalf("expected keyword argument parse error, got: %s", msg)
+	}
+	if !strings.Contains(msg, "--> line 2, column") {
+		t.Fatalf("expected codeframe line marker, got: %s", msg)
+	}
+	if !strings.Contains(msg, "call(foo: )") {
+		t.Fatalf("expected source line in codeframe, got: %s", msg)
+	}
+}
+
+func TestParseErrorIncludesBlockParameterHint(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	_, err := engine.Compile("def broken()\n  [1].each do |a,|\n    a\n  end\nend\n")
+	if err == nil {
+		t.Fatalf("expected compile error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "trailing comma in block parameter list") {
+		t.Fatalf("expected trailing comma hint, got: %s", msg)
+	}
+}
+
 func TestArraySumRejectsNonNumeric(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`
@@ -596,6 +626,12 @@ func TestRuntimeErrorStackTrace(t *testing.T) {
 	}
 	if rtErr.Frames[3].Function != "outer" {
 		t.Fatalf("expected outer frame fourth, got %s", rtErr.Frames[3].Function)
+	}
+	if rtErr.CodeFrame == "" {
+		t.Fatalf("expected runtime codeframe to be present")
+	}
+	if !strings.Contains(rtErr.Error(), "--> line") {
+		t.Fatalf("expected formatted runtime error to include codeframe marker")
 	}
 }
 
