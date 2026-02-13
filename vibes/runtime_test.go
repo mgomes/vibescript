@@ -1993,6 +1993,21 @@ end`,
 			script: `def run() 100000000000000000000.0.ceil end`,
 			errMsg: "out of int64 range",
 		},
+		{
+			name:   "float.round int64 boundary overflow",
+			script: `def run() 9223372036854775808.0.round end`,
+			errMsg: "out of int64 range",
+		},
+		{
+			name:   "float.floor int64 boundary overflow",
+			script: `def run() 9223372036854775808.0.floor end`,
+			errMsg: "out of int64 range",
+		},
+		{
+			name:   "float.ceil int64 boundary overflow",
+			script: `def run() 9223372036854775808.0.ceil end`,
+			errMsg: "out of int64 range",
+		},
 	}
 
 	for _, tt := range tests {

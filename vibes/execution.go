@@ -3572,7 +3572,8 @@ func floatToInt64Checked(v float64, method string) (int64, error) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, fmt.Errorf("%s result out of int64 range", method)
 	}
-	if v < float64(math.MinInt64) || v > float64(math.MaxInt64) {
+	// float64(math.MaxInt64) rounds to 2^63, so use >= 2^63 as the true upper bound.
+	if v < float64(math.MinInt64) || v >= math.Exp2(63) {
 		return 0, fmt.Errorf("%s result out of int64 range", method)
 	}
 	return int64(v), nil
