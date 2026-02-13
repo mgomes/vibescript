@@ -219,11 +219,12 @@ func NewEngine(cfg Config) (*Engine, error) {
 			layout := ""
 			hasLayout := false
 			if len(args) == 2 {
-				if args[1].Kind() != KindString {
+				if args[1].Kind() == KindString {
+					layout = args[1].String()
+					hasLayout = true
+				} else if args[1].Kind() != KindNil {
 					return NewNil(), fmt.Errorf("Time.parse layout must be string") //nolint:staticcheck // class.method reference
 				}
-				layout = args[1].String()
-				hasLayout = true
 			}
 
 			var loc *time.Location

@@ -885,14 +885,16 @@ func TestTimeFormatUsesGoLayout(t *testing.T) {
 
 func TestTimeParseAndAliases(t *testing.T) {
 	script := compileScript(t, `
-    def helpers()
-      default = Time.parse("2024-01-02T03:04:05Z")
-      custom = Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "America/New_York")
-      {
-        default_to_s: default.to_s,
-        default_iso: default.iso8601,
-        default_rfc3339: default.rfc3339,
-        custom_utc_offset: custom.utc_offset,
+	    def helpers()
+	      default = Time.parse("2024-01-02T03:04:05Z")
+	      default_nil_layout = Time.parse("2024-01-02T03:04:05Z", nil)
+	      custom = Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "America/New_York")
+	      {
+	        default_to_s: default.to_s,
+	        default_nil_layout_to_s: default_nil_layout.to_s,
+	        default_iso: default.iso8601,
+	        default_rfc3339: default.rfc3339,
+	        custom_utc_offset: custom.utc_offset,
         custom_utc: custom.utc.to_s
       }
     end
@@ -909,6 +911,9 @@ func TestTimeParseAndAliases(t *testing.T) {
 	got := result.Hash()
 	if got["default_to_s"].String() != "2024-01-02T03:04:05Z" {
 		t.Fatalf("default_to_s mismatch: %q", got["default_to_s"].String())
+	}
+	if got["default_nil_layout_to_s"].String() != "2024-01-02T03:04:05Z" {
+		t.Fatalf("default_nil_layout_to_s mismatch: %q", got["default_nil_layout_to_s"].String())
 	}
 	if got["default_iso"].String() != "2024-01-02T03:04:05Z" {
 		t.Fatalf("default_iso mismatch: %q", got["default_iso"].String())
