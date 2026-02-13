@@ -1,0 +1,4 @@
+def enter()
+  other = require("circular_runtime_b")
+  other.enter()
+end
