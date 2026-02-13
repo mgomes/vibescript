@@ -38,3 +38,79 @@ end
 def subtract_values(first, second)
   first - second
 end
+
+def include_value(values, value)
+  values.include?(value)
+end
+
+def first_match(values, threshold)
+  values.find do |value|
+    value > threshold
+  end
+end
+
+def first_match_index(values, threshold)
+  values.find_index do |value|
+    value > threshold
+  end
+end
+
+def count_value(values, value)
+  values.count(value)
+end
+
+def count_large(values, threshold)
+  values.count do |value|
+    value > threshold
+  end
+end
+
+def predicate_snapshot(values)
+  any_large = values.any? do |value|
+    value > 10
+  end
+  all_positive = values.all? do |value|
+    value > 0
+  end
+  none_negative = values.none? do |value|
+    value < 0
+  end
+
+  {
+    any_large: any_large,
+    all_positive: all_positive,
+    none_negative: none_negative
+  }
+end
+
+def sort_values(values)
+  values.sort
+end
+
+def sort_desc(values)
+  values.sort do |a, b|
+    b - a
+  end
+end
+
+def sort_words_by_length(words)
+  words.sort_by do |word|
+    word.length
+  end
+end
+
+def partition_even(values)
+  values.partition do |value|
+    value % 2 == 0
+  end
+end
+
+def group_by_status(players)
+  players.group_by do |player|
+    player[:status]
+  end
+end
+
+def tally_statuses(statuses)
+  statuses.tally
+end
