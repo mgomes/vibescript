@@ -7,12 +7,19 @@ import (
 )
 
 type parseError struct {
-	pos Position
-	msg string
+	pos    Position
+	msg    string
+	source string
 }
 
 func (e *parseError) Error() string {
-	return fmt.Sprintf("parse error at %d:%d: %s", e.pos.Line, e.pos.Column, e.msg)
+	var b strings.Builder
+	fmt.Fprintf(&b, "parse error at %d:%d: %s", e.pos.Line, e.pos.Column, e.msg)
+	if frame := formatCodeFrame(e.source, e.pos); frame != "" {
+		b.WriteString("\n")
+		b.WriteString(frame)
+	}
+	return b.String()
 }
 
 type (
@@ -547,7 +554,7 @@ func (p *parser) parseIdentifier() Expression {
 func (p *parser) parseIntegerLiteral() Expression {
 	value, err := strconv.ParseInt(p.curToken.Literal, 10, 64)
 	if err != nil {
-		p.errors = append(p.errors, &parseError{pos: p.curToken.Pos, msg: "invalid integer literal"})
+		p.addParseError(p.curToken.Pos, "invalid integer literal")
 		return nil
 	}
 	return &IntegerLiteral{Value: value, position: p.curToken.Pos}
@@ -556,7 +563,7 @@ func (p *parser) parseIntegerLiteral() Expression {
 func (p *parser) parseFloatLiteral() Expression {
 	value, err := strconv.ParseFloat(p.curToken.Literal, 64)
 	if err != nil {
-		p.errors = append(p.errors, &parseError{pos: p.curToken.Pos, msg: "invalid float literal"})
+		p.addParseError(p.curToken.Pos, "invalid float literal")
 		return nil
 	}
 	return &FloatLiteral{Value: value, position: p.curToken.Pos}
@@ -679,18 +686,22 @@ func (p *parser) parseHashLiteral() Expression {
 
 func (p *parser) parseHashPair() HashPair {
 	if p.curToken.Type != tokenIdent || p.peekToken.Type != tokenColon {
-		p.errors = append(p.errors, &parseError{
-			pos: p.curToken.Pos,
-			msg: "hash keys must use symbol shorthand (name:)",
-		})
+		p.addParseError(p.curToken.Pos, "invalid hash pair: expected symbol-style key like name:")
 		return HashPair{}
 	}
 
 	key := &SymbolLiteral{Name: p.curToken.Literal, position: p.curToken.Pos}
 	p.nextToken()
 	p.nextToken()
+	if p.curToken.Type == tokenComma || p.curToken.Type == tokenRBrace {
+		p.addParseError(p.curToken.Pos, fmt.Sprintf("missing value for hash key %s", key.Name))
+		return HashPair{}
+	}
 
 	value := p.parseExpression(lowestPrec)
+	if value == nil {
+		return HashPair{}
+	}
 	return HashPair{Key: key, Value: value}
 }
 
@@ -758,7 +769,14 @@ func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
 		name := p.curToken.Literal
 		p.nextToken()
 		p.nextToken()
+		if p.curToken.Type == tokenComma || p.curToken.Type == tokenRParen {
+			p.addParseError(p.curToken.Pos, fmt.Sprintf("missing value for keyword argument %s", name))
+			return
+		}
 		value := p.parseExpression(lowestPrec)
+		if value == nil {
+			return
+		}
 		*kwargs = append(*kwargs, KeywordArg{Name: name, Value: value})
 		return
 	}
@@ -807,6 +825,10 @@ func (p *parser) parseBlockParameters() ([]string, bool) {
 	for p.peekToken.Type == tokenComma {
 		p.nextToken()
 		p.nextToken()
+		if p.curToken.Type == tokenPipe {
+			p.addParseError(p.curToken.Pos, "trailing comma in block parameter list")
+			return nil, false
+		}
 		if p.curToken.Type != tokenIdent {
 			p.errorExpected(p.curToken, "block parameter")
 			return nil, false
@@ -858,16 +880,86 @@ func (p *parser) expectPeek(tt TokenType) bool {
 		p.nextToken()
 		return true
 	}
-	p.errorExpected(p.peekToken, string(tt))
+	p.errorExpected(p.peekToken, tokenLabel(tt))
 	return false
 }
 
 func (p *parser) errorExpected(tok Token, expected string) {
-	p.errors = append(p.errors, &parseError{pos: tok.Pos, msg: fmt.Sprintf("expected %s, got %s", expected, tok.Type)})
+	p.addParseError(tok.Pos, fmt.Sprintf("expected %s, got %s", expected, tokenLabel(tok.Type)))
 }
 
 func (p *parser) errorUnexpected(tok Token) {
-	p.errors = append(p.errors, &parseError{pos: tok.Pos, msg: fmt.Sprintf("unexpected token %s", tok.Type)})
+	p.addParseError(tok.Pos, fmt.Sprintf("unexpected token %s", tokenLabel(tok.Type)))
+}
+
+func (p *parser) addParseError(pos Position, msg string) {
+	p.errors = append(p.errors, &parseError{pos: pos, msg: msg, source: p.l.input})
+}
+
+func tokenLabel(tt TokenType) string {
+	switch tt {
+	case tokenIllegal:
+		return "invalid token"
+	case tokenEOF:
+		return "end of input"
+	case tokenIdent:
+		return "identifier"
+	case tokenInt:
+		return "integer"
+	case tokenFloat:
+		return "float"
+	case tokenString:
+		return "string"
+	case tokenSymbol:
+		return "symbol"
+	case tokenIvar:
+		return "instance variable"
+	case tokenClassVar:
+		return "class variable"
+	case tokenDef:
+		return "'def'"
+	case tokenClass:
+		return "'class'"
+	case tokenSelf:
+		return "'self'"
+	case tokenPrivate:
+		return "'private'"
+	case tokenProperty:
+		return "'property'"
+	case tokenGetter:
+		return "'getter'"
+	case tokenSetter:
+		return "'setter'"
+	case tokenEnd:
+		return "'end'"
+	case tokenReturn:
+		return "'return'"
+	case tokenYield:
+		return "'yield'"
+	case tokenDo:
+		return "'do'"
+	case tokenFor:
+		return "'for'"
+	case tokenIn:
+		return "'in'"
+	case tokenIf:
+		return "'if'"
+	case tokenElsif:
+		return "'elsif'"
+	case tokenElse:
+		return "'else'"
+	case tokenTrue:
+		return "'true'"
+	case tokenFalse:
+		return "'false'"
+	case tokenNil:
+		return "'nil'"
+	default:
+		if len(tt) == 1 || strings.HasPrefix(string(tt), "<") || strings.HasPrefix(string(tt), ">") {
+			return fmt.Sprintf("%q", string(tt))
+		}
+		return fmt.Sprintf("%q", strings.ToLower(string(tt)))
+	}
 }
 
 func resolveType(name string) (TypeKind, bool) {
