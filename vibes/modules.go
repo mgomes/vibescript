@@ -96,7 +96,7 @@ func moduleRelativePath(root, fullPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resolvedPath, err := resolvedExistingPath(cleanPath)
+	resolvedPath, err := resolvedPathWithMissing(cleanPath)
 	if err != nil {
 		return "", err
 	}
@@ -140,6 +140,44 @@ func resolvedExistingPath(path string) (string, error) {
 	return filepath.Clean(resolvedPath), nil
 }
 
+func resolvedPathWithMissing(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	cleanPath := filepath.Clean(absPath)
+
+	existing := cleanPath
+	suffix := make([]string, 0, 4)
+
+	for {
+		_, statErr := os.Lstat(existing)
+		if statErr == nil {
+			break
+		}
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			return "", statErr
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", statErr
+		}
+		suffix = append(suffix, filepath.Base(existing))
+		existing = parent
+	}
+
+	resolvedExisting, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", err
+	}
+
+	resolved := filepath.Clean(resolvedExisting)
+	for i := len(suffix) - 1; i >= 0; i-- {
+		resolved = filepath.Join(resolved, suffix[i])
+	}
+	return resolved, nil
+}
+
 func (e *Engine) getCachedModule(key string) (moduleEntry, bool) {
 	e.modMu.RLock()
 	entry, ok := e.modules[key]
@@ -172,6 +210,9 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 	key := moduleCacheKey(caller.root, relative)
 
 	if entry, ok := e.getCachedModule(key); ok {
+		if _, err := moduleRelativePath(caller.root, candidate); err != nil {
+			return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
+		}
 		return entry, nil
 	}
 

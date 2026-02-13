@@ -265,6 +265,51 @@ end`)
 	}
 }
 
+func TestRequireRelativePathRejectsOutOfRootCachedModule(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-specific on Windows")
+	}
+
+	moduleRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(outsideRoot, "secret.vibe"), []byte(`def value()
+  9
+end
+`), 0o644); err != nil {
+		t.Fatalf("write secret module: %v", err)
+	}
+
+	symlinkPath := filepath.Join(moduleRoot, "link")
+	if err := os.Symlink(outsideRoot, symlinkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(moduleRoot, "entry.vibe"), []byte(`def run()
+  dep = require("./link/secret")
+  dep.value()
+end
+`), 0o644); err != nil {
+		t.Fatalf("write entry module: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  require("link/secret")
+  entry = require("entry")
+  entry.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected module root escape error")
+	} else if !strings.Contains(err.Error(), "escapes module root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRequireRelativePathUsesCacheBeforeFilesystemResolution(t *testing.T) {
 	moduleRoot := t.TempDir()
 
