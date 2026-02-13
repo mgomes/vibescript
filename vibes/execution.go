@@ -24,10 +24,13 @@ type ScriptFunction struct {
 }
 
 type Script struct {
-	engine    *Engine
-	functions map[string]*ScriptFunction
-	classes   map[string]*ClassDef
-	source    string
+	engine     *Engine
+	functions  map[string]*ScriptFunction
+	classes    map[string]*ClassDef
+	source     string
+	moduleKey  string
+	modulePath string
+	moduleRoot string
 }
 
 type CallOptions struct {
@@ -38,21 +41,29 @@ type CallOptions struct {
 }
 
 type Execution struct {
-	engine        *Engine
-	script        *Script
-	ctx           context.Context
-	quota         int
-	memoryQuota   int
-	recursionCap  int
-	steps         int
-	callStack     []callFrame
-	root          *Env
-	modules       map[string]Value
-	moduleLoading map[string]bool
-	receiverStack []Value
-	envStack      []*Env
-	strictEffects bool
-	allowRequire  bool
+	engine          *Engine
+	script          *Script
+	ctx             context.Context
+	quota           int
+	memoryQuota     int
+	recursionCap    int
+	steps           int
+	callStack       []callFrame
+	root            *Env
+	modules         map[string]Value
+	moduleLoading   map[string]bool
+	moduleLoadStack []string
+	moduleStack     []moduleContext
+	receiverStack   []Value
+	envStack        []*Env
+	strictEffects   bool
+	allowRequire    bool
+}
+
+type moduleContext struct {
+	key  string
+	path string
+	root string
 }
 
 type callFrame struct {
@@ -211,6 +222,25 @@ func (exec *Execution) popEnv() {
 		return
 	}
 	exec.envStack = exec.envStack[:len(exec.envStack)-1]
+}
+
+func (exec *Execution) pushModuleContext(ctx moduleContext) {
+	exec.moduleStack = append(exec.moduleStack, ctx)
+}
+
+func (exec *Execution) popModuleContext() {
+	if len(exec.moduleStack) == 0 {
+		return
+	}
+	exec.moduleStack = exec.moduleStack[:len(exec.moduleStack)-1]
+}
+
+func (exec *Execution) currentModuleContext() *moduleContext {
+	if len(exec.moduleStack) == 0 {
+		return nil
+	}
+	ctx := exec.moduleStack[len(exec.moduleStack)-1]
+	return &ctx
 }
 
 func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool, error) {
@@ -603,9 +633,19 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	if err := exec.pushFrame(fn.Name, pos); err != nil {
 		return NewNil(), err
 	}
+	if fn.owner != nil && fn.owner.moduleKey != "" {
+		exec.pushModuleContext(moduleContext{
+			key:  fn.owner.moduleKey,
+			path: fn.owner.modulePath,
+			root: fn.owner.moduleRoot,
+		})
+	}
 	exec.pushReceiver(receiver)
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
 	exec.popReceiver()
+	if fn.owner != nil && fn.owner.moduleKey != "" {
+		exec.popModuleContext()
+	}
 	exec.popFrame()
 	if err != nil {
 		return NewNil(), err
@@ -3319,20 +3359,22 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	rebinder := newCallFunctionRebinder(s, root, callClasses)
 
 	exec := &Execution{
-		engine:        s.engine,
-		script:        s,
-		ctx:           ctx,
-		quota:         s.engine.config.StepQuota,
-		memoryQuota:   s.engine.config.MemoryQuotaBytes,
-		recursionCap:  s.engine.config.RecursionLimit,
-		callStack:     make([]callFrame, 0, 8),
-		root:          root,
-		modules:       make(map[string]Value),
-		moduleLoading: make(map[string]bool),
-		receiverStack: make([]Value, 0, 8),
-		envStack:      make([]*Env, 0, 8),
-		strictEffects: s.engine.config.StrictEffects,
-		allowRequire:  opts.AllowRequire,
+		engine:          s.engine,
+		script:          s,
+		ctx:             ctx,
+		quota:           s.engine.config.StepQuota,
+		memoryQuota:     s.engine.config.MemoryQuotaBytes,
+		recursionCap:    s.engine.config.RecursionLimit,
+		callStack:       make([]callFrame, 0, 8),
+		root:            root,
+		modules:         make(map[string]Value),
+		moduleLoading:   make(map[string]bool),
+		moduleLoadStack: make([]string, 0, 8),
+		moduleStack:     make([]moduleContext, 0, 8),
+		receiverStack:   make([]Value, 0, 8),
+		envStack:        make([]*Env, 0, 8),
+		strictEffects:   s.engine.config.StrictEffects,
+		allowRequire:    opts.AllowRequire,
 	}
 
 	if len(opts.Capabilities) > 0 {
