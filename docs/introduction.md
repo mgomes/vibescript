@@ -16,6 +16,7 @@ dives on specific topics.
 - `arrays.md` – working with arrays, including iteration helpers and
   transformations.
 - `hashes.md` – symbol-keyed hashes and the merging/lookup helpers we provide.
+- `errors.md` – parse and runtime error output, stack traces, and debugging tips.
 - `durations.md` – duration literals and time-based helper methods.
 - `time.md` – Time creation, formatting, accessors, and time/duration math.
 - `typing.md` – gradual typing: annotations, nullables, and type-checked calls.
