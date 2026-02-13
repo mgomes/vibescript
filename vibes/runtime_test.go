@@ -883,6 +883,217 @@ func TestTimeFormatUsesGoLayout(t *testing.T) {
 	}
 }
 
+func TestTimeParseAndAliases(t *testing.T) {
+	script := compileScript(t, `
+	    def helpers()
+	      default = Time.parse("2024-01-02T03:04:05Z")
+	      default_nil_layout = Time.parse("2024-01-02T03:04:05Z", nil)
+	      custom = Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "America/New_York")
+	      {
+	        default_to_s: default.to_s,
+	        default_nil_layout_to_s: default_nil_layout.to_s,
+	        default_iso: default.iso8601,
+	        default_rfc3339: default.rfc3339,
+	        custom_utc_offset: custom.utc_offset,
+        custom_utc: custom.utc.to_s
+      }
+    end
+
+    def parse_invalid()
+      Time.parse("not-a-time")
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if got["default_to_s"].String() != "2024-01-02T03:04:05Z" {
+		t.Fatalf("default_to_s mismatch: %q", got["default_to_s"].String())
+	}
+	if got["default_nil_layout_to_s"].String() != "2024-01-02T03:04:05Z" {
+		t.Fatalf("default_nil_layout_to_s mismatch: %q", got["default_nil_layout_to_s"].String())
+	}
+	if got["default_iso"].String() != "2024-01-02T03:04:05Z" {
+		t.Fatalf("default_iso mismatch: %q", got["default_iso"].String())
+	}
+	if got["default_rfc3339"].String() != "2024-01-02T03:04:05Z" {
+		t.Fatalf("default_rfc3339 mismatch: %q", got["default_rfc3339"].String())
+	}
+	if got["custom_utc_offset"].Int() != -18000 {
+		t.Fatalf("custom_utc_offset mismatch: %v", got["custom_utc_offset"])
+	}
+	if got["custom_utc"].String() != "2024-01-02T08:04:05Z" {
+		t.Fatalf("custom_utc mismatch: %q", got["custom_utc"].String())
+	}
+
+	_, err := script.Call(context.Background(), "parse_invalid", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected parse error")
+	}
+	if !strings.Contains(err.Error(), "could not parse time") {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+}
+
+func TestNumericHelpers(t *testing.T) {
+	script := compileScript(t, `
+    def int_helpers()
+      {
+        abs_neg: (-7).abs,
+        abs_pos: 7.abs,
+        clamp_mid: 7.clamp(1, 10),
+        clamp_low: (-2).clamp(0, 5),
+        clamp_high: 12.clamp(0, 5),
+        even_true: 4.even?,
+        even_false: 5.even?,
+        odd_true: 5.odd?,
+        odd_false: 4.odd?
+      }
+    end
+
+    def float_helpers()
+      {
+        abs_neg: (-1.25).abs,
+        clamp_mid: 1.5.clamp(1.0, 2.0),
+        clamp_low: (-1.0).clamp(0.5, 2.0),
+        clamp_high: 3.5.clamp(0.5, 2.0),
+        round: 1.6.round,
+        floor: 1.6.floor,
+        ceil: 1.2.ceil
+      }
+    end
+    `)
+
+	intResult := callFunc(t, script, "int_helpers", nil)
+	if intResult.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", intResult.Kind())
+	}
+	ints := intResult.Hash()
+	if !ints["abs_neg"].Equal(NewInt(7)) {
+		t.Fatalf("abs_neg mismatch: %v", ints["abs_neg"])
+	}
+	if !ints["abs_pos"].Equal(NewInt(7)) {
+		t.Fatalf("abs_pos mismatch: %v", ints["abs_pos"])
+	}
+	if !ints["clamp_mid"].Equal(NewInt(7)) {
+		t.Fatalf("clamp_mid mismatch: %v", ints["clamp_mid"])
+	}
+	if !ints["clamp_low"].Equal(NewInt(0)) {
+		t.Fatalf("clamp_low mismatch: %v", ints["clamp_low"])
+	}
+	if !ints["clamp_high"].Equal(NewInt(5)) {
+		t.Fatalf("clamp_high mismatch: %v", ints["clamp_high"])
+	}
+	if !ints["even_true"].Bool() || ints["even_false"].Bool() {
+		t.Fatalf("even? mismatch: true=%v false=%v", ints["even_true"], ints["even_false"])
+	}
+	if !ints["odd_true"].Bool() || ints["odd_false"].Bool() {
+		t.Fatalf("odd? mismatch: true=%v false=%v", ints["odd_true"], ints["odd_false"])
+	}
+
+	floatResult := callFunc(t, script, "float_helpers", nil)
+	if floatResult.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", floatResult.Kind())
+	}
+	floats := floatResult.Hash()
+	if floats["abs_neg"].Kind() != KindFloat || floats["abs_neg"].Float() != 1.25 {
+		t.Fatalf("float abs mismatch: %v", floats["abs_neg"])
+	}
+	if floats["clamp_mid"].Kind() != KindFloat || floats["clamp_mid"].Float() != 1.5 {
+		t.Fatalf("float clamp mid mismatch: %v", floats["clamp_mid"])
+	}
+	if floats["clamp_low"].Kind() != KindFloat || floats["clamp_low"].Float() != 0.5 {
+		t.Fatalf("float clamp low mismatch: %v", floats["clamp_low"])
+	}
+	if floats["clamp_high"].Kind() != KindFloat || floats["clamp_high"].Float() != 2.0 {
+		t.Fatalf("float clamp high mismatch: %v", floats["clamp_high"])
+	}
+	if !floats["round"].Equal(NewInt(2)) {
+		t.Fatalf("float round mismatch: %v", floats["round"])
+	}
+	if !floats["floor"].Equal(NewInt(1)) {
+		t.Fatalf("float floor mismatch: %v", floats["floor"])
+	}
+	if !floats["ceil"].Equal(NewInt(2)) {
+		t.Fatalf("float ceil mismatch: %v", floats["ceil"])
+	}
+}
+
+func TestReadmeLeaderboardExample(t *testing.T) {
+	script := compileScript(t, `
+    def leaderboard(players: array, since: time? = nil, limit: int = 5) -> array
+      cutoff = since
+      if cutoff == nil
+        cutoff = 7.days.ago(Time.now)
+      end
+      recent = players.select do |p|
+        Time.parse(p[:last_seen]) >= cutoff
+      end
+
+      ranked = recent.map do |p|
+        {
+          name: p[:name],
+          score: p[:score],
+          last_seen: Time.parse(p[:last_seen])
+        }
+      end
+
+      sorted = ranked.sort do |a, b|
+        b[:score] - a[:score]
+      end
+
+      top = sorted.first(limit)
+
+      top.map do |entry|
+        {
+          name: entry[:name],
+          score: entry[:score],
+          last_seen: entry[:last_seen].format("2006-01-02 15:04:05")
+        }
+      end
+    end
+    `)
+
+	players := NewArray([]Value{
+		NewHash(map[string]Value{
+			"name":      NewString("alex"),
+			"score":     NewInt(10),
+			"last_seen": NewString("2024-01-10T10:00:00Z"),
+		}),
+		NewHash(map[string]Value{
+			"name":      NewString("cam"),
+			"score":     NewInt(15),
+			"last_seen": NewString("2024-01-09T11:00:00Z"),
+		}),
+		NewHash(map[string]Value{
+			"name":      NewString("old"),
+			"score":     NewInt(99),
+			"last_seen": NewString("2023-12-25T00:00:00Z"),
+		}),
+	})
+	since := NewTime(time.Date(2024, time.January, 8, 0, 0, 0, 0, time.UTC))
+
+	result := callFunc(t, script, "leaderboard", []Value{players, since, NewInt(2)})
+	if result.Kind() != KindArray {
+		t.Fatalf("expected array, got %v", result.Kind())
+	}
+	arr := result.Array()
+	if len(arr) != 2 {
+		t.Fatalf("expected 2 leaderboard rows, got %d", len(arr))
+	}
+
+	first := arr[0].Hash()
+	if first["name"].String() != "cam" || first["score"].Int() != 15 || first["last_seen"].String() != "2024-01-09 11:00:00" {
+		t.Fatalf("unexpected first row: %#v", first)
+	}
+	second := arr[1].Hash()
+	if second["name"].String() != "alex" || second["score"].Int() != 10 || second["last_seen"].String() != "2024-01-10 10:00:00" {
+		t.Fatalf("unexpected second row: %#v", second)
+	}
+}
+
 func TestTypedFunctions(t *testing.T) {
 	script := compileScript(t, `
     def pick_second(n: int, m: int) -> int
@@ -1736,6 +1947,66 @@ end`,
 			name:   "array unknown method",
 			script: `def run() [1, 2].unknown_method() end`,
 			errMsg: "unknown array method",
+		},
+		{
+			name:   "Time.parse unknown keyword",
+			script: `def run() Time.parse("2024-01-01T00:00:00Z", foo: "bar") end`,
+			errMsg: "unknown keyword",
+		},
+		{
+			name:   "Time.parse layout must be string",
+			script: `def run() Time.parse("2024-01-01T00:00:00Z", 123) end`,
+			errMsg: "layout must be string",
+		},
+		{
+			name:   "int.clamp with wrong arity",
+			script: `def run() 5.clamp(1) end`,
+			errMsg: "expects min and max",
+		},
+		{
+			name:   "int.clamp with inverted bounds",
+			script: `def run() 5.clamp(10, 1) end`,
+			errMsg: "min must be <= max",
+		},
+		{
+			name:   "float.round with argument",
+			script: `def run() 1.5.round(1) end`,
+			errMsg: "does not take arguments",
+		},
+		{
+			name:   "float.clamp with non-numeric bounds",
+			script: `def run() 1.5.clamp("a", 2.0) end`,
+			errMsg: "expects numeric min and max",
+		},
+		{
+			name:   "float.round overflow",
+			script: `def run() 100000000000000000000.0.round end`,
+			errMsg: "out of int64 range",
+		},
+		{
+			name:   "float.floor overflow",
+			script: `def run() 100000000000000000000.0.floor end`,
+			errMsg: "out of int64 range",
+		},
+		{
+			name:   "float.ceil overflow",
+			script: `def run() 100000000000000000000.0.ceil end`,
+			errMsg: "out of int64 range",
+		},
+		{
+			name:   "float.round int64 boundary overflow",
+			script: `def run() 9223372036854775808.0.round end`,
+			errMsg: "out of int64 range",
+		},
+		{
+			name:   "float.floor int64 boundary overflow",
+			script: `def run() 9223372036854775808.0.floor end`,
+			errMsg: "out of int64 range",
+		},
+		{
+			name:   "float.ceil int64 boundary overflow",
+			script: `def run() 9223372036854775808.0.ceil end`,
+			errMsg: "out of int64 range",
 		},
 	}
 

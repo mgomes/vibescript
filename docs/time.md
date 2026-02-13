@@ -15,6 +15,7 @@ end
 - `Time.utc(...)` / `Time.gm(...)`
 - `Time.at(seconds_since_epoch, in: zone)`
 - `Time.now(in: zone)`
+- `Time.parse(string, layout=nil, in: zone)`
 
 Zones accept Go-style names (e.g. `"America/New_York"`), `"UTC"`/`"GMT"`, `"LOCAL"`, or numeric offsets like `"+05:30"`.
 
@@ -33,6 +34,8 @@ def formatted_timestamp
 end
 ```
 
+`Time#to_s` uses RFC3339Nano. `Time#iso8601` and `Time#rfc3339` return RFC3339.
+
 ## Accessors and predicates
 
 - Date/time parts: `year`, `month`/`mon`, `day`/`mday`, `hour`, `min`, `sec`, `usec`/`tv_usec`, `nsec`/`tv_nsec`, `subsec`
@@ -45,6 +48,7 @@ end
 - Epoch: `to_i`/`tv_sec`, `to_f`, `to_r`
 - Zone conversion: `getutc`/`getgm`, `getlocal`, `utc`/`gmtime`, `localtime`
 - String: `to_s` (RFC3339Nano)
+- RFC3339 aliases: `iso8601`, `rfc3339`
 
 ## Comparisons and math
 
