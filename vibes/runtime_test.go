@@ -1474,6 +1474,11 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "expects value and optional offset",
 		},
 		{
+			name:   "array.rindex validates offset on empty array",
+			script: `def run() [].rindex(1, -1) end`,
+			errMsg: "offset must be non-negative integer",
+		},
+		{
 			name: "array.count with argument and block",
 			script: `def run()
   [1, 1].count(1) do |v|

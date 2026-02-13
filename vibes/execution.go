@@ -2400,17 +2400,20 @@ func arrayMember(array Value, property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("array.rindex expects value and optional offset")
 			}
-			arr := receiver.Array()
-			if len(arr) == 0 {
-				return NewNil(), nil
-			}
-			offset := len(arr) - 1
+			offset := -1
 			if len(args) == 2 {
 				n, err := valueToInt(args[1])
 				if err != nil || n < 0 {
 					return NewNil(), fmt.Errorf("array.rindex offset must be non-negative integer")
 				}
 				offset = n
+			}
+			arr := receiver.Array()
+			if len(arr) == 0 {
+				return NewNil(), nil
+			}
+			if offset < 0 {
+				offset = len(arr) - 1
 			}
 			if offset >= len(arr) {
 				offset = len(arr) - 1
