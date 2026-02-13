@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -214,6 +215,51 @@ end`)
 
 	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
 		t.Fatalf("expected module root escape error")
+	} else if !strings.Contains(err.Error(), "escapes module root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireRelativePathRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-specific on Windows")
+	}
+
+	moduleRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+
+	secretModule := filepath.Join(outsideRoot, "secret.vibe")
+	if err := os.WriteFile(secretModule, []byte(`def hidden()
+  42
+end
+`), 0o644); err != nil {
+		t.Fatalf("write secret module: %v", err)
+	}
+
+	symlinkPath := filepath.Join(moduleRoot, "link")
+	if err := os.Symlink(outsideRoot, symlinkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	entryModule := filepath.Join(moduleRoot, "entry.vibe")
+	if err := os.WriteFile(entryModule, []byte(`def run()
+  require("./link/secret")
+end
+`), 0o644); err != nil {
+		t.Fatalf("write entry module: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  mod = require("entry")
+  mod.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected symlink escape error")
 	} else if !strings.Contains(err.Error(), "escapes module root") {
 		t.Fatalf("unexpected error: %v", err)
 	}

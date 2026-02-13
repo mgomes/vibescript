@@ -97,7 +97,35 @@ func moduleRelativePath(root, fullPath string) (string, error) {
 	if rel == ".." || strings.HasPrefix(rel, ".."+sep) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("require: module path %q escapes module root %q", cleanPath, cleanRoot)
 	}
+	resolvedRoot, err := resolvedExistingPath(cleanRoot)
+	if err != nil {
+		return "", err
+	}
+	resolvedPath, err := resolvedExistingPath(cleanPath)
+	if err != nil {
+		return "", err
+	}
+	resolvedRel, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil {
+		return "", err
+	}
+	resolvedRel = filepath.Clean(resolvedRel)
+	if resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+sep) || filepath.IsAbs(resolvedRel) {
+		return "", fmt.Errorf("require: module path %q escapes module root %q", cleanPath, cleanRoot)
+	}
 	return rel, nil
+}
+
+func resolvedExistingPath(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolvedPath), nil
 }
 
 func (e *Engine) getCachedModule(key string) (moduleEntry, bool) {
@@ -127,6 +155,9 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 	candidate := filepath.Clean(filepath.Join(filepath.Dir(caller.path), request.normalized))
 	relative, err := moduleRelativePath(caller.root, candidate)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return moduleEntry{}, fmt.Errorf("require: module %q not found", request.raw)
+		}
 		return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
 	}
 	key := moduleCacheKey(caller.root, relative)
