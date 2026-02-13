@@ -899,7 +899,14 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 }
 
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
-	return NewBlock(block.Params, block.Body, env), nil
+	blockValue := NewBlock(block.Params, block.Body, env)
+	if ctx := exec.currentModuleContext(); ctx != nil {
+		blk := blockValue.Block()
+		blk.moduleKey = ctx.key
+		blk.modulePath = ctx.path
+		blk.moduleRoot = ctx.root
+	}
+	return blockValue, nil
 }
 
 func ensureBlock(block Value, name string) error {
@@ -920,6 +927,13 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		return NewNil(), err
 	}
 	blk := block.Block()
+	exec.pushModuleContext(moduleContext{
+		key:  blk.moduleKey,
+		path: blk.modulePath,
+		root: blk.moduleRoot,
+	})
+	defer exec.popModuleContext()
+
 	blockEnv := newEnv(blk.Env)
 	for i, param := range blk.Params {
 		var val Value

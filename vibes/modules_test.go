@@ -265,6 +265,78 @@ end`)
 	}
 }
 
+func TestRequireRelativePathUsesCacheBeforeFilesystemResolution(t *testing.T) {
+	moduleRoot := t.TempDir()
+
+	depPath := filepath.Join(moduleRoot, "dep.vibe")
+	if err := os.WriteFile(depPath, []byte(`def value()
+  7
+end
+`), 0o644); err != nil {
+		t.Fatalf("write dep module: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleRoot, "entry.vibe"), []byte(`def run()
+  dep = require("./dep")
+  dep.value()
+end
+`), 0o644); err != nil {
+		t.Fatalf("write entry module: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  mod = require("entry")
+  mod.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 7 {
+		t.Fatalf("expected first call result 7, got %#v", result)
+	}
+
+	if err := os.Remove(depPath); err != nil {
+		t.Fatalf("remove dep module: %v", err)
+	}
+
+	result, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 7 {
+		t.Fatalf("expected second call result 7, got %#v", result)
+	}
+}
+
+func TestRequireRelativePathWorksInModuleDefinedBlockYieldedFromHost(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def host_each()
+  yield()
+end
+
+def run()
+  mod = require("block_host_yield")
+  mod.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 33 {
+		t.Fatalf("expected 33, got %#v", result)
+	}
+}
+
 func TestRequireExportsOnlyPublicFunctions(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 

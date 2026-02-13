@@ -159,6 +159,7 @@ func (est *memoryEstimator) value(val Value) int {
 		for _, param := range blk.Params {
 			size += len(param)
 		}
+		size += estimatedStringHeaderBytes*3 + len(blk.moduleKey) + len(blk.modulePath) + len(blk.moduleRoot)
 		size += est.env(blk.Env)
 	case KindFunction, KindBuiltin:
 		// Functions and builtins are compile-time/static artifacts for memory quotas.

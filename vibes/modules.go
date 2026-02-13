@@ -85,18 +85,13 @@ func moduleKeyDisplay(key string) string {
 }
 
 func moduleRelativePath(root, fullPath string) (string, error) {
-	cleanRoot := filepath.Clean(root)
-	cleanPath := filepath.Clean(fullPath)
-
-	rel, err := filepath.Rel(cleanRoot, cleanPath)
+	rel, err := moduleRelativePathLexical(root, fullPath)
 	if err != nil {
 		return "", err
 	}
-	rel = filepath.Clean(rel)
-	sep := string(filepath.Separator)
-	if rel == ".." || strings.HasPrefix(rel, ".."+sep) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("require: module path %q escapes module root %q", cleanPath, cleanRoot)
-	}
+	cleanRoot := filepath.Clean(root)
+	cleanPath := filepath.Clean(fullPath)
+
 	resolvedRoot, err := resolvedExistingPath(cleanRoot)
 	if err != nil {
 		return "", err
@@ -110,7 +105,24 @@ func moduleRelativePath(root, fullPath string) (string, error) {
 		return "", err
 	}
 	resolvedRel = filepath.Clean(resolvedRel)
+	sep := string(filepath.Separator)
 	if resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+sep) || filepath.IsAbs(resolvedRel) {
+		return "", fmt.Errorf("require: module path %q escapes module root %q", cleanPath, cleanRoot)
+	}
+	return rel, nil
+}
+
+func moduleRelativePathLexical(root, fullPath string) (string, error) {
+	cleanRoot := filepath.Clean(root)
+	cleanPath := filepath.Clean(fullPath)
+
+	rel, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil {
+		return "", err
+	}
+	rel = filepath.Clean(rel)
+	sep := string(filepath.Separator)
+	if rel == ".." || strings.HasPrefix(rel, ".."+sep) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("require: module path %q escapes module root %q", cleanPath, cleanRoot)
 	}
 	return rel, nil
@@ -153,17 +165,22 @@ func (e *Engine) loadModule(name string, caller *moduleContext) (moduleEntry, er
 
 func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext) (moduleEntry, error) {
 	candidate := filepath.Clean(filepath.Join(filepath.Dir(caller.path), request.normalized))
-	relative, err := moduleRelativePath(caller.root, candidate)
+	relative, err := moduleRelativePathLexical(caller.root, candidate)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return moduleEntry{}, fmt.Errorf("require: module %q not found", request.raw)
-		}
 		return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
 	}
 	key := moduleCacheKey(caller.root, relative)
 
 	if entry, ok := e.getCachedModule(key); ok {
 		return entry, nil
+	}
+
+	relative, err = moduleRelativePath(caller.root, candidate)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return moduleEntry{}, fmt.Errorf("require: module %q not found", request.raw)
+		}
+		return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
 	}
 
 	data, readErr := os.ReadFile(candidate)
