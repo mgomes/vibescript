@@ -16,24 +16,36 @@ Even in these constrained environments, non-technical users still need a way to 
 ```vibe
 # Quick leaderboard report with typing, time math, and blocks
 def leaderboard(players: array, since: time? = nil, limit: int = 5) -> array
-  cutoff = since || 7.days.ago(Time.now)
+  cutoff = since
+  if cutoff == nil
+    cutoff = 7.days.ago(Time.now)
+  end
+
   recent = players.select do |p|
     Time.parse(p[:last_seen]) >= cutoff
   end
 
-  recent
-    .map { |p| { name: p[:name], score: p[:score], last_seen: Time.parse(p[:last_seen]) } }
-    .sort do |a, b|
-      b[:score] <=> a[:score]
-    end
-    .first(limit)
-    .map do |entry|
-      {
-        name: entry[:name],
-        score: entry[:score],
-        last_seen: entry[:last_seen].format("2006-01-02 15:04:05"),
-      }
-    end
+  ranked = recent.map do |p|
+    {
+      name: p[:name],
+      score: p[:score],
+      last_seen: Time.parse(p[:last_seen]),
+    }
+  end
+
+  sorted = ranked.sort do |a, b|
+    b[:score] - a[:score]
+  end
+
+  top = sorted.first(limit)
+
+  top.map do |entry|
+    {
+      name: entry[:name],
+      score: entry[:score],
+      last_seen: entry[:last_seen].format("2006-01-02 15:04:05"),
+    }
+  end
 end
 ```
 

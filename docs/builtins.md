@@ -52,9 +52,9 @@ end
 # Returns: { event: "user_signup", timestamp: "2025-01-15T10:30:45Z" }
 ```
 
-**Note:** The `now()` function returns a string, not a time object. This is suitable for logging and timestamping, but does not support time arithmetic or component extraction. For time manipulation, parse the string in your host application.
+**Note:** The `now()` function returns a string, not a time object. This is suitable for logging and timestamping.
 
-**Future Enhancement:** A dedicated Time type may be added in future versions to support time arithmetic, component extraction (year, month, day), and formatting operations similar to how Money and Duration types work today.
+For time manipulation in VibeScript, use the `Time` object (`Time.now`, `Time.parse`, `Time.utc`, etc.). See `docs/time.md`.
 
 ## Module Loading
 
