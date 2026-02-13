@@ -323,12 +323,12 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		return NewNil(), fmt.Errorf("require: circular dependency detected: %s", formatModuleCycle(cycle))
 	}
 
-	if cycle, ok := moduleCycleFromExecution(exec.moduleStack, entry.key); ok {
-		return NewNil(), fmt.Errorf("require: circular dependency detected: %s", formatModuleCycle(cycle))
-	}
-
 	if cached, ok := exec.modules[entry.key]; ok {
 		return cached, nil
+	}
+
+	if cycle, ok := moduleCycleFromExecution(exec.moduleStack, entry.key); ok {
+		return NewNil(), fmt.Errorf("require: circular dependency detected: %s", formatModuleCycle(cycle))
 	}
 
 	if exec.moduleLoading[entry.key] {

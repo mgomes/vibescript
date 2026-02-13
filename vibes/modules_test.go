@@ -328,7 +328,7 @@ end`)
 	}
 }
 
-func TestRequireCircularDependencyIncludesChain(t *testing.T) {
+func TestRequireRuntimeModuleRecursionHitsRecursionLimit(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run()
@@ -340,9 +340,29 @@ end`)
 	}
 
 	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected circular dependency error")
-	} else if !strings.Contains(err.Error(), "circular_runtime_a.vibe -> circular_runtime_b.vibe -> circular_runtime_a.vibe") {
+		t.Fatalf("expected recursion limit error")
+	} else if !strings.Contains(err.Error(), "recursion depth exceeded") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireAllowsCachedModuleReuseAcrossModuleCalls(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run()
+  mod = require("require_cached_a")
+  mod.start()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 21 {
+		t.Fatalf("expected 21, got %#v", result)
 	}
 }
 
