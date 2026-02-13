@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+var defaultTimeParseLayouts = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
 func parseLocation(val Value) (*time.Location, error) {
 	switch val.Kind() {
 	case KindString:
@@ -100,4 +107,43 @@ func timeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
 		loc = time.Local
 	}
 	return time.Unix(seconds, nanos).In(loc), nil
+}
+
+func parseTimeString(input string, layout string, hasLayout bool, loc *time.Location) (time.Time, error) {
+	parseLoc := time.Local
+	if loc != nil {
+		parseLoc = loc
+	}
+
+	if hasLayout {
+		parsed, err := time.ParseInLocation(layout, input, parseLoc)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("Time.parse could not parse time: %w", err) //nolint:staticcheck // class.method reference
+		}
+		if loc != nil {
+			return parsed.In(loc), nil
+		}
+		return parsed, nil
+	}
+
+	for _, candidate := range defaultTimeParseLayouts {
+		var (
+			parsed time.Time
+			err    error
+		)
+		switch candidate {
+		case time.RFC3339, time.RFC3339Nano:
+			parsed, err = time.Parse(candidate, input)
+		default:
+			parsed, err = time.ParseInLocation(candidate, input, parseLoc)
+		}
+		if err == nil {
+			if loc != nil {
+				return parsed.In(loc), nil
+			}
+			return parsed, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("Time.parse could not parse time")
 }

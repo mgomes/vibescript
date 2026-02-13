@@ -206,6 +206,41 @@ func NewEngine(cfg Config) (*Engine, error) {
 			}
 			return NewTime(time.Now().In(loc)), nil
 		}),
+		"parse": NewBuiltin("Time.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) < 1 || len(args) > 2 || args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout") //nolint:staticcheck // class.method reference
+			}
+			for key := range kwargs {
+				if key != "in" {
+					return NewNil(), fmt.Errorf("Time.parse unknown keyword %q", key) //nolint:staticcheck // class.method reference
+				}
+			}
+
+			layout := ""
+			hasLayout := false
+			if len(args) == 2 {
+				if args[1].Kind() != KindString {
+					return NewNil(), fmt.Errorf("Time.parse layout must be string") //nolint:staticcheck // class.method reference
+				}
+				layout = args[1].String()
+				hasLayout = true
+			}
+
+			var loc *time.Location
+			if in, ok := kwargs["in"]; ok {
+				parsed, err := parseLocation(in)
+				if err != nil {
+					return NewNil(), err
+				}
+				loc = parsed
+			}
+
+			t, err := parseTimeString(args[0].String(), layout, hasLayout, loc)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewTime(t), nil
+		}),
 	})
 
 	return engine, nil

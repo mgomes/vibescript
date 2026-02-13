@@ -754,7 +754,7 @@ func (p *parser) parseCallExpression(function Expression) Expression {
 }
 
 func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
-	if p.curToken.Type == tokenIdent && p.peekToken.Type == tokenColon {
+	if (p.curToken.Type == tokenIdent || p.curToken.Type == tokenIn) && p.peekToken.Type == tokenColon {
 		name := p.curToken.Literal
 		p.nextToken()
 		p.nextToken()
