@@ -1978,6 +1978,21 @@ end`,
 			script: `def run() 1.5.clamp("a", 2.0) end`,
 			errMsg: "expects numeric min and max",
 		},
+		{
+			name:   "float.round overflow",
+			script: `def run() 100000000000000000000.0.round end`,
+			errMsg: "out of int64 range",
+		},
+		{
+			name:   "float.floor overflow",
+			script: `def run() 100000000000000000000.0.floor end`,
+			errMsg: "out of int64 range",
+		},
+		{
+			name:   "float.ceil overflow",
+			script: `def run() 100000000000000000000.0.ceil end`,
+			errMsg: "out of int64 range",
+		},
 	}
 
 	for _, tt := range tests {

@@ -1172,21 +1172,36 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 				if len(args) > 0 {
 					return NewNil(), fmt.Errorf("float.round does not take arguments")
 				}
-				return NewInt(int64(math.Round(receiver.Float()))), nil
+				rounded := math.Round(receiver.Float())
+				asInt, err := floatToInt64Checked(rounded, "float.round")
+				if err != nil {
+					return NewNil(), err
+				}
+				return NewInt(asInt), nil
 			}), nil
 		case "floor":
 			return NewAutoBuiltin("float.floor", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 				if len(args) > 0 {
 					return NewNil(), fmt.Errorf("float.floor does not take arguments")
 				}
-				return NewInt(int64(math.Floor(receiver.Float()))), nil
+				floored := math.Floor(receiver.Float())
+				asInt, err := floatToInt64Checked(floored, "float.floor")
+				if err != nil {
+					return NewNil(), err
+				}
+				return NewInt(asInt), nil
 			}), nil
 		case "ceil":
 			return NewAutoBuiltin("float.ceil", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 				if len(args) > 0 {
 					return NewNil(), fmt.Errorf("float.ceil does not take arguments")
 				}
-				return NewInt(int64(math.Ceil(receiver.Float()))), nil
+				ceiled := math.Ceil(receiver.Float())
+				asInt, err := floatToInt64Checked(ceiled, "float.ceil")
+				if err != nil {
+					return NewNil(), err
+				}
+				return NewInt(asInt), nil
 			}), nil
 		default:
 			return NewNil(), exec.errorAt(pos, "unknown float member %s", property)
@@ -3551,6 +3566,16 @@ func flattenValues(values []Value, depth int) []Value {
 		}
 	}
 	return out
+}
+
+func floatToInt64Checked(v float64, method string) (int64, error) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("%s result out of int64 range", method)
+	}
+	if v < float64(math.MinInt64) || v > float64(math.MaxInt64) {
+		return 0, fmt.Errorf("%s result out of int64 range", method)
+	}
+	return int64(v), nil
 }
 
 func addValues(left, right Value) (Value, error) {
