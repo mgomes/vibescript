@@ -16,6 +16,7 @@ const (
 	estimatedInstanceBytes     = 16
 	estimatedBlockBytes        = 24
 	estimatedCallFrameBytes    = 32
+	estimatedModuleContextSize = 24
 )
 
 type memoryEstimator struct {
@@ -78,6 +79,14 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	total += estimatedMapBaseBytes + len(exec.moduleLoading)*estimatedMapEntryBytes
 	for name := range exec.moduleLoading {
 		total += estimatedStringHeaderBytes + len(name)
+	}
+	total += estimatedSliceBaseBytes + len(exec.moduleLoadStack)*estimatedStringHeaderBytes
+	for _, key := range exec.moduleLoadStack {
+		total += len(key)
+	}
+	total += estimatedSliceBaseBytes + len(exec.moduleStack)*estimatedModuleContextSize
+	for _, ctx := range exec.moduleStack {
+		total += estimatedStringHeaderBytes*3 + len(ctx.key) + len(ctx.path) + len(ctx.root)
 	}
 	for _, extra := range extras {
 		total += est.value(extra)
@@ -150,6 +159,7 @@ func (est *memoryEstimator) value(val Value) int {
 		for _, param := range blk.Params {
 			size += len(param)
 		}
+		size += estimatedStringHeaderBytes*3 + len(blk.moduleKey) + len(blk.modulePath) + len(blk.moduleRoot)
 		size += est.env(blk.Env)
 	case KindFunction, KindBuiltin:
 		// Functions and builtins are compile-time/static artifacts for memory quotas.

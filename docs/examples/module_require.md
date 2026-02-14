@@ -25,6 +25,10 @@ end
 def apply_fee(amount)
   amount + rate()
 end
+
+def _rounding_hint()
+  "bankers"
+end
 ```
 
 A main script can load the helpers and use the exported functions:
@@ -40,9 +44,21 @@ end
 
 When `total_with_fee` runs, `require("fees")` resolves the module relative to
 `Config.ModulePaths`, compiles it once, and returns an object containing the
-module’s exports. Functions defined in the module call each other using the
-module-local environment, so collisions with host globals do not override the
-module’s behaviour.
+module’s public exports. Function names starting with `_` stay private to the
+module and are not exposed on the returned object or injected globally.
+
+Inside modules, explicit relative requires are supported:
+
+```vibe
+# modules/pricing/tax.vibe
+def compute(amount)
+  rates = require("./rates")
+  amount * rates.current()
+end
+```
+
+Relative requires (`./` and `../`) resolve from the requiring module’s
+directory and cannot escape the configured module root.
 
 After the first load the module is cached, making subsequent `require` calls
 cheap. To refresh or hot reload modules, restart the embedding application or

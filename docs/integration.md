@@ -54,9 +54,9 @@ mocks you can repurpose.
 
 Set `Config.ModulePaths` to the directories that contain re-usable `.vibe`
 files. Scripts can then call `require("module_name")` to load another file.
-The `require` builtin returns an object containing the module's functions and
-also defines any non-conflicting functions on the global scope for convenient
-access.
+The `require` builtin returns an object containing the module's public
+functions and also defines any non-conflicting public functions on the global
+scope for convenient access.
 
 ```go
 engine, err := vibes.NewEngine(vibes.Config{ModulePaths: []string{"/app/workflows"}})
@@ -70,8 +70,12 @@ script, err := engine.Compile(`def total(amount)
 end`)
 ```
 
-The interpreter searches each configured directory for `<module>.vibe` and
-caches compiled modules so subsequent calls to `require` are inexpensive.
+The interpreter searches each configured directory for `<module>.vibe` in order
+and caches compiled modules so subsequent calls to `require` are inexpensive.
+Inside a module, use explicit relative paths (`./` or `../`) to load siblings
+or parent-local helpers. Relative requires are resolved from the calling
+module's directory and are rejected if they escape the module root. Functions
+whose names start with `_` are private and are not exported.
 
 ### Capability Adapters
 

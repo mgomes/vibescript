@@ -346,7 +346,10 @@ type Range struct {
 }
 
 type Block struct {
-	Params []string
-	Body   []Statement
-	Env    *Env
+	Params     []string
+	Body       []Statement
+	Env        *Env
+	moduleKey  string
+	modulePath string
+	moduleRoot string
 }

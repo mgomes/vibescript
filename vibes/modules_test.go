@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -129,7 +130,7 @@ func TestRequireRejectsPathTraversal(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run()
-  require("../../etc/passwd")
+  require("nested/../../etc/passwd")
 end`)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
@@ -142,7 +143,288 @@ end`)
 	}
 }
 
-func TestRequireModuleCachePreventsRecursion(t *testing.T) {
+func TestRequireRelativePathRequiresModuleCaller(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run()
+  require("./helper")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected relative caller error")
+	} else if !strings.Contains(err.Error(), "requires a module caller") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireRelativePathDoesNotLeakFromModuleIntoHostFunction(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def host_relative()
+  require("./helper")
+end
+
+def run()
+  mod = require("module_calls_host")
+  mod.invoke_host_relative()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected relative caller error from host function")
+	} else if !strings.Contains(err.Error(), "requires a module caller") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireSupportsRelativePathsWithinModuleRoot(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  mod = require("relative/root")
+  mod.run(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(5)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 16 {
+		t.Fatalf("expected 16, got %#v", result)
+	}
+}
+
+func TestRequireRelativePathRejectsEscapingModuleRoot(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run()
+  mod = require("relative/escape")
+  mod.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected module root escape error")
+	} else if !strings.Contains(err.Error(), "escapes module root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireRelativePathRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-specific on Windows")
+	}
+
+	moduleRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+
+	secretModule := filepath.Join(outsideRoot, "secret.vibe")
+	if err := os.WriteFile(secretModule, []byte(`def hidden()
+  42
+end
+`), 0o644); err != nil {
+		t.Fatalf("write secret module: %v", err)
+	}
+
+	symlinkPath := filepath.Join(moduleRoot, "link")
+	if err := os.Symlink(outsideRoot, symlinkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	entryModule := filepath.Join(moduleRoot, "entry.vibe")
+	if err := os.WriteFile(entryModule, []byte(`def run()
+  require("./link/secret")
+end
+`), 0o644); err != nil {
+		t.Fatalf("write entry module: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  mod = require("entry")
+  mod.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected symlink escape error")
+	} else if !strings.Contains(err.Error(), "escapes module root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireRelativePathRejectsOutOfRootCachedModule(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-specific on Windows")
+	}
+
+	moduleRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(outsideRoot, "secret.vibe"), []byte(`def value()
+  9
+end
+`), 0o644); err != nil {
+		t.Fatalf("write secret module: %v", err)
+	}
+
+	symlinkPath := filepath.Join(moduleRoot, "link")
+	if err := os.Symlink(outsideRoot, symlinkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(moduleRoot, "entry.vibe"), []byte(`def run()
+  dep = require("./link/secret")
+  dep.value()
+end
+`), 0o644); err != nil {
+		t.Fatalf("write entry module: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  require("link/secret")
+  entry = require("entry")
+  entry.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected module root escape error")
+	} else if !strings.Contains(err.Error(), "escapes module root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireRelativePathUsesCacheBeforeFilesystemResolution(t *testing.T) {
+	moduleRoot := t.TempDir()
+
+	depPath := filepath.Join(moduleRoot, "dep.vibe")
+	if err := os.WriteFile(depPath, []byte(`def value()
+  7
+end
+`), 0o644); err != nil {
+		t.Fatalf("write dep module: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(moduleRoot, "entry.vibe"), []byte(`def run()
+  dep = require("./dep")
+  dep.value()
+end
+`), 0o644); err != nil {
+		t.Fatalf("write entry module: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  mod = require("entry")
+  mod.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 7 {
+		t.Fatalf("expected first call result 7, got %#v", result)
+	}
+
+	if err := os.Remove(depPath); err != nil {
+		t.Fatalf("remove dep module: %v", err)
+	}
+
+	result, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 7 {
+		t.Fatalf("expected second call result 7, got %#v", result)
+	}
+}
+
+func TestRequireRelativePathWorksInModuleDefinedBlockYieldedFromHost(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def host_each()
+  yield()
+end
+
+def run()
+  mod = require("block_host_yield")
+  mod.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 33 {
+		t.Fatalf("expected 33, got %#v", result)
+	}
+}
+
+func TestRequireExportsOnlyPublicFunctions(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  mod = require("private_exports")
+  if mod["_internal"] != nil
+    0
+  else
+    visible(value) + mod.call_internal(value)
+  end
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 105 {
+		t.Fatalf("expected 105, got %#v", result)
+	}
+}
+
+func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  require("private_exports")
+  _internal(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{}); err == nil {
+		t.Fatalf("expected undefined private function error")
+	} else if !strings.Contains(err.Error(), "undefined variable _internal") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireModuleCacheAvoidsDuplicateLoads(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run()
@@ -160,6 +442,44 @@ end`)
 	}
 	if result.String() != "ok" {
 		t.Fatalf("expected ok, got %#v", result)
+	}
+}
+
+func TestRequireRuntimeModuleRecursionHitsRecursionLimit(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run()
+  mod = require("circular_runtime_a")
+  mod.enter()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected recursion limit error")
+	} else if !strings.Contains(err.Error(), "recursion depth exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireAllowsCachedModuleReuseAcrossModuleCalls(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run()
+  mod = require("require_cached_a")
+  mod.start()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 21 {
+		t.Fatalf("expected 21, got %#v", result)
 	}
 }
 
