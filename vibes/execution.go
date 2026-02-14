@@ -41,23 +41,24 @@ type CallOptions struct {
 }
 
 type Execution struct {
-	engine          *Engine
-	script          *Script
-	ctx             context.Context
-	quota           int
-	memoryQuota     int
-	recursionCap    int
-	steps           int
-	callStack       []callFrame
-	root            *Env
-	modules         map[string]Value
-	moduleLoading   map[string]bool
-	moduleLoadStack []string
-	moduleStack     []moduleContext
-	receiverStack   []Value
-	envStack        []*Env
-	strictEffects   bool
-	allowRequire    bool
+	engine              *Engine
+	script              *Script
+	ctx                 context.Context
+	quota               int
+	memoryQuota         int
+	recursionCap        int
+	steps               int
+	callStack           []callFrame
+	root                *Env
+	modules             map[string]Value
+	moduleLoading       map[string]bool
+	moduleLoadStack     []string
+	moduleStack         []moduleContext
+	capabilityContracts map[string]CapabilityMethodContract
+	receiverStack       []Value
+	envStack            []*Env
+	strictEffects       bool
+	allowRequire        bool
 }
 
 type moduleContext struct {
@@ -605,9 +606,22 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 	case KindFunction:
 		return exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
 	case KindBuiltin:
-		result, err := callee.Builtin().Fn(exec, receiver, args, kwargs, block)
+		builtin := callee.Builtin()
+		contract, hasContract := exec.capabilityContracts[builtin.Name]
+		if hasContract && contract.ValidateArgs != nil {
+			if err := contract.ValidateArgs(args, kwargs, block); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
+
+		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		if err != nil {
 			return NewNil(), exec.wrapError(err, pos)
+		}
+		if hasContract && contract.ValidateReturn != nil {
+			if err := contract.ValidateReturn(result); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
 		}
 		return result, nil
 	default:
@@ -3374,22 +3388,23 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	rebinder := newCallFunctionRebinder(s, root, callClasses)
 
 	exec := &Execution{
-		engine:          s.engine,
-		script:          s,
-		ctx:             ctx,
-		quota:           s.engine.config.StepQuota,
-		memoryQuota:     s.engine.config.MemoryQuotaBytes,
-		recursionCap:    s.engine.config.RecursionLimit,
-		callStack:       make([]callFrame, 0, 8),
-		root:            root,
-		modules:         make(map[string]Value),
-		moduleLoading:   make(map[string]bool),
-		moduleLoadStack: make([]string, 0, 8),
-		moduleStack:     make([]moduleContext, 0, 8),
-		receiverStack:   make([]Value, 0, 8),
-		envStack:        make([]*Env, 0, 8),
-		strictEffects:   s.engine.config.StrictEffects,
-		allowRequire:    opts.AllowRequire,
+		engine:              s.engine,
+		script:              s,
+		ctx:                 ctx,
+		quota:               s.engine.config.StepQuota,
+		memoryQuota:         s.engine.config.MemoryQuotaBytes,
+		recursionCap:        s.engine.config.RecursionLimit,
+		callStack:           make([]callFrame, 0, 8),
+		root:                root,
+		modules:             make(map[string]Value),
+		moduleLoading:       make(map[string]bool),
+		moduleLoadStack:     make([]string, 0, 8),
+		moduleStack:         make([]moduleContext, 0, 8),
+		capabilityContracts: make(map[string]CapabilityMethodContract),
+		receiverStack:       make([]Value, 0, 8),
+		envStack:            make([]*Env, 0, 8),
+		strictEffects:       s.engine.config.StrictEffects,
+		allowRequire:        opts.AllowRequire,
 	}
 
 	if len(opts.Capabilities) > 0 {
@@ -3397,6 +3412,18 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		for _, adapter := range opts.Capabilities {
 			if adapter == nil {
 				continue
+			}
+			if provider, ok := adapter.(CapabilityContractProvider); ok {
+				for methodName, contract := range provider.CapabilityContracts() {
+					name := strings.TrimSpace(methodName)
+					if name == "" {
+						return NewNil(), fmt.Errorf("capability contract method name must be non-empty")
+					}
+					if _, exists := exec.capabilityContracts[name]; exists {
+						return NewNil(), fmt.Errorf("duplicate capability contract for %s", name)
+					}
+					exec.capabilityContracts[name] = contract
+				}
 			}
 			globals, err := adapter.Bind(binding)
 			if err != nil {
