@@ -68,6 +68,22 @@ type jobQueueCapability struct {
 	retry JobQueueWithRetry
 }
 
+func (c *jobQueueCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	contracts := map[string]CapabilityMethodContract{
+		c.name + ".enqueue": {
+			ValidateArgs:   c.validateEnqueueContractArgs,
+			ValidateReturn: c.validateMethodReturn(c.name + ".enqueue"),
+		},
+	}
+	if c.retry != nil {
+		contracts[c.name+".retry"] = CapabilityMethodContract{
+			ValidateArgs:   c.validateRetryContractArgs,
+			ValidateReturn: c.validateMethodReturn(c.name + ".retry"),
+		}
+	}
+	return contracts
+}
+
 func (c *jobQueueCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
 	methods := map[string]Value{
 		"enqueue": NewBuiltin(c.name+".enqueue", c.callEnqueue),
@@ -79,7 +95,7 @@ func (c *jobQueueCapability) Bind(binding CapabilityBinding) (map[string]Value, 
 }
 
 func (c *jobQueueCapability) callEnqueue(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	if len(args) < 2 {
+	if len(args) != 2 {
 		return NewNil(), fmt.Errorf("%s.enqueue expects job name and payload", c.name)
 	}
 	if !block.IsNil() {
@@ -117,8 +133,8 @@ func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []V
 	if c.retry == nil {
 		return NewNil(), fmt.Errorf("%s.retry is not supported", c.name)
 	}
-	if len(args) < 1 {
-		return NewNil(), fmt.Errorf("%s.retry expects job id", c.name)
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("%s.retry expects job id and optional options hash", c.name)
 	}
 	if !block.IsNil() {
 		return NewNil(), fmt.Errorf("%s.retry does not accept blocks", c.name)
@@ -141,6 +157,81 @@ func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []V
 
 	req := JobQueueRetryRequest{JobID: idVal.String(), Options: options}
 	return c.retry.Retry(exec.ctx, req)
+}
+
+func (c *jobQueueCapability) validateEnqueueContractArgs(args []Value, kwargs map[string]Value, block Value) error {
+	method := c.name + ".enqueue"
+
+	if len(args) != 2 {
+		return fmt.Errorf("%s expects job name and payload", method)
+	}
+	if !block.IsNil() {
+		return fmt.Errorf("%s does not accept blocks", method)
+	}
+
+	jobNameVal := args[0]
+	switch jobNameVal.Kind() {
+	case KindString, KindSymbol:
+		// supported
+	default:
+		return fmt.Errorf("%s expects job name as string or symbol", method)
+	}
+
+	payloadVal := args[1]
+	if payloadVal.Kind() != KindHash && payloadVal.Kind() != KindObject {
+		return fmt.Errorf("%s expects payload hash", method)
+	}
+	if err := validateCapabilityDataOnlyValue(method+" payload", payloadVal); err != nil {
+		return err
+	}
+
+	for key, val := range kwargs {
+		if err := validateCapabilityDataOnlyValue(fmt.Sprintf("%s keyword %s", method, key), val); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *jobQueueCapability) validateRetryContractArgs(args []Value, kwargs map[string]Value, block Value) error {
+	method := c.name + ".retry"
+
+	if len(args) < 1 || len(args) > 2 {
+		return fmt.Errorf("%s expects job id and optional options hash", method)
+	}
+	if !block.IsNil() {
+		return fmt.Errorf("%s does not accept blocks", method)
+	}
+
+	idVal := args[0]
+	if idVal.Kind() != KindString {
+		return fmt.Errorf("%s expects job id string", method)
+	}
+
+	if len(args) == 2 {
+		optionsVal := args[1]
+		if optionsVal.Kind() != KindHash && optionsVal.Kind() != KindObject {
+			return fmt.Errorf("%s options must be hash", method)
+		}
+		if err := validateCapabilityDataOnlyValue(method+" options", optionsVal); err != nil {
+			return err
+		}
+	}
+
+	for key, val := range kwargs {
+		if err := validateCapabilityDataOnlyValue(fmt.Sprintf("%s keyword %s", method, key), val); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *jobQueueCapability) validateMethodReturn(method string) func(result Value) error {
+	return func(result Value) error {
+		return validateCapabilityDataOnlyValue(method+" return value", result)
+	}
 }
 
 func parseJobQueueEnqueueOptions(name string, kwargs map[string]Value) (JobQueueEnqueueOptions, error) {

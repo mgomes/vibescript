@@ -80,6 +80,10 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	for name := range exec.moduleLoading {
 		total += estimatedStringHeaderBytes + len(name)
 	}
+	total += estimatedMapBaseBytes + len(exec.capabilityContracts)*estimatedMapEntryBytes
+	for name := range exec.capabilityContracts {
+		total += estimatedStringHeaderBytes + len(name)
+	}
 	total += estimatedSliceBaseBytes + len(exec.moduleLoadStack)*estimatedStringHeaderBytes
 	for _, key := range exec.moduleLoadStack {
 		total += len(key)

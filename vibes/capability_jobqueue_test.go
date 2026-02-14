@@ -14,6 +14,8 @@ type jobQueueStub struct {
 	retryCtx     []context.Context
 }
 
+type invalidReturnQueue struct{}
+
 func (s *jobQueueStub) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
 	s.enqueueCalls = append(s.enqueueCalls, job)
 	s.enqueueCtx = append(s.enqueueCtx, ctx)
@@ -24,6 +26,14 @@ func (s *jobQueueStub) Retry(ctx context.Context, req JobQueueRetryRequest) (Val
 	s.retryCalls = append(s.retryCalls, req)
 	s.retryCtx = append(s.retryCtx, ctx)
 	return NewBool(true), nil
+}
+
+func (invalidReturnQueue) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
+	return NewObject(map[string]Value{
+		"save": NewBuiltin("leak.save", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return NewString("ok"), nil
+		}),
+	}), nil
 }
 
 func TestJobQueueCapabilityEnqueue(t *testing.T) {
@@ -145,6 +155,31 @@ end`)
 	}
 }
 
+func TestJobQueueCapabilityRejectsCallablePayload(t *testing.T) {
+	stub := &jobQueueStub{}
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def helper(value)
+  value
+end
+
+def run()
+  jobs.enqueue("demo", { callback: helper })
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", stub)},
+	})
+	if err == nil {
+		t.Fatalf("expected callable payload contract error")
+	}
+	if got := err.Error(); !strings.Contains(got, "jobs.enqueue payload must be data-only") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
 func TestNilCapabilityAdapterFiltering(t *testing.T) {
 	stub := &jobQueueStub{}
 	engine := MustNewEngine(Config{})
@@ -190,6 +225,27 @@ end`)
 	}
 }
 
+func TestJobQueueRejectsUnexpectedEnqueuePositionalArgs(t *testing.T) {
+	stub := &jobQueueStub{}
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  jobs.enqueue("demo", { foo: "bar" }, { extra: true })
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", stub)},
+	})
+	if err == nil {
+		t.Fatalf("expected positional arg error")
+	}
+	if got := err.Error(); !strings.Contains(got, "jobs.enqueue expects job name and payload") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
 func TestJobQueueRejectsEmptyKey(t *testing.T) {
 	stub := &jobQueueStub{}
 	engine := MustNewEngine(Config{})
@@ -207,6 +263,47 @@ end`)
 		t.Fatalf("expected error for empty key")
 	}
 	if got := err.Error(); !strings.Contains(got, "jobs.enqueue key must be non-empty") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
+func TestJobQueueRejectsUnexpectedRetryPositionalArgs(t *testing.T) {
+	stub := &jobQueueStub{}
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  jobs.retry("job-7", { attempts: 1 }, { force: true })
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", stub)},
+	})
+	if err == nil {
+		t.Fatalf("expected retry positional arg error")
+	}
+	if got := err.Error(); !strings.Contains(got, "jobs.retry expects job id and optional options hash") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
+func TestJobQueueRejectsCallableReturnValue(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  jobs.enqueue("demo", { foo: "bar" })
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", invalidReturnQueue{})},
+	})
+	if err == nil {
+		t.Fatalf("expected return contract error")
+	}
+	if got := err.Error(); !strings.Contains(got, "jobs.enqueue return value must be data-only") {
 		t.Fatalf("unexpected error: %s", got)
 	}
 }
