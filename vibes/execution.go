@@ -631,7 +631,7 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 			}
 		}
 		scope := exec.capabilityContractScopes[builtin]
-		if scope != nil && len(scope.contracts) > 0 {
+		if scope != nil {
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.

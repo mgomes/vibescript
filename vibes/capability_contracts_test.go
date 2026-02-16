@@ -297,6 +297,59 @@ func (c siblingMutationContractCapability) CapabilityContracts() map[string]Capa
 	}
 }
 
+type foreignBuiltinRef struct {
+	call Value
+}
+
+type legacyForeignFooCapability struct {
+	shared      *foreignBuiltinRef
+	invokeCount *int
+}
+
+func (c legacyForeignFooCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	call := NewBuiltin("foo.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		*c.invokeCount = *c.invokeCount + 1
+		if len(args) != 1 || args[0].Kind() != KindString {
+			return NewNil(), fmt.Errorf("legacy foreign foo.call expects string")
+		}
+		return NewString("legacy-foreign"), nil
+	})
+	c.shared.call = call
+	return map[string]Value{
+		"foreign": NewObject(map[string]Value{
+			"call": call,
+		}),
+	}, nil
+}
+
+type importingContractCapability struct {
+	shared *foreignBuiltinRef
+}
+
+func (c importingContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"publisher": NewObject(map[string]Value{
+			"install": NewBuiltin("publisher.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				receiver.Hash()["call"] = c.shared.call
+				return NewString("installed"), nil
+			}),
+		}),
+	}, nil
+}
+
+func (c importingContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"foo.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("provider foo.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -557,5 +610,34 @@ end`)
 	}
 	if invocations != 0 {
 		t.Fatalf("sibling mutation capability should not execute when contract fails")
+	}
+}
+
+func TestCapabilityContractsDoNotAttachToForeignBuiltinsByName(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  publisher.install()
+  publisher.call("ok")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	shared := &foreignBuiltinRef{}
+	invocations := 0
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			legacyForeignFooCapability{shared: shared, invokeCount: &invocations},
+			importingContractCapability{shared: shared},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if invocations != 1 {
+		t.Fatalf("expected legacy foreign call once, got %d", invocations)
+	}
+	if result.Kind() != KindString || result.String() != "legacy-foreign" {
+		t.Fatalf("unexpected result: %#v", result)
 	}
 }

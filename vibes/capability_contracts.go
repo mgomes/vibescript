@@ -35,7 +35,7 @@ func bindCapabilityContracts(
 	target map[*Builtin]CapabilityMethodContract,
 	scopes map[*Builtin]*capabilityContractScope,
 ) {
-	if scope == nil || len(scope.contracts) == 0 {
+	if scope == nil {
 		return
 	}
 	scanner := newCapabilityContractScanner()
@@ -90,8 +90,13 @@ func (s *capabilityContractScanner) bindContracts(
 	switch val.Kind() {
 	case KindBuiltin:
 		builtin := val.Builtin()
-		if _, seen := scopes[builtin]; !seen {
+		ownerScope, seen := scopes[builtin]
+		if !seen {
 			scopes[builtin] = scope
+			ownerScope = scope
+		}
+		if ownerScope != scope {
+			return
 		}
 		if contract, ok := scope.contracts[builtin.Name]; ok {
 			if _, seen := target[builtin]; !seen {
