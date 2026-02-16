@@ -631,7 +631,7 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 			}
 		}
 		scope := exec.capabilityContractScopes[builtin]
-		if scope != nil {
+		if scope != nil && len(scope.contracts) > 0 {
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.
@@ -3460,7 +3460,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 			for name, val := range globals {
 				rebound := rebinder.rebindValue(val)
 				root.Define(name, rebound)
-				scope.roots = append(scope.roots, rebound)
+				if len(scope.contracts) > 0 {
+					scope.roots = append(scope.roots, rebound)
+				}
 				bindCapabilityContracts(rebound, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 		}
