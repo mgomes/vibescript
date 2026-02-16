@@ -384,6 +384,52 @@ func (c argMutationContractCapability) CapabilityContracts() map[string]Capabili
 	}
 }
 
+type foreignArgCapability struct {
+	invokeCount *int
+}
+
+func (c foreignArgCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"foreign": NewObject(map[string]Value{
+			"call": NewBuiltin("foo.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				*c.invokeCount = *c.invokeCount + 1
+				if len(args) != 1 || args[0].Kind() != KindString {
+					return NewNil(), fmt.Errorf("foreign foo.call expects string")
+				}
+				return NewString("foreign-ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+type argPassThroughContractCapability struct{}
+
+func (argPassThroughContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap2": NewObject(map[string]Value{
+			"install": NewBuiltin("cap2.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
+					return NewNil(), fmt.Errorf("cap2.install expects target hash")
+				}
+				return NewString("ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+func (argPassThroughContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"foo.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("provider foo.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -701,5 +747,34 @@ end`)
 	}
 	if invocations != 0 {
 		t.Fatalf("argument mutation capability should not execute when contract fails")
+	}
+}
+
+func TestCapabilityContractsDoNotHijackForeignBuiltinsFromArguments(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  target = { passthrough: foreign.call }
+  cap2.install(target)
+  target.passthrough("ok")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	invocations := 0
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			foreignArgCapability{invokeCount: &invocations},
+			argPassThroughContractCapability{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if invocations != 1 {
+		t.Fatalf("expected foreign call once, got %d", invocations)
+	}
+	if result.Kind() != KindString || result.String() != "foreign-ok" {
+		t.Fatalf("unexpected result: %#v", result)
 	}
 }

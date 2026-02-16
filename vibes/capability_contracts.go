@@ -10,6 +10,7 @@ type capabilityContractScanner struct {
 	seenMaps      map[uintptr]struct{}
 	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
+	excluded      map[*Builtin]struct{}
 }
 
 func newCapabilityContractScanner() *capabilityContractScanner {
@@ -35,11 +36,30 @@ func bindCapabilityContracts(
 	target map[*Builtin]CapabilityMethodContract,
 	scopes map[*Builtin]*capabilityContractScope,
 ) {
+	bindCapabilityContractsExcluding(val, scope, target, scopes, nil)
+}
+
+func bindCapabilityContractsExcluding(
+	val Value,
+	scope *capabilityContractScope,
+	target map[*Builtin]CapabilityMethodContract,
+	scopes map[*Builtin]*capabilityContractScope,
+	excluded map[*Builtin]struct{},
+) {
 	if scope == nil {
 		return
 	}
 	scanner := newCapabilityContractScanner()
+	scanner.excluded = excluded
 	scanner.bindContracts(val, scope, target, scopes)
+}
+
+func collectCapabilityBuiltins(val Value, out map[*Builtin]struct{}) {
+	if out == nil {
+		return
+	}
+	scanner := newCapabilityContractScanner()
+	scanner.collectBuiltins(val, out)
 }
 
 func (s *capabilityContractScanner) containsCallable(val Value) bool {
@@ -90,6 +110,9 @@ func (s *capabilityContractScanner) bindContracts(
 	switch val.Kind() {
 	case KindBuiltin:
 		builtin := val.Builtin()
+		if _, skip := s.excluded[builtin]; skip {
+			return
+		}
 		ownerScope, seen := scopes[builtin]
 		if !seen {
 			scopes[builtin] = scope
@@ -153,6 +176,64 @@ func (s *capabilityContractScanner) bindContracts(
 		}
 		if instance.Class != nil {
 			s.bindContracts(NewClass(instance.Class), scope, target, scopes)
+		}
+	}
+}
+
+func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]struct{}) {
+	switch val.Kind() {
+	case KindBuiltin:
+		out[val.Builtin()] = struct{}{}
+	case KindArray:
+		values := val.Array()
+		id := sliceIdentity{
+			ptr: reflect.ValueOf(values).Pointer(),
+			len: len(values),
+			cap: cap(values),
+		}
+		if _, seen := s.seenArrays[id]; seen {
+			return
+		}
+		s.seenArrays[id] = struct{}{}
+		for _, item := range values {
+			s.collectBuiltins(item, out)
+		}
+	case KindHash, KindObject:
+		entries := val.Hash()
+		ptr := reflect.ValueOf(entries).Pointer()
+		if _, seen := s.seenMaps[ptr]; seen {
+			return
+		}
+		s.seenMaps[ptr] = struct{}{}
+		for _, item := range entries {
+			s.collectBuiltins(item, out)
+		}
+	case KindClass:
+		classDef := val.Class()
+		if classDef == nil {
+			return
+		}
+		if _, seen := s.seenClasses[classDef]; seen {
+			return
+		}
+		s.seenClasses[classDef] = struct{}{}
+		for _, item := range classDef.ClassVars {
+			s.collectBuiltins(item, out)
+		}
+	case KindInstance:
+		instance := val.Instance()
+		if instance == nil {
+			return
+		}
+		if _, seen := s.seenInstances[instance]; seen {
+			return
+		}
+		s.seenInstances[instance] = struct{}{}
+		for _, item := range instance.Ivars {
+			s.collectBuiltins(item, out)
+		}
+		if instance.Class != nil {
+			s.collectBuiltins(NewClass(instance.Class), out)
 		}
 	}
 }

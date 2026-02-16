@@ -614,6 +614,17 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 		return exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
 	case KindBuiltin:
 		builtin := callee.Builtin()
+		scope := exec.capabilityContractScopes[builtin]
+		var preCallArgBuiltins map[*Builtin]struct{}
+		if scope != nil && len(scope.contracts) > 0 {
+			preCallArgBuiltins = make(map[*Builtin]struct{})
+			for _, arg := range args {
+				collectCapabilityBuiltins(arg, preCallArgBuiltins)
+			}
+			for _, kwarg := range kwargs {
+				collectCapabilityBuiltins(kwarg, preCallArgBuiltins)
+			}
+		}
 		contract, hasContract := exec.capabilityContracts[builtin]
 		if hasContract && contract.ValidateArgs != nil {
 			if err := contract.ValidateArgs(args, kwargs, block); err != nil {
@@ -630,7 +641,6 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 				return NewNil(), exec.wrapError(err, pos)
 			}
 		}
-		scope := exec.capabilityContractScopes[builtin]
 		if scope != nil && len(scope.contracts) > 0 {
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
@@ -647,10 +657,10 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 			// Methods can also publish builtins by mutating positional or keyword
 			// argument objects supplied by script code.
 			for _, arg := range args {
-				bindCapabilityContracts(arg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+				bindCapabilityContractsExcluding(arg, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallArgBuiltins)
 			}
 			for _, kwarg := range kwargs {
-				bindCapabilityContracts(kwarg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+				bindCapabilityContractsExcluding(kwarg, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallArgBuiltins)
 			}
 		}
 		return result, nil
