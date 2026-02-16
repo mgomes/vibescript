@@ -256,6 +256,47 @@ func (c legacyFooCapability) Bind(binding CapabilityBinding) (map[string]Value, 
 	}, nil
 }
 
+type siblingMutationContractCapability struct {
+	invokeCount *int
+}
+
+func (c siblingMutationContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	peer := NewInstance(&Instance{
+		Class: &ClassDef{
+			Name:         "PeerHost",
+			Methods:      map[string]*ScriptFunction{},
+			ClassMethods: map[string]*ScriptFunction{},
+			ClassVars:    map[string]Value{},
+		},
+		Ivars: map[string]Value{},
+	})
+	return map[string]Value{
+		"publisher": NewObject(map[string]Value{
+			"install": NewBuiltin("publisher.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				peer.Instance().Ivars["call"] = NewBuiltin("peer.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*c.invokeCount = *c.invokeCount + 1
+					return NewString("ok"), nil
+				})
+				return NewString("installed"), nil
+			}),
+		}),
+		"peer": peer,
+	}, nil
+}
+
+func (c siblingMutationContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"peer.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("peer.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -489,5 +530,32 @@ end`)
 	}
 	if result.Kind() != KindString || result.String() != "legacy" {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestCapabilityContractsBindAfterSiblingScopeMutation(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  publisher.install()
+  peer.call("bad")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	invocations := 0
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			siblingMutationContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected sibling-mutation contract validation error")
+	}
+	if got := err.Error(); !strings.Contains(got, "peer.call expects int") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+	if invocations != 0 {
+		t.Fatalf("sibling mutation capability should not execute when contract fails")
 	}
 }
