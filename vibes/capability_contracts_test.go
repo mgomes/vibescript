@@ -82,6 +82,74 @@ func (unrelatedNamedContractCapability) CapabilityContracts() map[string]Capabil
 	}
 }
 
+type instanceIvarContractCapability struct {
+	invokeCount *int
+}
+
+func (c instanceIvarContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	classDef := &ClassDef{
+		Name:         "CapabilityBox",
+		Methods:      map[string]*ScriptFunction{},
+		ClassMethods: map[string]*ScriptFunction{},
+		ClassVars:    map[string]Value{},
+	}
+	instance := &Instance{
+		Class: classDef,
+		Ivars: map[string]Value{
+			"call": NewBuiltin("probe.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				*c.invokeCount = *c.invokeCount + 1
+				return NewString("ok"), nil
+			}),
+		},
+	}
+	return map[string]Value{"box": NewInstance(instance)}, nil
+}
+
+func (c instanceIvarContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"probe.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("probe.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
+type classVarContractCapability struct {
+	invokeCount *int
+}
+
+func (c classVarContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	classDef := &ClassDef{
+		Name:         "CapabilityHolder",
+		Methods:      map[string]*ScriptFunction{},
+		ClassMethods: map[string]*ScriptFunction{},
+		ClassVars: map[string]Value{
+			"call": NewBuiltin("probe.class_call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				*c.invokeCount = *c.invokeCount + 1
+				return NewString("ok"), nil
+			}),
+		},
+	}
+	return map[string]Value{"holder": NewClass(classDef)}, nil
+}
+
+func (c classVarContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"probe.class_call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("probe.class_call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -182,5 +250,57 @@ end`)
 	}
 	if got, ok := result.Hash()["b"]; !ok || got.Kind() != KindInt || got.Int() != 2 {
 		t.Fatalf("unexpected merge result: %#v", result.Hash())
+	}
+}
+
+func TestCapabilityContractsTraverseInstanceValues(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  box.call("bad")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	invocations := 0
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			instanceIvarContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected instance contract validation error")
+	}
+	if got := err.Error(); !strings.Contains(got, "probe.call expects int") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+	if invocations != 0 {
+		t.Fatalf("instance capability should not execute when contract fails")
+	}
+}
+
+func TestCapabilityContractsTraverseClassValues(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  holder.call("bad")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	invocations := 0
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			classVarContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected class contract validation error")
+	}
+	if got := err.Error(); !strings.Contains(got, "probe.class_call expects int") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+	if invocations != 0 {
+		t.Fatalf("class capability should not execute when contract fails")
 	}
 }

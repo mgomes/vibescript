@@ -6,14 +6,18 @@ import (
 )
 
 type capabilityContractScanner struct {
-	seenArrays map[sliceIdentity]struct{}
-	seenMaps   map[uintptr]struct{}
+	seenArrays    map[sliceIdentity]struct{}
+	seenMaps      map[uintptr]struct{}
+	seenClasses   map[*ClassDef]struct{}
+	seenInstances map[*Instance]struct{}
 }
 
 func newCapabilityContractScanner() *capabilityContractScanner {
 	return &capabilityContractScanner{
-		seenArrays: make(map[sliceIdentity]struct{}),
-		seenMaps:   make(map[uintptr]struct{}),
+		seenArrays:    make(map[sliceIdentity]struct{}),
+		seenMaps:      make(map[uintptr]struct{}),
+		seenClasses:   make(map[*ClassDef]struct{}),
+		seenInstances: make(map[*Instance]struct{}),
 	}
 }
 
@@ -102,6 +106,33 @@ func (s *capabilityContractScanner) bindContracts(val Value, contractsByName map
 		s.seenMaps[ptr] = struct{}{}
 		for _, item := range entries {
 			s.bindContracts(item, contractsByName, target)
+		}
+	case KindClass:
+		classDef := val.Class()
+		if classDef == nil {
+			return
+		}
+		if _, seen := s.seenClasses[classDef]; seen {
+			return
+		}
+		s.seenClasses[classDef] = struct{}{}
+		for _, item := range classDef.ClassVars {
+			s.bindContracts(item, contractsByName, target)
+		}
+	case KindInstance:
+		instance := val.Instance()
+		if instance == nil {
+			return
+		}
+		if _, seen := s.seenInstances[instance]; seen {
+			return
+		}
+		s.seenInstances[instance] = struct{}{}
+		for _, item := range instance.Ivars {
+			s.bindContracts(item, contractsByName, target)
+		}
+		if instance.Class != nil {
+			s.bindContracts(NewClass(instance.Class), contractsByName, target)
 		}
 	}
 }
