@@ -60,6 +60,28 @@ func (duplicateContractCapability) CapabilityContracts() map[string]CapabilityMe
 	}
 }
 
+type unrelatedNamedContractCapability struct{}
+
+func (unrelatedNamedContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"probe": NewObject(map[string]Value{
+			"call": NewBuiltin("probe.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				return NewString("ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+func (unrelatedNamedContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"hash.merge": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				return fmt.Errorf("hash.merge contract should not be applied")
+			},
+		},
+	}
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -135,5 +157,30 @@ end`)
 	}
 	if got := err.Error(); !strings.Contains(got, "duplicate capability contract for dup.call") {
 		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
+func TestCapabilityContractsDoNotAttachByGlobalBuiltinName(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  base = { a: 1 }
+  override = { b: 2 }
+  base.merge(override)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{unrelatedNamedContractCapability{}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", result.Kind())
+	}
+	if got, ok := result.Hash()["b"]; !ok || got.Kind() != KindInt || got.Int() != 2 {
+		t.Fatalf("unexpected merge result: %#v", result.Hash())
 	}
 }

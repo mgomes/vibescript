@@ -25,6 +25,14 @@ func validateCapabilityDataOnlyValue(label string, val Value) error {
 	return nil
 }
 
+func bindCapabilityContracts(val Value, contractsByName map[string]CapabilityMethodContract, target map[*Builtin]CapabilityMethodContract) {
+	if len(contractsByName) == 0 {
+		return
+	}
+	scanner := newCapabilityContractScanner()
+	scanner.bindContracts(val, contractsByName, target)
+}
+
 func (s *capabilityContractScanner) containsCallable(val Value) bool {
 	switch val.Kind() {
 	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
@@ -61,5 +69,39 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 		return false
 	default:
 		return false
+	}
+}
+
+func (s *capabilityContractScanner) bindContracts(val Value, contractsByName map[string]CapabilityMethodContract, target map[*Builtin]CapabilityMethodContract) {
+	switch val.Kind() {
+	case KindBuiltin:
+		builtin := val.Builtin()
+		if contract, ok := contractsByName[builtin.Name]; ok {
+			target[builtin] = contract
+		}
+	case KindArray:
+		values := val.Array()
+		id := sliceIdentity{
+			ptr: reflect.ValueOf(values).Pointer(),
+			len: len(values),
+			cap: cap(values),
+		}
+		if _, seen := s.seenArrays[id]; seen {
+			return
+		}
+		s.seenArrays[id] = struct{}{}
+		for _, item := range values {
+			s.bindContracts(item, contractsByName, target)
+		}
+	case KindHash, KindObject:
+		entries := val.Hash()
+		ptr := reflect.ValueOf(entries).Pointer()
+		if _, seen := s.seenMaps[ptr]; seen {
+			return
+		}
+		s.seenMaps[ptr] = struct{}{}
+		for _, item := range entries {
+			s.bindContracts(item, contractsByName, target)
+		}
 	}
 }

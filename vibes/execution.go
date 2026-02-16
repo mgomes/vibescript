@@ -54,7 +54,7 @@ type Execution struct {
 	moduleLoading       map[string]bool
 	moduleLoadStack     []string
 	moduleStack         []moduleContext
-	capabilityContracts map[string]CapabilityMethodContract
+	capabilityContracts map[*Builtin]CapabilityMethodContract
 	receiverStack       []Value
 	envStack            []*Env
 	strictEffects       bool
@@ -607,7 +607,7 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 		return exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
 	case KindBuiltin:
 		builtin := callee.Builtin()
-		contract, hasContract := exec.capabilityContracts[builtin.Name]
+		contract, hasContract := exec.capabilityContracts[builtin]
 		if hasContract && contract.ValidateArgs != nil {
 			if err := contract.ValidateArgs(args, kwargs, block); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
@@ -3400,7 +3400,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		moduleLoading:       make(map[string]bool),
 		moduleLoadStack:     make([]string, 0, 8),
 		moduleStack:         make([]moduleContext, 0, 8),
-		capabilityContracts: make(map[string]CapabilityMethodContract),
+		capabilityContracts: make(map[*Builtin]CapabilityMethodContract),
 		receiverStack:       make([]Value, 0, 8),
 		envStack:            make([]*Env, 0, 8),
 		strictEffects:       s.engine.config.StrictEffects,
@@ -3409,20 +3409,23 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	if len(opts.Capabilities) > 0 {
 		binding := CapabilityBinding{Context: exec.ctx, Engine: s.engine}
+		knownCapabilityContracts := make(map[string]CapabilityMethodContract)
 		for _, adapter := range opts.Capabilities {
 			if adapter == nil {
 				continue
 			}
+			adapterContracts := map[string]CapabilityMethodContract{}
 			if provider, ok := adapter.(CapabilityContractProvider); ok {
 				for methodName, contract := range provider.CapabilityContracts() {
 					name := strings.TrimSpace(methodName)
 					if name == "" {
 						return NewNil(), fmt.Errorf("capability contract method name must be non-empty")
 					}
-					if _, exists := exec.capabilityContracts[name]; exists {
+					if _, exists := knownCapabilityContracts[name]; exists {
 						return NewNil(), fmt.Errorf("duplicate capability contract for %s", name)
 					}
-					exec.capabilityContracts[name] = contract
+					knownCapabilityContracts[name] = contract
+					adapterContracts[name] = contract
 				}
 			}
 			globals, err := adapter.Bind(binding)
@@ -3430,7 +3433,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 				return NewNil(), err
 			}
 			for name, val := range globals {
-				root.Define(name, rebinder.rebindValue(val))
+				rebound := rebinder.rebindValue(val)
+				root.Define(name, rebound)
+				bindCapabilityContracts(rebound, adapterContracts, exec.capabilityContracts)
 			}
 		}
 	}
