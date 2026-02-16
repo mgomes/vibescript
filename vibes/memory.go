@@ -81,6 +81,7 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 		total += estimatedStringHeaderBytes + len(name)
 	}
 	total += estimatedMapBaseBytes + len(exec.capabilityContracts)*estimatedMapEntryBytes
+	total += estimatedMapBaseBytes + len(exec.capabilityContractScopes)*estimatedMapEntryBytes
 	total += estimatedMapBaseBytes + len(exec.capabilityContractsByName)*estimatedMapEntryBytes
 	for name := range exec.capabilityContractsByName {
 		total += estimatedStringHeaderBytes + len(name)

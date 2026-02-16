@@ -55,6 +55,7 @@ type Execution struct {
 	moduleLoadStack           []string
 	moduleStack               []moduleContext
 	capabilityContracts       map[*Builtin]CapabilityMethodContract
+	capabilityContractScopes  map[*Builtin]map[string]CapabilityMethodContract
 	capabilityContractsByName map[string]CapabilityMethodContract
 	receiverStack             []Value
 	envStack                  []*Env
@@ -624,13 +625,14 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 				return NewNil(), exec.wrapError(err, pos)
 			}
 		}
-		if len(exec.capabilityContractsByName) > 0 {
+		scopeContracts := exec.capabilityContractScopes[builtin]
+		if len(scopeContracts) > 0 {
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.
-			bindCapabilityContracts(result, exec.capabilityContractsByName, exec.capabilityContracts)
+			bindCapabilityContracts(result, scopeContracts, exec.capabilityContracts, exec.capabilityContractScopes)
 			if receiver.Kind() != KindNil {
-				bindCapabilityContracts(receiver, exec.capabilityContractsByName, exec.capabilityContracts)
+				bindCapabilityContracts(receiver, scopeContracts, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 		}
 		return result, nil
@@ -3411,6 +3413,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		moduleLoadStack:           make([]string, 0, 8),
 		moduleStack:               make([]moduleContext, 0, 8),
 		capabilityContracts:       make(map[*Builtin]CapabilityMethodContract),
+		capabilityContractScopes:  make(map[*Builtin]map[string]CapabilityMethodContract),
 		capabilityContractsByName: make(map[string]CapabilityMethodContract),
 		receiverStack:             make([]Value, 0, 8),
 		envStack:                  make([]*Env, 0, 8),
@@ -3424,6 +3427,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 			if adapter == nil {
 				continue
 			}
+			adapterContracts := map[string]CapabilityMethodContract{}
 			if provider, ok := adapter.(CapabilityContractProvider); ok {
 				for methodName, contract := range provider.CapabilityContracts() {
 					name := strings.TrimSpace(methodName)
@@ -3434,6 +3438,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 						return NewNil(), fmt.Errorf("duplicate capability contract for %s", name)
 					}
 					exec.capabilityContractsByName[name] = contract
+					adapterContracts[name] = contract
 				}
 			}
 			globals, err := adapter.Bind(binding)
@@ -3443,7 +3448,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 			for name, val := range globals {
 				rebound := rebinder.rebindValue(val)
 				root.Define(name, rebound)
-				bindCapabilityContracts(rebound, exec.capabilityContractsByName, exec.capabilityContracts)
+				bindCapabilityContracts(rebound, adapterContracts, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 		}
 	}

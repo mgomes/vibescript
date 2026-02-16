@@ -213,6 +213,49 @@ func (c receiverMutationContractCapability) CapabilityContracts() map[string]Cap
 	}
 }
 
+type scopedContractCapability struct{}
+
+func (scopedContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"foo": NewObject(map[string]Value{
+			"call": NewBuiltin("foo.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				return NewString("provider"), nil
+			}),
+		}),
+	}, nil
+}
+
+func (scopedContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"foo.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("foo.call provider expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
+type legacyFooCapability struct {
+	invokeCount *int
+}
+
+func (c legacyFooCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"foo": NewObject(map[string]Value{
+			"call": NewBuiltin("foo.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				*c.invokeCount = *c.invokeCount + 1
+				if len(args) != 1 || args[0].Kind() != KindString {
+					return NewNil(), fmt.Errorf("legacy foo.call expects string")
+				}
+				return NewString("legacy"), nil
+			}),
+		}),
+	}, nil
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -419,5 +462,32 @@ end`)
 	}
 	if invocations != 0 {
 		t.Fatalf("mutated receiver capability should not execute when contract fails")
+	}
+}
+
+func TestCapabilityContractsAreScopedPerAdapter(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  foo.call("ok")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	invocations := 0
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			scopedContractCapability{},
+			legacyFooCapability{invokeCount: &invocations},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if invocations != 1 {
+		t.Fatalf("expected legacy capability call once, got %d", invocations)
+	}
+	if result.Kind() != KindString || result.String() != "legacy" {
+		t.Fatalf("unexpected result: %#v", result)
 	}
 }

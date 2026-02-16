@@ -29,12 +29,17 @@ func validateCapabilityDataOnlyValue(label string, val Value) error {
 	return nil
 }
 
-func bindCapabilityContracts(val Value, contractsByName map[string]CapabilityMethodContract, target map[*Builtin]CapabilityMethodContract) {
+func bindCapabilityContracts(
+	val Value,
+	contractsByName map[string]CapabilityMethodContract,
+	target map[*Builtin]CapabilityMethodContract,
+	scopes map[*Builtin]map[string]CapabilityMethodContract,
+) {
 	if len(contractsByName) == 0 {
 		return
 	}
 	scanner := newCapabilityContractScanner()
-	scanner.bindContracts(val, contractsByName, target)
+	scanner.bindContracts(val, contractsByName, target, scopes)
 }
 
 func (s *capabilityContractScanner) containsCallable(val Value) bool {
@@ -76,12 +81,22 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 	}
 }
 
-func (s *capabilityContractScanner) bindContracts(val Value, contractsByName map[string]CapabilityMethodContract, target map[*Builtin]CapabilityMethodContract) {
+func (s *capabilityContractScanner) bindContracts(
+	val Value,
+	contractsByName map[string]CapabilityMethodContract,
+	target map[*Builtin]CapabilityMethodContract,
+	scopes map[*Builtin]map[string]CapabilityMethodContract,
+) {
 	switch val.Kind() {
 	case KindBuiltin:
 		builtin := val.Builtin()
+		if _, seen := scopes[builtin]; !seen {
+			scopes[builtin] = contractsByName
+		}
 		if contract, ok := contractsByName[builtin.Name]; ok {
-			target[builtin] = contract
+			if _, seen := target[builtin]; !seen {
+				target[builtin] = contract
+			}
 		}
 	case KindArray:
 		values := val.Array()
@@ -95,7 +110,7 @@ func (s *capabilityContractScanner) bindContracts(val Value, contractsByName map
 		}
 		s.seenArrays[id] = struct{}{}
 		for _, item := range values {
-			s.bindContracts(item, contractsByName, target)
+			s.bindContracts(item, contractsByName, target, scopes)
 		}
 	case KindHash, KindObject:
 		entries := val.Hash()
@@ -105,7 +120,7 @@ func (s *capabilityContractScanner) bindContracts(val Value, contractsByName map
 		}
 		s.seenMaps[ptr] = struct{}{}
 		for _, item := range entries {
-			s.bindContracts(item, contractsByName, target)
+			s.bindContracts(item, contractsByName, target, scopes)
 		}
 	case KindClass:
 		classDef := val.Class()
@@ -117,7 +132,7 @@ func (s *capabilityContractScanner) bindContracts(val Value, contractsByName map
 		}
 		s.seenClasses[classDef] = struct{}{}
 		for _, item := range classDef.ClassVars {
-			s.bindContracts(item, contractsByName, target)
+			s.bindContracts(item, contractsByName, target, scopes)
 		}
 	case KindInstance:
 		instance := val.Instance()
@@ -129,10 +144,10 @@ func (s *capabilityContractScanner) bindContracts(val Value, contractsByName map
 		}
 		s.seenInstances[instance] = struct{}{}
 		for _, item := range instance.Ivars {
-			s.bindContracts(item, contractsByName, target)
+			s.bindContracts(item, contractsByName, target, scopes)
 		}
 		if instance.Class != nil {
-			s.bindContracts(NewClass(instance.Class), contractsByName, target)
+			s.bindContracts(NewClass(instance.Class), contractsByName, target, scopes)
 		}
 	}
 }
