@@ -350,6 +350,40 @@ func (c importingContractCapability) CapabilityContracts() map[string]Capability
 	}
 }
 
+type argMutationContractCapability struct {
+	invokeCount *int
+}
+
+func (c argMutationContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"install": NewBuiltin("cap.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
+					return NewNil(), fmt.Errorf("cap.install expects target hash")
+				}
+				args[0].Hash()["call"] = NewBuiltin("cap.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*c.invokeCount = *c.invokeCount + 1
+					return NewString("ok"), nil
+				})
+				return NewString("installed"), nil
+			}),
+		}),
+	}, nil
+}
+
+func (c argMutationContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"cap.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("cap.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -639,5 +673,33 @@ end`)
 	}
 	if result.Kind() != KindString || result.String() != "legacy-foreign" {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestCapabilityContractsBindAfterArgumentMutation(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  target = {}
+  cap.install(target)
+  target.call("bad")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	invocations := 0
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			argMutationContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected argument-mutation contract validation error")
+	}
+	if got := err.Error(); !strings.Contains(got, "cap.call expects int") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+	if invocations != 0 {
+		t.Fatalf("argument mutation capability should not execute when contract fails")
 	}
 }

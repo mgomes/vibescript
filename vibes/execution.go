@@ -644,6 +644,14 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 			for _, root := range scope.roots {
 				bindCapabilityContracts(root, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
+			// Methods can also publish builtins by mutating positional or keyword
+			// argument objects supplied by script code.
+			for _, arg := range args {
+				bindCapabilityContracts(arg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			}
+			for _, kwarg := range kwargs {
+				bindCapabilityContracts(kwarg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			}
 		}
 		return result, nil
 	default:
