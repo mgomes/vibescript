@@ -41,24 +41,25 @@ type CallOptions struct {
 }
 
 type Execution struct {
-	engine              *Engine
-	script              *Script
-	ctx                 context.Context
-	quota               int
-	memoryQuota         int
-	recursionCap        int
-	steps               int
-	callStack           []callFrame
-	root                *Env
-	modules             map[string]Value
-	moduleLoading       map[string]bool
-	moduleLoadStack     []string
-	moduleStack         []moduleContext
-	capabilityContracts map[*Builtin]CapabilityMethodContract
-	receiverStack       []Value
-	envStack            []*Env
-	strictEffects       bool
-	allowRequire        bool
+	engine                    *Engine
+	script                    *Script
+	ctx                       context.Context
+	quota                     int
+	memoryQuota               int
+	recursionCap              int
+	steps                     int
+	callStack                 []callFrame
+	root                      *Env
+	modules                   map[string]Value
+	moduleLoading             map[string]bool
+	moduleLoadStack           []string
+	moduleStack               []moduleContext
+	capabilityContracts       map[*Builtin]CapabilityMethodContract
+	capabilityContractsByName map[string]CapabilityMethodContract
+	receiverStack             []Value
+	envStack                  []*Env
+	strictEffects             bool
+	allowRequire              bool
 }
 
 type moduleContext struct {
@@ -621,6 +622,15 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 		if hasContract && contract.ValidateReturn != nil {
 			if err := contract.ValidateReturn(result); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
+		if len(exec.capabilityContractsByName) > 0 {
+			// Capability methods can lazily publish additional builtins at runtime
+			// (e.g. through factory return values or receiver mutation). Re-scan
+			// these values so future calls still enforce declared contracts.
+			bindCapabilityContracts(result, exec.capabilityContractsByName, exec.capabilityContracts)
+			if receiver.Kind() != KindNil {
+				bindCapabilityContracts(receiver, exec.capabilityContractsByName, exec.capabilityContracts)
 			}
 		}
 		return result, nil
@@ -3388,44 +3398,42 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	rebinder := newCallFunctionRebinder(s, root, callClasses)
 
 	exec := &Execution{
-		engine:              s.engine,
-		script:              s,
-		ctx:                 ctx,
-		quota:               s.engine.config.StepQuota,
-		memoryQuota:         s.engine.config.MemoryQuotaBytes,
-		recursionCap:        s.engine.config.RecursionLimit,
-		callStack:           make([]callFrame, 0, 8),
-		root:                root,
-		modules:             make(map[string]Value),
-		moduleLoading:       make(map[string]bool),
-		moduleLoadStack:     make([]string, 0, 8),
-		moduleStack:         make([]moduleContext, 0, 8),
-		capabilityContracts: make(map[*Builtin]CapabilityMethodContract),
-		receiverStack:       make([]Value, 0, 8),
-		envStack:            make([]*Env, 0, 8),
-		strictEffects:       s.engine.config.StrictEffects,
-		allowRequire:        opts.AllowRequire,
+		engine:                    s.engine,
+		script:                    s,
+		ctx:                       ctx,
+		quota:                     s.engine.config.StepQuota,
+		memoryQuota:               s.engine.config.MemoryQuotaBytes,
+		recursionCap:              s.engine.config.RecursionLimit,
+		callStack:                 make([]callFrame, 0, 8),
+		root:                      root,
+		modules:                   make(map[string]Value),
+		moduleLoading:             make(map[string]bool),
+		moduleLoadStack:           make([]string, 0, 8),
+		moduleStack:               make([]moduleContext, 0, 8),
+		capabilityContracts:       make(map[*Builtin]CapabilityMethodContract),
+		capabilityContractsByName: make(map[string]CapabilityMethodContract),
+		receiverStack:             make([]Value, 0, 8),
+		envStack:                  make([]*Env, 0, 8),
+		strictEffects:             s.engine.config.StrictEffects,
+		allowRequire:              opts.AllowRequire,
 	}
 
 	if len(opts.Capabilities) > 0 {
 		binding := CapabilityBinding{Context: exec.ctx, Engine: s.engine}
-		knownCapabilityContracts := make(map[string]CapabilityMethodContract)
 		for _, adapter := range opts.Capabilities {
 			if adapter == nil {
 				continue
 			}
-			adapterContracts := map[string]CapabilityMethodContract{}
 			if provider, ok := adapter.(CapabilityContractProvider); ok {
 				for methodName, contract := range provider.CapabilityContracts() {
 					name := strings.TrimSpace(methodName)
 					if name == "" {
 						return NewNil(), fmt.Errorf("capability contract method name must be non-empty")
 					}
-					if _, exists := knownCapabilityContracts[name]; exists {
+					if _, exists := exec.capabilityContractsByName[name]; exists {
 						return NewNil(), fmt.Errorf("duplicate capability contract for %s", name)
 					}
-					knownCapabilityContracts[name] = contract
-					adapterContracts[name] = contract
+					exec.capabilityContractsByName[name] = contract
 				}
 			}
 			globals, err := adapter.Bind(binding)
@@ -3435,7 +3443,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 			for name, val := range globals {
 				rebound := rebinder.rebindValue(val)
 				root.Define(name, rebound)
-				bindCapabilityContracts(rebound, adapterContracts, exec.capabilityContracts)
+				bindCapabilityContracts(rebound, exec.capabilityContractsByName, exec.capabilityContracts)
 			}
 		}
 	}

@@ -150,6 +150,69 @@ func (c classVarContractCapability) CapabilityContracts() map[string]CapabilityM
 	}
 }
 
+type lazyFactoryContractCapability struct {
+	invokeCount *int
+}
+
+func (c lazyFactoryContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"factory": NewObject(map[string]Value{
+			"make": NewBuiltin("factory.make", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				return NewObject(map[string]Value{
+					"call": NewBuiltin("factory.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+						*c.invokeCount = *c.invokeCount + 1
+						return NewString("ok"), nil
+					}),
+				}), nil
+			}),
+		}),
+	}, nil
+}
+
+func (c lazyFactoryContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"factory.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("factory.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
+type receiverMutationContractCapability struct {
+	invokeCount *int
+}
+
+func (c receiverMutationContractCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"mut": NewObject(map[string]Value{
+			"install": NewBuiltin("mut.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				receiver.Hash()["call"] = NewBuiltin("mut.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+					*c.invokeCount = *c.invokeCount + 1
+					return NewString("ok"), nil
+				})
+				return NewString("installed"), nil
+			}),
+		}),
+	}, nil
+}
+
+func (c receiverMutationContractCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"mut.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("mut.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -302,5 +365,59 @@ end`)
 	}
 	if invocations != 0 {
 		t.Fatalf("class capability should not execute when contract fails")
+	}
+}
+
+func TestCapabilityContractsBindForFactoryReturnedBuiltins(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  worker = factory.make()
+  worker.call("bad")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	invocations := 0
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			lazyFactoryContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected factory-returned contract validation error")
+	}
+	if got := err.Error(); !strings.Contains(got, "factory.call expects int") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+	if invocations != 0 {
+		t.Fatalf("factory capability should not execute when contract fails")
+	}
+}
+
+func TestCapabilityContractsBindAfterReceiverMutation(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  mut.install()
+  mut.call("bad")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	invocations := 0
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			receiverMutationContractCapability{invokeCount: &invocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected receiver-mutation contract validation error")
+	}
+	if got := err.Error(); !strings.Contains(got, "mut.call expects int") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+	if invocations != 0 {
+		t.Fatalf("mutated receiver capability should not execute when contract fails")
 	}
 }
