@@ -430,6 +430,28 @@ func (argPassThroughContractCapability) CapabilityContracts() map[string]Capabil
 	}
 }
 
+type hashMergeContractLeakProbeCapability struct{}
+
+func (hashMergeContractLeakProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"touch": NewBuiltin("cap.touch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				return NewString("ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+func (hashMergeContractLeakProbeCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"hash.merge": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				return fmt.Errorf("hash.merge contract should not bind to foreign builtin")
+			},
+		},
+	}
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -776,5 +798,32 @@ end`)
 	}
 	if result.Kind() != KindString || result.String() != "foreign-ok" {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestCapabilityContractsDoNotHijackReceiverStoredForeignBuiltins(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  cap.foreign = { a: 1 }.merge
+  cap.touch()
+  cap.foreign({ b: 2 })
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			hashMergeContractLeakProbeCapability{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", result.Kind())
+	}
+	if got, ok := result.Hash()["b"]; !ok || got.Kind() != KindInt || got.Int() != 2 {
+		t.Fatalf("unexpected merge result: %#v", result.Hash())
 	}
 }
