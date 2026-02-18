@@ -43,7 +43,7 @@ func NewJobQueueCapability(name string, queue JobQueue) (CapabilityAdapter, erro
 	if name == "" {
 		return nil, fmt.Errorf("vibes: job queue capability name must be non-empty")
 	}
-	if queue == nil {
+	if isNilCapabilityImplementation(queue) {
 		return nil, fmt.Errorf("vibes: job queue capability requires a non-nil implementation")
 	}
 

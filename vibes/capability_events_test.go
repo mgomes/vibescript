@@ -123,4 +123,9 @@ func TestNewEventsCapabilityRejectsInvalidArguments(t *testing.T) {
 	if _, err := NewEventsCapability("events", publisher); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
 		t.Fatalf("expected nil publisher error, got %v", err)
 	}
+
+	var typedNil *eventsCapabilityStub
+	if _, err := NewEventsCapability("events", typedNil); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
+		t.Fatalf("expected typed nil publisher error, got %v", err)
+	}
 }

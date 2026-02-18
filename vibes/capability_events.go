@@ -22,7 +22,7 @@ func NewEventsCapability(name string, publisher EventPublisher) (CapabilityAdapt
 	if name == "" {
 		return nil, fmt.Errorf("vibes: events capability name must be non-empty")
 	}
-	if publisher == nil {
+	if isNilCapabilityImplementation(publisher) {
 		return nil, fmt.Errorf("vibes: events capability requires a non-nil implementation")
 	}
 	return &eventsCapability{name: name, publisher: publisher}, nil

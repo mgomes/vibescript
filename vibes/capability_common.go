@@ -2,6 +2,7 @@ package vibes
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -32,4 +33,17 @@ func validateCapabilityKwargsDataOnly(method string, kwargs map[string]Value) er
 		}
 	}
 	return nil
+}
+
+func isNilCapabilityImplementation(impl any) bool {
+	if impl == nil {
+		return true
+	}
+	val := reflect.ValueOf(impl)
+	switch val.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return val.IsNil()
+	default:
+		return false
+	}
 }

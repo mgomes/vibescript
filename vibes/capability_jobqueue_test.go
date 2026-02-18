@@ -328,4 +328,13 @@ func TestNewJobQueueCapabilityRejectsNilQueue(t *testing.T) {
 	if got := err.Error(); !strings.Contains(got, "requires a non-nil implementation") {
 		t.Fatalf("unexpected error: %s", got)
 	}
+
+	var typedNil *jobQueueStub
+	_, err = NewJobQueueCapability("jobs", typedNil)
+	if err == nil {
+		t.Fatalf("expected typed nil queue to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "requires a non-nil implementation") {
+		t.Fatalf("unexpected typed nil error: %s", got)
+	}
 }

@@ -53,7 +53,7 @@ func NewDBCapability(name string, db Database) (CapabilityAdapter, error) {
 	if name == "" {
 		return nil, fmt.Errorf("vibes: database capability name must be non-empty")
 	}
-	if db == nil {
+	if isNilCapabilityImplementation(db) {
 		return nil, fmt.Errorf("vibes: database capability requires a non-nil implementation")
 	}
 	return &dbCapability{name: name, db: db}, nil

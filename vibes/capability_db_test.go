@@ -280,4 +280,9 @@ func TestNewDBCapabilityRejectsInvalidArguments(t *testing.T) {
 	if _, err := NewDBCapability("db", db); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
 		t.Fatalf("expected nil db error, got %v", err)
 	}
+
+	var typedNil *dbCapabilityStub
+	if _, err := NewDBCapability("db", typedNil); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
+		t.Fatalf("expected typed nil db error, got %v", err)
+	}
 }
