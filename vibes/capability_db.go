@@ -176,6 +176,9 @@ func (c *dbCapability) callEach(exec *Execution, receiver Value, args []Value, k
 		return NewNil(), err
 	}
 	for idx, row := range rows {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
 		if err := validateCapabilityDataOnlyValue(fmt.Sprintf("%s.each row %d", c.name, idx), row); err != nil {
 			return NewNil(), err
 		}

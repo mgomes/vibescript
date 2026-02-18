@@ -99,6 +99,35 @@ end`)
 	}
 }
 
+func TestCapabilityFoundationsEachNoopBlockRespectsStepQuota(t *testing.T) {
+	rows := make([]Value, 120)
+	for i := range rows {
+		rows[i] = NewHash(map[string]Value{"amount": NewInt(1)})
+	}
+	db := &dbCapabilityStub{eachRows: rows}
+
+	engine := MustNewEngine(Config{StepQuota: 20})
+	script, err := engine.Compile(`def run()
+  db.each("ScoreEntry") do |row|
+  end
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			MustNewDBCapability("db", db),
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected step quota error")
+	}
+	if got := err.Error(); !strings.Contains(got, "step quota exceeded") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
 func TestCapabilityFoundationsEachRespectsRecursionLimit(t *testing.T) {
 	db := &dbCapabilityStub{
 		eachRows: []Value{
