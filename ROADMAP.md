@@ -1,0 +1,368 @@
+# VibeScript Roadmap and Implementation Checklist
+
+This is the working implementation TODO for upcoming VibeScript releases.
+
+How to use this file:
+
+- Keep release scope realistic and bias toward shipping.
+- Move unfinished items forward instead of silently dropping them.
+- Link each checklist item to an issue/PR once created.
+- Mark items complete only after tests/docs are updated.
+
+Release status legend:
+
+- `[ ]` not started
+- `[~]` in progress (replace manually while working)
+- `[x]` complete
+
+---
+
+## Historical Completed Releases
+
+These releases are already shipped and tagged.
+
+### v0.1.0
+
+- [x] Added GitHub Actions CI workflow.
+- [x] Added stack traces to runtime errors.
+- [x] Expanded baseline stdlib coverage.
+- [x] Added optional-parens syntax support.
+- [x] Added initial CLI support.
+- [x] Fixed package/versioning setup for release tagging.
+
+### v0.2.0
+
+- [x] Added GoReleaser-based release automation.
+- [x] Added recursion depth limit enforcement.
+- [x] Added recursion limit test coverage.
+
+### v0.2.1
+
+- [x] Pinned GoReleaser version for stable release builds.
+
+### v0.2.2
+
+- [x] Adjusted GoReleaser configuration.
+
+### v0.3.0
+
+- [x] Added `Number#times`.
+- [x] Added `Duration` class modeled after ActiveSupport-style duration semantics.
+
+### v0.4.0
+
+- [x] Added duration arithmetic support.
+- [x] Improved optional-parens behavior for zero-arg methods.
+- [x] Implemented `Time` class.
+
+### v0.4.1
+
+- [x] Renamed `Time#strftime` to `Time#format` for Go layout alignment.
+- [x] Added Duration and Time documentation.
+
+### v0.5.0
+
+- [x] Added first pass of gradual typing.
+- [x] Added support for classes.
+- [x] Added block arguments in method definitions.
+- [x] Added numeric literal underscore separators.
+- [x] Expanded complex tests/examples coverage.
+
+### v0.5.1
+
+- [x] Expanded test suite breadth.
+- [x] Landed performance optimizations and refactors.
+- [x] Exported `CallBlock()` for embedders.
+
+### v0.6.0
+
+- [x] Added runtime memory quota enforcement.
+- [x] Enforced strict effects for globals and `require`.
+- [x] Isolated `Script.Call` runtime state per invocation.
+- [x] Replaced panicking constructors with error-returning APIs.
+- [x] Increased CLI/REPL test coverage and added execution benchmarks.
+
+### v0.7.0
+
+- [x] Shipped multi-phase string helper expansion.
+- [x] Added regex/byte helper coverage and bang-method parity improvements.
+
+### v0.8.0
+
+- [x] Expanded Hash built-ins and hash manipulation support.
+- [x] Refreshed hash docs and examples.
+
+### v0.9.0
+
+- [x] Expanded Array helper surface and enumerable workflows.
+
+### v0.10.0
+
+- [x] Made Time and numeric APIs coherent with documented behavior.
+
+### v0.11.0
+
+- [x] Improved parse/runtime error feedback and debugging quality.
+
+### v0.12.0
+
+- [x] Hardened `require` behavior for safer module composition.
+- [x] Improved private helper/module boundary behavior.
+- [x] Improved circular dependency diagnostics for modules.
+
+### v0.13.0
+
+- [x] Enforced capability contracts at runtime boundaries.
+- [x] Added contract validation paths for capability args and returns.
+- [x] Improved capability isolation and contract binding behavior.
+
+---
+
+## v0.14.0 - Capability Foundations
+
+Goal: make host integrations first-class and safe enough for production workflows.
+
+### Capability Adapters
+
+- [ ] Add first-party `db` capability adapter interface and implementation.
+- [ ] Add first-party `events` capability adapter interface and implementation.
+- [ ] Add first-party `ctx` capability adapter for request/user/tenant metadata.
+- [ ] Define naming conventions for adapter method exposure (`cap.method`).
+- [ ] Ensure all adapters support context propagation and cancellation.
+
+### Contracts and Safety
+
+- [ ] Add capability method contracts for all new adapter methods.
+- [ ] Validate args/kwargs/returns for `db` adapter methods.
+- [ ] Validate args/kwargs/returns for `events` adapter methods.
+- [ ] Add explicit data-only boundary checks for all capability returns.
+- [ ] Add contract error messages with actionable call-site context.
+
+### Script Surface
+
+- [ ] Promote `examples/background/` scenarios to fully supported behavior.
+- [ ] Convert `examples/future/iteration.vibe` from stretch to supported.
+- [ ] Add docs for common capability patterns (query + transform + enqueue).
+- [ ] Add docs for capability failure handling patterns.
+
+### Testing and Hardening
+
+- [ ] Add unit tests for each capability adapter method.
+- [ ] Add integration tests for mixed capability calls in one script.
+- [ ] Add negative tests for type violations and invalid payload shapes.
+- [ ] Add quota/recursion interaction tests with capability-heavy scripts.
+- [ ] Add benchmarks for capability call overhead.
+
+### v0.14.0 Definition of Done
+
+- [ ] All new capabilities documented in `docs/integration.md`.
+- [ ] Background/future examples run in CI examples suite.
+- [ ] No contract bypasses in capability call boundaries.
+
+---
+
+## v0.15.0 - Type System v2
+
+Goal: make types expressive enough for real workflows while keeping runtime checks predictable.
+
+### Type Features
+
+- [ ] Add parametric container types: `array<T>`, `hash<K, V>`.
+- [ ] Add union types beyond nil: `A | B`.
+- [ ] Add typed object/hash shape syntax for common payload contracts.
+- [ ] Add typed block signatures where appropriate.
+- [ ] Define type display formatting for readable runtime errors.
+
+### Type Semantics
+
+- [ ] Specify variance/invariance rules for container assignments.
+- [ ] Specify nullability interactions with unions (`T?` vs `T | nil`).
+- [ ] Define coercion policy (no coercion vs explicit coercion helpers).
+- [ ] Decide strictness for unknown keyword args under typed signatures.
+
+### Runtime and Parser
+
+- [ ] Extend parser grammar for generic and union type expressions.
+- [ ] Extend type resolver and internal type representation.
+- [ ] Add runtime validators for composite/union types.
+- [ ] Add contract interop so capability contracts can reuse type validators.
+
+### Testing and Docs
+
+- [ ] Add parser tests for all new type syntax forms.
+- [ ] Add runtime tests for nested composite type checks.
+- [ ] Add regression tests for existing `any` and nullable behavior.
+- [ ] Expand `docs/typing.md` with migration examples.
+
+### v0.15.0 Definition of Done
+
+- [ ] Existing scripts without annotations remain compatible.
+- [ ] Type errors include parameter name, expected type, and actual type.
+- [ ] Capability contract validation can use the same type primitives.
+
+---
+
+## v0.16.0 - Control Flow and Error Handling
+
+Goal: improve language ergonomics for complex script logic and recovery behavior.
+
+### Control Flow
+
+- [ ] Add `while` loops.
+- [ ] Add `until` loops.
+- [ ] Add loop control keywords: `break` and `next`.
+- [ ] Add `case/when` expression support (if approved).
+- [ ] Define behavior for nested loop control and block boundaries.
+
+### Error Handling Constructs
+
+- [ ] Add structured error handling syntax (`begin/rescue/ensure` or equivalent).
+- [ ] Add typed error matching where feasible.
+- [ ] Define re-raise semantics and stack preservation.
+- [ ] Ensure runtime errors preserve original position and call frames.
+
+### Runtime Behavior
+
+- [ ] Ensure new control flow integrates with step quota accounting.
+- [ ] Ensure new constructs integrate with recursion/memory quotas.
+- [ ] Validate behavior inside class methods, blocks, and capability callbacks.
+
+### Testing and Docs
+
+- [ ] Add parser/runtime tests for each new control flow construct.
+- [ ] Add nested control flow tests for edge cases.
+- [ ] Add docs updates in `docs/control-flow.md` and `docs/errors.md`.
+- [ ] Add examples under `examples/control_flow/` for each new feature.
+
+### v0.16.0 Definition of Done
+
+- [ ] No regressions in existing `if/for/range` behavior.
+- [ ] Structured error handling works with assertions and runtime errors.
+- [ ] Coverage includes nested/edge control-flow paths.
+
+---
+
+## v0.17.0 - Modules and Package Ergonomics
+
+Goal: make multi-file script projects easier to compose and maintain.
+
+### Module System
+
+- [ ] Add explicit export controls (beyond underscore naming).
+- [ ] Add import aliasing for module objects.
+- [ ] Define and enforce module namespace conflict behavior.
+- [ ] Improve cycle error diagnostics with concise chain rendering.
+- [ ] Add module cache invalidation policy for long-running hosts.
+
+### Security and Isolation
+
+- [ ] Tighten module root boundary checks and path normalization.
+- [ ] Add test coverage for path traversal attempts.
+- [ ] Add explicit policy hooks for module allow/deny lists.
+
+### Developer UX
+
+- [ ] Add docs for module project layout best practices.
+- [ ] Add examples for reusable helper modules and namespaced imports.
+- [ ] Add migration guide for existing `require` users.
+
+### v0.17.0 Definition of Done
+
+- [ ] Module APIs are explicit and predictable.
+- [ ] Error output for cycle/import failures is actionable.
+- [ ] Security invariants around module paths are fully tested.
+
+---
+
+## v0.18.0 - Standard Library Expansion
+
+Goal: reduce host-side boilerplate for common scripting tasks.
+
+### Core Utilities
+
+- [ ] Add JSON parse/stringify built-ins.
+- [ ] Add regex matching/replacement helpers.
+- [ ] Add UUID/random identifier utilities with deterministic test hooks.
+- [ ] Add richer date/time parsing helpers for common layouts.
+- [ ] Add safer numeric conversions and clamp/round helpers.
+
+### Collections and Strings
+
+- [ ] Expand hash helpers for nested transforms and key remapping.
+- [ ] Expand array helpers for chunking/windowing and stable group operations.
+- [ ] Add string helpers for common normalization and templating tasks.
+
+### Compatibility and Safety
+
+- [ ] Define deterministic behavior for locale-sensitive operations.
+- [ ] Add quotas/guards around potentially expensive operations.
+- [ ] Ensure new stdlib functions are capability-safe where required.
+
+### Testing and Docs
+
+- [ ] Add comprehensive docs pages and examples for each new family.
+- [ ] Add negative tests for malformed JSON/regex patterns.
+- [ ] Add benchmark coverage for hot stdlib paths.
+
+### v0.18.0 Definition of Done
+
+- [ ] New stdlib is documented and example-backed.
+- [ ] Runtime behavior is deterministic across supported OSes.
+- [ ] Security/performance guardrails are validated by tests.
+
+---
+
+## v0.19.0 - Tooling, Quality, and Performance
+
+Goal: improve day-to-day developer productivity and interpreter robustness.
+
+### Tooling
+
+- [ ] Add canonical formatter command and CI check.
+- [ ] Add language server protocol (LSP) prototype (hover, completion, diagnostics).
+- [ ] Add static analysis command for script-level linting.
+- [ ] Improve REPL inspection commands (globals/functions/types).
+
+### Runtime Quality
+
+- [ ] Profile evaluator hotspots and optimize dispatch paths.
+- [ ] Reduce allocations in common value transformations.
+- [ ] Improve error rendering for deeply nested call stacks.
+- [ ] Add fuzz tests for parser and runtime edge cases.
+
+### CI and Release Engineering
+
+- [ ] Add smoke tests for docs examples to CI.
+- [ ] Add release checklist automation for changelog/version bumps.
+- [ ] Add compatibility matrix notes for supported Go versions.
+
+### v0.19.0 Definition of Done
+
+- [ ] Tooling commands are documented and stable.
+- [ ] Performance regressions are tracked with benchmarks.
+- [ ] CI includes example and fuzz coverage gates.
+
+---
+
+## v1.0.0 - Stabilization and Public API Commitment
+
+Goal: lock the language and embedding API for long-term support.
+
+### Stabilization
+
+- [ ] Freeze core syntax and document compatibility guarantees.
+- [ ] Freeze public Go embedding APIs or publish deprecation policy.
+- [ ] Publish semantic versioning and compatibility contract.
+- [ ] Complete migration notes for all pre-1.0 breaking changes.
+
+### Documentation and Adoption
+
+- [ ] Publish complete language reference.
+- [ ] Publish host integration cookbook with production patterns.
+- [ ] Provide starter templates for common embedding scenarios.
+
+### Final Readiness
+
+- [ ] Zero known P0/P1 correctness bugs.
+- [ ] CI green across supported platforms and Go versions.
+- [ ] Release process rehearsed and repeatable.
