@@ -96,6 +96,32 @@ end`)
 	}
 }
 
+func TestContextCapabilityRejectsCyclicValue(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  ctx
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	resolver := func(context.Context) (Value, error) {
+		cyclic := map[string]Value{}
+		cyclic["self"] = NewHash(cyclic)
+		return NewHash(cyclic), nil
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewContextCapability("ctx", resolver)},
+	})
+	if err == nil {
+		t.Fatalf("expected cyclic value error")
+	}
+	if got := err.Error(); !strings.Contains(got, "ctx capability value must not contain cyclic references") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
 func TestNewContextCapabilityRejectsInvalidArguments(t *testing.T) {
 	resolver := func(context.Context) (Value, error) { return NewObject(map[string]Value{}), nil }
 
