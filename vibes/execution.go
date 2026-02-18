@@ -41,23 +41,31 @@ type CallOptions struct {
 }
 
 type Execution struct {
-	engine          *Engine
-	script          *Script
-	ctx             context.Context
-	quota           int
-	memoryQuota     int
-	recursionCap    int
-	steps           int
-	callStack       []callFrame
-	root            *Env
-	modules         map[string]Value
-	moduleLoading   map[string]bool
-	moduleLoadStack []string
-	moduleStack     []moduleContext
-	receiverStack   []Value
-	envStack        []*Env
-	strictEffects   bool
-	allowRequire    bool
+	engine                    *Engine
+	script                    *Script
+	ctx                       context.Context
+	quota                     int
+	memoryQuota               int
+	recursionCap              int
+	steps                     int
+	callStack                 []callFrame
+	root                      *Env
+	modules                   map[string]Value
+	moduleLoading             map[string]bool
+	moduleLoadStack           []string
+	moduleStack               []moduleContext
+	capabilityContracts       map[*Builtin]CapabilityMethodContract
+	capabilityContractScopes  map[*Builtin]*capabilityContractScope
+	capabilityContractsByName map[string]CapabilityMethodContract
+	receiverStack             []Value
+	envStack                  []*Env
+	strictEffects             bool
+	allowRequire              bool
+}
+
+type capabilityContractScope struct {
+	contracts map[string]CapabilityMethodContract
+	roots     []Value
 }
 
 type moduleContext struct {
@@ -605,9 +613,61 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 	case KindFunction:
 		return exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
 	case KindBuiltin:
-		result, err := callee.Builtin().Fn(exec, receiver, args, kwargs, block)
+		builtin := callee.Builtin()
+		scope := exec.capabilityContractScopes[builtin]
+		var preCallKnownBuiltins map[*Builtin]struct{}
+		if scope != nil && len(scope.contracts) > 0 {
+			preCallKnownBuiltins = make(map[*Builtin]struct{})
+			if receiver.Kind() != KindNil {
+				collectCapabilityBuiltins(receiver, preCallKnownBuiltins)
+			}
+			for _, root := range scope.roots {
+				collectCapabilityBuiltins(root, preCallKnownBuiltins)
+			}
+			for _, arg := range args {
+				collectCapabilityBuiltins(arg, preCallKnownBuiltins)
+			}
+			for _, kwarg := range kwargs {
+				collectCapabilityBuiltins(kwarg, preCallKnownBuiltins)
+			}
+		}
+		contract, hasContract := exec.capabilityContracts[builtin]
+		if hasContract && contract.ValidateArgs != nil {
+			if err := contract.ValidateArgs(args, kwargs, block); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
+
+		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		if err != nil {
 			return NewNil(), exec.wrapError(err, pos)
+		}
+		if hasContract && contract.ValidateReturn != nil {
+			if err := contract.ValidateReturn(result); err != nil {
+				return NewNil(), exec.wrapError(err, pos)
+			}
+		}
+		if scope != nil && len(scope.contracts) > 0 {
+			// Capability methods can lazily publish additional builtins at runtime
+			// (e.g. through factory return values or receiver mutation). Re-scan
+			// these values so future calls still enforce declared contracts.
+			bindCapabilityContractsExcluding(result, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+			if receiver.Kind() != KindNil {
+				bindCapabilityContractsExcluding(receiver, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+			}
+			// Methods can mutate sibling scope roots via captured references; refresh
+			// all adapter roots so newly exposed builtins also get bound.
+			for _, root := range scope.roots {
+				bindCapabilityContractsExcluding(root, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+			}
+			// Methods can also publish builtins by mutating positional or keyword
+			// argument objects supplied by script code.
+			for _, arg := range args {
+				bindCapabilityContractsExcluding(arg, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+			}
+			for _, kwarg := range kwargs {
+				bindCapabilityContractsExcluding(kwarg, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+			}
 		}
 		return result, nil
 	default:
@@ -3374,22 +3434,25 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	rebinder := newCallFunctionRebinder(s, root, callClasses)
 
 	exec := &Execution{
-		engine:          s.engine,
-		script:          s,
-		ctx:             ctx,
-		quota:           s.engine.config.StepQuota,
-		memoryQuota:     s.engine.config.MemoryQuotaBytes,
-		recursionCap:    s.engine.config.RecursionLimit,
-		callStack:       make([]callFrame, 0, 8),
-		root:            root,
-		modules:         make(map[string]Value),
-		moduleLoading:   make(map[string]bool),
-		moduleLoadStack: make([]string, 0, 8),
-		moduleStack:     make([]moduleContext, 0, 8),
-		receiverStack:   make([]Value, 0, 8),
-		envStack:        make([]*Env, 0, 8),
-		strictEffects:   s.engine.config.StrictEffects,
-		allowRequire:    opts.AllowRequire,
+		engine:                    s.engine,
+		script:                    s,
+		ctx:                       ctx,
+		quota:                     s.engine.config.StepQuota,
+		memoryQuota:               s.engine.config.MemoryQuotaBytes,
+		recursionCap:              s.engine.config.RecursionLimit,
+		callStack:                 make([]callFrame, 0, 8),
+		root:                      root,
+		modules:                   make(map[string]Value),
+		moduleLoading:             make(map[string]bool),
+		moduleLoadStack:           make([]string, 0, 8),
+		moduleStack:               make([]moduleContext, 0, 8),
+		capabilityContracts:       make(map[*Builtin]CapabilityMethodContract),
+		capabilityContractScopes:  make(map[*Builtin]*capabilityContractScope),
+		capabilityContractsByName: make(map[string]CapabilityMethodContract),
+		receiverStack:             make([]Value, 0, 8),
+		envStack:                  make([]*Env, 0, 8),
+		strictEffects:             s.engine.config.StrictEffects,
+		allowRequire:              opts.AllowRequire,
 	}
 
 	if len(opts.Capabilities) > 0 {
@@ -3398,12 +3461,33 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 			if adapter == nil {
 				continue
 			}
+			scope := &capabilityContractScope{
+				contracts: map[string]CapabilityMethodContract{},
+			}
+			if provider, ok := adapter.(CapabilityContractProvider); ok {
+				for methodName, contract := range provider.CapabilityContracts() {
+					name := strings.TrimSpace(methodName)
+					if name == "" {
+						return NewNil(), fmt.Errorf("capability contract method name must be non-empty")
+					}
+					if _, exists := exec.capabilityContractsByName[name]; exists {
+						return NewNil(), fmt.Errorf("duplicate capability contract for %s", name)
+					}
+					exec.capabilityContractsByName[name] = contract
+					scope.contracts[name] = contract
+				}
+			}
 			globals, err := adapter.Bind(binding)
 			if err != nil {
 				return NewNil(), err
 			}
 			for name, val := range globals {
-				root.Define(name, rebinder.rebindValue(val))
+				rebound := rebinder.rebindValue(val)
+				root.Define(name, rebound)
+				if len(scope.contracts) > 0 {
+					scope.roots = append(scope.roots, rebound)
+				}
+				bindCapabilityContracts(rebound, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 		}
 	}
