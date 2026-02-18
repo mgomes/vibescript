@@ -107,6 +107,63 @@ Adapters receive the invocation `context.Context`, making it straightforward to
 apply deadlines, tracing spans, or other host-specific policy without hand
 wiring builtins.
 
+### First-Party Capability Helpers
+
+VibeScript ships capability helpers for common integration points:
+
+- `NewDBCapability(name, db)` for `find/query/update/sum/each`.
+- `NewEventsCapability(name, publisher)` for `publish`.
+- `NewJobQueueCapability(name, queue)` for `enqueue/retry`.
+- `NewContextCapability(name, resolver)` for data-only request metadata.
+
+```go
+dbCap := vibes.MustNewDBCapability("db", myDB)
+eventsCap := vibes.MustNewEventsCapability("events", myEvents)
+jobsCap := vibes.MustNewJobQueueCapability("jobs", myJobs)
+ctxCap := vibes.MustNewContextCapability("ctx", func(ctx context.Context) (vibes.Value, error) {
+    userID, _ := ctx.Value("user_id").(string)
+    role, _ := ctx.Value("role").(string)
+    return vibes.NewObject(map[string]vibes.Value{
+        "user": vibes.NewObject(map[string]vibes.Value{
+            "id":   vibes.NewString(userID),
+            "role": vibes.NewString(role),
+        }),
+    }), nil
+})
+
+result, err := script.Call(ctx, "run", args, vibes.CallOptions{
+    Capabilities: []vibes.CapabilityAdapter{dbCap, eventsCap, jobsCap, ctxCap},
+})
+```
+
+Capability method names follow `capability.method` naming (`db.find`,
+`events.publish`, `jobs.enqueue`) so contracts and runtime errors are explicit
+about the boundary being enforced.
+
+### Capability Workflow Pattern
+
+A practical pattern is `query -> transform -> publish/enqueue` in one script
+call:
+
+1. Query records through `db.each` or `db.query`.
+2. Build a data-only payload in script code.
+3. Publish notifications via `events.publish` or queue work via `jobs.enqueue`.
+
+This keeps business logic in VibeScript while side effects stay behind typed
+host adapters.
+
+### Capability Failure Handling
+
+Capability adapters enforce data-only boundaries and argument shapes at runtime:
+
+- If script args/kwargs are invalid, the call fails before host code executes.
+- If host returns callable values, return contracts reject them.
+- Adapter errors are surfaced as runtime errors with call-site stack frames.
+
+In host code, handle script call errors the same way as other runtime failures
+and log adapter-specific method names from the error text (for example
+`db.update attributes must be data-only`).
+
 ### Handling Dynamic Types
 
 Every call returns a `vibes.Value`. Inspect the `Kind()` before consuming it:
