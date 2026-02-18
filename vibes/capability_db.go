@@ -119,7 +119,11 @@ func (c *dbCapability) callFind(exec *Execution, receiver Value, args []Value, k
 		ID:         deepCloneValue(args[1]),
 		Options:    cloneCapabilityKwargs(kwargs),
 	}
-	return c.db.Find(exec.ctx, req)
+	result, err := c.db.Find(exec.ctx, req)
+	if err != nil {
+		return NewNil(), err
+	}
+	return c.cloneMethodResult(c.name+".find", result)
 }
 
 func (c *dbCapability) callQuery(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -131,7 +135,11 @@ func (c *dbCapability) callQuery(exec *Execution, receiver Value, args []Value, 
 		Collection: collection,
 		Options:    cloneCapabilityKwargs(kwargs),
 	}
-	return c.db.Query(exec.ctx, req)
+	result, err := c.db.Query(exec.ctx, req)
+	if err != nil {
+		return NewNil(), err
+	}
+	return c.cloneMethodResult(c.name+".query", result)
 }
 
 func (c *dbCapability) callUpdate(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -145,7 +153,11 @@ func (c *dbCapability) callUpdate(exec *Execution, receiver Value, args []Value,
 		Attributes: cloneHash(args[2].Hash()),
 		Options:    cloneCapabilityKwargs(kwargs),
 	}
-	return c.db.Update(exec.ctx, req)
+	result, err := c.db.Update(exec.ctx, req)
+	if err != nil {
+		return NewNil(), err
+	}
+	return c.cloneMethodResult(c.name+".update", result)
 }
 
 func (c *dbCapability) callSum(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -159,7 +171,11 @@ func (c *dbCapability) callSum(exec *Execution, receiver Value, args []Value, kw
 		Field:      field,
 		Options:    cloneCapabilityKwargs(kwargs),
 	}
-	return c.db.Sum(exec.ctx, req)
+	result, err := c.db.Sum(exec.ctx, req)
+	if err != nil {
+		return NewNil(), err
+	}
+	return c.cloneMethodResult(c.name+".sum", result)
 }
 
 func (c *dbCapability) callEach(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -279,4 +295,11 @@ func (c *dbCapability) validateMethodReturn(method string) func(result Value) er
 	return func(result Value) error {
 		return validateCapabilityDataOnlyValue(method+" return value", result)
 	}
+}
+
+func (c *dbCapability) cloneMethodResult(method string, result Value) (Value, error) {
+	if err := validateCapabilityDataOnlyValue(method+" return value", result); err != nil {
+		return NewNil(), err
+	}
+	return deepCloneValue(result), nil
 }

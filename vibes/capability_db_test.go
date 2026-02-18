@@ -269,6 +269,50 @@ end`)
 	}
 }
 
+func TestDBCapabilityReturnsAreClonedFromHostState(t *testing.T) {
+	stub := &dbCapabilityStub{
+		findResult: NewHash(map[string]Value{
+			"profile": NewHash(map[string]Value{
+				"name": NewString("host"),
+			}),
+		}),
+		queryResult: NewArray([]Value{
+			NewHash(map[string]Value{
+				"profile": NewHash(map[string]Value{
+					"name": NewString("row-host"),
+				}),
+			}),
+		}),
+	}
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  player = db.find("Player", "p-1")
+  player[:profile][:name] = "script"
+
+  rows = db.query("Player")
+  rows[0][:profile][:name] = "row-script"
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
+	}); err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+
+	findName := stub.findResult.Hash()["profile"].Hash()["name"]
+	if findName.Kind() != KindString || findName.String() != "host" {
+		t.Fatalf("find host result mutated by script: %#v", stub.findResult)
+	}
+
+	queryName := stub.queryResult.Array()[0].Hash()["profile"].Hash()["name"]
+	if queryName.Kind() != KindString || queryName.String() != "row-host" {
+		t.Fatalf("query host result mutated by script: %#v", stub.queryResult)
+	}
+}
+
 func TestNewDBCapabilityRejectsInvalidArguments(t *testing.T) {
 	stub := &dbCapabilityStub{}
 
