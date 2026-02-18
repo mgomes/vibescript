@@ -3,6 +3,7 @@ package vibes
 import (
 	"fmt"
 	"reflect"
+	"slices"
 )
 
 type sliceIdentity struct {
@@ -47,12 +48,7 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 			return false
 		}
 		s.seenArrays[id] = struct{}{}
-		for _, item := range values {
-			if s.containsCallable(item) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(values, s.containsCallable)
 	case KindHash, KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()

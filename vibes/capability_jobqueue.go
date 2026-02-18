@@ -3,6 +3,7 @@ package vibes
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 )
 
@@ -343,8 +344,6 @@ func mergeHash(dest map[string]Value, src map[string]Value) map[string]Value {
 	if dest == nil {
 		dest = make(map[string]Value, len(src))
 	}
-	for k, v := range src {
-		dest[k] = v
-	}
+	maps.Copy(dest, src)
 	return dest
 }
