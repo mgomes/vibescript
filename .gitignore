@@ -12,6 +12,7 @@ bin/
 vendor/
 coverage.out
 .gocache/
+.cache/
 .cache/go-build/
 
 # Editors and OS
