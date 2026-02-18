@@ -578,10 +578,7 @@ func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
 
 	argA := newMemoryEstimator().value(NewString(payloadA))
 	argB := newMemoryEstimator().value(NewString(payloadB))
-	single := argA
-	if argB > single {
-		single = argB
-	}
+	single := max(argB, argA)
 	combined := argA + argB
 	quota := base + single + (combined-single)/2
 	if quota <= base+single {
@@ -891,10 +888,7 @@ func TestAggregateYieldArgumentsAreChecked(t *testing.T) {
 
 	argA := newMemoryEstimator().value(NewString(payloadA))
 	argB := newMemoryEstimator().value(NewString(payloadB))
-	single := argA
-	if argB > single {
-		single = argB
-	}
+	single := max(argB, argA)
 	combined := argA + argB
 	quota := base + single + (combined-single)/2
 	if quota <= base+single {

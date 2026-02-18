@@ -497,7 +497,7 @@ end`)
 	const goroutines = 10
 	results := make(chan error, goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 			if err != nil {
@@ -512,7 +512,7 @@ end`)
 		}()
 	}
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		if err := <-results; err != nil {
 			t.Fatalf("concurrent call failed: %v", err)
 		}

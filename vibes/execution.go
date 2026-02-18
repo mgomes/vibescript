@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1508,12 +1510,8 @@ func hashMember(obj Value, property string) (Value, error) {
 			base := receiver.Hash()
 			addition := args[0].Hash()
 			out := make(map[string]Value, len(base)+len(addition))
-			for k, v := range base {
-				out[k] = v
-			}
-			for k, v := range addition {
-				out[k] = v
-			}
+			maps.Copy(out, base)
+			maps.Copy(out, addition)
 			return NewHash(out), nil
 		}), nil
 	case "slice":
@@ -2835,13 +2833,7 @@ func arrayMember(array Value, property string) (Value, error) {
 			arr := receiver.Array()
 			unique := make([]Value, 0, len(arr))
 			for _, item := range arr {
-				found := false
-				for _, existing := range unique {
-					if item.Equal(existing) {
-						found = true
-						break
-					}
-				}
+				found := slices.ContainsFunc(unique, item.Equal)
 				if !found {
 					unique = append(unique, item)
 				}
@@ -3798,13 +3790,7 @@ func subtractValues(left, right Value) (Value, error) {
 		rArr := right.Array()
 		out := make([]Value, 0, len(lArr))
 		for _, item := range lArr {
-			found := false
-			for _, remove := range rArr {
-				if item.Equal(remove) {
-					found = true
-					break
-				}
-			}
+			found := slices.ContainsFunc(rArr, item.Equal)
 			if !found {
 				out = append(out, item)
 			}

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -60,12 +61,7 @@ func isExplicitRelativeModulePath(name string) bool {
 
 func containsPathTraversal(cleanPath string) bool {
 	sep := string(filepath.Separator)
-	for _, part := range strings.Split(cleanPath, sep) {
-		if part == ".." {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Split(cleanPath, sep), "..")
 }
 
 func moduleCacheKey(root, relative string) string {

@@ -3,6 +3,7 @@ package vibes
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -285,9 +286,7 @@ func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
 // Builtins returns a copy of the registered builtin map.
 func (e *Engine) Builtins() map[string]Value {
 	out := make(map[string]Value, len(e.builtins))
-	for k, v := range e.builtins {
-		out[k] = v
-	}
+	maps.Copy(out, e.builtins)
 	return out
 }
 

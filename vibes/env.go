@@ -1,5 +1,7 @@
 package vibes
 
+import "maps"
+
 type Env struct {
 	parent *Env
 	values map[string]Value
@@ -39,8 +41,6 @@ func (e *Env) Assign(name string, val Value) bool {
 
 func (e *Env) CloneShallow() *Env {
 	clone := newEnv(e.parent)
-	for k, v := range e.values {
-		clone.values[k] = v
-	}
+	maps.Copy(clone.values, e.values)
 	return clone
 }

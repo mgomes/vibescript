@@ -58,7 +58,6 @@ func TestComplexExamplesCompile(t *testing.T) {
 		"tests/complex/chudnovsky.vibe",
 	}
 	for _, path := range files {
-		path := path
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			full := filepath.Join("..", path)
 			data, err := os.ReadFile(full)
@@ -262,7 +261,6 @@ func TestComplexExamplesRun(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			script := compileComplexExample(t, tc.file)
 			opts := CallOptions{}
@@ -421,7 +419,6 @@ func TestProgramFixtures(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			script := compileTestProgram(t, tc.file)
 			result, err := script.Call(context.Background(), tc.function, nil, CallOptions{})
@@ -492,7 +489,7 @@ func TestComplexExamplesStress(t *testing.T) {
 	}
 
 	piScript := compileComplexExampleWithConfig(t, "chudnovsky.vibe", highQuota)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		val, err := piScript.Call(context.Background(), "pi_approx_precise", []Value{intVal(5_000)}, CallOptions{})
 		if err != nil {
 			t.Fatalf("pi_approx_precise run %d failed: %v", i, err)
@@ -529,7 +526,6 @@ func TestAllVibeFilesCompileAndRun(t *testing.T) {
 
 	engine := MustNewEngine(Config{StepQuota: 5_000_000})
 	for _, path := range files {
-		path := path
 		rel, _ := filepath.Rel(testsDir, path)
 		t.Run(rel, func(t *testing.T) {
 			source, err := os.ReadFile(path)
@@ -731,7 +727,7 @@ end
 		t.Fatalf("compile: %v", err)
 	}
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 		if err != nil {
 			t.Fatalf("run %d: %v", i, err)
@@ -762,7 +758,7 @@ end
 		t.Fatalf("compile: %v", err)
 	}
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 		if err != nil {
 			t.Fatalf("run %d: %v", i, err)

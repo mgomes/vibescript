@@ -2,6 +2,7 @@ package vibes
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1812,7 +1813,6 @@ func TestExamples(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.skip {
 				t.Skip("example is pending implementation")
@@ -1895,17 +1895,13 @@ func arrayVal(elems ...Value) Value {
 
 func hashVal(entries map[string]Value) Value {
 	cp := make(map[string]Value, len(entries))
-	for k, v := range entries {
-		cp[k] = v
-	}
+	maps.Copy(cp, entries)
 	return NewHash(cp)
 }
 
 func objectVal(entries map[string]Value) Value {
 	cp := make(map[string]Value, len(entries))
-	for k, v := range entries {
-		cp[k] = v
-	}
+	maps.Copy(cp, entries)
 	return NewObject(cp)
 }
 
@@ -2009,9 +2005,7 @@ func cloneKwargs(in map[string]Value) map[string]Value {
 		return nil
 	}
 	out := make(map[string]Value, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
