@@ -138,3 +138,18 @@ end`
 		t.Fatalf("expected nullable string type, got %#v", second.Type)
 	}
 }
+
+func TestParserTypeSyntaxRejectsGenericArgsOnScalars(t *testing.T) {
+	source := `def run(value: int<string>)
+  value
+end`
+
+	p := newParser(source)
+	_, errs := p.ParseProgram()
+	if len(errs) == 0 {
+		t.Fatalf("expected parse errors")
+	}
+	if got := errs[0].Error(); !strings.Contains(got, "type int does not accept type arguments") {
+		t.Fatalf("unexpected parse error: %s", got)
+	}
+}

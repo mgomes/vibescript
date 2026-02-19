@@ -1110,6 +1110,10 @@ func (p *parser) parseTypeAtom() *TypeExpr {
 	ty.Nullable = nullable
 
 	if p.peekToken.Type == tokenLT {
+		if ty.Kind != TypeArray && ty.Kind != TypeHash {
+			p.addParseError(p.curToken.Pos, fmt.Sprintf("type %s does not accept type arguments", ty.Name))
+			return nil
+		}
 		p.nextToken()
 		p.nextToken()
 		typeArgs := []*TypeExpr{}
