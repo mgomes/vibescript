@@ -124,40 +124,40 @@ Goal: make host integrations first-class and safe enough for production workflow
 
 ### Capability Adapters
 
-- [ ] Add first-party `db` capability adapter interface and implementation.
-- [ ] Add first-party `events` capability adapter interface and implementation.
-- [ ] Add first-party `ctx` capability adapter for request/user/tenant metadata.
-- [ ] Define naming conventions for adapter method exposure (`cap.method`).
-- [ ] Ensure all adapters support context propagation and cancellation.
+- [x] Add first-party `db` capability adapter interface and implementation.
+- [x] Add first-party `events` capability adapter interface and implementation.
+- [x] Add first-party `ctx` capability adapter for request/user/tenant metadata.
+- [x] Define naming conventions for adapter method exposure (`cap.method`).
+- [x] Ensure all adapters support context propagation and cancellation.
 
 ### Contracts and Safety
 
-- [ ] Add capability method contracts for all new adapter methods.
-- [ ] Validate args/kwargs/returns for `db` adapter methods.
-- [ ] Validate args/kwargs/returns for `events` adapter methods.
-- [ ] Add explicit data-only boundary checks for all capability returns.
-- [ ] Add contract error messages with actionable call-site context.
+- [x] Add capability method contracts for all new adapter methods.
+- [x] Validate args/kwargs/returns for `db` adapter methods.
+- [x] Validate args/kwargs/returns for `events` adapter methods.
+- [x] Add explicit data-only boundary checks for all capability returns.
+- [x] Add contract error messages with actionable call-site context.
 
 ### Script Surface
 
-- [ ] Promote `examples/background/` scenarios to fully supported behavior.
-- [ ] Convert `examples/future/iteration.vibe` from stretch to supported.
-- [ ] Add docs for common capability patterns (query + transform + enqueue).
-- [ ] Add docs for capability failure handling patterns.
+- [x] Promote `examples/background/` scenarios to fully supported behavior.
+- [x] Convert `examples/future/iteration.vibe` from stretch to supported.
+- [x] Add docs for common capability patterns (query + transform + enqueue).
+- [x] Add docs for capability failure handling patterns.
 
 ### Testing and Hardening
 
-- [ ] Add unit tests for each capability adapter method.
-- [ ] Add integration tests for mixed capability calls in one script.
-- [ ] Add negative tests for type violations and invalid payload shapes.
-- [ ] Add quota/recursion interaction tests with capability-heavy scripts.
-- [ ] Add benchmarks for capability call overhead.
+- [x] Add unit tests for each capability adapter method.
+- [x] Add integration tests for mixed capability calls in one script.
+- [x] Add negative tests for type violations and invalid payload shapes.
+- [x] Add quota/recursion interaction tests with capability-heavy scripts.
+- [x] Add benchmarks for capability call overhead.
 
 ### v0.14.0 Definition of Done
 
-- [ ] All new capabilities documented in `docs/integration.md`.
-- [ ] Background/future examples run in CI examples suite.
-- [ ] No contract bypasses in capability call boundaries.
+- [x] All new capabilities documented in `docs/integration.md`.
+- [x] Background/future examples run in CI examples suite.
+- [x] No contract bypasses in capability call boundaries.
 
 ---
 

@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+type benchmarkDBCapability struct{}
+
+func (benchmarkDBCapability) Find(ctx context.Context, req DBFindRequest) (Value, error) {
+	return NewHash(map[string]Value{"score": NewInt(1)}), nil
+}
+
+func (benchmarkDBCapability) Query(ctx context.Context, req DBQueryRequest) (Value, error) {
+	return NewArray(nil), nil
+}
+
+func (benchmarkDBCapability) Update(ctx context.Context, req DBUpdateRequest) (Value, error) {
+	return NewNil(), nil
+}
+
+func (benchmarkDBCapability) Sum(ctx context.Context, req DBSumRequest) (Value, error) {
+	return NewInt(0), nil
+}
+
+func (benchmarkDBCapability) Each(ctx context.Context, req DBEachRequest) ([]Value, error) {
+	return nil, nil
+}
+
 func benchmarkEngine() *Engine {
 	return MustNewEngine(Config{
 		StepQuota:        2_000_000,
@@ -101,6 +123,36 @@ end`)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkExecutionCapabilityFindLoop(b *testing.B) {
+	engine := benchmarkEngine()
+	script, err := engine.Compile(`def run(n)
+  total = 0
+  for i in 1..n
+    row = db.find("Player", "player-1")
+    total = total + row[:score]
+  end
+  total
+end`)
+	if err != nil {
+		b.Fatalf("compile failed: %v", err)
+	}
+
+	args := []Value{NewInt(300)}
+	opts := CallOptions{
+		Capabilities: []CapabilityAdapter{
+			MustNewDBCapability("db", benchmarkDBCapability{}),
+		},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := script.Call(context.Background(), "run", args, opts); err != nil {
 			b.Fatalf("call failed: %v", err)
 		}
 	}

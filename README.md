@@ -142,12 +142,9 @@ Representative `.vibe` programs are grouped under `examples/`:
 - `examples/durations/` – duration literals, math (add/sub/mul/div/mod), and time offsets.
 - `examples/time/` – Time creation, formatting (Go layouts), and duration/time math.
 - `examples/errors/` – patterns that rely on `assert` for validation.
-- `examples/capabilities/` – samples that touch `ctx`, `db`, and other declared capabilities.
-- `examples/background/` – jobs and events workflows that land as host integrations mature.
+- `examples/capabilities/` – samples that touch `ctx`, `db`, `events`, and other declared capabilities.
+- `examples/background/` – jobs and events workflows using typed capability adapters.
 - `examples/policies/` – authorization helpers consulted by manifest policies.
-- `examples/future/` – stretch goals for planned language features.
-
-Some scripts (notably in `examples/background/` and `examples/future/`) reference features that are still under development; they remain in the tree to track interpreter progress.
 
 ## Documentation
 

@@ -38,6 +38,49 @@ func newDBMock(t *testing.T) *dbMock {
 	return &dbMock{t: t}
 }
 
+func (m *dbMock) Find(ctx context.Context, req DBFindRequest) (Value, error) {
+	args := []Value{NewString(req.Collection), req.ID}
+	m.findCalls = append(m.findCalls, callRecord{cloneValues(args), cloneKwargs(req.Options)})
+	if m.findFunc == nil {
+		m.t.Fatalf("unexpected call to db.find")
+	}
+	return m.findFunc(args, req.Options)
+}
+
+func (m *dbMock) Query(ctx context.Context, req DBQueryRequest) (Value, error) {
+	args := []Value{NewString(req.Collection)}
+	m.queryCalls = append(m.queryCalls, callRecord{cloneValues(args), cloneKwargs(req.Options)})
+	if m.queryFunc == nil {
+		m.t.Fatalf("unexpected call to db.query")
+	}
+	return m.queryFunc(args, req.Options)
+}
+
+func (m *dbMock) Update(ctx context.Context, req DBUpdateRequest) (Value, error) {
+	args := []Value{NewString(req.Collection), req.ID, NewHash(cloneHash(req.Attributes))}
+	m.updateCalls = append(m.updateCalls, callRecord{cloneValues(args), cloneKwargs(req.Options)})
+	if m.updateFunc == nil {
+		m.t.Fatalf("unexpected call to db.update")
+	}
+	return m.updateFunc(args, req.Options)
+}
+
+func (m *dbMock) Sum(ctx context.Context, req DBSumRequest) (Value, error) {
+	args := []Value{NewString(req.Collection), NewSymbol(req.Field)}
+	m.sumCalls = append(m.sumCalls, callRecord{cloneValues(args), cloneKwargs(req.Options)})
+	if m.sumFunc == nil {
+		m.t.Fatalf("unexpected call to db.sum")
+	}
+	return m.sumFunc(args, req.Options)
+}
+
+func (m *dbMock) Each(ctx context.Context, req DBEachRequest) ([]Value, error) {
+	args := []Value{NewString(req.Collection)}
+	m.eachCalls = append(m.eachCalls, callRecord{cloneValues(args), cloneKwargs(req.Options)})
+	rows := cloneValues(m.eachRows)
+	return rows, nil
+}
+
 func (m *dbMock) Value() Value {
 	return NewObject(map[string]Value{
 		"find": makeBuiltin("db.find", func(args []Value, kwargs map[string]Value) (Value, error) {
@@ -96,6 +139,28 @@ func newJobsMock() *jobsMock {
 	return &jobsMock{}
 }
 
+func (m *jobsMock) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
+	args := []Value{
+		NewString(job.Name),
+		NewHash(cloneHash(job.Payload)),
+	}
+	kwargs := cloneKwargs(job.Options.Kwargs)
+	if kwargs == nil {
+		kwargs = map[string]Value{}
+	}
+	if job.Options.Delay != nil {
+		kwargs["delay"] = NewDuration(Duration{seconds: int64(job.Options.Delay.Seconds())})
+	}
+	if job.Options.Key != nil {
+		kwargs["key"] = NewString(*job.Options.Key)
+	}
+	m.enqueueCalls = append(m.enqueueCalls, callRecord{cloneValues(args), cloneKwargs(kwargs)})
+	if m.enqueueFunc != nil {
+		return m.enqueueFunc(args, kwargs)
+	}
+	return NewNil(), nil
+}
+
 func (m *jobsMock) Value() Value {
 	return NewObject(map[string]Value{
 		"enqueue": makeBuiltin("jobs.enqueue", func(args []Value, kwargs map[string]Value) (Value, error) {
@@ -117,6 +182,18 @@ func newEventsMock() *eventsMock {
 	return &eventsMock{}
 }
 
+func (m *eventsMock) Publish(ctx context.Context, req EventPublishRequest) (Value, error) {
+	args := []Value{
+		NewString(req.Topic),
+		NewHash(cloneHash(req.Payload)),
+	}
+	m.publishCalls = append(m.publishCalls, callRecord{cloneValues(args), cloneKwargs(req.Options)})
+	if m.publishFunc != nil {
+		return m.publishFunc(args, req.Options)
+	}
+	return NewNil(), nil
+}
+
 func (m *eventsMock) Value() Value {
 	return NewObject(map[string]Value{
 		"publish": makeBuiltin("events.publish", func(args []Value, kwargs map[string]Value) (Value, error) {
@@ -130,10 +207,11 @@ func (m *eventsMock) Value() Value {
 }
 
 type exampleEnv struct {
-	Globals map[string]Value
-	db      *dbMock
-	jobs    *jobsMock
-	events  *eventsMock
+	Globals      map[string]Value
+	Capabilities []CapabilityAdapter
+	db           *dbMock
+	jobs         *jobsMock
+	events       *eventsMock
 }
 
 type exampleCase struct {
@@ -1378,8 +1456,8 @@ func TestExamples(t *testing.T) {
 			function: "current_user_id",
 			prepare: func(t *testing.T) *exampleEnv {
 				return &exampleEnv{
-					Globals: map[string]Value{
-						"ctx": ctxValue("player-1", "coach"),
+					Capabilities: []CapabilityAdapter{
+						ctxCapability("player-1", "coach"),
 					},
 				}
 			},
@@ -1391,8 +1469,8 @@ func TestExamples(t *testing.T) {
 			function: "coach?",
 			prepare: func(t *testing.T) *exampleEnv {
 				return &exampleEnv{
-					Globals: map[string]Value{
-						"ctx": ctxValue("player-2", "coach"),
+					Capabilities: []CapabilityAdapter{
+						ctxCapability("player-2", "coach"),
 					},
 				}
 			},
@@ -1404,8 +1482,8 @@ func TestExamples(t *testing.T) {
 			function: "coach?",
 			prepare: func(t *testing.T) *exampleEnv {
 				return &exampleEnv{
-					Globals: map[string]Value{
-						"ctx": ctxValue("player-3", "member"),
+					Capabilities: []CapabilityAdapter{
+						ctxCapability("player-3", "member"),
 					},
 				}
 			},
@@ -1417,8 +1495,8 @@ func TestExamples(t *testing.T) {
 			function: "can_edit_player?",
 			prepare: func(t *testing.T) *exampleEnv {
 				return &exampleEnv{
-					Globals: map[string]Value{
-						"ctx": ctxValue("user-9", "coach"),
+					Capabilities: []CapabilityAdapter{
+						ctxCapability("user-9", "coach"),
 					},
 				}
 			},
@@ -1436,8 +1514,8 @@ func TestExamples(t *testing.T) {
 			function: "can_edit_player?",
 			prepare: func(t *testing.T) *exampleEnv {
 				return &exampleEnv{
-					Globals: map[string]Value{
-						"ctx": ctxValue("owner-1", "member"),
+					Capabilities: []CapabilityAdapter{
+						ctxCapability("owner-1", "member"),
 					},
 				}
 			},
@@ -1455,8 +1533,8 @@ func TestExamples(t *testing.T) {
 			function: "can_edit_player?",
 			prepare: func(t *testing.T) *exampleEnv {
 				return &exampleEnv{
-					Globals: map[string]Value{
-						"ctx": ctxValue("viewer-1", "member"),
+					Capabilities: []CapabilityAdapter{
+						ctxCapability("viewer-1", "member"),
 					},
 				}
 			},
@@ -1512,8 +1590,8 @@ func TestExamples(t *testing.T) {
 					}), nil
 				}
 				return &exampleEnv{
-					Globals: map[string]Value{"db": db.Value()},
-					db:      db,
+					Capabilities: []CapabilityAdapter{MustNewDBCapability("db", db)},
+					db:           db,
 				}
 			},
 			args: []Value{strVal("player-7")},
@@ -1543,8 +1621,8 @@ func TestExamples(t *testing.T) {
 					), nil
 				}
 				return &exampleEnv{
-					Globals: map[string]Value{"db": db.Value()},
-					db:      db,
+					Capabilities: []CapabilityAdapter{MustNewDBCapability("db", db)},
+					db:           db,
 				}
 			},
 			args: []Value{intVal(3)},
@@ -1569,8 +1647,8 @@ func TestExamples(t *testing.T) {
 					return NewNil(), nil
 				}
 				return &exampleEnv{
-					Globals: map[string]Value{"db": db.Value()},
-					db:      db,
+					Capabilities: []CapabilityAdapter{MustNewDBCapability("db", db)},
+					db:           db,
 				}
 			},
 			args: []Value{
@@ -1607,8 +1685,8 @@ func TestExamples(t *testing.T) {
 			prepare: func(t *testing.T) *exampleEnv {
 				jobs := newJobsMock()
 				return &exampleEnv{
-					Globals: map[string]Value{"jobs": jobs.Value()},
-					jobs:    jobs,
+					Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", jobs)},
+					jobs:         jobs,
 				}
 			},
 			args: []Value{strVal("player-12")},
@@ -1650,8 +1728,8 @@ func TestExamples(t *testing.T) {
 			prepare: func(t *testing.T) *exampleEnv {
 				events := newEventsMock()
 				return &exampleEnv{
-					Globals: map[string]Value{"events": events.Value()},
-					events:  events,
+					Capabilities: []CapabilityAdapter{MustNewEventsCapability("events", events)},
+					events:       events,
 				}
 			},
 			args: []Value{
@@ -1696,9 +1774,9 @@ func TestExamples(t *testing.T) {
 					return NewNil(), nil
 				}
 				return &exampleEnv{
-					Globals: map[string]Value{
-						"db":     db.Value(),
-						"events": events.Value(),
+					Capabilities: []CapabilityAdapter{
+						MustNewDBCapability("db", db),
+						MustNewEventsCapability("events", events),
 					},
 					db:     db,
 					events: events,
@@ -1734,8 +1812,8 @@ func TestExamples(t *testing.T) {
 			},
 		},
 		{
-			name:     "future/iteration_total_raised_for_player",
-			file:     "future/iteration.vibe",
+			name:     "capabilities/iteration_total_raised_for_player",
+			file:     "capabilities/iteration.vibe",
 			function: "total_raised_for_player",
 			prepare: func(t *testing.T) *exampleEnv {
 				db := newDBMock(t)
@@ -1745,8 +1823,8 @@ func TestExamples(t *testing.T) {
 					hashVal(map[string]Value{"amount": mustMoney("5.25 USD")}),
 				}
 				return &exampleEnv{
-					Globals: map[string]Value{"db": db.Value()},
-					db:      db,
+					Capabilities: []CapabilityAdapter{MustNewDBCapability("db", db)},
+					db:           db,
 				}
 			},
 			args: []Value{strVal("player-99")},
@@ -1831,6 +1909,9 @@ func TestExamples(t *testing.T) {
 			opts := CallOptions{}
 			if env.Globals != nil {
 				opts.Globals = env.Globals
+			}
+			if env.Capabilities != nil {
+				opts.Capabilities = env.Capabilities
 			}
 			result, err := script.Call(context.Background(), tc.function, tc.args, opts)
 			if tc.wantErr != "" {
@@ -1923,6 +2004,12 @@ func ctxValue(id, role string) Value {
 			"id":   strVal(id),
 			"role": strVal(role),
 		}),
+	})
+}
+
+func ctxCapability(id, role string) CapabilityAdapter {
+	return MustNewContextCapability("ctx", func(context.Context) (Value, error) {
+		return ctxValue(id, role), nil
 	})
 }
 

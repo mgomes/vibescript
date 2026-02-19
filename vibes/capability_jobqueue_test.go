@@ -15,6 +15,12 @@ type jobQueueStub struct {
 }
 
 type invalidReturnQueue struct{}
+type mutatingInputQueue struct{}
+
+type sharedReturnQueue struct {
+	enqueueResult Value
+	retryResult   Value
+}
 
 func (s *jobQueueStub) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
 	s.enqueueCalls = append(s.enqueueCalls, job)
@@ -34,6 +40,35 @@ func (invalidReturnQueue) Enqueue(ctx context.Context, job JobQueueJob) (Value, 
 			return NewString("ok"), nil
 		}),
 	}), nil
+}
+
+func (mutatingInputQueue) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
+	job.Payload["foo"] = NewString("host-payload")
+	meta, ok := job.Options.Kwargs["meta"]
+	if ok && (meta.Kind() == KindHash || meta.Kind() == KindObject) {
+		meta.Hash()["trace"] = NewString("host-meta")
+	}
+	return NewString("queued"), nil
+}
+
+func (mutatingInputQueue) Retry(ctx context.Context, req JobQueueRetryRequest) (Value, error) {
+	attempt, ok := req.Options["attempt"]
+	if ok && (attempt.Kind() == KindHash || attempt.Kind() == KindObject) {
+		attempt.Hash()["value"] = NewString("host-attempt")
+	}
+	kw, ok := req.Options["kw"]
+	if ok && (kw.Kind() == KindHash || kw.Kind() == KindObject) {
+		kw.Hash()["value"] = NewString("host-kw")
+	}
+	return NewBool(true), nil
+}
+
+func (s *sharedReturnQueue) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
+	return s.enqueueResult, nil
+}
+
+func (s *sharedReturnQueue) Retry(ctx context.Context, req JobQueueRetryRequest) (Value, error) {
+	return s.retryResult, nil
 }
 
 func TestJobQueueCapabilityEnqueue(t *testing.T) {
@@ -131,6 +166,102 @@ end`)
 	}
 	if v, ok := call.Options["priority"]; !ok || v.String() != "high" {
 		t.Fatalf("missing priority option: %+v", call.Options)
+	}
+}
+
+func TestJobQueueCapabilityEnqueueOptionsAreClonedFromScriptState(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  payload = { foo: "script-payload" }
+  meta = { trace: "script-meta" }
+  jobs.enqueue("demo", payload, meta: meta)
+  { payload: payload[:foo], trace: meta[:trace] }
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", mutatingInputQueue{})},
+	})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	hash := result.Hash()
+	if hash["payload"].Kind() != KindString || hash["payload"].String() != "script-payload" {
+		t.Fatalf("script payload was mutated by host: %#v", result)
+	}
+	if hash["trace"].Kind() != KindString || hash["trace"].String() != "script-meta" {
+		t.Fatalf("script kwargs value was mutated by host: %#v", result)
+	}
+}
+
+func TestJobQueueCapabilityRetryOptionsAreClonedFromScriptState(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  arg = { attempt: { value: "script-attempt" } }
+  kw = { value: "script-kw" }
+  jobs.retry("job-1", arg, kw: kw)
+  { attempt: arg[:attempt][:value], kw: kw[:value] }
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", mutatingInputQueue{})},
+	})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	hash := result.Hash()
+	if hash["attempt"].Kind() != KindString || hash["attempt"].String() != "script-attempt" {
+		t.Fatalf("script retry arg was mutated by host: %#v", result)
+	}
+	if hash["kw"].Kind() != KindString || hash["kw"].String() != "script-kw" {
+		t.Fatalf("script retry kwargs were mutated by host: %#v", result)
+	}
+}
+
+func TestJobQueueCapabilityReturnsAreClonedFromHostState(t *testing.T) {
+	stub := &sharedReturnQueue{
+		enqueueResult: NewHash(map[string]Value{
+			"meta": NewHash(map[string]Value{
+				"status": NewString("host-enqueue"),
+			}),
+		}),
+		retryResult: NewHash(map[string]Value{
+			"meta": NewHash(map[string]Value{
+				"status": NewString("host-retry"),
+			}),
+		}),
+	}
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  queued = jobs.enqueue("demo", { foo: "bar" })
+  queued[:meta][:status] = "script-enqueue"
+
+  retried = jobs.retry("job-1")
+  retried[:meta][:status] = "script-retry"
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewJobQueueCapability("jobs", stub)},
+	}); err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+
+	enqueueStatus := stub.enqueueResult.Hash()["meta"].Hash()["status"]
+	if enqueueStatus.Kind() != KindString || enqueueStatus.String() != "host-enqueue" {
+		t.Fatalf("enqueue host result mutated by script: %#v", stub.enqueueResult)
+	}
+
+	retryStatus := stub.retryResult.Hash()["meta"].Hash()["status"]
+	if retryStatus.Kind() != KindString || retryStatus.String() != "host-retry" {
+		t.Fatalf("retry host result mutated by script: %#v", stub.retryResult)
 	}
 }
 
@@ -327,5 +458,14 @@ func TestNewJobQueueCapabilityRejectsNilQueue(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "requires a non-nil implementation") {
 		t.Fatalf("unexpected error: %s", got)
+	}
+
+	var typedNil *jobQueueStub
+	_, err = NewJobQueueCapability("jobs", typedNil)
+	if err == nil {
+		t.Fatalf("expected typed nil queue to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "requires a non-nil implementation") {
+		t.Fatalf("unexpected typed nil error: %s", got)
 	}
 }
