@@ -2,6 +2,9 @@
 
 This repository uses GoReleaser for changelog generation and GitHub releases. The project ships as a Go module only—no binaries or archives are built.
 
+Versioning rules for deciding `MAJOR.MINOR.PATCH` are documented in
+`docs/versioning.md`.
+
 ## Prerequisites
 
 - GoReleaser installed locally.

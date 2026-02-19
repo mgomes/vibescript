@@ -168,6 +168,7 @@ Long-form guides live in `docs/`:
 - `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).
 - `docs/releasing.md` – GoReleaser workflow for changelog and GitHub release automation.
 - `docs/compatibility.md` – supported Go versions and CI coverage notes.
+- `docs/versioning.md` – semantic versioning policy and compatibility contract.
 - `ROADMAP.md` – versioned implementation checklist and release roadmap.
 
 ## Development
