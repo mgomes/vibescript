@@ -35,3 +35,4 @@ dives on specific topics.
   conversion, and common time parsing helpers.
 - `compatibility.md` – supported Go versions and CI coverage expectations.
 - `versioning.md` – semantic versioning policy and compatibility contract.
+- `deprecation_policy.md` – lifecycle policy for public Go embedding APIs.

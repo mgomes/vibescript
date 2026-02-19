@@ -1,7 +1,8 @@
 # Integrating VibeScript in Go
 
 The interpreter runs entirely in Go. Create an engine, compile scripts, and
-call functions like so:
+call functions like so. For API lifecycle guarantees, also see
+`docs/versioning.md` and `docs/deprecation_policy.md`.
 
 ```go
 package main

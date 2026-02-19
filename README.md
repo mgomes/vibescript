@@ -169,6 +169,7 @@ Long-form guides live in `docs/`:
 - `docs/releasing.md` – GoReleaser workflow for changelog and GitHub release automation.
 - `docs/compatibility.md` – supported Go versions and CI coverage notes.
 - `docs/versioning.md` – semantic versioning policy and compatibility contract.
+- `docs/deprecation_policy.md` – deprecation lifecycle for public Go embedding APIs.
 - `ROADMAP.md` – versioned implementation checklist and release roadmap.
 
 ## Development

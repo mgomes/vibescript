@@ -352,7 +352,7 @@ Goal: lock the language and embedding API for long-term support.
 ### Stabilization
 
 - [ ] Freeze core syntax and document compatibility guarantees.
-- [ ] Freeze public Go embedding APIs or publish deprecation policy.
+- [x] Freeze public Go embedding APIs or publish deprecation policy.
 - [x] Publish semantic versioning and compatibility contract.
 - [ ] Complete migration notes for all pre-1.0 breaking changes.
 
