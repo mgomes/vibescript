@@ -195,7 +195,7 @@ func (c *dbCapability) callEach(exec *Execution, receiver Value, args []Value, k
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
-		if err := validateCapabilityDataOnlyValue(fmt.Sprintf("%s.each row %d", c.name, idx), row); err != nil {
+		if err := validateCapabilityTypedValue(fmt.Sprintf("%s.each row %d", c.name, idx), row, capabilityTypeAny); err != nil {
 			return NewNil(), err
 		}
 		if _, err := exec.CallBlock(block, []Value{deepCloneValue(row)}); err != nil {
@@ -216,7 +216,7 @@ func (c *dbCapability) validateFindContractArgs(args []Value, kwargs map[string]
 	if _, err := capabilityNameArg(method, "collection", args[0]); err != nil {
 		return err
 	}
-	if err := validateCapabilityDataOnlyValue(method+" id", args[1]); err != nil {
+	if err := validateCapabilityTypedValue(method+" id", args[1], capabilityTypeAny); err != nil {
 		return err
 	}
 	return validateCapabilityKwargsDataOnly(method, kwargs)
@@ -247,14 +247,10 @@ func (c *dbCapability) validateUpdateContractArgs(args []Value, kwargs map[strin
 	if _, err := capabilityNameArg(method, "collection", args[0]); err != nil {
 		return err
 	}
-	if err := validateCapabilityDataOnlyValue(method+" id", args[1]); err != nil {
+	if err := validateCapabilityTypedValue(method+" id", args[1], capabilityTypeAny); err != nil {
 		return err
 	}
-	attrs := args[2]
-	if attrs.Kind() != KindHash && attrs.Kind() != KindObject {
-		return fmt.Errorf("%s expects attributes hash", method)
-	}
-	if err := validateCapabilityDataOnlyValue(method+" attributes", attrs); err != nil {
+	if err := validateCapabilityHashValue(method+" attributes", args[2]); err != nil {
 		return err
 	}
 	return validateCapabilityKwargsDataOnly(method, kwargs)
@@ -293,12 +289,12 @@ func (c *dbCapability) validateEachContractArgs(args []Value, kwargs map[string]
 
 func (c *dbCapability) validateMethodReturn(method string) func(result Value) error {
 	return func(result Value) error {
-		return validateCapabilityDataOnlyValue(method+" return value", result)
+		return validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny)
 	}
 }
 
 func (c *dbCapability) cloneMethodResult(method string, result Value) (Value, error) {
-	if err := validateCapabilityDataOnlyValue(method+" return value", result); err != nil {
+	if err := validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny); err != nil {
 		return NewNil(), err
 	}
 	return deepCloneValue(result), nil

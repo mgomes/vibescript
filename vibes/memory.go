@@ -163,7 +163,7 @@ func (est *memoryEstimator) value(val Value) int {
 		est.seenBlocks[blk] = struct{}{}
 		size += estimatedBlockBytes + estimatedSliceBaseBytes + len(blk.Params)*estimatedStringHeaderBytes
 		for _, param := range blk.Params {
-			size += len(param)
+			size += len(param.Name)
 		}
 		size += estimatedStringHeaderBytes*3 + len(blk.moduleKey) + len(blk.modulePath) + len(blk.moduleRoot)
 		size += est.env(blk.Env)

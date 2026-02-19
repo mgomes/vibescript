@@ -232,7 +232,7 @@ func NewObject(attrs map[string]Value) Value {
 	return Value{kind: KindObject, data: attrs}
 }
 func NewRange(r Range) Value { return Value{kind: KindRange, data: r} }
-func NewBlock(params []string, body []Statement, env *Env) Value {
+func NewBlock(params []Param, body []Statement, env *Env) Value {
 	return Value{kind: KindBlock, data: &Block{Params: params, Body: body, Env: env}}
 }
 
@@ -346,7 +346,7 @@ type Range struct {
 }
 
 type Block struct {
-	Params     []string
+	Params     []Param
 	Body       []Statement
 	Env        *Env
 	moduleKey  string

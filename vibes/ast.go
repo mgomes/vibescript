@@ -61,6 +61,8 @@ const (
 	TypeArray
 	TypeHash
 	TypeFunction
+	TypeShape
+	TypeUnion
 	TypeUnknown
 )
 
@@ -68,6 +70,9 @@ type TypeExpr struct {
 	Name     string
 	Kind     TypeKind
 	Nullable bool
+	TypeArgs []*TypeExpr
+	Shape    map[string]*TypeExpr
+	Union    []*TypeExpr
 	position Position
 }
 
@@ -272,7 +277,7 @@ func (e *RangeExpr) exprNode()     {}
 func (e *RangeExpr) Pos() Position { return e.position }
 
 type BlockLiteral struct {
-	Params   []string
+	Params   []Param
 	Body     []Statement
 	position Position
 }

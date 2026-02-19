@@ -281,7 +281,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected error for invalid payload")
 	}
-	if got := err.Error(); !strings.Contains(got, "jobs.enqueue expects payload hash") {
+	if got := err.Error(); !strings.Contains(got, "jobs.enqueue payload expected hash, got int") {
 		t.Fatalf("unexpected error: %s", got)
 	}
 }

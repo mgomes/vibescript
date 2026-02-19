@@ -190,6 +190,27 @@ end`)
 	}
 }
 
+func TestDBCapabilityRejectsNonHashUpdateAttributes(t *testing.T) {
+	stub := &dbCapabilityStub{}
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  db.update("Player", "p-1", 123)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
+	})
+	if err == nil {
+		t.Fatalf("expected non-hash attributes error")
+	}
+	if got := err.Error(); !strings.Contains(got, "db.update attributes expected hash, got int") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
 func TestDBCapabilityEachRequiresBlock(t *testing.T) {
 	stub := &dbCapabilityStub{}
 	engine := MustNewEngine(Config{})

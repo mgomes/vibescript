@@ -187,20 +187,11 @@ func (c *jobQueueCapability) validateEnqueueContractArgs(args []Value, kwargs ma
 	}
 
 	payloadVal := args[1]
-	if payloadVal.Kind() != KindHash && payloadVal.Kind() != KindObject {
-		return fmt.Errorf("%s expects payload hash", method)
-	}
-	if err := validateCapabilityDataOnlyValue(method+" payload", payloadVal); err != nil {
+	if err := validateCapabilityHashValue(method+" payload", payloadVal); err != nil {
 		return err
 	}
 
-	for key, val := range kwargs {
-		if err := validateCapabilityDataOnlyValue(fmt.Sprintf("%s keyword %s", method, key), val); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return validateCapabilityKwargsDataOnly(method, kwargs)
 }
 
 func (c *jobQueueCapability) validateRetryContractArgs(args []Value, kwargs map[string]Value, block Value) error {
@@ -220,31 +211,22 @@ func (c *jobQueueCapability) validateRetryContractArgs(args []Value, kwargs map[
 
 	if len(args) == 2 {
 		optionsVal := args[1]
-		if optionsVal.Kind() != KindHash && optionsVal.Kind() != KindObject {
-			return fmt.Errorf("%s options must be hash", method)
-		}
-		if err := validateCapabilityDataOnlyValue(method+" options", optionsVal); err != nil {
+		if err := validateCapabilityHashValue(method+" options", optionsVal); err != nil {
 			return err
 		}
 	}
 
-	for key, val := range kwargs {
-		if err := validateCapabilityDataOnlyValue(fmt.Sprintf("%s keyword %s", method, key), val); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return validateCapabilityKwargsDataOnly(method, kwargs)
 }
 
 func (c *jobQueueCapability) validateMethodReturn(method string) func(result Value) error {
 	return func(result Value) error {
-		return validateCapabilityDataOnlyValue(method+" return value", result)
+		return validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny)
 	}
 }
 
 func (c *jobQueueCapability) cloneMethodResult(method string, result Value) (Value, error) {
-	if err := validateCapabilityDataOnlyValue(method+" return value", result); err != nil {
+	if err := validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny); err != nil {
 		return NewNil(), err
 	}
 	return deepCloneValue(result), nil

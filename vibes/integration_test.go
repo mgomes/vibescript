@@ -592,8 +592,16 @@ func TestTypeErrorCases(t *testing.T) {
 	if err == nil {
 		t.Fatalf("arg_type_mismatch: expected error")
 	}
-	if !strings.Contains(err.Error(), "expected int") {
-		t.Fatalf("arg_type_mismatch: unexpected error '%v', want 'expected int'", err)
+	if !strings.Contains(err.Error(), "argument n expected int, got string") {
+		t.Fatalf("arg_type_mismatch: unexpected error '%v', want argument+expected+actual", err)
+	}
+
+	_, err = script.Call(context.Background(), "return_type_mismatch", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("return_type_mismatch: expected error")
+	}
+	if !strings.Contains(err.Error(), "return value for return_type_mismatch expected int, got string") {
+		t.Fatalf("return_type_mismatch: unexpected error '%v', want expected+actual", err)
 	}
 }
 

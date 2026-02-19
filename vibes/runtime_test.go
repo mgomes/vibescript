@@ -568,6 +568,76 @@ func TestParseErrorIncludesBlockParameterHint(t *testing.T) {
 	}
 }
 
+func TestTypedBlockSignatures(t *testing.T) {
+	script := compileScript(t, `
+    def increment_all(values)
+      values.map do |n: int|
+        n + 1
+      end
+    end
+
+    def typed_union(values)
+      values.map do |v: int | string|
+        v
+      end
+    end
+
+    def call_with_block(value)
+      yield value
+    end
+
+    def enforce_yield_type(value)
+      call_with_block(value) do |n: int|
+        n
+      end
+    end
+
+    def passthrough(values)
+      values.map do |v|
+        v
+      end
+    end
+    `)
+
+	inc := callFunc(t, script, "increment_all", []Value{
+		NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
+	})
+	compareArrays(t, inc, []Value{NewInt(2), NewInt(3), NewInt(4)})
+
+	unionResult := callFunc(t, script, "typed_union", []Value{
+		NewArray([]Value{NewInt(7), NewString("ok")}),
+	})
+	compareArrays(t, unionResult, []Value{NewInt(7), NewString("ok")})
+
+	if got := callFunc(t, script, "enforce_yield_type", []Value{NewInt(9)}); !got.Equal(NewInt(9)) {
+		t.Fatalf("typed yield block mismatch: got %v", got)
+	}
+
+	untouched := callFunc(t, script, "passthrough", []Value{
+		NewArray([]Value{NewInt(1), NewString("two")}),
+	})
+	compareArrays(t, untouched, []Value{NewInt(1), NewString("two")})
+
+	_, err := script.Call(context.Background(), "increment_all", []Value{
+		NewArray([]Value{NewInt(1), NewString("oops")}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument n expected int, got string") {
+		t.Fatalf("expected typed block argument error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "typed_union", []Value{
+		NewArray([]Value{NewBool(true)}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected int | string, got bool") {
+		t.Fatalf("expected typed union block argument error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "enforce_yield_type", []Value{NewString("bad")}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument n expected int, got string") {
+		t.Fatalf("expected typed yield argument error, got %v", err)
+	}
+}
+
 func TestArraySumRejectsNonNumeric(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`
@@ -1159,6 +1229,38 @@ func TestTypedFunctions(t *testing.T) {
     def pick_optional(s: string? = nil) -> string?
       s
     end
+
+    def union_echo(v: int | string) -> int | string
+      v
+    end
+
+    def union_optional(v: int | nil = nil) -> int | nil
+      v
+    end
+
+    def union_bad_return() -> int | string
+      true
+    end
+
+    def ints_only(values: array<int>) -> array<int>
+      values
+    end
+
+    def totals_by_player(totals: hash<string, int>) -> hash<string, int>
+      totals
+    end
+
+    def mixed_items(values: array<int | string>) -> array<int | string>
+      values
+    end
+
+    def player_payload(payload: { id: string, score: int, active: bool? }) -> { id: string, score: int, active: bool? }
+      payload
+    end
+
+    def shaped_rows(rows: array<{ id: string, stats: { wins: int } }>) -> array<{ id: string, stats: { wins: int } }>
+      rows
+    end
     `)
 
 	if fn, ok := script.Function("bad_return"); !ok || fn.ReturnTy == nil {
@@ -1175,6 +1277,47 @@ func TestTypedFunctions(t *testing.T) {
 	}
 	if got := callFunc(t, script, "pick_optional", nil); !got.Equal(NewNil()) {
 		t.Fatalf("pick_optional nil mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "union_echo", []Value{NewInt(7)}); !got.Equal(NewInt(7)) {
+		t.Fatalf("union_echo int mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "union_echo", []Value{NewString("ok")}); !got.Equal(NewString("ok")) {
+		t.Fatalf("union_echo string mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "union_optional", nil); !got.Equal(NewNil()) {
+		t.Fatalf("union_optional nil mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "union_optional", []Value{NewInt(9)}); !got.Equal(NewInt(9)) {
+		t.Fatalf("union_optional int mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "ints_only", []Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})}); got.Kind() != KindArray {
+		t.Fatalf("ints_only expected array result, got %v", got.Kind())
+	}
+	if got := callFunc(t, script, "totals_by_player", []Value{NewHash(map[string]Value{
+		"alice": NewInt(10),
+		"bob":   NewInt(12),
+	})}); got.Kind() != KindHash {
+		t.Fatalf("totals_by_player expected hash result, got %v", got.Kind())
+	}
+	if got := callFunc(t, script, "mixed_items", []Value{NewArray([]Value{NewInt(1), NewString("two"), NewInt(3)})}); got.Kind() != KindArray {
+		t.Fatalf("mixed_items expected array result, got %v", got.Kind())
+	}
+	if got := callFunc(t, script, "player_payload", []Value{NewHash(map[string]Value{
+		"id":     NewString("p-1"),
+		"score":  NewInt(42),
+		"active": NewNil(),
+	})}); got.Kind() != KindHash {
+		t.Fatalf("player_payload expected hash result, got %v", got.Kind())
+	}
+	if got := callFunc(t, script, "shaped_rows", []Value{NewArray([]Value{
+		NewHash(map[string]Value{
+			"id": NewString("p-1"),
+			"stats": NewHash(map[string]Value{
+				"wins": NewInt(7),
+			}),
+		}),
+	})}); got.Kind() != KindArray {
+		t.Fatalf("shaped_rows expected array result, got %v", got.Kind())
 	}
 	if got := callFunc(t, script, "nil_result", nil); !got.Equal(NewNil()) {
 		t.Fatalf("nil_result mismatch: %v", got)
@@ -1197,8 +1340,9 @@ func TestTypedFunctions(t *testing.T) {
 	}
 
 	_, err = script.Call(context.Background(), "pick_second", []Value{NewString("bad"), NewInt(2)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected int") {
-		t.Fatalf("expected type error, got %v", err)
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument n expected int, got string") {
+		t.Fatalf("expected argument type error, got %v", err)
 	}
 
 	_, err = script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
@@ -1206,8 +1350,198 @@ func TestTypedFunctions(t *testing.T) {
 		res, _ := script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
 		t.Fatalf("expected return type error, got value %v (%v)", res, res.Kind())
 	}
-	if !strings.Contains(err.Error(), "expected int") {
+	if !strings.Contains(err.Error(), "return value for bad_return expected int, got string") {
 		t.Fatalf("expected return type error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "union_echo", []Value{NewBool(true)}, CallOptions{})
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument v expected int | string, got bool") {
+		t.Fatalf("expected union arg type error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "union_bad_return", nil, CallOptions{})
+	if err == nil ||
+		!strings.Contains(err.Error(), "return value for union_bad_return expected int | string, got bool") {
+		t.Fatalf("expected union return type error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "ints_only", []Value{
+		NewArray([]Value{NewInt(1), NewString("oops")}),
+	}, CallOptions{})
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument values expected array<int>, got array<int | string>") {
+		t.Fatalf("expected typed array arg error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "totals_by_player", []Value{
+		NewHash(map[string]Value{"alice": NewString("oops")}),
+	}, CallOptions{})
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument totals expected hash<string, int>, got { alice: string }") {
+		t.Fatalf("expected typed hash arg error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "mixed_items", []Value{
+		NewArray([]Value{NewBool(true)}),
+	}, CallOptions{})
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument values expected array<int | string>, got array<bool>") {
+		t.Fatalf("expected typed union array arg error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "player_payload", []Value{
+		NewHash(map[string]Value{
+			"id":    NewString("p-1"),
+			"score": NewInt(42),
+			"role":  NewString("captain"),
+		}),
+	}, CallOptions{})
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got { id: string, role: string, score: int }") {
+		t.Fatalf("expected shape extra-field error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "player_payload", []Value{
+		NewHash(map[string]Value{
+			"id":     NewString("p-1"),
+			"score":  NewString("wrong"),
+			"active": NewBool(true),
+		}),
+	}, CallOptions{})
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got { active: bool, id: string, score: string }") {
+		t.Fatalf("expected shape field-type error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "shaped_rows", []Value{
+		NewArray([]Value{
+			NewHash(map[string]Value{
+				"id": NewString("p-1"),
+				"stats": NewHash(map[string]Value{
+					"wins": NewString("bad"),
+				}),
+			}),
+		}),
+	}, CallOptions{})
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument rows expected array<{ id: string, stats: { wins: int } }>, got array<{ id: string, stats: { wins: string } }>") {
+		t.Fatalf("expected nested shape error, got %v", err)
+	}
+}
+
+func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
+	script := compileScript(t, `
+    def takes_any(v: any) -> any
+      v
+    end
+
+    def takes_nullable(v: string? = nil) -> string?
+      v
+    end
+
+    def takes_nullable_union(v: string | nil) -> string | nil
+      v
+    end
+    `)
+
+	anyBuiltin := NewBuiltin("tmp.any", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewNil(), nil
+	})
+	if got := callFunc(t, script, "takes_any", []Value{anyBuiltin}); got.Kind() != KindBuiltin {
+		t.Fatalf("takes_any builtin mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "takes_any", []Value{NewHash(map[string]Value{"x": NewInt(1)})}); got.Kind() != KindHash {
+		t.Fatalf("takes_any hash mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "takes_any", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("takes_any nil mismatch: %#v", got)
+	}
+
+	if got := callFunc(t, script, "takes_nullable", nil); got.Kind() != KindNil {
+		t.Fatalf("takes_nullable default nil mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "takes_nullable", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
+		t.Fatalf("takes_nullable string mismatch: %#v", got)
+	}
+	_, err := script.Call(context.Background(), "takes_nullable", []Value{NewInt(1)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected string?, got int") {
+		t.Fatalf("expected nullable type mismatch, got %v", err)
+	}
+
+	if got := callFunc(t, script, "takes_nullable_union", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("takes_nullable_union nil mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "takes_nullable_union", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
+		t.Fatalf("takes_nullable_union string mismatch: %#v", got)
+	}
+	_, err = script.Call(context.Background(), "takes_nullable_union", []Value{NewInt(1)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected string | nil, got int") {
+		t.Fatalf("expected nullable union mismatch, got %v", err)
+	}
+}
+
+func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.T) {
+	script := compileScript(t, `
+    def run(payload: hash<string, hash<string, int>>) -> hash<string, hash<string, int>>
+      payload
+    end
+    `)
+
+	entries := map[string]Value{}
+	payload := NewHash(entries)
+	entries["self"] = payload
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := script.Call(context.Background(), "run", []Value{payload}, CallOptions{})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("expected type validation error for cyclic payload")
+		}
+		if !strings.Contains(err.Error(), "argument payload expected hash<string, hash<string, int>>") {
+			t.Fatalf("unexpected type error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("type validation did not terminate for cyclic payload")
+	}
+}
+
+func TestExistingUntypedScriptsRemainCompatible(t *testing.T) {
+	script := compileScript(t, `
+    def identity(v)
+      v
+    end
+
+    def run()
+      first = identity(1)
+      second = identity("two")
+      third = identity({ ok: true })
+      {
+        first: first,
+        second: second,
+        third_ok: third[:ok]
+      }
+    end
+    `)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", got.Kind())
+	}
+	hash := got.Hash()
+	if hash["first"].Kind() != KindInt || hash["first"].Int() != 1 {
+		t.Fatalf("unexpected first value: %#v", hash["first"])
+	}
+	if hash["second"].Kind() != KindString || hash["second"].String() != "two" {
+		t.Fatalf("unexpected second value: %#v", hash["second"])
+	}
+	if hash["third_ok"].Kind() != KindBool || !hash["third_ok"].Bool() {
+		t.Fatalf("unexpected third_ok value: %#v", hash["third_ok"])
 	}
 }
 

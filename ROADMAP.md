@@ -20,8 +20,9 @@ Release status legend:
 ## Historical Completed Releases
 
 These releases are already shipped and tagged.
+Completion dates reflect the corresponding git tag date.
 
-### v0.1.0
+### v0.1.0 (completed 2025-12-15)
 
 - [x] Added GitHub Actions CI workflow.
 - [x] Added stack traces to runtime errors.
@@ -30,37 +31,37 @@ These releases are already shipped and tagged.
 - [x] Added initial CLI support.
 - [x] Fixed package/versioning setup for release tagging.
 
-### v0.2.0
+### v0.2.0 (completed 2025-12-15)
 
 - [x] Added GoReleaser-based release automation.
 - [x] Added recursion depth limit enforcement.
 - [x] Added recursion limit test coverage.
 
-### v0.2.1
+### v0.2.1 (completed 2025-12-15)
 
 - [x] Pinned GoReleaser version for stable release builds.
 
-### v0.2.2
+### v0.2.2 (completed 2025-12-15)
 
 - [x] Adjusted GoReleaser configuration.
 
-### v0.3.0
+### v0.3.0 (completed 2025-12-20)
 
 - [x] Added `Number#times`.
 - [x] Added `Duration` class modeled after ActiveSupport-style duration semantics.
 
-### v0.4.0
+### v0.4.0 (completed 2025-12-21)
 
 - [x] Added duration arithmetic support.
 - [x] Improved optional-parens behavior for zero-arg methods.
 - [x] Implemented `Time` class.
 
-### v0.4.1
+### v0.4.1 (completed 2025-12-21)
 
 - [x] Renamed `Time#strftime` to `Time#format` for Go layout alignment.
 - [x] Added Duration and Time documentation.
 
-### v0.5.0
+### v0.5.0 (completed 2025-12-26)
 
 - [x] Added first pass of gradual typing.
 - [x] Added support for classes.
@@ -68,13 +69,13 @@ These releases are already shipped and tagged.
 - [x] Added numeric literal underscore separators.
 - [x] Expanded complex tests/examples coverage.
 
-### v0.5.1
+### v0.5.1 (completed 2026-02-07)
 
 - [x] Expanded test suite breadth.
 - [x] Landed performance optimizations and refactors.
 - [x] Exported `CallBlock()` for embedders.
 
-### v0.6.0
+### v0.6.0 (completed 2026-02-11)
 
 - [x] Added runtime memory quota enforcement.
 - [x] Enforced strict effects for globals and `require`.
@@ -82,35 +83,35 @@ These releases are already shipped and tagged.
 - [x] Replaced panicking constructors with error-returning APIs.
 - [x] Increased CLI/REPL test coverage and added execution benchmarks.
 
-### v0.7.0
+### v0.7.0 (completed 2026-02-12)
 
 - [x] Shipped multi-phase string helper expansion.
 - [x] Added regex/byte helper coverage and bang-method parity improvements.
 
-### v0.8.0
+### v0.8.0 (completed 2026-02-12)
 
 - [x] Expanded Hash built-ins and hash manipulation support.
 - [x] Refreshed hash docs and examples.
 
-### v0.9.0
+### v0.9.0 (completed 2026-02-12)
 
 - [x] Expanded Array helper surface and enumerable workflows.
 
-### v0.10.0
+### v0.10.0 (completed 2026-02-12)
 
 - [x] Made Time and numeric APIs coherent with documented behavior.
 
-### v0.11.0
+### v0.11.0 (completed 2026-02-12)
 
 - [x] Improved parse/runtime error feedback and debugging quality.
 
-### v0.12.0
+### v0.12.0 (completed 2026-02-13)
 
 - [x] Hardened `require` behavior for safer module composition.
 - [x] Improved private helper/module boundary behavior.
 - [x] Improved circular dependency diagnostics for modules.
 
-### v0.13.0
+### v0.13.0 (completed 2026-02-17)
 
 - [x] Enforced capability contracts at runtime boundaries.
 - [x] Added contract validation paths for capability args and returns.
@@ -118,7 +119,7 @@ These releases are already shipped and tagged.
 
 ---
 
-## v0.14.0 - Capability Foundations
+## v0.14.0 - Capability Foundations (completed 2026-02-18)
 
 Goal: make host integrations first-class and safe enough for production workflows.
 
@@ -167,11 +168,11 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 ### Type Features
 
-- [ ] Add parametric container types: `array<T>`, `hash<K, V>`.
-- [ ] Add union types beyond nil: `A | B`.
-- [ ] Add typed object/hash shape syntax for common payload contracts.
-- [ ] Add typed block signatures where appropriate.
-- [ ] Define type display formatting for readable runtime errors.
+- [x] Add parametric container types: `array<T>`, `hash<K, V>`.
+- [x] Add union types beyond nil: `A | B`.
+- [x] Add typed object/hash shape syntax for common payload contracts.
+- [x] Add typed block signatures where appropriate.
+- [x] Define type display formatting for readable runtime errors.
 
 ### Type Semantics
 
@@ -182,23 +183,23 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 ### Runtime and Parser
 
-- [ ] Extend parser grammar for generic and union type expressions.
-- [ ] Extend type resolver and internal type representation.
-- [ ] Add runtime validators for composite/union types.
+- [x] Extend parser grammar for generic and union type expressions.
+- [x] Extend type resolver and internal type representation.
+- [x] Add runtime validators for composite/union types.
 - [ ] Add contract interop so capability contracts can reuse type validators.
 
 ### Testing and Docs
 
-- [ ] Add parser tests for all new type syntax forms.
-- [ ] Add runtime tests for nested composite type checks.
-- [ ] Add regression tests for existing `any` and nullable behavior.
-- [ ] Expand `docs/typing.md` with migration examples.
+- [x] Add parser tests for all new type syntax forms.
+- [x] Add runtime tests for nested composite type checks.
+- [x] Add regression tests for existing `any` and nullable behavior.
+- [x] Expand `docs/typing.md` with migration examples.
 
 ### v0.15.0 Definition of Done
 
-- [ ] Existing scripts without annotations remain compatible.
-- [ ] Type errors include parameter name, expected type, and actual type.
-- [ ] Capability contract validation can use the same type primitives.
+- [x] Existing scripts without annotations remain compatible.
+- [x] Type errors include parameter name, expected type, and actual type.
+- [x] Capability contract validation can use the same type primitives.
 
 ---
 
