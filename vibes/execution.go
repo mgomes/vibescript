@@ -634,7 +634,17 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val Value, receiver V
 func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	switch callee.Kind() {
 	case KindFunction:
-		return exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
+		result, err := exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return NewNil(), exec.errorAt(pos, "break cannot cross call boundary")
+			}
+			if errors.Is(err, errLoopNext) {
+				return NewNil(), exec.errorAt(pos, "next cannot cross call boundary")
+			}
+			return NewNil(), err
+		}
+		return result, nil
 	case KindBuiltin:
 		builtin := callee.Builtin()
 		scope := exec.capabilityContractScopes[builtin]
@@ -663,6 +673,12 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return NewNil(), exec.errorAt(pos, "break cannot cross call boundary")
+			}
+			if errors.Is(err, errLoopNext) {
+				return NewNil(), exec.errorAt(pos, "next cannot cross call boundary")
+			}
 			return NewNil(), exec.wrapError(err, pos)
 		}
 		if hasContract && contract.ValidateReturn != nil {

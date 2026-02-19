@@ -931,6 +931,80 @@ func TestLoopControlBreakAndNext(t *testing.T) {
 	}
 }
 
+func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
+	script := compileScript(t, `
+    def nested_break()
+      out = []
+      for i in [1, 2]
+        for j in [1, 2, 3]
+          if j == 2
+            break
+          end
+          out = out + [i * 10 + j]
+        end
+      end
+      out
+    end
+
+    def nested_next()
+      out = []
+      for i in [1, 2]
+        for j in [1, 2, 3]
+          if j == 2
+            next
+          end
+          out = out + [i * 10 + j]
+        end
+      end
+      out
+    end
+
+    def break_from_block_boundary()
+      out = []
+      for n in [1, 2, 3]
+        items = [n]
+        items.each do |v|
+          if v == 2
+            break
+          end
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def next_from_block_boundary()
+      out = []
+      for n in [1, 2, 3]
+        items = [n]
+        items.each do |v|
+          if v == 2
+            next
+          end
+        end
+        out = out + [n]
+      end
+      out
+    end
+    `)
+
+	nestedBreak := callFunc(t, script, "nested_break", nil)
+	compareArrays(t, nestedBreak, []Value{NewInt(11), NewInt(21)})
+
+	nestedNext := callFunc(t, script, "nested_next", nil)
+	compareArrays(t, nestedNext, []Value{NewInt(11), NewInt(13), NewInt(21), NewInt(23)})
+
+	_, err := script.Call(context.Background(), "break_from_block_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "break cannot cross call boundary") {
+		t.Fatalf("expected block-boundary break error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "next_from_block_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
+		t.Fatalf("expected block-boundary next error, got %v", err)
+	}
+}
+
 func TestDurationMethods(t *testing.T) {
 	script := compileScript(t, `
     def duration_helpers()
