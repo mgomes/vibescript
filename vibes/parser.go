@@ -1138,6 +1138,18 @@ func (p *parser) parseTypeAtom() *TypeExpr {
 			break
 		}
 		ty.TypeArgs = typeArgs
+		switch ty.Kind {
+		case TypeArray:
+			if len(typeArgs) != 1 {
+				p.addParseError(ty.position, "array type expects exactly 1 type argument")
+				return nil
+			}
+		case TypeHash:
+			if len(typeArgs) != 2 {
+				p.addParseError(ty.position, "hash type expects exactly 2 type arguments")
+				return nil
+			}
+		}
 	}
 
 	return ty

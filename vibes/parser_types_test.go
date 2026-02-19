@@ -153,3 +153,39 @@ end`
 		t.Fatalf("unexpected parse error: %s", got)
 	}
 }
+
+func TestParserTypeSyntaxRejectsGenericArityMismatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		source  string
+		message string
+	}{
+		{
+			name: "array with two args",
+			source: `def run(values: array<int, string>)
+  values
+end`,
+			message: "array type expects exactly 1 type argument",
+		},
+		{
+			name: "hash with one arg",
+			source: `def run(values: hash<string>)
+  values
+end`,
+			message: "hash type expects exactly 2 type arguments",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newParser(tt.source)
+			_, errs := p.ParseProgram()
+			if len(errs) == 0 {
+				t.Fatalf("expected parse errors")
+			}
+			if got := errs[0].Error(); !strings.Contains(got, tt.message) {
+				t.Fatalf("unexpected parse error: %s", got)
+			}
+		})
+	}
+}
