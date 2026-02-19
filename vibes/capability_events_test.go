@@ -113,6 +113,35 @@ end`)
 	}
 }
 
+func TestEventsCapabilityReturnsAreClonedFromHostState(t *testing.T) {
+	stub := &eventsCapabilityStub{
+		publishResult: NewHash(map[string]Value{
+			"meta": NewHash(map[string]Value{
+				"trace": NewString("host"),
+			}),
+		}),
+	}
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  event = events.publish("topic", { id: "p-1" })
+  event[:meta][:trace] = "script"
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewEventsCapability("events", stub)},
+	}); err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+
+	trace := stub.publishResult.Hash()["meta"].Hash()["trace"]
+	if trace.Kind() != KindString || trace.String() != "host" {
+		t.Fatalf("publish host result mutated by script: %#v", stub.publishResult)
+	}
+}
+
 func TestNewEventsCapabilityRejectsInvalidArguments(t *testing.T) {
 	stub := &eventsCapabilityStub{}
 	if _, err := NewEventsCapability("", stub); err == nil || !strings.Contains(err.Error(), "name must be non-empty") {

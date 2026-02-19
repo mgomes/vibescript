@@ -69,7 +69,11 @@ func (c *eventsCapability) callPublish(exec *Execution, receiver Value, args []V
 		Payload: cloneHash(args[1].Hash()),
 		Options: cloneCapabilityKwargs(kwargs),
 	}
-	return c.publisher.Publish(exec.ctx, req)
+	result, err := c.publisher.Publish(exec.ctx, req)
+	if err != nil {
+		return NewNil(), err
+	}
+	return c.cloneMethodResult(c.name+".publish", result)
 }
 
 func (c *eventsCapability) validatePublishContractArgs(args []Value, kwargs map[string]Value, block Value) error {
@@ -97,4 +101,11 @@ func (c *eventsCapability) validateMethodReturn(method string) func(result Value
 	return func(result Value) error {
 		return validateCapabilityDataOnlyValue(method+" return value", result)
 	}
+}
+
+func (c *eventsCapability) cloneMethodResult(method string, result Value) (Value, error) {
+	if err := validateCapabilityDataOnlyValue(method+" return value", result); err != nil {
+		return NewNil(), err
+	}
+	return deepCloneValue(result), nil
 }
