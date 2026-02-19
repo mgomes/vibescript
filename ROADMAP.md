@@ -218,7 +218,7 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 ### Error Handling Constructs
 
 - [x] Add structured error handling syntax (`begin/rescue/ensure` or equivalent).
-- [ ] Add typed error matching where feasible.
+- [x] Add typed error matching where feasible.
 - [ ] Define re-raise semantics and stack preservation.
 - [x] Ensure runtime errors preserve original position and call frames.
 

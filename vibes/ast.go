@@ -156,6 +156,7 @@ func (s *NextStmt) Pos() Position { return s.position }
 
 type TryStmt struct {
 	Body     []Statement
+	RescueTy *TypeExpr
 	Rescue   []Statement
 	Ensure   []Statement
 	position Position

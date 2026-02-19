@@ -1014,6 +1014,96 @@ func TestBeginRescueEnsure(t *testing.T) {
 	}
 }
 
+func TestBeginRescueTypedMatching(t *testing.T) {
+	script := compileScript(t, `
+    def typed_assertion()
+      begin
+        assert false, "boom"
+      rescue(AssertionError)
+        "assertion"
+      end
+    end
+
+    def typed_runtime()
+      begin
+        assert false, "boom"
+      rescue(RuntimeError)
+        "runtime"
+      end
+    end
+
+    def typed_union()
+      begin
+        assert false, "boom"
+      rescue(AssertionError | RuntimeError)
+        "union"
+      end
+    end
+
+    def rescue_mismatch()
+      begin
+        1 / 0
+      rescue(AssertionError)
+        "nope"
+      end
+    end
+
+    def assertion_passthrough()
+      assert false, "raw"
+    end
+    `)
+
+	if got := callFunc(t, script, "typed_assertion", nil); !got.Equal(NewString("assertion")) {
+		t.Fatalf("typed_assertion mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "typed_runtime", nil); !got.Equal(NewString("runtime")) {
+		t.Fatalf("typed_runtime mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "typed_union", nil); !got.Equal(NewString("union")) {
+		t.Fatalf("typed_union mismatch: %v", got)
+	}
+
+	_, err := script.Call(context.Background(), "rescue_mismatch", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "division by zero") {
+		t.Fatalf("expected typed rescue mismatch to preserve original error, got %v", err)
+	}
+	var divideErr *RuntimeError
+	if !errors.As(err, &divideErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if divideErr.Type != runtimeErrorTypeBase {
+		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeBase, divideErr.Type)
+	}
+
+	_, err = script.Call(context.Background(), "assertion_passthrough", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "raw") {
+		t.Fatalf("expected assertion passthrough error, got %v", err)
+	}
+	var assertionErr *RuntimeError
+	if !errors.As(err, &assertionErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if assertionErr.Type != runtimeErrorTypeAssertion {
+		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeAssertion, assertionErr.Type)
+	}
+}
+
+func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	_, err := engine.Compile(`
+    def bad()
+      begin
+        1 / 0
+      rescue(NotARealError)
+        "fallback"
+      end
+    end
+    `)
+	if err == nil || !strings.Contains(err.Error(), "unknown rescue error type NotARealError") {
+		t.Fatalf("expected unknown rescue type compile error, got %v", err)
+	}
+}
+
 func TestLoopControlBreakAndNext(t *testing.T) {
 	script := compileScript(t, `
     def for_break()

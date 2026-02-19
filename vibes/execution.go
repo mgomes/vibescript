@@ -89,10 +89,24 @@ type StackFrame struct {
 }
 
 type RuntimeError struct {
+	Type      string
 	Message   string
 	CodeFrame string
 	Frames    []StackFrame
 }
+
+type assertionFailureError struct {
+	message string
+}
+
+func (e *assertionFailureError) Error() string {
+	return e.message
+}
+
+const (
+	runtimeErrorTypeBase      = "RuntimeError"
+	runtimeErrorTypeAssertion = "AssertionError"
+)
 
 var (
 	errLoopBreak = errors.New("loop break")
@@ -127,6 +141,37 @@ func (re *RuntimeError) Unwrap() error {
 	return nil
 }
 
+func canonicalRuntimeErrorType(name string) (string, bool) {
+	switch {
+	case strings.EqualFold(name, runtimeErrorTypeBase), strings.EqualFold(name, "Error"):
+		return runtimeErrorTypeBase, true
+	case strings.EqualFold(name, runtimeErrorTypeAssertion):
+		return runtimeErrorTypeAssertion, true
+	default:
+		return "", false
+	}
+}
+
+func classifyRuntimeErrorType(err error) string {
+	if err == nil {
+		return runtimeErrorTypeBase
+	}
+	var assertionErr *assertionFailureError
+	if errors.As(err, &assertionErr) {
+		return runtimeErrorTypeAssertion
+	}
+	if runtimeErr, ok := err.(*RuntimeError); ok {
+		if kind, known := canonicalRuntimeErrorType(runtimeErr.Type); known {
+			return kind
+		}
+	}
+	return runtimeErrorTypeBase
+}
+
+func newAssertionFailureError(message string) error {
+	return &assertionFailureError{message: message}
+}
+
 func (exec *Execution) step() error {
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {
@@ -152,6 +197,16 @@ func (exec *Execution) errorAt(pos Position, format string, args ...any) error {
 }
 
 func (exec *Execution) newRuntimeError(message string, pos Position) error {
+	return exec.newRuntimeErrorWithType(runtimeErrorTypeBase, message, pos)
+}
+
+func (exec *Execution) newRuntimeErrorWithType(kind string, message string, pos Position) error {
+	if canonical, ok := canonicalRuntimeErrorType(kind); ok {
+		kind = canonical
+	} else {
+		kind = runtimeErrorTypeBase
+	}
+
 	frames := make([]StackFrame, 0, len(exec.callStack)+1)
 
 	if len(exec.callStack) > 0 {
@@ -172,7 +227,7 @@ func (exec *Execution) newRuntimeError(message string, pos Position) error {
 	if exec.script != nil {
 		codeFrame = formatCodeFrame(exec.script.source, pos)
 	}
-	return &RuntimeError{Message: message, CodeFrame: codeFrame, Frames: frames}
+	return &RuntimeError{Type: kind, Message: message, CodeFrame: codeFrame, Frames: frames}
 }
 
 func (exec *Execution) wrapError(err error, pos Position) error {
@@ -182,7 +237,7 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	if _, ok := err.(*RuntimeError); ok {
 		return err
 	}
-	return exec.newRuntimeError(err.Error(), pos)
+	return exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
 }
 
 func (exec *Execution) pushReceiver(v Value) {
@@ -1317,7 +1372,7 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
 	val, returned, err := exec.evalStatements(stmt.Body, env)
 
-	if err != nil && len(stmt.Rescue) > 0 {
+	if err != nil && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
 		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, env)
 		if rescueErr != nil {
 			val = NewNil()
@@ -1344,6 +1399,36 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 		return NewNil(), false, err
 	}
 	return val, returned, nil
+}
+
+func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {
+	if rescueTy == nil {
+		return true
+	}
+	errKind := classifyRuntimeErrorType(err)
+	return rescueTypeMatchesErrorKind(rescueTy, errKind)
+}
+
+func rescueTypeMatchesErrorKind(ty *TypeExpr, errKind string) bool {
+	if ty == nil {
+		return false
+	}
+	if ty.Kind == TypeUnion {
+		for _, option := range ty.Union {
+			if rescueTypeMatchesErrorKind(option, errKind) {
+				return true
+			}
+		}
+		return false
+	}
+	canonical, ok := canonicalRuntimeErrorType(ty.Name)
+	if !ok {
+		return false
+	}
+	if canonical == runtimeErrorTypeBase {
+		return true
+	}
+	return canonical == errKind
 }
 
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {

@@ -440,8 +440,24 @@ func (p *parser) parseBeginStatement() Statement {
 	p.nextToken()
 	body := p.parseBlock(tokenRescue, tokenEnsure, tokenEnd)
 
+	var rescueTy *TypeExpr
 	var rescueBody []Statement
 	if p.curToken.Type == tokenRescue {
+		rescuePos := p.curToken.Pos
+		if p.peekToken.Type == tokenLParen && p.peekToken.Pos.Line == rescuePos.Line {
+			p.nextToken()
+			p.nextToken()
+			rescueTy = p.parseTypeExpr()
+			if rescueTy == nil {
+				return nil
+			}
+			if !p.validateRescueTypeExpr(rescueTy, rescuePos) {
+				return nil
+			}
+			if !p.expectPeek(tokenRParen) {
+				return nil
+			}
+		}
 		p.nextToken()
 		rescueBody = p.parseBlock(tokenEnsure, tokenEnd)
 	}
@@ -462,7 +478,34 @@ func (p *parser) parseBeginStatement() Statement {
 		return nil
 	}
 
-	return &TryStmt{Body: body, Rescue: rescueBody, Ensure: ensureBody, position: pos}
+	return &TryStmt{Body: body, RescueTy: rescueTy, Rescue: rescueBody, Ensure: ensureBody, position: pos}
+}
+
+func (p *parser) validateRescueTypeExpr(ty *TypeExpr, pos Position) bool {
+	if ty == nil {
+		p.addParseError(pos, "rescue type cannot be empty")
+		return false
+	}
+
+	if ty.Kind == TypeUnion {
+		ok := true
+		for _, option := range ty.Union {
+			if !p.validateRescueTypeExpr(option, option.position) {
+				ok = false
+			}
+		}
+		return ok
+	}
+
+	if len(ty.TypeArgs) > 0 || len(ty.Shape) > 0 {
+		p.addParseError(pos, fmt.Sprintf("rescue type must be an error class, got %s", formatTypeExpr(ty)))
+		return false
+	}
+	if _, ok := canonicalRuntimeErrorType(ty.Name); !ok {
+		p.addParseError(pos, fmt.Sprintf("unknown rescue error type %s", ty.Name))
+		return false
+	}
+	return true
 }
 
 func (p *parser) parseBlock(stop ...TokenType) []Statement {

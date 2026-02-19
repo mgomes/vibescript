@@ -1,7 +1,6 @@
 package vibes
 
 import (
-	"errors"
 	"fmt"
 	"time"
 )
@@ -20,7 +19,7 @@ func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[str
 	} else if msg, ok := kwargs["message"]; ok {
 		message = msg.String()
 	}
-	return NewNil(), errors.New(message)
+	return NewNil(), newAssertionFailureError(message)
 }
 
 func builtinMoney(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

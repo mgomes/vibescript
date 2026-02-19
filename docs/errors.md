@@ -70,7 +70,7 @@ Use `begin` with `rescue` and/or `ensure` for script-level recovery:
 def safe_div(a, b)
   begin
     a / b
-  rescue
+  rescue(RuntimeError)
     "fallback"
   ensure
     audit("safe_div attempted")
@@ -81,9 +81,11 @@ end
 Semantics:
 
 - `rescue` runs only when the `begin` body raises an error.
+- `rescue` supports optional typed matching via `rescue(<Type>)`.
+- `rescue` supports `AssertionError`, `RuntimeError`, and unions such as `rescue(AssertionError | RuntimeError)`.
 - `ensure` always runs (success, rescue path, or failure path).
 - Without `rescue`, original runtime errors still propagate after `ensure` executes.
-- `rescue` currently catches runtime failures broadly (typed matching and re-raise semantics are separate work).
+- Unmatched typed rescues do not swallow the original error.
 
 ## REPL Debugging
 
