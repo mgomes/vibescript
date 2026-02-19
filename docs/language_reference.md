@@ -134,7 +134,6 @@ end
 Supported control-flow constructs include:
 
 - `if` / `elsif` / `else`
-- `unless`
 - `while`
 - `until`
 - `for ... in`

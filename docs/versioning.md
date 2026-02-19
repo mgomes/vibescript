@@ -35,3 +35,4 @@ This contract applies to:
 - CLI command surface (`vibes run`, `vibes fmt`, `vibes analyze`, `vibes lsp`, `vibes repl`).
 
 Go toolchain support follows `docs/compatibility.md`.
+Core language syntax guarantees are tracked in `docs/syntax_compatibility.md`.

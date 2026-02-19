@@ -168,6 +168,7 @@ Long-form guides live in `docs/`:
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
 - `docs/typing.md` – gradual typing: annotations, nullable `?`, positional/keyword binding, and return checks.
 - `docs/language_reference.md` – consolidated language syntax and semantics reference.
+- `docs/syntax_compatibility.md` – core syntax freeze baseline and compatibility guarantees.
 - `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).
 - `docs/releasing.md` – GoReleaser workflow for changelog and GitHub release automation.
 - `docs/compatibility.md` – supported Go versions and CI coverage notes.
