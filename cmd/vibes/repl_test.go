@@ -201,6 +201,80 @@ func TestLastErrorCommandWhenNoError(t *testing.T) {
 	}
 }
 
+func TestGlobalsCommandPrintsSortedGlobals(t *testing.T) {
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
+	m.env["zeta"] = vibes.NewString("last")
+	m.env["alpha"] = vibes.NewInt(1)
+
+	m, _ = m.handleCommand(":globals")
+	if len(m.history) == 0 {
+		t.Fatalf("expected history entry for :globals")
+	}
+	last := m.history[len(m.history)-1]
+	if last.isErr {
+		t.Fatalf("expected :globals result to be non-error")
+	}
+	if last.output != "alpha = 1\nzeta = last" {
+		t.Fatalf("unexpected globals output: %q", last.output)
+	}
+}
+
+func TestFunctionsCommandListsBuiltinsAndEnvCallables(t *testing.T) {
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
+	m.env["worker"] = vibes.NewBuiltin("worker.call", func(exec *vibes.Execution, receiver vibes.Value, args []vibes.Value, kwargs map[string]vibes.Value, block vibes.Value) (vibes.Value, error) {
+		return vibes.NewString("ok"), nil
+	})
+	m.env["count"] = vibes.NewInt(1)
+
+	m, _ = m.handleCommand(":functions")
+	if len(m.history) == 0 {
+		t.Fatalf("expected history entry for :functions")
+	}
+	last := m.history[len(m.history)-1]
+	if last.isErr {
+		t.Fatalf("expected :functions result to be non-error")
+	}
+	if !strings.Contains(last.output, "JSON.parse") {
+		t.Fatalf("expected JSON.parse in functions output: %q", last.output)
+	}
+	if !strings.Contains(last.output, "worker") {
+		t.Fatalf("expected env callable in functions output: %q", last.output)
+	}
+	if strings.Contains(last.output, "count") {
+		t.Fatalf("non-callable env value should not appear in functions output: %q", last.output)
+	}
+}
+
+func TestTypesCommandShowsKinds(t *testing.T) {
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
+	m.env["count"] = vibes.NewInt(1)
+	m.env["name"] = vibes.NewString("alex")
+
+	m, _ = m.handleCommand(":types")
+	if len(m.history) == 0 {
+		t.Fatalf("expected history entry for :types")
+	}
+	last := m.history[len(m.history)-1]
+	if last.isErr {
+		t.Fatalf("expected :types result to be non-error")
+	}
+	if !strings.Contains(last.output, "count: int") {
+		t.Fatalf("missing count type output: %q", last.output)
+	}
+	if !strings.Contains(last.output, "name: string") {
+		t.Fatalf("missing name type output: %q", last.output)
+	}
+}
+
 func TestAutocompleteSingleCompletion(t *testing.T) {
 	m, err := newREPLModel()
 	if err != nil {
@@ -245,5 +319,18 @@ func TestAutocompleteUsesEnvVariables(t *testing.T) {
 	m = m.handleAutocomplete()
 	if got := m.textInput.Value(); got != "tenant_id" {
 		t.Fatalf("expected env completion, got %q", got)
+	}
+}
+
+func TestAutocompleteCompletesCommands(t *testing.T) {
+	m, err := newREPLModel()
+	if err != nil {
+		t.Fatalf("newREPLModel failed: %v", err)
+	}
+	m.textInput.SetValue(":gl")
+
+	m = m.handleAutocomplete()
+	if got := m.textInput.Value(); got != ":globals" {
+		t.Fatalf("expected command completion, got %q", got)
 	}
 }

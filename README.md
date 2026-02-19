@@ -111,6 +111,9 @@ The REPL maintains a persistent environment, so variables assigned in one expres
 | -------- | ---------------------- |
 | `:help`  | Toggle help panel      |
 | `:vars`  | Toggle variables panel |
+| `:globals` | Print current globals |
+| `:functions` | List callable functions |
+| `:types` | Show global value types |
 | `:last_error` | Show previous error |
 | `:clear` | Clear output history   |
 | `:reset` | Reset the environment  |

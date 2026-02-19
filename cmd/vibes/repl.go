@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -128,6 +129,74 @@ var keys = keyMap{
 	ShiftDown: key.NewBinding(
 		key.WithKeys("shift+down"),
 	),
+}
+
+var replBuiltinCompletions = []string{
+	"assert",
+	"money",
+	"money_cents",
+	"require",
+	"now",
+	"uuid",
+	"random_id",
+	"to_int",
+	"to_float",
+	"JSON",
+	"Regex",
+	"Time",
+}
+
+var replKeywordCompletions = []string{
+	"fn",
+	"if",
+	"else",
+	"for",
+	"in",
+	"return",
+	"true",
+	"false",
+	"nil",
+	"and",
+	"or",
+}
+
+var replCommandCompletions = []string{
+	":help",
+	":h",
+	":vars",
+	":v",
+	":globals",
+	":g",
+	":functions",
+	":f",
+	":types",
+	":t",
+	":clear",
+	":c",
+	":reset",
+	":r",
+	":last_error",
+	":le",
+	":quit",
+	":q",
+}
+
+var replBuiltinFunctionNames = []string{
+	"assert",
+	"money",
+	"money_cents",
+	"now",
+	"require",
+	"uuid",
+	"random_id",
+	"to_int",
+	"to_float",
+	"JSON.parse",
+	"JSON.stringify",
+	"Regex.match",
+	"Regex.replace",
+	"Regex.replace_all",
+	"Time.parse",
 }
 
 func newREPLModel() (replModel, error) {
@@ -260,6 +329,24 @@ func (m replModel) handleCommand(input string) (replModel, tea.Cmd) {
 		m.history = make([]historyEntry, 0)
 	case ":vars", ":v":
 		m.showVars = !m.showVars
+	case ":globals", ":g":
+		m.history = append(m.history, historyEntry{
+			input:  input,
+			output: globalsSnapshot(m.env),
+			isErr:  false,
+		})
+	case ":functions", ":f":
+		m.history = append(m.history, historyEntry{
+			input:  input,
+			output: functionsSnapshot(m.env),
+			isErr:  false,
+		})
+	case ":types", ":t":
+		m.history = append(m.history, historyEntry{
+			input:  input,
+			output: typesSnapshot(m.env),
+			isErr:  false,
+		})
 	case ":reset", ":r":
 		m.env = make(map[string]vibes.Value)
 		m.history = append(m.history, historyEntry{
@@ -308,19 +395,22 @@ func (m replModel) handleAutocomplete() replModel {
 	// Collect completions
 	var completions []string
 
-	// Built-in functions
-	builtins := []string{"assert", "money", "money_cents", "require", "now"}
-	for _, b := range builtins {
-		if strings.HasPrefix(b, lastWord) {
-			completions = append(completions, b)
+	if strings.HasPrefix(lastWord, ":") {
+		for _, cmd := range replCommandCompletions {
+			if strings.HasPrefix(cmd, lastWord) {
+				completions = append(completions, cmd)
+			}
 		}
-	}
-
-	// Keywords
-	keywords := []string{"fn", "if", "else", "for", "in", "return", "true", "false", "nil", "and", "or"}
-	for _, k := range keywords {
-		if strings.HasPrefix(k, lastWord) {
-			completions = append(completions, k)
+	} else {
+		for _, name := range replBuiltinCompletions {
+			if strings.HasPrefix(name, lastWord) {
+				completions = append(completions, name)
+			}
+		}
+		for _, keyword := range replKeywordCompletions {
+			if strings.HasPrefix(keyword, lastWord) {
+				completions = append(completions, keyword)
+			}
 		}
 	}
 
@@ -404,6 +494,58 @@ func formatValue(v vibes.Value) string {
 	return v.String()
 }
 
+func sortedEnvKeys(env map[string]vibes.Value) []string {
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func globalsSnapshot(env map[string]vibes.Value) string {
+	if len(env) == 0 {
+		return "No globals defined"
+	}
+	lines := make([]string, 0, len(env))
+	for _, name := range sortedEnvKeys(env) {
+		lines = append(lines, fmt.Sprintf("%s = %s", name, formatValue(env[name])))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isCallableValue(val vibes.Value) bool {
+	switch val.Kind() {
+	case vibes.KindFunction, vibes.KindBuiltin, vibes.KindBlock, vibes.KindClass:
+		return true
+	default:
+		return false
+	}
+}
+
+func functionsSnapshot(env map[string]vibes.Value) string {
+	names := make([]string, 0, len(replBuiltinFunctionNames)+len(env))
+	names = append(names, replBuiltinFunctionNames...)
+	for _, name := range sortedEnvKeys(env) {
+		if isCallableValue(env[name]) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return strings.Join(names, "\n")
+}
+
+func typesSnapshot(env map[string]vibes.Value) string {
+	if len(env) == 0 {
+		return "No globals defined"
+	}
+	lines := make([]string, 0, len(env))
+	for _, name := range sortedEnvKeys(env) {
+		lines = append(lines, fmt.Sprintf("%s: %s", name, env[name].Kind()))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (m replModel) View() string {
 	if !m.initialized {
 		return "Loading..."
@@ -476,7 +618,8 @@ func renderVarsPanel(env map[string]vibes.Value, width int) string {
 	var lines []string
 	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render("Variables"))
 	varNameStyle := lipgloss.NewStyle().Foreground(highlightColor)
-	for name, val := range env {
+	for _, name := range sortedEnvKeys(env) {
+		val := env[name]
 		line := fmt.Sprintf("  %s = %s", varNameStyle.Render(name), val.String())
 		lines = append(lines, line)
 	}
@@ -493,6 +636,9 @@ func renderHelpPanel(width int) string {
 		{"Enter", "Execute expression"},
 		{":help", "Toggle this help"},
 		{":vars", "Toggle variables panel"},
+		{":globals", "Print current globals"},
+		{":functions", "List callable functions"},
+		{":types", "Show global value types"},
 		{":clear", "Clear history"},
 		{":reset", "Reset environment"},
 		{":last_error", "Show previous error"},
