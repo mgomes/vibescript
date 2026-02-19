@@ -30,3 +30,5 @@ dives on specific topics.
   behavior (exports, aliasing, policy hooks).
 - `examples/module_require.md` – practical example showing how to share
   helpers with `require` and module search paths.
+- `stdlib_core_utilities.md` – examples for JSON, regex, random IDs, numeric
+  conversion, and common time parsing helpers.
