@@ -329,7 +329,7 @@ Goal: improve day-to-day developer productivity and interpreter robustness.
 - [ ] Profile evaluator hotspots and optimize dispatch paths.
 - [ ] Reduce allocations in common value transformations.
 - [ ] Improve error rendering for deeply nested call stacks.
-- [ ] Add fuzz tests for parser and runtime edge cases.
+- [x] Add fuzz tests for parser and runtime edge cases.
 
 ### CI and Release Engineering
 
