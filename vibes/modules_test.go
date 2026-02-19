@@ -125,6 +125,39 @@ end`)
 	}
 }
 
+func TestRequireAliasConflictDoesNotLeakExportsWhenRescued(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def helpers(value)
+  value
+end
+
+def run(value)
+  begin
+    require("helper", as: "helpers")
+  rescue
+    nil
+  end
+
+  begin
+    double(value)
+  rescue
+    "missing"
+  end
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindString || result.String() != "missing" {
+		t.Fatalf("expected leaked export lookup to fail, got %#v", result)
+	}
+}
+
 func TestRequirePreservesModuleLocalResolution(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 

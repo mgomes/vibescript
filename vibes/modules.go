@@ -517,6 +517,17 @@ func isValidModuleAlias(name string) bool {
 }
 
 func bindRequireAlias(root *Env, alias string, module Value) error {
+	if err := validateRequireAliasBinding(root, alias, module); err != nil {
+		return err
+	}
+	if alias == "" {
+		return nil
+	}
+	root.Define(alias, module)
+	return nil
+}
+
+func validateRequireAliasBinding(root *Env, alias string, module Value) error {
 	if alias == "" {
 		return nil
 	}
@@ -526,7 +537,6 @@ func bindRequireAlias(root *Env, alias string, module Value) error {
 		}
 		return fmt.Errorf("require: alias %q already defined", alias)
 	}
-	root.Define(alias, module)
 	return nil
 }
 
@@ -610,12 +620,14 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		}
 	}
 
-	bindModuleExportsWithoutOverwrite(exec.root, exports)
-
 	exportsVal := NewObject(exports)
-	exec.modules[entry.key] = exportsVal
-	if err := bindRequireAlias(exec.root, alias, exportsVal); err != nil {
+	if err := validateRequireAliasBinding(exec.root, alias, exportsVal); err != nil {
 		return NewNil(), err
+	}
+	bindModuleExportsWithoutOverwrite(exec.root, exports)
+	exec.modules[entry.key] = exportsVal
+	if alias != "" {
+		exec.root.Define(alias, exportsVal)
 	}
 	return exportsVal, nil
 }
