@@ -46,7 +46,9 @@ When `total_with_fee` runs, `require("fees")` resolves the module relative to
 `Config.ModulePaths`, compiles it once, and returns an object containing the
 module’s exports. Use `export def` for explicit control; if no explicit exports
 are declared, public functions are exported by default and names starting with
-`_` stay private to the module.
+`_` stay private to the module. When an exported name conflicts with an
+existing global, the existing binding keeps precedence and the module object
+remains the conflict-free access path.
 
 Inside modules, explicit relative requires are supported:
 

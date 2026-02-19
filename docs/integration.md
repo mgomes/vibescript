@@ -79,7 +79,8 @@ or parent-local helpers. Relative requires are resolved from the calling
 module's directory and are rejected if they escape the module root. Functions
 can be exported explicitly with `export def ...`; if no explicit exports are
 declared, public names are exported by default and names starting with `_`
-remain private.
+remain private. Exported names are only injected into globals when no binding
+already exists, so existing host/script globals keep precedence.
 
 ### Capability Adapters
 

@@ -149,6 +149,80 @@ end`)
 	}
 }
 
+func TestRequireNamespaceConflictKeepsExistingGlobalBinding(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def double(value)
+  value + 1
+end
+
+def run(value)
+  mod = require("helper")
+  {
+    global: double(value),
+    module: mod.double(value)
+  }
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %#v", result)
+	}
+	out := result.Hash()
+	if out["global"].Kind() != KindInt || out["global"].Int() != 4 {
+		t.Fatalf("expected global binding to stay at 4, got %#v", out["global"])
+	}
+	if out["module"].Kind() != KindInt || out["module"].Int() != 6 {
+		t.Fatalf("expected module object function to return 6, got %#v", out["module"])
+	}
+}
+
+func TestRequireNamespaceConflictKeepsFirstModuleBinding(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  first = require("helper")
+  second = require("helper_alt")
+  require("helper_alt", as: "alt")
+  {
+    global: double(value),
+    first: first.double(value),
+    second: second.double(value),
+    alias: alt.double(value)
+  }
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %#v", result)
+	}
+	out := result.Hash()
+	if out["global"].Kind() != KindInt || out["global"].Int() != 6 {
+		t.Fatalf("expected first module binding to stay global at 6, got %#v", out["global"])
+	}
+	if out["first"].Kind() != KindInt || out["first"].Int() != 6 {
+		t.Fatalf("expected first module object to return 6, got %#v", out["first"])
+	}
+	if out["second"].Kind() != KindInt || out["second"].Int() != 30 {
+		t.Fatalf("expected second module object to return 30, got %#v", out["second"])
+	}
+	if out["alias"].Kind() != KindInt || out["alias"].Int() != 30 {
+		t.Fatalf("expected alias module object to return 30, got %#v", out["alias"])
+	}
+}
+
 func TestRequireMissingModule(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 

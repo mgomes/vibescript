@@ -429,6 +429,15 @@ func bindRequireAlias(root *Env, alias string, module Value) error {
 	return nil
 }
 
+func bindModuleExportsWithoutOverwrite(root *Env, exports map[string]Value) {
+	for name, fnVal := range exports {
+		if _, exists := root.Get(name); exists {
+			continue
+		}
+		root.Define(name, fnVal)
+	}
+}
+
 func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if exec.strictEffects && !exec.allowRequire {
 		return NewNil(), fmt.Errorf("strict effects: require is disabled without CallOptions.AllowRequire")
@@ -499,12 +508,7 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		}
 	}
 
-	for name, fnVal := range exports {
-		if _, exists := exec.root.Get(name); exists {
-			continue
-		}
-		exec.root.Define(name, fnVal)
-	}
+	bindModuleExportsWithoutOverwrite(exec.root, exports)
 
 	exportsVal := NewObject(exports)
 	exec.modules[entry.key] = exportsVal
