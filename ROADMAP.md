@@ -308,8 +308,8 @@ Goal: reduce host-side boilerplate for common scripting tasks.
 ### v0.18.0 Definition of Done
 
 - [x] New stdlib is documented and example-backed.
-- [ ] Runtime behavior is deterministic across supported OSes.
-- [ ] Security/performance guardrails are validated by tests.
+- [x] Runtime behavior is deterministic across supported OSes.
+- [x] Security/performance guardrails are validated by tests.
 
 ---
 
