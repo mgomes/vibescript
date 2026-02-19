@@ -168,7 +168,7 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 ### Type Features
 
-- [ ] Add parametric container types: `array<T>`, `hash<K, V>`.
+- [x] Add parametric container types: `array<T>`, `hash<K, V>`.
 - [x] Add union types beyond nil: `A | B`.
 - [ ] Add typed object/hash shape syntax for common payload contracts.
 - [ ] Add typed block signatures where appropriate.
@@ -183,9 +183,9 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 ### Runtime and Parser
 
-- [ ] Extend parser grammar for generic and union type expressions.
-- [ ] Extend type resolver and internal type representation.
-- [ ] Add runtime validators for composite/union types.
+- [x] Extend parser grammar for generic and union type expressions.
+- [x] Extend type resolver and internal type representation.
+- [x] Add runtime validators for composite/union types.
 - [ ] Add contract interop so capability contracts can reuse type validators.
 
 ### Testing and Docs

@@ -12,6 +12,12 @@ Type names are case-insensitive:
 - `array`, `hash`/`object`, `function`
 - `any` (no checks)
 
+Parametric containers:
+
+- `array<T>` checks every element against `T`
+- `hash<K, V>` checks each key against `K` and each value against `V`
+- Example: `array<int>`, `array<int | string>`, `hash<string, int>`
+
 Nullable: append `?` to allow `nil` (e.g., `string?`, `time?`, `int?`).
 
 Unions: join allowed types with `|` (e.g., `int | string`, `int | nil`).
@@ -62,6 +68,6 @@ Duration methods like `ago`/`after` return `Time`. Typed signatures use `time` o
 
 ## Notes and limitations
 
-- Types are nominal by kind (no generics like `array<int>` yet).
-- Container element/key/value constraints are not supported yet (`array<T>`, `hash<K, V>`).
+- Types are nominal by kind.
+- Hash keys are runtime strings, so `hash<K, V>` key checks run against string keys.
 - Type names are case-insensitive (`Int` == `int`).

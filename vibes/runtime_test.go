@@ -1171,6 +1171,18 @@ func TestTypedFunctions(t *testing.T) {
     def union_bad_return() -> int | string
       true
     end
+
+    def ints_only(values: array<int>) -> array<int>
+      values
+    end
+
+    def totals_by_player(totals: hash<string, int>) -> hash<string, int>
+      totals
+    end
+
+    def mixed_items(values: array<int | string>) -> array<int | string>
+      values
+    end
     `)
 
 	if fn, ok := script.Function("bad_return"); !ok || fn.ReturnTy == nil {
@@ -1199,6 +1211,18 @@ func TestTypedFunctions(t *testing.T) {
 	}
 	if got := callFunc(t, script, "union_optional", []Value{NewInt(9)}); !got.Equal(NewInt(9)) {
 		t.Fatalf("union_optional int mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "ints_only", []Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})}); got.Kind() != KindArray {
+		t.Fatalf("ints_only expected array result, got %v", got.Kind())
+	}
+	if got := callFunc(t, script, "totals_by_player", []Value{NewHash(map[string]Value{
+		"alice": NewInt(10),
+		"bob":   NewInt(12),
+	})}); got.Kind() != KindHash {
+		t.Fatalf("totals_by_player expected hash result, got %v", got.Kind())
+	}
+	if got := callFunc(t, script, "mixed_items", []Value{NewArray([]Value{NewInt(1), NewString("two"), NewInt(3)})}); got.Kind() != KindArray {
+		t.Fatalf("mixed_items expected array result, got %v", got.Kind())
 	}
 	if got := callFunc(t, script, "nil_result", nil); !got.Equal(NewNil()) {
 		t.Fatalf("nil_result mismatch: %v", got)
@@ -1242,6 +1266,27 @@ func TestTypedFunctions(t *testing.T) {
 	_, err = script.Call(context.Background(), "union_bad_return", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "expected int | string") {
 		t.Fatalf("expected union return type error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "ints_only", []Value{
+		NewArray([]Value{NewInt(1), NewString("oops")}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expected array<int>") {
+		t.Fatalf("expected typed array arg error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "totals_by_player", []Value{
+		NewHash(map[string]Value{"alice": NewString("oops")}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expected hash<string, int>") {
+		t.Fatalf("expected typed hash arg error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "mixed_items", []Value{
+		NewArray([]Value{NewBool(true)}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expected array<int | string>") {
+		t.Fatalf("expected typed union array arg error, got %v", err)
 	}
 }
 

@@ -1033,5 +1033,33 @@ func (p *parser) parseTypeAtom() *TypeExpr {
 	kind, nullable := resolveType(p.curToken.Literal)
 	ty.Kind = kind
 	ty.Nullable = nullable
+
+	if p.peekToken.Type == tokenLT {
+		p.nextToken()
+		p.nextToken()
+		typeArgs := []*TypeExpr{}
+		for {
+			arg := p.parseTypeExpr()
+			if arg == nil {
+				return nil
+			}
+			typeArgs = append(typeArgs, arg)
+
+			if p.peekToken.Type == tokenComma {
+				p.nextToken()
+				p.nextToken()
+				continue
+			}
+
+			if p.peekToken.Type != tokenGT {
+				p.errorExpected(p.peekToken, ">")
+				return nil
+			}
+			p.nextToken()
+			break
+		}
+		ty.TypeArgs = typeArgs
+	}
+
 	return ty
 }

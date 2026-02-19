@@ -69,6 +69,7 @@ type TypeExpr struct {
 	Name     string
 	Kind     TypeKind
 	Nullable bool
+	TypeArgs []*TypeExpr
 	Union    []*TypeExpr
 	position Position
 }

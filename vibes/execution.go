@@ -3309,9 +3309,55 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 	case TypeMoney:
 		return val.Kind() == KindMoney, nil
 	case TypeArray:
-		return val.Kind() == KindArray, nil
+		if val.Kind() != KindArray {
+			return false, nil
+		}
+		if len(ty.TypeArgs) == 0 {
+			return true, nil
+		}
+		if len(ty.TypeArgs) != 1 {
+			return false, fmt.Errorf("array type expects exactly 1 type argument")
+		}
+		elemType := ty.TypeArgs[0]
+		for _, elem := range val.Array() {
+			matches, err := valueMatchesType(elem, elemType)
+			if err != nil {
+				return false, err
+			}
+			if !matches {
+				return false, nil
+			}
+		}
+		return true, nil
 	case TypeHash:
-		return val.Kind() == KindHash || val.Kind() == KindObject, nil
+		if val.Kind() != KindHash && val.Kind() != KindObject {
+			return false, nil
+		}
+		if len(ty.TypeArgs) == 0 {
+			return true, nil
+		}
+		if len(ty.TypeArgs) != 2 {
+			return false, fmt.Errorf("hash type expects exactly 2 type arguments")
+		}
+		keyType := ty.TypeArgs[0]
+		valueType := ty.TypeArgs[1]
+		for key, value := range val.Hash() {
+			keyMatches, err := valueMatchesType(NewString(key), keyType)
+			if err != nil {
+				return false, err
+			}
+			if !keyMatches {
+				return false, nil
+			}
+			valueMatches, err := valueMatchesType(value, valueType)
+			if err != nil {
+				return false, err
+			}
+			if !valueMatches {
+				return false, nil
+			}
+		}
+		return true, nil
 	case TypeFunction:
 		return val.Kind() == KindFunction, nil
 	case TypeUnion:
@@ -3379,6 +3425,13 @@ func formatTypeExpr(ty *TypeExpr) string {
 	}
 	if name == "" {
 		name = "unknown"
+	}
+	if len(ty.TypeArgs) > 0 {
+		args := make([]string, len(ty.TypeArgs))
+		for i, typeArg := range ty.TypeArgs {
+			args[i] = formatTypeExpr(typeArg)
+		}
+		name = fmt.Sprintf("%s<%s>", name, strings.Join(args, ", "))
 	}
 	if ty.Nullable && !strings.HasSuffix(name, "?") {
 		return name + "?"
