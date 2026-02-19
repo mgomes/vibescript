@@ -1887,6 +1887,52 @@ func TestJSONAndRegexMalformedInputs(t *testing.T) {
 	}
 }
 
+func TestJSONAndRegexSizeGuards(t *testing.T) {
+	engine := MustNewEngine(Config{MemoryQuotaBytes: 4 << 20})
+	script, err := engine.Compile(`
+    def parse_raw(raw)
+      JSON.parse(raw)
+    end
+
+    def stringify_value(value)
+      JSON.stringify(value)
+    end
+
+    def regex_match_guard(pattern, text)
+      Regex.match(pattern, text)
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	largeJSON := `{"data":"` + strings.Repeat("x", maxJSONPayloadBytes) + `"}`
+	_, err = script.Call(context.Background(), "parse_raw", []Value{NewString(largeJSON)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.parse input exceeds limit") {
+		t.Fatalf("expected JSON.parse size guard error, got %v", err)
+	}
+
+	largeValue := NewHash(map[string]Value{
+		"data": NewString(strings.Repeat("x", maxJSONPayloadBytes)),
+	})
+	_, err = script.Call(context.Background(), "stringify_value", []Value{largeValue}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.stringify output exceeds limit") {
+		t.Fatalf("expected JSON.stringify size guard error, got %v", err)
+	}
+
+	largePattern := strings.Repeat("a", maxRegexPatternSize+1)
+	_, err = script.Call(context.Background(), "regex_match_guard", []Value{NewString(largePattern), NewString("aaa")}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.match pattern exceeds limit") {
+		t.Fatalf("expected Regex.match pattern guard error, got %v", err)
+	}
+
+	largeText := strings.Repeat("a", maxRegexInputBytes+1)
+	_, err = script.Call(context.Background(), "regex_match_guard", []Value{NewString("a+"), NewString(largeText)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.match text exceeds limit") {
+		t.Fatalf("expected Regex.match text guard error, got %v", err)
+	}
+}
+
 func TestLocaleSensitiveOperationsDeterministic(t *testing.T) {
 	script := compileScript(t, `
     def locale_ops()

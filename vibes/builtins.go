@@ -13,7 +13,12 @@ import (
 	"time"
 )
 
-const randomIDAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+const (
+	randomIDAlphabet    = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	maxJSONPayloadBytes = 1 << 20
+	maxRegexInputBytes  = 1 << 20
+	maxRegexPatternSize = 16 << 10
+)
 
 func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) == 0 {
@@ -225,7 +230,12 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 		return NewNil(), fmt.Errorf("JSON.parse does not accept blocks")
 	}
 
-	decoder := json.NewDecoder(strings.NewReader(args[0].String()))
+	raw := args[0].String()
+	if len(raw) > maxJSONPayloadBytes {
+		return NewNil(), fmt.Errorf("JSON.parse input exceeds limit %d bytes", maxJSONPayloadBytes)
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.UseNumber()
 
 	var decoded any
@@ -266,6 +276,9 @@ func builtinJSONStringify(exec *Execution, receiver Value, args []Value, kwargs 
 	payload, err := json.Marshal(encoded)
 	if err != nil {
 		return NewNil(), fmt.Errorf("JSON.stringify failed: %v", err)
+	}
+	if len(payload) > maxJSONPayloadBytes {
+		return NewNil(), fmt.Errorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)
 	}
 	return NewString(string(payload)), nil
 }
@@ -384,12 +397,20 @@ func builtinRegexMatch(exec *Execution, receiver Value, args []Value, kwargs map
 	if args[0].Kind() != KindString || args[1].Kind() != KindString {
 		return NewNil(), fmt.Errorf("Regex.match expects string pattern and text")
 	}
+	pattern := args[0].String()
+	text := args[1].String()
+	if len(pattern) > maxRegexPatternSize {
+		return NewNil(), fmt.Errorf("Regex.match pattern exceeds limit %d bytes", maxRegexPatternSize)
+	}
+	if len(text) > maxRegexInputBytes {
+		return NewNil(), fmt.Errorf("Regex.match text exceeds limit %d bytes", maxRegexInputBytes)
+	}
 
-	re, err := regexp.Compile(args[0].String())
+	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return NewNil(), fmt.Errorf("Regex.match invalid regex: %v", err)
 	}
-	match := re.FindString(args[1].String())
+	match := re.FindString(text)
 	if match == "" {
 		return NewNil(), nil
 	}
@@ -426,6 +447,12 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 	text := args[0].String()
 	pattern := args[1].String()
 	replacement := args[2].String()
+	if len(pattern) > maxRegexPatternSize {
+		return NewNil(), fmt.Errorf("%s pattern exceeds limit %d bytes", method, maxRegexPatternSize)
+	}
+	if len(text) > maxRegexInputBytes {
+		return NewNil(), fmt.Errorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
 
 	re, err := regexp.Compile(pattern)
 	if err != nil {

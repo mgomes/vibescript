@@ -102,6 +102,8 @@ payload = JSON.parse("{\"id\":\"p-1\",\"score\":10}")
 payload[:score] # 10
 ```
 
+`JSON.parse` enforces a 1 MiB input limit.
+
 ### `JSON.stringify(value)`
 
 Serializes supported values (`hash`/`object`, `array`, scalar primitives) into
@@ -110,6 +112,8 @@ a JSON string:
 ```vibe
 raw = JSON.stringify({ id: "p-1", score: 10, tags: ["a", "b"] })
 ```
+
+`JSON.stringify` enforces a 1 MiB output limit.
 
 ## Regex
 
@@ -131,6 +135,8 @@ Regex.replace("ID-12 ID-34", "ID-[0-9]+", "X")           # "X ID-34"
 Regex.replace_all("ID-12 ID-34", "ID-[0-9]+", "X")       # "X X"
 Regex.replace("ID-12", "ID-([0-9]+)", "X-$1")            # "X-12"
 ```
+
+Regex helpers enforce input guards (max pattern size 16 KiB, max text size 1 MiB).
 
 ## Module Loading
 

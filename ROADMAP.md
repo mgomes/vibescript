@@ -296,7 +296,7 @@ Goal: reduce host-side boilerplate for common scripting tasks.
 ### Compatibility and Safety
 
 - [x] Define deterministic behavior for locale-sensitive operations.
-- [ ] Add quotas/guards around potentially expensive operations.
+- [x] Add quotas/guards around potentially expensive operations.
 - [ ] Ensure new stdlib functions are capability-safe where required.
 
 ### Testing and Docs
