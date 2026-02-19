@@ -220,7 +220,7 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 - [ ] Add structured error handling syntax (`begin/rescue/ensure` or equivalent).
 - [ ] Add typed error matching where feasible.
 - [ ] Define re-raise semantics and stack preservation.
-- [ ] Ensure runtime errors preserve original position and call frames.
+- [x] Ensure runtime errors preserve original position and call frames.
 
 ### Runtime Behavior
 
@@ -237,9 +237,9 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 
 ### v0.16.0 Definition of Done
 
-- [ ] No regressions in existing `if/for/range` behavior.
+- [x] No regressions in existing `if/for/range` behavior.
 - [ ] Structured error handling works with assertions and runtime errors.
-- [ ] Coverage includes nested/edge control-flow paths.
+- [x] Coverage includes nested/edge control-flow paths.
 
 ---
 
