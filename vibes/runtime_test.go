@@ -1651,6 +1651,44 @@ func TestTimeParseAndAliases(t *testing.T) {
 	}
 }
 
+func TestTimeParseCommonLayouts(t *testing.T) {
+	script := compileScript(t, `
+    def parse_common()
+      {
+        slash_date: Time.parse("2024/01/02", in: "UTC").to_s,
+        slash_datetime: Time.parse("2024/01/02 03:04:05", in: "UTC").to_s,
+        us_date: Time.parse("01/02/2024", in: "UTC").to_s,
+        us_datetime: Time.parse("01/02/2024 03:04:05", in: "UTC").to_s,
+        iso_no_zone: Time.parse("2024-01-02T03:04:05", in: "UTC").to_s,
+        rfc1123: Time.parse("Tue, 02 Jan 2024 03:04:05 UTC").to_s
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "parse_common", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	expect := map[string]string{
+		"slash_date":     "2024-01-02T00:00:00Z",
+		"slash_datetime": "2024-01-02T03:04:05Z",
+		"us_date":        "2024-01-02T00:00:00Z",
+		"us_datetime":    "2024-01-02T03:04:05Z",
+		"iso_no_zone":    "2024-01-02T03:04:05Z",
+		"rfc1123":        "2024-01-02T03:04:05Z",
+	}
+	for key, want := range expect {
+		val, ok := got[key]
+		if !ok {
+			t.Fatalf("missing key %s", key)
+		}
+		if val.Kind() != KindString || val.String() != want {
+			t.Fatalf("%s mismatch: got %v want %s", key, val, want)
+		}
+	}
+}
+
 func TestJSONBuiltins(t *testing.T) {
 	script := compileScript(t, `
     def parse_payload()

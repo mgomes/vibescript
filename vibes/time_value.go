@@ -10,8 +10,15 @@ import (
 var defaultTimeParseLayouts = []string{
 	time.RFC3339Nano,
 	time.RFC3339,
+	time.RFC1123Z,
+	time.RFC1123,
+	"2006-01-02T15:04:05",
 	"2006-01-02 15:04:05",
+	"2006/01/02 15:04:05",
 	"2006-01-02",
+	"2006/01/02",
+	"01/02/2006 15:04:05",
+	"01/02/2006",
 }
 
 func parseLocation(val Value) (*time.Location, error) {

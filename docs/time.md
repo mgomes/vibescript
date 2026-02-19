@@ -18,6 +18,7 @@ end
 - `Time.parse(string, layout=nil, in: zone)`
 
 Zones accept Go-style names (e.g. `"America/New_York"`), `"UTC"`/`"GMT"`, `"LOCAL"`, or numeric offsets like `"+05:30"`.
+Without an explicit `layout`, `Time.parse` accepts common formats such as RFC3339/RFC1123, `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYY-MM-DD HH:MM:SS`, and `MM/DD/YYYY` (with optional time).
 
 ## Formatting
 
