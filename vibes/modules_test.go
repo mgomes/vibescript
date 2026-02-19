@@ -367,6 +367,47 @@ end`)
 	}
 }
 
+func TestRequireRejectsBackslashPathTraversal(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run()
+  require("nested\\..\\..\\etc\\passwd")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected error for backslash path traversal")
+	} else if !strings.Contains(err.Error(), "escapes search paths") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireNormalizesPathSeparators(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  unix_style = require("shared/math")
+  windows_style = require("shared\\math")
+  unix_style.double(value) + windows_style.double(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 12 {
+		t.Fatalf("expected 12, got %#v", result)
+	}
+	if len(engine.modules) != 1 {
+		t.Fatalf("expected normalized requires to share cache entry, got %d modules", len(engine.modules))
+	}
+}
+
 func TestRequireRelativePathRequiresModuleCaller(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
@@ -477,6 +518,42 @@ end
 	script, err := engine.Compile(`def run()
   mod = require("entry")
   mod.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected symlink escape error")
+	} else if !strings.Contains(err.Error(), "escapes module root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireSearchPathRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-specific on Windows")
+	}
+
+	moduleRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+
+	secretModule := filepath.Join(outsideRoot, "secret.vibe")
+	if err := os.WriteFile(secretModule, []byte(`def hidden()
+  42
+end
+`), 0o644); err != nil {
+		t.Fatalf("write secret module: %v", err)
+	}
+
+	symlinkPath := filepath.Join(moduleRoot, "link")
+	if err := os.Symlink(outsideRoot, symlinkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  require("link/secret")
 end`)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)

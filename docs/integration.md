@@ -85,6 +85,8 @@ can be exported explicitly with `export def ...`; if no explicit exports are
 declared, public names are exported by default and names starting with `_`
 remain private. Exported names are only injected into globals when no binding
 already exists, so existing host/script globals keep precedence.
+Import paths are normalized across slash styles, and traversal/symlink escapes
+outside configured module roots are blocked.
 
 ### Capability Adapters
 

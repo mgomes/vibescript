@@ -31,15 +31,18 @@ func parseModuleRequest(name string) (moduleRequest, error) {
 	if trimmed == "" {
 		return moduleRequest{}, fmt.Errorf("require: module name must be non-empty")
 	}
+	normalizedName := strings.ReplaceAll(trimmed, "\\", string(filepath.Separator))
+	normalizedName = strings.ReplaceAll(normalizedName, "/", string(filepath.Separator))
+
 	request := moduleRequest{
 		raw:              name,
 		explicitRelative: isExplicitRelativeModulePath(trimmed),
 	}
-	if filepath.Ext(trimmed) == "" {
-		trimmed += ".vibe"
+	if filepath.Ext(normalizedName) == "" {
+		normalizedName += ".vibe"
 	}
 
-	request.normalized = filepath.Clean(trimmed)
+	request.normalized = filepath.Clean(normalizedName)
 	if request.normalized == "." {
 		return moduleRequest{}, fmt.Errorf("require: module name %q resolves to current directory", name)
 	}
@@ -61,8 +64,8 @@ func isExplicitRelativeModulePath(name string) bool {
 }
 
 func containsPathTraversal(cleanPath string) bool {
-	sep := string(filepath.Separator)
-	return slices.Contains(strings.Split(cleanPath, sep), "..")
+	normalized := strings.ReplaceAll(filepath.Clean(cleanPath), "\\", "/")
+	return slices.Contains(strings.Split(normalized, "/"), "..")
 }
 
 func moduleCacheKey(root, relative string) string {
@@ -244,11 +247,15 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 
 	for _, root := range e.modPaths {
 		key := moduleCacheKey(root, request.normalized)
+		candidate := filepath.Join(root, request.normalized)
+
+		if _, err := moduleRelativePath(root, candidate); err != nil {
+			return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
+		}
+
 		if entry, ok := e.getCachedModule(key); ok {
 			return entry, nil
 		}
-
-		candidate := filepath.Join(root, request.normalized)
 		data, readErr := os.ReadFile(candidate)
 		if readErr != nil {
 			if errors.Is(readErr, fs.ErrNotExist) {
