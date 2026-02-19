@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -362,6 +363,72 @@ func shouldExportModuleFunction(name string, fn *ScriptFunction, hasExplicitExpo
 	return isPublicModuleExport(name)
 }
 
+func parseRequireAlias(kwargs map[string]Value) (string, error) {
+	if len(kwargs) == 0 {
+		return "", nil
+	}
+	if len(kwargs) != 1 {
+		for key := range kwargs {
+			if key != "as" {
+				return "", fmt.Errorf("require: unknown keyword argument %s", key)
+			}
+		}
+		return "", fmt.Errorf("require: unknown keyword arguments")
+	}
+
+	aliasVal, ok := kwargs["as"]
+	if !ok {
+		for key := range kwargs {
+			return "", fmt.Errorf("require: unknown keyword argument %s", key)
+		}
+		return "", fmt.Errorf("require: unknown keyword arguments")
+	}
+
+	var aliasName string
+	switch aliasVal.Kind() {
+	case KindString, KindSymbol:
+		aliasName = strings.TrimSpace(aliasVal.String())
+	default:
+		return "", fmt.Errorf("require: alias must be a string or symbol")
+	}
+
+	if !isValidModuleAlias(aliasName) {
+		return "", fmt.Errorf("require: invalid alias %q", aliasName)
+	}
+
+	return aliasName, nil
+}
+
+func isValidModuleAlias(name string) bool {
+	if name == "" {
+		return false
+	}
+	runes := []rune(name)
+	if len(runes) == 0 || !isIdentifierStart(runes[0]) {
+		return false
+	}
+	for _, r := range runes[1:] {
+		if !isIdentifierRune(r) {
+			return false
+		}
+	}
+	return lookupIdent(name) == tokenIdent
+}
+
+func bindRequireAlias(root *Env, alias string, module Value) error {
+	if alias == "" {
+		return nil
+	}
+	if existing, ok := root.Get(alias); ok {
+		if existing.Kind() == KindObject && module.Kind() == KindObject && reflect.ValueOf(existing.Hash()).Pointer() == reflect.ValueOf(module.Hash()).Pointer() {
+			return nil
+		}
+		return fmt.Errorf("require: alias %q already defined", alias)
+	}
+	root.Define(alias, module)
+	return nil
+}
+
 func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if exec.strictEffects && !exec.allowRequire {
 		return NewNil(), fmt.Errorf("strict effects: require is disabled without CallOptions.AllowRequire")
@@ -374,6 +441,10 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	}
 	if exec.root == nil {
 		return NewNil(), fmt.Errorf("require unavailable in this context")
+	}
+	alias, err := parseRequireAlias(kwargs)
+	if err != nil {
+		return NewNil(), err
 	}
 
 	modNameVal := args[0]
@@ -394,6 +465,9 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	}
 
 	if cached, ok := exec.modules[entry.key]; ok {
+		if err := bindRequireAlias(exec.root, alias, cached); err != nil {
+			return NewNil(), err
+		}
 		return cached, nil
 	}
 
@@ -434,5 +508,8 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 
 	exportsVal := NewObject(exports)
 	exec.modules[entry.key] = exportsVal
+	if err := bindRequireAlias(exec.root, alias, exportsVal); err != nil {
+		return NewNil(), err
+	}
 	return exportsVal, nil
 }

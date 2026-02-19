@@ -30,6 +30,101 @@ end`)
 	}
 }
 
+func TestRequireSupportsModuleAlias(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  require("helper", as: "helpers")
+  require("helper", as: "helpers")
+  helpers.triple(value) + helpers.double(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 15 {
+		t.Fatalf("expected 15, got %#v", result)
+	}
+}
+
+func TestRequireAliasValidation(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	cases := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{
+			name: "invalid identifier",
+			source: `def run()
+  require("helper", as: "123bad")
+end`,
+			wantErr: `require: invalid alias "123bad"`,
+		},
+		{
+			name: "keyword alias",
+			source: `def run()
+  require("helper", as: "if")
+end`,
+			wantErr: `require: invalid alias "if"`,
+		},
+		{
+			name: "invalid type",
+			source: `def run()
+  require("helper", as: 10)
+end`,
+			wantErr: "require: alias must be a string or symbol",
+		},
+		{
+			name: "unknown keyword",
+			source: `def run()
+  require("helper", name: "helpers")
+end`,
+			wantErr: "require: unknown keyword argument name",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script, err := engine.Compile(tc.source)
+			if err != nil {
+				t.Fatalf("compile failed: %v", err)
+			}
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("expected alias validation error")
+			} else if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRequireAliasRejectsConflictingGlobal(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def helpers(value)
+  value
+end
+
+def run()
+  require("helper", as: "helpers")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected alias conflict error")
+	} else if !strings.Contains(err.Error(), `require: alias "helpers" already defined`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRequirePreservesModuleLocalResolution(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 

@@ -65,13 +65,15 @@ if err != nil {
 }
 
 script, err := engine.Compile(`def total(amount)
-  helpers = require("fees")
+  require("fees", as: "helpers")
   helpers.apply_fee(amount)
 end`)
 ```
 
 The interpreter searches each configured directory for `<module>.vibe` in order
 and caches compiled modules so subsequent calls to `require` are inexpensive.
+Use the optional `as:` keyword to bind the loaded module object to a global
+alias.
 Inside a module, use explicit relative paths (`./` or `../`) to load siblings
 or parent-local helpers. Relative requires are resolved from the calling
 module's directory and are rejected if they escape the module root. Functions

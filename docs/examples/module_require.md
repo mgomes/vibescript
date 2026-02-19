@@ -37,7 +37,7 @@ A main script can load the helpers and use the exported functions:
 # scripts/checkout.vibe
 
 def total_with_fee(amount)
-  fees = require("fees")
+  require("fees", as: "fees")
   fees.apply_fee(amount)
 end
 ```
