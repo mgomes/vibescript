@@ -556,6 +556,27 @@ func TestParseErrorIncludesCodeFrameAndKeywordMessage(t *testing.T) {
 	}
 }
 
+func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
+	script := compileScript(t, `
+    def hash_payload(cursor)
+      { next: cursor, break: cursor + 1 }
+    end
+
+    def call_payload(cursor)
+      list(next: cursor, break: cursor + 1)
+    end
+    `)
+
+	payload := callFunc(t, script, "hash_payload", []Value{NewInt(7)})
+	if payload.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", payload.Kind())
+	}
+	compareHash(t, payload.Hash(), map[string]Value{
+		"next":  NewInt(7),
+		"break": NewInt(8),
+	})
+}
+
 func TestParseErrorIncludesBlockParameterHint(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	_, err := engine.Compile("def broken()\n  [1].each do |a,|\n    a\n  end\nend\n")

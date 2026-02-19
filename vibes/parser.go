@@ -784,7 +784,7 @@ func (p *parser) parseHashLiteral() Expression {
 }
 
 func (p *parser) parseHashPair() HashPair {
-	if p.curToken.Type != tokenIdent || p.peekToken.Type != tokenColon {
+	if !isLabelNameToken(p.curToken.Type) || p.peekToken.Type != tokenColon {
 		p.addParseError(p.curToken.Pos, "invalid hash pair: expected symbol-style key like name:")
 		return HashPair{}
 	}
@@ -864,7 +864,7 @@ func (p *parser) parseCallExpression(function Expression) Expression {
 }
 
 func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
-	if (p.curToken.Type == tokenIdent || p.curToken.Type == tokenIn) && p.peekToken.Type == tokenColon {
+	if isLabelNameToken(p.curToken.Type) && p.peekToken.Type == tokenColon {
 		name := p.curToken.Literal
 		p.nextToken()
 		p.nextToken()
@@ -883,6 +883,19 @@ func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
 	expr := p.parseExpression(lowestPrec)
 	if expr != nil {
 		*args = append(*args, expr)
+	}
+}
+
+func isLabelNameToken(tt TokenType) bool {
+	switch tt {
+	case tokenIdent,
+		tokenDef, tokenClass, tokenSelf, tokenPrivate, tokenProperty, tokenGetter, tokenSetter,
+		tokenEnd, tokenReturn, tokenYield, tokenDo, tokenFor, tokenWhile, tokenUntil,
+		tokenBreak, tokenNext, tokenIn, tokenIf, tokenCase, tokenWhen, tokenElsif, tokenElse,
+		tokenTrue, tokenFalse, tokenNil:
+		return true
+	default:
+		return false
 	}
 }
 
