@@ -814,6 +814,17 @@ end`)
 	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
 		t.Fatalf("expected top-level export parse error, got %v", err)
 	}
+
+	_, err = engine.Compile(`def outer()
+  if true
+    export def nested()
+      1
+    end
+  end
+end`)
+	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
+		t.Fatalf("expected nested export parse error, got %v", err)
+	}
 }
 
 func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {

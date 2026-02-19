@@ -38,8 +38,9 @@ type parser struct {
 	prefixFns map[TokenType]prefixParseFn
 	infixFns  map[TokenType]infixParseFn
 
-	insideClass bool
-	privateNext bool
+	insideClass      bool
+	privateNext      bool
+	statementNesting int
 }
 
 func newParser(input string) *parser {
@@ -204,6 +205,10 @@ func (p *parser) parseFunctionStatement() Statement {
 		p.nextToken()
 	}
 	body := []Statement{}
+	p.statementNesting++
+	defer func() {
+		p.statementNesting--
+	}()
 	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
 		stmt := p.parseStatement()
 		if stmt != nil {
@@ -227,7 +232,7 @@ func (p *parser) parseFunctionStatement() Statement {
 
 func (p *parser) parseExportStatement() Statement {
 	pos := p.curToken.Pos
-	if p.insideClass {
+	if p.insideClass || p.statementNesting > 0 {
 		p.addParseError(pos, "export is only supported for top-level functions")
 		return nil
 	}
@@ -323,6 +328,10 @@ func (p *parser) parseClassStatement() Statement {
 	prevPrivate := p.privateNext
 	p.insideClass = true
 	p.privateNext = false
+	p.statementNesting++
+	defer func() {
+		p.statementNesting--
+	}()
 
 	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
 		switch p.curToken.Type {
@@ -557,6 +566,10 @@ func (p *parser) parseBlock(stop ...TokenType) []Statement {
 	for _, tt := range stop {
 		stopSet[tt] = struct{}{}
 	}
+	p.statementNesting++
+	defer func() {
+		p.statementNesting--
+	}()
 
 	for {
 		if _, ok := stopSet[p.curToken.Type]; ok || p.curToken.Type == tokenEOF {
