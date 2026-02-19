@@ -37,6 +37,10 @@ jobs:
         if: runner.os != 'Windows'
         run: just lint
 
+      - name: Check Vibe formatting
+        if: runner.os != 'Windows'
+        run: go run ./cmd/vibes fmt -check .
+
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -51,6 +55,11 @@ jobs:
             Write-Host $fmt
             exit 1
           }
+
+      - name: Check Vibe formatting (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go run ./cmd/vibes fmt -check .
 
       - name: Run golangci-lint (Windows)
         if: runner.os == 'Windows'
