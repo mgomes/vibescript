@@ -1,0 +1,40 @@
+name: benchmarks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run benchmarks
+        run: |
+          mkdir -p .bench
+          go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem | tee .bench/benchmark.txt
+
+      - name: Publish benchmark summary
+        run: |
+          {
+            echo "## Benchmark Results"
+            echo ""
+            echo '```text'
+            cat .bench/benchmark.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: .bench/benchmark.txt

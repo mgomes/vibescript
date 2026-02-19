@@ -174,8 +174,12 @@ Long-form guides live in `docs/`:
 This repository uses [Just](https://github.com/casey/just) for common tasks:
 
 - `just test` runs the full Go test suite (`go test ./...`).
+- `just bench` runs the core execution benchmarks (`go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem`).
 - `just lint` checks formatting (`gofmt`) and runs `golangci-lint` with a generous timeout.
 - Add new recipes in the `Justfile` as workflows grow.
+
+CI also publishes benchmark artifacts via `.github/workflows/benchmarks.yml` on
+pull requests and pushes to `master`.
 
 Contributions should run `just test` and `just lint` (or the equivalent `go` and `golangci-lint` commands) before submitting patches.
 
