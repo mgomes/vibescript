@@ -188,6 +188,7 @@ This repository uses [Just](https://github.com/casey/just) for common tasks:
 - `just lint` checks formatting (`gofmt`) and runs `golangci-lint` with a generous timeout.
 - `vibes fmt <path>` applies canonical formatting to `.vibe` files (`-check` for CI, `-w` to write).
 - `vibes analyze <script.vibe>` runs script-level lint checks (e.g., unreachable statements).
+- `./scripts/check_ci_green.sh` verifies latest `master` CI run is green.
 - `vibes lsp` starts the language server protocol prototype (hover/completion/diagnostics over stdio).
 - Add new recipes in the `Justfile` as workflows grow.
 
