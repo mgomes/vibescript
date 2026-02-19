@@ -189,6 +189,7 @@ This repository uses [Just](https://github.com/casey/just) for common tasks:
 - `vibes fmt <path>` applies canonical formatting to `.vibe` files (`-check` for CI, `-w` to write).
 - `vibes analyze <script.vibe>` runs script-level lint checks (e.g., unreachable statements).
 - `./scripts/check_ci_green.sh` verifies latest `master` CI run is green.
+- `./scripts/release_rehearsal.sh <version>` runs repeatable pre-tag release checks.
 - `vibes lsp` starts the language server protocol prototype (hover/completion/diagnostics over stdio).
 - Add new recipes in the `Justfile` as workflows grow.
 

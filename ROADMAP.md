@@ -366,4 +366,4 @@ Goal: lock the language and embedding API for long-term support.
 
 - [x] Zero known P0/P1 correctness bugs.
 - [x] CI green across supported platforms and Go versions.
-- [ ] Release process rehearsed and repeatable.
+- [x] Release process rehearsed and repeatable.
