@@ -452,6 +452,35 @@ func (hashMergeContractLeakProbeCapability) CapabilityContracts() map[string]Cap
 	}
 }
 
+type stdlibContractLeakProbeCapability struct{}
+
+func (stdlibContractLeakProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"touch": NewBuiltin("cap.touch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				return NewString("ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+func (stdlibContractLeakProbeCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	contract := func(name string) CapabilityMethodContract {
+		return CapabilityMethodContract{
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				return fmt.Errorf("%s contract should not bind to foreign builtin", name)
+			},
+		}
+	}
+	return map[string]CapabilityMethodContract{
+		"JSON.parse":      contract("JSON.parse"),
+		"Regex.match":     contract("Regex.match"),
+		"hash.remap_keys": contract("hash.remap_keys"),
+		"array.chunk":     contract("array.chunk"),
+		"string.template": contract("string.template"),
+	}
+}
+
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`def run()
@@ -825,5 +854,134 @@ end`)
 	}
 	if got, ok := result.Hash()["b"]; !ok || got.Kind() != KindInt || got.Int() != 2 {
 		t.Fatalf("unexpected merge result: %#v", result.Hash())
+	}
+}
+
+func TestCapabilityContractsDoNotAttachToExpandedStdlibBuiltinsByName(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  cap.touch()
+  parsed = JSON.parse("{\"name\":\"alex\"}")
+  {
+    json_name: parsed.fetch("name"),
+    regex: Regex.match("ID-[0-9]+", "ID-12"),
+    squish: "  hi \n there  ".squish,
+    template: "Hi {{name}}".template({ name: "Alex" }),
+    chunk_size: [1, 2, 3, 4].chunk(2).size,
+    remap_value: { name: "Alex" }.remap_keys({ name: :player_name }).fetch(:player_name)
+  }
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			stdlibContractLeakProbeCapability{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if !got["json_name"].Equal(NewString("alex")) {
+		t.Fatalf("json_name mismatch: %v", got["json_name"])
+	}
+	if !got["regex"].Equal(NewString("ID-12")) {
+		t.Fatalf("regex mismatch: %v", got["regex"])
+	}
+	if !got["squish"].Equal(NewString("hi there")) {
+		t.Fatalf("squish mismatch: %v", got["squish"])
+	}
+	if !got["template"].Equal(NewString("Hi Alex")) {
+		t.Fatalf("template mismatch: %v", got["template"])
+	}
+	if !got["chunk_size"].Equal(NewInt(2)) {
+		t.Fatalf("chunk_size mismatch: %v", got["chunk_size"])
+	}
+	if !got["remap_value"].Equal(NewString("Alex")) {
+		t.Fatalf("remap_value mismatch: %v", got["remap_value"])
+	}
+}
+
+func TestCapabilityContractsStayEnforcedThroughExpandedStdlibTransforms(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def call_through_transforms()
+  hash_handler = { handler: probe.call }.remap_keys({ handler: :run }).fetch(:run)
+  chunk_handler = [probe.call].chunk(1).first.first
+  {
+    hash_ok: hash_handler(1),
+    chunk_ok: chunk_handler(2)
+  }
+end
+
+def fail_through_remap()
+  handler = { handler: probe.call }.remap_keys({ handler: :run }).fetch(:run)
+  handler("bad")
+end
+
+def fail_through_chunk()
+  handler = [probe.call].chunk(1).first.first
+  handler("bad")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	successInvocations := 0
+	okResult, err := script.Call(context.Background(), "call_through_transforms", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			contractProbeCapability{invokeCount: &successInvocations},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected success-call error: %v", err)
+	}
+	if successInvocations != 2 {
+		t.Fatalf("expected two successful capability invocations, got %d", successInvocations)
+	}
+	if okResult.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", okResult.Kind())
+	}
+	if !okResult.Hash()["hash_ok"].Equal(NewString("ok")) {
+		t.Fatalf("hash_ok mismatch: %v", okResult.Hash()["hash_ok"])
+	}
+	if !okResult.Hash()["chunk_ok"].Equal(NewString("ok")) {
+		t.Fatalf("chunk_ok mismatch: %v", okResult.Hash()["chunk_ok"])
+	}
+
+	remapInvocations := 0
+	_, err = script.Call(context.Background(), "fail_through_remap", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			contractProbeCapability{invokeCount: &remapInvocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected remap path contract validation error")
+	}
+	if got := err.Error(); !strings.Contains(got, "probe.call expects a single int argument") {
+		t.Fatalf("unexpected remap path error: %s", got)
+	}
+	if remapInvocations != 0 {
+		t.Fatalf("contract should reject remap path before invoke, got %d calls", remapInvocations)
+	}
+
+	chunkInvocations := 0
+	_, err = script.Call(context.Background(), "fail_through_chunk", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			contractProbeCapability{invokeCount: &chunkInvocations},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected chunk path contract validation error")
+	}
+	if got := err.Error(); !strings.Contains(got, "probe.call expects a single int argument") {
+		t.Fatalf("unexpected chunk path error: %s", got)
+	}
+	if chunkInvocations != 0 {
+		t.Fatalf("contract should reject chunk path before invoke, got %d calls", chunkInvocations)
 	}
 }
