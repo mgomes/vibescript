@@ -239,3 +239,35 @@ end`)
 		}
 	}
 }
+
+func BenchmarkExecutionTallyLoop(b *testing.B) {
+	engine := benchmarkEngine()
+	script, err := engine.Compile(`def run(values, n)
+  out = {}
+  for i in 1..n
+    out = values.tally
+  end
+  out
+end`)
+	if err != nil {
+		b.Fatalf("compile failed: %v", err)
+	}
+
+	values := make([]Value, 600)
+	for i := range values {
+		if i%2 == 0 {
+			values[i] = NewString("active")
+		} else {
+			values[i] = NewString("complete")
+		}
+	}
+	args := []Value{NewArray(values), NewInt(80)}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}

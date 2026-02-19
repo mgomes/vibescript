@@ -327,7 +327,7 @@ Goal: improve day-to-day developer productivity and interpreter robustness.
 ### Runtime Quality
 
 - [ ] Profile evaluator hotspots and optimize dispatch paths.
-- [ ] Reduce allocations in common value transformations.
+- [x] Reduce allocations in common value transformations.
 - [x] Improve error rendering for deeply nested call stacks.
 - [x] Add fuzz tests for parser and runtime edge cases.
 

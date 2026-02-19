@@ -628,7 +628,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		}
 		return NewArray(elems), nil
 	case *HashLiteral:
-		entries := make(map[string]Value)
+		entries := make(map[string]Value, len(e.Pairs))
 		for _, pair := range e.Pairs {
 			keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
 			if err != nil {
@@ -3677,8 +3677,9 @@ func arrayMember(array Value, property string) (Value, error) {
 			if err := ensureBlock(block, "array.group_by"); err != nil {
 				return NewNil(), err
 			}
-			groups := make(map[string][]Value)
-			for _, item := range receiver.Array() {
+			arr := receiver.Array()
+			groups := make(map[string][]Value, len(arr))
+			for _, item := range arr {
 				groupValue, err := exec.CallBlock(block, []Value{item})
 				if err != nil {
 					return NewNil(), err
@@ -3703,10 +3704,11 @@ func arrayMember(array Value, property string) (Value, error) {
 			if err := ensureBlock(block, "array.group_by_stable"); err != nil {
 				return NewNil(), err
 			}
-			order := make([]string, 0)
-			keyValues := make(map[string]Value)
-			groups := make(map[string][]Value)
-			for _, item := range receiver.Array() {
+			arr := receiver.Array()
+			order := make([]string, 0, len(arr))
+			keyValues := make(map[string]Value, len(arr))
+			groups := make(map[string][]Value, len(arr))
+			for _, item := range arr {
 				groupValue, err := exec.CallBlock(block, []Value{item})
 				if err != nil {
 					return NewNil(), err
@@ -3736,8 +3738,9 @@ func arrayMember(array Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.tally does not take arguments")
 			}
-			counts := make(map[string]int64)
-			for _, item := range receiver.Array() {
+			arr := receiver.Array()
+			counts := make(map[string]int64, len(arr))
+			for _, item := range arr {
 				keyValue := item
 				if block.Block() != nil {
 					mapped, err := exec.CallBlock(block, []Value{item})
