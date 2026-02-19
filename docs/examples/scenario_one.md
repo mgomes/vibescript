@@ -8,13 +8,12 @@ def process_payouts()
   db.each("Donation", where: { payout_status: :pending }) do |donation|
     response = payments.send({
       donation_id: donation[:id],
-      amount: donation[:amount],
+      amount: donation[:amount]
     })
 
-    status = if response[:ok]
-      :complete
-    else
-      :failed
+    status = :failed
+    if response[:ok]
+      status = :complete
     end
 
     db.update("Donation", donation[:id], { payout_status: status })

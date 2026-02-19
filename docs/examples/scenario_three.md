@@ -14,10 +14,10 @@ def schedule_auto_renewal_reminders()
       {
         subscription_id: subscription[:id],
         supporter_id: subscription[:supporter_id],
-        renews_at: renewal_date,
+        renews_at: renewal_date
       },
       key: "subscription:renewal:" + subscription[:id],
-      run_at: reminder_time,
+      run_at: reminder_time
     )
   end
 end

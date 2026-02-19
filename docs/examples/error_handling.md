@@ -27,7 +27,7 @@ def normalize_metadata(record)
 
   clean = meta.merge({
     tag: meta[:tag] || "uncategorized",
-    source: meta[:source] || "unknown",
+    source: meta[:source] || "unknown"
   })
   record.merge(meta: clean)
 end

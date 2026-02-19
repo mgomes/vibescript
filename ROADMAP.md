@@ -333,7 +333,7 @@ Goal: improve day-to-day developer productivity and interpreter robustness.
 
 ### CI and Release Engineering
 
-- [ ] Add smoke tests for docs examples to CI.
+- [x] Add smoke tests for docs examples to CI.
 - [ ] Add release checklist automation for changelog/version bumps.
 - [x] Add compatibility matrix notes for supported Go versions.
 
