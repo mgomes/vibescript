@@ -334,7 +334,7 @@ Goal: improve day-to-day developer productivity and interpreter robustness.
 ### CI and Release Engineering
 
 - [x] Add smoke tests for docs examples to CI.
-- [ ] Add release checklist automation for changelog/version bumps.
+- [x] Add release checklist automation for changelog/version bumps.
 - [x] Add compatibility matrix notes for supported Go versions.
 
 ### v0.19.0 Definition of Done
