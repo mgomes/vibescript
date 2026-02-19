@@ -320,7 +320,7 @@ Goal: improve day-to-day developer productivity and interpreter robustness.
 ### Tooling
 
 - [x] Add canonical formatter command and CI check.
-- [ ] Add language server protocol (LSP) prototype (hover, completion, diagnostics).
+- [x] Add language server protocol (LSP) prototype (hover, completion, diagnostics).
 - [x] Add static analysis command for script-level linting.
 - [x] Improve REPL inspection commands (globals/functions/types).
 

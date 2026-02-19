@@ -160,7 +160,7 @@ Long-form guides live in `docs/`:
 - `docs/errors.md` – parse/runtime error formatting and debugging patterns.
 - `docs/control-flow.md` – conditionals, loops, and ranges.
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
-- `docs/tooling.md` – CLI workflows for running, formatting, analyzing, and REPL usage.
+- `docs/tooling.md` – CLI workflows for running, formatting, analyzing, language-server usage, and REPL usage.
 - `docs/integration.md` – integrating the interpreter in Go applications.
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
@@ -179,6 +179,7 @@ This repository uses [Just](https://github.com/casey/just) for common tasks:
 - `just lint` checks formatting (`gofmt`) and runs `golangci-lint` with a generous timeout.
 - `vibes fmt <path>` applies canonical formatting to `.vibe` files (`-check` for CI, `-w` to write).
 - `vibes analyze <script.vibe>` runs script-level lint checks (e.g., unreachable statements).
+- `vibes lsp` starts the language server protocol prototype (hover/completion/diagnostics over stdio).
 - Add new recipes in the `Justfile` as workflows grow.
 
 CI also publishes benchmark artifacts via `.github/workflows/benchmarks.yml` on

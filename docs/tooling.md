@@ -43,6 +43,17 @@ vibes analyze ./examples/strings/operations.vibe
 Current checks include unreachable statements after terminating operations such
 as `return` and `raise`.
 
+## `vibes lsp`
+
+Starts an LSP prototype over stdio, with hover, completion, and diagnostics.
+
+```bash
+vibes lsp
+```
+
+This command is meant to be launched by your editor's language-server client.
+It currently tracks in-memory document updates from `didOpen`/`didChange`.
+
 ## `vibes repl`
 
 Starts the interactive REPL for quick evaluation.
