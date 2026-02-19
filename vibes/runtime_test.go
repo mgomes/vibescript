@@ -1887,6 +1887,33 @@ func TestJSONAndRegexMalformedInputs(t *testing.T) {
 	}
 }
 
+func TestLocaleSensitiveOperationsDeterministic(t *testing.T) {
+	script := compileScript(t, `
+    def locale_ops()
+      {
+        up_i: "i".upcase,
+        down_i_dot: "İ".downcase,
+        sorted_words: ["ä", "z", "a"].sort,
+        sorted_case: ["b", "A", "a"].sort
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "locale_ops", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	out := result.Hash()
+	if !out["up_i"].Equal(NewString("I")) {
+		t.Fatalf("up_i mismatch: %v", out["up_i"])
+	}
+	if !out["down_i_dot"].Equal(NewString("i")) {
+		t.Fatalf("down_i_dot mismatch: %v", out["down_i_dot"])
+	}
+	compareArrays(t, out["sorted_words"], []Value{NewString("a"), NewString("z"), NewString("ä")})
+	compareArrays(t, out["sorted_case"], []Value{NewString("A"), NewString("a"), NewString("b")})
+}
+
 func TestRandomIdentifierBuiltins(t *testing.T) {
 	engine := MustNewEngine(Config{
 		RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xAB}, 128)),

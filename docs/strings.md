@@ -2,6 +2,12 @@
 
 VibeScript provides several methods for string manipulation.
 
+## Locale Behavior
+
+String transforms are locale-insensitive and deterministic across supported
+platforms. Methods like `upcase`, `downcase`, and `capitalize` use Unicode
+case mapping rules and do not depend on host locale settings.
+
 ## Basic Methods
 
 ### `length`

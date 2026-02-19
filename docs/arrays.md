@@ -57,6 +57,9 @@ end
 - `group_by` to collect values by key.
 - `tally` to count symbol/string occurrences.
 
+Sorting of strings/symbols uses deterministic codepoint ordering (locale
+collation is not applied).
+
 ```vibe
 def summarize(players)
   grouped = players.group_by { |p| p[:status] }
