@@ -28,6 +28,20 @@ func callFunc(t *testing.T, script *Script, name string, args []Value) Value {
 	return result
 }
 
+func TestCompileMalformedCallTargetDoesNotPanic(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("compile panicked: %v", r)
+		}
+	}()
+
+	_, err := engine.Compile(`be(in (000000000`)
+	if err == nil {
+		t.Fatalf("expected compile error for malformed input")
+	}
+}
+
 func TestHashMergeAndKeys(t *testing.T) {
 	script := compileScript(t, `
     def merged()

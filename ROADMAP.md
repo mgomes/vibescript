@@ -341,7 +341,7 @@ Goal: improve day-to-day developer productivity and interpreter robustness.
 
 - [ ] Tooling commands are documented and stable.
 - [ ] Performance regressions are tracked with benchmarks.
-- [ ] CI includes example and fuzz coverage gates.
+- [x] CI includes example and fuzz coverage gates.
 
 ---
 
