@@ -66,6 +66,7 @@ func newParser(input string) *parser {
 	p.registerPrefix(tokenBang, p.parsePrefixExpression)
 	p.registerPrefix(tokenMinus, p.parsePrefixExpression)
 	p.registerPrefix(tokenYield, p.parseYieldExpression)
+	p.registerPrefix(tokenCase, p.parseCaseExpression)
 
 	p.infixFns[tokenPlus] = p.parseInfixExpression
 	p.infixFns[tokenMinus] = p.parseInfixExpression
@@ -126,6 +127,14 @@ func (p *parser) parseStatement() Statement {
 		return p.parseIfStatement()
 	case tokenFor:
 		return p.parseForStatement()
+	case tokenWhile:
+		return p.parseWhileStatement()
+	case tokenUntil:
+		return p.parseUntilStatement()
+	case tokenBreak:
+		return p.parseBreakStatement()
+	case tokenNext:
+		return p.parseNextStatement()
 	case tokenIdent:
 		if p.curToken.Literal == "assert" {
 			return p.parseAssertStatement()
@@ -386,6 +395,44 @@ func (p *parser) parseForStatement() Statement {
 	return &ForStmt{Iterator: iterator, Iterable: iterable, Body: body, position: pos}
 }
 
+func (p *parser) parseWhileStatement() Statement {
+	pos := p.curToken.Pos
+	p.nextToken()
+	condition := p.parseExpression(lowestPrec)
+
+	p.nextToken()
+	body := p.parseBlock(tokenEnd)
+
+	if p.curToken.Type != tokenEnd {
+		p.errorExpected(p.curToken, "end")
+	}
+
+	return &WhileStmt{Condition: condition, Body: body, position: pos}
+}
+
+func (p *parser) parseUntilStatement() Statement {
+	pos := p.curToken.Pos
+	p.nextToken()
+	condition := p.parseExpression(lowestPrec)
+
+	p.nextToken()
+	body := p.parseBlock(tokenEnd)
+
+	if p.curToken.Type != tokenEnd {
+		p.errorExpected(p.curToken, "end")
+	}
+
+	return &UntilStmt{Condition: condition, Body: body, position: pos}
+}
+
+func (p *parser) parseBreakStatement() Statement {
+	return &BreakStmt{position: p.curToken.Pos}
+}
+
+func (p *parser) parseNextStatement() Statement {
+	return &NextStmt{position: p.curToken.Pos}
+}
+
 func (p *parser) parseBlock(stop ...TokenType) []Statement {
 	stmts := []Statement{}
 	stopSet := make(map[TokenType]struct{}, len(stop))
@@ -613,6 +660,66 @@ func (p *parser) parseYieldExpression() Expression {
 	return &YieldExpr{Args: args, position: pos}
 }
 
+func (p *parser) parseCaseExpression() Expression {
+	pos := p.curToken.Pos
+	p.nextToken()
+	target := p.parseExpression(lowestPrec)
+	if target == nil {
+		return nil
+	}
+
+	p.nextToken()
+	clauses := []CaseWhenClause{}
+	for p.curToken.Type == tokenWhen {
+		p.nextToken()
+		values := []Expression{}
+		first := p.parseExpression(lowestPrec)
+		if first == nil {
+			return nil
+		}
+		values = append(values, first)
+		for p.peekToken.Type == tokenComma {
+			p.nextToken()
+			p.nextToken()
+			value := p.parseExpression(lowestPrec)
+			if value == nil {
+				return nil
+			}
+			values = append(values, value)
+		}
+
+		p.nextToken()
+		result := p.parseExpressionWithBlock()
+		if result == nil {
+			return nil
+		}
+		clauses = append(clauses, CaseWhenClause{Values: values, Result: result})
+		p.nextToken()
+	}
+
+	if len(clauses) == 0 {
+		p.errorExpected(p.curToken, "when")
+		return nil
+	}
+
+	var elseExpr Expression
+	if p.curToken.Type == tokenElse {
+		p.nextToken()
+		elseExpr = p.parseExpressionWithBlock()
+		if elseExpr == nil {
+			return nil
+		}
+		p.nextToken()
+	}
+
+	if p.curToken.Type != tokenEnd {
+		p.errorExpected(p.curToken, "end")
+		return nil
+	}
+
+	return &CaseExpr{Target: target, Clauses: clauses, ElseExpr: elseExpr, position: pos}
+}
+
 func (p *parser) parseGroupedExpression() Expression {
 	p.nextToken()
 	expr := p.parseExpression(lowestPrec)
@@ -677,7 +784,7 @@ func (p *parser) parseHashLiteral() Expression {
 }
 
 func (p *parser) parseHashPair() HashPair {
-	if p.curToken.Type != tokenIdent || p.peekToken.Type != tokenColon {
+	if !isLabelNameToken(p.curToken.Type) || p.peekToken.Type != tokenColon {
 		p.addParseError(p.curToken.Pos, "invalid hash pair: expected symbol-style key like name:")
 		return HashPair{}
 	}
@@ -757,7 +864,7 @@ func (p *parser) parseCallExpression(function Expression) Expression {
 }
 
 func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
-	if (p.curToken.Type == tokenIdent || p.curToken.Type == tokenIn) && p.peekToken.Type == tokenColon {
+	if isLabelNameToken(p.curToken.Type) && p.peekToken.Type == tokenColon {
 		name := p.curToken.Literal
 		p.nextToken()
 		p.nextToken()
@@ -776,6 +883,19 @@ func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
 	expr := p.parseExpression(lowestPrec)
 	if expr != nil {
 		*args = append(*args, expr)
+	}
+}
+
+func isLabelNameToken(tt TokenType) bool {
+	switch tt {
+	case tokenIdent,
+		tokenDef, tokenClass, tokenSelf, tokenPrivate, tokenProperty, tokenGetter, tokenSetter,
+		tokenEnd, tokenReturn, tokenYield, tokenDo, tokenFor, tokenWhile, tokenUntil,
+		tokenBreak, tokenNext, tokenIn, tokenIf, tokenCase, tokenWhen, tokenElsif, tokenElse,
+		tokenTrue, tokenFalse, tokenNil:
+		return true
+	default:
+		return false
 	}
 }
 

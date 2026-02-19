@@ -210,6 +210,34 @@ end`)
 	}
 }
 
+func TestMemoryQuotaExceededWithWhileLoopAllocations(t *testing.T) {
+	engine := MustNewEngine(Config{
+		StepQuota:        20000,
+		MemoryQuotaBytes: 2048,
+	})
+
+	script, err := engine.Compile(`def run()
+  items = []
+  n = 0
+  while n < 200
+    items = items.push("abcdefghij")
+    n = n + 1
+  end
+  items.size
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected memory quota error for while-loop allocations")
+	}
+	if !strings.Contains(err.Error(), "memory quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestAssignmentPostCheckDoesNotDoubleCountAssignedValue(t *testing.T) {
 	payload := strings.Repeat("abcdefghij", 300)
 

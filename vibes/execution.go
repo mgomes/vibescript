@@ -62,6 +62,7 @@ type Execution struct {
 	capabilityContractsByName map[string]CapabilityMethodContract
 	receiverStack             []Value
 	envStack                  []*Env
+	loopDepth                 int
 	strictEffects             bool
 	allowRequire              bool
 }
@@ -92,6 +93,11 @@ type RuntimeError struct {
 	CodeFrame string
 	Frames    []StackFrame
 }
+
+var (
+	errLoopBreak = errors.New("loop break")
+	errLoopNext  = errors.New("loop next")
+)
 
 func (re *RuntimeError) Error() string {
 	var b strings.Builder
@@ -336,6 +342,20 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		return NewNil(), false, nil
 	case *ForStmt:
 		return exec.evalForStatement(s, env)
+	case *WhileStmt:
+		return exec.evalWhileStatement(s, env)
+	case *UntilStmt:
+		return exec.evalUntilStatement(s, env)
+	case *BreakStmt:
+		if exec.loopDepth == 0 {
+			return NewNil(), false, exec.errorAt(s.Pos(), "break used outside of loop")
+		}
+		return NewNil(), false, errLoopBreak
+	case *NextStmt:
+		if exec.loopDepth == 0 {
+			return NewNil(), false, exec.errorAt(s.Pos(), "next used outside of loop")
+		}
+		return NewNil(), false, errLoopNext
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement")
 	}
@@ -362,6 +382,14 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 			return exec.errorAt(pos, "private method %s", setterName)
 		}
 		_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), pos)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return exec.errorAt(pos, "break cannot cross call boundary")
+			}
+			if errors.Is(err, errLoopNext) {
+				return exec.errorAt(pos, "next cannot cross call boundary")
+			}
+		}
 		return err
 	}
 
@@ -535,6 +563,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalBinaryExpr(e, env)
 	case *RangeExpr:
 		return exec.evalRangeExpr(e, env)
+	case *CaseExpr:
+		return exec.evalCaseExpr(e, env)
 	case *MemberExpr:
 		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
 		if err != nil {
@@ -614,7 +644,17 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val Value, receiver V
 func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	switch callee.Kind() {
 	case KindFunction:
-		return exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
+		result, err := exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return NewNil(), exec.errorAt(pos, "break cannot cross call boundary")
+			}
+			if errors.Is(err, errLoopNext) {
+				return NewNil(), exec.errorAt(pos, "next cannot cross call boundary")
+			}
+			return NewNil(), err
+		}
+		return result, nil
 	case KindBuiltin:
 		builtin := callee.Builtin()
 		scope := exec.capabilityContractScopes[builtin]
@@ -643,6 +683,12 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
 		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return NewNil(), exec.errorAt(pos, "break cannot cross call boundary")
+			}
+			if errors.Is(err, errLoopNext) {
+				return NewNil(), exec.errorAt(pos, "next cannot cross call boundary")
+			}
 			return NewNil(), exec.wrapError(err, pos)
 		}
 		if hasContract && contract.ValidateReturn != nil {
@@ -1066,7 +1112,63 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 	return NewRange(Range{Start: start, End: end}), nil
 }
 
+func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
+	target, err := exec.evalExpression(expr.Target, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(target); err != nil {
+		return NewNil(), err
+	}
+
+	for _, clause := range expr.Clauses {
+		matched := false
+		for _, candidateExpr := range clause.Values {
+			candidate, err := exec.evalExpression(candidateExpr, env)
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := exec.checkMemoryWith(candidate); err != nil {
+				return NewNil(), err
+			}
+			if target.Equal(candidate) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		result, err := exec.evalExpressionWithAuto(clause.Result, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
+	}
+
+	if expr.ElseExpr != nil {
+		result, err := exec.evalExpressionWithAuto(expr.ElseExpr, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
+	}
+
+	return NewNil(), nil
+}
+
 func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, error) {
+	exec.loopDepth++
+	defer func() {
+		exec.loopDepth--
+	}()
+
 	iterable, err := exec.evalExpression(stmt.Iterable, env)
 	if err != nil {
 		return NewNil(), false, err
@@ -1083,6 +1185,12 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			env.Assign(stmt.Iterator, item)
 			val, returned, err := exec.evalStatements(stmt.Body, env)
 			if err != nil {
+				if errors.Is(err, errLoopBreak) {
+					return last, false, nil
+				}
+				if errors.Is(err, errLoopNext) {
+					continue
+				}
 				return NewNil(), false, err
 			}
 			if returned {
@@ -1097,6 +1205,12 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				env.Assign(stmt.Iterator, NewInt(i))
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
+					if errors.Is(err, errLoopBreak) {
+						return last, false, nil
+					}
+					if errors.Is(err, errLoopNext) {
+						continue
+					}
 					return NewNil(), false, err
 				}
 				if returned {
@@ -1109,6 +1223,12 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				env.Assign(stmt.Iterator, NewInt(i))
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
+					if errors.Is(err, errLoopBreak) {
+						return last, false, nil
+					}
+					if errors.Is(err, errLoopNext) {
+						continue
+					}
 					return NewNil(), false, err
 				}
 				if returned {
@@ -1122,6 +1242,82 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 	}
 
 	return last, false, nil
+}
+
+func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, bool, error) {
+	exec.loopDepth++
+	defer func() {
+		exec.loopDepth--
+	}()
+
+	last := NewNil()
+	for {
+		if err := exec.step(); err != nil {
+			return NewNil(), false, exec.wrapError(err, stmt.Pos())
+		}
+		condition, err := exec.evalExpression(stmt.Condition, env)
+		if err != nil {
+			return NewNil(), false, err
+		}
+		if err := exec.checkMemoryWith(condition); err != nil {
+			return NewNil(), false, err
+		}
+		if !condition.Truthy() {
+			return last, false, nil
+		}
+		val, returned, err := exec.evalStatements(stmt.Body, env)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return last, false, nil
+			}
+			if errors.Is(err, errLoopNext) {
+				continue
+			}
+			return NewNil(), false, err
+		}
+		if returned {
+			return val, true, nil
+		}
+		last = val
+	}
+}
+
+func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, bool, error) {
+	exec.loopDepth++
+	defer func() {
+		exec.loopDepth--
+	}()
+
+	last := NewNil()
+	for {
+		if err := exec.step(); err != nil {
+			return NewNil(), false, exec.wrapError(err, stmt.Pos())
+		}
+		condition, err := exec.evalExpression(stmt.Condition, env)
+		if err != nil {
+			return NewNil(), false, err
+		}
+		if err := exec.checkMemoryWith(condition); err != nil {
+			return NewNil(), false, err
+		}
+		if condition.Truthy() {
+			return last, false, nil
+		}
+		val, returned, err := exec.evalStatements(stmt.Body, env)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return last, false, nil
+			}
+			if errors.Is(err, errLoopNext) {
+				continue
+			}
+			return NewNil(), false, err
+		}
+		if returned {
+			return val, true, nil
+		}
+		last = val
+	}
 }
 
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {

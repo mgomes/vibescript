@@ -182,6 +182,43 @@ Typed blocks catch callback mismatches at runtime with errors that include param
 
 Duration methods like `ago`/`after` return `Time`. Typed signatures use `time` or `time?` for those values.
 
+## Type semantics
+
+### Container compatibility rules
+
+Container annotations are checked by validating contained values against the declared type.
+
+- `array<T>` validates every element with `T`.
+- `hash<K, V>` validates every key with `K` and every value with `V`.
+
+Practical consequence:
+
+- `array<int>` is valid for `array<number>` because each `int` satisfies `number`.
+- `array<number>` is only valid for `array<int>` when all elements are actually ints.
+
+### `T?` and `T | nil`
+
+`T?` and `T | nil` are equivalent at runtime: both accept `nil` and values matching `T`.
+
+- Prefer `T?` for simple optional values.
+- Use `T | nil` when you are already expressing a broader union (for example `int | string | nil`).
+
+### Coercion policy
+
+Typed checks do not perform implicit coercion.
+
+- `int` does not accept `"1"`.
+- `string` does not accept `1`.
+
+Convert explicitly before calling typed boundaries (for example `.to_i`, `.to_f`, `.string`, parsers/builders for time and duration).
+
+### Unknown keyword args under typed signatures
+
+Unknown keyword arguments are strict for all function calls, including typed signatures.
+
+- Extra keyword arguments raise `unexpected keyword argument <name>`.
+- This behavior is the same for typed and untyped functions.
+
 ## Notes and limitations
 
 - Types are nominal by kind.

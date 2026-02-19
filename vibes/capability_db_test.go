@@ -165,6 +165,48 @@ end`)
 	}
 }
 
+func TestDBCapabilityEachLoopControlCannotCrossCallbackBoundary(t *testing.T) {
+	stub := &dbCapabilityStub{
+		eachRows: []Value{
+			NewHash(map[string]Value{"id": NewString("p-1")}),
+			NewHash(map[string]Value{"id": NewString("p-2")}),
+		},
+	}
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def break_from_callback()
+  db.each("Player") do |row|
+    if row[:id] == "p-2"
+      break
+    end
+  end
+end
+
+def next_from_callback()
+  db.each("Player") do |row|
+    if row[:id] == "p-2"
+      next
+    end
+  end
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "break_from_callback", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "break used outside of loop") {
+		t.Fatalf("expected callback break outside-loop error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "next_from_callback", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
+	})
+	if err == nil || !strings.Contains(err.Error(), "next used outside of loop") {
+		t.Fatalf("expected callback next outside-loop error, got %v", err)
+	}
+}
+
 func TestDBCapabilityRejectsCallableUpdateAttributes(t *testing.T) {
 	stub := &dbCapabilityStub{}
 	engine := MustNewEngine(Config{})

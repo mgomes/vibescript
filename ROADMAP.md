@@ -176,17 +176,17 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 ### Type Semantics
 
-- [ ] Specify variance/invariance rules for container assignments.
-- [ ] Specify nullability interactions with unions (`T?` vs `T | nil`).
-- [ ] Define coercion policy (no coercion vs explicit coercion helpers).
-- [ ] Decide strictness for unknown keyword args under typed signatures.
+- [x] Specify variance/invariance rules for container assignments.
+- [x] Specify nullability interactions with unions (`T?` vs `T | nil`).
+- [x] Define coercion policy (no coercion vs explicit coercion helpers).
+- [x] Decide strictness for unknown keyword args under typed signatures.
 
 ### Runtime and Parser
 
 - [x] Extend parser grammar for generic and union type expressions.
 - [x] Extend type resolver and internal type representation.
 - [x] Add runtime validators for composite/union types.
-- [ ] Add contract interop so capability contracts can reuse type validators.
+- [x] Add contract interop so capability contracts can reuse type validators.
 
 ### Testing and Docs
 
@@ -209,37 +209,37 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 
 ### Control Flow
 
-- [ ] Add `while` loops.
-- [ ] Add `until` loops.
-- [ ] Add loop control keywords: `break` and `next`.
-- [ ] Add `case/when` expression support (if approved).
-- [ ] Define behavior for nested loop control and block boundaries.
+- [x] Add `while` loops.
+- [x] Add `until` loops.
+- [x] Add loop control keywords: `break` and `next`.
+- [x] Add `case/when` expression support (if approved).
+- [x] Define behavior for nested loop control and block boundaries.
 
 ### Error Handling Constructs
 
 - [ ] Add structured error handling syntax (`begin/rescue/ensure` or equivalent).
 - [ ] Add typed error matching where feasible.
 - [ ] Define re-raise semantics and stack preservation.
-- [ ] Ensure runtime errors preserve original position and call frames.
+- [x] Ensure runtime errors preserve original position and call frames.
 
 ### Runtime Behavior
 
-- [ ] Ensure new control flow integrates with step quota accounting.
-- [ ] Ensure new constructs integrate with recursion/memory quotas.
-- [ ] Validate behavior inside class methods, blocks, and capability callbacks.
+- [x] Ensure new control flow integrates with step quota accounting.
+- [x] Ensure new constructs integrate with recursion/memory quotas.
+- [x] Validate behavior inside class methods, blocks, and capability callbacks.
 
 ### Testing and Docs
 
-- [ ] Add parser/runtime tests for each new control flow construct.
-- [ ] Add nested control flow tests for edge cases.
-- [ ] Add docs updates in `docs/control-flow.md` and `docs/errors.md`.
-- [ ] Add examples under `examples/control_flow/` for each new feature.
+- [x] Add parser/runtime tests for each new control flow construct.
+- [x] Add nested control flow tests for edge cases.
+- [x] Add docs updates in `docs/control-flow.md` and `docs/errors.md`.
+- [x] Add examples under `examples/control_flow/` for each new feature.
 
 ### v0.16.0 Definition of Done
 
-- [ ] No regressions in existing `if/for/range` behavior.
+- [x] No regressions in existing `if/for/range` behavior.
 - [ ] Structured error handling works with assertions and runtime errors.
-- [ ] Coverage includes nested/edge control-flow paths.
+- [x] Coverage includes nested/edge control-flow paths.
 
 ---
 

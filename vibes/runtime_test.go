@@ -556,6 +556,27 @@ func TestParseErrorIncludesCodeFrameAndKeywordMessage(t *testing.T) {
 	}
 }
 
+func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
+	script := compileScript(t, `
+    def hash_payload(cursor)
+      { next: cursor, break: cursor + 1 }
+    end
+
+    def call_payload(cursor)
+      list(next: cursor, break: cursor + 1)
+    end
+    `)
+
+	payload := callFunc(t, script, "hash_payload", []Value{NewInt(7)})
+	if payload.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", payload.Kind())
+	}
+	compareHash(t, payload.Hash(), map[string]Value{
+		"next":  NewInt(7),
+		"break": NewInt(8),
+	})
+}
+
 func TestParseErrorIncludesBlockParameterHint(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	_, err := engine.Compile("def broken()\n  [1].each do |a,|\n    a\n  end\nend\n")
@@ -751,6 +772,401 @@ func TestIntTimes(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for times without block")
 	}
+}
+
+func TestWhileLoops(t *testing.T) {
+	script := compileScript(t, `
+    def countdown(n)
+      out = []
+      while n > 0
+        out = out + [n]
+        n = n - 1
+      end
+      out
+    end
+
+    def first_positive(n)
+      while n > 0
+        return n
+      end
+      0
+    end
+
+    def skip_false()
+      while false
+        1
+      end
+    end
+    `)
+
+	countdown := callFunc(t, script, "countdown", []Value{NewInt(3)})
+	compareArrays(t, countdown, []Value{NewInt(3), NewInt(2), NewInt(1)})
+
+	if got := callFunc(t, script, "first_positive", []Value{NewInt(4)}); !got.Equal(NewInt(4)) {
+		t.Fatalf("first_positive mismatch for positive input: %v", got)
+	}
+	if got := callFunc(t, script, "first_positive", []Value{NewInt(0)}); !got.Equal(NewInt(0)) {
+		t.Fatalf("first_positive mismatch for zero input: %v", got)
+	}
+	if got := callFunc(t, script, "skip_false", nil); !got.Equal(NewNil()) {
+		t.Fatalf("skip_false expected nil, got %v", got)
+	}
+
+	engine := MustNewEngine(Config{StepQuota: 40})
+	spinScript, err := engine.Compile(`
+    def spin()
+      while true
+      end
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	_, err = spinScript.Call(context.Background(), "spin", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
+		t.Fatalf("expected step quota error for infinite while loop, got %v", err)
+	}
+}
+
+func TestUntilLoops(t *testing.T) {
+	script := compileScript(t, `
+    def count_up(target)
+      out = []
+      n = 0
+      until n >= target
+        out = out + [n]
+        n = n + 1
+      end
+      out
+    end
+
+    def first_non_negative(n)
+      until n >= 0
+        return n
+      end
+      n
+    end
+
+    def skip_until_true()
+      until true
+        1
+      end
+    end
+    `)
+
+	countUp := callFunc(t, script, "count_up", []Value{NewInt(4)})
+	compareArrays(t, countUp, []Value{NewInt(0), NewInt(1), NewInt(2), NewInt(3)})
+
+	if got := callFunc(t, script, "first_non_negative", []Value{NewInt(-3)}); !got.Equal(NewInt(-3)) {
+		t.Fatalf("first_non_negative mismatch for negative input: %v", got)
+	}
+	if got := callFunc(t, script, "first_non_negative", []Value{NewInt(2)}); !got.Equal(NewInt(2)) {
+		t.Fatalf("first_non_negative mismatch for non-negative input: %v", got)
+	}
+	if got := callFunc(t, script, "skip_until_true", nil); !got.Equal(NewNil()) {
+		t.Fatalf("skip_until_true expected nil, got %v", got)
+	}
+
+	engine := MustNewEngine(Config{StepQuota: 40})
+	spinScript, err := engine.Compile(`
+    def spin_until()
+      until false
+      end
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	_, err = spinScript.Call(context.Background(), "spin_until", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
+		t.Fatalf("expected step quota error for infinite until loop, got %v", err)
+	}
+}
+
+func TestCaseWhenExpressions(t *testing.T) {
+	script := compileScript(t, `
+    def label(score)
+      case score
+      when 100
+        "perfect"
+      when 90, 95
+        "great"
+      else
+        "ok"
+      end
+    end
+
+    def classify(value)
+      case value
+      when nil
+        "missing"
+      when true
+        "yes"
+      else
+        "other"
+      end
+    end
+
+    def assign_case(v)
+      result = case v
+      when 1
+        10
+      else
+        20
+      end
+      result
+    end
+
+    def unmatched(v)
+      case v
+      when 1
+        "one"
+      end
+    end
+    `)
+
+	if got := callFunc(t, script, "label", []Value{NewInt(100)}); !got.Equal(NewString("perfect")) {
+		t.Fatalf("label(100) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "label", []Value{NewInt(95)}); !got.Equal(NewString("great")) {
+		t.Fatalf("label(95) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "label", []Value{NewInt(70)}); !got.Equal(NewString("ok")) {
+		t.Fatalf("label(70) mismatch: %v", got)
+	}
+
+	if got := callFunc(t, script, "classify", []Value{NewNil()}); !got.Equal(NewString("missing")) {
+		t.Fatalf("classify(nil) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "classify", []Value{NewBool(true)}); !got.Equal(NewString("yes")) {
+		t.Fatalf("classify(true) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "classify", []Value{NewInt(1)}); !got.Equal(NewString("other")) {
+		t.Fatalf("classify(1) mismatch: %v", got)
+	}
+
+	if got := callFunc(t, script, "assign_case", []Value{NewInt(1)}); !got.Equal(NewInt(10)) {
+		t.Fatalf("assign_case(1) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "assign_case", []Value{NewInt(2)}); !got.Equal(NewInt(20)) {
+		t.Fatalf("assign_case(2) mismatch: %v", got)
+	}
+
+	if got := callFunc(t, script, "unmatched", []Value{NewInt(7)}); !got.Equal(NewNil()) {
+		t.Fatalf("unmatched(7) expected nil, got %v", got)
+	}
+}
+
+func TestLoopControlBreakAndNext(t *testing.T) {
+	script := compileScript(t, `
+    def for_break()
+      out = []
+      for n in [1, 2, 3, 4]
+        if n == 3
+          break
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def for_next()
+      out = []
+      for n in [1, 2, 3, 4]
+        if n % 2 == 0
+          next
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def while_break_next()
+      n = 0
+      out = []
+      while n < 5
+        n = n + 1
+        if n == 3
+          next
+        end
+        if n == 5
+          break
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def break_outside()
+      break
+    end
+
+    def next_outside()
+      next
+    end
+    `)
+
+	forBreak := callFunc(t, script, "for_break", nil)
+	compareArrays(t, forBreak, []Value{NewInt(1), NewInt(2)})
+
+	forNext := callFunc(t, script, "for_next", nil)
+	compareArrays(t, forNext, []Value{NewInt(1), NewInt(3)})
+
+	whileBreakNext := callFunc(t, script, "while_break_next", nil)
+	compareArrays(t, whileBreakNext, []Value{NewInt(1), NewInt(2), NewInt(4)})
+
+	_, err := script.Call(context.Background(), "break_outside", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "break used outside of loop") {
+		t.Fatalf("expected outside-loop break error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "next_outside", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "next used outside of loop") {
+		t.Fatalf("expected outside-loop next error, got %v", err)
+	}
+}
+
+func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
+	script := compileScript(t, `
+    class SetterBoundary
+      def break_set=(n)
+        if n == 2
+          break
+        end
+      end
+
+      def next_set=(n)
+        if n == 2
+          next
+        end
+      end
+    end
+
+    def nested_break()
+      out = []
+      for i in [1, 2]
+        for j in [1, 2, 3]
+          if j == 2
+            break
+          end
+          out = out + [i * 10 + j]
+        end
+      end
+      out
+    end
+
+    def nested_next()
+      out = []
+      for i in [1, 2]
+        for j in [1, 2, 3]
+          if j == 2
+            next
+          end
+          out = out + [i * 10 + j]
+        end
+      end
+      out
+    end
+
+    def break_from_block_boundary()
+      out = []
+      for n in [1, 2, 3]
+        items = [n]
+        items.each do |v|
+          if v == 2
+            break
+          end
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def next_from_block_boundary()
+      out = []
+      for n in [1, 2, 3]
+        items = [n]
+        items.each do |v|
+          if v == 2
+            next
+          end
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def break_from_setter_boundary()
+      target = SetterBoundary.new
+      for n in [1, 2, 3]
+        target.break_set = n
+      end
+      true
+    end
+
+    def next_from_setter_boundary()
+      target = SetterBoundary.new
+      for n in [1, 2, 3]
+        target.next_set = n
+      end
+      true
+    end
+    `)
+
+	nestedBreak := callFunc(t, script, "nested_break", nil)
+	compareArrays(t, nestedBreak, []Value{NewInt(11), NewInt(21)})
+
+	nestedNext := callFunc(t, script, "nested_next", nil)
+	compareArrays(t, nestedNext, []Value{NewInt(11), NewInt(13), NewInt(21), NewInt(23)})
+
+	_, err := script.Call(context.Background(), "break_from_block_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "break cannot cross call boundary") {
+		t.Fatalf("expected block-boundary break error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "next_from_block_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
+		t.Fatalf("expected block-boundary next error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "break_from_setter_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "break cannot cross call boundary") {
+		t.Fatalf("expected setter-boundary break error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "next_from_setter_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
+		t.Fatalf("expected setter-boundary next error, got %v", err)
+	}
+}
+
+func TestLoopControlInsideClassMethods(t *testing.T) {
+	script := compileScript(t, `
+    class Counter
+      def self.collect(limit)
+        out = []
+        n = 0
+        while n < limit
+          n = n + 1
+          if n % 2 == 0
+            next
+          end
+          if n > 5
+            break
+          end
+          out = out + [n]
+        end
+        out
+      end
+    end
+
+    def run(limit)
+      Counter.collect(limit)
+    end
+    `)
+
+	result := callFunc(t, script, "run", []Value{NewInt(10)})
+	compareArrays(t, result, []Value{NewInt(1), NewInt(3), NewInt(5)})
 }
 
 func TestDurationMethods(t *testing.T) {
@@ -1427,6 +1843,107 @@ func TestTypedFunctions(t *testing.T) {
 	if err == nil ||
 		!strings.Contains(err.Error(), "argument rows expected array<{ id: string, stats: { wins: int } }>, got array<{ id: string, stats: { wins: string } }>") {
 		t.Fatalf("expected nested shape error, got %v", err)
+	}
+}
+
+func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testing.T) {
+	script := compileScript(t, `
+    def accepts_numbers(values: array<number>) -> array<number>
+      values
+    end
+
+    def accepts_ints(values: array<int>) -> array<int>
+      values
+    end
+
+    def nullable_short(v: string?) -> string?
+      v
+    end
+
+    def nullable_union(v: string | nil) -> string | nil
+      v
+    end
+
+    def takes_int(v: int) -> int
+      v
+    end
+
+    def typed_kw(a: int) -> int
+      a
+    end
+
+    def untyped_kw(a)
+      a
+    end
+    `)
+
+	got := callFunc(t, script, "accepts_numbers", []Value{
+		NewArray([]Value{NewInt(1), NewFloat(2.5)}),
+	})
+	if got.Kind() != KindArray {
+		t.Fatalf("accepts_numbers mixed numeric mismatch: %v", got)
+	}
+	compareArrays(t, got, []Value{NewInt(1), NewFloat(2.5)})
+
+	got = callFunc(t, script, "accepts_numbers", []Value{
+		NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+	if got.Kind() != KindArray {
+		t.Fatalf("accepts_numbers int-only mismatch: %v", got)
+	}
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
+
+	got = callFunc(t, script, "accepts_ints", []Value{
+		NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+	if got.Kind() != KindArray {
+		t.Fatalf("accepts_ints int-only mismatch: %v", got)
+	}
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
+	_, err := script.Call(context.Background(), "accepts_ints", []Value{
+		NewArray([]Value{NewInt(1), NewFloat(2.5)}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument values expected array<int>, got array<float | int>") {
+		t.Fatalf("expected container element strictness error, got %v", err)
+	}
+
+	if got := callFunc(t, script, "nullable_short", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("nullable_short nil mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "nullable_union", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("nullable_union nil mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "nullable_short", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
+		t.Fatalf("nullable_short string mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "nullable_union", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
+		t.Fatalf("nullable_union string mismatch: %#v", got)
+	}
+	_, err = script.Call(context.Background(), "nullable_short", []Value{NewInt(1)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected string?, got int") {
+		t.Fatalf("expected nullable shorthand mismatch, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "nullable_union", []Value{NewInt(1)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected string | nil, got int") {
+		t.Fatalf("expected nullable union mismatch, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "takes_int", []Value{NewString("1")}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected int, got string") {
+		t.Fatalf("expected no-coercion mismatch, got %v", err)
+	}
+
+	extraKw := map[string]Value{
+		"a":     NewInt(1),
+		"extra": NewInt(2),
+	}
+	_, err = script.Call(context.Background(), "typed_kw", nil, CallOptions{Keywords: extraKw})
+	if err == nil || !strings.Contains(err.Error(), "unexpected keyword argument extra") {
+		t.Fatalf("expected typed function unknown kwarg strictness, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "untyped_kw", nil, CallOptions{Keywords: extraKw})
+	if err == nil || !strings.Contains(err.Error(), "unexpected keyword argument extra") {
+		t.Fatalf("expected untyped function unknown kwarg strictness, got %v", err)
 	}
 }
 

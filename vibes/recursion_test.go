@@ -168,3 +168,28 @@ end`)
 		t.Fatalf("unexpected result: %v", result)
 	}
 }
+
+func TestRecursionLimitWithWhileLoopFrames(t *testing.T) {
+	engine := MustNewEngine(Config{
+		RecursionLimit: 4,
+		StepQuota:      1_000_000,
+	})
+
+	script, err := engine.Compile(`def recurse(n)
+  while n > 0
+    n = n - 1
+  end
+  recurse(1)
+end`)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "recurse", []Value{NewInt(3)}, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected recursion depth error")
+	}
+	if !strings.Contains(err.Error(), "recursion depth exceeded (limit 4)") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

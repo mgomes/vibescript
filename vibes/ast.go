@@ -122,6 +122,38 @@ type ForStmt struct {
 func (s *ForStmt) stmtNode()     {}
 func (s *ForStmt) Pos() Position { return s.position }
 
+type WhileStmt struct {
+	Condition Expression
+	Body      []Statement
+	position  Position
+}
+
+func (s *WhileStmt) stmtNode()     {}
+func (s *WhileStmt) Pos() Position { return s.position }
+
+type UntilStmt struct {
+	Condition Expression
+	Body      []Statement
+	position  Position
+}
+
+func (s *UntilStmt) stmtNode()     {}
+func (s *UntilStmt) Pos() Position { return s.position }
+
+type BreakStmt struct {
+	position Position
+}
+
+func (s *BreakStmt) stmtNode()     {}
+func (s *BreakStmt) Pos() Position { return s.position }
+
+type NextStmt struct {
+	position Position
+}
+
+func (s *NextStmt) stmtNode()     {}
+func (s *NextStmt) Pos() Position { return s.position }
+
 type Identifier struct {
 	Name     string
 	position Position
@@ -275,6 +307,21 @@ type RangeExpr struct {
 
 func (e *RangeExpr) exprNode()     {}
 func (e *RangeExpr) Pos() Position { return e.position }
+
+type CaseWhenClause struct {
+	Values []Expression
+	Result Expression
+}
+
+type CaseExpr struct {
+	Target   Expression
+	Clauses  []CaseWhenClause
+	ElseExpr Expression
+	position Position
+}
+
+func (e *CaseExpr) exprNode()     {}
+func (e *CaseExpr) Pos() Position { return e.position }
 
 type BlockLiteral struct {
 	Params   []Param
