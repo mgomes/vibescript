@@ -225,7 +225,7 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 ### Runtime Behavior
 
 - [x] Ensure new control flow integrates with step quota accounting.
-- [ ] Ensure new constructs integrate with recursion/memory quotas.
+- [x] Ensure new constructs integrate with recursion/memory quotas.
 - [x] Validate behavior inside class methods, blocks, and capability callbacks.
 
 ### Testing and Docs
