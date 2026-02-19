@@ -3049,6 +3049,11 @@ func TestStringTransforms(t *testing.T) {
     def helpers()
       original = "  hello  "
       ids = "ID-12 ID-34"
+      template_context = {
+        user: { name: "Alex", score: 42 },
+        id: :p_1,
+        missing_nil: nil
+      }
       {
         bytesize: "hé".bytesize,
         ord: "hé".ord,
@@ -3085,6 +3090,16 @@ func TestStringTransforms(t *testing.T) {
         replace: "old".replace("new"),
         strip_bang: original.strip!,
         strip_bang_nochange: "hello".strip!,
+        squish: "  hello \n\t world  ".squish,
+        squish_bang: "  hello \n\t world  ".squish!,
+        squish_bang_nochange: "hello world".squish!,
+        template_basic: "Hello {{name}}".template({ name: "Alex" }),
+        template_nested: "Player {{user.name}} scored {{user.score}}".template(template_context),
+        template_symbol: "ID={{id}}".template(template_context),
+        template_nil: "Value={{missing_nil}}".template(template_context),
+        template_missing_passthrough: "Hello {{missing}}".template({ name: "Alex" }),
+        template_spacing: "Hello {{ name }}".template({ name: "Alex" }),
+        template_multiple: "{{name}}/{{name}}".template({ name: "Alex" }),
         original_unchanged: original
       }
     end
@@ -3193,6 +3208,36 @@ func TestStringTransforms(t *testing.T) {
 	}
 	if got["strip_bang_nochange"].Kind() != KindNil {
 		t.Fatalf("strip_bang_nochange expected nil, got %v", got["strip_bang_nochange"])
+	}
+	if got["squish"].String() != "hello world" {
+		t.Fatalf("squish mismatch: %q", got["squish"].String())
+	}
+	if got["squish_bang"].String() != "hello world" {
+		t.Fatalf("squish_bang mismatch: %q", got["squish_bang"].String())
+	}
+	if got["squish_bang_nochange"].Kind() != KindNil {
+		t.Fatalf("squish_bang_nochange expected nil, got %v", got["squish_bang_nochange"])
+	}
+	if got["template_basic"].String() != "Hello Alex" {
+		t.Fatalf("template_basic mismatch: %q", got["template_basic"].String())
+	}
+	if got["template_nested"].String() != "Player Alex scored 42" {
+		t.Fatalf("template_nested mismatch: %q", got["template_nested"].String())
+	}
+	if got["template_symbol"].String() != "ID=p_1" {
+		t.Fatalf("template_symbol mismatch: %q", got["template_symbol"].String())
+	}
+	if got["template_nil"].String() != "Value=" {
+		t.Fatalf("template_nil mismatch: %q", got["template_nil"].String())
+	}
+	if got["template_missing_passthrough"].String() != "Hello {{missing}}" {
+		t.Fatalf("template_missing_passthrough mismatch: %q", got["template_missing_passthrough"].String())
+	}
+	if got["template_spacing"].String() != "Hello Alex" {
+		t.Fatalf("template_spacing mismatch: %q", got["template_spacing"].String())
+	}
+	if got["template_multiple"].String() != "Alex/Alex" {
+		t.Fatalf("template_multiple mismatch: %q", got["template_multiple"].String())
 	}
 	if got["original_unchanged"].String() != "  hello  " {
 		t.Fatalf("original_unchanged mismatch: %q", got["original_unchanged"].String())
@@ -3486,9 +3531,44 @@ end`,
 			errMsg: "string.strip! does not take arguments",
 		},
 		{
+			name:   "string.squish with argument",
+			script: `def run() "hello".squish(1) end`,
+			errMsg: "string.squish does not take arguments",
+		},
+		{
 			name:   "string.gsub! with missing argument",
 			script: `def run() "hello".gsub!("l") end`,
 			errMsg: "expects pattern and replacement",
+		},
+		{
+			name:   "string.template without context",
+			script: `def run() "hello {{name}}".template end`,
+			errMsg: "expects exactly one context hash",
+		},
+		{
+			name:   "string.template with non-hash context",
+			script: `def run() "hello {{name}}".template(1) end`,
+			errMsg: "context must be hash",
+		},
+		{
+			name:   "string.template with unknown keyword",
+			script: `def run() "hello {{name}}".template({}, foo: true) end`,
+			errMsg: "supports only strict keyword",
+		},
+		{
+			name:   "string.template with non-bool strict keyword",
+			script: `def run() "hello {{name}}".template({}, strict: 1) end`,
+			errMsg: "strict keyword must be bool",
+		},
+		{
+			name:   "string.template strict missing key",
+			script: `def run() "hello {{name}}".template({}, strict: true) end`,
+			errMsg: "missing placeholder name",
+		},
+		{
+			name:   "string.template with non-scalar value",
+			script: `def run() "hello {{items}}".template({ items: [1, 2] }) end`,
+			errMsg: "placeholder items value must be scalar",
 		},
 		{
 			name:   "hash.size with argument",

@@ -111,8 +111,9 @@ const (
 )
 
 var (
-	errLoopBreak = errors.New("loop break")
-	errLoopNext  = errors.New("loop next")
+	errLoopBreak          = errors.New("loop break")
+	errLoopNext           = errors.New("loop next")
+	stringTemplatePattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}`)
 )
 
 func (re *RuntimeError) Error() string {
@@ -2253,6 +2254,82 @@ func stringBangResult(original, updated string) Value {
 	return NewString(updated)
 }
 
+func stringSquish(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func stringTemplateOption(kwargs map[string]Value) (bool, error) {
+	if len(kwargs) == 0 {
+		return false, nil
+	}
+	value, ok := kwargs["strict"]
+	if !ok || len(kwargs) != 1 {
+		return false, fmt.Errorf("string.template supports only strict keyword")
+	}
+	if value.Kind() != KindBool {
+		return false, fmt.Errorf("string.template strict keyword must be bool")
+	}
+	return value.Bool(), nil
+}
+
+func stringTemplateLookup(context Value, keyPath string) (Value, bool) {
+	current := context
+	for _, segment := range strings.Split(keyPath, ".") {
+		if segment == "" {
+			return NewNil(), false
+		}
+		if current.Kind() != KindHash && current.Kind() != KindObject {
+			return NewNil(), false
+		}
+		next, ok := current.Hash()[segment]
+		if !ok {
+			return NewNil(), false
+		}
+		current = next
+	}
+	return current, true
+}
+
+func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
+	switch value.Kind() {
+	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindTime:
+		return value.String(), nil
+	default:
+		return "", fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
+	}
+}
+
+func stringTemplate(text string, context Value, strict bool) (string, error) {
+	templateErr := error(nil)
+	rendered := stringTemplatePattern.ReplaceAllStringFunc(text, func(match string) string {
+		if templateErr != nil {
+			return match
+		}
+		submatch := stringTemplatePattern.FindStringSubmatch(match)
+		if len(submatch) != 2 {
+			return match
+		}
+		keyPath := submatch[1]
+		value, ok := stringTemplateLookup(context, keyPath)
+		if !ok {
+			if strict {
+				templateErr = fmt.Errorf("string.template missing placeholder %s", keyPath)
+			}
+			return match
+		}
+		segment, err := stringTemplateScalarValue(value, keyPath)
+		if err != nil {
+			templateErr = err
+			return match
+		}
+		return segment
+	})
+	if templateErr != nil {
+		return "", templateErr
+	}
+	return rendered, nil
+}
+
 func stringMember(str Value, property string) (Value, error) {
 	switch property {
 	case "size":
@@ -2503,6 +2580,21 @@ func stringMember(str Value, property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.strip! does not take arguments")
 			}
 			updated := strings.TrimSpace(receiver.String())
+			return stringBangResult(receiver.String(), updated), nil
+		}), nil
+	case "squish":
+		return NewAutoBuiltin("string.squish", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.squish does not take arguments")
+			}
+			return NewString(stringSquish(receiver.String())), nil
+		}), nil
+	case "squish!":
+		return NewAutoBuiltin("string.squish!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.squish! does not take arguments")
+			}
+			updated := stringSquish(receiver.String())
 			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "lstrip":
@@ -2798,6 +2890,24 @@ func stringMember(str Value, property string) (Value, error) {
 				values[i] = NewString(part)
 			}
 			return NewArray(values), nil
+		}), nil
+	case "template":
+		return NewAutoBuiltin("string.template", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.template expects exactly one context hash")
+			}
+			if args[0].Kind() != KindHash && args[0].Kind() != KindObject {
+				return NewNil(), fmt.Errorf("string.template context must be hash")
+			}
+			strict, err := stringTemplateOption(kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			rendered, err := stringTemplate(receiver.String(), args[0], strict)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewString(rendered), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
