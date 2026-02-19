@@ -1689,6 +1689,64 @@ func TestTimeParseCommonLayouts(t *testing.T) {
 	}
 }
 
+func TestNumericConversionBuiltins(t *testing.T) {
+	script := compileScript(t, `
+    def conversions()
+      {
+        int_from_int: to_int(5),
+        int_from_float: to_int(5.0),
+        int_from_string: to_int("42"),
+        float_from_int: to_float(5),
+        float_from_float: to_float(1.25),
+        float_from_string: to_float("2.5")
+      }
+    end
+
+    def bad_int_fraction()
+      to_int(1.5)
+    end
+
+    def bad_int_string()
+      to_int("abc")
+    end
+
+    def bad_float_string()
+      to_float("abc")
+    end
+    `)
+
+	result := callFunc(t, script, "conversions", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if !got["int_from_int"].Equal(NewInt(5)) || !got["int_from_float"].Equal(NewInt(5)) || !got["int_from_string"].Equal(NewInt(42)) {
+		t.Fatalf("to_int conversions mismatch: %#v", got)
+	}
+	if got["float_from_int"].Kind() != KindFloat || got["float_from_int"].Float() != 5 {
+		t.Fatalf("float_from_int mismatch: %v", got["float_from_int"])
+	}
+	if got["float_from_float"].Kind() != KindFloat || got["float_from_float"].Float() != 1.25 {
+		t.Fatalf("float_from_float mismatch: %v", got["float_from_float"])
+	}
+	if got["float_from_string"].Kind() != KindFloat || got["float_from_string"].Float() != 2.5 {
+		t.Fatalf("float_from_string mismatch: %v", got["float_from_string"])
+	}
+
+	_, err := script.Call(context.Background(), "bad_int_fraction", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_int cannot convert non-integer float") {
+		t.Fatalf("expected fractional to_int error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_int_string", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_int expects a base-10 integer string") {
+		t.Fatalf("expected string to_int error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_float_string", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_float expects a numeric string") {
+		t.Fatalf("expected string to_float error, got %v", err)
+	}
+}
+
 func TestJSONBuiltins(t *testing.T) {
 	script := compileScript(t, `
     def parse_payload()

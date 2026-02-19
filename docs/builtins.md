@@ -75,6 +75,21 @@ short = random_id(8)
 token = random_id()
 ```
 
+## Numeric Conversion
+
+### `to_int(value)`
+
+Converts `int`, integral `float`, or base-10 numeric `string` values into `int`.
+
+### `to_float(value)`
+
+Converts `int`, `float`, or numeric `string` values into `float`.
+
+```vibe
+count = to_int("42")
+ratio = to_float("1.25")
+```
+
 ## JSON
 
 ### `JSON.parse(string)`

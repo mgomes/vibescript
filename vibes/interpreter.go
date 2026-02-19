@@ -77,6 +77,8 @@ func NewEngine(cfg Config) (*Engine, error) {
 	engine.RegisterZeroArgBuiltin("now", builtinNow)
 	engine.RegisterZeroArgBuiltin("uuid", builtinUUID)
 	engine.RegisterBuiltin("random_id", builtinRandomID)
+	engine.RegisterBuiltin("to_int", builtinToInt)
+	engine.RegisterBuiltin("to_float", builtinToFloat)
 	engine.builtins["JSON"] = NewObject(map[string]Value{
 		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
 		"stringify": NewBuiltin("JSON.stringify", builtinJSONStringify),

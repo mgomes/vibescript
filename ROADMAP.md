@@ -285,7 +285,7 @@ Goal: reduce host-side boilerplate for common scripting tasks.
 - [x] Add regex matching/replacement helpers.
 - [x] Add UUID/random identifier utilities with deterministic test hooks.
 - [x] Add richer date/time parsing helpers for common layouts.
-- [ ] Add safer numeric conversions and clamp/round helpers.
+- [x] Add safer numeric conversions and clamp/round helpers.
 
 ### Collections and Strings
 
