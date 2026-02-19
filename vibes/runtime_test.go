@@ -1850,6 +1850,43 @@ func TestRegexBuiltins(t *testing.T) {
 	}
 }
 
+func TestJSONAndRegexMalformedInputs(t *testing.T) {
+	script := compileScript(t, `
+    def bad_json_trailing()
+      JSON.parse("{\"a\":1}{\"b\":2}")
+    end
+
+    def bad_json_syntax()
+      JSON.parse("{\"a\":")
+    end
+
+    def bad_regex_replace()
+      Regex.replace("abc", "[", "x")
+    end
+
+    def bad_regex_replace_all()
+      Regex.replace_all("abc", "[", "x")
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "bad_json_trailing", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON: trailing data") {
+		t.Fatalf("expected trailing JSON error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_json_syntax", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON") {
+		t.Fatalf("expected malformed JSON syntax error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_regex_replace", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.replace invalid regex") {
+		t.Fatalf("expected regex replace error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_regex_replace_all", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.replace_all invalid regex") {
+		t.Fatalf("expected regex replace_all error, got %v", err)
+	}
+}
+
 func TestRandomIdentifierBuiltins(t *testing.T) {
 	engine := MustNewEngine(Config{
 		RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xAB}, 128)),

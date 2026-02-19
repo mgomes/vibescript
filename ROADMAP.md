@@ -302,7 +302,7 @@ Goal: reduce host-side boilerplate for common scripting tasks.
 ### Testing and Docs
 
 - [ ] Add comprehensive docs pages and examples for each new family.
-- [ ] Add negative tests for malformed JSON/regex patterns.
+- [x] Add negative tests for malformed JSON/regex patterns.
 - [ ] Add benchmark coverage for hot stdlib paths.
 
 ### v0.18.0 Definition of Done
