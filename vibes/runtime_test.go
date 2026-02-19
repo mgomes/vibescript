@@ -1897,14 +1897,15 @@ func TestJSONBuiltins(t *testing.T) {
 
 func TestRegexBuiltins(t *testing.T) {
 	script := compileScript(t, `
-    def helpers()
-      {
-        match_hit: Regex.match("ID-[0-9]+", "ID-12 ID-34"),
-        match_miss: Regex.match("Z+", "ID-12"),
-        replace_one: Regex.replace("ID-12 ID-34", "ID-[0-9]+", "X"),
-        replace_all: Regex.replace_all("ID-12 ID-34", "ID-[0-9]+", "X"),
-        replace_capture: Regex.replace("ID-12 ID-34", "ID-([0-9]+)", "X-$1")
-      }
+	    def helpers()
+	      {
+	        match_hit: Regex.match("ID-[0-9]+", "ID-12 ID-34"),
+	        match_miss: Regex.match("Z+", "ID-12"),
+	        match_empty: Regex.match("^", "ID-12"),
+	        replace_one: Regex.replace("ID-12 ID-34", "ID-[0-9]+", "X"),
+	        replace_all: Regex.replace_all("ID-12 ID-34", "ID-[0-9]+", "X"),
+	        replace_capture: Regex.replace("ID-12 ID-34", "ID-([0-9]+)", "X-$1")
+	      }
     end
 
     def invalid_regex()
@@ -1922,6 +1923,9 @@ func TestRegexBuiltins(t *testing.T) {
 	}
 	if out["match_miss"].Kind() != KindNil {
 		t.Fatalf("expected match_miss nil, got %v", out["match_miss"])
+	}
+	if !out["match_empty"].Equal(NewString("")) {
+		t.Fatalf("match_empty mismatch: %#v", out["match_empty"])
 	}
 	if !out["replace_one"].Equal(NewString("X ID-34")) {
 		t.Fatalf("replace_one mismatch: %v", out["replace_one"])
@@ -2719,9 +2723,13 @@ func TestArrayAndHashHelpers(t *testing.T) {
       { a: 1, b: nil, c: 3 }.compact()
     end
 
-    def hash_remap()
-      { first_name: "Alex", total_raised: 10 }.remap_keys({ first_name: :name, total_raised: :raised })
-    end
+	    def hash_remap()
+	      { first_name: "Alex", total_raised: 10 }.remap_keys({ first_name: :name, total_raised: :raised })
+	    end
+
+	    def hash_remap_collision()
+	      { a: 1, b: 2 }.remap_keys({ a: :x, b: :x })
+	    end
 
     def hash_deep_transform()
       payload = {
@@ -2801,6 +2809,14 @@ func TestArrayAndHashHelpers(t *testing.T) {
 		"name":   NewString("Alex"),
 		"raised": NewInt(10),
 	})
+
+	colliding := callFunc(t, script, "hash_remap_collision", nil)
+	if colliding.Kind() != KindHash {
+		t.Fatalf("expected colliding remap hash, got %v", colliding.Kind())
+	}
+	if got := colliding.Hash()["x"]; got.Kind() != KindInt || got.Int() != 2 {
+		t.Fatalf("expected deterministic collision winner x=2, got %#v", got)
+	}
 
 	deepTransformed := callFunc(t, script, "hash_deep_transform", nil)
 	if deepTransformed.Kind() != KindHash {

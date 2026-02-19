@@ -410,11 +410,11 @@ func builtinRegexMatch(exec *Execution, receiver Value, args []Value, kwargs map
 	if err != nil {
 		return NewNil(), fmt.Errorf("Regex.match invalid regex: %v", err)
 	}
-	match := re.FindString(text)
-	if match == "" {
+	indices := re.FindStringIndex(text)
+	if indices == nil {
 		return NewNil(), nil
 	}
-	return NewString(match), nil
+	return NewString(text[indices[0]:indices[1]]), nil
 }
 
 func builtinRegexReplace(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

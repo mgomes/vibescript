@@ -1986,7 +1986,8 @@ func hashMember(obj Value, property string) (Value, error) {
 			entries := receiver.Hash()
 			mapping := args[0].Hash()
 			out := make(map[string]Value, len(entries))
-			for key, value := range entries {
+			for _, key := range sortedHashKeys(entries) {
+				value := entries[key]
 				if mapped, ok := mapping[key]; ok {
 					nextKey, err := valueToHashKey(mapped)
 					if err != nil {
