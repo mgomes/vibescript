@@ -199,7 +199,7 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 - [ ] Existing scripts without annotations remain compatible.
 - [x] Type errors include parameter name, expected type, and actual type.
-- [ ] Capability contract validation can use the same type primitives.
+- [x] Capability contract validation can use the same type primitives.
 
 ---
 

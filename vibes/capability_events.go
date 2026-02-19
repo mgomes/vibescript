@@ -87,11 +87,7 @@ func (c *eventsCapability) validatePublishContractArgs(args []Value, kwargs map[
 	if _, err := capabilityNameArg(method, "topic", args[0]); err != nil {
 		return err
 	}
-	payload := args[1]
-	if payload.Kind() != KindHash && payload.Kind() != KindObject {
-		return fmt.Errorf("%s expects payload hash", method)
-	}
-	if err := validateCapabilityDataOnlyValue(method+" payload", payload); err != nil {
+	if err := validateCapabilityHashValue(method+" payload", args[1]); err != nil {
 		return err
 	}
 	return validateCapabilityKwargsDataOnly(method, kwargs)
@@ -99,12 +95,12 @@ func (c *eventsCapability) validatePublishContractArgs(args []Value, kwargs map[
 
 func (c *eventsCapability) validateMethodReturn(method string) func(result Value) error {
 	return func(result Value) error {
-		return validateCapabilityDataOnlyValue(method+" return value", result)
+		return validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny)
 	}
 }
 
 func (c *eventsCapability) cloneMethodResult(method string, result Value) (Value, error) {
-	if err := validateCapabilityDataOnlyValue(method+" return value", result); err != nil {
+	if err := validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny); err != nil {
 		return NewNil(), err
 	}
 	return deepCloneValue(result), nil

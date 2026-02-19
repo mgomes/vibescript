@@ -86,6 +86,27 @@ end`)
 	}
 }
 
+func TestEventsCapabilityRejectsNonHashPayload(t *testing.T) {
+	stub := &eventsCapabilityStub{}
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile(`def run()
+  events.publish("topic", 42)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{MustNewEventsCapability("events", stub)},
+	})
+	if err == nil {
+		t.Fatalf("expected non-hash payload error")
+	}
+	if got := err.Error(); !strings.Contains(got, "events.publish payload expected hash, got int") {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
 func TestEventsCapabilityRejectsCallableReturn(t *testing.T) {
 	stub := &eventsCapabilityStub{
 		publishResult: NewObject(map[string]Value{

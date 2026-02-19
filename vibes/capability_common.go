@@ -1,9 +1,21 @@
 package vibes
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
+)
+
+var (
+	capabilityTypeAny = &TypeExpr{
+		Name: "any",
+		Kind: TypeAny,
+	}
+	capabilityTypeHash = &TypeExpr{
+		Name: "hash",
+		Kind: TypeHash,
+	}
 )
 
 func capabilityNameArg(method string, label string, val Value) (string, error) {
@@ -28,11 +40,29 @@ func cloneCapabilityKwargs(kwargs map[string]Value) map[string]Value {
 
 func validateCapabilityKwargsDataOnly(method string, kwargs map[string]Value) error {
 	for key, val := range kwargs {
-		if err := validateCapabilityDataOnlyValue(fmt.Sprintf("%s keyword %s", method, key), val); err != nil {
+		if err := validateCapabilityTypedValue(fmt.Sprintf("%s keyword %s", method, key), val, capabilityTypeAny); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func validateCapabilityTypedValue(label string, val Value, ty *TypeExpr) error {
+	if err := validateCapabilityDataOnlyValue(label, val); err != nil {
+		return err
+	}
+	if err := checkValueType(val, ty); err != nil {
+		var mismatch *typeMismatchError
+		if errors.As(err, &mismatch) {
+			return fmt.Errorf("%s expected %s, got %s", label, mismatch.Expected, mismatch.Actual)
+		}
+		return err
+	}
+	return nil
+}
+
+func validateCapabilityHashValue(label string, val Value) error {
+	return validateCapabilityTypedValue(label, val, capabilityTypeHash)
 }
 
 func isNilCapabilityImplementation(impl any) bool {
