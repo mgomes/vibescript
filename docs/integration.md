@@ -74,6 +74,9 @@ The interpreter searches each configured directory for `<module>.vibe` in order
 and caches compiled modules so subsequent calls to `require` are inexpensive.
 For long-running hosts, call `engine.ClearModuleCache()` between runs when
 module sources can change.
+Use `Config.ModuleAllowList` / `Config.ModuleDenyList` for policy hooks over
+which modules may be loaded (`*` glob patterns against normalized module names,
+with deny-list rules taking precedence).
 When a circular module dependency is detected, the runtime reports a concise
 chain (for example `a -> b -> a`).
 Use the optional `as:` keyword to bind the loaded module object to a global

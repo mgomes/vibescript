@@ -17,6 +17,8 @@ type Config struct {
 	StrictEffects    bool
 	RecursionLimit   int
 	ModulePaths      []string
+	ModuleAllowList  []string
+	ModuleDenyList   []string
 	MaxCachedModules int
 }
 
@@ -45,6 +47,12 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}
 
 	if err := validateModulePaths(cfg.ModulePaths); err != nil {
+		return nil, err
+	}
+	if err := validateModulePolicyPatterns(cfg.ModuleAllowList, "allow"); err != nil {
+		return nil, err
+	}
+	if err := validateModulePolicyPatterns(cfg.ModuleDenyList, "deny"); err != nil {
 		return nil, err
 	}
 

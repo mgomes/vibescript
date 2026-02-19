@@ -259,7 +259,7 @@ Goal: make multi-file script projects easier to compose and maintain.
 
 - [x] Tighten module root boundary checks and path normalization.
 - [x] Add test coverage for path traversal attempts.
-- [ ] Add explicit policy hooks for module allow/deny lists.
+- [x] Add explicit policy hooks for module allow/deny lists.
 
 ### Developer UX
 

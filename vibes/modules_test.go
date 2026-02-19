@@ -947,6 +947,71 @@ end`)
 	}
 }
 
+func TestRequireModuleAllowList(t *testing.T) {
+	engine := MustNewEngine(Config{
+		ModulePaths:     []string{filepath.Join("testdata", "modules")},
+		ModuleAllowList: []string{"shared/*"},
+	})
+
+	script, err := engine.Compile(`def run_allowed(value)
+  mod = require("shared/math")
+  mod.double(value)
+end
+
+def run_denied(value)
+  mod = require("helper")
+  mod.double(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	allowed, err := script.Call(context.Background(), "run_allowed", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("allowed call failed: %v", err)
+	}
+	if allowed.Kind() != KindInt || allowed.Int() != 6 {
+		t.Fatalf("expected allowed result 6, got %#v", allowed)
+	}
+
+	if _, err := script.Call(context.Background(), "run_denied", []Value{NewInt(3)}, CallOptions{}); err == nil {
+		t.Fatalf("expected denied module error")
+	} else if !strings.Contains(err.Error(), `require: module "helper" not allowed by policy`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireModuleDenyListOverridesAllowList(t *testing.T) {
+	engine := MustNewEngine(Config{
+		ModulePaths:     []string{filepath.Join("testdata", "modules")},
+		ModuleAllowList: []string{"*"},
+		ModuleDenyList:  []string{"helper"},
+	})
+
+	script, err := engine.Compile(`def run()
+  require("helper")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected deny-list error")
+	} else if !strings.Contains(err.Error(), `require: module "helper" denied by policy`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestModulePolicyPatternValidation(t *testing.T) {
+	_, err := NewEngine(Config{
+		ModulePaths:     []string{filepath.Join("testdata", "modules")},
+		ModuleAllowList: []string{"[invalid"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid module allow-list pattern") {
+		t.Fatalf("expected invalid allow-list pattern error, got %v", err)
+	}
+}
+
 func TestFormatModuleCycleUsesConciseChain(t *testing.T) {
 	root := filepath.Join("tmp", "modules")
 	a := moduleCacheKey(root, filepath.Join("nested", "a.vibe"))
