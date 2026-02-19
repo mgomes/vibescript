@@ -160,6 +160,7 @@ Long-form guides live in `docs/`:
 - `docs/errors.md` – parse/runtime error formatting and debugging patterns.
 - `docs/control-flow.md` – conditionals, loops, and ranges.
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
+- `docs/tooling.md` – CLI workflows for running, formatting, analyzing, and REPL usage.
 - `docs/integration.md` – integrating the interpreter in Go applications.
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.

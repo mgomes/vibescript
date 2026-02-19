@@ -339,7 +339,7 @@ Goal: improve day-to-day developer productivity and interpreter robustness.
 
 ### v0.19.0 Definition of Done
 
-- [ ] Tooling commands are documented and stable.
+- [x] Tooling commands are documented and stable.
 - [x] Performance regressions are tracked with benchmarks.
 - [x] CI includes example and fuzz coverage gates.
 
