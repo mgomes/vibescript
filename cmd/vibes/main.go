@@ -26,6 +26,8 @@ func runCLI(args []string) error {
 	switch args[1] {
 	case "run":
 		return runCommand(args[2:])
+	case "analyze":
+		return analyzeCommand(args[2:])
 	case "repl":
 		return runREPL()
 	case "help", "-h", "--help":
@@ -98,6 +100,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: %s <command> [flags] [args...]\n\n", prog)
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  run <script>    Execute a script file")
+	fmt.Fprintln(os.Stderr, "  analyze <script> Analyze a script for lint issues")
 	fmt.Fprintln(os.Stderr, "  repl            Start interactive REPL")
 	fmt.Fprintln(os.Stderr, "  help            Show this help message")
 	fmt.Fprintln(os.Stderr, "")

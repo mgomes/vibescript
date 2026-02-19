@@ -71,6 +71,43 @@ func TestRunCommandRequiresScriptPath(t *testing.T) {
 	}
 }
 
+func TestAnalyzeCommandNoIssues(t *testing.T) {
+	scriptPath := writeScript(t, `def run()
+  value = 1
+  value
+end`)
+
+	out, err := captureStdout(t, func() error {
+		return analyzeCommand([]string{scriptPath})
+	})
+	if err != nil {
+		t.Fatalf("analyzeCommand failed: %v", err)
+	}
+	if !strings.Contains(out, "No issues found") {
+		t.Fatalf("unexpected analyze output: %q", out)
+	}
+}
+
+func TestAnalyzeCommandReportsUnreachableStatements(t *testing.T) {
+	scriptPath := writeScript(t, `def run()
+  return 1
+  2
+end`)
+
+	out, err := captureStdout(t, func() error {
+		return analyzeCommand([]string{scriptPath})
+	})
+	if err == nil {
+		t.Fatalf("expected analyze command to report lint failures")
+	}
+	if !strings.Contains(err.Error(), "analysis found 1 issue(s)") {
+		t.Fatalf("unexpected analyze error: %v", err)
+	}
+	if !strings.Contains(out, "unreachable statement") {
+		t.Fatalf("expected unreachable statement warning, got %q", out)
+	}
+}
+
 func TestComputeModulePathsIncludesScriptDirAndDedupesExtras(t *testing.T) {
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "main.vibe")

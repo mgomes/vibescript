@@ -4268,6 +4268,20 @@ func (s *Script) Function(name string) (*ScriptFunction, bool) {
 	return fn, ok
 }
 
+// Functions returns compiled functions in deterministic name order.
+func (s *Script) Functions() []*ScriptFunction {
+	names := make([]string, 0, len(s.functions))
+	for name := range s.functions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*ScriptFunction, 0, len(names))
+	for _, name := range names {
+		out = append(out, s.functions[name])
+	}
+	return out
+}
+
 func (s *Script) bindFunctionOwnership() {
 	for _, fn := range s.functions {
 		fn.owner = s
