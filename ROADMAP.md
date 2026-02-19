@@ -157,7 +157,7 @@ Goal: make host integrations first-class and safe enough for production workflow
 
 - [x] All new capabilities documented in `docs/integration.md`.
 - [x] Background/future examples run in CI examples suite.
-- [ ] No contract bypasses in capability call boundaries.
+- [x] No contract bypasses in capability call boundaries.
 
 ---
 

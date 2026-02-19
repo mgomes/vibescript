@@ -127,7 +127,11 @@ func (c *jobQueueCapability) callEnqueue(exec *Execution, receiver Value, args [
 		Options: options,
 	}
 
-	return c.queue.Enqueue(exec.ctx, job)
+	result, err := c.queue.Enqueue(exec.ctx, job)
+	if err != nil {
+		return NewNil(), err
+	}
+	return c.cloneMethodResult(c.name+".enqueue", result)
 }
 
 func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -152,12 +156,16 @@ func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []V
 		if optsVal.Kind() != KindHash && optsVal.Kind() != KindObject {
 			return NewNil(), fmt.Errorf("%s.retry options must be hash", c.name)
 		}
-		options = mergeHash(options, optsVal.Hash())
+		options = mergeHash(options, cloneHash(optsVal.Hash()))
 	}
-	options = mergeHash(options, kwargs)
+	options = mergeHash(options, cloneCapabilityKwargs(kwargs))
 
 	req := JobQueueRetryRequest{JobID: idVal.String(), Options: options}
-	return c.retry.Retry(exec.ctx, req)
+	result, err := c.retry.Retry(exec.ctx, req)
+	if err != nil {
+		return NewNil(), err
+	}
+	return c.cloneMethodResult(c.name+".retry", result)
 }
 
 func (c *jobQueueCapability) validateEnqueueContractArgs(args []Value, kwargs map[string]Value, block Value) error {
@@ -235,6 +243,13 @@ func (c *jobQueueCapability) validateMethodReturn(method string) func(result Val
 	}
 }
 
+func (c *jobQueueCapability) cloneMethodResult(method string, result Value) (Value, error) {
+	if err := validateCapabilityDataOnlyValue(method+" return value", result); err != nil {
+		return NewNil(), err
+	}
+	return deepCloneValue(result), nil
+}
+
 func parseJobQueueEnqueueOptions(name string, kwargs map[string]Value) (JobQueueEnqueueOptions, error) {
 	if len(kwargs) == 0 {
 		return JobQueueEnqueueOptions{}, nil
@@ -265,7 +280,7 @@ func parseJobQueueEnqueueOptions(name string, kwargs map[string]Value) (JobQueue
 			}
 			key = &s
 		default:
-			extra[k] = v
+			extra[k] = deepCloneValue(v)
 		}
 	}
 
