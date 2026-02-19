@@ -417,6 +417,8 @@ func lookupIdent(ident string) TokenType {
 		return tokenFor
 	case "while":
 		return tokenWhile
+	case "until":
+		return tokenUntil
 	case "in":
 		return tokenIn
 	case "if":

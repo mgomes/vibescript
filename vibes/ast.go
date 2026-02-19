@@ -131,6 +131,15 @@ type WhileStmt struct {
 func (s *WhileStmt) stmtNode()     {}
 func (s *WhileStmt) Pos() Position { return s.position }
 
+type UntilStmt struct {
+	Condition Expression
+	Body      []Statement
+	position  Position
+}
+
+func (s *UntilStmt) stmtNode()     {}
+func (s *UntilStmt) Pos() Position { return s.position }
+
 type Identifier struct {
 	Name     string
 	position Position

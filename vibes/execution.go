@@ -338,6 +338,8 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		return exec.evalForStatement(s, env)
 	case *WhileStmt:
 		return exec.evalWhileStatement(s, env)
+	case *UntilStmt:
+		return exec.evalUntilStatement(s, env)
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement")
 	}
@@ -1140,6 +1142,33 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 			return NewNil(), false, err
 		}
 		if !condition.Truthy() {
+			return last, false, nil
+		}
+		val, returned, err := exec.evalStatements(stmt.Body, env)
+		if err != nil {
+			return NewNil(), false, err
+		}
+		if returned {
+			return val, true, nil
+		}
+		last = val
+	}
+}
+
+func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, bool, error) {
+	last := NewNil()
+	for {
+		if err := exec.step(); err != nil {
+			return NewNil(), false, exec.wrapError(err, stmt.Pos())
+		}
+		condition, err := exec.evalExpression(stmt.Condition, env)
+		if err != nil {
+			return NewNil(), false, err
+		}
+		if err := exec.checkMemoryWith(condition); err != nil {
+			return NewNil(), false, err
+		}
+		if condition.Truthy() {
 			return last, false, nil
 		}
 		val, returned, err := exec.evalStatements(stmt.Body, env)
