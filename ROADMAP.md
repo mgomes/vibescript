@@ -192,12 +192,12 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 - [x] Add parser tests for all new type syntax forms.
 - [x] Add runtime tests for nested composite type checks.
-- [ ] Add regression tests for existing `any` and nullable behavior.
+- [x] Add regression tests for existing `any` and nullable behavior.
 - [ ] Expand `docs/typing.md` with migration examples.
 
 ### v0.15.0 Definition of Done
 
-- [ ] Existing scripts without annotations remain compatible.
+- [x] Existing scripts without annotations remain compatible.
 - [x] Type errors include parameter name, expected type, and actual type.
 - [x] Capability contract validation can use the same type primitives.
 

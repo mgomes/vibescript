@@ -1360,6 +1360,91 @@ func TestTypedFunctions(t *testing.T) {
 	}
 }
 
+func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
+	script := compileScript(t, `
+    def takes_any(v: any) -> any
+      v
+    end
+
+    def takes_nullable(v: string? = nil) -> string?
+      v
+    end
+
+    def takes_nullable_union(v: string | nil) -> string | nil
+      v
+    end
+    `)
+
+	anyBuiltin := NewBuiltin("tmp.any", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewNil(), nil
+	})
+	if got := callFunc(t, script, "takes_any", []Value{anyBuiltin}); got.Kind() != KindBuiltin {
+		t.Fatalf("takes_any builtin mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "takes_any", []Value{NewHash(map[string]Value{"x": NewInt(1)})}); got.Kind() != KindHash {
+		t.Fatalf("takes_any hash mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "takes_any", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("takes_any nil mismatch: %#v", got)
+	}
+
+	if got := callFunc(t, script, "takes_nullable", nil); got.Kind() != KindNil {
+		t.Fatalf("takes_nullable default nil mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "takes_nullable", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
+		t.Fatalf("takes_nullable string mismatch: %#v", got)
+	}
+	_, err := script.Call(context.Background(), "takes_nullable", []Value{NewInt(1)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected string?, got int") {
+		t.Fatalf("expected nullable type mismatch, got %v", err)
+	}
+
+	if got := callFunc(t, script, "takes_nullable_union", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("takes_nullable_union nil mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "takes_nullable_union", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
+		t.Fatalf("takes_nullable_union string mismatch: %#v", got)
+	}
+	_, err = script.Call(context.Background(), "takes_nullable_union", []Value{NewInt(1)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected string | nil, got int") {
+		t.Fatalf("expected nullable union mismatch, got %v", err)
+	}
+}
+
+func TestExistingUntypedScriptsRemainCompatible(t *testing.T) {
+	script := compileScript(t, `
+    def identity(v)
+      v
+    end
+
+    def run()
+      first = identity(1)
+      second = identity("two")
+      third = identity({ ok: true })
+      {
+        first: first,
+        second: second,
+        third_ok: third[:ok]
+      }
+    end
+    `)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", got.Kind())
+	}
+	hash := got.Hash()
+	if hash["first"].Kind() != KindInt || hash["first"].Int() != 1 {
+		t.Fatalf("unexpected first value: %#v", hash["first"])
+	}
+	if hash["second"].Kind() != KindString || hash["second"].String() != "two" {
+		t.Fatalf("unexpected second value: %#v", hash["second"])
+	}
+	if hash["third_ok"].Kind() != KindBool || !hash["third_ok"].Bool() {
+		t.Fatalf("unexpected third_ok value: %#v", hash["third_ok"])
+	}
+}
+
 func TestArrayAndHashHelpers(t *testing.T) {
 	script := compileScript(t, `
     def array_helpers()
