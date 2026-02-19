@@ -1410,7 +1410,7 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
 	val, returned, err := exec.evalStatements(stmt.Body, env)
 
-	if err != nil && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
+	if err != nil && !isLoopControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
 		exec.pushRescuedError(err)
 		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, env)
 		exec.popRescuedError()
@@ -1439,6 +1439,10 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 		return NewNil(), false, err
 	}
 	return val, returned, nil
+}
+
+func isLoopControlSignal(err error) bool {
+	return errors.Is(err, errLoopBreak) || errors.Is(err, errLoopNext)
 }
 
 func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {

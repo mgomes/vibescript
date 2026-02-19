@@ -1088,6 +1088,46 @@ func TestBeginRescueTypedMatching(t *testing.T) {
 	}
 }
 
+func TestBeginRescueDoesNotCatchLoopControlSignals(t *testing.T) {
+	script := compileScript(t, `
+    def break_in_loop()
+      out = []
+      for n in [1, 2, 3]
+        begin
+          if n == 2
+            break
+          end
+          out = out + [n]
+        rescue
+          out = out + ["rescued"]
+        end
+      end
+      out
+    end
+
+    def next_in_loop()
+      out = []
+      for n in [1, 2, 3]
+        begin
+          if n == 2
+            next
+          end
+          out = out + [n]
+        rescue
+          out = out + ["rescued"]
+        end
+      end
+      out
+    end
+    `)
+
+	breakOut := callFunc(t, script, "break_in_loop", nil)
+	compareArrays(t, breakOut, []Value{NewInt(1)})
+
+	nextOut := callFunc(t, script, "next_in_loop", nil)
+	compareArrays(t, nextOut, []Value{NewInt(1), NewInt(3)})
+}
+
 func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	_, err := engine.Compile(`
