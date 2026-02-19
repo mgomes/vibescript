@@ -356,6 +356,8 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			return NewNil(), false, exec.errorAt(s.Pos(), "next used outside of loop")
 		}
 		return NewNil(), false, errLoopNext
+	case *TryStmt:
+		return exec.evalTryStatement(s, env)
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement")
 	}
@@ -1310,6 +1312,38 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 		}
 		last = val
 	}
+}
+
+func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
+	val, returned, err := exec.evalStatements(stmt.Body, env)
+
+	if err != nil && len(stmt.Rescue) > 0 {
+		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, env)
+		if rescueErr != nil {
+			val = NewNil()
+			returned = false
+			err = rescueErr
+		} else {
+			val = rescueVal
+			returned = rescueReturned
+			err = nil
+		}
+	}
+
+	if len(stmt.Ensure) > 0 {
+		ensureVal, ensureReturned, ensureErr := exec.evalStatements(stmt.Ensure, env)
+		if ensureErr != nil {
+			return NewNil(), false, ensureErr
+		}
+		if ensureReturned {
+			return ensureVal, true, nil
+		}
+	}
+
+	if err != nil {
+		return NewNil(), false, err
+	}
+	return val, returned, nil
 }
 
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {

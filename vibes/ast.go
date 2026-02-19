@@ -154,6 +154,16 @@ type NextStmt struct {
 func (s *NextStmt) stmtNode()     {}
 func (s *NextStmt) Pos() Position { return s.position }
 
+type TryStmt struct {
+	Body     []Statement
+	Rescue   []Statement
+	Ensure   []Statement
+	position Position
+}
+
+func (s *TryStmt) stmtNode()     {}
+func (s *TryStmt) Pos() Position { return s.position }
+
 type Identifier struct {
 	Name     string
 	position Position

@@ -135,6 +135,8 @@ func (p *parser) parseStatement() Statement {
 		return p.parseBreakStatement()
 	case tokenNext:
 		return p.parseNextStatement()
+	case tokenBegin:
+		return p.parseBeginStatement()
 	case tokenIdent:
 		if p.curToken.Literal == "assert" {
 			return p.parseAssertStatement()
@@ -431,6 +433,36 @@ func (p *parser) parseBreakStatement() Statement {
 
 func (p *parser) parseNextStatement() Statement {
 	return &NextStmt{position: p.curToken.Pos}
+}
+
+func (p *parser) parseBeginStatement() Statement {
+	pos := p.curToken.Pos
+	p.nextToken()
+	body := p.parseBlock(tokenRescue, tokenEnsure, tokenEnd)
+
+	var rescueBody []Statement
+	if p.curToken.Type == tokenRescue {
+		p.nextToken()
+		rescueBody = p.parseBlock(tokenEnsure, tokenEnd)
+	}
+
+	var ensureBody []Statement
+	if p.curToken.Type == tokenEnsure {
+		p.nextToken()
+		ensureBody = p.parseBlock(tokenEnd)
+	}
+
+	if p.curToken.Type != tokenEnd {
+		p.errorExpected(p.curToken, "end")
+		return nil
+	}
+
+	if len(rescueBody) == 0 && len(ensureBody) == 0 {
+		p.addParseError(pos, "begin requires rescue and/or ensure")
+		return nil
+	}
+
+	return &TryStmt{Body: body, Rescue: rescueBody, Ensure: ensureBody, position: pos}
 }
 
 func (p *parser) parseBlock(stop ...TokenType) []Statement {

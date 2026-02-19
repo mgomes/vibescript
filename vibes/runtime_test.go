@@ -936,6 +936,84 @@ func TestCaseWhenExpressions(t *testing.T) {
 	}
 }
 
+func TestBeginRescueEnsure(t *testing.T) {
+	script := compileScript(t, `
+    def safe_div(a, b)
+      begin
+        a / b
+      rescue
+        "fallback"
+      end
+    end
+
+    def ensure_trace(fail)
+      trace = []
+      begin
+        trace = trace + ["body"]
+        if fail
+          1 / 0
+        end
+        trace = trace + ["body_done"]
+      rescue
+        trace = trace + ["rescue"]
+      ensure
+        trace = trace + ["ensure"]
+      end
+      trace
+    end
+
+    def rescue_assertion()
+      begin
+        assert false, "boom"
+      rescue
+        "caught"
+      end
+    end
+
+    def ensure_return_override()
+      begin
+        10
+      ensure
+        return 42
+      end
+    end
+
+    def ensure_without_rescue()
+      begin
+        1 / 0
+      ensure
+        123
+      end
+    end
+    `)
+
+	if got := callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(2)}); !got.Equal(NewFloat(5)) {
+		t.Fatalf("safe_div success mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(0)}); !got.Equal(NewString("fallback")) {
+		t.Fatalf("safe_div rescue mismatch: %v", got)
+	}
+
+	traceOK := callFunc(t, script, "ensure_trace", []Value{NewBool(false)})
+	compareArrays(t, traceOK, []Value{NewString("body"), NewString("body_done"), NewString("ensure")})
+
+	traceFail := callFunc(t, script, "ensure_trace", []Value{NewBool(true)})
+	compareArrays(t, traceFail, []Value{NewString("body"), NewString("rescue"), NewString("ensure")})
+
+	if got := callFunc(t, script, "rescue_assertion", nil); !got.Equal(NewString("caught")) {
+		t.Fatalf("rescue_assertion mismatch: %v", got)
+	}
+
+	if got := callFunc(t, script, "ensure_return_override", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("ensure_return_override mismatch: %v", got)
+	}
+
+	_, err := script.Call(context.Background(), "ensure_without_rescue", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "division by zero") {
+		t.Fatalf("expected ensure_without_rescue to preserve original error, got %v", err)
+	}
+}
+
 func TestLoopControlBreakAndNext(t *testing.T) {
 	script := compileScript(t, `
     def for_break()
