@@ -37,6 +37,31 @@ division by zero
   at calculate (7:7)
 ```
 
+## Type Errors
+
+Typed argument and return checks include:
+
+- parameter or function context
+- expected type
+- actual runtime type
+
+```text
+argument payload expected { id: string, score: int }, got { id: string, score: string }
+```
+
+For composite values, actual types include shape/element detail (`array<int | string>`, `{ id: string, ... }`) to make fixes local and explicit.
+
+## Loop Control Errors
+
+Loop control diagnostics are explicit:
+
+- `break used outside of loop`
+- `next used outside of loop`
+- `break cannot cross call boundary`
+- `next cannot cross call boundary`
+
+These boundary errors happen when `break`/`next` are raised inside called blocks/functions and attempt to escape into an outer loop.
+
 ## REPL Debugging
 
 The REPL stores the previous failure. Use:

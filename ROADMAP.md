@@ -232,7 +232,7 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 
 - [x] Add parser/runtime tests for each new control flow construct.
 - [x] Add nested control flow tests for edge cases.
-- [ ] Add docs updates in `docs/control-flow.md` and `docs/errors.md`.
+- [x] Add docs updates in `docs/control-flow.md` and `docs/errors.md`.
 - [ ] Add examples under `examples/control_flow/` for each new feature.
 
 ### v0.16.0 Definition of Done
