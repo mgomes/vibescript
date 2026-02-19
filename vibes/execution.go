@@ -3317,7 +3317,33 @@ func formatReturnTypeMismatch(fnName string, err error) string {
 	return fmt.Sprintf("return type check failed for %s: %s", fnName, err.Error())
 }
 
+type typeValidationVisit struct {
+	valueKind ValueKind
+	valueID   uintptr
+	ty        *TypeExpr
+}
+
+type typeValidationState struct {
+	active map[typeValidationVisit]struct{}
+}
+
 func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
+	state := typeValidationState{
+		active: make(map[typeValidationVisit]struct{}),
+	}
+	return state.matches(val, ty)
+}
+
+func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
+	if visit, ok := typeValidationVisitFor(val, ty); ok {
+		if _, seen := s.active[visit]; seen {
+			// Recursive value/type pair already being validated higher in the stack.
+			return true, nil
+		}
+		s.active[visit] = struct{}{}
+		defer delete(s.active, visit)
+	}
+
 	if ty.Nullable && val.Kind() == KindNil {
 		return true, nil
 	}
@@ -3354,7 +3380,7 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 		}
 		elemType := ty.TypeArgs[0]
 		for _, elem := range val.Array() {
-			matches, err := valueMatchesType(elem, elemType)
+			matches, err := s.matches(elem, elemType)
 			if err != nil {
 				return false, err
 			}
@@ -3376,14 +3402,14 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 		keyType := ty.TypeArgs[0]
 		valueType := ty.TypeArgs[1]
 		for key, value := range val.Hash() {
-			keyMatches, err := valueMatchesType(NewString(key), keyType)
+			keyMatches, err := s.matches(NewString(key), keyType)
 			if err != nil {
 				return false, err
 			}
 			if !keyMatches {
 				return false, nil
 			}
-			valueMatches, err := valueMatchesType(value, valueType)
+			valueMatches, err := s.matches(value, valueType)
 			if err != nil {
 				return false, err
 			}
@@ -3407,7 +3433,7 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 			if !ok {
 				return false, nil
 			}
-			matches, err := valueMatchesType(fieldVal, fieldType)
+			matches, err := s.matches(fieldVal, fieldType)
 			if err != nil {
 				return false, err
 			}
@@ -3423,7 +3449,7 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 		return true, nil
 	case TypeUnion:
 		for _, option := range ty.Union {
-			matches, err := valueMatchesType(val, option)
+			matches, err := s.matches(val, option)
 			if err != nil {
 				return false, err
 			}
@@ -3435,6 +3461,31 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 	default:
 		return false, fmt.Errorf("unknown type %s", ty.Name)
 	}
+}
+
+func typeValidationVisitFor(val Value, ty *TypeExpr) (typeValidationVisit, bool) {
+	if ty == nil {
+		return typeValidationVisit{}, false
+	}
+
+	var valueID uintptr
+	switch val.Kind() {
+	case KindArray:
+		valueID = reflect.ValueOf(val.Array()).Pointer()
+	case KindHash, KindObject:
+		valueID = reflect.ValueOf(val.Hash()).Pointer()
+	default:
+		return typeValidationVisit{}, false
+	}
+	if valueID == 0 {
+		return typeValidationVisit{}, false
+	}
+
+	return typeValidationVisit{
+		valueKind: val.Kind(),
+		valueID:   valueID,
+		ty:        ty,
+	}, true
 }
 
 func formatTypeExpr(ty *TypeExpr) string {

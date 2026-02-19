@@ -1481,6 +1481,36 @@ func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
 	}
 }
 
+func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.T) {
+	script := compileScript(t, `
+    def run(payload: hash<string, hash<string, int>>) -> hash<string, hash<string, int>>
+      payload
+    end
+    `)
+
+	entries := map[string]Value{}
+	payload := NewHash(entries)
+	entries["self"] = payload
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := script.Call(context.Background(), "run", []Value{payload}, CallOptions{})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("expected type validation error for cyclic payload")
+		}
+		if !strings.Contains(err.Error(), "argument payload expected hash<string, hash<string, int>>") {
+			t.Fatalf("unexpected type error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("type validation did not terminate for cyclic payload")
+	}
+}
+
 func TestExistingUntypedScriptsRemainCompatible(t *testing.T) {
 	script := compileScript(t, `
     def identity(v)
