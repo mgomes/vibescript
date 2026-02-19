@@ -31,6 +31,7 @@ type FunctionStmt struct {
 	ReturnTy      *TypeExpr
 	Body          []Statement
 	IsClassMethod bool
+	Exported      bool
 	Private       bool
 	position      Position
 }

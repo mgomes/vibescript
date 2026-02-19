@@ -249,7 +249,7 @@ Goal: make multi-file script projects easier to compose and maintain.
 
 ### Module System
 
-- [ ] Add explicit export controls (beyond underscore naming).
+- [x] Add explicit export controls (beyond underscore naming).
 - [ ] Add import aliasing for module objects.
 - [ ] Define and enforce module namespace conflict behavior.
 - [ ] Improve cycle error diagnostics with concise chain rendering.

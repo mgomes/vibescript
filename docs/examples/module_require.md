@@ -18,12 +18,12 @@ Place `modules/fees.vibe` on disk:
 ```vibe
 # modules/fees.vibe
 
-def rate()
-  1
+export def apply_fee(amount)
+  amount + rate()
 end
 
-def apply_fee(amount)
-  amount + rate()
+def rate()
+  1
 end
 
 def _rounding_hint()
@@ -44,8 +44,9 @@ end
 
 When `total_with_fee` runs, `require("fees")` resolves the module relative to
 `Config.ModulePaths`, compiles it once, and returns an object containing the
-module’s public exports. Function names starting with `_` stay private to the
-module and are not exposed on the returned object or injected globally.
+module’s exports. Use `export def` for explicit control; if no explicit exports
+are declared, public functions are exported by default and names starting with
+`_` stay private to the module.
 
 Inside modules, explicit relative requires are supported:
 

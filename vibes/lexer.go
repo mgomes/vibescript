@@ -395,6 +395,8 @@ func lookupIdent(ident string) TokenType {
 		return tokenDef
 	case "class":
 		return tokenClass
+	case "export":
+		return tokenExport
 	case "self":
 		return tokenSelf
 	case "private":

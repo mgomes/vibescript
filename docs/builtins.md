@@ -60,7 +60,7 @@ For time manipulation in VibeScript, use the `Time` object (`Time.now`, `Time.pa
 
 ### `require(module_name)`
 
-Loads a module from configured module search paths and returns an object containing the module's exported functions:
+Loads a module from configured module search paths and returns an object containing the module's exported functions. Modules can mark exports explicitly with `export def ...`; when no explicit exports are declared, public (non-underscore) functions are exported by default:
 
 ```vibe
 def calculate_total(amount)

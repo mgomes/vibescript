@@ -121,6 +121,8 @@ func (p *parser) parseStatement() Statement {
 		return p.parseFunctionStatement()
 	case tokenClass:
 		return p.parseClassStatement()
+	case tokenExport:
+		return p.parseExportStatement()
 	case tokenReturn:
 		return p.parseReturnStatement()
 	case tokenRaise:
@@ -221,6 +223,32 @@ func (p *parser) parseFunctionStatement() Statement {
 	}
 
 	return &FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, IsClassMethod: isClassMethod, Private: private, position: pos}
+}
+
+func (p *parser) parseExportStatement() Statement {
+	pos := p.curToken.Pos
+	if p.insideClass {
+		p.addParseError(pos, "export is only supported for top-level functions")
+		return nil
+	}
+	if !p.expectPeek(tokenDef) {
+		return nil
+	}
+	fnStmt := p.parseFunctionStatement()
+	if fnStmt == nil {
+		return nil
+	}
+	fn, ok := fnStmt.(*FunctionStmt)
+	if !ok {
+		p.addParseError(pos, "export expects a function definition")
+		return nil
+	}
+	if fn.IsClassMethod {
+		p.addParseError(pos, "export cannot be used with class methods")
+		return nil
+	}
+	fn.Exported = true
+	return fn
 }
 
 func (p *parser) parseParams() []Param {
@@ -1181,6 +1209,8 @@ func tokenLabel(tt TokenType) string {
 		return "'def'"
 	case tokenClass:
 		return "'class'"
+	case tokenExport:
+		return "'export'"
 	case tokenSelf:
 		return "'self'"
 	case tokenPrivate:

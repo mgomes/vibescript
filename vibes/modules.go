@@ -346,6 +346,22 @@ func isPublicModuleExport(name string) bool {
 	return name != "" && !strings.HasPrefix(name, "_")
 }
 
+func moduleHasExplicitExports(functions map[string]*ScriptFunction) bool {
+	for _, fn := range functions {
+		if fn != nil && fn.Exported {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldExportModuleFunction(name string, fn *ScriptFunction, hasExplicitExports bool) bool {
+	if hasExplicitExports {
+		return fn != nil && fn.Exported
+	}
+	return isPublicModuleExport(name)
+}
+
 func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if exec.strictEffects && !exec.allowRequire {
 		return NewNil(), fmt.Errorf("strict effects: require is disabled without CallOptions.AllowRequire")
@@ -399,11 +415,12 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 
 	moduleEnv := newEnv(exec.root)
 	exports := make(map[string]Value, len(entry.script.functions))
+	hasExplicitExports := moduleHasExplicitExports(entry.script.functions)
 	for name, fn := range entry.script.functions {
 		clone := cloneFunctionForEnv(fn, moduleEnv)
 		fnVal := NewFunction(clone)
 		moduleEnv.Define(name, fnVal)
-		if isPublicModuleExport(name) {
+		if shouldExportModuleFunction(name, fn, hasExplicitExports) {
 			exports[name] = fnVal
 		}
 	}

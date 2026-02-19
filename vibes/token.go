@@ -46,6 +46,7 @@ const (
 
 	tokenDef      TokenType = "DEF"
 	tokenClass    TokenType = "CLASS"
+	tokenExport   TokenType = "EXPORT"
 	tokenSelf     TokenType = "SELF"
 	tokenPrivate  TokenType = "PRIVATE"
 	tokenProperty TokenType = "PROPERTY"

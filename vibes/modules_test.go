@@ -406,6 +406,82 @@ end`)
 	}
 }
 
+func TestRequireSupportsExplicitExportControls(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  mod = require("explicit_exports")
+  {
+    has_exposed: mod["exposed"] != nil,
+    has_explicit_hidden: mod["_explicit_hidden"] != nil,
+    has_helper: mod["helper"] != nil,
+    has_internal: mod["_internal"] != nil,
+    exposed: mod.exposed(value),
+    explicit_hidden: mod._explicit_hidden(value)
+  }
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %#v", result)
+	}
+	out := result.Hash()
+	if !out["has_exposed"].Bool() || !out["has_explicit_hidden"].Bool() {
+		t.Fatalf("expected explicit exports to be present, got %#v", out)
+	}
+	if out["has_helper"].Bool() || out["has_internal"].Bool() {
+		t.Fatalf("expected non-exported helpers to be hidden, got %#v", out)
+	}
+	if out["exposed"].Kind() != KindInt || out["exposed"].Int() != 10 {
+		t.Fatalf("expected exposed(3)=10, got %#v", out["exposed"])
+	}
+	if out["explicit_hidden"].Kind() != KindInt || out["explicit_hidden"].Int() != 103 {
+		t.Fatalf("expected _explicit_hidden(3)=103, got %#v", out["explicit_hidden"])
+	}
+}
+
+func TestRequireNonExportedFunctionsAreNotInjectedAsGlobalsWhenUsingExplicitExports(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  require("explicit_exports")
+  helper(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{}); err == nil {
+		t.Fatalf("expected undefined helper error")
+	} else if !strings.Contains(err.Error(), "undefined variable helper") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExportKeywordValidation(t *testing.T) {
+	engine := MustNewEngine(Config{})
+
+	_, err := engine.Compile(`export helper`)
+	if err == nil || !strings.Contains(err.Error(), "expected 'def'") {
+		t.Fatalf("expected export def parse error, got %v", err)
+	}
+
+	_, err = engine.Compile(`class Example
+  export def value()
+    1
+  end
+end`)
+	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
+		t.Fatalf("expected top-level export parse error, got %v", err)
+	}
+}
+
 func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 

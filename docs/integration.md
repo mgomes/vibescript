@@ -75,7 +75,9 @@ and caches compiled modules so subsequent calls to `require` are inexpensive.
 Inside a module, use explicit relative paths (`./` or `../`) to load siblings
 or parent-local helpers. Relative requires are resolved from the calling
 module's directory and are rejected if they escape the module root. Functions
-whose names start with `_` are private and are not exported.
+can be exported explicitly with `export def ...`; if no explicit exports are
+declared, public names are exported by default and names starting with `_`
+remain private.
 
 ### Capability Adapters
 
