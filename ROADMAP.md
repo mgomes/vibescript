@@ -224,14 +224,14 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 
 ### Runtime Behavior
 
-- [ ] Ensure new control flow integrates with step quota accounting.
+- [x] Ensure new control flow integrates with step quota accounting.
 - [ ] Ensure new constructs integrate with recursion/memory quotas.
 - [ ] Validate behavior inside class methods, blocks, and capability callbacks.
 
 ### Testing and Docs
 
-- [ ] Add parser/runtime tests for each new control flow construct.
-- [ ] Add nested control flow tests for edge cases.
+- [x] Add parser/runtime tests for each new control flow construct.
+- [x] Add nested control flow tests for edge cases.
 - [ ] Add docs updates in `docs/control-flow.md` and `docs/errors.md`.
 - [ ] Add examples under `examples/control_flow/` for each new feature.
 
