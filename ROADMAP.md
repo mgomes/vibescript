@@ -281,7 +281,7 @@ Goal: reduce host-side boilerplate for common scripting tasks.
 
 ### Core Utilities
 
-- [ ] Add JSON parse/stringify built-ins.
+- [x] Add JSON parse/stringify built-ins.
 - [ ] Add regex matching/replacement helpers.
 - [ ] Add UUID/random identifier utilities with deterministic test hooks.
 - [ ] Add richer date/time parsing helpers for common layouts.

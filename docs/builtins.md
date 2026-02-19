@@ -56,6 +56,27 @@ end
 
 For time manipulation in VibeScript, use the `Time` object (`Time.now`, `Time.parse`, `Time.utc`, etc.). See `docs/time.md`.
 
+## JSON
+
+### `JSON.parse(string)`
+
+Parses a JSON string into VibeScript values (`hash`, `array`, `string`, `int`,
+`float`, `bool`, `nil`):
+
+```vibe
+payload = JSON.parse("{\"id\":\"p-1\",\"score\":10}")
+payload[:score] # 10
+```
+
+### `JSON.stringify(value)`
+
+Serializes supported values (`hash`/`object`, `array`, scalar primitives) into
+a JSON string:
+
+```vibe
+raw = JSON.stringify({ id: "p-1", score: 10, tags: ["a", "b"] })
+```
+
 ## Module Loading
 
 ### `require(module_name, as: alias?)`

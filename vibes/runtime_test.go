@@ -1650,6 +1650,65 @@ func TestTimeParseAndAliases(t *testing.T) {
 	}
 }
 
+func TestJSONBuiltins(t *testing.T) {
+	script := compileScript(t, `
+    def parse_payload()
+      JSON.parse("{\"name\":\"alex\",\"score\":10,\"tags\":[\"x\",true,null],\"ratio\":1.5}")
+    end
+
+    def stringify_payload()
+      payload = { name: "alex", score: 10, tags: ["x", true, nil], ratio: 1.5 }
+      JSON.stringify(payload)
+    end
+
+    def parse_invalid()
+      JSON.parse("{bad")
+    end
+
+    def stringify_unsupported()
+      JSON.stringify({ fn: helper })
+    end
+
+    def helper(value)
+      value
+    end
+    `)
+
+	parsed := callFunc(t, script, "parse_payload", nil)
+	if parsed.Kind() != KindHash {
+		t.Fatalf("expected parsed payload hash, got %v", parsed.Kind())
+	}
+	obj := parsed.Hash()
+	if !obj["name"].Equal(NewString("alex")) {
+		t.Fatalf("name mismatch: %v", obj["name"])
+	}
+	if !obj["score"].Equal(NewInt(10)) {
+		t.Fatalf("score mismatch: %v", obj["score"])
+	}
+	if obj["ratio"].Kind() != KindFloat || obj["ratio"].Float() != 1.5 {
+		t.Fatalf("ratio mismatch: %v", obj["ratio"])
+	}
+	compareArrays(t, obj["tags"], []Value{NewString("x"), NewBool(true), NewNil()})
+
+	stringified := callFunc(t, script, "stringify_payload", nil)
+	if stringified.Kind() != KindString {
+		t.Fatalf("expected JSON.stringify to return string, got %v", stringified.Kind())
+	}
+	if got := stringified.String(); got != `{"name":"alex","ratio":1.5,"score":10,"tags":["x",true,null]}` {
+		t.Fatalf("stringify mismatch: %q", got)
+	}
+
+	_, err := script.Call(context.Background(), "parse_invalid", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON") {
+		t.Fatalf("expected parse invalid JSON error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "stringify_unsupported", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.stringify unsupported value type function") {
+		t.Fatalf("expected stringify unsupported error, got %v", err)
+	}
+}
+
 func TestNumericHelpers(t *testing.T) {
 	script := compileScript(t, `
     def int_helpers()

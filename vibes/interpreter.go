@@ -68,6 +68,10 @@ func NewEngine(cfg Config) (*Engine, error) {
 	engine.RegisterBuiltin("money_cents", builtinMoneyCents)
 	engine.RegisterBuiltin("require", builtinRequire)
 	engine.RegisterZeroArgBuiltin("now", builtinNow)
+	engine.builtins["JSON"] = NewObject(map[string]Value{
+		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
+		"stringify": NewBuiltin("JSON.stringify", builtinJSONStringify),
+	})
 	engine.builtins["Duration"] = NewObject(map[string]Value{
 		"build": NewBuiltin("Duration.build", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) == 1 && len(kwargs) == 0 {
