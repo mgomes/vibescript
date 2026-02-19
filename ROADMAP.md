@@ -186,7 +186,7 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 - [x] Extend parser grammar for generic and union type expressions.
 - [x] Extend type resolver and internal type representation.
 - [x] Add runtime validators for composite/union types.
-- [ ] Add contract interop so capability contracts can reuse type validators.
+- [x] Add contract interop so capability contracts can reuse type validators.
 
 ### Testing and Docs
 
