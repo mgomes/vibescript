@@ -2,7 +2,8 @@
 
 The interpreter runs entirely in Go. Create an engine, compile scripts, and
 call functions like so. For API lifecycle guarantees, also see
-`docs/versioning.md` and `docs/deprecation_policy.md`.
+`docs/versioning.md` and `docs/deprecation_policy.md`. For production
+integration playbooks, see `docs/host_cookbook.md`.
 
 ```go
 package main

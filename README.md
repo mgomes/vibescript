@@ -162,6 +162,7 @@ Long-form guides live in `docs/`:
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
 - `docs/tooling.md` – CLI workflows for running, formatting, analyzing, language-server usage, and REPL usage.
 - `docs/integration.md` – integrating the interpreter in Go applications.
+- `docs/host_cookbook.md` – production integration patterns for embedding hosts.
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
 - `docs/typing.md` – gradual typing: annotations, nullable `?`, positional/keyword binding, and return checks.

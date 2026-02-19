@@ -25,6 +25,7 @@ dives on specific topics.
 - `tooling.md` – CLI commands for run/format/analyze/repl workflows.
 - `integration.md` – host integration patterns showing how Go services can
   expose capabilities to scripts.
+- `host_cookbook.md` – production embedding patterns and operational guidance.
 - `module_project_layout.md` – recommended structure for multi-module script
   repositories.
 - `module_require_migration.md` – migration checklist for modern `require`
