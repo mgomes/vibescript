@@ -81,6 +81,11 @@ func moduleKeyDisplay(key string) string {
 	return display
 }
 
+func moduleDisplayName(key string) string {
+	display := filepath.ToSlash(moduleKeyDisplay(key))
+	return strings.TrimSuffix(display, ".vibe")
+}
+
 func moduleRelativePath(root, fullPath string) (string, error) {
 	rel, err := moduleRelativePathLexical(root, fullPath)
 	if err != nil {
@@ -336,9 +341,19 @@ func moduleCycleFromExecution(stack []moduleContext, next string) ([]string, boo
 }
 
 func formatModuleCycle(cycle []string) string {
-	parts := make([]string, len(cycle))
-	for idx, key := range cycle {
-		parts[idx] = moduleKeyDisplay(key)
+	if len(cycle) == 0 {
+		return ""
+	}
+	normalized := make([]string, 0, len(cycle))
+	for _, key := range cycle {
+		if len(normalized) > 0 && normalized[len(normalized)-1] == key {
+			continue
+		}
+		normalized = append(normalized, key)
+	}
+	parts := make([]string, len(normalized))
+	for idx, key := range normalized {
+		parts[idx] = moduleDisplayName(key)
 	}
 	return strings.Join(parts, " -> ")
 }
@@ -485,7 +500,8 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	}
 
 	if exec.moduleLoading[entry.key] {
-		return NewNil(), fmt.Errorf("require: circular dependency detected for module %q", moduleKeyDisplay(entry.key))
+		cycle := append(append([]string(nil), exec.moduleLoadStack...), entry.key)
+		return NewNil(), fmt.Errorf("require: circular dependency detected: %s", formatModuleCycle(cycle))
 	}
 	exec.moduleLoading[entry.key] = true
 	exec.moduleLoadStack = append(exec.moduleLoadStack, entry.key)

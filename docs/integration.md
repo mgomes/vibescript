@@ -72,6 +72,8 @@ end`)
 
 The interpreter searches each configured directory for `<module>.vibe` in order
 and caches compiled modules so subsequent calls to `require` are inexpensive.
+When a circular module dependency is detected, the runtime reports a concise
+chain (for example `a -> b -> a`).
 Use the optional `as:` keyword to bind the loaded module object to a global
 alias.
 Inside a module, use explicit relative paths (`./` or `../`) to load siblings

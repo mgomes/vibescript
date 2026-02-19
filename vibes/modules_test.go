@@ -814,3 +814,24 @@ end`)
 		t.Fatalf("expected 12, got %#v", result)
 	}
 }
+
+func TestFormatModuleCycleUsesConciseChain(t *testing.T) {
+	root := filepath.Join("tmp", "modules")
+	a := moduleCacheKey(root, filepath.Join("nested", "a.vibe"))
+	b := moduleCacheKey(root, filepath.Join("nested", "b.vibe"))
+
+	got := formatModuleCycle([]string{a, b, b, a})
+	want := filepath.ToSlash(filepath.Join("nested", "a")) + " -> " + filepath.ToSlash(filepath.Join("nested", "b")) + " -> " + filepath.ToSlash(filepath.Join("nested", "a"))
+	if got != want {
+		t.Fatalf("expected cycle %q, got %q", want, got)
+	}
+}
+
+func TestModuleDisplayNameTrimsExtension(t *testing.T) {
+	key := moduleCacheKey(filepath.Join("tmp", "modules"), filepath.Join("pkg", "helper.vibe"))
+	got := moduleDisplayName(key)
+	want := filepath.ToSlash(filepath.Join("pkg", "helper"))
+	if got != want {
+		t.Fatalf("expected display %q, got %q", want, got)
+	}
+}

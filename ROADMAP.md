@@ -252,7 +252,7 @@ Goal: make multi-file script projects easier to compose and maintain.
 - [x] Add explicit export controls (beyond underscore naming).
 - [x] Add import aliasing for module objects.
 - [x] Define and enforce module namespace conflict behavior.
-- [ ] Improve cycle error diagnostics with concise chain rendering.
+- [x] Improve cycle error diagnostics with concise chain rendering.
 - [ ] Add module cache invalidation policy for long-running hosts.
 
 ### Security and Isolation
