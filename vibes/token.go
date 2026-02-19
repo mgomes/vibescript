@@ -56,6 +56,7 @@ const (
 	tokenYield    TokenType = "YIELD"
 	tokenDo       TokenType = "DO"
 	tokenFor      TokenType = "FOR"
+	tokenWhile    TokenType = "WHILE"
 	tokenIn       TokenType = "IN"
 	tokenIf       TokenType = "IF"
 	tokenElsif    TokenType = "ELSIF"

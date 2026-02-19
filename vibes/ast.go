@@ -122,6 +122,15 @@ type ForStmt struct {
 func (s *ForStmt) stmtNode()     {}
 func (s *ForStmt) Pos() Position { return s.position }
 
+type WhileStmt struct {
+	Condition Expression
+	Body      []Statement
+	position  Position
+}
+
+func (s *WhileStmt) stmtNode()     {}
+func (s *WhileStmt) Pos() Position { return s.position }
+
 type Identifier struct {
 	Name     string
 	position Position

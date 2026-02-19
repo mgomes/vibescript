@@ -753,6 +753,60 @@ func TestIntTimes(t *testing.T) {
 	}
 }
 
+func TestWhileLoops(t *testing.T) {
+	script := compileScript(t, `
+    def countdown(n)
+      out = []
+      while n > 0
+        out = out + [n]
+        n = n - 1
+      end
+      out
+    end
+
+    def first_positive(n)
+      while n > 0
+        return n
+      end
+      0
+    end
+
+    def skip_false()
+      while false
+        1
+      end
+    end
+    `)
+
+	countdown := callFunc(t, script, "countdown", []Value{NewInt(3)})
+	compareArrays(t, countdown, []Value{NewInt(3), NewInt(2), NewInt(1)})
+
+	if got := callFunc(t, script, "first_positive", []Value{NewInt(4)}); !got.Equal(NewInt(4)) {
+		t.Fatalf("first_positive mismatch for positive input: %v", got)
+	}
+	if got := callFunc(t, script, "first_positive", []Value{NewInt(0)}); !got.Equal(NewInt(0)) {
+		t.Fatalf("first_positive mismatch for zero input: %v", got)
+	}
+	if got := callFunc(t, script, "skip_false", nil); !got.Equal(NewNil()) {
+		t.Fatalf("skip_false expected nil, got %v", got)
+	}
+
+	engine := MustNewEngine(Config{StepQuota: 40})
+	spinScript, err := engine.Compile(`
+    def spin()
+      while true
+      end
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	_, err = spinScript.Call(context.Background(), "spin", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
+		t.Fatalf("expected step quota error for infinite while loop, got %v", err)
+	}
+}
+
 func TestDurationMethods(t *testing.T) {
 	script := compileScript(t, `
     def duration_helpers()

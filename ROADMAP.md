@@ -209,7 +209,7 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 
 ### Control Flow
 
-- [ ] Add `while` loops.
+- [x] Add `while` loops.
 - [ ] Add `until` loops.
 - [ ] Add loop control keywords: `break` and `next`.
 - [ ] Add `case/when` expression support (if approved).
