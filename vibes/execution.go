@@ -715,7 +715,7 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	}
 	if fn.ReturnTy != nil {
 		if err := checkValueType(val, fn.ReturnTy); err != nil {
-			return NewNil(), exec.errorAt(pos, "%s", err.Error())
+			return NewNil(), exec.errorAt(pos, "%s", formatReturnTypeMismatch(fn.Name, err))
 		}
 	}
 	if returned {
@@ -3247,7 +3247,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 
 		if param.Type != nil {
 			if err := checkValueType(val, param.Type); err != nil {
-				return exec.errorAt(pos, "%s", err.Error())
+				return exec.errorAt(pos, "%s", formatArgumentTypeMismatch(param.Name, err))
 			}
 		}
 		env.Define(param.Name, val)
@@ -3280,7 +3280,35 @@ func checkValueType(val Value, ty *TypeExpr) error {
 	if matches {
 		return nil
 	}
-	return fmt.Errorf("expected %s", formatTypeExpr(ty))
+	return &typeMismatchError{
+		Expected: formatTypeExpr(ty),
+		Actual:   val.Kind().String(),
+	}
+}
+
+type typeMismatchError struct {
+	Expected string
+	Actual   string
+}
+
+func (e *typeMismatchError) Error() string {
+	return fmt.Sprintf("expected %s, got %s", e.Expected, e.Actual)
+}
+
+func formatArgumentTypeMismatch(name string, err error) string {
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) {
+		return fmt.Sprintf("argument %s expected %s, got %s", name, mismatch.Expected, mismatch.Actual)
+	}
+	return fmt.Sprintf("argument %s type check failed: %s", name, err.Error())
+}
+
+func formatReturnTypeMismatch(fnName string, err error) string {
+	var mismatch *typeMismatchError
+	if errors.As(err, &mismatch) {
+		return fmt.Sprintf("return value for %s expected %s, got %s", fnName, mismatch.Expected, mismatch.Actual)
+	}
+	return fmt.Sprintf("return type check failed for %s: %s", fnName, err.Error())
 }
 
 func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
@@ -3677,7 +3705,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 	if fn.ReturnTy != nil {
 		if err := checkValueType(val, fn.ReturnTy); err != nil {
-			return NewNil(), err
+			return NewNil(), exec.errorAt(fn.Pos, "%s", formatReturnTypeMismatch(fn.Name, err))
 		}
 	}
 	if err := exec.checkMemoryWith(val); err != nil {

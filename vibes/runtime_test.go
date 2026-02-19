@@ -1270,8 +1270,9 @@ func TestTypedFunctions(t *testing.T) {
 	}
 
 	_, err = script.Call(context.Background(), "pick_second", []Value{NewString("bad"), NewInt(2)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected int") {
-		t.Fatalf("expected type error, got %v", err)
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument n expected int, got string") {
+		t.Fatalf("expected argument type error, got %v", err)
 	}
 
 	_, err = script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
@@ -1279,38 +1280,43 @@ func TestTypedFunctions(t *testing.T) {
 		res, _ := script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
 		t.Fatalf("expected return type error, got value %v (%v)", res, res.Kind())
 	}
-	if !strings.Contains(err.Error(), "expected int") {
+	if !strings.Contains(err.Error(), "return value for bad_return expected int, got string") {
 		t.Fatalf("expected return type error, got %v", err)
 	}
 
 	_, err = script.Call(context.Background(), "union_echo", []Value{NewBool(true)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected int | string") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument v expected int | string, got bool") {
 		t.Fatalf("expected union arg type error, got %v", err)
 	}
 
 	_, err = script.Call(context.Background(), "union_bad_return", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected int | string") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "return value for union_bad_return expected int | string, got bool") {
 		t.Fatalf("expected union return type error, got %v", err)
 	}
 
 	_, err = script.Call(context.Background(), "ints_only", []Value{
 		NewArray([]Value{NewInt(1), NewString("oops")}),
 	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected array<int>") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument values expected array<int>, got array") {
 		t.Fatalf("expected typed array arg error, got %v", err)
 	}
 
 	_, err = script.Call(context.Background(), "totals_by_player", []Value{
 		NewHash(map[string]Value{"alice": NewString("oops")}),
 	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected hash<string, int>") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument totals expected hash<string, int>, got hash") {
 		t.Fatalf("expected typed hash arg error, got %v", err)
 	}
 
 	_, err = script.Call(context.Background(), "mixed_items", []Value{
 		NewArray([]Value{NewBool(true)}),
 	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected array<int | string>") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument values expected array<int | string>, got array") {
 		t.Fatalf("expected typed union array arg error, got %v", err)
 	}
 
@@ -1321,7 +1327,8 @@ func TestTypedFunctions(t *testing.T) {
 			"role":  NewString("captain"),
 		}),
 	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected { active: bool?, id: string, score: int }") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got hash") {
 		t.Fatalf("expected shape extra-field error, got %v", err)
 	}
 
@@ -1332,7 +1339,8 @@ func TestTypedFunctions(t *testing.T) {
 			"active": NewBool(true),
 		}),
 	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected { active: bool?, id: string, score: int }") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got hash") {
 		t.Fatalf("expected shape field-type error, got %v", err)
 	}
 
@@ -1346,7 +1354,8 @@ func TestTypedFunctions(t *testing.T) {
 			}),
 		}),
 	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "expected array<{ id: string, stats: { wins: int } }>") {
+	if err == nil ||
+		!strings.Contains(err.Error(), "argument rows expected array<{ id: string, stats: { wins: int } }>, got array") {
 		t.Fatalf("expected nested shape error, got %v", err)
 	}
 }
