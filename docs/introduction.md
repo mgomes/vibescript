@@ -20,6 +20,7 @@ dives on specific topics.
 - `durations.md` – duration literals and time-based helper methods.
 - `time.md` – Time creation, formatting, accessors, and time/duration math.
 - `typing.md` – gradual typing: annotations, nullables, and type-checked calls.
+- `language_reference.md` – consolidated language syntax and semantics reference.
 - `control-flow.md` – conditionals, loops, and ranges.
 - `blocks.md` – using block literals for map/select/reduce style patterns.
 - `tooling.md` – CLI commands for run/format/analyze/repl workflows.

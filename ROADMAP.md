@@ -358,7 +358,7 @@ Goal: lock the language and embedding API for long-term support.
 
 ### Documentation and Adoption
 
-- [ ] Publish complete language reference.
+- [x] Publish complete language reference.
 - [x] Publish host integration cookbook with production patterns.
 - [x] Provide starter templates for common embedding scenarios.
 
