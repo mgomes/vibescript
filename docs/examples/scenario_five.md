@@ -4,7 +4,7 @@
 # vibe: 0.2
 # uses: db, jobs
 
-def schedule_upsell_followups()
+def schedule_upsell_followups
   db.each("Donation", where: { status: :processed }) do |donation|
     if donation[:amount] < money("50.00 USD")
       jobs.enqueue(

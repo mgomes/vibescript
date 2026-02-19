@@ -41,6 +41,10 @@ jobs:
         if: runner.os != 'Windows'
         run: go run ./cmd/vibes fmt -check .
 
+      - name: Check zero-arg paren style
+        if: runner.os != 'Windows'
+        run: ./scripts/check_vibe_zero_arg_parens.sh
+
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -60,6 +64,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: go run ./cmd/vibes fmt -check .
+
+      - name: Check zero-arg paren style (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: ./scripts/check_vibe_zero_arg_parens.sh
 
       - name: Run golangci-lint (Windows)
         if: runner.os == 'Windows'

@@ -37,7 +37,7 @@ price = money_cents(2550, "USD")  # $25.50 USD
 
 ## Time
 
-### `now()`
+### `now`
 
 Returns the current UTC timestamp as an ISO 8601 / RFC 3339 formatted string:
 
@@ -45,25 +45,25 @@ Returns the current UTC timestamp as an ISO 8601 / RFC 3339 formatted string:
 def log_event(name)
   {
     event: name,
-    timestamp: now()
+    timestamp: now
   }
 end
 
 # Returns: { event: "user_signup", timestamp: "2025-01-15T10:30:45Z" }
 ```
 
-**Note:** The `now()` function returns a string, not a time object. This is suitable for logging and timestamping.
+**Note:** The `now` function returns a string, not a time object. This is suitable for logging and timestamping.
 
 For time manipulation in VibeScript, use the `Time` object (`Time.now`, `Time.parse`, `Time.utc`, etc.). See `docs/time.md`.
 
 ## Random IDs
 
-### `uuid()`
+### `uuid`
 
 Returns an RFC 4122 version 4 UUID string:
 
 ```vibe
-event_id = uuid()
+event_id = uuid
 ```
 
 ### `random_id(length = 16)`
@@ -72,7 +72,7 @@ Returns an alphanumeric random identifier string:
 
 ```vibe
 short = random_id(8)
-token = random_id()
+token = random_id
 ```
 
 ## Numeric Conversion

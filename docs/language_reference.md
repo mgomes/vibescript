@@ -153,11 +153,11 @@ Structured handling supports `rescue`/`ensure`:
 
 ```vibe
 def run
-  risky()
+  risky
 rescue
   "fallback"
 ensure
-  cleanup()
+  cleanup
 end
 ```
 

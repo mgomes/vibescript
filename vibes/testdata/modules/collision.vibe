@@ -3,5 +3,5 @@ def rate
 end
 
 def apply_fee(amount)
-  amount + rate()
+  amount + rate
 end

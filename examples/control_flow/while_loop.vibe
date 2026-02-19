@@ -8,6 +8,6 @@ def countdown(start)
   out
 end
 
-def run()
+def run
   countdown(5)
 end

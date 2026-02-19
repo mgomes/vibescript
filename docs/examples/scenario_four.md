@@ -10,7 +10,7 @@ def refresh_leaderboard(limit)
     {
       id: player[:id],
       name: player[:name],
-      raised: player[:raised].format()
+      raised: player[:raised].format
     }
   end
 

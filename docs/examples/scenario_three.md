@@ -4,7 +4,7 @@
 # vibe: 0.2
 # uses: db, jobs
 
-def schedule_auto_renewal_reminders()
+def schedule_auto_renewal_reminders
   db.each("Subscription", where: { status: :active }) do |subscription|
     renewal_date = subscription[:renews_at]
     reminder_time = renewal_date - 3.days

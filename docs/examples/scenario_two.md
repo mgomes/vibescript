@@ -10,7 +10,7 @@ def notify_high_value_donations(threshold)
       events.publish("high_value_donations", {
         donation_id: donation[:id],
         supporter: donation[:supporter_name],
-        amount: donation[:amount].format(),
+        amount: donation[:amount].format,
         campaign_id: donation[:campaign_id]
       })
     end

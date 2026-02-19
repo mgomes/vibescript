@@ -19,14 +19,14 @@ Place `modules/fees.vibe` on disk:
 # modules/fees.vibe
 
 export def apply_fee(amount)
-  amount + rate()
+  amount + rate
 end
 
-def rate()
+def rate
   1
 end
 
-def _rounding_hint()
+def _rounding_hint
   "bankers"
 end
 ```
@@ -66,7 +66,7 @@ Inside modules, explicit relative requires are supported:
 # modules/pricing/tax.vibe
 def compute(amount)
   rates = require("./rates")
-  amount * rates.current()
+  amount * rates.current
 end
 ```
 

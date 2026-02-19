@@ -49,7 +49,7 @@ def apply_bonus(payload: { id: string, points: int }) -> { id: string, points: i
   { id: payload[:id], points: payload[:points] + 5 }
 end
 
-def nil_result() -> nil
+def nil_result -> nil
   nil
 end
 ```

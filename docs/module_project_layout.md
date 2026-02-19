@@ -30,10 +30,10 @@ Example:
 ```vibe
 # modules/billing/fees.vibe
 export def apply(amount)
-  amount + shared_rate()
+  amount + shared_rate
 end
 
-def shared_rate()
+def shared_rate
   rates = require("../shared/math", as: "math")
   math.double(1)
 end

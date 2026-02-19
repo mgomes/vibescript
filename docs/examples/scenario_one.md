@@ -4,7 +4,7 @@
 # vibe: 0.2
 # uses: db, payments
 
-def process_payouts()
+def process_payouts
   db.each("Donation", where: { payout_status: :pending }) do |donation|
     response = payments.send({
       donation_id: donation[:id],

@@ -16,7 +16,7 @@ def sum_squares(nums)
   total
 end
 
-def delta_info()
+def delta_info
   delta = 90.seconds + 2.minutes
   parts = delta.parts
   {
@@ -29,7 +29,7 @@ end
 
 def run
   nums = [1, 2, 3, 4, 5]
-  delta = delta_info()
+  delta = delta_info
   {
     total: sum_range(1_000),
     square_sum: sum_squares(nums),
