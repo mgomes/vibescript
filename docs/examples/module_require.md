@@ -42,6 +42,16 @@ def total_with_fee(amount)
 end
 ```
 
+Namespaced imports scale better as helper sets grow:
+
+```vibe
+def quote_total(amount)
+  require("billing/fees", as: "fees")
+  require("billing/taxes", as: "taxes")
+  taxes.apply(fees.apply(amount))
+end
+```
+
 When `total_with_fee` runs, `require("fees")` resolves the module relative to
 `Config.ModulePaths`, compiles it once, and returns an object containing the
 module’s exports. Use `export def` for explicit control; if no explicit exports
@@ -57,6 +67,21 @@ Inside modules, explicit relative requires are supported:
 def compute(amount)
   rates = require("./rates")
   amount * rates.current()
+end
+```
+
+Reusable helper modules can be shared from a central namespace:
+
+```vibe
+# modules/shared/currency.vibe
+export def cents(value)
+  value * 100
+end
+
+# modules/billing/taxes.vibe
+export def apply(amount)
+  require("../shared/currency", as: "currency")
+  amount + currency.cents(1)
 end
 ```
 

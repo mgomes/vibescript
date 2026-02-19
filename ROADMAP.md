@@ -263,15 +263,15 @@ Goal: make multi-file script projects easier to compose and maintain.
 
 ### Developer UX
 
-- [ ] Add docs for module project layout best practices.
-- [ ] Add examples for reusable helper modules and namespaced imports.
-- [ ] Add migration guide for existing `require` users.
+- [x] Add docs for module project layout best practices.
+- [x] Add examples for reusable helper modules and namespaced imports.
+- [x] Add migration guide for existing `require` users.
 
 ### v0.17.0 Definition of Done
 
-- [ ] Module APIs are explicit and predictable.
-- [ ] Error output for cycle/import failures is actionable.
-- [ ] Security invariants around module paths are fully tested.
+- [x] Module APIs are explicit and predictable.
+- [x] Error output for cycle/import failures is actionable.
+- [x] Security invariants around module paths are fully tested.
 
 ---
 
