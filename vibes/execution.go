@@ -62,6 +62,7 @@ type Execution struct {
 	capabilityContractsByName map[string]CapabilityMethodContract
 	receiverStack             []Value
 	envStack                  []*Env
+	loopDepth                 int
 	strictEffects             bool
 	allowRequire              bool
 }
@@ -92,6 +93,11 @@ type RuntimeError struct {
 	CodeFrame string
 	Frames    []StackFrame
 }
+
+var (
+	errLoopBreak = errors.New("loop break")
+	errLoopNext  = errors.New("loop next")
+)
 
 func (re *RuntimeError) Error() string {
 	var b strings.Builder
@@ -340,6 +346,16 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		return exec.evalWhileStatement(s, env)
 	case *UntilStmt:
 		return exec.evalUntilStatement(s, env)
+	case *BreakStmt:
+		if exec.loopDepth == 0 {
+			return NewNil(), false, exec.errorAt(s.Pos(), "break used outside of loop")
+		}
+		return NewNil(), false, errLoopBreak
+	case *NextStmt:
+		if exec.loopDepth == 0 {
+			return NewNil(), false, exec.errorAt(s.Pos(), "next used outside of loop")
+		}
+		return NewNil(), false, errLoopNext
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement")
 	}
@@ -1071,6 +1087,11 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 }
 
 func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, error) {
+	exec.loopDepth++
+	defer func() {
+		exec.loopDepth--
+	}()
+
 	iterable, err := exec.evalExpression(stmt.Iterable, env)
 	if err != nil {
 		return NewNil(), false, err
@@ -1087,6 +1108,12 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			env.Assign(stmt.Iterator, item)
 			val, returned, err := exec.evalStatements(stmt.Body, env)
 			if err != nil {
+				if errors.Is(err, errLoopBreak) {
+					return last, false, nil
+				}
+				if errors.Is(err, errLoopNext) {
+					continue
+				}
 				return NewNil(), false, err
 			}
 			if returned {
@@ -1101,6 +1128,12 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				env.Assign(stmt.Iterator, NewInt(i))
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
+					if errors.Is(err, errLoopBreak) {
+						return last, false, nil
+					}
+					if errors.Is(err, errLoopNext) {
+						continue
+					}
 					return NewNil(), false, err
 				}
 				if returned {
@@ -1113,6 +1146,12 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				env.Assign(stmt.Iterator, NewInt(i))
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
+					if errors.Is(err, errLoopBreak) {
+						return last, false, nil
+					}
+					if errors.Is(err, errLoopNext) {
+						continue
+					}
 					return NewNil(), false, err
 				}
 				if returned {
@@ -1129,6 +1168,11 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 }
 
 func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, bool, error) {
+	exec.loopDepth++
+	defer func() {
+		exec.loopDepth--
+	}()
+
 	last := NewNil()
 	for {
 		if err := exec.step(); err != nil {
@@ -1146,6 +1190,12 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 		}
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return last, false, nil
+			}
+			if errors.Is(err, errLoopNext) {
+				continue
+			}
 			return NewNil(), false, err
 		}
 		if returned {
@@ -1156,6 +1206,11 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 }
 
 func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, bool, error) {
+	exec.loopDepth++
+	defer func() {
+		exec.loopDepth--
+	}()
+
 	last := NewNil()
 	for {
 		if err := exec.step(); err != nil {
@@ -1173,6 +1228,12 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 		}
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return last, false, nil
+			}
+			if errors.Is(err, errLoopNext) {
+				continue
+			}
 			return NewNil(), false, err
 		}
 		if returned {

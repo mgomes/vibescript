@@ -130,6 +130,10 @@ func (p *parser) parseStatement() Statement {
 		return p.parseWhileStatement()
 	case tokenUntil:
 		return p.parseUntilStatement()
+	case tokenBreak:
+		return p.parseBreakStatement()
+	case tokenNext:
+		return p.parseNextStatement()
 	case tokenIdent:
 		if p.curToken.Literal == "assert" {
 			return p.parseAssertStatement()
@@ -418,6 +422,14 @@ func (p *parser) parseUntilStatement() Statement {
 	}
 
 	return &UntilStmt{Condition: condition, Body: body, position: pos}
+}
+
+func (p *parser) parseBreakStatement() Statement {
+	return &BreakStmt{position: p.curToken.Pos}
+}
+
+func (p *parser) parseNextStatement() Statement {
+	return &NextStmt{position: p.curToken.Pos}
 }
 
 func (p *parser) parseBlock(stop ...TokenType) []Statement {

@@ -862,6 +862,75 @@ func TestUntilLoops(t *testing.T) {
 	}
 }
 
+func TestLoopControlBreakAndNext(t *testing.T) {
+	script := compileScript(t, `
+    def for_break()
+      out = []
+      for n in [1, 2, 3, 4]
+        if n == 3
+          break
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def for_next()
+      out = []
+      for n in [1, 2, 3, 4]
+        if n % 2 == 0
+          next
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def while_break_next()
+      n = 0
+      out = []
+      while n < 5
+        n = n + 1
+        if n == 3
+          next
+        end
+        if n == 5
+          break
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def break_outside()
+      break
+    end
+
+    def next_outside()
+      next
+    end
+    `)
+
+	forBreak := callFunc(t, script, "for_break", nil)
+	compareArrays(t, forBreak, []Value{NewInt(1), NewInt(2)})
+
+	forNext := callFunc(t, script, "for_next", nil)
+	compareArrays(t, forNext, []Value{NewInt(1), NewInt(3)})
+
+	whileBreakNext := callFunc(t, script, "while_break_next", nil)
+	compareArrays(t, whileBreakNext, []Value{NewInt(1), NewInt(2), NewInt(4)})
+
+	_, err := script.Call(context.Background(), "break_outside", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "break used outside of loop") {
+		t.Fatalf("expected outside-loop break error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "next_outside", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "next used outside of loop") {
+		t.Fatalf("expected outside-loop next error, got %v", err)
+	}
+}
+
 func TestDurationMethods(t *testing.T) {
 	script := compileScript(t, `
     def duration_helpers()

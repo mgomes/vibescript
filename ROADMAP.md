@@ -211,7 +211,7 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 
 - [x] Add `while` loops.
 - [x] Add `until` loops.
-- [ ] Add loop control keywords: `break` and `next`.
+- [x] Add loop control keywords: `break` and `next`.
 - [ ] Add `case/when` expression support (if approved).
 - [ ] Define behavior for nested loop control and block boundaries.
 

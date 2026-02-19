@@ -140,6 +140,20 @@ type UntilStmt struct {
 func (s *UntilStmt) stmtNode()     {}
 func (s *UntilStmt) Pos() Position { return s.position }
 
+type BreakStmt struct {
+	position Position
+}
+
+func (s *BreakStmt) stmtNode()     {}
+func (s *BreakStmt) Pos() Position { return s.position }
+
+type NextStmt struct {
+	position Position
+}
+
+func (s *NextStmt) stmtNode()     {}
+func (s *NextStmt) Pos() Position { return s.position }
+
 type Identifier struct {
 	Name     string
 	position Position
