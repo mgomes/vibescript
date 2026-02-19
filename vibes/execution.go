@@ -3273,75 +3273,117 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 }
 
 func checkValueType(val Value, ty *TypeExpr) error {
-	if ty.Nullable && val.Kind() == KindNil {
+	matches, err := valueMatchesType(val, ty)
+	if err != nil {
+		return err
+	}
+	if matches {
 		return nil
+	}
+	return fmt.Errorf("expected %s", formatTypeExpr(ty))
+}
+
+func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
+	if ty.Nullable && val.Kind() == KindNil {
+		return true, nil
 	}
 	switch ty.Kind {
 	case TypeAny:
-		return nil
+		return true, nil
 	case TypeInt:
-		if val.Kind() == KindInt {
-			return nil
-		}
-		return fmt.Errorf("expected int")
+		return val.Kind() == KindInt, nil
 	case TypeFloat:
-		if val.Kind() == KindFloat {
-			return nil
-		}
-		return fmt.Errorf("expected float")
+		return val.Kind() == KindFloat, nil
 	case TypeNumber:
-		if val.Kind() == KindInt || val.Kind() == KindFloat {
-			return nil
-		}
-		return fmt.Errorf("expected number")
+		return val.Kind() == KindInt || val.Kind() == KindFloat, nil
 	case TypeString:
-		if val.Kind() == KindString {
-			return nil
-		}
-		return fmt.Errorf("expected string")
+		return val.Kind() == KindString, nil
 	case TypeBool:
-		if val.Kind() == KindBool {
-			return nil
-		}
-		return fmt.Errorf("expected bool")
+		return val.Kind() == KindBool, nil
 	case TypeNil:
-		if val.Kind() == KindNil {
-			return nil
-		}
-		return fmt.Errorf("expected nil")
+		return val.Kind() == KindNil, nil
 	case TypeDuration:
-		if val.Kind() == KindDuration {
-			return nil
-		}
-		return fmt.Errorf("expected duration")
+		return val.Kind() == KindDuration, nil
 	case TypeTime:
-		if val.Kind() == KindTime {
-			return nil
-		}
-		return fmt.Errorf("expected time")
+		return val.Kind() == KindTime, nil
 	case TypeMoney:
-		if val.Kind() == KindMoney {
-			return nil
-		}
-		return fmt.Errorf("expected money")
+		return val.Kind() == KindMoney, nil
 	case TypeArray:
-		if val.Kind() == KindArray {
-			return nil
-		}
-		return fmt.Errorf("expected array")
+		return val.Kind() == KindArray, nil
 	case TypeHash:
-		if val.Kind() == KindHash || val.Kind() == KindObject {
-			return nil
-		}
-		return fmt.Errorf("expected hash")
+		return val.Kind() == KindHash || val.Kind() == KindObject, nil
 	case TypeFunction:
-		if val.Kind() == KindFunction {
-			return nil
+		return val.Kind() == KindFunction, nil
+	case TypeUnion:
+		for _, option := range ty.Union {
+			matches, err := valueMatchesType(val, option)
+			if err != nil {
+				return false, err
+			}
+			if matches {
+				return true, nil
+			}
 		}
-		return fmt.Errorf("expected function")
+		return false, nil
 	default:
-		return fmt.Errorf("unknown type %s", ty.Name)
+		return false, fmt.Errorf("unknown type %s", ty.Name)
 	}
+}
+
+func formatTypeExpr(ty *TypeExpr) string {
+	if ty == nil {
+		return "unknown"
+	}
+
+	if ty.Kind == TypeUnion {
+		if len(ty.Union) == 0 {
+			return "unknown"
+		}
+		parts := make([]string, len(ty.Union))
+		for i, option := range ty.Union {
+			parts[i] = formatTypeExpr(option)
+		}
+		return strings.Join(parts, " | ")
+	}
+
+	var name string
+	switch ty.Kind {
+	case TypeAny:
+		name = "any"
+	case TypeInt:
+		name = "int"
+	case TypeFloat:
+		name = "float"
+	case TypeNumber:
+		name = "number"
+	case TypeString:
+		name = "string"
+	case TypeBool:
+		name = "bool"
+	case TypeNil:
+		name = "nil"
+	case TypeDuration:
+		name = "duration"
+	case TypeTime:
+		name = "time"
+	case TypeMoney:
+		name = "money"
+	case TypeArray:
+		name = "array"
+	case TypeHash:
+		name = "hash"
+	case TypeFunction:
+		name = "function"
+	default:
+		name = ty.Name
+	}
+	if name == "" {
+		name = "unknown"
+	}
+	if ty.Nullable && !strings.HasSuffix(name, "?") {
+		return name + "?"
+	}
+	return name
 }
 
 // Function looks up a compiled function by name.

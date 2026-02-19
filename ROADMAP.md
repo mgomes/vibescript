@@ -168,7 +168,7 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 ### Type Features
 
 - [ ] Add parametric container types: `array<T>`, `hash<K, V>`.
-- [ ] Add union types beyond nil: `A | B`.
+- [x] Add union types beyond nil: `A | B`.
 - [ ] Add typed object/hash shape syntax for common payload contracts.
 - [ ] Add typed block signatures where appropriate.
 - [ ] Define type display formatting for readable runtime errors.

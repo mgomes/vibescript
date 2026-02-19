@@ -182,14 +182,10 @@ func (p *parser) parseFunctionStatement() Statement {
 	}
 	if p.curToken.Type == tokenArrow {
 		p.nextToken()
-		if p.curToken.Type != tokenIdent && p.curToken.Type != tokenNil {
-			p.errorExpected(p.curToken, "return type")
+		returnTy = p.parseTypeExpr()
+		if returnTy == nil {
 			return nil
 		}
-		returnTy = &TypeExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
-		kind, nullable := resolveType(p.curToken.Literal)
-		returnTy.Kind = kind
-		returnTy.Nullable = nullable
 		p.nextToken()
 	}
 	body := []Statement{}
@@ -229,14 +225,10 @@ func (p *parser) parseParams() []Param {
 		if p.peekToken.Type == tokenColon {
 			p.nextToken()
 			p.nextToken()
-			if p.curToken.Type != tokenIdent {
-				p.errorExpected(p.curToken, "type name")
+			param.Type = p.parseTypeExpr()
+			if param.Type == nil {
 				return params
 			}
-			param.Type = &TypeExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
-			kind, nullable := resolveType(p.curToken.Literal)
-			param.Type.Kind = kind
-			param.Type.Nullable = nullable
 		}
 		if p.peekToken.Type == tokenAssign {
 			p.nextToken()
@@ -997,4 +989,49 @@ func resolveType(name string) (TypeKind, bool) {
 		return TypeFunction, nullable
 	}
 	return TypeUnknown, nullable
+}
+
+func (p *parser) parseTypeExpr() *TypeExpr {
+	first := p.parseTypeAtom()
+	if first == nil {
+		return nil
+	}
+
+	union := []*TypeExpr{first}
+	for p.peekToken.Type == tokenPipe {
+		p.nextToken()
+		p.nextToken()
+		next := p.parseTypeAtom()
+		if next == nil {
+			return nil
+		}
+		union = append(union, next)
+	}
+
+	if len(union) == 1 {
+		return first
+	}
+
+	names := make([]string, len(union))
+	for i, option := range union {
+		names[i] = formatTypeExpr(option)
+	}
+	return &TypeExpr{
+		Name:     strings.Join(names, " | "),
+		Kind:     TypeUnion,
+		Union:    union,
+		position: first.position,
+	}
+}
+
+func (p *parser) parseTypeAtom() *TypeExpr {
+	if p.curToken.Type != tokenIdent && p.curToken.Type != tokenNil {
+		p.errorExpected(p.curToken, "type name")
+		return nil
+	}
+	ty := &TypeExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
+	kind, nullable := resolveType(p.curToken.Literal)
+	ty.Kind = kind
+	ty.Nullable = nullable
+	return ty
 }

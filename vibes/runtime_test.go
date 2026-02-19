@@ -1159,6 +1159,18 @@ func TestTypedFunctions(t *testing.T) {
     def pick_optional(s: string? = nil) -> string?
       s
     end
+
+    def union_echo(v: int | string) -> int | string
+      v
+    end
+
+    def union_optional(v: int | nil = nil) -> int | nil
+      v
+    end
+
+    def union_bad_return() -> int | string
+      true
+    end
     `)
 
 	if fn, ok := script.Function("bad_return"); !ok || fn.ReturnTy == nil {
@@ -1175,6 +1187,18 @@ func TestTypedFunctions(t *testing.T) {
 	}
 	if got := callFunc(t, script, "pick_optional", nil); !got.Equal(NewNil()) {
 		t.Fatalf("pick_optional nil mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "union_echo", []Value{NewInt(7)}); !got.Equal(NewInt(7)) {
+		t.Fatalf("union_echo int mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "union_echo", []Value{NewString("ok")}); !got.Equal(NewString("ok")) {
+		t.Fatalf("union_echo string mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "union_optional", nil); !got.Equal(NewNil()) {
+		t.Fatalf("union_optional nil mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "union_optional", []Value{NewInt(9)}); !got.Equal(NewInt(9)) {
+		t.Fatalf("union_optional int mismatch: %v", got)
 	}
 	if got := callFunc(t, script, "nil_result", nil); !got.Equal(NewNil()) {
 		t.Fatalf("nil_result mismatch: %v", got)
@@ -1208,6 +1232,16 @@ func TestTypedFunctions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "expected int") {
 		t.Fatalf("expected return type error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "union_echo", []Value{NewBool(true)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expected int | string") {
+		t.Fatalf("expected union arg type error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "union_bad_return", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expected int | string") {
+		t.Fatalf("expected union return type error, got %v", err)
 	}
 }
 

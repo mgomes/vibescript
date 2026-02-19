@@ -61,6 +61,7 @@ const (
 	TypeArray
 	TypeHash
 	TypeFunction
+	TypeUnion
 	TypeUnknown
 )
 
@@ -68,6 +69,7 @@ type TypeExpr struct {
 	Name     string
 	Kind     TypeKind
 	Nullable bool
+	Union    []*TypeExpr
 	position Position
 }
 

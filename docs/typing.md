@@ -14,6 +14,8 @@ Type names are case-insensitive:
 
 Nullable: append `?` to allow `nil` (e.g., `string?`, `time?`, `int?`).
 
+Unions: join allowed types with `|` (e.g., `int | string`, `int | nil`).
+
 ## Function definitions
 
 Method declarations omit parentheses when there are no args:
@@ -25,6 +27,10 @@ end
 
 def pick_optional(label: string? = nil) -> string?
   label
+end
+
+def normalize_id(id: int | string) -> string
+  id.string
 end
 
 def nil_result() -> nil
@@ -57,5 +63,5 @@ Duration methods like `ago`/`after` return `Time`. Typed signatures use `time` o
 ## Notes and limitations
 
 - Types are nominal by kind (no generics like `array<int>` yet).
-- Nullable via `?` only; unions beyond `nil` are not supported yet.
+- Container element/key/value constraints are not supported yet (`array<T>`, `hash<K, V>`).
 - Type names are case-insensitive (`Int` == `int`).
