@@ -427,6 +427,10 @@ func lookupIdent(ident string) TokenType {
 		return tokenIn
 	case "if":
 		return tokenIf
+	case "case":
+		return tokenCase
+	case "when":
+		return tokenWhen
 	case "elsif":
 		return tokenElsif
 	case "else":

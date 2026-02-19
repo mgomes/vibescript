@@ -308,6 +308,21 @@ type RangeExpr struct {
 func (e *RangeExpr) exprNode()     {}
 func (e *RangeExpr) Pos() Position { return e.position }
 
+type CaseWhenClause struct {
+	Values []Expression
+	Result Expression
+}
+
+type CaseExpr struct {
+	Target   Expression
+	Clauses  []CaseWhenClause
+	ElseExpr Expression
+	position Position
+}
+
+func (e *CaseExpr) exprNode()     {}
+func (e *CaseExpr) Pos() Position { return e.position }
+
 type BlockLiteral struct {
 	Params   []Param
 	Body     []Statement

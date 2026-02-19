@@ -555,6 +555,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalBinaryExpr(e, env)
 	case *RangeExpr:
 		return exec.evalRangeExpr(e, env)
+	case *CaseExpr:
+		return exec.evalCaseExpr(e, env)
 	case *MemberExpr:
 		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
 		if err != nil {
@@ -1100,6 +1102,57 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 		return NewNil(), exec.errorAt(expr.End.Pos(), "%s", err.Error())
 	}
 	return NewRange(Range{Start: start, End: end}), nil
+}
+
+func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
+	target, err := exec.evalExpression(expr.Target, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(target); err != nil {
+		return NewNil(), err
+	}
+
+	for _, clause := range expr.Clauses {
+		matched := false
+		for _, candidateExpr := range clause.Values {
+			candidate, err := exec.evalExpression(candidateExpr, env)
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := exec.checkMemoryWith(candidate); err != nil {
+				return NewNil(), err
+			}
+			if target.Equal(candidate) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		result, err := exec.evalExpressionWithAuto(clause.Result, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
+	}
+
+	if expr.ElseExpr != nil {
+		result, err := exec.evalExpressionWithAuto(expr.ElseExpr, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
+	}
+
+	return NewNil(), nil
 }
 
 func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, error) {

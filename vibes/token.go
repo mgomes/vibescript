@@ -62,6 +62,8 @@ const (
 	tokenNext     TokenType = "NEXT"
 	tokenIn       TokenType = "IN"
 	tokenIf       TokenType = "IF"
+	tokenCase     TokenType = "CASE"
+	tokenWhen     TokenType = "WHEN"
 	tokenElsif    TokenType = "ELSIF"
 	tokenElse     TokenType = "ELSE"
 	tokenTrue     TokenType = "TRUE"

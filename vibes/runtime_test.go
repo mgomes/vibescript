@@ -862,6 +862,80 @@ func TestUntilLoops(t *testing.T) {
 	}
 }
 
+func TestCaseWhenExpressions(t *testing.T) {
+	script := compileScript(t, `
+    def label(score)
+      case score
+      when 100
+        "perfect"
+      when 90, 95
+        "great"
+      else
+        "ok"
+      end
+    end
+
+    def classify(value)
+      case value
+      when nil
+        "missing"
+      when true
+        "yes"
+      else
+        "other"
+      end
+    end
+
+    def assign_case(v)
+      result = case v
+      when 1
+        10
+      else
+        20
+      end
+      result
+    end
+
+    def unmatched(v)
+      case v
+      when 1
+        "one"
+      end
+    end
+    `)
+
+	if got := callFunc(t, script, "label", []Value{NewInt(100)}); !got.Equal(NewString("perfect")) {
+		t.Fatalf("label(100) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "label", []Value{NewInt(95)}); !got.Equal(NewString("great")) {
+		t.Fatalf("label(95) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "label", []Value{NewInt(70)}); !got.Equal(NewString("ok")) {
+		t.Fatalf("label(70) mismatch: %v", got)
+	}
+
+	if got := callFunc(t, script, "classify", []Value{NewNil()}); !got.Equal(NewString("missing")) {
+		t.Fatalf("classify(nil) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "classify", []Value{NewBool(true)}); !got.Equal(NewString("yes")) {
+		t.Fatalf("classify(true) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "classify", []Value{NewInt(1)}); !got.Equal(NewString("other")) {
+		t.Fatalf("classify(1) mismatch: %v", got)
+	}
+
+	if got := callFunc(t, script, "assign_case", []Value{NewInt(1)}); !got.Equal(NewInt(10)) {
+		t.Fatalf("assign_case(1) mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "assign_case", []Value{NewInt(2)}); !got.Equal(NewInt(20)) {
+		t.Fatalf("assign_case(2) mismatch: %v", got)
+	}
+
+	if got := callFunc(t, script, "unmatched", []Value{NewInt(7)}); !got.Equal(NewNil()) {
+		t.Fatalf("unmatched(7) expected nil, got %v", got)
+	}
+}
+
 func TestLoopControlBreakAndNext(t *testing.T) {
 	script := compileScript(t, `
     def for_break()

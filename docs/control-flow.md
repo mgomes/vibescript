@@ -3,6 +3,7 @@
 VibeScript supports these control-flow forms:
 
 - `if` / `elsif` / `else`
+- `case` / `when` expressions
 - `for` loops over arrays and ranges
 - `while` and `until` loops
 - loop control with `break` and `next`
@@ -17,6 +18,23 @@ def sum_first_five()
     total = total + n
   end
   total
+end
+```
+
+## `case` / `when` expressions
+
+`case` evaluates to the matching branch expression (or `nil` when no branch matches and no `else` is provided).
+
+```vibe
+def label(score)
+  case score
+  when 100
+    "perfect"
+  when 90, 95
+    "great"
+  else
+    "ok"
+  end
 end
 ```
 
