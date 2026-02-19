@@ -78,6 +78,17 @@ def safe_div(a, b)
 end
 ```
 
+Re-raise the current rescued error with `raise`:
+
+```vibe
+begin
+  risky_call()
+rescue(AssertionError)
+  audit("recovering assertion")
+  raise
+end
+```
+
 Semantics:
 
 - `rescue` runs only when the `begin` body raises an error.
@@ -86,6 +97,8 @@ Semantics:
 - `ensure` always runs (success, rescue path, or failure path).
 - Without `rescue`, original runtime errors still propagate after `ensure` executes.
 - Unmatched typed rescues do not swallow the original error.
+- `raise` inside `rescue` re-raises the original error and preserves its stack frames.
+- `raise "message"` raises a new runtime error. Bare `raise` outside `rescue` is a runtime error.
 
 ## REPL Debugging
 

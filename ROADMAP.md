@@ -219,7 +219,7 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 
 - [x] Add structured error handling syntax (`begin/rescue/ensure` or equivalent).
 - [x] Add typed error matching where feasible.
-- [ ] Define re-raise semantics and stack preservation.
+- [x] Define re-raise semantics and stack preservation.
 - [x] Ensure runtime errors preserve original position and call frames.
 
 ### Runtime Behavior

@@ -84,6 +84,14 @@ type ReturnStmt struct {
 func (s *ReturnStmt) stmtNode()     {}
 func (s *ReturnStmt) Pos() Position { return s.position }
 
+type RaiseStmt struct {
+	Value    Expression
+	position Position
+}
+
+func (s *RaiseStmt) stmtNode()     {}
+func (s *RaiseStmt) Pos() Position { return s.position }
+
 type AssignStmt struct {
 	Target   Expression
 	Value    Expression

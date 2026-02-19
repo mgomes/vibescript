@@ -411,6 +411,8 @@ func lookupIdent(ident string) TokenType {
 		return tokenRescue
 	case "ensure":
 		return tokenEnsure
+	case "raise":
+		return tokenRaise
 	case "end":
 		return tokenEnd
 	case "return":

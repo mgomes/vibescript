@@ -1104,6 +1104,90 @@ func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
 	}
 }
 
+func TestBeginRescueReraisePreservesStack(t *testing.T) {
+	script := compileScript(t, `
+    def inner()
+      assert false, "boom"
+    end
+
+    def middle()
+      begin
+        inner()
+      rescue(AssertionError)
+        raise
+      end
+    end
+
+    def outer()
+      middle()
+    end
+
+    def catches_reraise()
+      begin
+        middle()
+      rescue(AssertionError)
+        "caught"
+      end
+    end
+
+    def raise_outside()
+      raise
+    end
+
+    def raise_new_message()
+      raise "custom boom"
+    end
+    `)
+
+	if got := callFunc(t, script, "catches_reraise", nil); !got.Equal(NewString("caught")) {
+		t.Fatalf("catches_reraise mismatch: %v", got)
+	}
+
+	_, err := script.Call(context.Background(), "outer", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected reraise error, got %v", err)
+	}
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if rtErr.Type != runtimeErrorTypeAssertion {
+		t.Fatalf("expected assertion error type %s, got %s", runtimeErrorTypeAssertion, rtErr.Type)
+	}
+	if len(rtErr.Frames) < 4 {
+		t.Fatalf("expected at least 4 frames, got %d", len(rtErr.Frames))
+	}
+	if rtErr.Frames[0].Function != "inner" {
+		t.Fatalf("expected inner frame first, got %s", rtErr.Frames[0].Function)
+	}
+	if rtErr.Frames[1].Function != "inner" {
+		t.Fatalf("expected inner call site second, got %s", rtErr.Frames[1].Function)
+	}
+	if rtErr.Frames[2].Function != "middle" {
+		t.Fatalf("expected middle frame third, got %s", rtErr.Frames[2].Function)
+	}
+	if rtErr.Frames[3].Function != "outer" {
+		t.Fatalf("expected outer frame fourth, got %s", rtErr.Frames[3].Function)
+	}
+
+	_, err = script.Call(context.Background(), "raise_outside", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "raise used outside of rescue") {
+		t.Fatalf("expected raise outside rescue error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "raise_new_message", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "custom boom") {
+		t.Fatalf("expected raise message error, got %v", err)
+	}
+	var raisedErr *RuntimeError
+	if !errors.As(err, &raisedErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if raisedErr.Type != runtimeErrorTypeBase {
+		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeBase, raisedErr.Type)
+	}
+}
+
 func TestLoopControlBreakAndNext(t *testing.T) {
 	script := compileScript(t, `
     def for_break()

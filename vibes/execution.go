@@ -63,6 +63,7 @@ type Execution struct {
 	receiverStack             []Value
 	envStack                  []*Env
 	loopDepth                 int
+	rescuedErrors             []error
 	strictEffects             bool
 	allowRequire              bool
 }
@@ -315,6 +316,24 @@ func (exec *Execution) currentModuleContext() *moduleContext {
 	return &ctx
 }
 
+func (exec *Execution) pushRescuedError(err error) {
+	exec.rescuedErrors = append(exec.rescuedErrors, err)
+}
+
+func (exec *Execution) popRescuedError() {
+	if len(exec.rescuedErrors) == 0 {
+		return
+	}
+	exec.rescuedErrors = exec.rescuedErrors[:len(exec.rescuedErrors)-1]
+}
+
+func (exec *Execution) currentRescuedError() error {
+	if len(exec.rescuedErrors) == 0 {
+		return nil
+	}
+	return exec.rescuedErrors[len(exec.rescuedErrors)-1]
+}
+
 func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool, error) {
 	exec.pushEnv(env)
 	defer exec.popEnv()
@@ -356,6 +375,8 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	case *ReturnStmt:
 		val, err := exec.evalExpression(s.Value, env)
 		return val, true, err
+	case *RaiseStmt:
+		return exec.evalRaiseStatement(s, env)
 	case *AssignStmt:
 		val, err := exec.evalExpression(s.Value, env)
 		if err != nil {
@@ -1369,11 +1390,29 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 	}
 }
 
+func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {
+	if stmt.Value != nil {
+		val, err := exec.evalExpression(stmt.Value, env)
+		if err != nil {
+			return NewNil(), false, err
+		}
+		return NewNil(), false, exec.errorAt(stmt.Pos(), "%s", val.String())
+	}
+
+	err := exec.currentRescuedError()
+	if err == nil {
+		return NewNil(), false, exec.errorAt(stmt.Pos(), "raise used outside of rescue")
+	}
+	return NewNil(), false, err
+}
+
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
 	val, returned, err := exec.evalStatements(stmt.Body, env)
 
 	if err != nil && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
+		exec.pushRescuedError(err)
 		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, env)
+		exec.popRescuedError()
 		if rescueErr != nil {
 			val = NewNil()
 			returned = false

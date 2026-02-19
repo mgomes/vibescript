@@ -123,6 +123,8 @@ func (p *parser) parseStatement() Statement {
 		return p.parseClassStatement()
 	case tokenReturn:
 		return p.parseReturnStatement()
+	case tokenRaise:
+		return p.parseRaiseStatement()
 	case tokenIf:
 		return p.parseIfStatement()
 	case tokenFor:
@@ -261,6 +263,19 @@ func (p *parser) parseReturnStatement() Statement {
 	p.nextToken()
 	value := p.parseExpression(lowestPrec)
 	return &ReturnStmt{Value: value, position: pos}
+}
+
+func (p *parser) parseRaiseStatement() Statement {
+	pos := p.curToken.Pos
+	if p.peekToken.Type == tokenEOF || p.peekToken.Type == tokenEnd || p.peekToken.Type == tokenEnsure || p.peekToken.Type == tokenRescue || p.peekToken.Pos.Line != pos.Line {
+		return &RaiseStmt{position: pos}
+	}
+	p.nextToken()
+	value := p.parseExpression(lowestPrec)
+	if value == nil {
+		return nil
+	}
+	return &RaiseStmt{Value: value, position: pos}
 }
 
 func (p *parser) parseClassStatement() Statement {
@@ -1178,6 +1193,8 @@ func tokenLabel(tt TokenType) string {
 		return "'setter'"
 	case tokenEnd:
 		return "'end'"
+	case tokenRaise:
+		return "'raise'"
 	case tokenReturn:
 		return "'return'"
 	case tokenYield:

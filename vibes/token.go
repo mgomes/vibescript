@@ -54,6 +54,7 @@ const (
 	tokenBegin    TokenType = "BEGIN"
 	tokenRescue   TokenType = "RESCUE"
 	tokenEnsure   TokenType = "ENSURE"
+	tokenRaise    TokenType = "RAISE"
 	tokenEnd      TokenType = "END"
 	tokenReturn   TokenType = "RETURN"
 	tokenYield    TokenType = "YIELD"
