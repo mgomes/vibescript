@@ -3360,6 +3360,33 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 		return true, nil
 	case TypeFunction:
 		return val.Kind() == KindFunction, nil
+	case TypeShape:
+		if val.Kind() != KindHash && val.Kind() != KindObject {
+			return false, nil
+		}
+		entries := val.Hash()
+		if len(ty.Shape) == 0 {
+			return len(entries) == 0, nil
+		}
+		for field, fieldType := range ty.Shape {
+			fieldVal, ok := entries[field]
+			if !ok {
+				return false, nil
+			}
+			matches, err := valueMatchesType(fieldVal, fieldType)
+			if err != nil {
+				return false, err
+			}
+			if !matches {
+				return false, nil
+			}
+		}
+		for field := range entries {
+			if _, ok := ty.Shape[field]; !ok {
+				return false, nil
+			}
+		}
+		return true, nil
 	case TypeUnion:
 		for _, option := range ty.Union {
 			matches, err := valueMatchesType(val, option)
@@ -3420,6 +3447,8 @@ func formatTypeExpr(ty *TypeExpr) string {
 		name = "hash"
 	case TypeFunction:
 		name = "function"
+	case TypeShape:
+		name = formatShapeType(ty)
 	default:
 		name = ty.Name
 	}
@@ -3437,6 +3466,22 @@ func formatTypeExpr(ty *TypeExpr) string {
 		return name + "?"
 	}
 	return name
+}
+
+func formatShapeType(ty *TypeExpr) string {
+	if ty == nil || len(ty.Shape) == 0 {
+		return "{}"
+	}
+	fields := make([]string, 0, len(ty.Shape))
+	for field := range ty.Shape {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	parts := make([]string, len(fields))
+	for i, field := range fields {
+		parts[i] = fmt.Sprintf("%s: %s", field, formatTypeExpr(ty.Shape[field]))
+	}
+	return "{ " + strings.Join(parts, ", ") + " }"
 }
 
 // Function looks up a compiled function by name.

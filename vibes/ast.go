@@ -61,6 +61,7 @@ const (
 	TypeArray
 	TypeHash
 	TypeFunction
+	TypeShape
 	TypeUnion
 	TypeUnknown
 )
@@ -70,6 +71,7 @@ type TypeExpr struct {
 	Kind     TypeKind
 	Nullable bool
 	TypeArgs []*TypeExpr
+	Shape    map[string]*TypeExpr
 	Union    []*TypeExpr
 	position Position
 }

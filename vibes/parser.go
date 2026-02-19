@@ -1025,6 +1025,9 @@ func (p *parser) parseTypeExpr() *TypeExpr {
 }
 
 func (p *parser) parseTypeAtom() *TypeExpr {
+	if p.curToken.Type == tokenLBrace {
+		return p.parseTypeShape()
+	}
 	if p.curToken.Type != tokenIdent && p.curToken.Type != tokenNil {
 		p.errorExpected(p.curToken, "type name")
 		return nil
@@ -1062,4 +1065,69 @@ func (p *parser) parseTypeAtom() *TypeExpr {
 	}
 
 	return ty
+}
+
+func (p *parser) parseTypeShape() *TypeExpr {
+	pos := p.curToken.Pos
+	fields := make(map[string]*TypeExpr)
+
+	if p.peekToken.Type == tokenRBrace {
+		p.nextToken()
+		return &TypeExpr{
+			Kind:     TypeShape,
+			Shape:    fields,
+			position: pos,
+		}
+	}
+
+	p.nextToken()
+	for {
+		key, ok := p.parseTypeShapeFieldName()
+		if !ok {
+			return nil
+		}
+		if p.peekToken.Type != tokenColon {
+			p.errorExpected(p.peekToken, ":")
+			return nil
+		}
+		p.nextToken()
+		p.nextToken()
+		fieldType := p.parseTypeExpr()
+		if fieldType == nil {
+			return nil
+		}
+		if _, exists := fields[key]; exists {
+			p.addParseError(p.curToken.Pos, fmt.Sprintf("duplicate shape field %s", key))
+			return nil
+		}
+		fields[key] = fieldType
+
+		if p.peekToken.Type == tokenComma {
+			p.nextToken()
+			p.nextToken()
+			continue
+		}
+		if p.peekToken.Type != tokenRBrace {
+			p.errorExpected(p.peekToken, "}")
+			return nil
+		}
+		p.nextToken()
+		break
+	}
+
+	return &TypeExpr{
+		Kind:     TypeShape,
+		Shape:    fields,
+		position: pos,
+	}
+}
+
+func (p *parser) parseTypeShapeFieldName() (string, bool) {
+	switch p.curToken.Type {
+	case tokenIdent, tokenString, tokenSymbol:
+		return p.curToken.Literal, true
+	default:
+		p.errorExpected(p.curToken, "shape field name")
+		return "", false
+	}
 }

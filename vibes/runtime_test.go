@@ -1183,6 +1183,14 @@ func TestTypedFunctions(t *testing.T) {
     def mixed_items(values: array<int | string>) -> array<int | string>
       values
     end
+
+    def player_payload(payload: { id: string, score: int, active: bool? }) -> { id: string, score: int, active: bool? }
+      payload
+    end
+
+    def shaped_rows(rows: array<{ id: string, stats: { wins: int } }>) -> array<{ id: string, stats: { wins: int } }>
+      rows
+    end
     `)
 
 	if fn, ok := script.Function("bad_return"); !ok || fn.ReturnTy == nil {
@@ -1223,6 +1231,23 @@ func TestTypedFunctions(t *testing.T) {
 	}
 	if got := callFunc(t, script, "mixed_items", []Value{NewArray([]Value{NewInt(1), NewString("two"), NewInt(3)})}); got.Kind() != KindArray {
 		t.Fatalf("mixed_items expected array result, got %v", got.Kind())
+	}
+	if got := callFunc(t, script, "player_payload", []Value{NewHash(map[string]Value{
+		"id":     NewString("p-1"),
+		"score":  NewInt(42),
+		"active": NewNil(),
+	})}); got.Kind() != KindHash {
+		t.Fatalf("player_payload expected hash result, got %v", got.Kind())
+	}
+	if got := callFunc(t, script, "shaped_rows", []Value{NewArray([]Value{
+		NewHash(map[string]Value{
+			"id": NewString("p-1"),
+			"stats": NewHash(map[string]Value{
+				"wins": NewInt(7),
+			}),
+		}),
+	})}); got.Kind() != KindArray {
+		t.Fatalf("shaped_rows expected array result, got %v", got.Kind())
 	}
 	if got := callFunc(t, script, "nil_result", nil); !got.Equal(NewNil()) {
 		t.Fatalf("nil_result mismatch: %v", got)
@@ -1287,6 +1312,42 @@ func TestTypedFunctions(t *testing.T) {
 	}, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "expected array<int | string>") {
 		t.Fatalf("expected typed union array arg error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "player_payload", []Value{
+		NewHash(map[string]Value{
+			"id":    NewString("p-1"),
+			"score": NewInt(42),
+			"role":  NewString("captain"),
+		}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expected { active: bool?, id: string, score: int }") {
+		t.Fatalf("expected shape extra-field error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "player_payload", []Value{
+		NewHash(map[string]Value{
+			"id":     NewString("p-1"),
+			"score":  NewString("wrong"),
+			"active": NewBool(true),
+		}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expected { active: bool?, id: string, score: int }") {
+		t.Fatalf("expected shape field-type error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "shaped_rows", []Value{
+		NewArray([]Value{
+			NewHash(map[string]Value{
+				"id": NewString("p-1"),
+				"stats": NewHash(map[string]Value{
+					"wins": NewString("bad"),
+				}),
+			}),
+		}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "expected array<{ id: string, stats: { wins: int } }>") {
+		t.Fatalf("expected nested shape error, got %v", err)
 	}
 }
 

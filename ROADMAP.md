@@ -170,7 +170,7 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 - [x] Add parametric container types: `array<T>`, `hash<K, V>`.
 - [x] Add union types beyond nil: `A | B`.
-- [ ] Add typed object/hash shape syntax for common payload contracts.
+- [x] Add typed object/hash shape syntax for common payload contracts.
 - [ ] Add typed block signatures where appropriate.
 - [ ] Define type display formatting for readable runtime errors.
 
@@ -190,8 +190,8 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 ### Testing and Docs
 
-- [ ] Add parser tests for all new type syntax forms.
-- [ ] Add runtime tests for nested composite type checks.
+- [x] Add parser tests for all new type syntax forms.
+- [x] Add runtime tests for nested composite type checks.
 - [ ] Add regression tests for existing `any` and nullable behavior.
 - [ ] Expand `docs/typing.md` with migration examples.
 
