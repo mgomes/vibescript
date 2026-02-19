@@ -1025,6 +1025,9 @@ func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
 }
 
 func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Value, error) {
+	if len(call.KwArgs) == 0 {
+		return nil, nil
+	}
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kw := range call.KwArgs {
 		val, err := exec.evalExpressionWithAuto(kw.Value, env, true)
@@ -1047,6 +1050,12 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 }
 
 func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if receiver.Kind() == KindNil && len(kwargs) == 0 && block.IsNil() {
+		if len(args) == 0 {
+			return nil
+		}
+		return exec.checkMemoryWith(args...)
+	}
 	combined := make([]Value, 0, len(args)+len(kwargs)+2)
 	if receiver.Kind() != KindNil {
 		combined = append(combined, receiver)
