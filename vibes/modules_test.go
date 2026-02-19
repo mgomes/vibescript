@@ -1025,6 +1025,29 @@ end`)
 	}
 }
 
+func TestRequireModuleAllowListStarMatchesNestedModules(t *testing.T) {
+	engine := MustNewEngine(Config{
+		ModulePaths:     []string{filepath.Join("testdata", "modules")},
+		ModuleAllowList: []string{"*"},
+	})
+
+	script, err := engine.Compile(`def run(value)
+  mod = require("shared/math")
+  mod.double(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(4)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 8 {
+		t.Fatalf("expected nested module call result 8, got %#v", result)
+	}
+}
+
 func TestRequireModuleDenyListOverridesAllowList(t *testing.T) {
 	engine := MustNewEngine(Config{
 		ModulePaths:     []string{filepath.Join("testdata", "modules")},

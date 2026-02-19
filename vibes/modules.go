@@ -63,6 +63,9 @@ func validateModulePolicyPatterns(patterns []string, label string) error {
 }
 
 func modulePolicyMatch(pattern string, module string) bool {
+	if pattern == "*" {
+		return module != ""
+	}
 	matched, err := path.Match(pattern, module)
 	if err != nil {
 		return false
