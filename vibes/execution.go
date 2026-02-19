@@ -3283,6 +3283,52 @@ func arrayMember(array Value, property string) (Value, error) {
 			out := flattenValues(arr, depth)
 			return NewArray(out), nil
 		}), nil
+	case "chunk":
+		return NewAutoBuiltin("array.chunk", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.chunk expects a chunk size")
+			}
+			if args[0].Kind() != KindInt || args[0].Int() <= 0 {
+				return NewNil(), fmt.Errorf("array.chunk size must be a positive integer")
+			}
+			size := int(args[0].Int())
+			arr := receiver.Array()
+			if len(arr) == 0 {
+				return NewArray([]Value{}), nil
+			}
+			chunks := make([]Value, 0, (len(arr)+size-1)/size)
+			for i := 0; i < len(arr); i += size {
+				end := i + size
+				if end > len(arr) {
+					end = len(arr)
+				}
+				part := make([]Value, end-i)
+				copy(part, arr[i:end])
+				chunks = append(chunks, NewArray(part))
+			}
+			return NewArray(chunks), nil
+		}), nil
+	case "window":
+		return NewAutoBuiltin("array.window", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.window expects a window size")
+			}
+			if args[0].Kind() != KindInt || args[0].Int() <= 0 {
+				return NewNil(), fmt.Errorf("array.window size must be a positive integer")
+			}
+			size := int(args[0].Int())
+			arr := receiver.Array()
+			if size > len(arr) {
+				return NewArray([]Value{}), nil
+			}
+			windows := make([]Value, 0, len(arr)-size+1)
+			for i := 0; i+size <= len(arr); i++ {
+				part := make([]Value, size)
+				copy(part, arr[i:i+size])
+				windows = append(windows, NewArray(part))
+			}
+			return NewArray(windows), nil
+		}), nil
 	case "join":
 		return NewAutoBuiltin("array.join", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 1 {
@@ -3454,6 +3500,42 @@ func arrayMember(array Value, property string) (Value, error) {
 				result[key] = NewArray(items)
 			}
 			return NewHash(result), nil
+		}), nil
+	case "group_by_stable":
+		return NewAutoBuiltin("array.group_by_stable", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.group_by_stable does not take arguments")
+			}
+			if err := ensureBlock(block, "array.group_by_stable"); err != nil {
+				return NewNil(), err
+			}
+			order := make([]string, 0)
+			keyValues := make(map[string]Value)
+			groups := make(map[string][]Value)
+			for _, item := range receiver.Array() {
+				groupValue, err := exec.CallBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				key, err := valueToHashKey(groupValue)
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.group_by_stable block must return symbol or string")
+				}
+				if _, exists := groups[key]; !exists {
+					order = append(order, key)
+					keyValues[key] = groupValue
+					groups[key] = []Value{}
+				}
+				groups[key] = append(groups[key], item)
+			}
+			result := make([]Value, 0, len(order))
+			for _, key := range order {
+				result = append(result, NewArray([]Value{
+					keyValues[key],
+					NewArray(groups[key]),
+				}))
+			}
+			return NewArray(result), nil
 		}), nil
 	case "tally":
 		return NewAutoBuiltin("array.tally", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

@@ -19,6 +19,8 @@ Common enumerable helpers include:
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays (defaults to fully flattening).
+- `chunk(size)` to split into fixed-size slices.
+- `window(size)` to build overlapping windows.
 - `join(sep = "")` to produce a string.
 
 Example:
@@ -31,6 +33,11 @@ def total_by_multiplier(values, multiplier)
     end
     .sum()
 end
+```
+
+```vibe
+[1, 2, 3, 4, 5].chunk(2)   # [[1,2], [3,4], [5]]
+[1, 2, 3, 4].window(3)      # [[1,2,3], [2,3,4]]
 ```
 
 ## Search and predicates
@@ -55,6 +62,7 @@ end
 - `reverse`, `sort`, and `sort_by`.
 - `partition` to split into matching and non-matching arrays.
 - `group_by` to collect values by key.
+- `group_by_stable` to collect values by key while preserving group order.
 - `tally` to count symbol/string occurrences.
 
 Sorting of strings/symbols uses deterministic codepoint ordering (locale

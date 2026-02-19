@@ -290,7 +290,7 @@ Goal: reduce host-side boilerplate for common scripting tasks.
 ### Collections and Strings
 
 - [ ] Expand hash helpers for nested transforms and key remapping.
-- [ ] Expand array helpers for chunking/windowing and stable group operations.
+- [x] Expand array helpers for chunking/windowing and stable group operations.
 - [ ] Add string helpers for common normalization and templating tasks.
 
 ### Compatibility and Safety

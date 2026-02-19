@@ -381,6 +381,15 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
           :odd
         end
       end
+      grouped_stable = values.group_by_stable do |v|
+        if v % 2 == 0
+          :even
+        else
+          :odd
+        end
+      end
+      chunked = [1, 2, 3, 4, 5].chunk(2)
+      windowed = [1, 2, 3, 4].window(3)
       tally_block = [1, 2, 3, 4].tally do |v|
         if v % 2 == 0
           :even
@@ -417,6 +426,9 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
         sort_by_words: sort_by_words,
         partition: partitioned,
         group_by_parity: grouped,
+        group_by_stable_parity: grouped_stable,
+        chunked: chunked,
+        windowed: windowed,
         tally_plain: ["a", "b", "a", "a"].tally,
         tally_block: tally_block,
         original: values
@@ -485,6 +497,54 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 	compareArrays(t, groupedHash["odd"], []Value{NewInt(3), NewInt(1), NewInt(1)})
 	compareArrays(t, groupedHash["even"], []Value{NewInt(2)})
 
+	stableGrouped := got["group_by_stable_parity"]
+	if stableGrouped.Kind() != KindArray {
+		t.Fatalf("group_by_stable_parity expected array, got %v", stableGrouped.Kind())
+	}
+	stablePairs := stableGrouped.Array()
+	if len(stablePairs) != 2 {
+		t.Fatalf("group_by_stable_parity length mismatch: %d", len(stablePairs))
+	}
+	firstPair := stablePairs[0]
+	if firstPair.Kind() != KindArray || len(firstPair.Array()) != 2 {
+		t.Fatalf("group_by_stable first pair mismatch: %v", firstPair)
+	}
+	if !firstPair.Array()[0].Equal(NewSymbol("odd")) {
+		t.Fatalf("group_by_stable first key mismatch: %v", firstPair.Array()[0])
+	}
+	compareArrays(t, firstPair.Array()[1], []Value{NewInt(3), NewInt(1), NewInt(1)})
+	secondPair := stablePairs[1]
+	if secondPair.Kind() != KindArray || len(secondPair.Array()) != 2 {
+		t.Fatalf("group_by_stable second pair mismatch: %v", secondPair)
+	}
+	if !secondPair.Array()[0].Equal(NewSymbol("even")) {
+		t.Fatalf("group_by_stable second key mismatch: %v", secondPair.Array()[0])
+	}
+	compareArrays(t, secondPair.Array()[1], []Value{NewInt(2)})
+
+	chunked := got["chunked"]
+	if chunked.Kind() != KindArray {
+		t.Fatalf("chunked expected array, got %v", chunked.Kind())
+	}
+	chunks := chunked.Array()
+	if len(chunks) != 3 {
+		t.Fatalf("chunked length mismatch: %d", len(chunks))
+	}
+	compareArrays(t, chunks[0], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, chunks[1], []Value{NewInt(3), NewInt(4)})
+	compareArrays(t, chunks[2], []Value{NewInt(5)})
+
+	windowed := got["windowed"]
+	if windowed.Kind() != KindArray {
+		t.Fatalf("windowed expected array, got %v", windowed.Kind())
+	}
+	windows := windowed.Array()
+	if len(windows) != 2 {
+		t.Fatalf("windowed length mismatch: %d", len(windows))
+	}
+	compareArrays(t, windows[0], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, windows[1], []Value{NewInt(2), NewInt(3), NewInt(4)})
+
 	tallyPlain := got["tally_plain"]
 	if tallyPlain.Kind() != KindHash {
 		t.Fatalf("tally_plain expected hash, got %v", tallyPlain.Kind())
@@ -504,6 +564,35 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 	})
 
 	compareArrays(t, got["original"], []Value{NewInt(3), NewInt(1), NewInt(2), NewInt(1)})
+}
+
+func TestArrayChunkWindowValidation(t *testing.T) {
+	script := compileScript(t, `
+    def bad_chunk()
+      [1, 2, 3].chunk(0)
+    end
+
+    def bad_window()
+      [1, 2, 3].window("2")
+    end
+
+    def bad_group_by_stable()
+      [1, 2, 3].group_by_stable
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "bad_chunk", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
+		t.Fatalf("expected chunk validation error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_window", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
+		t.Fatalf("expected window validation error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_group_by_stable", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "array.group_by_stable requires a block") {
+		t.Fatalf("expected group_by_stable block error, got %v", err)
+	}
 }
 
 func TestArrayConcatAndSubtract(t *testing.T) {
