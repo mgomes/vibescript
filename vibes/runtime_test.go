@@ -2718,6 +2718,39 @@ func TestArrayAndHashHelpers(t *testing.T) {
     def hash_compact()
       { a: 1, b: nil, c: 3 }.compact()
     end
+
+    def hash_remap()
+      { first_name: "Alex", total_raised: 10 }.remap_keys({ first_name: :name, total_raised: :raised })
+    end
+
+    def hash_deep_transform()
+      payload = {
+        player_id: 7,
+        profile: { total_raised: 12 },
+        events: [{ amount_cents: 300 }]
+      }
+      payload.deep_transform_keys do |k|
+        if k == :player_id
+          :playerId
+        elsif k == :total_raised
+          :totalRaised
+        elsif k == :amount_cents
+          :amountCents
+        else
+          k
+        end
+      end
+    end
+
+    def bad_hash_remap()
+      { a: 1 }.remap_keys({ a: 1 })
+    end
+
+    def bad_deep_transform()
+      { a: 1 }.deep_transform_keys do |k|
+        1
+      end
+    end
     `)
 
 	compact := callFunc(t, script, "array_helpers", nil)
@@ -2758,6 +2791,52 @@ func TestArrayAndHashHelpers(t *testing.T) {
 	}
 	if _, ok := h["b"]; ok {
 		t.Fatalf("expected key b to be removed")
+	}
+
+	remapped := callFunc(t, script, "hash_remap", nil)
+	if remapped.Kind() != KindHash {
+		t.Fatalf("expected remapped hash, got %v", remapped.Kind())
+	}
+	compareHash(t, remapped.Hash(), map[string]Value{
+		"name":   NewString("Alex"),
+		"raised": NewInt(10),
+	})
+
+	deepTransformed := callFunc(t, script, "hash_deep_transform", nil)
+	if deepTransformed.Kind() != KindHash {
+		t.Fatalf("expected deep transformed hash, got %v", deepTransformed.Kind())
+	}
+	dh := deepTransformed.Hash()
+	if !dh["playerId"].Equal(NewInt(7)) {
+		t.Fatalf("playerId mismatch: %v", dh["playerId"])
+	}
+	profileVal := dh["profile"]
+	if profileVal.Kind() != KindHash {
+		t.Fatalf("profile expected hash, got %v", profileVal.Kind())
+	}
+	profile, ok := profileVal.Hash()["totalRaised"]
+	if !ok || !profile.Equal(NewInt(12)) {
+		t.Fatalf("profile.totalRaised mismatch: %#v", profileVal)
+	}
+	events := dh["events"]
+	if events.Kind() != KindArray || len(events.Array()) != 1 {
+		t.Fatalf("events mismatch: %v", events)
+	}
+	event := events.Array()[0]
+	if event.Kind() != KindHash {
+		t.Fatalf("event expected hash, got %v", event.Kind())
+	}
+	if !event.Hash()["amountCents"].Equal(NewInt(300)) {
+		t.Fatalf("amountCents mismatch: %v", event.Hash()["amountCents"])
+	}
+
+	_, err := script.Call(context.Background(), "bad_hash_remap", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "hash.remap_keys mapping values must be symbol or string") {
+		t.Fatalf("expected bad remap error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_deep_transform", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "hash.deep_transform_keys block must return symbol or string") {
+		t.Fatalf("expected bad deep transform error, got %v", err)
 	}
 }
 
