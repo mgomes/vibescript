@@ -571,6 +571,60 @@ func TestExamples(t *testing.T) {
 			}),
 		},
 		{
+			name:     "arrays/chunk_values",
+			file:     "arrays/extras.vibe",
+			function: "chunk_values",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3), intVal(4), intVal(5)),
+				intVal(2),
+			},
+			want: arrayVal(
+				arrayVal(intVal(1), intVal(2)),
+				arrayVal(intVal(3), intVal(4)),
+				arrayVal(intVal(5)),
+			),
+		},
+		{
+			name:     "arrays/window_values",
+			file:     "arrays/extras.vibe",
+			function: "window_values",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3), intVal(4)),
+				intVal(3),
+			},
+			want: arrayVal(
+				arrayVal(intVal(1), intVal(2), intVal(3)),
+				arrayVal(intVal(2), intVal(3), intVal(4)),
+			),
+		},
+		{
+			name:     "arrays/group_by_stable_status",
+			file:     "arrays/extras.vibe",
+			function: "group_by_stable_status",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"id": strVal("p1"), "status": strVal("active")}),
+					hashVal(map[string]Value{"id": strVal("p2"), "status": strVal("complete")}),
+					hashVal(map[string]Value{"id": strVal("p3"), "status": strVal("active")}),
+				),
+			},
+			want: arrayVal(
+				arrayVal(
+					strVal("active"),
+					arrayVal(
+						hashVal(map[string]Value{"id": strVal("p1"), "status": strVal("active")}),
+						hashVal(map[string]Value{"id": strVal("p3"), "status": strVal("active")}),
+					),
+				),
+				arrayVal(
+					strVal("complete"),
+					arrayVal(
+						hashVal(map[string]Value{"id": strVal("p2"), "status": strVal("complete")}),
+					),
+				),
+			),
+		},
+		{
 			name:     "collections/make_player",
 			file:     "collections/hashes.vibe",
 			function: "make_player",
@@ -1322,6 +1376,52 @@ func TestExamples(t *testing.T) {
 			}),
 		},
 		{
+			name:     "hashes/remap_profile",
+			file:     "hashes/transformations.vibe",
+			function: "remap_profile",
+			args: []Value{
+				hashVal(map[string]Value{
+					"first_name":   strVal("Alex"),
+					"total_raised": intVal(12),
+					"team":         strVal("north"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("Alex"),
+				"raised": intVal(12),
+				"team":   strVal("north"),
+			}),
+		},
+		{
+			name:     "hashes/deep_transform_profile",
+			file:     "hashes/transformations.vibe",
+			function: "deep_transform_profile",
+			args: []Value{
+				hashVal(map[string]Value{
+					"player_id": intVal(7),
+					"profile": hashVal(map[string]Value{
+						"total_raised": intVal(10),
+					}),
+					"events": arrayVal(
+						hashVal(map[string]Value{
+							"amount_cents": intVal(300),
+						}),
+					),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"playerId": intVal(7),
+				"profile": hashVal(map[string]Value{
+					"totalRaised": intVal(10),
+				}),
+				"events": arrayVal(
+					hashVal(map[string]Value{
+						"amountCents": intVal(300),
+					}),
+				),
+			}),
+		},
+		{
 			name:     "blocks/total_raised_by_currency",
 			file:     "blocks/enumerable_reports.vibe",
 			function: "total_raised_by_currency",
@@ -1860,6 +1960,10 @@ func TestExamples(t *testing.T) {
 				"scan":                arrayVal(strVal("ID-12"), strVal("ID-34")),
 				"strip_bang":          strVal("hello"),
 				"strip_bang_nochange": nilVal(),
+				"squish":              strVal("hello world"),
+				"squish_bang":         strVal("hello world"),
+				"template":            strVal("Player Alex scored 42"),
+				"template_missing":    strVal("Hello {{missing}}"),
 				"immutable_after":     strVal("  hello  "),
 				"clear":               strVal(""),
 				"concat":              strVal("hello!"),
@@ -1886,6 +1990,25 @@ func TestExamples(t *testing.T) {
 				"slice_char":          strVal("é"),
 				"slice_range":         strVal("éllo"),
 				"length":              intVal(5),
+			}),
+		},
+		{
+			name:     "stdlib/core_utilities_run",
+			file:     "stdlib/core_utilities.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"json_id":           strVal("p-1"),
+				"json_score":        intVal(10),
+				"json_encoded":      strVal("{\"id\":\"p-1\",\"score\":10}"),
+				"regex_match":       strVal("ID-12"),
+				"regex_replace":     strVal("X ID-34"),
+				"regex_replace_all": strVal("X X"),
+				"uuid_length":       intVal(36),
+				"uuid_has_dash":     boolVal(true),
+				"random_length":     intVal(8),
+				"to_int":            intVal(42),
+				"to_float":          floatVal(1.25),
+				"parsed_time":       strVal("2024-05-01T10:30:00Z"),
 			}),
 		},
 	}

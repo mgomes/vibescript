@@ -65,3 +65,5 @@ def parse_seen_at(raw)
   Time.parse(raw, in: "UTC")
 end
 ```
+
+For a runnable end-to-end sample, see `examples/stdlib/core_utilities.vibe`.

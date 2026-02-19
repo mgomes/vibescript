@@ -301,13 +301,13 @@ Goal: reduce host-side boilerplate for common scripting tasks.
 
 ### Testing and Docs
 
-- [ ] Add comprehensive docs pages and examples for each new family.
+- [x] Add comprehensive docs pages and examples for each new family.
 - [x] Add negative tests for malformed JSON/regex patterns.
 - [x] Add benchmark coverage for hot stdlib paths.
 
 ### v0.18.0 Definition of Done
 
-- [ ] New stdlib is documented and example-backed.
+- [x] New stdlib is documented and example-backed.
 - [ ] Runtime behavior is deterministic across supported OSes.
 - [ ] Security/performance guardrails are validated by tests.
 

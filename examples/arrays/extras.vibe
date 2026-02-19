@@ -114,3 +114,17 @@ end
 def tally_statuses(statuses)
   statuses.tally
 end
+
+def chunk_values(values, size)
+  values.chunk(size)
+end
+
+def window_values(values, size)
+  values.window(size)
+end
+
+def group_by_stable_status(players)
+  players.group_by_stable do |player|
+    player[:status]
+  end
+end
