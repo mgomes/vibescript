@@ -26,6 +26,7 @@ dives on specific topics.
 - `integration.md` – host integration patterns showing how Go services can
   expose capabilities to scripts.
 - `host_cookbook.md` – production embedding patterns and operational guidance.
+- `starter_templates.md` – starter scaffolds for common embedding scenarios.
 - `module_project_layout.md` – recommended structure for multi-module script
   repositories.
 - `module_require_migration.md` – migration checklist for modern `require`

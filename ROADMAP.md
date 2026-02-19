@@ -360,7 +360,7 @@ Goal: lock the language and embedding API for long-term support.
 
 - [ ] Publish complete language reference.
 - [x] Publish host integration cookbook with production patterns.
-- [ ] Provide starter templates for common embedding scenarios.
+- [x] Provide starter templates for common embedding scenarios.
 
 ### Final Readiness
 

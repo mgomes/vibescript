@@ -163,6 +163,7 @@ Long-form guides live in `docs/`:
 - `docs/tooling.md` – CLI workflows for running, formatting, analyzing, language-server usage, and REPL usage.
 - `docs/integration.md` – integrating the interpreter in Go applications.
 - `docs/host_cookbook.md` – production integration patterns for embedding hosts.
+- `docs/starter_templates.md` – starter scaffolds for common embedding scenarios.
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
 - `docs/typing.md` – gradual typing: annotations, nullable `?`, positional/keyword binding, and return checks.
@@ -172,6 +173,7 @@ Long-form guides live in `docs/`:
 - `docs/versioning.md` – semantic versioning policy and compatibility contract.
 - `docs/deprecation_policy.md` – deprecation lifecycle for public Go embedding APIs.
 - `ROADMAP.md` – versioned implementation checklist and release roadmap.
+- `templates/` – copy-friendly starter templates for common host integration patterns.
 
 ## Development
 

@@ -1,0 +1,71 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/mgomes/vibescript/vibes"
+)
+
+type service struct {
+	script *vibes.Script
+}
+
+func newService() (*service, error) {
+	engine, err := vibes.NewEngine(vibes.Config{
+		StepQuota:        20_000,
+		MemoryQuotaBytes: 256 << 10,
+		RecursionLimit:   32,
+		StrictEffects:    true,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	script, err := engine.Compile(`
+def run(input: hash) -> hash
+  {
+    id: input[:id],
+    status: "ok",
+  }
+end
+`)
+	if err != nil {
+		return nil, err
+	}
+
+	return &service{script: script}, nil
+}
+
+func (s *service) handle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	result, err := s.script.Call(ctx, "run", []vibes.Value{
+		vibes.NewHash(map[string]vibes.Value{
+			"id": vibes.NewString(r.URL.Query().Get("id")),
+		}),
+	}, vibes.CallOptions{
+		Globals: map[string]vibes.Value{
+			"request_id": vibes.NewString(r.Header.Get("X-Request-Id")),
+		},
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"result": result.String(),
+	})
+}
+
+func main() {
+	svc, err := newService()
+	if err != nil {
+		panic(err)
+	}
+	http.HandleFunc("/run", svc.handle)
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		panic(err)
+	}
+}
