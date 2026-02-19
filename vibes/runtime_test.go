@@ -1007,6 +1007,20 @@ func TestLoopControlBreakAndNext(t *testing.T) {
 
 func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 	script := compileScript(t, `
+    class SetterBoundary
+      def break_set=(n)
+        if n == 2
+          break
+        end
+      end
+
+      def next_set=(n)
+        if n == 2
+          next
+        end
+      end
+    end
+
     def nested_break()
       out = []
       for i in [1, 2]
@@ -1060,6 +1074,22 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
       end
       out
     end
+
+    def break_from_setter_boundary()
+      target = SetterBoundary.new
+      for n in [1, 2, 3]
+        target.break_set = n
+      end
+      true
+    end
+
+    def next_from_setter_boundary()
+      target = SetterBoundary.new
+      for n in [1, 2, 3]
+        target.next_set = n
+      end
+      true
+    end
     `)
 
 	nestedBreak := callFunc(t, script, "nested_break", nil)
@@ -1076,6 +1106,16 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 	_, err = script.Call(context.Background(), "next_from_block_boundary", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
 		t.Fatalf("expected block-boundary next error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "break_from_setter_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "break cannot cross call boundary") {
+		t.Fatalf("expected setter-boundary break error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "next_from_setter_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
+		t.Fatalf("expected setter-boundary next error, got %v", err)
 	}
 }
 

@@ -382,6 +382,14 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 			return exec.errorAt(pos, "private method %s", setterName)
 		}
 		_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), pos)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return exec.errorAt(pos, "break cannot cross call boundary")
+			}
+			if errors.Is(err, errLoopNext) {
+				return exec.errorAt(pos, "next cannot cross call boundary")
+			}
+		}
 		return err
 	}
 
