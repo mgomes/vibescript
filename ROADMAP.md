@@ -176,10 +176,10 @@ Goal: make types expressive enough for real workflows while keeping runtime chec
 
 ### Type Semantics
 
-- [ ] Specify variance/invariance rules for container assignments.
-- [ ] Specify nullability interactions with unions (`T?` vs `T | nil`).
-- [ ] Define coercion policy (no coercion vs explicit coercion helpers).
-- [ ] Decide strictness for unknown keyword args under typed signatures.
+- [x] Specify variance/invariance rules for container assignments.
+- [x] Specify nullability interactions with unions (`T?` vs `T | nil`).
+- [x] Define coercion policy (no coercion vs explicit coercion helpers).
+- [x] Decide strictness for unknown keyword args under typed signatures.
 
 ### Runtime and Parser
 

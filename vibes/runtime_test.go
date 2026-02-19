@@ -1430,6 +1430,107 @@ func TestTypedFunctions(t *testing.T) {
 	}
 }
 
+func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testing.T) {
+	script := compileScript(t, `
+    def accepts_numbers(values: array<number>) -> array<number>
+      values
+    end
+
+    def accepts_ints(values: array<int>) -> array<int>
+      values
+    end
+
+    def nullable_short(v: string?) -> string?
+      v
+    end
+
+    def nullable_union(v: string | nil) -> string | nil
+      v
+    end
+
+    def takes_int(v: int) -> int
+      v
+    end
+
+    def typed_kw(a: int) -> int
+      a
+    end
+
+    def untyped_kw(a)
+      a
+    end
+    `)
+
+	got := callFunc(t, script, "accepts_numbers", []Value{
+		NewArray([]Value{NewInt(1), NewFloat(2.5)}),
+	})
+	if got.Kind() != KindArray {
+		t.Fatalf("accepts_numbers mixed numeric mismatch: %v", got)
+	}
+	compareArrays(t, got, []Value{NewInt(1), NewFloat(2.5)})
+
+	got = callFunc(t, script, "accepts_numbers", []Value{
+		NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+	if got.Kind() != KindArray {
+		t.Fatalf("accepts_numbers int-only mismatch: %v", got)
+	}
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
+
+	got = callFunc(t, script, "accepts_ints", []Value{
+		NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+	if got.Kind() != KindArray {
+		t.Fatalf("accepts_ints int-only mismatch: %v", got)
+	}
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
+	_, err := script.Call(context.Background(), "accepts_ints", []Value{
+		NewArray([]Value{NewInt(1), NewFloat(2.5)}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument values expected array<int>, got array<float | int>") {
+		t.Fatalf("expected container element strictness error, got %v", err)
+	}
+
+	if got := callFunc(t, script, "nullable_short", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("nullable_short nil mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "nullable_union", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("nullable_union nil mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "nullable_short", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
+		t.Fatalf("nullable_short string mismatch: %#v", got)
+	}
+	if got := callFunc(t, script, "nullable_union", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
+		t.Fatalf("nullable_union string mismatch: %#v", got)
+	}
+	_, err = script.Call(context.Background(), "nullable_short", []Value{NewInt(1)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected string?, got int") {
+		t.Fatalf("expected nullable shorthand mismatch, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "nullable_union", []Value{NewInt(1)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected string | nil, got int") {
+		t.Fatalf("expected nullable union mismatch, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "takes_int", []Value{NewString("1")}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected int, got string") {
+		t.Fatalf("expected no-coercion mismatch, got %v", err)
+	}
+
+	extraKw := map[string]Value{
+		"a":     NewInt(1),
+		"extra": NewInt(2),
+	}
+	_, err = script.Call(context.Background(), "typed_kw", nil, CallOptions{Keywords: extraKw})
+	if err == nil || !strings.Contains(err.Error(), "unexpected keyword argument extra") {
+		t.Fatalf("expected typed function unknown kwarg strictness, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "untyped_kw", nil, CallOptions{Keywords: extraKw})
+	if err == nil || !strings.Contains(err.Error(), "unexpected keyword argument extra") {
+		t.Fatalf("expected untyped function unknown kwarg strictness, got %v", err)
+	}
+}
+
 func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
 	script := compileScript(t, `
     def takes_any(v: any) -> any
