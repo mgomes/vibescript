@@ -1128,6 +1128,28 @@ func TestBeginRescueDoesNotCatchLoopControlSignals(t *testing.T) {
 	compareArrays(t, nextOut, []Value{NewInt(1), NewInt(3)})
 }
 
+func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
+	engine := MustNewEngine(Config{StepQuota: 60})
+	script, err := engine.Compile(`
+    def run()
+      begin
+        while true
+        end
+      rescue
+        "rescued"
+      end
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
+		t.Fatalf("expected host quota signal to bypass rescue, got %v", err)
+	}
+}
+
 func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	_, err := engine.Compile(`

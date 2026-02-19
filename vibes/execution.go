@@ -111,8 +111,10 @@ const (
 )
 
 var (
-	errLoopBreak = errors.New("loop break")
-	errLoopNext  = errors.New("loop next")
+	errLoopBreak           = errors.New("loop break")
+	errLoopNext            = errors.New("loop next")
+	errStepQuotaExceeded   = errors.New("step quota exceeded")
+	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
 )
 
 func (re *RuntimeError) Error() string {
@@ -177,7 +179,7 @@ func newAssertionFailureError(message string) error {
 func (exec *Execution) step() error {
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {
-		return fmt.Errorf("step quota exceeded (%d)", exec.quota)
+		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
 	}
 	if exec.memoryQuota > 0 && (exec.steps&15) == 0 {
 		if err := exec.checkMemory(); err != nil {
@@ -235,6 +237,9 @@ func (exec *Execution) newRuntimeErrorWithType(kind string, message string, pos 
 func (exec *Execution) wrapError(err error, pos Position) error {
 	if err == nil {
 		return nil
+	}
+	if isHostControlSignal(err) {
+		return err
 	}
 	if _, ok := err.(*RuntimeError); ok {
 		return err
@@ -1410,7 +1415,7 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
 	val, returned, err := exec.evalStatements(stmt.Body, env)
 
-	if err != nil && !isLoopControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
+	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
 		exec.pushRescuedError(err)
 		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, env)
 		exec.popRescuedError()
@@ -1445,7 +1450,18 @@ func isLoopControlSignal(err error) bool {
 	return errors.Is(err, errLoopBreak) || errors.Is(err, errLoopNext)
 }
 
+func isHostControlSignal(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, errStepQuotaExceeded) ||
+		errors.Is(err, errMemoryQuotaExceeded)
+}
+
 func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {
+	var runtimeErr *RuntimeError
+	if !errors.As(err, &runtimeErr) {
+		return false
+	}
 	if rescueTy == nil {
 		return true
 	}
