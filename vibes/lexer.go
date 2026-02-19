@@ -395,6 +395,8 @@ func lookupIdent(ident string) TokenType {
 		return tokenDef
 	case "class":
 		return tokenClass
+	case "export":
+		return tokenExport
 	case "self":
 		return tokenSelf
 	case "private":
@@ -405,6 +407,14 @@ func lookupIdent(ident string) TokenType {
 		return tokenGetter
 	case "setter":
 		return tokenSetter
+	case "begin":
+		return tokenBegin
+	case "rescue":
+		return tokenRescue
+	case "ensure":
+		return tokenEnsure
+	case "raise":
+		return tokenRaise
 	case "end":
 		return tokenEnd
 	case "return":

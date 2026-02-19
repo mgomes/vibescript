@@ -17,6 +17,8 @@ type Config struct {
 	StrictEffects    bool
 	RecursionLimit   int
 	ModulePaths      []string
+	ModuleAllowList  []string
+	ModuleDenyList   []string
 	MaxCachedModules int
 }
 
@@ -45,6 +47,12 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}
 
 	if err := validateModulePaths(cfg.ModulePaths); err != nil {
+		return nil, err
+	}
+	if err := validateModulePolicyPatterns(cfg.ModuleAllowList, "allow"); err != nil {
+		return nil, err
+	}
+	if err := validateModulePolicyPatterns(cfg.ModuleDenyList, "deny"); err != nil {
 		return nil, err
 	}
 
@@ -288,6 +296,17 @@ func (e *Engine) Builtins() map[string]Value {
 	out := make(map[string]Value, len(e.builtins))
 	maps.Copy(out, e.builtins)
 	return out
+}
+
+// ClearModuleCache drops all cached modules and returns the number of entries removed.
+// Long-running hosts can call this between script runs to force fresh module reloads.
+func (e *Engine) ClearModuleCache() int {
+	e.modMu.Lock()
+	defer e.modMu.Unlock()
+
+	count := len(e.modules)
+	clear(e.modules)
+	return count
 }
 
 // Execute compiles the provided source ensuring it is valid under current config.

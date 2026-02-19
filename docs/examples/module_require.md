@@ -18,12 +18,12 @@ Place `modules/fees.vibe` on disk:
 ```vibe
 # modules/fees.vibe
 
-def rate()
-  1
+export def apply_fee(amount)
+  amount + rate()
 end
 
-def apply_fee(amount)
-  amount + rate()
+def rate()
+  1
 end
 
 def _rounding_hint()
@@ -37,15 +37,28 @@ A main script can load the helpers and use the exported functions:
 # scripts/checkout.vibe
 
 def total_with_fee(amount)
-  fees = require("fees")
+  require("fees", as: "fees")
   fees.apply_fee(amount)
+end
+```
+
+Namespaced imports scale better as helper sets grow:
+
+```vibe
+def quote_total(amount)
+  require("billing/fees", as: "fees")
+  require("billing/taxes", as: "taxes")
+  taxes.apply(fees.apply(amount))
 end
 ```
 
 When `total_with_fee` runs, `require("fees")` resolves the module relative to
 `Config.ModulePaths`, compiles it once, and returns an object containing the
-module’s public exports. Function names starting with `_` stay private to the
-module and are not exposed on the returned object or injected globally.
+module’s exports. Use `export def` for explicit control; if no explicit exports
+are declared, public functions are exported by default and names starting with
+`_` stay private to the module. When an exported name conflicts with an
+existing global, the existing binding keeps precedence and the module object
+remains the conflict-free access path.
 
 Inside modules, explicit relative requires are supported:
 
@@ -57,9 +70,24 @@ def compute(amount)
 end
 ```
 
+Reusable helper modules can be shared from a central namespace:
+
+```vibe
+# modules/shared/currency.vibe
+export def cents(value)
+  value * 100
+end
+
+# modules/billing/taxes.vibe
+export def apply(amount)
+  require("../shared/currency", as: "currency")
+  amount + currency.cents(1)
+end
+```
+
 Relative requires (`./` and `../`) resolve from the requiring module’s
 directory and cannot escape the configured module root.
 
 After the first load the module is cached, making subsequent `require` calls
 cheap. To refresh or hot reload modules, restart the embedding application or
-clear the engine’s module cache.
+call `engine.ClearModuleCache()` between runs.

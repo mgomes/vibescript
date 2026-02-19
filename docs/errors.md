@@ -62,6 +62,44 @@ Loop control diagnostics are explicit:
 
 These boundary errors happen when `break`/`next` are raised inside called blocks/functions and attempt to escape into an outer loop.
 
+## Structured Error Handling
+
+Use `begin` with `rescue` and/or `ensure` for script-level recovery:
+
+```vibe
+def safe_div(a, b)
+  begin
+    a / b
+  rescue(RuntimeError)
+    "fallback"
+  ensure
+    audit("safe_div attempted")
+  end
+end
+```
+
+Re-raise the current rescued error with `raise`:
+
+```vibe
+begin
+  risky_call()
+rescue(AssertionError)
+  audit("recovering assertion")
+  raise
+end
+```
+
+Semantics:
+
+- `rescue` runs only when the `begin` body raises an error.
+- `rescue` supports optional typed matching via `rescue(<Type>)`.
+- `rescue` supports `AssertionError`, `RuntimeError`, and unions such as `rescue(AssertionError | RuntimeError)`.
+- `ensure` always runs (success, rescue path, or failure path).
+- Without `rescue`, original runtime errors still propagate after `ensure` executes.
+- Unmatched typed rescues do not swallow the original error.
+- `raise` inside `rescue` re-raises the original error and preserves its stack frames.
+- `raise "message"` raises a new runtime error. Bare `raise` outside `rescue` is a runtime error.
+
 ## REPL Debugging
 
 The REPL stores the previous failure. Use:

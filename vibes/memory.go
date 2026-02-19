@@ -57,7 +57,7 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 
 	used := exec.estimateMemoryUsage(extras...)
 	if used > exec.memoryQuota {
-		return fmt.Errorf("memory quota exceeded (%d bytes)", exec.memoryQuota)
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
 	return nil
 }

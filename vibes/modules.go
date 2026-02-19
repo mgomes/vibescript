@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -25,20 +27,100 @@ type moduleRequest struct {
 
 const moduleKeySeparator = "::"
 
+func normalizeModulePolicyPattern(pattern string) string {
+	normalized := strings.TrimSpace(pattern)
+	normalized = strings.ReplaceAll(normalized, "\\", "/")
+	normalized = strings.TrimPrefix(normalized, "./")
+	normalized = strings.TrimSuffix(normalized, ".vibe")
+	normalized = path.Clean(normalized)
+	if normalized == "." {
+		return ""
+	}
+	return normalized
+}
+
+func normalizeModulePolicyModuleName(relative string) string {
+	normalized := filepath.ToSlash(filepath.Clean(relative))
+	normalized = strings.TrimPrefix(normalized, "./")
+	normalized = strings.TrimSuffix(normalized, ".vibe")
+	if normalized == "." {
+		return ""
+	}
+	return normalized
+}
+
+func validateModulePolicyPatterns(patterns []string, label string) error {
+	for _, raw := range patterns {
+		pattern := normalizeModulePolicyPattern(raw)
+		if pattern == "" {
+			return fmt.Errorf("vibes: module %s-list pattern cannot be empty", label)
+		}
+		if _, err := path.Match(pattern, "probe"); err != nil {
+			return fmt.Errorf("vibes: invalid module %s-list pattern %q: %w", label, raw, err)
+		}
+	}
+	return nil
+}
+
+func modulePolicyMatch(pattern string, module string) bool {
+	if pattern == "*" {
+		return module != ""
+	}
+	matched, err := path.Match(pattern, module)
+	if err != nil {
+		return false
+	}
+	return matched
+}
+
+func (e *Engine) enforceModulePolicy(relative string) error {
+	module := normalizeModulePolicyModuleName(relative)
+	if module == "" {
+		return nil
+	}
+
+	for _, raw := range e.config.ModuleDenyList {
+		pattern := normalizeModulePolicyPattern(raw)
+		if pattern == "" {
+			continue
+		}
+		if modulePolicyMatch(pattern, module) {
+			return fmt.Errorf("require: module %q denied by policy", module)
+		}
+	}
+
+	if len(e.config.ModuleAllowList) == 0 {
+		return nil
+	}
+	for _, raw := range e.config.ModuleAllowList {
+		pattern := normalizeModulePolicyPattern(raw)
+		if pattern == "" {
+			continue
+		}
+		if modulePolicyMatch(pattern, module) {
+			return nil
+		}
+	}
+	return fmt.Errorf("require: module %q not allowed by policy", module)
+}
+
 func parseModuleRequest(name string) (moduleRequest, error) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
 		return moduleRequest{}, fmt.Errorf("require: module name must be non-empty")
 	}
+	normalizedName := strings.ReplaceAll(trimmed, "\\", string(filepath.Separator))
+	normalizedName = strings.ReplaceAll(normalizedName, "/", string(filepath.Separator))
+
 	request := moduleRequest{
 		raw:              name,
 		explicitRelative: isExplicitRelativeModulePath(trimmed),
 	}
-	if filepath.Ext(trimmed) == "" {
-		trimmed += ".vibe"
+	if filepath.Ext(normalizedName) == "" {
+		normalizedName += ".vibe"
 	}
 
-	request.normalized = filepath.Clean(trimmed)
+	request.normalized = filepath.Clean(normalizedName)
 	if request.normalized == "." {
 		return moduleRequest{}, fmt.Errorf("require: module name %q resolves to current directory", name)
 	}
@@ -60,8 +142,8 @@ func isExplicitRelativeModulePath(name string) bool {
 }
 
 func containsPathTraversal(cleanPath string) bool {
-	sep := string(filepath.Separator)
-	return slices.Contains(strings.Split(cleanPath, sep), "..")
+	normalized := strings.ReplaceAll(filepath.Clean(cleanPath), "\\", "/")
+	return slices.Contains(strings.Split(normalized, "/"), "..")
 }
 
 func moduleCacheKey(root, relative string) string {
@@ -78,6 +160,11 @@ func moduleKeyDisplay(key string) string {
 		return key
 	}
 	return display
+}
+
+func moduleDisplayName(key string) string {
+	display := filepath.ToSlash(moduleKeyDisplay(key))
+	return strings.TrimSuffix(display, ".vibe")
 }
 
 func moduleRelativePath(root, fullPath string) (string, error) {
@@ -238,11 +325,15 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 
 	for _, root := range e.modPaths {
 		key := moduleCacheKey(root, request.normalized)
+		candidate := filepath.Join(root, request.normalized)
+
+		if _, err := moduleRelativePath(root, candidate); err != nil {
+			return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
+		}
+
 		if entry, ok := e.getCachedModule(key); ok {
 			return entry, nil
 		}
-
-		candidate := filepath.Join(root, request.normalized)
 		data, readErr := os.ReadFile(candidate)
 		if readErr != nil {
 			if errors.Is(readErr, fs.ErrNotExist) {
@@ -258,6 +349,10 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 }
 
 func (e *Engine) compileAndCacheModule(key, root, relative, fullPath string, content []byte) (moduleEntry, error) {
+	if err := e.enforceModulePolicy(relative); err != nil {
+		return moduleEntry{}, err
+	}
+
 	script, err := e.Compile(string(content))
 	if err != nil {
 		return moduleEntry{}, fmt.Errorf("require: compiling %s failed: %w", fullPath, err)
@@ -335,15 +430,126 @@ func moduleCycleFromExecution(stack []moduleContext, next string) ([]string, boo
 }
 
 func formatModuleCycle(cycle []string) string {
-	parts := make([]string, len(cycle))
-	for idx, key := range cycle {
-		parts[idx] = moduleKeyDisplay(key)
+	if len(cycle) == 0 {
+		return ""
+	}
+	normalized := make([]string, 0, len(cycle))
+	for _, key := range cycle {
+		if len(normalized) > 0 && normalized[len(normalized)-1] == key {
+			continue
+		}
+		normalized = append(normalized, key)
+	}
+	parts := make([]string, len(normalized))
+	for idx, key := range normalized {
+		parts[idx] = moduleDisplayName(key)
 	}
 	return strings.Join(parts, " -> ")
 }
 
 func isPublicModuleExport(name string) bool {
 	return name != "" && !strings.HasPrefix(name, "_")
+}
+
+func moduleHasExplicitExports(functions map[string]*ScriptFunction) bool {
+	for _, fn := range functions {
+		if fn != nil && fn.Exported {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldExportModuleFunction(name string, fn *ScriptFunction, hasExplicitExports bool) bool {
+	if hasExplicitExports {
+		return fn != nil && fn.Exported
+	}
+	return isPublicModuleExport(name)
+}
+
+func parseRequireAlias(kwargs map[string]Value) (string, error) {
+	if len(kwargs) == 0 {
+		return "", nil
+	}
+	if len(kwargs) != 1 {
+		for key := range kwargs {
+			if key != "as" {
+				return "", fmt.Errorf("require: unknown keyword argument %s", key)
+			}
+		}
+		return "", fmt.Errorf("require: unknown keyword arguments")
+	}
+
+	aliasVal, ok := kwargs["as"]
+	if !ok {
+		for key := range kwargs {
+			return "", fmt.Errorf("require: unknown keyword argument %s", key)
+		}
+		return "", fmt.Errorf("require: unknown keyword arguments")
+	}
+
+	var aliasName string
+	switch aliasVal.Kind() {
+	case KindString, KindSymbol:
+		aliasName = strings.TrimSpace(aliasVal.String())
+	default:
+		return "", fmt.Errorf("require: alias must be a string or symbol")
+	}
+
+	if !isValidModuleAlias(aliasName) {
+		return "", fmt.Errorf("require: invalid alias %q", aliasName)
+	}
+
+	return aliasName, nil
+}
+
+func isValidModuleAlias(name string) bool {
+	if name == "" {
+		return false
+	}
+	runes := []rune(name)
+	if len(runes) == 0 || !isIdentifierStart(runes[0]) {
+		return false
+	}
+	for _, r := range runes[1:] {
+		if !isIdentifierRune(r) {
+			return false
+		}
+	}
+	return lookupIdent(name) == tokenIdent
+}
+
+func bindRequireAlias(root *Env, alias string, module Value) error {
+	if err := validateRequireAliasBinding(root, alias, module); err != nil {
+		return err
+	}
+	if alias == "" {
+		return nil
+	}
+	root.Define(alias, module)
+	return nil
+}
+
+func validateRequireAliasBinding(root *Env, alias string, module Value) error {
+	if alias == "" {
+		return nil
+	}
+	if existing, ok := root.Get(alias); ok {
+		if existing.Kind() == KindObject && module.Kind() == KindObject && reflect.ValueOf(existing.Hash()).Pointer() == reflect.ValueOf(module.Hash()).Pointer() {
+			return nil
+		}
+		return fmt.Errorf("require: alias %q already defined", alias)
+	}
+	return nil
+}
+
+func bindModuleExportsWithoutOverwrite(root *Env, exports map[string]Value) {
+	for name, fnVal := range exports {
+		if _, exists := root.Get(name); exists {
+			continue
+		}
+		root.Define(name, fnVal)
+	}
 }
 
 func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -358,6 +564,10 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	}
 	if exec.root == nil {
 		return NewNil(), fmt.Errorf("require unavailable in this context")
+	}
+	alias, err := parseRequireAlias(kwargs)
+	if err != nil {
+		return NewNil(), err
 	}
 
 	modNameVal := args[0]
@@ -378,6 +588,9 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	}
 
 	if cached, ok := exec.modules[entry.key]; ok {
+		if err := bindRequireAlias(exec.root, alias, cached); err != nil {
+			return NewNil(), err
+		}
 		return cached, nil
 	}
 
@@ -386,7 +599,8 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	}
 
 	if exec.moduleLoading[entry.key] {
-		return NewNil(), fmt.Errorf("require: circular dependency detected for module %q", moduleKeyDisplay(entry.key))
+		cycle := append(append([]string(nil), exec.moduleLoadStack...), entry.key)
+		return NewNil(), fmt.Errorf("require: circular dependency detected: %s", formatModuleCycle(cycle))
 	}
 	exec.moduleLoading[entry.key] = true
 	exec.moduleLoadStack = append(exec.moduleLoadStack, entry.key)
@@ -399,23 +613,24 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 
 	moduleEnv := newEnv(exec.root)
 	exports := make(map[string]Value, len(entry.script.functions))
+	hasExplicitExports := moduleHasExplicitExports(entry.script.functions)
 	for name, fn := range entry.script.functions {
 		clone := cloneFunctionForEnv(fn, moduleEnv)
 		fnVal := NewFunction(clone)
 		moduleEnv.Define(name, fnVal)
-		if isPublicModuleExport(name) {
+		if shouldExportModuleFunction(name, fn, hasExplicitExports) {
 			exports[name] = fnVal
 		}
 	}
 
-	for name, fnVal := range exports {
-		if _, exists := exec.root.Get(name); exists {
-			continue
-		}
-		exec.root.Define(name, fnVal)
-	}
-
 	exportsVal := NewObject(exports)
+	if err := validateRequireAliasBinding(exec.root, alias, exportsVal); err != nil {
+		return NewNil(), err
+	}
+	bindModuleExportsWithoutOverwrite(exec.root, exports)
 	exec.modules[entry.key] = exportsVal
+	if alias != "" {
+		exec.root.Define(alias, exportsVal)
+	}
 	return exportsVal, nil
 }

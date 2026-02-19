@@ -217,9 +217,9 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 
 ### Error Handling Constructs
 
-- [ ] Add structured error handling syntax (`begin/rescue/ensure` or equivalent).
-- [ ] Add typed error matching where feasible.
-- [ ] Define re-raise semantics and stack preservation.
+- [x] Add structured error handling syntax (`begin/rescue/ensure` or equivalent).
+- [x] Add typed error matching where feasible.
+- [x] Define re-raise semantics and stack preservation.
 - [x] Ensure runtime errors preserve original position and call frames.
 
 ### Runtime Behavior
@@ -238,7 +238,7 @@ Goal: improve language ergonomics for complex script logic and recovery behavior
 ### v0.16.0 Definition of Done
 
 - [x] No regressions in existing `if/for/range` behavior.
-- [ ] Structured error handling works with assertions and runtime errors.
+- [x] Structured error handling works with assertions and runtime errors.
 - [x] Coverage includes nested/edge control-flow paths.
 
 ---
@@ -249,29 +249,29 @@ Goal: make multi-file script projects easier to compose and maintain.
 
 ### Module System
 
-- [ ] Add explicit export controls (beyond underscore naming).
-- [ ] Add import aliasing for module objects.
-- [ ] Define and enforce module namespace conflict behavior.
-- [ ] Improve cycle error diagnostics with concise chain rendering.
-- [ ] Add module cache invalidation policy for long-running hosts.
+- [x] Add explicit export controls (beyond underscore naming).
+- [x] Add import aliasing for module objects.
+- [x] Define and enforce module namespace conflict behavior.
+- [x] Improve cycle error diagnostics with concise chain rendering.
+- [x] Add module cache invalidation policy for long-running hosts.
 
 ### Security and Isolation
 
-- [ ] Tighten module root boundary checks and path normalization.
-- [ ] Add test coverage for path traversal attempts.
-- [ ] Add explicit policy hooks for module allow/deny lists.
+- [x] Tighten module root boundary checks and path normalization.
+- [x] Add test coverage for path traversal attempts.
+- [x] Add explicit policy hooks for module allow/deny lists.
 
 ### Developer UX
 
-- [ ] Add docs for module project layout best practices.
-- [ ] Add examples for reusable helper modules and namespaced imports.
-- [ ] Add migration guide for existing `require` users.
+- [x] Add docs for module project layout best practices.
+- [x] Add examples for reusable helper modules and namespaced imports.
+- [x] Add migration guide for existing `require` users.
 
 ### v0.17.0 Definition of Done
 
-- [ ] Module APIs are explicit and predictable.
-- [ ] Error output for cycle/import failures is actionable.
-- [ ] Security invariants around module paths are fully tested.
+- [x] Module APIs are explicit and predictable.
+- [x] Error output for cycle/import failures is actionable.
+- [x] Security invariants around module paths are fully tested.
 
 ---
 

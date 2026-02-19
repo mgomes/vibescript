@@ -30,6 +30,134 @@ end`)
 	}
 }
 
+func TestRequireSupportsModuleAlias(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  require("helper", as: "helpers")
+  require("helper", as: "helpers")
+  helpers.triple(value) + helpers.double(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 15 {
+		t.Fatalf("expected 15, got %#v", result)
+	}
+}
+
+func TestRequireAliasValidation(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	cases := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{
+			name: "invalid identifier",
+			source: `def run()
+  require("helper", as: "123bad")
+end`,
+			wantErr: `require: invalid alias "123bad"`,
+		},
+		{
+			name: "keyword alias",
+			source: `def run()
+  require("helper", as: "if")
+end`,
+			wantErr: `require: invalid alias "if"`,
+		},
+		{
+			name: "invalid type",
+			source: `def run()
+  require("helper", as: 10)
+end`,
+			wantErr: "require: alias must be a string or symbol",
+		},
+		{
+			name: "unknown keyword",
+			source: `def run()
+  require("helper", name: "helpers")
+end`,
+			wantErr: "require: unknown keyword argument name",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script, err := engine.Compile(tc.source)
+			if err != nil {
+				t.Fatalf("compile failed: %v", err)
+			}
+			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+				t.Fatalf("expected alias validation error")
+			} else if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRequireAliasRejectsConflictingGlobal(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def helpers(value)
+  value
+end
+
+def run()
+  require("helper", as: "helpers")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected alias conflict error")
+	} else if !strings.Contains(err.Error(), `require: alias "helpers" already defined`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireAliasConflictDoesNotLeakExportsWhenRescued(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def helpers(value)
+  value
+end
+
+def run(value)
+  begin
+    require("helper", as: "helpers")
+  rescue
+    nil
+  end
+
+  begin
+    double(value)
+  rescue
+    "missing"
+  end
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindString || result.String() != "missing" {
+		t.Fatalf("expected leaked export lookup to fail, got %#v", result)
+	}
+}
+
 func TestRequirePreservesModuleLocalResolution(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
@@ -51,6 +179,80 @@ end`)
 	}
 	if result.Kind() != KindInt || result.Int() != 11 {
 		t.Fatalf("expected module-local rate to be used, got %#v", result)
+	}
+}
+
+func TestRequireNamespaceConflictKeepsExistingGlobalBinding(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def double(value)
+  value + 1
+end
+
+def run(value)
+  mod = require("helper")
+  {
+    global: double(value),
+    module: mod.double(value)
+  }
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %#v", result)
+	}
+	out := result.Hash()
+	if out["global"].Kind() != KindInt || out["global"].Int() != 4 {
+		t.Fatalf("expected global binding to stay at 4, got %#v", out["global"])
+	}
+	if out["module"].Kind() != KindInt || out["module"].Int() != 6 {
+		t.Fatalf("expected module object function to return 6, got %#v", out["module"])
+	}
+}
+
+func TestRequireNamespaceConflictKeepsFirstModuleBinding(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  first = require("helper")
+  second = require("helper_alt")
+  require("helper_alt", as: "alt")
+  {
+    global: double(value),
+    first: first.double(value),
+    second: second.double(value),
+    alias: alt.double(value)
+  }
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %#v", result)
+	}
+	out := result.Hash()
+	if out["global"].Kind() != KindInt || out["global"].Int() != 6 {
+		t.Fatalf("expected first module binding to stay global at 6, got %#v", out["global"])
+	}
+	if out["first"].Kind() != KindInt || out["first"].Int() != 6 {
+		t.Fatalf("expected first module object to return 6, got %#v", out["first"])
+	}
+	if out["second"].Kind() != KindInt || out["second"].Int() != 30 {
+		t.Fatalf("expected second module object to return 30, got %#v", out["second"])
+	}
+	if out["alias"].Kind() != KindInt || out["alias"].Int() != 30 {
+		t.Fatalf("expected alias module object to return 30, got %#v", out["alias"])
 	}
 }
 
@@ -97,6 +299,61 @@ end`)
 	}
 }
 
+func TestClearModuleCacheForcesModuleReload(t *testing.T) {
+	moduleRoot := t.TempDir()
+	modulePath := filepath.Join(moduleRoot, "dynamic.vibe")
+	writeModule := func(v int) {
+		content := fmt.Sprintf(`def value()
+  %d
+end
+`, v)
+		if err := os.WriteFile(modulePath, []byte(content), 0o644); err != nil {
+			t.Fatalf("write module: %v", err)
+		}
+	}
+
+	writeModule(1)
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  mod = require("dynamic")
+  mod.value()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	first, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if first.Kind() != KindInt || first.Int() != 1 {
+		t.Fatalf("expected first value 1, got %#v", first)
+	}
+
+	writeModule(2)
+
+	stale, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("stale call failed: %v", err)
+	}
+	if stale.Kind() != KindInt || stale.Int() != 1 {
+		t.Fatalf("expected cached value 1 before cache clear, got %#v", stale)
+	}
+
+	if cleared := engine.ClearModuleCache(); cleared != 1 {
+		t.Fatalf("expected 1 cleared module, got %d", cleared)
+	}
+
+	refreshed, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("refreshed call failed: %v", err)
+	}
+	if refreshed.Kind() != KindInt || refreshed.Int() != 2 {
+		t.Fatalf("expected refreshed value 2 after cache clear, got %#v", refreshed)
+	}
+}
+
 func TestRequireRejectsAbsolutePaths(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
@@ -140,6 +397,47 @@ end`)
 		t.Fatalf("expected error for path traversal")
 	} else if !strings.Contains(err.Error(), "escapes search paths") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireRejectsBackslashPathTraversal(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run()
+  require("nested\\..\\..\\etc\\passwd")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected error for backslash path traversal")
+	} else if !strings.Contains(err.Error(), "escapes search paths") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireNormalizesPathSeparators(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  unix_style = require("shared/math")
+  windows_style = require("shared\\math")
+  unix_style.double(value) + windows_style.double(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 12 {
+		t.Fatalf("expected 12, got %#v", result)
+	}
+	if len(engine.modules) != 1 {
+		t.Fatalf("expected normalized requires to share cache entry, got %d modules", len(engine.modules))
 	}
 }
 
@@ -253,6 +551,42 @@ end
 	script, err := engine.Compile(`def run()
   mod = require("entry")
   mod.run()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected symlink escape error")
+	} else if !strings.Contains(err.Error(), "escapes module root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireSearchPathRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-specific on Windows")
+	}
+
+	moduleRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+
+	secretModule := filepath.Join(outsideRoot, "secret.vibe")
+	if err := os.WriteFile(secretModule, []byte(`def hidden()
+  42
+end
+`), 0o644); err != nil {
+		t.Fatalf("write secret module: %v", err)
+	}
+
+	symlinkPath := filepath.Join(moduleRoot, "link")
+	if err := os.Symlink(outsideRoot, symlinkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  require("link/secret")
 end`)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
@@ -403,6 +737,93 @@ end`)
 	}
 	if result.Kind() != KindInt || result.Int() != 105 {
 		t.Fatalf("expected 105, got %#v", result)
+	}
+}
+
+func TestRequireSupportsExplicitExportControls(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  mod = require("explicit_exports")
+  {
+    has_exposed: mod["exposed"] != nil,
+    has_explicit_hidden: mod["_explicit_hidden"] != nil,
+    has_helper: mod["helper"] != nil,
+    has_internal: mod["_internal"] != nil,
+    exposed: mod.exposed(value),
+    explicit_hidden: mod._explicit_hidden(value)
+  }
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %#v", result)
+	}
+	out := result.Hash()
+	if !out["has_exposed"].Bool() || !out["has_explicit_hidden"].Bool() {
+		t.Fatalf("expected explicit exports to be present, got %#v", out)
+	}
+	if out["has_helper"].Bool() || out["has_internal"].Bool() {
+		t.Fatalf("expected non-exported helpers to be hidden, got %#v", out)
+	}
+	if out["exposed"].Kind() != KindInt || out["exposed"].Int() != 10 {
+		t.Fatalf("expected exposed(3)=10, got %#v", out["exposed"])
+	}
+	if out["explicit_hidden"].Kind() != KindInt || out["explicit_hidden"].Int() != 103 {
+		t.Fatalf("expected _explicit_hidden(3)=103, got %#v", out["explicit_hidden"])
+	}
+}
+
+func TestRequireNonExportedFunctionsAreNotInjectedAsGlobalsWhenUsingExplicitExports(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def run(value)
+  require("explicit_exports")
+  helper(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{}); err == nil {
+		t.Fatalf("expected undefined helper error")
+	} else if !strings.Contains(err.Error(), "undefined variable helper") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestExportKeywordValidation(t *testing.T) {
+	engine := MustNewEngine(Config{})
+
+	_, err := engine.Compile(`export helper`)
+	if err == nil || !strings.Contains(err.Error(), "expected 'def'") {
+		t.Fatalf("expected export def parse error, got %v", err)
+	}
+
+	_, err = engine.Compile(`class Example
+  export def value()
+    1
+  end
+end`)
+	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
+		t.Fatalf("expected top-level export parse error, got %v", err)
+	}
+
+	_, err = engine.Compile(`def outer()
+  if true
+    export def nested()
+      1
+    end
+  end
+end`)
+	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
+		t.Fatalf("expected nested export parse error, got %v", err)
 	}
 }
 
@@ -567,5 +988,114 @@ end`)
 	}
 	if result.Kind() != KindInt || result.Int() != 12 {
 		t.Fatalf("expected 12, got %#v", result)
+	}
+}
+
+func TestRequireModuleAllowList(t *testing.T) {
+	engine := MustNewEngine(Config{
+		ModulePaths:     []string{filepath.Join("testdata", "modules")},
+		ModuleAllowList: []string{"shared/*"},
+	})
+
+	script, err := engine.Compile(`def run_allowed(value)
+  mod = require("shared/math")
+  mod.double(value)
+end
+
+def run_denied(value)
+  mod = require("helper")
+  mod.double(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	allowed, err := script.Call(context.Background(), "run_allowed", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("allowed call failed: %v", err)
+	}
+	if allowed.Kind() != KindInt || allowed.Int() != 6 {
+		t.Fatalf("expected allowed result 6, got %#v", allowed)
+	}
+
+	if _, err := script.Call(context.Background(), "run_denied", []Value{NewInt(3)}, CallOptions{}); err == nil {
+		t.Fatalf("expected denied module error")
+	} else if !strings.Contains(err.Error(), `require: module "helper" not allowed by policy`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireModuleAllowListStarMatchesNestedModules(t *testing.T) {
+	engine := MustNewEngine(Config{
+		ModulePaths:     []string{filepath.Join("testdata", "modules")},
+		ModuleAllowList: []string{"*"},
+	})
+
+	script, err := engine.Compile(`def run(value)
+  mod = require("shared/math")
+  mod.double(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(4)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 8 {
+		t.Fatalf("expected nested module call result 8, got %#v", result)
+	}
+}
+
+func TestRequireModuleDenyListOverridesAllowList(t *testing.T) {
+	engine := MustNewEngine(Config{
+		ModulePaths:     []string{filepath.Join("testdata", "modules")},
+		ModuleAllowList: []string{"*"},
+		ModuleDenyList:  []string{"helper"},
+	})
+
+	script, err := engine.Compile(`def run()
+  require("helper")
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatalf("expected deny-list error")
+	} else if !strings.Contains(err.Error(), `require: module "helper" denied by policy`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestModulePolicyPatternValidation(t *testing.T) {
+	_, err := NewEngine(Config{
+		ModulePaths:     []string{filepath.Join("testdata", "modules")},
+		ModuleAllowList: []string{"[invalid"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid module allow-list pattern") {
+		t.Fatalf("expected invalid allow-list pattern error, got %v", err)
+	}
+}
+
+func TestFormatModuleCycleUsesConciseChain(t *testing.T) {
+	root := filepath.Join("tmp", "modules")
+	a := moduleCacheKey(root, filepath.Join("nested", "a.vibe"))
+	b := moduleCacheKey(root, filepath.Join("nested", "b.vibe"))
+
+	got := formatModuleCycle([]string{a, b, b, a})
+	want := filepath.ToSlash(filepath.Join("nested", "a")) + " -> " + filepath.ToSlash(filepath.Join("nested", "b")) + " -> " + filepath.ToSlash(filepath.Join("nested", "a"))
+	if got != want {
+		t.Fatalf("expected cycle %q, got %q", want, got)
+	}
+}
+
+func TestModuleDisplayNameTrimsExtension(t *testing.T) {
+	key := moduleCacheKey(filepath.Join("tmp", "modules"), filepath.Join("pkg", "helper.vibe"))
+	got := moduleDisplayName(key)
+	want := filepath.ToSlash(filepath.Join("pkg", "helper"))
+	if got != want {
+		t.Fatalf("expected display %q, got %q", want, got)
 	}
 }

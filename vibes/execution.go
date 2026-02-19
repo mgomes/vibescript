@@ -22,6 +22,7 @@ type ScriptFunction struct {
 	Body     []Statement
 	Pos      Position
 	Env      *Env
+	Exported bool
 	Private  bool
 	owner    *Script
 }
@@ -63,6 +64,7 @@ type Execution struct {
 	receiverStack             []Value
 	envStack                  []*Env
 	loopDepth                 int
+	rescuedErrors             []error
 	strictEffects             bool
 	allowRequire              bool
 }
@@ -89,14 +91,30 @@ type StackFrame struct {
 }
 
 type RuntimeError struct {
+	Type      string
 	Message   string
 	CodeFrame string
 	Frames    []StackFrame
 }
 
+type assertionFailureError struct {
+	message string
+}
+
+func (e *assertionFailureError) Error() string {
+	return e.message
+}
+
+const (
+	runtimeErrorTypeBase      = "RuntimeError"
+	runtimeErrorTypeAssertion = "AssertionError"
+)
+
 var (
-	errLoopBreak = errors.New("loop break")
-	errLoopNext  = errors.New("loop next")
+	errLoopBreak           = errors.New("loop break")
+	errLoopNext            = errors.New("loop next")
+	errStepQuotaExceeded   = errors.New("step quota exceeded")
+	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
 )
 
 func (re *RuntimeError) Error() string {
@@ -127,10 +145,41 @@ func (re *RuntimeError) Unwrap() error {
 	return nil
 }
 
+func canonicalRuntimeErrorType(name string) (string, bool) {
+	switch {
+	case strings.EqualFold(name, runtimeErrorTypeBase), strings.EqualFold(name, "Error"):
+		return runtimeErrorTypeBase, true
+	case strings.EqualFold(name, runtimeErrorTypeAssertion):
+		return runtimeErrorTypeAssertion, true
+	default:
+		return "", false
+	}
+}
+
+func classifyRuntimeErrorType(err error) string {
+	if err == nil {
+		return runtimeErrorTypeBase
+	}
+	var assertionErr *assertionFailureError
+	if errors.As(err, &assertionErr) {
+		return runtimeErrorTypeAssertion
+	}
+	if runtimeErr, ok := err.(*RuntimeError); ok {
+		if kind, known := canonicalRuntimeErrorType(runtimeErr.Type); known {
+			return kind
+		}
+	}
+	return runtimeErrorTypeBase
+}
+
+func newAssertionFailureError(message string) error {
+	return &assertionFailureError{message: message}
+}
+
 func (exec *Execution) step() error {
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {
-		return fmt.Errorf("step quota exceeded (%d)", exec.quota)
+		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
 	}
 	if exec.memoryQuota > 0 && (exec.steps&15) == 0 {
 		if err := exec.checkMemory(); err != nil {
@@ -152,6 +201,16 @@ func (exec *Execution) errorAt(pos Position, format string, args ...any) error {
 }
 
 func (exec *Execution) newRuntimeError(message string, pos Position) error {
+	return exec.newRuntimeErrorWithType(runtimeErrorTypeBase, message, pos)
+}
+
+func (exec *Execution) newRuntimeErrorWithType(kind string, message string, pos Position) error {
+	if canonical, ok := canonicalRuntimeErrorType(kind); ok {
+		kind = canonical
+	} else {
+		kind = runtimeErrorTypeBase
+	}
+
 	frames := make([]StackFrame, 0, len(exec.callStack)+1)
 
 	if len(exec.callStack) > 0 {
@@ -172,17 +231,20 @@ func (exec *Execution) newRuntimeError(message string, pos Position) error {
 	if exec.script != nil {
 		codeFrame = formatCodeFrame(exec.script.source, pos)
 	}
-	return &RuntimeError{Message: message, CodeFrame: codeFrame, Frames: frames}
+	return &RuntimeError{Type: kind, Message: message, CodeFrame: codeFrame, Frames: frames}
 }
 
 func (exec *Execution) wrapError(err error, pos Position) error {
 	if err == nil {
 		return nil
 	}
+	if isHostControlSignal(err) {
+		return err
+	}
 	if _, ok := err.(*RuntimeError); ok {
 		return err
 	}
-	return exec.newRuntimeError(err.Error(), pos)
+	return exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
 }
 
 func (exec *Execution) pushReceiver(v Value) {
@@ -260,6 +322,24 @@ func (exec *Execution) currentModuleContext() *moduleContext {
 	return &ctx
 }
 
+func (exec *Execution) pushRescuedError(err error) {
+	exec.rescuedErrors = append(exec.rescuedErrors, err)
+}
+
+func (exec *Execution) popRescuedError() {
+	if len(exec.rescuedErrors) == 0 {
+		return
+	}
+	exec.rescuedErrors = exec.rescuedErrors[:len(exec.rescuedErrors)-1]
+}
+
+func (exec *Execution) currentRescuedError() error {
+	if len(exec.rescuedErrors) == 0 {
+		return nil
+	}
+	return exec.rescuedErrors[len(exec.rescuedErrors)-1]
+}
+
 func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool, error) {
 	exec.pushEnv(env)
 	defer exec.popEnv()
@@ -301,6 +381,8 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	case *ReturnStmt:
 		val, err := exec.evalExpression(s.Value, env)
 		return val, true, err
+	case *RaiseStmt:
+		return exec.evalRaiseStatement(s, env)
 	case *AssignStmt:
 		val, err := exec.evalExpression(s.Value, env)
 		if err != nil {
@@ -356,6 +438,8 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			return NewNil(), false, exec.errorAt(s.Pos(), "next used outside of loop")
 		}
 		return NewNil(), false, errLoopNext
+	case *TryStmt:
+		return exec.evalTryStatement(s, env)
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement")
 	}
@@ -1318,6 +1402,101 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 		}
 		last = val
 	}
+}
+
+func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {
+	if stmt.Value != nil {
+		val, err := exec.evalExpression(stmt.Value, env)
+		if err != nil {
+			return NewNil(), false, err
+		}
+		return NewNil(), false, exec.errorAt(stmt.Pos(), "%s", val.String())
+	}
+
+	err := exec.currentRescuedError()
+	if err == nil {
+		return NewNil(), false, exec.errorAt(stmt.Pos(), "raise used outside of rescue")
+	}
+	return NewNil(), false, err
+}
+
+func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
+	val, returned, err := exec.evalStatements(stmt.Body, env)
+
+	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
+		exec.pushRescuedError(err)
+		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, env)
+		exec.popRescuedError()
+		if rescueErr != nil {
+			val = NewNil()
+			returned = false
+			err = rescueErr
+		} else {
+			val = rescueVal
+			returned = rescueReturned
+			err = nil
+		}
+	}
+
+	if len(stmt.Ensure) > 0 {
+		ensureVal, ensureReturned, ensureErr := exec.evalStatements(stmt.Ensure, env)
+		if ensureErr != nil {
+			return NewNil(), false, ensureErr
+		}
+		if ensureReturned {
+			return ensureVal, true, nil
+		}
+	}
+
+	if err != nil {
+		return NewNil(), false, err
+	}
+	return val, returned, nil
+}
+
+func isLoopControlSignal(err error) bool {
+	return errors.Is(err, errLoopBreak) || errors.Is(err, errLoopNext)
+}
+
+func isHostControlSignal(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, errStepQuotaExceeded) ||
+		errors.Is(err, errMemoryQuotaExceeded)
+}
+
+func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {
+	var runtimeErr *RuntimeError
+	if !errors.As(err, &runtimeErr) {
+		return false
+	}
+	if rescueTy == nil {
+		return true
+	}
+	errKind := classifyRuntimeErrorType(err)
+	return rescueTypeMatchesErrorKind(rescueTy, errKind)
+}
+
+func rescueTypeMatchesErrorKind(ty *TypeExpr, errKind string) bool {
+	if ty == nil {
+		return false
+	}
+	if ty.Kind == TypeUnion {
+		for _, option := range ty.Union {
+			if rescueTypeMatchesErrorKind(option, errKind) {
+				return true
+			}
+		}
+		return false
+	}
+	canonical, ok := canonicalRuntimeErrorType(ty.Name)
+	if !ok {
+		return false
+	}
+	if canonical == runtimeErrorTypeBase {
+		return true
+	}
+	return canonical == errKind
 }
 
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {
@@ -3352,7 +3531,7 @@ func (e *Engine) Compile(source string) (*Script, error) {
 			if _, exists := functions[s.Name]; exists {
 				return nil, fmt.Errorf("duplicate function %s", s.Name)
 			}
-			functions[s.Name] = &ScriptFunction{Name: s.Name, Params: s.Params, ReturnTy: s.ReturnTy, Body: s.Body, Pos: s.Pos()}
+			functions[s.Name] = &ScriptFunction{Name: s.Name, Params: s.Params, ReturnTy: s.ReturnTy, Body: s.Body, Pos: s.Pos(), Exported: s.Exported}
 		case *ClassStmt:
 			if _, exists := classes[s.Name]; exists {
 				return nil, fmt.Errorf("duplicate class %s", s.Name)

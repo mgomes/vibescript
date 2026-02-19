@@ -65,17 +65,31 @@ if err != nil {
 }
 
 script, err := engine.Compile(`def total(amount)
-  helpers = require("fees")
+  require("fees", as: "helpers")
   helpers.apply_fee(amount)
 end`)
 ```
 
 The interpreter searches each configured directory for `<module>.vibe` in order
 and caches compiled modules so subsequent calls to `require` are inexpensive.
+For long-running hosts, call `engine.ClearModuleCache()` between runs when
+module sources can change.
+Use `Config.ModuleAllowList` / `Config.ModuleDenyList` for policy hooks over
+which modules may be loaded (`*` glob patterns against normalized module names,
+with deny-list rules taking precedence).
+When a circular module dependency is detected, the runtime reports a concise
+chain (for example `a -> b -> a`).
+Use the optional `as:` keyword to bind the loaded module object to a global
+alias.
 Inside a module, use explicit relative paths (`./` or `../`) to load siblings
 or parent-local helpers. Relative requires are resolved from the calling
 module's directory and are rejected if they escape the module root. Functions
-whose names start with `_` are private and are not exported.
+can be exported explicitly with `export def ...`; if no explicit exports are
+declared, public names are exported by default and names starting with `_`
+remain private. Exported names are only injected into globals when no binding
+already exists, so existing host/script globals keep precedence.
+Import paths are normalized across slash styles, and traversal/symlink escapes
+outside configured module roots are blocked.
 
 ### Capability Adapters
 

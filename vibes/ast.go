@@ -31,6 +31,7 @@ type FunctionStmt struct {
 	ReturnTy      *TypeExpr
 	Body          []Statement
 	IsClassMethod bool
+	Exported      bool
 	Private       bool
 	position      Position
 }
@@ -83,6 +84,14 @@ type ReturnStmt struct {
 
 func (s *ReturnStmt) stmtNode()     {}
 func (s *ReturnStmt) Pos() Position { return s.position }
+
+type RaiseStmt struct {
+	Value    Expression
+	position Position
+}
+
+func (s *RaiseStmt) stmtNode()     {}
+func (s *RaiseStmt) Pos() Position { return s.position }
 
 type AssignStmt struct {
 	Target   Expression
@@ -153,6 +162,17 @@ type NextStmt struct {
 
 func (s *NextStmt) stmtNode()     {}
 func (s *NextStmt) Pos() Position { return s.position }
+
+type TryStmt struct {
+	Body     []Statement
+	RescueTy *TypeExpr
+	Rescue   []Statement
+	Ensure   []Statement
+	position Position
+}
+
+func (s *TryStmt) stmtNode()     {}
+func (s *TryStmt) Pos() Position { return s.position }
 
 type Identifier struct {
 	Name     string

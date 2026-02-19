@@ -38,8 +38,9 @@ type parser struct {
 	prefixFns map[TokenType]prefixParseFn
 	infixFns  map[TokenType]infixParseFn
 
-	insideClass bool
-	privateNext bool
+	insideClass      bool
+	privateNext      bool
+	statementNesting int
 }
 
 func newParser(input string) *parser {
@@ -121,8 +122,12 @@ func (p *parser) parseStatement() Statement {
 		return p.parseFunctionStatement()
 	case tokenClass:
 		return p.parseClassStatement()
+	case tokenExport:
+		return p.parseExportStatement()
 	case tokenReturn:
 		return p.parseReturnStatement()
+	case tokenRaise:
+		return p.parseRaiseStatement()
 	case tokenIf:
 		return p.parseIfStatement()
 	case tokenFor:
@@ -135,6 +140,8 @@ func (p *parser) parseStatement() Statement {
 		return p.parseBreakStatement()
 	case tokenNext:
 		return p.parseNextStatement()
+	case tokenBegin:
+		return p.parseBeginStatement()
 	case tokenIdent:
 		if p.curToken.Literal == "assert" {
 			return p.parseAssertStatement()
@@ -198,6 +205,10 @@ func (p *parser) parseFunctionStatement() Statement {
 		p.nextToken()
 	}
 	body := []Statement{}
+	p.statementNesting++
+	defer func() {
+		p.statementNesting--
+	}()
 	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
 		stmt := p.parseStatement()
 		if stmt != nil {
@@ -217,6 +228,32 @@ func (p *parser) parseFunctionStatement() Statement {
 	}
 
 	return &FunctionStmt{Name: name, Params: params, ReturnTy: returnTy, Body: body, IsClassMethod: isClassMethod, Private: private, position: pos}
+}
+
+func (p *parser) parseExportStatement() Statement {
+	pos := p.curToken.Pos
+	if p.insideClass || p.statementNesting > 0 {
+		p.addParseError(pos, "export is only supported for top-level functions")
+		return nil
+	}
+	if !p.expectPeek(tokenDef) {
+		return nil
+	}
+	fnStmt := p.parseFunctionStatement()
+	if fnStmt == nil {
+		return nil
+	}
+	fn, ok := fnStmt.(*FunctionStmt)
+	if !ok {
+		p.addParseError(pos, "export expects a function definition")
+		return nil
+	}
+	if fn.IsClassMethod {
+		p.addParseError(pos, "export cannot be used with class methods")
+		return nil
+	}
+	fn.Exported = true
+	return fn
 }
 
 func (p *parser) parseParams() []Param {
@@ -261,6 +298,19 @@ func (p *parser) parseReturnStatement() Statement {
 	return &ReturnStmt{Value: value, position: pos}
 }
 
+func (p *parser) parseRaiseStatement() Statement {
+	pos := p.curToken.Pos
+	if p.peekToken.Type == tokenEOF || p.peekToken.Type == tokenEnd || p.peekToken.Type == tokenEnsure || p.peekToken.Type == tokenRescue || p.peekToken.Pos.Line != pos.Line {
+		return &RaiseStmt{position: pos}
+	}
+	p.nextToken()
+	value := p.parseExpression(lowestPrec)
+	if value == nil {
+		return nil
+	}
+	return &RaiseStmt{Value: value, position: pos}
+}
+
 func (p *parser) parseClassStatement() Statement {
 	pos := p.curToken.Pos
 	if !p.expectPeek(tokenIdent) {
@@ -278,6 +328,10 @@ func (p *parser) parseClassStatement() Statement {
 	prevPrivate := p.privateNext
 	p.insideClass = true
 	p.privateNext = false
+	p.statementNesting++
+	defer func() {
+		p.statementNesting--
+	}()
 
 	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
 		switch p.curToken.Type {
@@ -433,12 +487,89 @@ func (p *parser) parseNextStatement() Statement {
 	return &NextStmt{position: p.curToken.Pos}
 }
 
+func (p *parser) parseBeginStatement() Statement {
+	pos := p.curToken.Pos
+	p.nextToken()
+	body := p.parseBlock(tokenRescue, tokenEnsure, tokenEnd)
+
+	var rescueTy *TypeExpr
+	var rescueBody []Statement
+	if p.curToken.Type == tokenRescue {
+		rescuePos := p.curToken.Pos
+		if p.peekToken.Type == tokenLParen && p.peekToken.Pos.Line == rescuePos.Line {
+			p.nextToken()
+			p.nextToken()
+			rescueTy = p.parseTypeExpr()
+			if rescueTy == nil {
+				return nil
+			}
+			if !p.validateRescueTypeExpr(rescueTy, rescuePos) {
+				return nil
+			}
+			if !p.expectPeek(tokenRParen) {
+				return nil
+			}
+		}
+		p.nextToken()
+		rescueBody = p.parseBlock(tokenEnsure, tokenEnd)
+	}
+
+	var ensureBody []Statement
+	if p.curToken.Type == tokenEnsure {
+		p.nextToken()
+		ensureBody = p.parseBlock(tokenEnd)
+	}
+
+	if p.curToken.Type != tokenEnd {
+		p.errorExpected(p.curToken, "end")
+		return nil
+	}
+
+	if len(rescueBody) == 0 && len(ensureBody) == 0 {
+		p.addParseError(pos, "begin requires rescue and/or ensure")
+		return nil
+	}
+
+	return &TryStmt{Body: body, RescueTy: rescueTy, Rescue: rescueBody, Ensure: ensureBody, position: pos}
+}
+
+func (p *parser) validateRescueTypeExpr(ty *TypeExpr, pos Position) bool {
+	if ty == nil {
+		p.addParseError(pos, "rescue type cannot be empty")
+		return false
+	}
+
+	if ty.Kind == TypeUnion {
+		ok := true
+		for _, option := range ty.Union {
+			if !p.validateRescueTypeExpr(option, option.position) {
+				ok = false
+			}
+		}
+		return ok
+	}
+
+	if len(ty.TypeArgs) > 0 || len(ty.Shape) > 0 {
+		p.addParseError(pos, fmt.Sprintf("rescue type must be an error class, got %s", formatTypeExpr(ty)))
+		return false
+	}
+	if _, ok := canonicalRuntimeErrorType(ty.Name); !ok {
+		p.addParseError(pos, fmt.Sprintf("unknown rescue error type %s", ty.Name))
+		return false
+	}
+	return true
+}
+
 func (p *parser) parseBlock(stop ...TokenType) []Statement {
 	stmts := []Statement{}
 	stopSet := make(map[TokenType]struct{}, len(stop))
 	for _, tt := range stop {
 		stopSet[tt] = struct{}{}
 	}
+	p.statementNesting++
+	defer func() {
+		p.statementNesting--
+	}()
 
 	for {
 		if _, ok := stopSet[p.curToken.Type]; ok || p.curToken.Type == tokenEOF {
@@ -1104,6 +1235,8 @@ func tokenLabel(tt TokenType) string {
 		return "'def'"
 	case tokenClass:
 		return "'class'"
+	case tokenExport:
+		return "'export'"
 	case tokenSelf:
 		return "'self'"
 	case tokenPrivate:
@@ -1116,6 +1249,8 @@ func tokenLabel(tt TokenType) string {
 		return "'setter'"
 	case tokenEnd:
 		return "'end'"
+	case tokenRaise:
+		return "'raise'"
 	case tokenReturn:
 		return "'return'"
 	case tokenYield:

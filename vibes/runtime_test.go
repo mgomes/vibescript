@@ -957,6 +957,320 @@ func TestCaseWhenExpressions(t *testing.T) {
 	}
 }
 
+func TestBeginRescueEnsure(t *testing.T) {
+	script := compileScript(t, `
+    def safe_div(a, b)
+      begin
+        a / b
+      rescue
+        "fallback"
+      end
+    end
+
+    def ensure_trace(fail)
+      trace = []
+      begin
+        trace = trace + ["body"]
+        if fail
+          1 / 0
+        end
+        trace = trace + ["body_done"]
+      rescue
+        trace = trace + ["rescue"]
+      ensure
+        trace = trace + ["ensure"]
+      end
+      trace
+    end
+
+    def rescue_assertion()
+      begin
+        assert false, "boom"
+      rescue
+        "caught"
+      end
+    end
+
+    def ensure_return_override()
+      begin
+        10
+      ensure
+        return 42
+      end
+    end
+
+    def ensure_without_rescue()
+      begin
+        1 / 0
+      ensure
+        123
+      end
+    end
+    `)
+
+	if got := callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(2)}); !got.Equal(NewFloat(5)) {
+		t.Fatalf("safe_div success mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(0)}); !got.Equal(NewString("fallback")) {
+		t.Fatalf("safe_div rescue mismatch: %v", got)
+	}
+
+	traceOK := callFunc(t, script, "ensure_trace", []Value{NewBool(false)})
+	compareArrays(t, traceOK, []Value{NewString("body"), NewString("body_done"), NewString("ensure")})
+
+	traceFail := callFunc(t, script, "ensure_trace", []Value{NewBool(true)})
+	compareArrays(t, traceFail, []Value{NewString("body"), NewString("rescue"), NewString("ensure")})
+
+	if got := callFunc(t, script, "rescue_assertion", nil); !got.Equal(NewString("caught")) {
+		t.Fatalf("rescue_assertion mismatch: %v", got)
+	}
+
+	if got := callFunc(t, script, "ensure_return_override", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("ensure_return_override mismatch: %v", got)
+	}
+
+	_, err := script.Call(context.Background(), "ensure_without_rescue", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "division by zero") {
+		t.Fatalf("expected ensure_without_rescue to preserve original error, got %v", err)
+	}
+}
+
+func TestBeginRescueTypedMatching(t *testing.T) {
+	script := compileScript(t, `
+    def typed_assertion()
+      begin
+        assert false, "boom"
+      rescue(AssertionError)
+        "assertion"
+      end
+    end
+
+    def typed_runtime()
+      begin
+        assert false, "boom"
+      rescue(RuntimeError)
+        "runtime"
+      end
+    end
+
+    def typed_union()
+      begin
+        assert false, "boom"
+      rescue(AssertionError | RuntimeError)
+        "union"
+      end
+    end
+
+    def rescue_mismatch()
+      begin
+        1 / 0
+      rescue(AssertionError)
+        "nope"
+      end
+    end
+
+    def assertion_passthrough()
+      assert false, "raw"
+    end
+    `)
+
+	if got := callFunc(t, script, "typed_assertion", nil); !got.Equal(NewString("assertion")) {
+		t.Fatalf("typed_assertion mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "typed_runtime", nil); !got.Equal(NewString("runtime")) {
+		t.Fatalf("typed_runtime mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "typed_union", nil); !got.Equal(NewString("union")) {
+		t.Fatalf("typed_union mismatch: %v", got)
+	}
+
+	_, err := script.Call(context.Background(), "rescue_mismatch", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "division by zero") {
+		t.Fatalf("expected typed rescue mismatch to preserve original error, got %v", err)
+	}
+	var divideErr *RuntimeError
+	if !errors.As(err, &divideErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if divideErr.Type != runtimeErrorTypeBase {
+		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeBase, divideErr.Type)
+	}
+
+	_, err = script.Call(context.Background(), "assertion_passthrough", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "raw") {
+		t.Fatalf("expected assertion passthrough error, got %v", err)
+	}
+	var assertionErr *RuntimeError
+	if !errors.As(err, &assertionErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if assertionErr.Type != runtimeErrorTypeAssertion {
+		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeAssertion, assertionErr.Type)
+	}
+}
+
+func TestBeginRescueDoesNotCatchLoopControlSignals(t *testing.T) {
+	script := compileScript(t, `
+    def break_in_loop()
+      out = []
+      for n in [1, 2, 3]
+        begin
+          if n == 2
+            break
+          end
+          out = out + [n]
+        rescue
+          out = out + ["rescued"]
+        end
+      end
+      out
+    end
+
+    def next_in_loop()
+      out = []
+      for n in [1, 2, 3]
+        begin
+          if n == 2
+            next
+          end
+          out = out + [n]
+        rescue
+          out = out + ["rescued"]
+        end
+      end
+      out
+    end
+    `)
+
+	breakOut := callFunc(t, script, "break_in_loop", nil)
+	compareArrays(t, breakOut, []Value{NewInt(1)})
+
+	nextOut := callFunc(t, script, "next_in_loop", nil)
+	compareArrays(t, nextOut, []Value{NewInt(1), NewInt(3)})
+}
+
+func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
+	engine := MustNewEngine(Config{StepQuota: 60})
+	script, err := engine.Compile(`
+    def run()
+      begin
+        while true
+        end
+      rescue
+        "rescued"
+      end
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
+		t.Fatalf("expected host quota signal to bypass rescue, got %v", err)
+	}
+}
+
+func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
+	engine := MustNewEngine(Config{})
+	_, err := engine.Compile(`
+    def bad()
+      begin
+        1 / 0
+      rescue(NotARealError)
+        "fallback"
+      end
+    end
+    `)
+	if err == nil || !strings.Contains(err.Error(), "unknown rescue error type NotARealError") {
+		t.Fatalf("expected unknown rescue type compile error, got %v", err)
+	}
+}
+
+func TestBeginRescueReraisePreservesStack(t *testing.T) {
+	script := compileScript(t, `
+    def inner()
+      assert false, "boom"
+    end
+
+    def middle()
+      begin
+        inner()
+      rescue(AssertionError)
+        raise
+      end
+    end
+
+    def outer()
+      middle()
+    end
+
+    def catches_reraise()
+      begin
+        middle()
+      rescue(AssertionError)
+        "caught"
+      end
+    end
+
+    def raise_outside()
+      raise
+    end
+
+    def raise_new_message()
+      raise "custom boom"
+    end
+    `)
+
+	if got := callFunc(t, script, "catches_reraise", nil); !got.Equal(NewString("caught")) {
+		t.Fatalf("catches_reraise mismatch: %v", got)
+	}
+
+	_, err := script.Call(context.Background(), "outer", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected reraise error, got %v", err)
+	}
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if rtErr.Type != runtimeErrorTypeAssertion {
+		t.Fatalf("expected assertion error type %s, got %s", runtimeErrorTypeAssertion, rtErr.Type)
+	}
+	if len(rtErr.Frames) < 4 {
+		t.Fatalf("expected at least 4 frames, got %d", len(rtErr.Frames))
+	}
+	if rtErr.Frames[0].Function != "inner" {
+		t.Fatalf("expected inner frame first, got %s", rtErr.Frames[0].Function)
+	}
+	if rtErr.Frames[1].Function != "inner" {
+		t.Fatalf("expected inner call site second, got %s", rtErr.Frames[1].Function)
+	}
+	if rtErr.Frames[2].Function != "middle" {
+		t.Fatalf("expected middle frame third, got %s", rtErr.Frames[2].Function)
+	}
+	if rtErr.Frames[3].Function != "outer" {
+		t.Fatalf("expected outer frame fourth, got %s", rtErr.Frames[3].Function)
+	}
+
+	_, err = script.Call(context.Background(), "raise_outside", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "raise used outside of rescue") {
+		t.Fatalf("expected raise outside rescue error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "raise_new_message", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "custom boom") {
+		t.Fatalf("expected raise message error, got %v", err)
+	}
+	var raisedErr *RuntimeError
+	if !errors.As(err, &raisedErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if raisedErr.Type != runtimeErrorTypeBase {
+		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeBase, raisedErr.Type)
+	}
+}
+
 func TestLoopControlBreakAndNext(t *testing.T) {
 	script := compileScript(t, `
     def for_break()
