@@ -81,3 +81,60 @@ end`
 		t.Fatalf("unexpected parse error: %s", got)
 	}
 }
+
+func TestParserTypeSyntaxTypedBlockParameters(t *testing.T) {
+	source := `def run(values)
+  values.map do |value: int | string, label: string?|
+    label
+  end
+end`
+
+	p := newParser(source)
+	program, errs := p.ParseProgram()
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+	if len(program.Statements) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(program.Statements))
+	}
+	fn, ok := program.Statements[0].(*FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", program.Statements[0])
+	}
+	if len(fn.Body) != 1 {
+		t.Fatalf("expected 1 body statement, got %d", len(fn.Body))
+	}
+	exprStmt, ok := fn.Body[0].(*ExprStmt)
+	if !ok {
+		t.Fatalf("expected expression statement, got %T", fn.Body[0])
+	}
+	call, ok := exprStmt.Expr.(*CallExpr)
+	if !ok {
+		t.Fatalf("expected call expression, got %T", exprStmt.Expr)
+	}
+	if call.Block == nil {
+		t.Fatalf("expected call block")
+	}
+	if len(call.Block.Params) != 2 {
+		t.Fatalf("expected 2 block params, got %d", len(call.Block.Params))
+	}
+
+	first := call.Block.Params[0]
+	if first.Name != "value" {
+		t.Fatalf("expected first param name value, got %q", first.Name)
+	}
+	if first.Type == nil || first.Type.Kind != TypeUnion || len(first.Type.Union) != 2 {
+		t.Fatalf("expected first param union type, got %#v", first.Type)
+	}
+	if first.Type.Union[0].Kind != TypeInt || first.Type.Union[1].Kind != TypeString {
+		t.Fatalf("expected union int|string, got %#v", first.Type.Union)
+	}
+
+	second := call.Block.Params[1]
+	if second.Name != "label" {
+		t.Fatalf("expected second param name label, got %q", second.Name)
+	}
+	if second.Type == nil || second.Type.Kind != TypeString || !second.Type.Nullable {
+		t.Fatalf("expected nullable string type, got %#v", second.Type)
+	}
+}

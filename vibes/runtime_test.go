@@ -568,6 +568,76 @@ func TestParseErrorIncludesBlockParameterHint(t *testing.T) {
 	}
 }
 
+func TestTypedBlockSignatures(t *testing.T) {
+	script := compileScript(t, `
+    def increment_all(values)
+      values.map do |n: int|
+        n + 1
+      end
+    end
+
+    def typed_union(values)
+      values.map do |v: int | string|
+        v
+      end
+    end
+
+    def call_with_block(value)
+      yield value
+    end
+
+    def enforce_yield_type(value)
+      call_with_block(value) do |n: int|
+        n
+      end
+    end
+
+    def passthrough(values)
+      values.map do |v|
+        v
+      end
+    end
+    `)
+
+	inc := callFunc(t, script, "increment_all", []Value{
+		NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
+	})
+	compareArrays(t, inc, []Value{NewInt(2), NewInt(3), NewInt(4)})
+
+	unionResult := callFunc(t, script, "typed_union", []Value{
+		NewArray([]Value{NewInt(7), NewString("ok")}),
+	})
+	compareArrays(t, unionResult, []Value{NewInt(7), NewString("ok")})
+
+	if got := callFunc(t, script, "enforce_yield_type", []Value{NewInt(9)}); !got.Equal(NewInt(9)) {
+		t.Fatalf("typed yield block mismatch: got %v", got)
+	}
+
+	untouched := callFunc(t, script, "passthrough", []Value{
+		NewArray([]Value{NewInt(1), NewString("two")}),
+	})
+	compareArrays(t, untouched, []Value{NewInt(1), NewString("two")})
+
+	_, err := script.Call(context.Background(), "increment_all", []Value{
+		NewArray([]Value{NewInt(1), NewString("oops")}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument n expected int, got string") {
+		t.Fatalf("expected typed block argument error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "typed_union", []Value{
+		NewArray([]Value{NewBool(true)}),
+	}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument v expected int | string, got bool") {
+		t.Fatalf("expected typed union block argument error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "enforce_yield_type", []Value{NewString("bad")}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "argument n expected int, got string") {
+		t.Fatalf("expected typed yield argument error, got %v", err)
+	}
+}
+
 func TestArraySumRejectsNonNumeric(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	script, err := engine.Compile(`
@@ -1300,7 +1370,7 @@ func TestTypedFunctions(t *testing.T) {
 		NewArray([]Value{NewInt(1), NewString("oops")}),
 	}, CallOptions{})
 	if err == nil ||
-		!strings.Contains(err.Error(), "argument values expected array<int>, got array") {
+		!strings.Contains(err.Error(), "argument values expected array<int>, got array<int | string>") {
 		t.Fatalf("expected typed array arg error, got %v", err)
 	}
 
@@ -1308,7 +1378,7 @@ func TestTypedFunctions(t *testing.T) {
 		NewHash(map[string]Value{"alice": NewString("oops")}),
 	}, CallOptions{})
 	if err == nil ||
-		!strings.Contains(err.Error(), "argument totals expected hash<string, int>, got hash") {
+		!strings.Contains(err.Error(), "argument totals expected hash<string, int>, got { alice: string }") {
 		t.Fatalf("expected typed hash arg error, got %v", err)
 	}
 
@@ -1316,7 +1386,7 @@ func TestTypedFunctions(t *testing.T) {
 		NewArray([]Value{NewBool(true)}),
 	}, CallOptions{})
 	if err == nil ||
-		!strings.Contains(err.Error(), "argument values expected array<int | string>, got array") {
+		!strings.Contains(err.Error(), "argument values expected array<int | string>, got array<bool>") {
 		t.Fatalf("expected typed union array arg error, got %v", err)
 	}
 
@@ -1328,7 +1398,7 @@ func TestTypedFunctions(t *testing.T) {
 		}),
 	}, CallOptions{})
 	if err == nil ||
-		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got hash") {
+		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got { id: string, role: string, score: int }") {
 		t.Fatalf("expected shape extra-field error, got %v", err)
 	}
 
@@ -1340,7 +1410,7 @@ func TestTypedFunctions(t *testing.T) {
 		}),
 	}, CallOptions{})
 	if err == nil ||
-		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got hash") {
+		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got { active: bool, id: string, score: string }") {
 		t.Fatalf("expected shape field-type error, got %v", err)
 	}
 
@@ -1355,7 +1425,7 @@ func TestTypedFunctions(t *testing.T) {
 		}),
 	}, CallOptions{})
 	if err == nil ||
-		!strings.Contains(err.Error(), "argument rows expected array<{ id: string, stats: { wins: int } }>, got array") {
+		!strings.Contains(err.Error(), "argument rows expected array<{ id: string, stats: { wins: int } }>, got array<{ id: string, stats: { wins: string } }>") {
 		t.Fatalf("expected nested shape error, got %v", err)
 	}
 }

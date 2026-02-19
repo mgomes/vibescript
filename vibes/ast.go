@@ -277,7 +277,7 @@ func (e *RangeExpr) exprNode()     {}
 func (e *RangeExpr) Pos() Position { return e.position }
 
 type BlockLiteral struct {
-	Params   []string
+	Params   []Param
 	Body     []Statement
 	position Position
 }
