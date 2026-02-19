@@ -1710,6 +1710,50 @@ func TestJSONBuiltins(t *testing.T) {
 	}
 }
 
+func TestRegexBuiltins(t *testing.T) {
+	script := compileScript(t, `
+    def helpers()
+      {
+        match_hit: Regex.match("ID-[0-9]+", "ID-12 ID-34"),
+        match_miss: Regex.match("Z+", "ID-12"),
+        replace_one: Regex.replace("ID-12 ID-34", "ID-[0-9]+", "X"),
+        replace_all: Regex.replace_all("ID-12 ID-34", "ID-[0-9]+", "X"),
+        replace_capture: Regex.replace("ID-12 ID-34", "ID-([0-9]+)", "X-$1")
+      }
+    end
+
+    def invalid_regex()
+      Regex.match("[", "abc")
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	out := result.Hash()
+	if !out["match_hit"].Equal(NewString("ID-12")) {
+		t.Fatalf("match_hit mismatch: %v", out["match_hit"])
+	}
+	if out["match_miss"].Kind() != KindNil {
+		t.Fatalf("expected match_miss nil, got %v", out["match_miss"])
+	}
+	if !out["replace_one"].Equal(NewString("X ID-34")) {
+		t.Fatalf("replace_one mismatch: %v", out["replace_one"])
+	}
+	if !out["replace_all"].Equal(NewString("X X")) {
+		t.Fatalf("replace_all mismatch: %v", out["replace_all"])
+	}
+	if !out["replace_capture"].Equal(NewString("X-12 ID-34")) {
+		t.Fatalf("replace_capture mismatch: %v", out["replace_capture"])
+	}
+
+	_, err := script.Call(context.Background(), "invalid_regex", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.match invalid regex") {
+		t.Fatalf("expected invalid regex error, got %v", err)
+	}
+}
+
 func TestRandomIdentifierBuiltins(t *testing.T) {
 	engine := MustNewEngine(Config{
 		RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xAB}, 128)),

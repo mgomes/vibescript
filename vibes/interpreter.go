@@ -81,6 +81,11 @@ func NewEngine(cfg Config) (*Engine, error) {
 		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
 		"stringify": NewBuiltin("JSON.stringify", builtinJSONStringify),
 	})
+	engine.builtins["Regex"] = NewObject(map[string]Value{
+		"match":       NewBuiltin("Regex.match", builtinRegexMatch),
+		"replace":     NewBuiltin("Regex.replace", builtinRegexReplace),
+		"replace_all": NewBuiltin("Regex.replace_all", builtinRegexReplaceAll),
+	})
 	engine.builtins["Duration"] = NewObject(map[string]Value{
 		"build": NewBuiltin("Duration.build", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) == 1 && len(kwargs) == 0 {

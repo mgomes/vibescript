@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -296,4 +297,78 @@ func vibeValueToJSONValue(val Value, state *jsonStringifyState) (any, error) {
 	default:
 		return nil, fmt.Errorf("JSON.stringify unsupported value type %s", val.Kind())
 	}
+}
+
+func builtinRegexMatch(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) != 2 {
+		return NewNil(), fmt.Errorf("Regex.match expects pattern and text")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("Regex.match does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("Regex.match does not accept blocks")
+	}
+	if args[0].Kind() != KindString || args[1].Kind() != KindString {
+		return NewNil(), fmt.Errorf("Regex.match expects string pattern and text")
+	}
+
+	re, err := regexp.Compile(args[0].String())
+	if err != nil {
+		return NewNil(), fmt.Errorf("Regex.match invalid regex: %v", err)
+	}
+	match := re.FindString(args[1].String())
+	if match == "" {
+		return NewNil(), nil
+	}
+	return NewString(match), nil
+}
+
+func builtinRegexReplace(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	return builtinRegexReplaceInternal(args, kwargs, block, false)
+}
+
+func builtinRegexReplaceAll(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	return builtinRegexReplaceInternal(args, kwargs, block, true)
+}
+
+func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Value, replaceAll bool) (Value, error) {
+	method := "Regex.replace"
+	if replaceAll {
+		method = "Regex.replace_all"
+	}
+
+	if len(args) != 3 {
+		return NewNil(), fmt.Errorf("%s expects text, pattern, replacement", method)
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not accept keyword arguments", method)
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("%s does not accept blocks", method)
+	}
+	if args[0].Kind() != KindString || args[1].Kind() != KindString || args[2].Kind() != KindString {
+		return NewNil(), fmt.Errorf("%s expects string text, pattern, replacement", method)
+	}
+
+	text := args[0].String()
+	pattern := args[1].String()
+	replacement := args[2].String()
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return NewNil(), fmt.Errorf("%s invalid regex: %v", method, err)
+	}
+
+	if replaceAll {
+		return NewString(re.ReplaceAllString(text, replacement)), nil
+	}
+
+	loc := re.FindStringIndex(text)
+	if loc == nil {
+		return NewString(text), nil
+	}
+	segment := text[loc[0]:loc[1]]
+	replaced := re.ReplaceAllString(segment, replacement)
+	return NewString(text[:loc[0]] + replaced + text[loc[1]:]), nil
 }

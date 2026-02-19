@@ -96,6 +96,27 @@ a JSON string:
 raw = JSON.stringify({ id: "p-1", score: 10, tags: ["a", "b"] })
 ```
 
+## Regex
+
+### `Regex.match(pattern, text)`
+
+Returns the first match string or `nil` when no match exists.
+
+### `Regex.replace(text, pattern, replacement)`
+
+Replaces the first regex match in `text`.
+
+### `Regex.replace_all(text, pattern, replacement)`
+
+Replaces all regex matches in `text`.
+
+```vibe
+Regex.match("ID-[0-9]+", "ID-12 ID-34")                  # "ID-12"
+Regex.replace("ID-12 ID-34", "ID-[0-9]+", "X")           # "X ID-34"
+Regex.replace_all("ID-12 ID-34", "ID-[0-9]+", "X")       # "X X"
+Regex.replace("ID-12", "ID-([0-9]+)", "X-$1")            # "X-12"
+```
+
 ## Module Loading
 
 ### `require(module_name, as: alias?)`
