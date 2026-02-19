@@ -266,6 +266,61 @@ end`)
 	}
 }
 
+func TestClearModuleCacheForcesModuleReload(t *testing.T) {
+	moduleRoot := t.TempDir()
+	modulePath := filepath.Join(moduleRoot, "dynamic.vibe")
+	writeModule := func(v int) {
+		content := fmt.Sprintf(`def value()
+  %d
+end
+`, v)
+		if err := os.WriteFile(modulePath, []byte(content), 0o644); err != nil {
+			t.Fatalf("write module: %v", err)
+		}
+	}
+
+	writeModule(1)
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script, err := engine.Compile(`def run()
+  mod = require("dynamic")
+  mod.value()
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	first, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if first.Kind() != KindInt || first.Int() != 1 {
+		t.Fatalf("expected first value 1, got %#v", first)
+	}
+
+	writeModule(2)
+
+	stale, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("stale call failed: %v", err)
+	}
+	if stale.Kind() != KindInt || stale.Int() != 1 {
+		t.Fatalf("expected cached value 1 before cache clear, got %#v", stale)
+	}
+
+	if cleared := engine.ClearModuleCache(); cleared != 1 {
+		t.Fatalf("expected 1 cleared module, got %d", cleared)
+	}
+
+	refreshed, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("refreshed call failed: %v", err)
+	}
+	if refreshed.Kind() != KindInt || refreshed.Int() != 2 {
+		t.Fatalf("expected refreshed value 2 after cache clear, got %#v", refreshed)
+	}
+}
+
 func TestRequireRejectsAbsolutePaths(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 

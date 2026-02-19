@@ -290,6 +290,17 @@ func (e *Engine) Builtins() map[string]Value {
 	return out
 }
 
+// ClearModuleCache drops all cached modules and returns the number of entries removed.
+// Long-running hosts can call this between script runs to force fresh module reloads.
+func (e *Engine) ClearModuleCache() int {
+	e.modMu.Lock()
+	defer e.modMu.Unlock()
+
+	count := len(e.modules)
+	clear(e.modules)
+	return count
+}
+
 // Execute compiles the provided source ensuring it is valid under current config.
 func (e *Engine) Execute(ctx context.Context, script string) error {
 	_, err := e.Compile(script)
