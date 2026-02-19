@@ -354,7 +354,7 @@ Goal: lock the language and embedding API for long-term support.
 - [x] Freeze core syntax and document compatibility guarantees.
 - [x] Freeze public Go embedding APIs or publish deprecation policy.
 - [x] Publish semantic versioning and compatibility contract.
-- [ ] Complete migration notes for all pre-1.0 breaking changes.
+- [x] Complete migration notes for all pre-1.0 breaking changes.
 
 ### Documentation and Adoption
 

@@ -174,6 +174,7 @@ Long-form guides live in `docs/`:
 - `docs/compatibility.md` – supported Go versions and CI coverage notes.
 - `docs/versioning.md` – semantic versioning policy and compatibility contract.
 - `docs/deprecation_policy.md` – deprecation lifecycle for public Go embedding APIs.
+- `docs/pre_1_0_migration.md` – migration notes for known pre-1.0 breaking changes.
 - `ROADMAP.md` – versioned implementation checklist and release roadmap.
 - `templates/` – copy-friendly starter templates for common host integration patterns.
 
