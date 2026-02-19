@@ -163,6 +163,7 @@ Long-form guides live in `docs/`:
 - `docs/typing.md` – gradual typing: annotations, nullable `?`, positional/keyword binding, and return checks.
 - `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).
 - `docs/releasing.md` – GoReleaser workflow for changelog and GitHub release automation.
+- `docs/compatibility.md` – supported Go versions and CI coverage notes.
 - `ROADMAP.md` – versioned implementation checklist and release roadmap.
 
 ## Development

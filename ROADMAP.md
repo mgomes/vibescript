@@ -335,7 +335,7 @@ Goal: improve day-to-day developer productivity and interpreter robustness.
 
 - [ ] Add smoke tests for docs examples to CI.
 - [ ] Add release checklist automation for changelog/version bumps.
-- [ ] Add compatibility matrix notes for supported Go versions.
+- [x] Add compatibility matrix notes for supported Go versions.
 
 ### v0.19.0 Definition of Done
 

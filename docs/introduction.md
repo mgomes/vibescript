@@ -32,3 +32,4 @@ dives on specific topics.
   helpers with `require` and module search paths.
 - `stdlib_core_utilities.md` – examples for JSON, regex, random IDs, numeric
   conversion, and common time parsing helpers.
+- `compatibility.md` – supported Go versions and CI coverage expectations.
