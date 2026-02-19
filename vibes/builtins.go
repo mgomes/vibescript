@@ -1,6 +1,7 @@
 package vibes
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"time"
 )
+
+const randomIDAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) == 0 {
@@ -68,6 +71,69 @@ func builtinNow(exec *Execution, receiver Value, args []Value, kwargs map[string
 		return NewNil(), fmt.Errorf("now does not take arguments")
 	}
 	return NewString(time.Now().UTC().Format(time.RFC3339)), nil
+}
+
+func builtinUUID(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("uuid does not take arguments")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("uuid does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("uuid does not accept blocks")
+	}
+	raw, err := exec.engine.randomBytes(16)
+	if err != nil {
+		return NewNil(), err
+	}
+
+	// RFC 4122 v4: set version and variant bits.
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	return NewString(formatUUIDv4(raw)), nil
+}
+
+func builtinRandomID(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("random_id does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("random_id does not accept blocks")
+	}
+
+	length := int64(16)
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("random_id expects at most one length argument")
+	}
+	if len(args) == 1 {
+		n, err := valueToInt64(args[0])
+		if err != nil {
+			return NewNil(), fmt.Errorf("random_id length must be integer")
+		}
+		length = n
+	}
+	if length <= 0 {
+		return NewNil(), fmt.Errorf("random_id length must be positive")
+	}
+	if length > 1024 {
+		return NewNil(), fmt.Errorf("random_id length exceeds maximum 1024")
+	}
+
+	raw, err := exec.engine.randomBytes(int(length))
+	if err != nil {
+		return NewNil(), err
+	}
+	chars := make([]byte, len(raw))
+	for i, b := range raw {
+		chars[i] = randomIDAlphabet[int(b)%len(randomIDAlphabet)]
+	}
+	return NewString(string(chars)), nil
+}
+
+func formatUUIDv4(raw []byte) string {
+	hexValue := hex.EncodeToString(raw)
+	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:32]
 }
 
 type jsonStringifyState struct {

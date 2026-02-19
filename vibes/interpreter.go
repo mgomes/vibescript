@@ -2,7 +2,9 @@ package vibes
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"strings"
@@ -19,6 +21,7 @@ type Config struct {
 	ModulePaths      []string
 	ModuleAllowList  []string
 	ModuleDenyList   []string
+	RandomReader     io.Reader
 	MaxCachedModules int
 }
 
@@ -29,6 +32,7 @@ type Engine struct {
 	modules  map[string]moduleEntry
 	modPaths []string
 	modMu    sync.RWMutex
+	randomMu sync.Mutex
 }
 
 // NewEngine constructs an Engine with sane defaults and registers built-ins.
@@ -44,6 +48,9 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}
 	if cfg.MaxCachedModules == 0 {
 		cfg.MaxCachedModules = 1000
+	}
+	if cfg.RandomReader == nil {
+		cfg.RandomReader = cryptorand.Reader
 	}
 
 	if err := validateModulePaths(cfg.ModulePaths); err != nil {
@@ -68,6 +75,8 @@ func NewEngine(cfg Config) (*Engine, error) {
 	engine.RegisterBuiltin("money_cents", builtinMoneyCents)
 	engine.RegisterBuiltin("require", builtinRequire)
 	engine.RegisterZeroArgBuiltin("now", builtinNow)
+	engine.RegisterZeroArgBuiltin("uuid", builtinUUID)
+	engine.RegisterBuiltin("random_id", builtinRandomID)
 	engine.builtins["JSON"] = NewObject(map[string]Value{
 		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
 		"stringify": NewBuiltin("JSON.stringify", builtinJSONStringify),
@@ -258,6 +267,19 @@ func NewEngine(cfg Config) (*Engine, error) {
 	})
 
 	return engine, nil
+}
+
+func (e *Engine) randomBytes(n int) ([]byte, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("random source failed: invalid byte request")
+	}
+	buf := make([]byte, n)
+	e.randomMu.Lock()
+	defer e.randomMu.Unlock()
+	if _, err := io.ReadFull(e.config.RandomReader, buf); err != nil {
+		return nil, fmt.Errorf("random source failed: %w", err)
+	}
+	return buf, nil
 }
 
 func validateModulePaths(paths []string) error {

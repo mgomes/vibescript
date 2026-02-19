@@ -1,6 +1,7 @@
 package vibes
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -1706,6 +1707,81 @@ func TestJSONBuiltins(t *testing.T) {
 	_, err = script.Call(context.Background(), "stringify_unsupported", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "JSON.stringify unsupported value type function") {
 		t.Fatalf("expected stringify unsupported error, got %v", err)
+	}
+}
+
+func TestRandomIdentifierBuiltins(t *testing.T) {
+	engine := MustNewEngine(Config{
+		RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xAB}, 128)),
+	})
+	script, err := engine.Compile(`
+    def values()
+      {
+        uuid: uuid(),
+        id8: random_id(8),
+        id_default: random_id()
+      }
+    end
+
+    def bad_length_type()
+      random_id("x")
+    end
+
+    def bad_length_value()
+      random_id(0)
+    end
+
+    def bad_uuid_args()
+      uuid(1)
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "values", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("values call failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", result.Kind())
+	}
+	out := result.Hash()
+	if !out["uuid"].Equal(NewString("abababab-abab-4bab-abab-abababababab")) {
+		t.Fatalf("uuid mismatch: %v", out["uuid"])
+	}
+	if !out["id8"].Equal(NewString("VVVVVVVV")) {
+		t.Fatalf("id8 mismatch: %v", out["id8"])
+	}
+	if got := out["id_default"]; got.Kind() != KindString || got.String() != "VVVVVVVVVVVVVVVV" {
+		t.Fatalf("id_default mismatch: %v", got)
+	}
+
+	if _, err := script.Call(context.Background(), "bad_length_type", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be integer") {
+		t.Fatalf("expected length type error, got %v", err)
+	}
+	if _, err := script.Call(context.Background(), "bad_length_value", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be positive") {
+		t.Fatalf("expected length value error, got %v", err)
+	}
+	if _, err := script.Call(context.Background(), "bad_uuid_args", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "uuid does not take arguments") {
+		t.Fatalf("expected uuid args error, got %v", err)
+	}
+}
+
+func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
+	engine := MustNewEngine(Config{RandomReader: bytes.NewReader([]byte{1, 2, 3})})
+	script, err := engine.Compile(`
+    def run()
+      uuid()
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "random source failed") {
+		t.Fatalf("expected random source failure, got %v", err)
 	}
 }
 

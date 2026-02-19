@@ -56,6 +56,25 @@ end
 
 For time manipulation in VibeScript, use the `Time` object (`Time.now`, `Time.parse`, `Time.utc`, etc.). See `docs/time.md`.
 
+## Random IDs
+
+### `uuid()`
+
+Returns an RFC 4122 version 4 UUID string:
+
+```vibe
+event_id = uuid()
+```
+
+### `random_id(length = 16)`
+
+Returns an alphanumeric random identifier string:
+
+```vibe
+short = random_id(8)
+token = random_id()
+```
+
 ## JSON
 
 ### `JSON.parse(string)`
