@@ -108,6 +108,8 @@ func (e *assertionFailureError) Error() string {
 const (
 	runtimeErrorTypeBase      = "RuntimeError"
 	runtimeErrorTypeAssertion = "AssertionError"
+	runtimeErrorFrameHead     = 8
+	runtimeErrorFrameTail     = 8
 )
 
 var (
@@ -123,18 +125,32 @@ func (re *RuntimeError) Error() string {
 		b.WriteString("\n")
 		b.WriteString(re.CodeFrame)
 	}
-	for _, frame := range re.Frames {
-		// Show position if line number is valid (1-based)
+	renderFrame := func(frame StackFrame) {
 		if frame.Pos.Line > 0 && frame.Pos.Column > 0 {
 			fmt.Fprintf(&b, "\n  at %s (%d:%d)", frame.Function, frame.Pos.Line, frame.Pos.Column)
 		} else if frame.Pos.Line > 0 {
-			// Line valid but column missing
 			fmt.Fprintf(&b, "\n  at %s (line %d)", frame.Function, frame.Pos.Line)
 		} else {
-			// No position information available
 			fmt.Fprintf(&b, "\n  at %s", frame.Function)
 		}
 	}
+
+	if len(re.Frames) <= runtimeErrorFrameHead+runtimeErrorFrameTail {
+		for _, frame := range re.Frames {
+			renderFrame(frame)
+		}
+		return b.String()
+	}
+
+	for _, frame := range re.Frames[:runtimeErrorFrameHead] {
+		renderFrame(frame)
+	}
+	omitted := len(re.Frames) - (runtimeErrorFrameHead + runtimeErrorFrameTail)
+	fmt.Fprintf(&b, "\n  ... %d frames omitted ...", omitted)
+	for _, frame := range re.Frames[len(re.Frames)-runtimeErrorFrameTail:] {
+		renderFrame(frame)
+	}
+
 	return b.String()
 }
 

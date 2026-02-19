@@ -809,6 +809,45 @@ func TestRuntimeErrorStackTrace(t *testing.T) {
 	}
 }
 
+func TestRuntimeErrorCondensesDeepStackRendering(t *testing.T) {
+	engine := MustNewEngine(Config{RecursionLimit: 128})
+	script, err := engine.Compile(`
+    def recurse(n)
+      if n <= 0
+        1 / 0
+      end
+      recurse(n - 1)
+    end
+
+    def run()
+      recurse(40)
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil {
+		t.Fatalf("expected runtime error")
+	}
+
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if len(rtErr.Frames) <= 16 {
+		t.Fatalf("expected deep frame set, got %d", len(rtErr.Frames))
+	}
+	rendered := rtErr.Error()
+	if !strings.Contains(rendered, "frames omitted") {
+		t.Fatalf("expected deep stack output to include omitted-frame marker: %s", rendered)
+	}
+	if !strings.Contains(rendered, "at recurse") {
+		t.Fatalf("expected deep stack output to include recurse frames: %s", rendered)
+	}
+}
+
 func TestIntTimes(t *testing.T) {
 	script := compileScript(t, `
     def collect(n)
