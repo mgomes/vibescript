@@ -1005,6 +1005,35 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 	}
 }
 
+func TestLoopControlInsideClassMethods(t *testing.T) {
+	script := compileScript(t, `
+    class Counter
+      def self.collect(limit)
+        out = []
+        n = 0
+        while n < limit
+          n = n + 1
+          if n % 2 == 0
+            next
+          end
+          if n > 5
+            break
+          end
+          out = out + [n]
+        end
+        out
+      end
+    end
+
+    def run(limit)
+      Counter.collect(limit)
+    end
+    `)
+
+	result := callFunc(t, script, "run", []Value{NewInt(10)})
+	compareArrays(t, result, []Value{NewInt(1), NewInt(3), NewInt(5)})
+}
+
 func TestDurationMethods(t *testing.T) {
 	script := compileScript(t, `
     def duration_helpers()
