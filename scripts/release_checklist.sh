@@ -26,7 +26,12 @@ grep -Eq "^## ${version}( |$)" CHANGELOG.md || fail "CHANGELOG.md missing headin
 grep -Eq "^## ${version}( |$)" ROADMAP.md || fail "ROADMAP.md missing milestone heading for ${version}"
 grep -Fq "version := mutedStyle.Render(\"${version}\")" cmd/vibes/repl.go || fail "REPL version label does not match ${version}"
 
-if git rev-parse -q --verify "refs/tags/${version}" >/dev/null 2>&1; then
+is_tag_trigger=0
+if [[ "${GITHUB_EVENT_NAME:-}" == "push" && "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == "${version}" ]]; then
+  is_tag_trigger=1
+fi
+
+if [[ "${is_tag_trigger}" -eq 0 ]] && git rev-parse -q --verify "refs/tags/${version}" >/dev/null 2>&1; then
   fail "git tag ${version} already exists locally"
 fi
 
