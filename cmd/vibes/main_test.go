@@ -71,6 +71,127 @@ func TestRunCommandRequiresScriptPath(t *testing.T) {
 	}
 }
 
+func TestAnalyzeCommandNoIssues(t *testing.T) {
+	scriptPath := writeScript(t, `def run()
+  value = 1
+  value
+end`)
+
+	out, err := captureStdout(t, func() error {
+		return analyzeCommand([]string{scriptPath})
+	})
+	if err != nil {
+		t.Fatalf("analyzeCommand failed: %v", err)
+	}
+	if !strings.Contains(out, "No issues found") {
+		t.Fatalf("unexpected analyze output: %q", out)
+	}
+}
+
+func TestAnalyzeCommandReportsUnreachableStatements(t *testing.T) {
+	scriptPath := writeScript(t, `def run()
+  return 1
+  2
+end`)
+
+	out, err := captureStdout(t, func() error {
+		return analyzeCommand([]string{scriptPath})
+	})
+	if err == nil {
+		t.Fatalf("expected analyze command to report lint failures")
+	}
+	if !strings.Contains(err.Error(), "analysis found 1 issue(s)") {
+		t.Fatalf("unexpected analyze error: %v", err)
+	}
+	if !strings.Contains(out, "unreachable statement") {
+		t.Fatalf("expected unreachable statement warning, got %q", out)
+	}
+}
+
+func TestAnalyzeCommandReportsUnreachableAfterTerminatingElsifChain(t *testing.T) {
+	scriptPath := writeScript(t, `def run()
+  if false
+    return 1
+  elsif true
+    return 2
+  else
+    return 3
+  end
+  4
+end`)
+
+	out, err := captureStdout(t, func() error {
+		return analyzeCommand([]string{scriptPath})
+	})
+	if err == nil {
+		t.Fatalf("expected analyze command to report lint failures")
+	}
+	if !strings.Contains(err.Error(), "analysis found 1 issue(s)") {
+		t.Fatalf("unexpected analyze error: %v", err)
+	}
+	if !strings.Contains(out, "unreachable statement") {
+		t.Fatalf("expected unreachable statement warning, got %q", out)
+	}
+}
+
+func TestAnalyzeCommandReportsUnreachableAfterBeginEnsureWithoutRescue(t *testing.T) {
+	scriptPath := writeScript(t, `def run()
+  begin
+    return 1
+  ensure
+    value = 2
+  end
+  3
+end`)
+
+	out, err := captureStdout(t, func() error {
+		return analyzeCommand([]string{scriptPath})
+	})
+	if err == nil {
+		t.Fatalf("expected analyze command to report lint failures")
+	}
+	if !strings.Contains(err.Error(), "analysis found 1 issue(s)") {
+		t.Fatalf("unexpected analyze error: %v", err)
+	}
+	if !strings.Contains(out, "unreachable statement") {
+		t.Fatalf("expected unreachable statement warning, got %q", out)
+	}
+}
+
+func TestAnalyzeCommandReportsUnreachableStatementsInClassMethods(t *testing.T) {
+	scriptPath := writeScript(t, `class Reporter
+  def instance_path()
+    return 1
+    2
+  end
+
+  def self.class_path()
+    return 3
+    4
+  end
+end
+
+def run()
+  Reporter.new.instance_path
+end`)
+
+	out, err := captureStdout(t, func() error {
+		return analyzeCommand([]string{scriptPath})
+	})
+	if err == nil {
+		t.Fatalf("expected analyze command to report lint failures")
+	}
+	if !strings.Contains(err.Error(), "analysis found 2 issue(s)") {
+		t.Fatalf("unexpected analyze error: %v", err)
+	}
+	if !strings.Contains(out, "(Reporter#instance_path)") {
+		t.Fatalf("expected instance method warning, got %q", out)
+	}
+	if !strings.Contains(out, "(Reporter.class_path)") {
+		t.Fatalf("expected class method warning, got %q", out)
+	}
+}
+
 func TestComputeModulePathsIncludesScriptDirAndDedupesExtras(t *testing.T) {
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "main.vibe")

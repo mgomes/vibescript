@@ -8,4 +8,3 @@ def total_raised_for_player(player_id)
   end
   total
 end
-

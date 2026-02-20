@@ -108,6 +108,8 @@ func (e *assertionFailureError) Error() string {
 const (
 	runtimeErrorTypeBase      = "RuntimeError"
 	runtimeErrorTypeAssertion = "AssertionError"
+	runtimeErrorFrameHead     = 8
+	runtimeErrorFrameTail     = 8
 )
 
 var (
@@ -125,18 +127,32 @@ func (re *RuntimeError) Error() string {
 		b.WriteString("\n")
 		b.WriteString(re.CodeFrame)
 	}
-	for _, frame := range re.Frames {
-		// Show position if line number is valid (1-based)
+	renderFrame := func(frame StackFrame) {
 		if frame.Pos.Line > 0 && frame.Pos.Column > 0 {
 			fmt.Fprintf(&b, "\n  at %s (%d:%d)", frame.Function, frame.Pos.Line, frame.Pos.Column)
 		} else if frame.Pos.Line > 0 {
-			// Line valid but column missing
 			fmt.Fprintf(&b, "\n  at %s (line %d)", frame.Function, frame.Pos.Line)
 		} else {
-			// No position information available
 			fmt.Fprintf(&b, "\n  at %s", frame.Function)
 		}
 	}
+
+	if len(re.Frames) <= runtimeErrorFrameHead+runtimeErrorFrameTail {
+		for _, frame := range re.Frames {
+			renderFrame(frame)
+		}
+		return b.String()
+	}
+
+	for _, frame := range re.Frames[:runtimeErrorFrameHead] {
+		renderFrame(frame)
+	}
+	omitted := len(re.Frames) - (runtimeErrorFrameHead + runtimeErrorFrameTail)
+	fmt.Fprintf(&b, "\n  ... %d frames omitted ...", omitted)
+	for _, frame := range re.Frames[len(re.Frames)-runtimeErrorFrameTail:] {
+		renderFrame(frame)
+	}
+
 	return b.String()
 }
 
@@ -625,7 +641,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		}
 		return NewArray(elems), nil
 	case *HashLiteral:
-		entries := make(map[string]Value)
+		entries := make(map[string]Value, len(e.Pairs))
 		for _, pair := range e.Pairs {
 			keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
 			if err != nil {
@@ -1022,6 +1038,9 @@ func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
 }
 
 func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Value, error) {
+	if len(call.KwArgs) == 0 {
+		return nil, nil
+	}
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kw := range call.KwArgs {
 		val, err := exec.evalExpressionWithAuto(kw.Value, env, true)
@@ -1044,6 +1063,12 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 }
 
 func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if receiver.Kind() == KindNil && len(kwargs) == 0 && block.IsNil() {
+		if len(args) == 0 {
+			return nil
+		}
+		return exec.checkMemoryWith(args...)
+	}
 	combined := make([]Value, 0, len(args)+len(kwargs)+2)
 	if receiver.Kind() != KindNil {
 		combined = append(combined, receiver)
@@ -3726,8 +3751,9 @@ func arrayMember(array Value, property string) (Value, error) {
 			if err := ensureBlock(block, "array.group_by"); err != nil {
 				return NewNil(), err
 			}
-			groups := make(map[string][]Value)
-			for _, item := range receiver.Array() {
+			arr := receiver.Array()
+			groups := make(map[string][]Value, len(arr))
+			for _, item := range arr {
 				groupValue, err := exec.CallBlock(block, []Value{item})
 				if err != nil {
 					return NewNil(), err
@@ -3752,10 +3778,11 @@ func arrayMember(array Value, property string) (Value, error) {
 			if err := ensureBlock(block, "array.group_by_stable"); err != nil {
 				return NewNil(), err
 			}
-			order := make([]string, 0)
-			keyValues := make(map[string]Value)
-			groups := make(map[string][]Value)
-			for _, item := range receiver.Array() {
+			arr := receiver.Array()
+			order := make([]string, 0, len(arr))
+			keyValues := make(map[string]Value, len(arr))
+			groups := make(map[string][]Value, len(arr))
+			for _, item := range arr {
 				groupValue, err := exec.CallBlock(block, []Value{item})
 				if err != nil {
 					return NewNil(), err
@@ -3785,8 +3812,9 @@ func arrayMember(array Value, property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.tally does not take arguments")
 			}
-			counts := make(map[string]int64)
-			for _, item := range receiver.Array() {
+			arr := receiver.Array()
+			counts := make(map[string]int64, len(arr))
+			for _, item := range arr {
 				keyValue := item
 				if block.Block() != nil {
 					mapped, err := exec.CallBlock(block, []Value{item})
@@ -4366,6 +4394,34 @@ func joinSortedTypes(typeSet map[string]struct{}) string {
 func (s *Script) Function(name string) (*ScriptFunction, bool) {
 	fn, ok := s.functions[name]
 	return fn, ok
+}
+
+// Functions returns compiled functions in deterministic name order.
+func (s *Script) Functions() []*ScriptFunction {
+	names := make([]string, 0, len(s.functions))
+	for name := range s.functions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*ScriptFunction, 0, len(names))
+	for _, name := range names {
+		out = append(out, s.functions[name])
+	}
+	return out
+}
+
+// Classes returns compiled classes in deterministic name order.
+func (s *Script) Classes() []*ClassDef {
+	names := make([]string, 0, len(s.classes))
+	for name := range s.classes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*ClassDef, 0, len(names))
+	for _, name := range names {
+		out = append(out, s.classes[name])
+	}
+	return out
 }
 
 func (s *Script) bindFunctionOwnership() {

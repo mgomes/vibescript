@@ -11,7 +11,7 @@ def notify_high_value_donations(threshold)
         donation_id: donation[:id],
         supporter: donation[:supporter_name],
         amount: donation[:amount].format(),
-        campaign_id: donation[:campaign_id],
+        campaign_id: donation[:campaign_id]
       })
     end
   end

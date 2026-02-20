@@ -111,6 +111,9 @@ The REPL maintains a persistent environment, so variables assigned in one expres
 | -------- | ---------------------- |
 | `:help`  | Toggle help panel      |
 | `:vars`  | Toggle variables panel |
+| `:globals` | Print current globals |
+| `:functions` | List callable functions |
+| `:types` | Show global value types |
 | `:last_error` | Show previous error |
 | `:clear` | Clear output history   |
 | `:reset` | Reset the environment  |
@@ -157,12 +160,14 @@ Long-form guides live in `docs/`:
 - `docs/errors.md` – parse/runtime error formatting and debugging patterns.
 - `docs/control-flow.md` – conditionals, loops, and ranges.
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
+- `docs/tooling.md` – CLI workflows for running, formatting, analyzing, language-server usage, and REPL usage.
 - `docs/integration.md` – integrating the interpreter in Go applications.
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
 - `docs/typing.md` – gradual typing: annotations, nullable `?`, positional/keyword binding, and return checks.
 - `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).
 - `docs/releasing.md` – GoReleaser workflow for changelog and GitHub release automation.
+- `docs/compatibility.md` – supported Go versions and CI coverage notes.
 - `ROADMAP.md` – versioned implementation checklist and release roadmap.
 
 ## Development
@@ -170,8 +175,15 @@ Long-form guides live in `docs/`:
 This repository uses [Just](https://github.com/casey/just) for common tasks:
 
 - `just test` runs the full Go test suite (`go test ./...`).
+- `just bench` runs the core execution benchmarks (`go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem`).
 - `just lint` checks formatting (`gofmt`) and runs `golangci-lint` with a generous timeout.
+- `vibes fmt <path>` applies canonical formatting to `.vibe` files (`-check` for CI, `-w` to write).
+- `vibes analyze <script.vibe>` runs script-level lint checks (e.g., unreachable statements).
+- `vibes lsp` starts the language server protocol prototype (hover/completion/diagnostics over stdio).
 - Add new recipes in the `Justfile` as workflows grow.
+
+CI also publishes benchmark artifacts via `.github/workflows/benchmarks.yml` on
+pull requests and pushes to `master`.
 
 Contributions should run `just test` and `just lint` (or the equivalent `go` and `golangci-lint` commands) before submitting patches.
 

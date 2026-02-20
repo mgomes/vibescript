@@ -12,10 +12,10 @@ def schedule_upsell_followups()
         {
           donation_id: donation[:id],
           supporter_id: donation[:supporter_id],
-          amount: donation[:amount],
+          amount: donation[:amount]
         },
         delay: 3.days,
-        key: "upsell:" + donation[:id],
+        key: "upsell:" + donation[:id]
       )
     end
   end

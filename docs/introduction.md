@@ -22,6 +22,7 @@ dives on specific topics.
 - `typing.md` – gradual typing: annotations, nullables, and type-checked calls.
 - `control-flow.md` – conditionals, loops, and ranges.
 - `blocks.md` – using block literals for map/select/reduce style patterns.
+- `tooling.md` – CLI commands for run/format/analyze/repl workflows.
 - `integration.md` – host integration patterns showing how Go services can
   expose capabilities to scripts.
 - `module_project_layout.md` – recommended structure for multi-module script
@@ -32,3 +33,4 @@ dives on specific topics.
   helpers with `require` and module search paths.
 - `stdlib_core_utilities.md` – examples for JSON, regex, random IDs, numeric
   conversion, and common time parsing helpers.
+- `compatibility.md` – supported Go versions and CI coverage expectations.

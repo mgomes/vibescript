@@ -37,6 +37,10 @@ jobs:
         if: runner.os != 'Windows'
         run: just lint
 
+      - name: Check Vibe formatting
+        if: runner.os != 'Windows'
+        run: go run ./cmd/vibes fmt -check .
+
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -52,7 +56,32 @@ jobs:
             exit 1
           }
 
+      - name: Check Vibe formatting (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go run ./cmd/vibes fmt -check .
+
       - name: Run golangci-lint (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: golangci-lint run --timeout=10m --out-format=colored-line-number
+
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Gate examples coverage
+        run: go test ./vibes -run 'TestExamples|TestDocsExampleSnippetsCompile'
+
+      - name: Gate parser fuzz target
+        run: go test ./vibes -run '^$' -fuzz=FuzzCompileScriptDoesNotPanic -fuzztime=5s
+
+      - name: Gate runtime fuzz target
+        run: go test ./vibes -run '^$' -fuzz=FuzzRuntimeEdgeCasesDoNotPanic -fuzztime=5s

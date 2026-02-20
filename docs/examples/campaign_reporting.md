@@ -24,17 +24,19 @@ def daily_summary(campaign_id)
     state
   end
 
+  formatted_rows = rows.map do |row|
+    {
+      supporter: row[:supporter],
+      amount: row[:amount].format(),
+      received_at: row[:received_at]
+    }
+  end
+
   events.publish("campaign_reports", {
     campaign_id: campaign_id,
     supporters: totals[:supporters],
     total: totals[:total].format(),
-    rows: rows.map do |row|
-      {
-        supporter: row[:supporter],
-        amount: row[:amount].format(),
-        received_at: row[:received_at]
-      }
-    end
+    rows: formatted_rows
   })
 end
 ```

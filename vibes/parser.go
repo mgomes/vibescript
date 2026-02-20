@@ -704,6 +704,9 @@ func (p *parser) parseExpression(precedence int) Expression {
 	}
 
 	left := prefix()
+	if left == nil {
+		return nil
+	}
 
 	for p.peekToken.Type != tokenEOF && precedence < p.peekPrecedence() {
 		infix := p.infixFns[p.peekToken.Type]
@@ -712,6 +715,9 @@ func (p *parser) parseExpression(precedence int) Expression {
 		}
 		p.nextToken()
 		left = infix(left)
+		if left == nil {
+			return nil
+		}
 	}
 
 	return left
@@ -961,6 +967,9 @@ func (p *parser) parseRangeExpression(left Expression) Expression {
 }
 
 func (p *parser) parseCallExpression(function Expression) Expression {
+	if function == nil {
+		return nil
+	}
 	expr := &CallExpr{Callee: function, position: function.Pos()}
 	args := []Expression{}
 	kwargs := []KeywordArg{}

@@ -319,29 +319,29 @@ Goal: improve day-to-day developer productivity and interpreter robustness.
 
 ### Tooling
 
-- [ ] Add canonical formatter command and CI check.
-- [ ] Add language server protocol (LSP) prototype (hover, completion, diagnostics).
-- [ ] Add static analysis command for script-level linting.
-- [ ] Improve REPL inspection commands (globals/functions/types).
+- [x] Add canonical formatter command and CI check.
+- [x] Add language server protocol (LSP) prototype (hover, completion, diagnostics).
+- [x] Add static analysis command for script-level linting.
+- [x] Improve REPL inspection commands (globals/functions/types).
 
 ### Runtime Quality
 
-- [ ] Profile evaluator hotspots and optimize dispatch paths.
-- [ ] Reduce allocations in common value transformations.
-- [ ] Improve error rendering for deeply nested call stacks.
-- [ ] Add fuzz tests for parser and runtime edge cases.
+- [x] Profile evaluator hotspots and optimize dispatch paths.
+- [x] Reduce allocations in common value transformations.
+- [x] Improve error rendering for deeply nested call stacks.
+- [x] Add fuzz tests for parser and runtime edge cases.
 
 ### CI and Release Engineering
 
-- [ ] Add smoke tests for docs examples to CI.
-- [ ] Add release checklist automation for changelog/version bumps.
-- [ ] Add compatibility matrix notes for supported Go versions.
+- [x] Add smoke tests for docs examples to CI.
+- [x] Add release checklist automation for changelog/version bumps.
+- [x] Add compatibility matrix notes for supported Go versions.
 
 ### v0.19.0 Definition of Done
 
-- [ ] Tooling commands are documented and stable.
-- [ ] Performance regressions are tracked with benchmarks.
-- [ ] CI includes example and fuzz coverage gates.
+- [x] Tooling commands are documented and stable.
+- [x] Performance regressions are tracked with benchmarks.
+- [x] CI includes example and fuzz coverage gates.
 
 ---
 
