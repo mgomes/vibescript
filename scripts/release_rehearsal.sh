@@ -24,7 +24,7 @@ echo "[3/4] Running release checklist"
 
 echo "[4/4] Running GoReleaser dry run (if installed)"
 if command -v goreleaser >/dev/null 2>&1; then
-  goreleaser release --clean --skip=publish
+  goreleaser release --snapshot --clean --skip=publish
 else
   echo "goreleaser not found; skipping dry run"
 fi
