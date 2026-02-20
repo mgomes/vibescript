@@ -162,13 +162,22 @@ Long-form guides live in `docs/`:
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
 - `docs/tooling.md` – CLI workflows for running, formatting, analyzing, language-server usage, and REPL usage.
 - `docs/integration.md` – integrating the interpreter in Go applications.
+- `docs/host_cookbook.md` – production integration patterns for embedding hosts.
+- `docs/starter_templates.md` – starter scaffolds for common embedding scenarios.
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
 - `docs/typing.md` – gradual typing: annotations, nullable `?`, positional/keyword binding, and return checks.
+- `docs/language_reference.md` – consolidated language syntax and semantics reference.
+- `docs/syntax_compatibility.md` – core syntax freeze baseline and compatibility guarantees.
 - `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).
 - `docs/releasing.md` – GoReleaser workflow for changelog and GitHub release automation.
 - `docs/compatibility.md` – supported Go versions and CI coverage notes.
+- `docs/versioning.md` – semantic versioning policy and compatibility contract.
+- `docs/deprecation_policy.md` – deprecation lifecycle for public Go embedding APIs.
+- `docs/pre_1_0_migration.md` – migration notes for known pre-1.0 breaking changes.
+- `docs/known_issues.md` – tracked P0/P1 correctness bug bar.
 - `ROADMAP.md` – versioned implementation checklist and release roadmap.
+- `templates/` – copy-friendly starter templates for common host integration patterns.
 
 ## Development
 
@@ -179,6 +188,8 @@ This repository uses [Just](https://github.com/casey/just) for common tasks:
 - `just lint` checks formatting (`gofmt`) and runs `golangci-lint` with a generous timeout.
 - `vibes fmt <path>` applies canonical formatting to `.vibe` files (`-check` for CI, `-w` to write).
 - `vibes analyze <script.vibe>` runs script-level lint checks (e.g., unreachable statements).
+- `./scripts/check_ci_green.sh` verifies latest `master` CI run is green.
+- `./scripts/release_rehearsal.sh <version>` runs repeatable pre-tag release checks.
 - `vibes lsp` starts the language server protocol prototype (hover/completion/diagnostics over stdio).
 - Add new recipes in the `Justfile` as workflows grow.
 

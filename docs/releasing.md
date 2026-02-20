@@ -2,6 +2,9 @@
 
 This repository uses GoReleaser for changelog generation and GitHub releases. The project ships as a Go module only—no binaries or archives are built.
 
+Versioning rules for deciding `MAJOR.MINOR.PATCH` are documented in
+`docs/versioning.md`.
+
 ## Prerequisites
 
 - GoReleaser installed locally.
@@ -32,6 +35,21 @@ The checklist verifies:
 The same validation runs automatically on tag pushes via
 `.github/workflows/release-checklist.yml` and can also be run manually via
 GitHub Actions `workflow_dispatch`.
+
+## Release rehearsal
+
+For a repeatable pre-tag rehearsal, run:
+
+```bash
+./scripts/release_rehearsal.sh v0.19.0
+```
+
+This runs:
+
+- P0/P1 known-issues gate.
+- Full test suite (`go test ./...`).
+- Release checklist validation.
+- GoReleaser dry run when `goreleaser` is installed.
 
 ### Local dry run (optional)
 

@@ -80,6 +80,9 @@ jobs:
       - name: Gate examples coverage
         run: go test ./vibes -run 'TestExamples|TestDocsExampleSnippetsCompile'
 
+      - name: Gate known-issues bug bar
+        run: ./scripts/check_known_issues.sh
+
       - name: Gate parser fuzz target
         run: go test ./vibes -run '^$' -fuzz=FuzzCompileScriptDoesNotPanic -fuzztime=5s
 

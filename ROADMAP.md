@@ -351,19 +351,19 @@ Goal: lock the language and embedding API for long-term support.
 
 ### Stabilization
 
-- [ ] Freeze core syntax and document compatibility guarantees.
-- [ ] Freeze public Go embedding APIs or publish deprecation policy.
-- [ ] Publish semantic versioning and compatibility contract.
-- [ ] Complete migration notes for all pre-1.0 breaking changes.
+- [x] Freeze core syntax and document compatibility guarantees.
+- [x] Freeze public Go embedding APIs or publish deprecation policy.
+- [x] Publish semantic versioning and compatibility contract.
+- [x] Complete migration notes for all pre-1.0 breaking changes.
 
 ### Documentation and Adoption
 
-- [ ] Publish complete language reference.
-- [ ] Publish host integration cookbook with production patterns.
-- [ ] Provide starter templates for common embedding scenarios.
+- [x] Publish complete language reference.
+- [x] Publish host integration cookbook with production patterns.
+- [x] Provide starter templates for common embedding scenarios.
 
 ### Final Readiness
 
-- [ ] Zero known P0/P1 correctness bugs.
-- [ ] CI green across supported platforms and Go versions.
-- [ ] Release process rehearsed and repeatable.
+- [x] Zero known P0/P1 correctness bugs.
+- [x] CI green across supported platforms and Go versions.
+- [x] Release process rehearsed and repeatable.
