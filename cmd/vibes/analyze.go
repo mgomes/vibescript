@@ -131,7 +131,7 @@ func statementTerminates(function string, stmt vibes.Statement, warnings *[]lint
 			return true
 		}
 		if len(typed.Rescue) == 0 {
-			return false
+			return bodyTerminated
 		}
 		return bodyTerminated && rescueTerminated
 	default:
