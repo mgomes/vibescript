@@ -45,6 +45,8 @@ end
 - `except(*keys)` removes selected keys.
 - `select` / `reject` with a block.
 - `transform_keys` / `transform_values` with a block.
+- `deep_transform_keys` for recursive key mapping across nested hashes/arrays.
+- `remap_keys(mapping_hash)` for direct key rename maps.
 
 ```vibe
 def public_profile(record)
@@ -52,6 +54,21 @@ def public_profile(record)
     .slice(:name, :raised, :goal)
     .reject { |key, value| value == nil }
 end
+```
+
+```vibe
+payload = { player_id: 7, profile: { total_raised: 12 } }
+payload.deep_transform_keys do |k|
+  if k == :player_id
+    :playerId
+  elsif k == :total_raised
+    :totalRaised
+  else
+    k
+  end
+end
+
+{ first_name: "Alex" }.remap_keys({ first_name: :name })
 ```
 
 ## Iteration helpers

@@ -2,6 +2,12 @@
 
 VibeScript provides several methods for string manipulation.
 
+## Locale Behavior
+
+String transforms are locale-insensitive and deterministic across supported
+platforms. Methods like `upcase`, `downcase`, and `capitalize` use Unicode
+case mapping rules and do not depend on host locale settings.
+
 ## Basic Methods
 
 ### `length`
@@ -56,6 +62,15 @@ def clean_input(text)
 end
 
 clean_input("  hello  ")  # "hello"
+```
+
+### `squish`
+
+Trims leading/trailing whitespace and collapses internal whitespace runs to a
+single space:
+
+```vibe
+"  hello \n\t world  ".squish # "hello world"
 ```
 
 ### `lstrip`
@@ -269,6 +284,7 @@ The following methods are supported as aliases and return transformed strings.
 When there is no change, bang methods return `nil`.
 
 - `strip!`, `lstrip!`, `rstrip!`, `chomp!`
+- `squish!`
 - `delete_prefix!`, `delete_suffix!`
 - `upcase!`, `downcase!`, `capitalize!`, `swapcase!`, `reverse!`
 - `sub!`, `gsub!`
@@ -291,6 +307,23 @@ Splits a string into an array of strings.
 "a,b,c".split(",")        # ["a", "b", "c"]
 "path/to/file".split("/") # ["path", "to", "file"]
 ```
+
+## Templating
+
+### `template(context, strict: false)`
+
+Interpolates `{{name}}` placeholders from a hash context. Dot paths can access
+nested hashes (`{{user.name}}`).
+
+```vibe
+tpl = "Player {{user.name}} scored {{user.score}}"
+ctx = { user: { name: "Alex", score: 42 } }
+
+tpl.template(ctx) # "Player Alex scored 42"
+```
+
+When `strict: true`, missing placeholders raise an error instead of being left
+unchanged.
 
 ## Example: Text Processing
 

@@ -1,6 +1,7 @@
 package vibes
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -380,6 +381,15 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
           :odd
         end
       end
+      grouped_stable = values.group_by_stable do |v|
+        if v % 2 == 0
+          :even
+        else
+          :odd
+        end
+      end
+      chunked = [1, 2, 3, 4, 5].chunk(2)
+      windowed = [1, 2, 3, 4].window(3)
       tally_block = [1, 2, 3, 4].tally do |v|
         if v % 2 == 0
           :even
@@ -416,6 +426,9 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
         sort_by_words: sort_by_words,
         partition: partitioned,
         group_by_parity: grouped,
+        group_by_stable_parity: grouped_stable,
+        chunked: chunked,
+        windowed: windowed,
         tally_plain: ["a", "b", "a", "a"].tally,
         tally_block: tally_block,
         original: values
@@ -484,6 +497,54 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 	compareArrays(t, groupedHash["odd"], []Value{NewInt(3), NewInt(1), NewInt(1)})
 	compareArrays(t, groupedHash["even"], []Value{NewInt(2)})
 
+	stableGrouped := got["group_by_stable_parity"]
+	if stableGrouped.Kind() != KindArray {
+		t.Fatalf("group_by_stable_parity expected array, got %v", stableGrouped.Kind())
+	}
+	stablePairs := stableGrouped.Array()
+	if len(stablePairs) != 2 {
+		t.Fatalf("group_by_stable_parity length mismatch: %d", len(stablePairs))
+	}
+	firstPair := stablePairs[0]
+	if firstPair.Kind() != KindArray || len(firstPair.Array()) != 2 {
+		t.Fatalf("group_by_stable first pair mismatch: %v", firstPair)
+	}
+	if !firstPair.Array()[0].Equal(NewSymbol("odd")) {
+		t.Fatalf("group_by_stable first key mismatch: %v", firstPair.Array()[0])
+	}
+	compareArrays(t, firstPair.Array()[1], []Value{NewInt(3), NewInt(1), NewInt(1)})
+	secondPair := stablePairs[1]
+	if secondPair.Kind() != KindArray || len(secondPair.Array()) != 2 {
+		t.Fatalf("group_by_stable second pair mismatch: %v", secondPair)
+	}
+	if !secondPair.Array()[0].Equal(NewSymbol("even")) {
+		t.Fatalf("group_by_stable second key mismatch: %v", secondPair.Array()[0])
+	}
+	compareArrays(t, secondPair.Array()[1], []Value{NewInt(2)})
+
+	chunked := got["chunked"]
+	if chunked.Kind() != KindArray {
+		t.Fatalf("chunked expected array, got %v", chunked.Kind())
+	}
+	chunks := chunked.Array()
+	if len(chunks) != 3 {
+		t.Fatalf("chunked length mismatch: %d", len(chunks))
+	}
+	compareArrays(t, chunks[0], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, chunks[1], []Value{NewInt(3), NewInt(4)})
+	compareArrays(t, chunks[2], []Value{NewInt(5)})
+
+	windowed := got["windowed"]
+	if windowed.Kind() != KindArray {
+		t.Fatalf("windowed expected array, got %v", windowed.Kind())
+	}
+	windows := windowed.Array()
+	if len(windows) != 2 {
+		t.Fatalf("windowed length mismatch: %d", len(windows))
+	}
+	compareArrays(t, windows[0], []Value{NewInt(1), NewInt(2), NewInt(3)})
+	compareArrays(t, windows[1], []Value{NewInt(2), NewInt(3), NewInt(4)})
+
 	tallyPlain := got["tally_plain"]
 	if tallyPlain.Kind() != KindHash {
 		t.Fatalf("tally_plain expected hash, got %v", tallyPlain.Kind())
@@ -503,6 +564,69 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 	})
 
 	compareArrays(t, got["original"], []Value{NewInt(3), NewInt(1), NewInt(2), NewInt(1)})
+}
+
+func TestArrayChunkWindowValidation(t *testing.T) {
+	script := compileScript(t, `
+    def bad_chunk()
+      [1, 2, 3].chunk(0)
+    end
+
+    def huge_chunk(size)
+      [1, 2].chunk(size)
+    end
+
+    def huge_window(size)
+      [1, 2, 3].window(size)
+    end
+
+    def bad_window()
+      [1, 2, 3].window("2")
+    end
+
+    def bad_group_by_stable()
+      [1, 2, 3].group_by_stable
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "bad_chunk", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
+		t.Fatalf("expected chunk validation error, got %v", err)
+	}
+	nativeMaxInt := int64(^uint(0) >> 1)
+	hugeChunk := callFunc(t, script, "huge_chunk", []Value{NewInt(nativeMaxInt)})
+	if hugeChunk.Kind() != KindArray {
+		t.Fatalf("expected huge chunk result to be array, got %v", hugeChunk.Kind())
+	}
+	chunks := hugeChunk.Array()
+	if len(chunks) != 1 {
+		t.Fatalf("expected one chunk for oversized chunk size, got %d", len(chunks))
+	}
+	compareArrays(t, chunks[0], []Value{NewInt(1), NewInt(2)})
+	_, err = script.Call(context.Background(), "bad_window", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
+		t.Fatalf("expected window validation error, got %v", err)
+	}
+	hugeWindow := callFunc(t, script, "huge_window", []Value{NewInt(nativeMaxInt)})
+	if hugeWindow.Kind() != KindArray || len(hugeWindow.Array()) != 0 {
+		t.Fatalf("expected huge window size to return empty array, got %v", hugeWindow)
+	}
+
+	overflowSize := int64(1 << 62)
+	if nativeMaxInt < overflowSize {
+		_, err = script.Call(context.Background(), "huge_chunk", []Value{NewInt(overflowSize)}, CallOptions{})
+		if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
+			t.Fatalf("expected chunk overflow validation error, got %v", err)
+		}
+		_, err = script.Call(context.Background(), "huge_window", []Value{NewInt(overflowSize)}, CallOptions{})
+		if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
+			t.Fatalf("expected window overflow validation error, got %v", err)
+		}
+	}
+	_, err = script.Call(context.Background(), "bad_group_by_stable", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "array.group_by_stable requires a block") {
+		t.Fatalf("expected group_by_stable block error, got %v", err)
+	}
 }
 
 func TestArrayConcatAndSubtract(t *testing.T) {
@@ -1773,6 +1897,503 @@ func TestTimeParseAndAliases(t *testing.T) {
 	}
 }
 
+func TestTimeParseCommonLayouts(t *testing.T) {
+	script := compileScript(t, `
+    def parse_common()
+      {
+        slash_date: Time.parse("2024/01/02", in: "UTC").to_s,
+        slash_datetime: Time.parse("2024/01/02 03:04:05", in: "UTC").to_s,
+        us_date: Time.parse("01/02/2024", in: "UTC").to_s,
+        us_datetime: Time.parse("01/02/2024 03:04:05", in: "UTC").to_s,
+        iso_no_zone: Time.parse("2024-01-02T03:04:05", in: "UTC").to_s,
+        rfc1123: Time.parse("Tue, 02 Jan 2024 03:04:05 UTC").to_s
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "parse_common", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	expect := map[string]string{
+		"slash_date":     "2024-01-02T00:00:00Z",
+		"slash_datetime": "2024-01-02T03:04:05Z",
+		"us_date":        "2024-01-02T00:00:00Z",
+		"us_datetime":    "2024-01-02T03:04:05Z",
+		"iso_no_zone":    "2024-01-02T03:04:05Z",
+		"rfc1123":        "2024-01-02T03:04:05Z",
+	}
+	for key, want := range expect {
+		val, ok := got[key]
+		if !ok {
+			t.Fatalf("missing key %s", key)
+		}
+		if val.Kind() != KindString || val.String() != want {
+			t.Fatalf("%s mismatch: got %v want %s", key, val, want)
+		}
+	}
+}
+
+func TestNumericConversionBuiltins(t *testing.T) {
+	script := compileScript(t, `
+    def conversions()
+      {
+        int_from_int: to_int(5),
+        int_from_float: to_int(5.0),
+        int_from_string: to_int("42"),
+        float_from_int: to_float(5),
+        float_from_float: to_float(1.25),
+        float_from_string: to_float("2.5")
+      }
+    end
+
+    def bad_int_fraction()
+      to_int(1.5)
+    end
+
+    def bad_int_string()
+      to_int("abc")
+    end
+
+	    def bad_float_string()
+	      to_float("abc")
+	    end
+
+	    def bad_float_nan()
+	      to_float("NaN")
+	    end
+
+	    def bad_float_inf()
+	      to_float("Inf")
+	    end
+	    `)
+
+	result := callFunc(t, script, "conversions", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if !got["int_from_int"].Equal(NewInt(5)) || !got["int_from_float"].Equal(NewInt(5)) || !got["int_from_string"].Equal(NewInt(42)) {
+		t.Fatalf("to_int conversions mismatch: %#v", got)
+	}
+	if got["float_from_int"].Kind() != KindFloat || got["float_from_int"].Float() != 5 {
+		t.Fatalf("float_from_int mismatch: %v", got["float_from_int"])
+	}
+	if got["float_from_float"].Kind() != KindFloat || got["float_from_float"].Float() != 1.25 {
+		t.Fatalf("float_from_float mismatch: %v", got["float_from_float"])
+	}
+	if got["float_from_string"].Kind() != KindFloat || got["float_from_string"].Float() != 2.5 {
+		t.Fatalf("float_from_string mismatch: %v", got["float_from_string"])
+	}
+
+	_, err := script.Call(context.Background(), "bad_int_fraction", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_int cannot convert non-integer float") {
+		t.Fatalf("expected fractional to_int error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_int_string", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_int expects a base-10 integer string") {
+		t.Fatalf("expected string to_int error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_float_string", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_float expects a numeric string") {
+		t.Fatalf("expected string to_float error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_float_nan", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_float expects a finite numeric string") {
+		t.Fatalf("expected NaN to_float error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_float_inf", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_float expects a finite numeric string") {
+		t.Fatalf("expected Inf to_float error, got %v", err)
+	}
+}
+
+func TestJSONBuiltins(t *testing.T) {
+	script := compileScript(t, `
+    def parse_payload()
+      JSON.parse("{\"name\":\"alex\",\"score\":10,\"tags\":[\"x\",true,null],\"ratio\":1.5}")
+    end
+
+    def stringify_payload()
+      payload = { name: "alex", score: 10, tags: ["x", true, nil], ratio: 1.5 }
+      JSON.stringify(payload)
+    end
+
+    def parse_invalid()
+      JSON.parse("{bad")
+    end
+
+    def stringify_unsupported()
+      JSON.stringify({ fn: helper })
+    end
+
+    def helper(value)
+      value
+    end
+    `)
+
+	parsed := callFunc(t, script, "parse_payload", nil)
+	if parsed.Kind() != KindHash {
+		t.Fatalf("expected parsed payload hash, got %v", parsed.Kind())
+	}
+	obj := parsed.Hash()
+	if !obj["name"].Equal(NewString("alex")) {
+		t.Fatalf("name mismatch: %v", obj["name"])
+	}
+	if !obj["score"].Equal(NewInt(10)) {
+		t.Fatalf("score mismatch: %v", obj["score"])
+	}
+	if obj["ratio"].Kind() != KindFloat || obj["ratio"].Float() != 1.5 {
+		t.Fatalf("ratio mismatch: %v", obj["ratio"])
+	}
+	compareArrays(t, obj["tags"], []Value{NewString("x"), NewBool(true), NewNil()})
+
+	stringified := callFunc(t, script, "stringify_payload", nil)
+	if stringified.Kind() != KindString {
+		t.Fatalf("expected JSON.stringify to return string, got %v", stringified.Kind())
+	}
+	if got := stringified.String(); got != `{"name":"alex","ratio":1.5,"score":10,"tags":["x",true,null]}` {
+		t.Fatalf("stringify mismatch: %q", got)
+	}
+
+	_, err := script.Call(context.Background(), "parse_invalid", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON") {
+		t.Fatalf("expected parse invalid JSON error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "stringify_unsupported", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.stringify unsupported value type function") {
+		t.Fatalf("expected stringify unsupported error, got %v", err)
+	}
+}
+
+func TestRegexBuiltins(t *testing.T) {
+	script := compileScript(t, `
+	    def helpers()
+	      {
+	        match_hit: Regex.match("ID-[0-9]+", "ID-12 ID-34"),
+	        match_miss: Regex.match("Z+", "ID-12"),
+	        match_empty: Regex.match("^", "ID-12"),
+	        replace_one: Regex.replace("ID-12 ID-34", "ID-[0-9]+", "X"),
+	        replace_all: Regex.replace_all("ID-12 ID-34", "ID-[0-9]+", "X"),
+	        replace_all_adjacent: Regex.replace_all("aaaa", "aa", "X"),
+	        replace_all_anchor: Regex.replace_all("abc", "^", "X"),
+	        replace_all_boundary: Regex.replace_all("ab", "\\b", "X"),
+	        replace_all_abutting_empty: Regex.replace_all("aa", "aa|", "X"),
+	        replace_capture: Regex.replace("ID-12 ID-34", "ID-([0-9]+)", "X-$1"),
+	        replace_boundary: Regex.replace("ab", "\\Bb", "X")
+	      }
+    end
+
+    def invalid_regex()
+      Regex.match("[", "abc")
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	out := result.Hash()
+	if !out["match_hit"].Equal(NewString("ID-12")) {
+		t.Fatalf("match_hit mismatch: %v", out["match_hit"])
+	}
+	if out["match_miss"].Kind() != KindNil {
+		t.Fatalf("expected match_miss nil, got %v", out["match_miss"])
+	}
+	if !out["match_empty"].Equal(NewString("")) {
+		t.Fatalf("match_empty mismatch: %#v", out["match_empty"])
+	}
+	if !out["replace_one"].Equal(NewString("X ID-34")) {
+		t.Fatalf("replace_one mismatch: %v", out["replace_one"])
+	}
+	if !out["replace_all"].Equal(NewString("X X")) {
+		t.Fatalf("replace_all mismatch: %v", out["replace_all"])
+	}
+	if !out["replace_all_adjacent"].Equal(NewString("XX")) {
+		t.Fatalf("replace_all_adjacent mismatch: %v", out["replace_all_adjacent"])
+	}
+	if !out["replace_all_anchor"].Equal(NewString("Xabc")) {
+		t.Fatalf("replace_all_anchor mismatch: %v", out["replace_all_anchor"])
+	}
+	if !out["replace_all_boundary"].Equal(NewString("XabX")) {
+		t.Fatalf("replace_all_boundary mismatch: %v", out["replace_all_boundary"])
+	}
+	if !out["replace_all_abutting_empty"].Equal(NewString("X")) {
+		t.Fatalf("replace_all_abutting_empty mismatch: %v", out["replace_all_abutting_empty"])
+	}
+	if !out["replace_capture"].Equal(NewString("X-12 ID-34")) {
+		t.Fatalf("replace_capture mismatch: %v", out["replace_capture"])
+	}
+	if !out["replace_boundary"].Equal(NewString("aX")) {
+		t.Fatalf("replace_boundary mismatch: %v", out["replace_boundary"])
+	}
+
+	_, err := script.Call(context.Background(), "invalid_regex", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.match invalid regex") {
+		t.Fatalf("expected invalid regex error, got %v", err)
+	}
+}
+
+func TestJSONAndRegexMalformedInputs(t *testing.T) {
+	script := compileScript(t, `
+    def bad_json_trailing()
+      JSON.parse("{\"a\":1}{\"b\":2}")
+    end
+
+    def bad_json_syntax()
+      JSON.parse("{\"a\":")
+    end
+
+    def bad_regex_replace()
+      Regex.replace("abc", "[", "x")
+    end
+
+    def bad_regex_replace_all()
+      Regex.replace_all("abc", "[", "x")
+    end
+    `)
+
+	_, err := script.Call(context.Background(), "bad_json_trailing", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON: trailing data") {
+		t.Fatalf("expected trailing JSON error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_json_syntax", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON") {
+		t.Fatalf("expected malformed JSON syntax error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_regex_replace", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.replace invalid regex") {
+		t.Fatalf("expected regex replace error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_regex_replace_all", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.replace_all invalid regex") {
+		t.Fatalf("expected regex replace_all error, got %v", err)
+	}
+}
+
+func TestJSONAndRegexSizeGuards(t *testing.T) {
+	engine := MustNewEngine(Config{MemoryQuotaBytes: 4 << 20})
+	script, err := engine.Compile(`
+    def parse_raw(raw)
+      JSON.parse(raw)
+    end
+
+    def stringify_value(value)
+      JSON.stringify(value)
+    end
+
+    def regex_match_guard(pattern, text)
+      Regex.match(pattern, text)
+    end
+
+    def regex_replace_all_guard(text, pattern, replacement)
+      Regex.replace_all(text, pattern, replacement)
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	largeJSON := `{"data":"` + strings.Repeat("x", maxJSONPayloadBytes) + `"}`
+	_, err = script.Call(context.Background(), "parse_raw", []Value{NewString(largeJSON)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.parse input exceeds limit") {
+		t.Fatalf("expected JSON.parse size guard error, got %v", err)
+	}
+
+	largeValue := NewHash(map[string]Value{
+		"data": NewString(strings.Repeat("x", maxJSONPayloadBytes)),
+	})
+	_, err = script.Call(context.Background(), "stringify_value", []Value{largeValue}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "JSON.stringify output exceeds limit") {
+		t.Fatalf("expected JSON.stringify size guard error, got %v", err)
+	}
+
+	largePattern := strings.Repeat("a", maxRegexPatternSize+1)
+	_, err = script.Call(context.Background(), "regex_match_guard", []Value{NewString(largePattern), NewString("aaa")}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.match pattern exceeds limit") {
+		t.Fatalf("expected Regex.match pattern guard error, got %v", err)
+	}
+
+	largeText := strings.Repeat("a", maxRegexInputBytes+1)
+	_, err = script.Call(context.Background(), "regex_match_guard", []Value{NewString("a+"), NewString(largeText)}, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "Regex.match text exceeds limit") {
+		t.Fatalf("expected Regex.match text guard error, got %v", err)
+	}
+
+	hugeReplacement := strings.Repeat("x", maxRegexInputBytes/2)
+	_, err = script.Call(
+		context.Background(),
+		"regex_replace_all_guard",
+		[]Value{NewString("abc"), NewString(""), NewString(hugeReplacement)},
+		CallOptions{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "Regex.replace_all output exceeds limit") {
+		t.Fatalf("expected Regex.replace_all output guard error, got %v", err)
+	}
+
+	largeRun := strings.Repeat("a", maxRegexInputBytes-1024)
+	replaced, err := script.Call(
+		context.Background(),
+		"regex_replace_all_guard",
+		[]Value{NewString(largeRun), NewString("(a)[a]*"), NewString("$1$1")},
+		CallOptions{},
+	)
+	if err != nil {
+		t.Fatalf("expected large capture replacement to succeed, got %v", err)
+	}
+	if replaced.Kind() != KindString || replaced.String() != "aa" {
+		t.Fatalf("expected capture replacement to produce \"aa\", got %v", replaced)
+	}
+}
+
+func TestLocaleSensitiveOperationsDeterministic(t *testing.T) {
+	script := compileScript(t, `
+    def locale_ops()
+      {
+        up_i: "i".upcase,
+        down_i_dot: "İ".downcase,
+        sorted_words: ["ä", "z", "a"].sort,
+        sorted_case: ["b", "A", "a"].sort
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "locale_ops", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	out := result.Hash()
+	if !out["up_i"].Equal(NewString("I")) {
+		t.Fatalf("up_i mismatch: %v", out["up_i"])
+	}
+	if !out["down_i_dot"].Equal(NewString("i")) {
+		t.Fatalf("down_i_dot mismatch: %v", out["down_i_dot"])
+	}
+	compareArrays(t, out["sorted_words"], []Value{NewString("a"), NewString("z"), NewString("ä")})
+	compareArrays(t, out["sorted_case"], []Value{NewString("A"), NewString("a"), NewString("b")})
+}
+
+func TestRandomIdentifierBuiltins(t *testing.T) {
+	engine := MustNewEngine(Config{
+		RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xAB}, 128)),
+	})
+	script, err := engine.Compile(`
+    def values()
+      {
+        uuid: uuid(),
+        id8: random_id(8),
+        id_default: random_id()
+      }
+    end
+
+	    def bad_length_type()
+	      random_id("x")
+	    end
+
+	    def bad_length_float()
+	      random_id(8.9)
+	    end
+
+	    def bad_length_value()
+	      random_id(0)
+	    end
+
+    def bad_uuid_args()
+      uuid(1)
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "values", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("values call failed: %v", err)
+	}
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", result.Kind())
+	}
+	out := result.Hash()
+	if !out["uuid"].Equal(NewString("abababab-abab-4bab-abab-abababababab")) {
+		t.Fatalf("uuid mismatch: %v", out["uuid"])
+	}
+	if !out["id8"].Equal(NewString("VVVVVVVV")) {
+		t.Fatalf("id8 mismatch: %v", out["id8"])
+	}
+	if got := out["id_default"]; got.Kind() != KindString || got.String() != "VVVVVVVVVVVVVVVV" {
+		t.Fatalf("id_default mismatch: %v", got)
+	}
+
+	if _, err := script.Call(context.Background(), "bad_length_type", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be integer") {
+		t.Fatalf("expected length type error, got %v", err)
+	}
+	if _, err := script.Call(context.Background(), "bad_length_float", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be integer") {
+		t.Fatalf("expected length float error, got %v", err)
+	}
+	if _, err := script.Call(context.Background(), "bad_length_value", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be positive") {
+		t.Fatalf("expected length value error, got %v", err)
+	}
+	if _, err := script.Call(context.Background(), "bad_uuid_args", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "uuid does not take arguments") {
+		t.Fatalf("expected uuid args error, got %v", err)
+	}
+}
+
+func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
+	engine := MustNewEngine(Config{RandomReader: bytes.NewReader([]byte{1, 2, 3})})
+	script, err := engine.Compile(`
+    def run()
+      uuid()
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "random source failed") {
+		t.Fatalf("expected random source failure, got %v", err)
+	}
+}
+
+func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
+	engine := MustNewEngine(Config{RandomReader: bytes.NewReader([]byte{248, 1})})
+	script, err := engine.Compile(`
+    def run()
+      random_id(1)
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if !got.Equal(NewString("b")) {
+		t.Fatalf("expected unbiased sample to produce b, got %v", got)
+	}
+}
+
+func TestRandomIdentifierBuiltinsRejectsStalledEntropy(t *testing.T) {
+	engine := MustNewEngine(Config{RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xFF}, 1024))})
+	script, err := engine.Compile(`
+    def run()
+      random_id(4)
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "random_id entropy source rejected too many bytes") {
+		t.Fatalf("expected stalled entropy error, got %v", err)
+	}
+}
+
 func TestNumericHelpers(t *testing.T) {
 	script := compileScript(t, `
     def int_helpers()
@@ -2397,7 +3018,52 @@ func TestArrayAndHashHelpers(t *testing.T) {
     def hash_compact()
       { a: 1, b: nil, c: 3 }.compact()
     end
-    `)
+
+	    def hash_remap()
+	      { first_name: "Alex", total_raised: 10 }.remap_keys({ first_name: :name, total_raised: :raised })
+	    end
+
+	    def hash_remap_collision()
+	      { a: 1, b: 2 }.remap_keys({ a: :x, b: :x })
+	    end
+
+    def hash_deep_transform()
+      payload = {
+        player_id: 7,
+        profile: { total_raised: 12 },
+        events: [{ amount_cents: 300 }]
+      }
+      payload.deep_transform_keys do |k|
+        if k == :player_id
+          :playerId
+        elsif k == :total_raised
+          :totalRaised
+        elsif k == :amount_cents
+          :amountCents
+        else
+          k
+        end
+      end
+    end
+
+    def bad_hash_remap()
+      { a: 1 }.remap_keys({ a: 1 })
+    end
+
+	    def bad_deep_transform()
+	      { a: 1 }.deep_transform_keys do |k|
+	        1
+	      end
+	    end
+
+	    def bad_deep_transform_cycle()
+	      cyc = {}
+	      cyc[:self] = cyc
+	      cyc.deep_transform_keys do |k|
+	        k
+	      end
+	    end
+	    `)
 
 	compact := callFunc(t, script, "array_helpers", nil)
 	compareArrays(t, compact, []Value{NewInt(1), NewInt(2)})
@@ -2437,6 +3103,64 @@ func TestArrayAndHashHelpers(t *testing.T) {
 	}
 	if _, ok := h["b"]; ok {
 		t.Fatalf("expected key b to be removed")
+	}
+
+	remapped := callFunc(t, script, "hash_remap", nil)
+	if remapped.Kind() != KindHash {
+		t.Fatalf("expected remapped hash, got %v", remapped.Kind())
+	}
+	compareHash(t, remapped.Hash(), map[string]Value{
+		"name":   NewString("Alex"),
+		"raised": NewInt(10),
+	})
+
+	colliding := callFunc(t, script, "hash_remap_collision", nil)
+	if colliding.Kind() != KindHash {
+		t.Fatalf("expected colliding remap hash, got %v", colliding.Kind())
+	}
+	if got := colliding.Hash()["x"]; got.Kind() != KindInt || got.Int() != 2 {
+		t.Fatalf("expected deterministic collision winner x=2, got %#v", got)
+	}
+
+	deepTransformed := callFunc(t, script, "hash_deep_transform", nil)
+	if deepTransformed.Kind() != KindHash {
+		t.Fatalf("expected deep transformed hash, got %v", deepTransformed.Kind())
+	}
+	dh := deepTransformed.Hash()
+	if !dh["playerId"].Equal(NewInt(7)) {
+		t.Fatalf("playerId mismatch: %v", dh["playerId"])
+	}
+	profileVal := dh["profile"]
+	if profileVal.Kind() != KindHash {
+		t.Fatalf("profile expected hash, got %v", profileVal.Kind())
+	}
+	profile, ok := profileVal.Hash()["totalRaised"]
+	if !ok || !profile.Equal(NewInt(12)) {
+		t.Fatalf("profile.totalRaised mismatch: %#v", profileVal)
+	}
+	events := dh["events"]
+	if events.Kind() != KindArray || len(events.Array()) != 1 {
+		t.Fatalf("events mismatch: %v", events)
+	}
+	event := events.Array()[0]
+	if event.Kind() != KindHash {
+		t.Fatalf("event expected hash, got %v", event.Kind())
+	}
+	if !event.Hash()["amountCents"].Equal(NewInt(300)) {
+		t.Fatalf("amountCents mismatch: %v", event.Hash()["amountCents"])
+	}
+
+	_, err := script.Call(context.Background(), "bad_hash_remap", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "hash.remap_keys mapping values must be symbol or string") {
+		t.Fatalf("expected bad remap error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_deep_transform", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "hash.deep_transform_keys block must return symbol or string") {
+		t.Fatalf("expected bad deep transform error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_deep_transform_cycle", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "hash.deep_transform_keys does not support cyclic structures") {
+		t.Fatalf("expected cyclic deep transform error, got %v", err)
 	}
 }
 
@@ -2649,6 +3373,11 @@ func TestStringTransforms(t *testing.T) {
     def helpers()
       original = "  hello  "
       ids = "ID-12 ID-34"
+      template_context = {
+        user: { name: "Alex", score: 42 },
+        id: :p_1,
+        missing_nil: nil
+      }
       {
         bytesize: "hé".bytesize,
         ord: "hé".ord,
@@ -2685,6 +3414,16 @@ func TestStringTransforms(t *testing.T) {
         replace: "old".replace("new"),
         strip_bang: original.strip!,
         strip_bang_nochange: "hello".strip!,
+        squish: "  hello \n\t world  ".squish,
+        squish_bang: "  hello \n\t world  ".squish!,
+        squish_bang_nochange: "hello world".squish!,
+        template_basic: "Hello {{name}}".template({ name: "Alex" }),
+        template_nested: "Player {{user.name}} scored {{user.score}}".template(template_context),
+        template_symbol: "ID={{id}}".template(template_context),
+        template_nil: "Value={{missing_nil}}".template(template_context),
+        template_missing_passthrough: "Hello {{missing}}".template({ name: "Alex" }),
+        template_spacing: "Hello {{ name }}".template({ name: "Alex" }),
+        template_multiple: "{{name}}/{{name}}".template({ name: "Alex" }),
         original_unchanged: original
       }
     end
@@ -2793,6 +3532,36 @@ func TestStringTransforms(t *testing.T) {
 	}
 	if got["strip_bang_nochange"].Kind() != KindNil {
 		t.Fatalf("strip_bang_nochange expected nil, got %v", got["strip_bang_nochange"])
+	}
+	if got["squish"].String() != "hello world" {
+		t.Fatalf("squish mismatch: %q", got["squish"].String())
+	}
+	if got["squish_bang"].String() != "hello world" {
+		t.Fatalf("squish_bang mismatch: %q", got["squish_bang"].String())
+	}
+	if got["squish_bang_nochange"].Kind() != KindNil {
+		t.Fatalf("squish_bang_nochange expected nil, got %v", got["squish_bang_nochange"])
+	}
+	if got["template_basic"].String() != "Hello Alex" {
+		t.Fatalf("template_basic mismatch: %q", got["template_basic"].String())
+	}
+	if got["template_nested"].String() != "Player Alex scored 42" {
+		t.Fatalf("template_nested mismatch: %q", got["template_nested"].String())
+	}
+	if got["template_symbol"].String() != "ID=p_1" {
+		t.Fatalf("template_symbol mismatch: %q", got["template_symbol"].String())
+	}
+	if got["template_nil"].String() != "Value=" {
+		t.Fatalf("template_nil mismatch: %q", got["template_nil"].String())
+	}
+	if got["template_missing_passthrough"].String() != "Hello {{missing}}" {
+		t.Fatalf("template_missing_passthrough mismatch: %q", got["template_missing_passthrough"].String())
+	}
+	if got["template_spacing"].String() != "Hello Alex" {
+		t.Fatalf("template_spacing mismatch: %q", got["template_spacing"].String())
+	}
+	if got["template_multiple"].String() != "Alex/Alex" {
+		t.Fatalf("template_multiple mismatch: %q", got["template_multiple"].String())
 	}
 	if got["original_unchanged"].String() != "  hello  " {
 		t.Fatalf("original_unchanged mismatch: %q", got["original_unchanged"].String())
@@ -3086,9 +3855,44 @@ end`,
 			errMsg: "string.strip! does not take arguments",
 		},
 		{
+			name:   "string.squish with argument",
+			script: `def run() "hello".squish(1) end`,
+			errMsg: "string.squish does not take arguments",
+		},
+		{
 			name:   "string.gsub! with missing argument",
 			script: `def run() "hello".gsub!("l") end`,
 			errMsg: "expects pattern and replacement",
+		},
+		{
+			name:   "string.template without context",
+			script: `def run() "hello {{name}}".template end`,
+			errMsg: "expects exactly one context hash",
+		},
+		{
+			name:   "string.template with non-hash context",
+			script: `def run() "hello {{name}}".template(1) end`,
+			errMsg: "context must be hash",
+		},
+		{
+			name:   "string.template with unknown keyword",
+			script: `def run() "hello {{name}}".template({}, foo: true) end`,
+			errMsg: "supports only strict keyword",
+		},
+		{
+			name:   "string.template with non-bool strict keyword",
+			script: `def run() "hello {{name}}".template({}, strict: 1) end`,
+			errMsg: "strict keyword must be bool",
+		},
+		{
+			name:   "string.template strict missing key",
+			script: `def run() "hello {{name}}".template({}, strict: true) end`,
+			errMsg: "missing placeholder name",
+		},
+		{
+			name:   "string.template with non-scalar value",
+			script: `def run() "hello {{items}}".template({ items: [1, 2] }) end`,
+			errMsg: "placeholder items value must be scalar",
 		},
 		{
 			name:   "hash.size with argument",

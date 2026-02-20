@@ -55,3 +55,21 @@ def non_zero(record)
     value == 0
   end
 end
+
+def remap_profile(record)
+  record.remap_keys({ first_name: :name, total_raised: :raised })
+end
+
+def deep_transform_profile(record)
+  record.deep_transform_keys do |key|
+    if key == :player_id
+      :playerId
+    elsif key == :total_raised
+      :totalRaised
+    elsif key == :amount_cents
+      :amountCents
+    else
+      key
+    end
+  end
+end

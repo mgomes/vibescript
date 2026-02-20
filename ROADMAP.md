@@ -281,35 +281,35 @@ Goal: reduce host-side boilerplate for common scripting tasks.
 
 ### Core Utilities
 
-- [ ] Add JSON parse/stringify built-ins.
-- [ ] Add regex matching/replacement helpers.
-- [ ] Add UUID/random identifier utilities with deterministic test hooks.
-- [ ] Add richer date/time parsing helpers for common layouts.
-- [ ] Add safer numeric conversions and clamp/round helpers.
+- [x] Add JSON parse/stringify built-ins.
+- [x] Add regex matching/replacement helpers.
+- [x] Add UUID/random identifier utilities with deterministic test hooks.
+- [x] Add richer date/time parsing helpers for common layouts.
+- [x] Add safer numeric conversions and clamp/round helpers.
 
 ### Collections and Strings
 
-- [ ] Expand hash helpers for nested transforms and key remapping.
-- [ ] Expand array helpers for chunking/windowing and stable group operations.
-- [ ] Add string helpers for common normalization and templating tasks.
+- [x] Expand hash helpers for nested transforms and key remapping.
+- [x] Expand array helpers for chunking/windowing and stable group operations.
+- [x] Add string helpers for common normalization and templating tasks.
 
 ### Compatibility and Safety
 
-- [ ] Define deterministic behavior for locale-sensitive operations.
-- [ ] Add quotas/guards around potentially expensive operations.
-- [ ] Ensure new stdlib functions are capability-safe where required.
+- [x] Define deterministic behavior for locale-sensitive operations.
+- [x] Add quotas/guards around potentially expensive operations.
+- [x] Ensure new stdlib functions are capability-safe where required.
 
 ### Testing and Docs
 
-- [ ] Add comprehensive docs pages and examples for each new family.
-- [ ] Add negative tests for malformed JSON/regex patterns.
-- [ ] Add benchmark coverage for hot stdlib paths.
+- [x] Add comprehensive docs pages and examples for each new family.
+- [x] Add negative tests for malformed JSON/regex patterns.
+- [x] Add benchmark coverage for hot stdlib paths.
 
 ### v0.18.0 Definition of Done
 
-- [ ] New stdlib is documented and example-backed.
-- [ ] Runtime behavior is deterministic across supported OSes.
-- [ ] Security/performance guardrails are validated by tests.
+- [x] New stdlib is documented and example-backed.
+- [x] Runtime behavior is deterministic across supported OSes.
+- [x] Security/performance guardrails are validated by tests.
 
 ---
 

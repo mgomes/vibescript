@@ -115,6 +115,7 @@ var (
 	errLoopNext            = errors.New("loop next")
 	errStepQuotaExceeded   = errors.New("step quota exceeded")
 	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
+	stringTemplatePattern  = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}`)
 )
 
 func (re *RuntimeError) Error() string {
@@ -1995,6 +1996,38 @@ func hashMember(obj Value, property string) (Value, error) {
 			}
 			return NewHash(out), nil
 		}), nil
+	case "deep_transform_keys":
+		return NewAutoBuiltin("hash.deep_transform_keys", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.deep_transform_keys does not take arguments")
+			}
+			if err := ensureBlock(block, "hash.deep_transform_keys"); err != nil {
+				return NewNil(), err
+			}
+			return deepTransformKeys(exec, receiver, block)
+		}), nil
+	case "remap_keys":
+		return NewBuiltin("hash.remap_keys", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
+				return NewNil(), fmt.Errorf("hash.remap_keys expects a key mapping hash")
+			}
+			entries := receiver.Hash()
+			mapping := args[0].Hash()
+			out := make(map[string]Value, len(entries))
+			for _, key := range sortedHashKeys(entries) {
+				value := entries[key]
+				if mapped, ok := mapping[key]; ok {
+					nextKey, err := valueToHashKey(mapped)
+					if err != nil {
+						return NewNil(), fmt.Errorf("hash.remap_keys mapping values must be symbol or string")
+					}
+					out[nextKey] = value
+					continue
+				}
+				out[key] = value
+			}
+			return NewHash(out), nil
+		}), nil
 	case "transform_values":
 		return NewAutoBuiltin("hash.transform_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -2040,6 +2073,71 @@ func sortedHashKeys(entries map[string]Value) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func deepTransformKeys(exec *Execution, value Value, block Value) (Value, error) {
+	return deepTransformKeysWithState(exec, value, block, &deepTransformState{
+		seenHashes: make(map[uintptr]struct{}),
+		seenArrays: make(map[uintptr]struct{}),
+	})
+}
+
+type deepTransformState struct {
+	seenHashes map[uintptr]struct{}
+	seenArrays map[uintptr]struct{}
+}
+
+func deepTransformKeysWithState(exec *Execution, value Value, block Value, state *deepTransformState) (Value, error) {
+	switch value.Kind() {
+	case KindHash, KindObject:
+		entries := value.Hash()
+		id := reflect.ValueOf(entries).Pointer()
+		if id != 0 {
+			if _, seen := state.seenHashes[id]; seen {
+				return NewNil(), fmt.Errorf("hash.deep_transform_keys does not support cyclic structures")
+			}
+			state.seenHashes[id] = struct{}{}
+			defer delete(state.seenHashes, id)
+		}
+		out := make(map[string]Value, len(entries))
+		for _, key := range sortedHashKeys(entries) {
+			nextKeyValue, err := exec.CallBlock(block, []Value{NewSymbol(key)})
+			if err != nil {
+				return NewNil(), err
+			}
+			nextKey, err := valueToHashKey(nextKeyValue)
+			if err != nil {
+				return NewNil(), fmt.Errorf("hash.deep_transform_keys block must return symbol or string")
+			}
+			nextValue, err := deepTransformKeysWithState(exec, entries[key], block, state)
+			if err != nil {
+				return NewNil(), err
+			}
+			out[nextKey] = nextValue
+		}
+		return NewHash(out), nil
+	case KindArray:
+		items := value.Array()
+		id := reflect.ValueOf(items).Pointer()
+		if id != 0 {
+			if _, seen := state.seenArrays[id]; seen {
+				return NewNil(), fmt.Errorf("hash.deep_transform_keys does not support cyclic structures")
+			}
+			state.seenArrays[id] = struct{}{}
+			defer delete(state.seenArrays, id)
+		}
+		out := make([]Value, len(items))
+		for i, item := range items {
+			nextValue, err := deepTransformKeysWithState(exec, item, block, state)
+			if err != nil {
+				return NewNil(), err
+			}
+			out[i] = nextValue
+		}
+		return NewArray(out), nil
+	default:
+		return value, nil
+	}
 }
 
 func chompDefault(text string) string {
@@ -2211,6 +2309,82 @@ func stringBangResult(original, updated string) Value {
 		return NewNil()
 	}
 	return NewString(updated)
+}
+
+func stringSquish(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func stringTemplateOption(kwargs map[string]Value) (bool, error) {
+	if len(kwargs) == 0 {
+		return false, nil
+	}
+	value, ok := kwargs["strict"]
+	if !ok || len(kwargs) != 1 {
+		return false, fmt.Errorf("string.template supports only strict keyword")
+	}
+	if value.Kind() != KindBool {
+		return false, fmt.Errorf("string.template strict keyword must be bool")
+	}
+	return value.Bool(), nil
+}
+
+func stringTemplateLookup(context Value, keyPath string) (Value, bool) {
+	current := context
+	for _, segment := range strings.Split(keyPath, ".") {
+		if segment == "" {
+			return NewNil(), false
+		}
+		if current.Kind() != KindHash && current.Kind() != KindObject {
+			return NewNil(), false
+		}
+		next, ok := current.Hash()[segment]
+		if !ok {
+			return NewNil(), false
+		}
+		current = next
+	}
+	return current, true
+}
+
+func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
+	switch value.Kind() {
+	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindTime:
+		return value.String(), nil
+	default:
+		return "", fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
+	}
+}
+
+func stringTemplate(text string, context Value, strict bool) (string, error) {
+	templateErr := error(nil)
+	rendered := stringTemplatePattern.ReplaceAllStringFunc(text, func(match string) string {
+		if templateErr != nil {
+			return match
+		}
+		submatch := stringTemplatePattern.FindStringSubmatch(match)
+		if len(submatch) != 2 {
+			return match
+		}
+		keyPath := submatch[1]
+		value, ok := stringTemplateLookup(context, keyPath)
+		if !ok {
+			if strict {
+				templateErr = fmt.Errorf("string.template missing placeholder %s", keyPath)
+			}
+			return match
+		}
+		segment, err := stringTemplateScalarValue(value, keyPath)
+		if err != nil {
+			templateErr = err
+			return match
+		}
+		return segment
+	})
+	if templateErr != nil {
+		return "", templateErr
+	}
+	return rendered, nil
 }
 
 func stringMember(str Value, property string) (Value, error) {
@@ -2463,6 +2637,21 @@ func stringMember(str Value, property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.strip! does not take arguments")
 			}
 			updated := strings.TrimSpace(receiver.String())
+			return stringBangResult(receiver.String(), updated), nil
+		}), nil
+	case "squish":
+		return NewAutoBuiltin("string.squish", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.squish does not take arguments")
+			}
+			return NewString(stringSquish(receiver.String())), nil
+		}), nil
+	case "squish!":
+		return NewAutoBuiltin("string.squish!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.squish! does not take arguments")
+			}
+			updated := stringSquish(receiver.String())
 			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "lstrip":
@@ -2758,6 +2947,24 @@ func stringMember(str Value, property string) (Value, error) {
 				values[i] = NewString(part)
 			}
 			return NewArray(values), nil
+		}), nil
+	case "template":
+		return NewAutoBuiltin("string.template", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.template expects exactly one context hash")
+			}
+			if args[0].Kind() != KindHash && args[0].Kind() != KindObject {
+				return NewNil(), fmt.Errorf("string.template context must be hash")
+			}
+			strict, err := stringTemplateOption(kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			rendered, err := stringTemplate(receiver.String(), args[0], strict)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewString(rendered), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
@@ -3311,6 +3518,60 @@ func arrayMember(array Value, property string) (Value, error) {
 			out := flattenValues(arr, depth)
 			return NewArray(out), nil
 		}), nil
+	case "chunk":
+		return NewAutoBuiltin("array.chunk", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.chunk expects a chunk size")
+			}
+			sizeValue := args[0]
+			maxNativeInt := int64(^uint(0) >> 1)
+			if sizeValue.Kind() != KindInt || sizeValue.Int() <= 0 || sizeValue.Int() > maxNativeInt {
+				return NewNil(), fmt.Errorf("array.chunk size must be a positive integer")
+			}
+			size := int(sizeValue.Int())
+			arr := receiver.Array()
+			if len(arr) == 0 {
+				return NewArray([]Value{}), nil
+			}
+			chunkCapacity := len(arr) / size
+			if len(arr)%size != 0 {
+				chunkCapacity++
+			}
+			chunks := make([]Value, 0, chunkCapacity)
+			for i := 0; i < len(arr); i += size {
+				end := i + size
+				if end > len(arr) {
+					end = len(arr)
+				}
+				part := make([]Value, end-i)
+				copy(part, arr[i:end])
+				chunks = append(chunks, NewArray(part))
+			}
+			return NewArray(chunks), nil
+		}), nil
+	case "window":
+		return NewAutoBuiltin("array.window", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.window expects a window size")
+			}
+			sizeValue := args[0]
+			maxNativeInt := int64(^uint(0) >> 1)
+			if sizeValue.Kind() != KindInt || sizeValue.Int() <= 0 || sizeValue.Int() > maxNativeInt {
+				return NewNil(), fmt.Errorf("array.window size must be a positive integer")
+			}
+			size := int(sizeValue.Int())
+			arr := receiver.Array()
+			if size > len(arr) {
+				return NewArray([]Value{}), nil
+			}
+			windows := make([]Value, 0, len(arr)-size+1)
+			for i := 0; i+size <= len(arr); i++ {
+				part := make([]Value, size)
+				copy(part, arr[i:i+size])
+				windows = append(windows, NewArray(part))
+			}
+			return NewArray(windows), nil
+		}), nil
 	case "join":
 		return NewAutoBuiltin("array.join", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 1 {
@@ -3482,6 +3743,42 @@ func arrayMember(array Value, property string) (Value, error) {
 				result[key] = NewArray(items)
 			}
 			return NewHash(result), nil
+		}), nil
+	case "group_by_stable":
+		return NewAutoBuiltin("array.group_by_stable", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.group_by_stable does not take arguments")
+			}
+			if err := ensureBlock(block, "array.group_by_stable"); err != nil {
+				return NewNil(), err
+			}
+			order := make([]string, 0)
+			keyValues := make(map[string]Value)
+			groups := make(map[string][]Value)
+			for _, item := range receiver.Array() {
+				groupValue, err := exec.CallBlock(block, []Value{item})
+				if err != nil {
+					return NewNil(), err
+				}
+				key, err := valueToHashKey(groupValue)
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.group_by_stable block must return symbol or string")
+				}
+				if _, exists := groups[key]; !exists {
+					order = append(order, key)
+					keyValues[key] = groupValue
+					groups[key] = []Value{}
+				}
+				groups[key] = append(groups[key], item)
+			}
+			result := make([]Value, 0, len(order))
+			for _, key := range order {
+				result = append(result, NewArray([]Value{
+					keyValues[key],
+					NewArray(groups[key]),
+				}))
+			}
+			return NewArray(result), nil
 		}), nil
 	case "tally":
 		return NewAutoBuiltin("array.tally", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
