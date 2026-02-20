@@ -72,7 +72,7 @@ Returns an alphanumeric random identifier string:
 
 ```vibe
 short = random_id(8)
-token = random_id
+token = random_id()
 ```
 
 ## Numeric Conversion
