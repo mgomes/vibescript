@@ -125,6 +125,39 @@ end`)
 	}
 }
 
+func TestRequireAliasConflictDoesNotLeakExportsWhenRescued(t *testing.T) {
+	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+
+	script, err := engine.Compile(`def helpers(value)
+  value
+end
+
+def run(value)
+  begin
+    require("helper", as: "helpers")
+  rescue
+    nil
+  end
+
+  begin
+    double(value)
+  rescue
+    "missing"
+  end
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindString || result.String() != "missing" {
+		t.Fatalf("expected leaked export lookup to fail, got %#v", result)
+	}
+}
+
 func TestRequirePreservesModuleLocalResolution(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
@@ -781,6 +814,17 @@ end`)
 	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
 		t.Fatalf("expected top-level export parse error, got %v", err)
 	}
+
+	_, err = engine.Compile(`def outer()
+  if true
+    export def nested()
+      1
+    end
+  end
+end`)
+	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
+		t.Fatalf("expected nested export parse error, got %v", err)
+	}
 }
 
 func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {
@@ -978,6 +1022,29 @@ end`)
 		t.Fatalf("expected denied module error")
 	} else if !strings.Contains(err.Error(), `require: module "helper" not allowed by policy`) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRequireModuleAllowListStarMatchesNestedModules(t *testing.T) {
+	engine := MustNewEngine(Config{
+		ModulePaths:     []string{filepath.Join("testdata", "modules")},
+		ModuleAllowList: []string{"*"},
+	})
+
+	script, err := engine.Compile(`def run(value)
+  mod = require("shared/math")
+  mod.double(value)
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(4)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 8 {
+		t.Fatalf("expected nested module call result 8, got %#v", result)
 	}
 }
 

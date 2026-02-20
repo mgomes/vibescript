@@ -111,9 +111,11 @@ const (
 )
 
 var (
-	errLoopBreak          = errors.New("loop break")
-	errLoopNext           = errors.New("loop next")
-	stringTemplatePattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}`)
+	errLoopBreak           = errors.New("loop break")
+	errLoopNext            = errors.New("loop next")
+	errStepQuotaExceeded   = errors.New("step quota exceeded")
+	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
+	stringTemplatePattern  = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}`)
 )
 
 func (re *RuntimeError) Error() string {
@@ -178,7 +180,7 @@ func newAssertionFailureError(message string) error {
 func (exec *Execution) step() error {
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {
-		return fmt.Errorf("step quota exceeded (%d)", exec.quota)
+		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
 	}
 	if exec.memoryQuota > 0 && (exec.steps&15) == 0 {
 		if err := exec.checkMemory(); err != nil {
@@ -236,6 +238,9 @@ func (exec *Execution) newRuntimeErrorWithType(kind string, message string, pos 
 func (exec *Execution) wrapError(err error, pos Position) error {
 	if err == nil {
 		return nil
+	}
+	if isHostControlSignal(err) {
+		return err
 	}
 	if _, ok := err.(*RuntimeError); ok {
 		return err
@@ -462,6 +467,14 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 			return exec.errorAt(pos, "private method %s", setterName)
 		}
 		_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), pos)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return exec.errorAt(pos, "break cannot cross call boundary")
+			}
+			if errors.Is(err, errLoopNext) {
+				return exec.errorAt(pos, "next cannot cross call boundary")
+			}
+		}
 		return err
 	}
 
@@ -1411,7 +1424,7 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
 	val, returned, err := exec.evalStatements(stmt.Body, env)
 
-	if err != nil && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
+	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
 		exec.pushRescuedError(err)
 		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, env)
 		exec.popRescuedError()
@@ -1442,7 +1455,22 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	return val, returned, nil
 }
 
+func isLoopControlSignal(err error) bool {
+	return errors.Is(err, errLoopBreak) || errors.Is(err, errLoopNext)
+}
+
+func isHostControlSignal(err error) bool {
+	return errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, errStepQuotaExceeded) ||
+		errors.Is(err, errMemoryQuotaExceeded)
+}
+
 func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {
+	var runtimeErr *RuntimeError
+	if !errors.As(err, &runtimeErr) {
+		return false
+	}
 	if rescueTy == nil {
 		return true
 	}
@@ -3961,7 +3989,33 @@ func formatReturnTypeMismatch(fnName string, err error) string {
 	return fmt.Sprintf("return type check failed for %s: %s", fnName, err.Error())
 }
 
+type typeValidationVisit struct {
+	valueKind ValueKind
+	valueID   uintptr
+	ty        *TypeExpr
+}
+
+type typeValidationState struct {
+	active map[typeValidationVisit]struct{}
+}
+
 func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
+	state := typeValidationState{
+		active: make(map[typeValidationVisit]struct{}),
+	}
+	return state.matches(val, ty)
+}
+
+func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
+	if visit, ok := typeValidationVisitFor(val, ty); ok {
+		if _, seen := s.active[visit]; seen {
+			// Recursive value/type pair already being validated higher in the stack.
+			return true, nil
+		}
+		s.active[visit] = struct{}{}
+		defer delete(s.active, visit)
+	}
+
 	if ty.Nullable && val.Kind() == KindNil {
 		return true, nil
 	}
@@ -3998,7 +4052,7 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 		}
 		elemType := ty.TypeArgs[0]
 		for _, elem := range val.Array() {
-			matches, err := valueMatchesType(elem, elemType)
+			matches, err := s.matches(elem, elemType)
 			if err != nil {
 				return false, err
 			}
@@ -4020,14 +4074,14 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 		keyType := ty.TypeArgs[0]
 		valueType := ty.TypeArgs[1]
 		for key, value := range val.Hash() {
-			keyMatches, err := valueMatchesType(NewString(key), keyType)
+			keyMatches, err := s.matches(NewString(key), keyType)
 			if err != nil {
 				return false, err
 			}
 			if !keyMatches {
 				return false, nil
 			}
-			valueMatches, err := valueMatchesType(value, valueType)
+			valueMatches, err := s.matches(value, valueType)
 			if err != nil {
 				return false, err
 			}
@@ -4051,7 +4105,7 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 			if !ok {
 				return false, nil
 			}
-			matches, err := valueMatchesType(fieldVal, fieldType)
+			matches, err := s.matches(fieldVal, fieldType)
 			if err != nil {
 				return false, err
 			}
@@ -4067,7 +4121,7 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 		return true, nil
 	case TypeUnion:
 		for _, option := range ty.Union {
-			matches, err := valueMatchesType(val, option)
+			matches, err := s.matches(val, option)
 			if err != nil {
 				return false, err
 			}
@@ -4079,6 +4133,31 @@ func valueMatchesType(val Value, ty *TypeExpr) (bool, error) {
 	default:
 		return false, fmt.Errorf("unknown type %s", ty.Name)
 	}
+}
+
+func typeValidationVisitFor(val Value, ty *TypeExpr) (typeValidationVisit, bool) {
+	if ty == nil {
+		return typeValidationVisit{}, false
+	}
+
+	var valueID uintptr
+	switch val.Kind() {
+	case KindArray:
+		valueID = reflect.ValueOf(val.Array()).Pointer()
+	case KindHash, KindObject:
+		valueID = reflect.ValueOf(val.Hash()).Pointer()
+	default:
+		return typeValidationVisit{}, false
+	}
+	if valueID == 0 {
+		return typeValidationVisit{}, false
+	}
+
+	return typeValidationVisit{
+		valueKind: val.Kind(),
+		valueID:   valueID,
+		ty:        ty,
+	}, true
 }
 
 func formatTypeExpr(ty *TypeExpr) string {

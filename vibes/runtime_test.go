@@ -680,6 +680,27 @@ func TestParseErrorIncludesCodeFrameAndKeywordMessage(t *testing.T) {
 	}
 }
 
+func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
+	script := compileScript(t, `
+    def hash_payload(cursor)
+      { next: cursor, break: cursor + 1 }
+    end
+
+    def call_payload(cursor)
+      list(next: cursor, break: cursor + 1)
+    end
+    `)
+
+	payload := callFunc(t, script, "hash_payload", []Value{NewInt(7)})
+	if payload.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", payload.Kind())
+	}
+	compareHash(t, payload.Hash(), map[string]Value{
+		"next":  NewInt(7),
+		"break": NewInt(8),
+	})
+}
+
 func TestParseErrorIncludesBlockParameterHint(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	_, err := engine.Compile("def broken()\n  [1].each do |a,|\n    a\n  end\nend\n")
@@ -1212,6 +1233,68 @@ func TestBeginRescueTypedMatching(t *testing.T) {
 	}
 }
 
+func TestBeginRescueDoesNotCatchLoopControlSignals(t *testing.T) {
+	script := compileScript(t, `
+    def break_in_loop()
+      out = []
+      for n in [1, 2, 3]
+        begin
+          if n == 2
+            break
+          end
+          out = out + [n]
+        rescue
+          out = out + ["rescued"]
+        end
+      end
+      out
+    end
+
+    def next_in_loop()
+      out = []
+      for n in [1, 2, 3]
+        begin
+          if n == 2
+            next
+          end
+          out = out + [n]
+        rescue
+          out = out + ["rescued"]
+        end
+      end
+      out
+    end
+    `)
+
+	breakOut := callFunc(t, script, "break_in_loop", nil)
+	compareArrays(t, breakOut, []Value{NewInt(1)})
+
+	nextOut := callFunc(t, script, "next_in_loop", nil)
+	compareArrays(t, nextOut, []Value{NewInt(1), NewInt(3)})
+}
+
+func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
+	engine := MustNewEngine(Config{StepQuota: 60})
+	script, err := engine.Compile(`
+    def run()
+      begin
+        while true
+        end
+      rescue
+        "rescued"
+      end
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
+		t.Fatalf("expected host quota signal to bypass rescue, got %v", err)
+	}
+}
+
 func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
 	engine := MustNewEngine(Config{})
 	_, err := engine.Compile(`
@@ -1383,6 +1466,20 @@ func TestLoopControlBreakAndNext(t *testing.T) {
 
 func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 	script := compileScript(t, `
+    class SetterBoundary
+      def break_set=(n)
+        if n == 2
+          break
+        end
+      end
+
+      def next_set=(n)
+        if n == 2
+          next
+        end
+      end
+    end
+
     def nested_break()
       out = []
       for i in [1, 2]
@@ -1436,6 +1533,22 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
       end
       out
     end
+
+    def break_from_setter_boundary()
+      target = SetterBoundary.new
+      for n in [1, 2, 3]
+        target.break_set = n
+      end
+      true
+    end
+
+    def next_from_setter_boundary()
+      target = SetterBoundary.new
+      for n in [1, 2, 3]
+        target.next_set = n
+      end
+      true
+    end
     `)
 
 	nestedBreak := callFunc(t, script, "nested_break", nil)
@@ -1452,6 +1565,16 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 	_, err = script.Call(context.Background(), "next_from_block_boundary", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
 		t.Fatalf("expected block-boundary next error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "break_from_setter_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "break cannot cross call boundary") {
+		t.Fatalf("expected setter-boundary break error, got %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "next_from_setter_boundary", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
+		t.Fatalf("expected setter-boundary next error, got %v", err)
 	}
 }
 
@@ -2807,6 +2930,36 @@ func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
 	_, err = script.Call(context.Background(), "takes_nullable_union", []Value{NewInt(1)}, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "argument v expected string | nil, got int") {
 		t.Fatalf("expected nullable union mismatch, got %v", err)
+	}
+}
+
+func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.T) {
+	script := compileScript(t, `
+    def run(payload: hash<string, hash<string, int>>) -> hash<string, hash<string, int>>
+      payload
+    end
+    `)
+
+	entries := map[string]Value{}
+	payload := NewHash(entries)
+	entries["self"] = payload
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := script.Call(context.Background(), "run", []Value{payload}, CallOptions{})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("expected type validation error for cyclic payload")
+		}
+		if !strings.Contains(err.Error(), "argument payload expected hash<string, hash<string, int>>") {
+			t.Fatalf("unexpected type error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("type validation did not terminate for cyclic payload")
 	}
 }
 

@@ -38,8 +38,9 @@ type parser struct {
 	prefixFns map[TokenType]prefixParseFn
 	infixFns  map[TokenType]infixParseFn
 
-	insideClass bool
-	privateNext bool
+	insideClass      bool
+	privateNext      bool
+	statementNesting int
 }
 
 func newParser(input string) *parser {
@@ -204,6 +205,10 @@ func (p *parser) parseFunctionStatement() Statement {
 		p.nextToken()
 	}
 	body := []Statement{}
+	p.statementNesting++
+	defer func() {
+		p.statementNesting--
+	}()
 	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
 		stmt := p.parseStatement()
 		if stmt != nil {
@@ -227,7 +232,7 @@ func (p *parser) parseFunctionStatement() Statement {
 
 func (p *parser) parseExportStatement() Statement {
 	pos := p.curToken.Pos
-	if p.insideClass {
+	if p.insideClass || p.statementNesting > 0 {
 		p.addParseError(pos, "export is only supported for top-level functions")
 		return nil
 	}
@@ -323,6 +328,10 @@ func (p *parser) parseClassStatement() Statement {
 	prevPrivate := p.privateNext
 	p.insideClass = true
 	p.privateNext = false
+	p.statementNesting++
+	defer func() {
+		p.statementNesting--
+	}()
 
 	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
 		switch p.curToken.Type {
@@ -557,6 +566,10 @@ func (p *parser) parseBlock(stop ...TokenType) []Statement {
 	for _, tt := range stop {
 		stopSet[tt] = struct{}{}
 	}
+	p.statementNesting++
+	defer func() {
+		p.statementNesting--
+	}()
 
 	for {
 		if _, ok := stopSet[p.curToken.Type]; ok || p.curToken.Type == tokenEOF {
@@ -902,7 +915,7 @@ func (p *parser) parseHashLiteral() Expression {
 }
 
 func (p *parser) parseHashPair() HashPair {
-	if p.curToken.Type != tokenIdent || p.peekToken.Type != tokenColon {
+	if !isLabelNameToken(p.curToken.Type) || p.peekToken.Type != tokenColon {
 		p.addParseError(p.curToken.Pos, "invalid hash pair: expected symbol-style key like name:")
 		return HashPair{}
 	}
@@ -982,7 +995,7 @@ func (p *parser) parseCallExpression(function Expression) Expression {
 }
 
 func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
-	if (p.curToken.Type == tokenIdent || p.curToken.Type == tokenIn) && p.peekToken.Type == tokenColon {
+	if isLabelNameToken(p.curToken.Type) && p.peekToken.Type == tokenColon {
 		name := p.curToken.Literal
 		p.nextToken()
 		p.nextToken()
@@ -1001,6 +1014,19 @@ func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
 	expr := p.parseExpression(lowestPrec)
 	if expr != nil {
 		*args = append(*args, expr)
+	}
+}
+
+func isLabelNameToken(tt TokenType) bool {
+	switch tt {
+	case tokenIdent,
+		tokenDef, tokenClass, tokenSelf, tokenPrivate, tokenProperty, tokenGetter, tokenSetter,
+		tokenEnd, tokenReturn, tokenYield, tokenDo, tokenFor, tokenWhile, tokenUntil,
+		tokenBreak, tokenNext, tokenIn, tokenIf, tokenCase, tokenWhen, tokenElsif, tokenElse,
+		tokenTrue, tokenFalse, tokenNil:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1339,6 +1365,10 @@ func (p *parser) parseTypeAtom() *TypeExpr {
 	ty.Nullable = nullable
 
 	if p.peekToken.Type == tokenLT {
+		if ty.Kind != TypeArray && ty.Kind != TypeHash {
+			p.addParseError(p.curToken.Pos, fmt.Sprintf("type %s does not accept type arguments", ty.Name))
+			return nil
+		}
 		p.nextToken()
 		p.nextToken()
 		typeArgs := []*TypeExpr{}
@@ -1363,6 +1393,18 @@ func (p *parser) parseTypeAtom() *TypeExpr {
 			break
 		}
 		ty.TypeArgs = typeArgs
+		switch ty.Kind {
+		case TypeArray:
+			if len(typeArgs) != 1 {
+				p.addParseError(ty.position, "array type expects exactly 1 type argument")
+				return nil
+			}
+		case TypeHash:
+			if len(typeArgs) != 2 {
+				p.addParseError(ty.position, "hash type expects exactly 2 type arguments")
+				return nil
+			}
+		}
 	}
 
 	return ty
