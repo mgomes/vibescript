@@ -2028,6 +2028,10 @@ func TestJSONAndRegexSizeGuards(t *testing.T) {
     def regex_match_guard(pattern, text)
       Regex.match(pattern, text)
     end
+
+    def regex_replace_all_guard(text, pattern, replacement)
+      Regex.replace_all(text, pattern, replacement)
+    end
     `)
 	if err != nil {
 		t.Fatalf("compile error: %v", err)
@@ -2057,6 +2061,17 @@ func TestJSONAndRegexSizeGuards(t *testing.T) {
 	_, err = script.Call(context.Background(), "regex_match_guard", []Value{NewString("a+"), NewString(largeText)}, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "Regex.match text exceeds limit") {
 		t.Fatalf("expected Regex.match text guard error, got %v", err)
+	}
+
+	hugeReplacement := strings.Repeat("x", maxRegexInputBytes/2)
+	_, err = script.Call(
+		context.Background(),
+		"regex_replace_all_guard",
+		[]Value{NewString("abc"), NewString(""), NewString(hugeReplacement)},
+		CallOptions{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "Regex.replace_all output exceeds limit") {
+		t.Fatalf("expected Regex.replace_all output guard error, got %v", err)
 	}
 }
 

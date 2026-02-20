@@ -465,6 +465,9 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 	if len(text) > maxRegexInputBytes {
 		return NewNil(), fmt.Errorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
+	if len(replacement) > maxRegexInputBytes {
+		return NewNil(), fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
 
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -472,7 +475,11 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 	}
 
 	if replaceAll {
-		return NewString(re.ReplaceAllString(text, replacement)), nil
+		replaced, err := regexReplaceAllWithLimit(re, text, replacement, method)
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewString(replaced), nil
 	}
 
 	loc := re.FindStringSubmatchIndex(text)
@@ -480,5 +487,38 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 		return NewString(text), nil
 	}
 	replaced := string(re.ExpandString(nil, replacement, text, loc))
+	outputLen := len(text) - (loc[1] - loc[0]) + len(replaced)
+	if outputLen > maxRegexInputBytes {
+		return NewNil(), fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
 	return NewString(text[:loc[0]] + replaced + text[loc[1]:]), nil
+}
+
+func regexReplaceAllWithLimit(re *regexp.Regexp, text string, replacement string, method string) (string, error) {
+	matches := re.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return text, nil
+	}
+
+	out := make([]byte, 0, len(text))
+	last := 0
+	for _, loc := range matches {
+		segmentLen := loc[0] - last
+		if len(out) > maxRegexInputBytes-segmentLen {
+			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		}
+		out = append(out, text[last:loc[0]]...)
+		out = re.ExpandString(out, replacement, text, loc)
+		if len(out) > maxRegexInputBytes {
+			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		}
+		last = loc[1]
+	}
+
+	tailLen := len(text) - last
+	if len(out) > maxRegexInputBytes-tailLen {
+		return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
+	out = append(out, text[last:]...)
+	return string(out), nil
 }
