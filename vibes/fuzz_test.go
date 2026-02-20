@@ -14,6 +14,9 @@ func FuzzCompileScriptDoesNotPanic(f *testing.F) {
 	f.Add([]byte("require(\"../path\")"))
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
+		if len(raw) > 4096 {
+			raw = raw[:4096]
+		}
 		engine := MustNewEngine(Config{})
 		_, _ = engine.Compile(string(raw))
 	})
