@@ -463,11 +463,10 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 		return NewString(re.ReplaceAllString(text, replacement)), nil
 	}
 
-	loc := re.FindStringIndex(text)
+	loc := re.FindStringSubmatchIndex(text)
 	if loc == nil {
 		return NewString(text), nil
 	}
-	segment := text[loc[0]:loc[1]]
-	replaced := re.ReplaceAllString(segment, replacement)
+	replaced := string(re.ExpandString(nil, replacement, text, loc))
 	return NewString(text[:loc[0]] + replaced + text[loc[1]:]), nil
 }

@@ -1904,7 +1904,8 @@ func TestRegexBuiltins(t *testing.T) {
 	        match_empty: Regex.match("^", "ID-12"),
 	        replace_one: Regex.replace("ID-12 ID-34", "ID-[0-9]+", "X"),
 	        replace_all: Regex.replace_all("ID-12 ID-34", "ID-[0-9]+", "X"),
-	        replace_capture: Regex.replace("ID-12 ID-34", "ID-([0-9]+)", "X-$1")
+	        replace_capture: Regex.replace("ID-12 ID-34", "ID-([0-9]+)", "X-$1"),
+	        replace_boundary: Regex.replace("ab", "\\Bb", "X")
 	      }
     end
 
@@ -1935,6 +1936,9 @@ func TestRegexBuiltins(t *testing.T) {
 	}
 	if !out["replace_capture"].Equal(NewString("X-12 ID-34")) {
 		t.Fatalf("replace_capture mismatch: %v", out["replace_capture"])
+	}
+	if !out["replace_boundary"].Equal(NewString("aX")) {
+		t.Fatalf("replace_boundary mismatch: %v", out["replace_boundary"])
 	}
 
 	_, err := script.Call(context.Background(), "invalid_regex", nil, CallOptions{})
@@ -2754,12 +2758,20 @@ func TestArrayAndHashHelpers(t *testing.T) {
       { a: 1 }.remap_keys({ a: 1 })
     end
 
-    def bad_deep_transform()
-      { a: 1 }.deep_transform_keys do |k|
-        1
-      end
-    end
-    `)
+	    def bad_deep_transform()
+	      { a: 1 }.deep_transform_keys do |k|
+	        1
+	      end
+	    end
+
+	    def bad_deep_transform_cycle()
+	      cyc = {}
+	      cyc[:self] = cyc
+	      cyc.deep_transform_keys do |k|
+	        k
+	      end
+	    end
+	    `)
 
 	compact := callFunc(t, script, "array_helpers", nil)
 	compareArrays(t, compact, []Value{NewInt(1), NewInt(2)})
@@ -2853,6 +2865,10 @@ func TestArrayAndHashHelpers(t *testing.T) {
 	_, err = script.Call(context.Background(), "bad_deep_transform", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "hash.deep_transform_keys block must return symbol or string") {
 		t.Fatalf("expected bad deep transform error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_deep_transform_cycle", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "hash.deep_transform_keys does not support cyclic structures") {
+		t.Fatalf("expected cyclic deep transform error, got %v", err)
 	}
 }
 
