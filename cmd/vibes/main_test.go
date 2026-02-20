@@ -108,6 +108,32 @@ end`)
 	}
 }
 
+func TestAnalyzeCommandReportsUnreachableAfterTerminatingElsifChain(t *testing.T) {
+	scriptPath := writeScript(t, `def run()
+  if false
+    return 1
+  elsif true
+    return 2
+  else
+    return 3
+  end
+  4
+end`)
+
+	out, err := captureStdout(t, func() error {
+		return analyzeCommand([]string{scriptPath})
+	})
+	if err == nil {
+		t.Fatalf("expected analyze command to report lint failures")
+	}
+	if !strings.Contains(err.Error(), "analysis found 1 issue(s)") {
+		t.Fatalf("unexpected analyze error: %v", err)
+	}
+	if !strings.Contains(out, "unreachable statement") {
+		t.Fatalf("expected unreachable statement warning, got %q", out)
+	}
+}
+
 func TestComputeModulePathsIncludesScriptDirAndDedupesExtras(t *testing.T) {
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "main.vibe")

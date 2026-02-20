@@ -141,15 +141,14 @@ func statementTerminates(function string, stmt vibes.Statement, warnings *[]lint
 
 func ifStatementTerminates(function string, stmt *vibes.IfStmt, warnings *[]lintWarning) bool {
 	consequentTerminated := lintStatements(function, stmt.Consequent, warnings)
-	if len(stmt.Alternate) == 0 {
-		return false
-	}
-
 	elseIfAllTerminated := true
 	for _, elseIf := range stmt.ElseIf {
-		if !ifStatementTerminates(function, elseIf, warnings) {
+		if !lintStatements(function, elseIf.Consequent, warnings) {
 			elseIfAllTerminated = false
 		}
+	}
+	if len(stmt.Alternate) == 0 {
+		return false
 	}
 	alternateTerminated := lintStatements(function, stmt.Alternate, warnings)
 	return consequentTerminated && elseIfAllTerminated && alternateTerminated
