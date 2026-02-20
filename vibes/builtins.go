@@ -516,18 +516,18 @@ func regexReplaceAllWithLimit(re *regexp.Regexp, text string, replacement string
 		}
 		lastAppended = loc[1]
 
-		if loc[1] > searchStart {
+		if loc[1] > loc[0] {
 			searchStart = loc[1]
 			continue
 		}
-		if searchStart >= len(text) {
+		if loc[1] >= len(text) {
 			break
 		}
-		_, size := utf8.DecodeRuneInString(text[searchStart:])
+		_, size := utf8.DecodeRuneInString(text[loc[1]:])
 		if size == 0 {
 			size = 1
 		}
-		searchStart += size
+		searchStart = loc[1] + size
 	}
 
 	tailLen := len(text) - lastAppended
