@@ -115,11 +115,10 @@ func builtinRandomID(exec *Execution, receiver Value, args []Value, kwargs map[s
 		return NewNil(), fmt.Errorf("random_id expects at most one length argument")
 	}
 	if len(args) == 1 {
-		n, err := valueToInt64(args[0])
-		if err != nil {
+		if args[0].Kind() != KindInt {
 			return NewNil(), fmt.Errorf("random_id length must be integer")
 		}
-		length = n
+		length = args[0].Int()
 	}
 	if length <= 0 {
 		return NewNil(), fmt.Errorf("random_id length must be positive")

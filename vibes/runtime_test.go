@@ -2070,13 +2070,17 @@ func TestRandomIdentifierBuiltins(t *testing.T) {
       }
     end
 
-    def bad_length_type()
-      random_id("x")
-    end
+	    def bad_length_type()
+	      random_id("x")
+	    end
 
-    def bad_length_value()
-      random_id(0)
-    end
+	    def bad_length_float()
+	      random_id(8.9)
+	    end
+
+	    def bad_length_value()
+	      random_id(0)
+	    end
 
     def bad_uuid_args()
       uuid(1)
@@ -2106,6 +2110,9 @@ func TestRandomIdentifierBuiltins(t *testing.T) {
 
 	if _, err := script.Call(context.Background(), "bad_length_type", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be integer") {
 		t.Fatalf("expected length type error, got %v", err)
+	}
+	if _, err := script.Call(context.Background(), "bad_length_float", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be integer") {
+		t.Fatalf("expected length float error, got %v", err)
 	}
 	if _, err := script.Call(context.Background(), "bad_length_value", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be positive") {
 		t.Fatalf("expected length value error, got %v", err)
