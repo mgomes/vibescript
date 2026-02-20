@@ -22,8 +22,9 @@ fail() {
 [[ -f ROADMAP.md ]] || fail "missing ROADMAP.md"
 [[ -f cmd/vibes/repl.go ]] || fail "missing cmd/vibes/repl.go"
 
-grep -Eq "^## ${version}( |$)" CHANGELOG.md || fail "CHANGELOG.md missing heading for ${version}"
-grep -Eq "^## ${version}( |$)" ROADMAP.md || fail "ROADMAP.md missing milestone heading for ${version}"
+version_ere="${version//./\\.}"
+grep -Eq "^## ${version_ere}( |$)" CHANGELOG.md || fail "CHANGELOG.md missing heading for ${version}"
+grep -Eq "^## ${version_ere}( |$)" ROADMAP.md || fail "ROADMAP.md missing milestone heading for ${version}"
 grep -Fq "version := mutedStyle.Render(\"${version}\")" cmd/vibes/repl.go || fail "REPL version label does not match ${version}"
 
 is_tag_trigger=0
