@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -495,30 +496,64 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 }
 
 func regexReplaceAllWithLimit(re *regexp.Regexp, text string, replacement string, method string) (string, error) {
-	matches := re.FindAllStringSubmatchIndex(text, -1)
-	if len(matches) == 0 {
-		return text, nil
-	}
-
 	out := make([]byte, 0, len(text))
-	last := 0
-	for _, loc := range matches {
-		segmentLen := loc[0] - last
+	lastAppended := 0
+	searchStart := 0
+	lastMatchEnd := -1
+	for searchStart <= len(text) {
+		loc := re.FindStringSubmatchIndex(text[searchStart:])
+		if loc == nil {
+			break
+		}
+		for i := range loc {
+			if loc[i] >= 0 {
+				loc[i] += searchStart
+			}
+		}
+		start := loc[0]
+		end := loc[1]
+		if start == end && start == lastMatchEnd {
+			if searchStart >= len(text) {
+				break
+			}
+			_, size := utf8.DecodeRuneInString(text[searchStart:])
+			if size == 0 {
+				size = 1
+			}
+			searchStart += size
+			continue
+		}
+
+		segmentLen := start - lastAppended
 		if len(out) > maxRegexInputBytes-segmentLen {
 			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
-		out = append(out, text[last:loc[0]]...)
+		out = append(out, text[lastAppended:start]...)
 		out = re.ExpandString(out, replacement, text, loc)
 		if len(out) > maxRegexInputBytes {
 			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
-		last = loc[1]
+		lastAppended = end
+		lastMatchEnd = end
+
+		if end > searchStart {
+			searchStart = end
+			continue
+		}
+		if searchStart >= len(text) {
+			break
+		}
+		_, size := utf8.DecodeRuneInString(text[searchStart:])
+		if size == 0 {
+			size = 1
+		}
+		searchStart += size
 	}
 
-	tailLen := len(text) - last
+	tailLen := len(text) - lastAppended
 	if len(out) > maxRegexInputBytes-tailLen {
 		return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
-	out = append(out, text[last:]...)
+	out = append(out, text[lastAppended:]...)
 	return string(out), nil
 }
