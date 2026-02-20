@@ -499,10 +499,22 @@ func regexReplaceAllWithLimit(re *regexp.Regexp, text string, replacement string
 	out := make([]byte, 0, len(text))
 	lastAppended := 0
 	searchStart := 0
+	lastMatchEnd := -1
 	for searchStart <= len(text) {
 		loc, found := nextRegexReplaceAllSubmatchIndex(re, text, searchStart)
 		if !found {
 			break
+		}
+		if loc[0] == loc[1] && loc[0] == lastMatchEnd {
+			if loc[0] >= len(text) {
+				break
+			}
+			_, size := utf8.DecodeRuneInString(text[loc[0]:])
+			if size == 0 {
+				size = 1
+			}
+			searchStart = loc[0] + size
+			continue
 		}
 
 		segmentLen := loc[0] - lastAppended
@@ -515,6 +527,7 @@ func regexReplaceAllWithLimit(re *regexp.Regexp, text string, replacement string
 			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
 		lastAppended = loc[1]
+		lastMatchEnd = loc[1]
 
 		if loc[1] > loc[0] {
 			searchStart = loc[1]
