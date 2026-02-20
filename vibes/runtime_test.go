@@ -2097,6 +2097,20 @@ func TestJSONAndRegexSizeGuards(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Regex.replace_all output exceeds limit") {
 		t.Fatalf("expected Regex.replace_all output guard error, got %v", err)
 	}
+
+	largeRun := strings.Repeat("a", maxRegexInputBytes-1024)
+	replaced, err := script.Call(
+		context.Background(),
+		"regex_replace_all_guard",
+		[]Value{NewString(largeRun), NewString("(a)[a]*"), NewString("$1$1")},
+		CallOptions{},
+	)
+	if err != nil {
+		t.Fatalf("expected large capture replacement to succeed, got %v", err)
+	}
+	if replaced.Kind() != KindString || replaced.String() != "aa" {
+		t.Fatalf("expected capture replacement to produce \"aa\", got %v", replaced)
+	}
 }
 
 func TestLocaleSensitiveOperationsDeterministic(t *testing.T) {

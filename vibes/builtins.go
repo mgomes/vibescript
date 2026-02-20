@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -495,83 +496,68 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 }
 
 func regexReplaceAllWithLimit(re *regexp.Regexp, text string, replacement string, method string) (string, error) {
-	literalBytesPerMatch, refCountPerMatch := regexReplacementTemplateStats(replacement)
-	matchCount := int64(0)
-	totalMatchBytes := int64(0)
-	referenceMatchBytes := int64(0)
+	out := make([]byte, 0, len(text))
+	lastAppended := 0
+	searchStart := 0
+	for searchStart <= len(text) {
+		loc, found := nextRegexReplaceAllSubmatchIndex(re, text, searchStart)
+		if !found {
+			break
+		}
 
-	// Use regexp's native replacement scanner so anchoring/boundary semantics
-	// match the final replace_all behavior while estimating worst-case output.
-	re.ReplaceAllStringFunc(text, func(match string) string {
-		matchCount++
-		matchBytes := int64(len(match))
-		totalMatchBytes += matchBytes
-		referenceMatchBytes += matchBytes * int64(refCountPerMatch)
-		return match
-	})
+		segmentLen := loc[0] - lastAppended
+		if len(out) > maxRegexInputBytes-segmentLen {
+			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		}
+		out = append(out, text[lastAppended:loc[0]]...)
+		out = re.ExpandString(out, replacement, text, loc)
+		if len(out) > maxRegexInputBytes {
+			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		}
+		lastAppended = loc[1]
 
-	upperBound := int64(len(text)) - totalMatchBytes + matchCount*int64(literalBytesPerMatch) + referenceMatchBytes
-	if upperBound > int64(maxRegexInputBytes) {
-		return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		if loc[1] > searchStart {
+			searchStart = loc[1]
+			continue
+		}
+		if searchStart >= len(text) {
+			break
+		}
+		_, size := utf8.DecodeRuneInString(text[searchStart:])
+		if size == 0 {
+			size = 1
+		}
+		searchStart += size
 	}
 
-	out := re.ReplaceAllString(text, replacement)
-	if len(out) > maxRegexInputBytes {
+	tailLen := len(text) - lastAppended
+	if len(out) > maxRegexInputBytes-tailLen {
 		return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
-	return out, nil
+	out = append(out, text[lastAppended:]...)
+	return string(out), nil
 }
 
-func regexReplacementTemplateStats(replacement string) (literalBytes int, referenceCount int) {
-	for i := 0; i < len(replacement); {
-		if replacement[i] != '$' {
-			literalBytes++
-			i++
+func nextRegexReplaceAllSubmatchIndex(re *regexp.Regexp, text string, start int) ([]int, bool) {
+	windowStart := start
+	if windowStart > 0 {
+		windowStart--
+	}
+	locs := re.FindAllStringSubmatchIndex(text[windowStart:], 2)
+	for _, loc := range locs {
+		absStart := loc[0] + windowStart
+		if absStart < start {
 			continue
 		}
-		if i+1 >= len(replacement) {
-			literalBytes++
-			i++
-			continue
-		}
-		if replacement[i+1] == '$' {
-			literalBytes++
-			i += 2
-			continue
-		}
-		if replacement[i+1] == '{' {
-			j := i + 2
-			for j < len(replacement) && replacement[j] != '}' {
-				j++
-			}
-			if j < len(replacement) {
-				referenceCount++
-				i = j + 1
+		abs := make([]int, len(loc))
+		for i, index := range loc {
+			if index < 0 {
+				abs[i] = -1
 				continue
 			}
-			literalBytes++
-			i++
-			continue
+			abs[i] = index + windowStart
 		}
-
-		j := i + 1
-		for j < len(replacement) && isRegexReplacementNameByte(replacement[j]) {
-			j++
-		}
-		if j == i+1 {
-			literalBytes++
-			i++
-			continue
-		}
-		referenceCount++
-		i = j
+		return abs, true
 	}
-	return literalBytes, referenceCount
-}
-
-func isRegexReplacementNameByte(char byte) bool {
-	return (char >= '0' && char <= '9') ||
-		(char >= 'a' && char <= 'z') ||
-		(char >= 'A' && char <= 'Z') ||
-		char == '_'
+	return nil, false
 }
