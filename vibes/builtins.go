@@ -552,25 +552,46 @@ func regexReplaceAllWithLimit(re *regexp.Regexp, text string, replacement string
 }
 
 func nextRegexReplaceAllSubmatchIndex(re *regexp.Regexp, text string, start int) ([]int, bool) {
-	windowStart := start
-	if windowStart > 0 {
-		windowStart--
+	loc := re.FindStringSubmatchIndex(text[start:])
+	if loc == nil {
+		return nil, false
 	}
+	direct := offsetRegexSubmatchIndex(loc, start)
+	if start == 0 || direct[0] > start {
+		return direct, true
+	}
+
+	windowStart := start - 1
 	locs := re.FindAllStringSubmatchIndex(text[windowStart:], 2)
-	for _, loc := range locs {
-		absStart := loc[0] + windowStart
-		if absStart < start {
-			continue
-		}
-		abs := make([]int, len(loc))
-		for i, index := range loc {
-			if index < 0 {
-				abs[i] = -1
-				continue
-			}
-			abs[i] = index + windowStart
-		}
-		return abs, true
+	if len(locs) == 0 {
+		return nil, false
+	}
+
+	first := offsetRegexSubmatchIndex(locs[0], windowStart)
+	if first[0] >= start {
+		return first, true
+	}
+	if first[1] > start {
+		return direct, true
+	}
+	if len(locs) < 2 {
+		return nil, false
+	}
+	second := offsetRegexSubmatchIndex(locs[1], windowStart)
+	if second[0] >= start {
+		return second, true
 	}
 	return nil, false
+}
+
+func offsetRegexSubmatchIndex(loc []int, offset int) []int {
+	abs := make([]int, len(loc))
+	for i, index := range loc {
+		if index < 0 {
+			abs[i] = -1
+			continue
+		}
+		abs[i] = index + offset
+	}
+	return abs
 }

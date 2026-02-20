@@ -1954,6 +1954,7 @@ func TestRegexBuiltins(t *testing.T) {
 	        match_empty: Regex.match("^", "ID-12"),
 	        replace_one: Regex.replace("ID-12 ID-34", "ID-[0-9]+", "X"),
 	        replace_all: Regex.replace_all("ID-12 ID-34", "ID-[0-9]+", "X"),
+	        replace_all_adjacent: Regex.replace_all("aaaa", "aa", "X"),
 	        replace_all_anchor: Regex.replace_all("abc", "^", "X"),
 	        replace_all_boundary: Regex.replace_all("ab", "\\b", "X"),
 	        replace_all_abutting_empty: Regex.replace_all("aa", "aa|", "X"),
@@ -1986,6 +1987,9 @@ func TestRegexBuiltins(t *testing.T) {
 	}
 	if !out["replace_all"].Equal(NewString("X X")) {
 		t.Fatalf("replace_all mismatch: %v", out["replace_all"])
+	}
+	if !out["replace_all_adjacent"].Equal(NewString("XX")) {
+		t.Fatalf("replace_all_adjacent mismatch: %v", out["replace_all_adjacent"])
 	}
 	if !out["replace_all_anchor"].Equal(NewString("Xabc")) {
 		t.Fatalf("replace_all_anchor mismatch: %v", out["replace_all_anchor"])
