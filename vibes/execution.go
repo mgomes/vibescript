@@ -3503,7 +3503,11 @@ func arrayMember(array Value, property string) (Value, error) {
 			if len(arr) == 0 {
 				return NewArray([]Value{}), nil
 			}
-			chunks := make([]Value, 0, (len(arr)+size-1)/size)
+			chunkCapacity := len(arr) / size
+			if len(arr)%size != 0 {
+				chunkCapacity++
+			}
+			chunks := make([]Value, 0, chunkCapacity)
 			for i := 0; i < len(arr); i += size {
 				end := i + size
 				if end > len(arr) {

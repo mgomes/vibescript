@@ -572,6 +572,10 @@ func TestArrayChunkWindowValidation(t *testing.T) {
       [1, 2, 3].chunk(0)
     end
 
+    def huge_chunk(size)
+      [1, 2].chunk(size)
+    end
+
     def bad_window()
       [1, 2, 3].window("2")
     end
@@ -585,6 +589,16 @@ func TestArrayChunkWindowValidation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
 		t.Fatalf("expected chunk validation error, got %v", err)
 	}
+	nativeMaxInt := int(^uint(0) >> 1)
+	hugeChunk := callFunc(t, script, "huge_chunk", []Value{NewInt(int64(nativeMaxInt))})
+	if hugeChunk.Kind() != KindArray {
+		t.Fatalf("expected huge chunk result to be array, got %v", hugeChunk.Kind())
+	}
+	chunks := hugeChunk.Array()
+	if len(chunks) != 1 {
+		t.Fatalf("expected one chunk for oversized chunk size, got %d", len(chunks))
+	}
+	compareArrays(t, chunks[0], []Value{NewInt(1), NewInt(2)})
 	_, err = script.Call(context.Background(), "bad_window", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
 		t.Fatalf("expected window validation error, got %v", err)
