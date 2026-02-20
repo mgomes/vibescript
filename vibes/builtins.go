@@ -17,6 +17,7 @@ import (
 const (
 	randomIDAlphabet       = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	randomIDUnbiasedCutoff = byte((256 / len(randomIDAlphabet)) * len(randomIDAlphabet))
+	maxRandomIDStallReads  = 8
 	maxJSONPayloadBytes    = 1 << 20
 	maxRegexInputBytes     = 1 << 20
 	maxRegexPatternSize    = 16 << 10
@@ -130,21 +131,32 @@ func builtinRandomID(exec *Execution, receiver Value, args []Value, kwargs map[s
 	}
 
 	chars := make([]byte, 0, length)
+	stalledReads := 0
 	for int64(len(chars)) < length {
 		needed := int(length) - len(chars)
 		raw, err := exec.engine.randomBytes(needed)
 		if err != nil {
 			return NewNil(), err
 		}
+		acceptedThisRead := 0
 		for _, b := range raw {
 			if b >= randomIDUnbiasedCutoff {
 				continue
 			}
 			chars = append(chars, randomIDAlphabet[int(b)%len(randomIDAlphabet)])
+			acceptedThisRead++
 			if int64(len(chars)) == length {
 				break
 			}
 		}
+		if acceptedThisRead == 0 {
+			stalledReads++
+			if stalledReads > maxRandomIDStallReads {
+				return NewNil(), fmt.Errorf("random_id entropy source rejected too many bytes")
+			}
+			continue
+		}
+		stalledReads = 0
 	}
 	return NewString(string(chars)), nil
 }

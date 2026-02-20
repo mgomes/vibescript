@@ -2254,6 +2254,23 @@ func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
 	}
 }
 
+func TestRandomIdentifierBuiltinsRejectsStalledEntropy(t *testing.T) {
+	engine := MustNewEngine(Config{RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xFF}, 1024))})
+	script, err := engine.Compile(`
+    def run()
+      random_id(4)
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "random_id entropy source rejected too many bytes") {
+		t.Fatalf("expected stalled entropy error, got %v", err)
+	}
+}
+
 func TestNumericHelpers(t *testing.T) {
 	script := compileScript(t, `
     def int_helpers()
