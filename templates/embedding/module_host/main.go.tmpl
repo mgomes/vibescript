@@ -38,7 +38,9 @@ end
 
 	_, err = script.Call(context.Background(), "run", []vibes.Value{
 		vibes.NewInt(1000),
-	}, vibes.CallOptions{})
+	}, vibes.CallOptions{
+		AllowRequire: true,
+	})
 	if err != nil {
 		panic(err)
 	}
