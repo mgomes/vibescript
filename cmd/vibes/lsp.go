@@ -364,13 +364,15 @@ func wordAtPosition(source string, line, character int) string {
 		return ""
 	}
 
-	runes := []rune(lines[line])
+	lineText := lines[line]
+	runes := []rune(lineText)
 	if len(runes) == 0 {
 		return ""
 	}
 	if character < 0 {
 		character = 0
 	}
+	character = utf16OffsetToRuneIndex(lineText, character)
 	if character > len(runes) {
 		character = len(runes)
 	}
@@ -399,6 +401,26 @@ func wordAtPosition(source string, line, character int) string {
 		end++
 	}
 	return string(runes[start:end])
+}
+
+func utf16OffsetToRuneIndex(text string, utf16Offset int) int {
+	if utf16Offset <= 0 {
+		return 0
+	}
+	runeIndex := 0
+	consumed := 0
+	for _, r := range text {
+		if consumed >= utf16Offset {
+			break
+		}
+		if r > 0xFFFF {
+			consumed += 2
+		} else {
+			consumed++
+		}
+		runeIndex++
+	}
+	return runeIndex
 }
 
 func isWordRune(r rune) bool {

@@ -186,6 +186,14 @@ func TestWordAtPosition(t *testing.T) {
 	}
 }
 
+func TestWordAtPositionUsesUTF16CharacterOffsets(t *testing.T) {
+	source := "😀😀x y\n"
+	word := wordAtPosition(source, 0, 4)
+	if word != "x" {
+		t.Fatalf("expected x, got %q", word)
+	}
+}
+
 func rawID(value string) *json.RawMessage {
 	raw := json.RawMessage(value)
 	return &raw
