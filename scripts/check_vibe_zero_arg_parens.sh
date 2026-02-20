@@ -3,7 +3,7 @@ set -euo pipefail
 
 status=0
 
-echo "checking .vibe style: no empty parentheses for zero-arg defs/calls"
+echo "checking .vibe style: no empty parentheses for zero-arg defs/autoinvoked calls"
 
 if rg -n --glob '*.vibe' '^\s*(export\s+)?def\s+[A-Za-z_][A-Za-z0-9_!?]*\s*\(\s*\)' >/tmp/vibe_style_defs.txt; then
   echo "style violations: zero-arg method definitions must omit parentheses" >&2
@@ -11,8 +11,9 @@ if rg -n --glob '*.vibe' '^\s*(export\s+)?def\s+[A-Za-z_][A-Za-z0-9_!?]*\s*\(\s*
   status=1
 fi
 
-if rg -n --glob '*.vibe' '\b[A-Za-z_][A-Za-z0-9_!?]*\s*\(\s*\)' >/tmp/vibe_style_calls.txt; then
-  echo "style violations: zero-arg method calls must omit parentheses" >&2
+# Only check builtins that are auto-invoked without `()`.
+if rg -n --glob '*.vibe' '\b(now|uuid)\s*\(\s*\)' >/tmp/vibe_style_calls.txt; then
+  echo "style violations: auto-invoked zero-arg calls must omit parentheses" >&2
   cat /tmp/vibe_style_calls.txt >&2
   status=1
 fi
