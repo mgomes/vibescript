@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	randomIDAlphabet    = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	maxJSONPayloadBytes = 1 << 20
-	maxRegexInputBytes  = 1 << 20
-	maxRegexPatternSize = 16 << 10
+	randomIDAlphabet       = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	randomIDUnbiasedCutoff = byte((256 / len(randomIDAlphabet)) * len(randomIDAlphabet))
+	maxJSONPayloadBytes    = 1 << 20
+	maxRegexInputBytes     = 1 << 20
+	maxRegexPatternSize    = 16 << 10
 )
 
 func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -127,13 +128,22 @@ func builtinRandomID(exec *Execution, receiver Value, args []Value, kwargs map[s
 		return NewNil(), fmt.Errorf("random_id length exceeds maximum 1024")
 	}
 
-	raw, err := exec.engine.randomBytes(int(length))
-	if err != nil {
-		return NewNil(), err
-	}
-	chars := make([]byte, len(raw))
-	for i, b := range raw {
-		chars[i] = randomIDAlphabet[int(b)%len(randomIDAlphabet)]
+	chars := make([]byte, 0, length)
+	for int64(len(chars)) < length {
+		needed := int(length) - len(chars)
+		raw, err := exec.engine.randomBytes(needed)
+		if err != nil {
+			return NewNil(), err
+		}
+		for _, b := range raw {
+			if b >= randomIDUnbiasedCutoff {
+				continue
+			}
+			chars = append(chars, randomIDAlphabet[int(b)%len(randomIDAlphabet)])
+			if int64(len(chars)) == length {
+				break
+			}
+		}
 	}
 	return NewString(string(chars)), nil
 }
@@ -201,6 +211,9 @@ func builtinToFloat(exec *Execution, receiver Value, args []Value, kwargs map[st
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil {
 			return NewNil(), fmt.Errorf("to_float expects a numeric string")
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return NewNil(), fmt.Errorf("to_float expects a finite numeric string")
 		}
 		return NewFloat(f), nil
 	default:

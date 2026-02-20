@@ -1799,10 +1799,18 @@ func TestNumericConversionBuiltins(t *testing.T) {
       to_int("abc")
     end
 
-    def bad_float_string()
-      to_float("abc")
-    end
-    `)
+	    def bad_float_string()
+	      to_float("abc")
+	    end
+
+	    def bad_float_nan()
+	      to_float("NaN")
+	    end
+
+	    def bad_float_inf()
+	      to_float("Inf")
+	    end
+	    `)
 
 	result := callFunc(t, script, "conversions", nil)
 	if result.Kind() != KindHash {
@@ -1833,6 +1841,14 @@ func TestNumericConversionBuiltins(t *testing.T) {
 	_, err = script.Call(context.Background(), "bad_float_string", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "to_float expects a numeric string") {
 		t.Fatalf("expected string to_float error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_float_nan", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_float expects a finite numeric string") {
+		t.Fatalf("expected NaN to_float error, got %v", err)
+	}
+	_, err = script.Call(context.Background(), "bad_float_inf", nil, CallOptions{})
+	if err == nil || !strings.Contains(err.Error(), "to_float expects a finite numeric string") {
+		t.Fatalf("expected Inf to_float error, got %v", err)
 	}
 }
 
@@ -2136,6 +2152,26 @@ func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "random source failed") {
 		t.Fatalf("expected random source failure, got %v", err)
+	}
+}
+
+func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
+	engine := MustNewEngine(Config{RandomReader: bytes.NewReader([]byte{248, 1})})
+	script, err := engine.Compile(`
+    def run()
+      random_id(1)
+    end
+    `)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if !got.Equal(NewString("b")) {
+		t.Fatalf("expected unbiased sample to produce b, got %v", got)
 	}
 }
 
