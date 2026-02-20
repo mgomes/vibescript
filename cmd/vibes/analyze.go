@@ -70,6 +70,14 @@ func analyzeScriptWarnings(script *vibes.Script) []lintWarning {
 	for _, fn := range script.Functions() {
 		lintStatements(fn.Name, fn.Body, &warnings)
 	}
+	for _, classDef := range script.Classes() {
+		for _, method := range sortedFunctionsByName(classDef.Methods) {
+			lintStatements(classDef.Name+"#"+method.Name, method.Body, &warnings)
+		}
+		for _, method := range sortedFunctionsByName(classDef.ClassMethods) {
+			lintStatements(classDef.Name+"."+method.Name, method.Body, &warnings)
+		}
+	}
 
 	sort.SliceStable(warnings, func(i, j int) bool {
 		if warnings[i].Pos.Line != warnings[j].Pos.Line {
@@ -82,6 +90,19 @@ func analyzeScriptWarnings(script *vibes.Script) []lintWarning {
 	})
 
 	return warnings
+}
+
+func sortedFunctionsByName(functions map[string]*vibes.ScriptFunction) []*vibes.ScriptFunction {
+	names := make([]string, 0, len(functions))
+	for name := range functions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	sorted := make([]*vibes.ScriptFunction, 0, len(names))
+	for _, name := range names {
+		sorted = append(sorted, functions[name])
+	}
+	return sorted
 }
 
 func lintStatements(function string, statements []vibes.Statement, warnings *[]lintWarning) bool {

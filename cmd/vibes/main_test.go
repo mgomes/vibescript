@@ -158,6 +158,40 @@ end`)
 	}
 }
 
+func TestAnalyzeCommandReportsUnreachableStatementsInClassMethods(t *testing.T) {
+	scriptPath := writeScript(t, `class Reporter
+  def instance_path()
+    return 1
+    2
+  end
+
+  def self.class_path()
+    return 3
+    4
+  end
+end
+
+def run()
+  Reporter.new.instance_path
+end`)
+
+	out, err := captureStdout(t, func() error {
+		return analyzeCommand([]string{scriptPath})
+	})
+	if err == nil {
+		t.Fatalf("expected analyze command to report lint failures")
+	}
+	if !strings.Contains(err.Error(), "analysis found 2 issue(s)") {
+		t.Fatalf("unexpected analyze error: %v", err)
+	}
+	if !strings.Contains(out, "(Reporter#instance_path)") {
+		t.Fatalf("expected instance method warning, got %q", out)
+	}
+	if !strings.Contains(out, "(Reporter.class_path)") {
+		t.Fatalf("expected class method warning, got %q", out)
+	}
+}
+
 func TestComputeModulePathsIncludesScriptDirAndDedupesExtras(t *testing.T) {
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "main.vibe")

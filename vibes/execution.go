@@ -4294,6 +4294,20 @@ func (s *Script) Functions() []*ScriptFunction {
 	return out
 }
 
+// Classes returns compiled classes in deterministic name order.
+func (s *Script) Classes() []*ClassDef {
+	names := make([]string, 0, len(s.classes))
+	for name := range s.classes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*ClassDef, 0, len(names))
+	for _, name := range names {
+		out = append(out, s.classes[name])
+	}
+	return out
+}
+
 func (s *Script) bindFunctionOwnership() {
 	for _, fn := range s.functions {
 		fn.owner = s
