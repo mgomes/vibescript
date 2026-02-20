@@ -576,6 +576,10 @@ func TestArrayChunkWindowValidation(t *testing.T) {
       [1, 2].chunk(size)
     end
 
+    def huge_window(size)
+      [1, 2, 3].window(size)
+    end
+
     def bad_window()
       [1, 2, 3].window("2")
     end
@@ -589,8 +593,8 @@ func TestArrayChunkWindowValidation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
 		t.Fatalf("expected chunk validation error, got %v", err)
 	}
-	nativeMaxInt := int(^uint(0) >> 1)
-	hugeChunk := callFunc(t, script, "huge_chunk", []Value{NewInt(int64(nativeMaxInt))})
+	nativeMaxInt := int64(^uint(0) >> 1)
+	hugeChunk := callFunc(t, script, "huge_chunk", []Value{NewInt(nativeMaxInt)})
 	if hugeChunk.Kind() != KindArray {
 		t.Fatalf("expected huge chunk result to be array, got %v", hugeChunk.Kind())
 	}
@@ -602,6 +606,22 @@ func TestArrayChunkWindowValidation(t *testing.T) {
 	_, err = script.Call(context.Background(), "bad_window", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
 		t.Fatalf("expected window validation error, got %v", err)
+	}
+	hugeWindow := callFunc(t, script, "huge_window", []Value{NewInt(nativeMaxInt)})
+	if hugeWindow.Kind() != KindArray || len(hugeWindow.Array()) != 0 {
+		t.Fatalf("expected huge window size to return empty array, got %v", hugeWindow)
+	}
+
+	overflowSize := int64(1 << 62)
+	if nativeMaxInt < overflowSize {
+		_, err = script.Call(context.Background(), "huge_chunk", []Value{NewInt(overflowSize)}, CallOptions{})
+		if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
+			t.Fatalf("expected chunk overflow validation error, got %v", err)
+		}
+		_, err = script.Call(context.Background(), "huge_window", []Value{NewInt(overflowSize)}, CallOptions{})
+		if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
+			t.Fatalf("expected window overflow validation error, got %v", err)
+		}
 	}
 	_, err = script.Call(context.Background(), "bad_group_by_stable", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "array.group_by_stable requires a block") {

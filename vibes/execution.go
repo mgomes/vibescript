@@ -3495,10 +3495,12 @@ func arrayMember(array Value, property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("array.chunk expects a chunk size")
 			}
-			if args[0].Kind() != KindInt || args[0].Int() <= 0 {
+			sizeValue := args[0]
+			maxNativeInt := int64(^uint(0) >> 1)
+			if sizeValue.Kind() != KindInt || sizeValue.Int() <= 0 || sizeValue.Int() > maxNativeInt {
 				return NewNil(), fmt.Errorf("array.chunk size must be a positive integer")
 			}
-			size := int(args[0].Int())
+			size := int(sizeValue.Int())
 			arr := receiver.Array()
 			if len(arr) == 0 {
 				return NewArray([]Value{}), nil
@@ -3524,10 +3526,12 @@ func arrayMember(array Value, property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("array.window expects a window size")
 			}
-			if args[0].Kind() != KindInt || args[0].Int() <= 0 {
+			sizeValue := args[0]
+			maxNativeInt := int64(^uint(0) >> 1)
+			if sizeValue.Kind() != KindInt || sizeValue.Int() <= 0 || sizeValue.Int() > maxNativeInt {
 				return NewNil(), fmt.Errorf("array.window size must be a positive integer")
 			}
-			size := int(args[0].Int())
+			size := int(sizeValue.Int())
 			arr := receiver.Array()
 			if size > len(arr) {
 				return NewArray([]Value{}), nil
