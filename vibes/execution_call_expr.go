@@ -6,6 +6,12 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		if err != nil {
 			return NewNil(), NewNil(), err
 		}
+		if directCallee, handled, err := exec.evalDirectMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
+			if err != nil {
+				return NewNil(), NewNil(), err
+			}
+			return directCallee, receiver, nil
+		}
 		callee, err := exec.getMember(receiver, member.Property, member.Pos())
 		if err != nil {
 			return NewNil(), NewNil(), err
@@ -18,6 +24,36 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		return NewNil(), NewNil(), err
 	}
 	return callee, NewNil(), nil
+}
+
+func (exec *Execution) evalDirectMemberMethodCall(receiver Value, property string, pos Position) (Value, bool, error) {
+	switch receiver.Kind() {
+	case KindClass:
+		if property == "new" {
+			return NewNil(), false, nil
+		}
+		classDef := receiver.Class()
+		fn, ok := classDef.ClassMethods[property]
+		if !ok {
+			return NewNil(), false, nil
+		}
+		if fn.Private && !exec.isCurrentReceiver(receiver) {
+			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
+		}
+		return NewFunction(fn), true, nil
+	case KindInstance:
+		instance := receiver.Instance()
+		fn, ok := instance.Class.Methods[property]
+		if !ok {
+			return NewNil(), false, nil
+		}
+		if fn.Private && !exec.isCurrentReceiver(receiver) {
+			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
+		}
+		return NewFunction(fn), true, nil
+	default:
+		return NewNil(), false, nil
+	}
 }
 
 func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
