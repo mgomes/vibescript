@@ -975,9 +975,7 @@ func TestModulePolicyPatternValidation(t *testing.T) {
 		ModulePaths:     []string{filepath.Join("testdata", "modules")},
 		ModuleAllowList: []string{"[invalid"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid module allow-list pattern") {
-		t.Fatalf("expected invalid allow-list pattern error, got %v", err)
-	}
+	requireErrorContains(t, err, "invalid module allow-list pattern")
 }
 
 func TestFormatModuleCycleUsesConciseChain(t *testing.T) {
