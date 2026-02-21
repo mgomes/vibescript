@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -14,9 +13,7 @@ func TestNewEngineRejectsMissingModulePath(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected NewEngine to reject missing module path")
 	}
-	if !strings.Contains(err.Error(), "invalid module path") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "invalid module path")
 }
 
 func TestNewEngineRejectsFileModulePath(t *testing.T) {
@@ -30,9 +27,7 @@ func TestNewEngineRejectsFileModulePath(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected NewEngine to reject file module path")
 	}
-	if !strings.Contains(err.Error(), "is not a directory") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "is not a directory")
 }
 
 func TestNewEngineAcceptsValidModulePaths(t *testing.T) {
@@ -61,9 +56,7 @@ func TestNewEngineValidatesConfiguredModulePathAsProvided(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected NewEngine to reject module path that os.Stat rejects")
 		}
-		if !strings.Contains(err.Error(), "invalid module path") {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		requireErrorContains(t, err, "invalid module path")
 		return
 	}
 
