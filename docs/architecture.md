@@ -80,6 +80,7 @@ Key files:
 - `vibes/modules_policy.go` (module allow/deny policy normalization and enforcement)
 - `vibes/modules_compile.go` (module compile/cache helpers and function-env cloning)
 - `vibes/modules_cycles.go` (module cycle detection and formatting helpers)
+- `vibes/modules_bindings.go` (require alias validation/binding and export helpers)
 - `vibes/modules_require.go` (runtime require execution, export/alias behavior, cycle reporting)
 
 ## Builtins
