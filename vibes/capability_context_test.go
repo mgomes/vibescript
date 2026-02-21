@@ -2,7 +2,6 @@ package vibes
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -91,10 +90,9 @@ end`)
 func TestNewContextCapabilityRejectsInvalidArguments(t *testing.T) {
 	resolver := func(context.Context) (Value, error) { return NewObject(map[string]Value{}), nil }
 
-	if _, err := NewContextCapability("", resolver); err == nil || !strings.Contains(err.Error(), "name must be non-empty") {
-		t.Fatalf("expected empty name error, got %v", err)
-	}
-	if _, err := NewContextCapability("ctx", nil); err == nil || !strings.Contains(err.Error(), "requires a resolver") {
-		t.Fatalf("expected nil resolver error, got %v", err)
-	}
+	_, err := NewContextCapability("", resolver)
+	requireErrorContains(t, err, "name must be non-empty")
+
+	_, err = NewContextCapability("ctx", nil)
+	requireErrorContains(t, err, "requires a resolver")
 }

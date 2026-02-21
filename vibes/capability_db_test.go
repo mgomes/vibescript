@@ -2,7 +2,6 @@ package vibes
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -306,17 +305,14 @@ end`)
 func TestNewDBCapabilityRejectsInvalidArguments(t *testing.T) {
 	stub := &dbCapabilityStub{}
 
-	if _, err := NewDBCapability("", stub); err == nil || !strings.Contains(err.Error(), "name must be non-empty") {
-		t.Fatalf("expected empty name error, got %v", err)
-	}
+	_, err := NewDBCapability("", stub)
+	requireErrorContains(t, err, "name must be non-empty")
 
 	var db Database
-	if _, err := NewDBCapability("db", db); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected nil db error, got %v", err)
-	}
+	_, err = NewDBCapability("db", db)
+	requireErrorContains(t, err, "requires a non-nil implementation")
 
 	var typedNil *dbCapabilityStub
-	if _, err := NewDBCapability("db", typedNil); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected typed nil db error, got %v", err)
-	}
+	_, err = NewDBCapability("db", typedNil)
+	requireErrorContains(t, err, "requires a non-nil implementation")
 }

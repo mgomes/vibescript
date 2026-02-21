@@ -2,7 +2,6 @@ package vibes
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -125,17 +124,14 @@ end`)
 
 func TestNewEventsCapabilityRejectsInvalidArguments(t *testing.T) {
 	stub := &eventsCapabilityStub{}
-	if _, err := NewEventsCapability("", stub); err == nil || !strings.Contains(err.Error(), "name must be non-empty") {
-		t.Fatalf("expected empty name error, got %v", err)
-	}
+	_, err := NewEventsCapability("", stub)
+	requireErrorContains(t, err, "name must be non-empty")
 
 	var publisher EventPublisher
-	if _, err := NewEventsCapability("events", publisher); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected nil publisher error, got %v", err)
-	}
+	_, err = NewEventsCapability("events", publisher)
+	requireErrorContains(t, err, "requires a non-nil implementation")
 
 	var typedNil *eventsCapabilityStub
-	if _, err := NewEventsCapability("events", typedNil); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected typed nil publisher error, got %v", err)
-	}
+	_, err = NewEventsCapability("events", typedNil)
+	requireErrorContains(t, err, "requires a non-nil implementation")
 }
