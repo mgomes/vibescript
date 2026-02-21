@@ -20,7 +20,7 @@ Guidelines:
 
 - Keep reusable helpers under `modules/shared/`.
 - Group domain logic by folder (`billing/`, `risk/`, `reporting/`).
-- Prefer `export def ...` for public API surface, keep internals unexported.
+- Export functions by default and mark internal helpers with `private def ...`.
 - Use `require("module/path", as: "alias")` to avoid global name collisions.
 - Use relative requires only within a module subtree (`./`, `../`).
 - Configure `ModuleAllowList` and `ModuleDenyList` in hosts that need strict import policy boundaries.
@@ -29,11 +29,11 @@ Example:
 
 ```vibe
 # modules/billing/fees.vibe
-export def apply(amount)
+def apply(amount)
   amount + shared_rate
 end
 
-def shared_rate
+private def shared_rate
   rates = require("../shared/math", as: "math")
   math.double(1)
 end

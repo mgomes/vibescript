@@ -2,7 +2,7 @@ def visible(value)
   value + 1
 end
 
-def _internal(value)
+private def _internal(value)
   value + 100
 end
 

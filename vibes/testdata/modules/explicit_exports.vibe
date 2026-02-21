@@ -1,15 +1,15 @@
-export def exposed(value)
+def exposed(value)
   helper(value) + _internal(value)
 end
 
-def helper(value)
+private def helper(value)
   value * 2
 end
 
-export def _explicit_hidden(value)
+def _explicit_hidden(value)
   value + 100
 end
 
-def _internal(value)
+private def _internal(value)
   value + 1
 end

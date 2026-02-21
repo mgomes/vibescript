@@ -87,9 +87,8 @@ alias.
 Inside a module, use explicit relative paths (`./` or `../`) to load siblings
 or parent-local helpers. Relative requires are resolved from the calling
 module's directory and are rejected if they escape the module root. Functions
-can be exported explicitly with `export def ...`; if no explicit exports are
-declared, public names are exported by default and names starting with `_`
-remain private. Exported names are only injected into globals when no binding
+are exported by default; use `private def ...` for module-local helpers.
+Exported names are only injected into globals when no binding
 already exists, so existing host/script globals keep precedence.
 Import paths are normalized across slash styles, and traversal/symlink escapes
 outside configured module roots are blocked.

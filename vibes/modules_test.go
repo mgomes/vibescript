@@ -716,7 +716,7 @@ end`)
 	}
 }
 
-func TestRequireExportsOnlyPublicFunctions(t *testing.T) {
+func TestRequireExportsOnlyNonPrivateFunctions(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run(value)
@@ -740,7 +740,7 @@ end`)
 	}
 }
 
-func TestRequireSupportsExplicitExportControls(t *testing.T) {
+func TestRequireSupportsPrivateModuleExportOptOut(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run(value)
@@ -767,10 +767,10 @@ end`)
 	}
 	out := result.Hash()
 	if !out["has_exposed"].Bool() || !out["has_explicit_hidden"].Bool() {
-		t.Fatalf("expected explicit exports to be present, got %#v", out)
+		t.Fatalf("expected non-private exports to be present, got %#v", out)
 	}
 	if out["has_helper"].Bool() || out["has_internal"].Bool() {
-		t.Fatalf("expected non-exported helpers to be hidden, got %#v", out)
+		t.Fatalf("expected private helpers to be hidden, got %#v", out)
 	}
 	if out["exposed"].Kind() != KindInt || out["exposed"].Int() != 10 {
 		t.Fatalf("expected exposed(3)=10, got %#v", out["exposed"])
@@ -780,7 +780,7 @@ end`)
 	}
 }
 
-func TestRequireNonExportedFunctionsAreNotInjectedAsGlobalsWhenUsingExplicitExports(t *testing.T) {
+func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run(value)
@@ -827,7 +827,34 @@ end`)
 	}
 }
 
-func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {
+func TestPrivateKeywordValidation(t *testing.T) {
+	engine := MustNewEngine(Config{})
+
+	_, err := engine.Compile(`private helper`)
+	if err == nil || !strings.Contains(err.Error(), "expected 'def'") {
+		t.Fatalf("expected private def parse error, got %v", err)
+	}
+
+	_, err = engine.Compile(`def outer()
+  if true
+    private def nested()
+      1
+    end
+  end
+end`)
+	if err == nil || !strings.Contains(err.Error(), "private is only supported for top-level functions and class methods") {
+		t.Fatalf("expected nested private parse error, got %v", err)
+	}
+
+	_, err = engine.Compile(`private def self.value()
+  1
+end`)
+	if err == nil || !strings.Contains(err.Error(), "private cannot be used with class methods") {
+		t.Fatalf("expected private class-method parse error, got %v", err)
+	}
+}
+
+func TestRequirePrivateFunctionsRemainModuleScoped(t *testing.T) {
 	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
 
 	script, err := engine.Compile(`def run(value)

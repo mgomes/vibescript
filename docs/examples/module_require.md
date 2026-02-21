@@ -18,15 +18,15 @@ Place `modules/fees.vibe` on disk:
 ```vibe
 # modules/fees.vibe
 
-export def apply_fee(amount)
+def apply_fee(amount)
   amount + rate
 end
 
-def rate
+private def rate
   1
 end
 
-def _rounding_hint
+private def _rounding_hint
   "bankers"
 end
 ```
@@ -54,9 +54,8 @@ end
 
 When `total_with_fee` runs, `require("fees")` resolves the module relative to
 `Config.ModulePaths`, compiles it once, and returns an object containing the
-module’s exports. Use `export def` for explicit control; if no explicit exports
-are declared, public functions are exported by default and names starting with
-`_` stay private to the module. When an exported name conflicts with an
+module’s exports. Functions are exported by default; use `private def` for
+module-only helpers. When an exported name conflicts with an
 existing global, the existing binding keeps precedence and the module object
 remains the conflict-free access path.
 
@@ -74,12 +73,12 @@ Reusable helper modules can be shared from a central namespace:
 
 ```vibe
 # modules/shared/currency.vibe
-export def cents(value)
+def cents(value)
   value * 100
 end
 
 # modules/billing/taxes.vibe
-export def apply(amount)
+def apply(amount)
   require("../shared/currency", as: "currency")
   amount + currency.cents(1)
 end
