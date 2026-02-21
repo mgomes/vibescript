@@ -82,7 +82,7 @@ Re-raise the current rescued error with `raise`:
 
 ```vibe
 begin
-  risky_call()
+  risky_call
 rescue(AssertionError)
   audit("recovering assertion")
   raise

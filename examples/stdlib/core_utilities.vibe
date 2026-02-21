@@ -2,7 +2,7 @@
 
 def run
   parsed = JSON.parse("{\"id\":\"p-1\",\"score\":10}")
-  event_id = uuid()
+  event_id = uuid
   token = random_id(8)
   parsed_time = Time.parse("2024-05-01 10:30:00", in: "UTC")
 

@@ -18,6 +18,6 @@ def arg_type_mismatch(n: int)
   n
 end
 
-def return_type_mismatch() -> int
+def return_type_mismatch -> int
   "hello"
 end

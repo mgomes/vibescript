@@ -1,7 +1,7 @@
 # String utilities
 
 def slugify(text)
-  text.strip().downcase().split(" ").join("-")
+  text.strip.downcase.split(" ").join("-")
 end
 
 def initials(name)
@@ -14,7 +14,7 @@ def initials(name)
 end
 
 def titleize(name)
-  name.strip()
+  name.strip
 end
 
 def wrap(text, width)

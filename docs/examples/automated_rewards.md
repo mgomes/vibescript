@@ -4,7 +4,7 @@
 # vibe: 0.2
 # uses: db, jobs
 
-def schedule_reward_checks()
+def schedule_reward_checks
   players = db.query("Player", where: { status: "active" })
   players.each do |player|
     total = player[:raised]

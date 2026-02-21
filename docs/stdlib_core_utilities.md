@@ -29,11 +29,11 @@ end
 ## Random IDs
 
 ```vibe
-def new_event_id()
-  uuid()
+def new_event_id
+  uuid
 end
 
-def short_token()
+def short_token
   random_id(8)
 end
 ```

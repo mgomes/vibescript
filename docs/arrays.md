@@ -31,7 +31,7 @@ def total_by_multiplier(values, multiplier)
     .map do |value|
       value * multiplier
     end
-    .sum()
+    .sum
 end
 ```
 
@@ -86,7 +86,7 @@ Use `+` to concatenate and `-` to subtract values:
 
 ```vibe
 def unique_participants(core, late)
-  (core + late).uniq().compact()
+  (core + late).uniq.compact
 end
 
 def without_dropouts(participants, dropouts)

@@ -9,6 +9,6 @@ def label(score)
   end
 end
 
-def run()
+def run
   [label(100), label(95), label(70)]
 end

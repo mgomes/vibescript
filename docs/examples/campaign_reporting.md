@@ -19,7 +19,7 @@ def daily_summary(campaign_id)
   end
 
   totals = rows.reduce({ supporters: [], total: money("0.00 USD") }) do |state, row|
-    state[:supporters] = (state[:supporters] + [row[:supporter]]).uniq()
+    state[:supporters] = (state[:supporters] + [row[:supporter]]).uniq
     state[:total] = state[:total] + row[:amount]
     state
   end
@@ -27,7 +27,7 @@ def daily_summary(campaign_id)
   formatted_rows = rows.map do |row|
     {
       supporter: row[:supporter],
-      amount: row[:amount].format(),
+      amount: row[:amount].format,
       received_at: row[:received_at]
     }
   end
@@ -35,7 +35,7 @@ def daily_summary(campaign_id)
   events.publish("campaign_reports", {
     campaign_id: campaign_id,
     supporters: totals[:supporters],
-    total: totals[:total].format(),
+    total: totals[:total].format,
     rows: formatted_rows
   })
 end

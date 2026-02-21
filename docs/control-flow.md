@@ -12,7 +12,7 @@ VibeScript supports these control-flow forms:
 ## `for` loops
 
 ```vibe
-def sum_first_five()
+def sum_first_five
   total = 0
   for n in 1..5
     total = total + n
@@ -64,7 +64,7 @@ end
 ## `break` and `next`
 
 ```vibe
-def odds_under_five()
+def odds_under_five
   out = []
   for n in [1, 2, 3, 4, 5]
     if n == 5

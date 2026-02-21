@@ -38,12 +38,12 @@ end
 
 def undefined_method
   c = Counter.new(0)
-  c.nonexistent()
+  c.nonexistent
 end
 
 def private_method_external
   c = Counter.new(0)
-  c.secret()
+  c.secret
 end
 
 def write_to_readonly
@@ -52,7 +52,7 @@ def write_to_readonly
 end
 
 def wrong_init_args
-  Counter.new()
+  Counter.new
 end
 
 def run

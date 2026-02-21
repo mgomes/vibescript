@@ -8,6 +8,6 @@ def collect_until(limit)
   out
 end
 
-def run()
+def run
   collect_until(5)
 end
