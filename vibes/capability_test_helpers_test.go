@@ -89,6 +89,12 @@ func callScriptErr(t testing.TB, ctx context.Context, script *Script, fn string,
 	return err
 }
 
+func requireCallErrorContains(t testing.TB, script *Script, fn string, args []Value, opts CallOptions, want string) {
+	t.Helper()
+	err := callScriptErr(t, context.Background(), script, fn, args, opts)
+	requireErrorContains(t, err, want)
+}
+
 func requireErrorContains(t testing.TB, err error, want string) {
 	t.Helper()
 	if err == nil {
