@@ -44,7 +44,8 @@ Key files:
 - `vibes/execution_members_array_query.go` (array query/enumeration member methods)
 - `vibes/execution_members_array_transforms.go` (array mutation/transform member methods)
 - `vibes/execution_members_array_grouping.go` (array sort/group/tally member methods)
-- `vibes/execution_types.go` (type-checking + type formatting helpers)
+- `vibes/execution_types.go` (type-checking and declared-type formatting helpers)
+- `vibes/execution_types_value_format.go` (runtime value-type formatting helpers)
 - `vibes/execution_values.go` (value conversion, sorting, and flattening helpers)
 - `vibes/execution_values_arithmetic.go` (value arithmetic and comparison operators)
 
