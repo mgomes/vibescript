@@ -42,8 +42,7 @@ type callResult struct {
 }
 
 func TestScriptCallOverlappingCallsKeepFunctionEnvIsolated(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def helper
+	script := compileScriptDefault(t, `def helper
   tenant
 end
 
@@ -51,9 +50,6 @@ def run
   sync.wait()
   helper
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	barrier := &blockingSync{
 		entered: make(chan struct{}, 1),
@@ -108,8 +104,7 @@ end`)
 }
 
 func TestScriptCallOverlappingCallsKeepClassVarsIsolated(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`class Counter
+	script := compileScriptDefault(t, `class Counter
   @@count = 0
 
   def self.bump
@@ -126,9 +121,6 @@ def run
   Counter.bump
   Counter.count
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	barrier := &blockingSync{
 		entered: make(chan struct{}, 1),
@@ -181,8 +173,7 @@ end`)
 }
 
 func TestScriptCallRebindsEscapedFunctionsToCurrentCallEnv(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def format_tenant(value)
+	script := compileScriptDefault(t, `def format_tenant(value)
   tenant + "-" + value
 end
 
@@ -193,9 +184,6 @@ end
 def run_with(fn, value)
   fn(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	exported, err := script.Call(context.Background(), "export_fn", nil, CallOptions{
 		Globals: map[string]Value{
@@ -223,8 +211,7 @@ end`)
 }
 
 func TestScriptCallRebindingDoesNotMutateSharedArgMaps(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def format_tenant(value)
+	script := compileScriptDefault(t, `def format_tenant(value)
   tenant + "-" + value
 end
 
@@ -236,9 +223,6 @@ def run(ctx)
   sync.wait()
   ctx.fn("value")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	exported, err := script.Call(context.Background(), "export_fn", nil, CallOptions{
 		Globals: map[string]Value{
@@ -351,8 +335,7 @@ end`)
 }
 
 func TestScriptCallRebindsEscapedClassValuesToCurrentCall(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`class Bucket
+	script := compileScriptDefault(t, `class Bucket
   @@count = 0
 
   def self.bump
@@ -373,9 +356,6 @@ def run_with(klass)
   klass.bump
   klass.snapshot
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	exportedClass, err := script.Call(context.Background(), "export_class", nil, CallOptions{
 		Globals: map[string]Value{
@@ -410,8 +390,7 @@ end`)
 }
 
 func TestScriptCallRebindsEscapedInstancesToCurrentCallState(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`class Bucket
+	script := compileScriptDefault(t, `class Bucket
   @@count = 0
 
   def initialize(name)
@@ -431,9 +410,6 @@ end
 def run_with(bucket)
   bucket.report
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	exportedInstance, err := script.Call(context.Background(), "export_instance", []Value{NewString("seed")}, CallOptions{
 		Globals: map[string]Value{
@@ -471,13 +447,9 @@ end`)
 }
 
 func TestScriptCallRebindingPreservesHashAndObjectKindsForAliasedMaps(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run(a, b)
+	script := compileScriptDefault(t, `def run(a, b)
   [a, b]
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	shared := map[string]Value{"x": NewInt(1)}
 	hashVal := NewHash(shared)
