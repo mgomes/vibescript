@@ -2174,22 +2174,10 @@ func TestJSONAndRegexMalformedInputs(t *testing.T) {
     end
     `)
 
-	_, err := script.Call(context.Background(), "bad_json_trailing", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON: trailing data") {
-		t.Fatalf("expected trailing JSON error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_json_syntax", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON") {
-		t.Fatalf("expected malformed JSON syntax error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_regex_replace", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.replace invalid regex") {
-		t.Fatalf("expected regex replace error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_regex_replace_all", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.replace_all invalid regex") {
-		t.Fatalf("expected regex replace_all error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_json_trailing", nil, CallOptions{}, "JSON.parse invalid JSON: trailing data")
+	requireCallErrorContains(t, script, "bad_json_syntax", nil, CallOptions{}, "JSON.parse invalid JSON")
+	requireCallErrorContains(t, script, "bad_regex_replace", nil, CallOptions{}, "Regex.replace invalid regex")
+	requireCallErrorContains(t, script, "bad_regex_replace_all", nil, CallOptions{}, "Regex.replace_all invalid regex")
 }
 
 func TestJSONAndRegexSizeGuards(t *testing.T) {
@@ -2212,42 +2200,21 @@ func TestJSONAndRegexSizeGuards(t *testing.T) {
     `)
 
 	largeJSON := `{"data":"` + strings.Repeat("x", maxJSONPayloadBytes) + `"}`
-	var err error
-	_, err = script.Call(context.Background(), "parse_raw", []Value{NewString(largeJSON)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.parse input exceeds limit") {
-		t.Fatalf("expected JSON.parse size guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "parse_raw", []Value{NewString(largeJSON)}, CallOptions{}, "JSON.parse input exceeds limit")
 
 	largeValue := NewHash(map[string]Value{
 		"data": NewString(strings.Repeat("x", maxJSONPayloadBytes)),
 	})
-	_, err = script.Call(context.Background(), "stringify_value", []Value{largeValue}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.stringify output exceeds limit") {
-		t.Fatalf("expected JSON.stringify size guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "stringify_value", []Value{largeValue}, CallOptions{}, "JSON.stringify output exceeds limit")
 
 	largePattern := strings.Repeat("a", maxRegexPatternSize+1)
-	_, err = script.Call(context.Background(), "regex_match_guard", []Value{NewString(largePattern), NewString("aaa")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.match pattern exceeds limit") {
-		t.Fatalf("expected Regex.match pattern guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "regex_match_guard", []Value{NewString(largePattern), NewString("aaa")}, CallOptions{}, "Regex.match pattern exceeds limit")
 
 	largeText := strings.Repeat("a", maxRegexInputBytes+1)
-	_, err = script.Call(context.Background(), "regex_match_guard", []Value{NewString("a+"), NewString(largeText)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.match text exceeds limit") {
-		t.Fatalf("expected Regex.match text guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "regex_match_guard", []Value{NewString("a+"), NewString(largeText)}, CallOptions{}, "Regex.match text exceeds limit")
 
 	hugeReplacement := strings.Repeat("x", maxRegexInputBytes/2)
-	_, err = script.Call(
-		context.Background(),
-		"regex_replace_all_guard",
-		[]Value{NewString("abc"), NewString(""), NewString(hugeReplacement)},
-		CallOptions{},
-	)
-	if err == nil || !strings.Contains(err.Error(), "Regex.replace_all output exceeds limit") {
-		t.Fatalf("expected Regex.replace_all output guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "regex_replace_all_guard", []Value{NewString("abc"), NewString(""), NewString(hugeReplacement)}, CallOptions{}, "Regex.replace_all output exceeds limit")
 
 	largeRun := strings.Repeat("a", maxRegexInputBytes-1024)
 	replaced, err := script.Call(
