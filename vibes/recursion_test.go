@@ -3,7 +3,6 @@ package vibes
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -22,9 +21,7 @@ end`)
 	if !errors.As(err, &re) {
 		t.Fatalf("expected RuntimeError, got %T", err)
 	}
-	if !strings.Contains(err.Error(), "recursion depth exceeded (limit 3)") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "recursion depth exceeded (limit 3)")
 }
 
 func TestRecursionLimitAllowsWithinBound(t *testing.T) {
@@ -52,9 +49,7 @@ func TestRecursionLimitDefaultApplies(t *testing.T) {
 end`)
 
 	err := callScriptErr(t, context.Background(), script, "recurse", []Value{NewInt(100)}, CallOptions{})
-	if !strings.Contains(err.Error(), "recursion depth exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "recursion depth exceeded")
 }
 
 func TestMutualRecursionRespectsLimit(t *testing.T) {
@@ -75,9 +70,7 @@ def b(n)
 end`)
 
 	err := callScriptErr(t, context.Background(), script, "a", []Value{NewInt(10)}, CallOptions{})
-	if !strings.Contains(err.Error(), "recursion depth exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "recursion depth exceeded")
 }
 
 func TestRecursionLimitWinsOverStepQuota(t *testing.T) {
@@ -90,9 +83,7 @@ func TestRecursionLimitWinsOverStepQuota(t *testing.T) {
 end`)
 
 	err := callScriptErr(t, context.Background(), script, "spin", []Value{NewInt(50)}, CallOptions{})
-	if !strings.Contains(err.Error(), "recursion depth exceeded (limit 3)") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "recursion depth exceeded (limit 3)")
 }
 
 func TestRecursionLimitNoLeakAfterError(t *testing.T) {
@@ -123,7 +114,5 @@ func TestRecursionLimitWithWhileLoopFrames(t *testing.T) {
 end`)
 
 	err := callScriptErr(t, context.Background(), script, "recurse", []Value{NewInt(3)}, CallOptions{})
-	if !strings.Contains(err.Error(), "recursion depth exceeded (limit 4)") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "recursion depth exceeded (limit 4)")
 }
