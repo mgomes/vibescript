@@ -1,0 +1,211 @@
+package vibes
+
+type Identifier struct {
+	Name     string
+	position Position
+}
+
+func (e *Identifier) exprNode()     {}
+func (e *Identifier) Pos() Position { return e.position }
+
+type IntegerLiteral struct {
+	Value    int64
+	position Position
+}
+
+func (e *IntegerLiteral) exprNode()     {}
+func (e *IntegerLiteral) Pos() Position { return e.position }
+
+type FloatLiteral struct {
+	Value    float64
+	position Position
+}
+
+func (e *FloatLiteral) exprNode()     {}
+func (e *FloatLiteral) Pos() Position { return e.position }
+
+type StringLiteral struct {
+	Value    string
+	position Position
+}
+
+func (e *StringLiteral) exprNode()     {}
+func (e *StringLiteral) Pos() Position { return e.position }
+
+type BoolLiteral struct {
+	Value    bool
+	position Position
+}
+
+func (e *BoolLiteral) exprNode()     {}
+func (e *BoolLiteral) Pos() Position { return e.position }
+
+type NilLiteral struct {
+	position Position
+}
+
+func (e *NilLiteral) exprNode()     {}
+func (e *NilLiteral) Pos() Position { return e.position }
+
+type SymbolLiteral struct {
+	Name     string
+	position Position
+}
+
+func (e *SymbolLiteral) exprNode()     {}
+func (e *SymbolLiteral) Pos() Position { return e.position }
+
+type ArrayLiteral struct {
+	Elements []Expression
+	position Position
+}
+
+func (e *ArrayLiteral) exprNode()     {}
+func (e *ArrayLiteral) Pos() Position { return e.position }
+
+type HashPair struct {
+	Key   Expression
+	Value Expression
+}
+
+type HashLiteral struct {
+	Pairs    []HashPair
+	position Position
+}
+
+func (e *HashLiteral) exprNode()     {}
+func (e *HashLiteral) Pos() Position { return e.position }
+
+type CallExpr struct {
+	Callee   Expression
+	Args     []Expression
+	KwArgs   []KeywordArg
+	Block    *BlockLiteral
+	position Position
+}
+
+func (e *CallExpr) exprNode()     {}
+func (e *CallExpr) Pos() Position { return e.position }
+
+type KeywordArg struct {
+	Name  string
+	Value Expression
+}
+
+type MemberExpr struct {
+	Object   Expression
+	Property string
+	position Position
+}
+
+func (e *MemberExpr) exprNode()     {}
+func (e *MemberExpr) Pos() Position { return e.position }
+
+type IndexExpr struct {
+	Object   Expression
+	Index    Expression
+	position Position
+}
+
+func (e *IndexExpr) exprNode()     {}
+func (e *IndexExpr) Pos() Position { return e.position }
+
+type IvarExpr struct {
+	Name     string
+	position Position
+}
+
+func (e *IvarExpr) exprNode()     {}
+func (e *IvarExpr) Pos() Position { return e.position }
+
+type ClassVarExpr struct {
+	Name     string
+	position Position
+}
+
+func (e *ClassVarExpr) exprNode()     {}
+func (e *ClassVarExpr) Pos() Position { return e.position }
+
+type UnaryExpr struct {
+	Operator TokenType
+	Right    Expression
+	position Position
+}
+
+func (e *UnaryExpr) exprNode()     {}
+func (e *UnaryExpr) Pos() Position { return e.position }
+
+type BinaryExpr struct {
+	Left     Expression
+	Operator TokenType
+	Right    Expression
+	position Position
+}
+
+func (e *BinaryExpr) exprNode()     {}
+func (e *BinaryExpr) Pos() Position { return e.position }
+
+type RangeExpr struct {
+	Start    Expression
+	End      Expression
+	position Position
+}
+
+func (e *RangeExpr) exprNode()     {}
+func (e *RangeExpr) Pos() Position { return e.position }
+
+type CaseWhenClause struct {
+	Values []Expression
+	Result Expression
+}
+
+type CaseExpr struct {
+	Target   Expression
+	Clauses  []CaseWhenClause
+	ElseExpr Expression
+	position Position
+}
+
+func (e *CaseExpr) exprNode()     {}
+func (e *CaseExpr) Pos() Position { return e.position }
+
+type BlockLiteral struct {
+	Params   []Param
+	Body     []Statement
+	position Position
+}
+
+func (b *BlockLiteral) exprNode()     {}
+func (b *BlockLiteral) Pos() Position { return b.position }
+
+type YieldExpr struct {
+	Args     []Expression
+	position Position
+}
+
+func (y *YieldExpr) exprNode()     {}
+func (y *YieldExpr) Pos() Position { return y.position }
+
+type InterpolatedString struct {
+	Parts    []StringPart
+	position Position
+}
+
+type StringPart interface {
+	isStringPart()
+}
+
+type StringText struct {
+	Text string
+}
+
+func (StringText) isStringPart() {}
+
+type StringExpr struct {
+	Expr Expression
+}
+
+func (StringExpr) isStringPart() {}
+
+func (s *InterpolatedString) exprNode()     {}
+func (s *InterpolatedString) Pos() Position { return s.position }

@@ -9,7 +9,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Config controls interpreter execution bounds and enforcement modes.
@@ -70,208 +69,10 @@ func NewEngine(cfg Config) (*Engine, error) {
 		modPaths: append([]string(nil), cfg.ModulePaths...),
 	}
 
-	engine.RegisterBuiltin("assert", builtinAssert)
-	engine.RegisterBuiltin("money", builtinMoney)
-	engine.RegisterBuiltin("money_cents", builtinMoneyCents)
-	engine.RegisterBuiltin("require", builtinRequire)
-	engine.RegisterZeroArgBuiltin("now", builtinNow)
-	engine.RegisterZeroArgBuiltin("uuid", builtinUUID)
-	engine.RegisterBuiltin("random_id", builtinRandomID)
-	engine.RegisterBuiltin("to_int", builtinToInt)
-	engine.RegisterBuiltin("to_float", builtinToFloat)
-	engine.builtins["JSON"] = NewObject(map[string]Value{
-		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
-		"stringify": NewBuiltin("JSON.stringify", builtinJSONStringify),
-	})
-	engine.builtins["Regex"] = NewObject(map[string]Value{
-		"match":       NewBuiltin("Regex.match", builtinRegexMatch),
-		"replace":     NewBuiltin("Regex.replace", builtinRegexReplace),
-		"replace_all": NewBuiltin("Regex.replace_all", builtinRegexReplaceAll),
-	})
-	engine.builtins["Duration"] = NewObject(map[string]Value{
-		"build": NewBuiltin("Duration.build", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) == 1 && len(kwargs) == 0 {
-				secs, err := numericToSeconds(args[0])
-				if err != nil {
-					return NewNil(), err
-				}
-				return NewDuration(Duration{seconds: secs}), nil
-			}
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("Duration.build accepts either seconds or named parts, not both") //nolint:staticcheck // class.method reference
-			}
-			if len(kwargs) == 0 {
-				return NewNil(), fmt.Errorf("Duration.build expects seconds or named parts") //nolint:staticcheck // class.method reference
-			}
-			allowed := map[string]struct{}{
-				"weeks":   {},
-				"days":    {},
-				"hours":   {},
-				"minutes": {},
-				"seconds": {},
-			}
-			for key := range kwargs {
-				if _, ok := allowed[key]; !ok {
-					return NewNil(), fmt.Errorf("Duration.build unknown part %q", key) //nolint:staticcheck // class.method reference
-				}
-			}
-
-			parsePart := func(name string) (int64, error) {
-				if v, ok := kwargs[name]; ok {
-					return numericToSeconds(v)
-				}
-				return 0, nil
-			}
-			weeks, err := parsePart("weeks")
-			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "weeks", err) //nolint:staticcheck // class.method reference
-			}
-			days, err := parsePart("days")
-			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "days", err) //nolint:staticcheck // class.method reference
-			}
-			hours, err := parsePart("hours")
-			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "hours", err) //nolint:staticcheck // class.method reference
-			}
-			minutes, err := parsePart("minutes")
-			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "minutes", err) //nolint:staticcheck // class.method reference
-			}
-			seconds, err := parsePart("seconds")
-			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "seconds", err) //nolint:staticcheck // class.method reference
-			}
-			return NewDuration(durationFromParts(weeks, days, hours, minutes, seconds)), nil
-		}),
-		"parse": NewBuiltin("Duration.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 1 || args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("Duration.parse expects a duration string") //nolint:staticcheck // class.method reference
-			}
-			parsed, err := parseDurationString(args[0].String())
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewDuration(parsed), nil
-		}),
-	})
-	engine.builtins["Time"] = NewObject(map[string]Value{
-		"new": NewBuiltin("Time.new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			loc := time.Local
-			if zone, ok := kwargs["in"]; ok {
-				parsed, err := parseLocation(zone)
-				if err != nil {
-					return NewNil(), err
-				}
-				if parsed != nil {
-					loc = parsed
-				}
-			}
-			t, err := timeFromParts(args, loc)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewTime(t), nil
-		}),
-		"local": NewBuiltin("Time.local", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			t, err := timeFromParts(args, time.Local)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewTime(t), nil
-		}),
-		"mktime": NewAutoBuiltin("Time.mktime", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			t, err := timeFromParts(args, time.Local)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewTime(t), nil
-		}),
-		"utc": NewBuiltin("Time.utc", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			t, err := timeFromParts(args, time.UTC)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewTime(t), nil
-		}),
-		"gm": NewAutoBuiltin("Time.gm", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			t, err := timeFromParts(args, time.UTC)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewTime(t), nil
-		}),
-		"at": NewBuiltin("Time.at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 1 {
-				return NewNil(), fmt.Errorf("Time.at expects seconds since epoch") //nolint:staticcheck // class.method reference
-			}
-			var loc *time.Location
-			if in, ok := kwargs["in"]; ok {
-				parsed, err := parseLocation(in)
-				if err != nil {
-					return NewNil(), err
-				}
-				loc = parsed
-			}
-			t, err := timeFromEpoch(args[0], loc)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewTime(t), nil
-		}),
-		"now": NewAutoBuiltin("Time.now", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("Time.now does not take positional arguments") //nolint:staticcheck // class.method reference
-			}
-			loc := time.Local
-			if in, ok := kwargs["in"]; ok {
-				parsed, err := parseLocation(in)
-				if err != nil {
-					return NewNil(), err
-				}
-				if parsed != nil {
-					loc = parsed
-				}
-			}
-			return NewTime(time.Now().In(loc)), nil
-		}),
-		"parse": NewBuiltin("Time.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) < 1 || len(args) > 2 || args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout") //nolint:staticcheck // class.method reference
-			}
-			for key := range kwargs {
-				if key != "in" {
-					return NewNil(), fmt.Errorf("Time.parse unknown keyword %q", key) //nolint:staticcheck // class.method reference
-				}
-			}
-
-			layout := ""
-			hasLayout := false
-			if len(args) == 2 {
-				if args[1].Kind() == KindString {
-					layout = args[1].String()
-					hasLayout = true
-				} else if args[1].Kind() != KindNil {
-					return NewNil(), fmt.Errorf("Time.parse layout must be string") //nolint:staticcheck // class.method reference
-				}
-			}
-
-			var loc *time.Location
-			if in, ok := kwargs["in"]; ok {
-				parsed, err := parseLocation(in)
-				if err != nil {
-					return NewNil(), err
-				}
-				loc = parsed
-			}
-
-			t, err := parseTimeString(args[0].String(), layout, hasLayout, loc)
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewTime(t), nil
-		}),
-	})
+	registerCoreBuiltins(engine)
+	registerDataBuiltins(engine)
+	registerDurationBuiltins(engine)
+	registerTimeBuiltins(engine)
 
 	return engine, nil
 }
@@ -322,6 +123,30 @@ func (e *Engine) RegisterBuiltin(name string, fn BuiltinFunc) {
 // RegisterZeroArgBuiltin registers a builtin that can be invoked without arguments or parentheses.
 func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
 	e.builtins[name] = NewAutoBuiltin(name, fn)
+}
+
+func registerCoreBuiltins(engine *Engine) {
+	for _, builtin := range []struct {
+		name       string
+		fn         BuiltinFunc
+		autoInvoke bool
+	}{
+		{name: "assert", fn: builtinAssert},
+		{name: "money", fn: builtinMoney},
+		{name: "money_cents", fn: builtinMoneyCents},
+		{name: "require", fn: builtinRequire},
+		{name: "now", fn: builtinNow, autoInvoke: true},
+		{name: "uuid", fn: builtinUUID, autoInvoke: true},
+		{name: "random_id", fn: builtinRandomID},
+		{name: "to_int", fn: builtinToInt},
+		{name: "to_float", fn: builtinToFloat},
+	} {
+		if builtin.autoInvoke {
+			engine.RegisterZeroArgBuiltin(builtin.name, builtin.fn)
+			continue
+		}
+		engine.RegisterBuiltin(builtin.name, builtin.fn)
+	}
 }
 
 // Builtins returns a copy of the registered builtin map.

@@ -1,0 +1,171 @@
+# Internal Architecture
+
+This document summarizes how core interpreter subsystems fit together.
+
+## Execution Flow
+
+High-level call path:
+
+1. `Script.Call(...)` clones function/class declarations into an isolated call environment.
+2. Builtins, globals, capabilities, and module context are bound into root env.
+3. Class bodies are evaluated to initialize class variables.
+4. Target function arguments are bound and type-checked.
+5. Statement/expression evaluators execute the script and enforce:
+   - step quota
+   - recursion limit
+   - memory quota
+
+Key files:
+
+- `vibes/execution.go` (execution engine types/state container)
+- `vibes/execution_statements.go` (statement dispatch and execution)
+- `vibes/execution_expressions.go` (expression dispatch and evaluation)
+- `vibes/execution_assign.go` (assignment targets and member assignment flow)
+- `vibes/execution_script.go` (script call surface and call-time orchestration)
+- `vibes/execution_script_helpers.go` (compiled script lookup/order/ownership and call-time cloning helpers)
+- `vibes/execution_call_execution.go` (execution struct bootstrap for script calls)
+- `vibes/execution_call_capabilities.go` (call-time capability binding and contract registration)
+- `vibes/execution_call_globals.go` (strict global validation and call-time global binding)
+- `vibes/execution_call_classes.go` (call-time class body initialization in class-local scope)
+- `vibes/execution_call_env.go` (call env prep: argument rebind/bind and memory validation)
+- `vibes/execution_call_invoke.go` (function frame execution, return type validation, memory checks)
+- `vibes/execution_function_args.go` (function argument/default/type/ivar binding helpers)
+- `vibes/execution_calls.go` (callable dispatch + function invocation)
+- `vibes/execution_call_expr.go` (call expression target/args/kwargs/block evaluation)
+- `vibes/execution_blocks.go` (block literal creation and block/yield invocation)
+- `vibes/execution_operators.go` (unary/index/binary operator evaluation)
+- `vibes/execution_control.go` (range/case/loop/try evaluation)
+- `vibes/execution_loops.go` (`for`/`while`/`until` loop execution)
+- `vibes/execution_try_raise.go` (raise/try-rescue-ensure execution flow)
+- `vibes/execution_rescue_types.go` (rescue type matching and control-signal classification helpers)
+- `vibes/execution_errors.go` (runtime error model, wrapping, and quota/signal sentinels)
+- `vibes/execution_state.go` (runtime call/env/module/receiver stack helpers)
+- `vibes/execution_members.go` (member dispatch for runtime values)
+- `vibes/execution_members_class_instance.go` (class/instance member access and callable wrapper binding)
+- `vibes/execution_members_numeric.go` (int/float/money member behavior)
+- `vibes/execution_members_hash.go` (hash/object member dispatch)
+- `vibes/execution_members_hash_query.go` (hash query and enumeration member methods)
+- `vibes/execution_members_hash_transforms.go` (hash filter/transform/member mutation methods)
+- `vibes/execution_members_hash_deep.go` (`hash.deep_transform_keys` recursion/cycle handling)
+- `vibes/execution_members_string.go` (string member dispatch)
+- `vibes/execution_members_string_query.go` (string query/search member methods)
+- `vibes/execution_members_string_transforms.go` (string transform/normalization member methods)
+- `vibes/execution_members_string_textops.go` (string substitution/splitting/template member methods)
+- `vibes/execution_members_string_helpers.go` (string helper routines for member methods)
+- `vibes/execution_members_duration.go` (duration member behavior)
+- `vibes/execution_members_array.go` (array member dispatch)
+- `vibes/execution_members_array_query.go` (array query/enumeration member methods)
+- `vibes/execution_members_array_transforms.go` (array mutation/transform member methods)
+- `vibes/execution_members_array_grouping.go` (array sort/group/tally member methods)
+- `vibes/execution_types.go` (type mismatch and declared-type formatting helpers)
+- `vibes/execution_types_validation.go` (runtime value-vs-type validation with recursion guards)
+- `vibes/execution_types_value_format.go` (runtime value-type formatting helpers)
+- `vibes/execution_values.go` (value conversion, sorting, and flattening helpers)
+- `vibes/execution_values_arithmetic.go` (value arithmetic and comparison operators)
+
+## Parsing And AST
+
+Pipeline:
+
+1. `lexer` tokenizes source.
+2. `parser` builds AST statements/expressions.
+3. `Engine.Compile(...)` lowers AST declarations into `ScriptFunction` and `ClassDef`.
+
+Key files:
+
+- `vibes/lexer.go`
+- `vibes/parser.go` (parser core initialization + token stream helpers)
+- `vibes/parser_errors.go` (parse errors and token labeling)
+- `vibes/parser_expressions.go` (expression dispatch loop)
+- `vibes/parser_operator_expressions.go` (grouped/prefix/infix/range expression parsing)
+- `vibes/parser_access_expressions.go` (member and index expression parsing)
+- `vibes/parser_yield_literals.go` (`yield` expression argument parsing)
+- `vibes/parser_case_literals.go` (case/when/else expression parsing)
+- `vibes/parser_call_literals.go` (call argument parsing, keyword labels, and call blocks)
+- `vibes/parser_literals.go` (identifier and scalar literal parsing)
+- `vibes/parser_collection_literals.go` (array/hash literal parsing and symbol-style hash pairs)
+- `vibes/parser_block_literals.go` (block literals, block params, and typed union param parsing)
+- `vibes/parser_statements.go` (statement dispatch + return/raise/block parsing)
+- `vibes/parser_expression_statements.go` (expression/assert/assignment statement parsing)
+- `vibes/parser_declarations.go` (function declaration parsing)
+- `vibes/parser_class_declarations.go` (class declaration parsing)
+- `vibes/parser_function_modifiers.go` (top-level `export`/`private` function declaration parsing)
+- `vibes/parser_declaration_helpers.go` (parameter list and property declaration parsing)
+- `vibes/parser_control.go` (if/loop/begin-rescue-ensure parsing)
+- `vibes/parser_precedence.go` (precedence table + assignable-expression helpers)
+- `vibes/parser_types.go` (type-expression parsing)
+- `vibes/ast.go` (core AST interfaces and shared type nodes)
+- `vibes/ast_statements.go` (statement node definitions)
+- `vibes/ast_expressions.go` (expression node definitions)
+- `vibes/execution_compile.go` (AST lowering into compiled script functions/classes)
+- `vibes/execution_compile_functions.go` (function lowering helper for compile)
+- `vibes/execution_compile_classes.go` (class/property/method lowering helpers for compile)
+- `vibes/execution_compile_errors.go` (parse error aggregation for compile failures)
+
+## Modules (`require`)
+
+`require` runtime behavior:
+
+1. Parse module request and optional alias.
+2. Resolve relative or search-path module file.
+3. Enforce allow/deny policy rules.
+4. Compile + cache module script by normalized cache key.
+5. Execute module in a module-local env.
+6. Export non-private functions to module object.
+7. Inject non-conflicting exports into globals and optionally bind alias.
+
+Key files:
+
+- `vibes/modules.go` (module entry/request types and cache access)
+- `vibes/modules_load.go` (module load workflows for relative/search-path modules)
+- `vibes/modules_paths.go` (module request parsing and path resolution helpers)
+- `vibes/modules_policy.go` (module allow/deny policy normalization and enforcement)
+- `vibes/modules_compile.go` (module compile/cache helpers and function-env cloning)
+- `vibes/modules_cycles.go` (module cycle detection and formatting helpers)
+- `vibes/modules_bindings.go` (require alias validation/binding and export helpers)
+- `vibes/modules_require.go` (runtime require execution, export/alias behavior, cycle reporting)
+
+## Builtins
+
+Builtins are registered during engine initialization:
+
+- core registration entrypoint: `registerCoreBuiltins(...)` in `vibes/interpreter.go`
+- domain files:
+  - `vibes/builtins.go` (core/id helpers)
+  - `vibes/builtins_numeric.go`
+  - `vibes/builtins_json.go` (JSON parse/stringify builtins)
+  - `vibes/builtins_json_convert.go` (JSON <-> runtime value conversion helpers)
+  - `vibes/builtins_json_regex.go` (Regex match builtin)
+  - `vibes/builtins_regex_replace.go` (Regex replace/replace_all builtins and replacement helpers)
+- class/object registration helpers in `vibes/interpreter_builtins_data.go` (`JSON`/`Regex` namespace objects)
+- duration class registration in `vibes/interpreter_builtins_duration.go`
+- time class registration in `vibes/interpreter_builtins_time.go`
+
+## Capability Adapters
+
+Capabilities expose host functionality to scripts through typed contracts and runtime adapters.
+
+Key files:
+
+- `vibes/capability_contracts.go` (capability contract declarations and call boundary enforcement)
+- `vibes/capability_contracts_cycles.go` (cycle detection scan for capability payloads)
+- `vibes/capability_contracts_scanner.go` (callable/builtin scanning and contract binding traversal)
+- `vibes/capability_common.go` (shared validation/name helpers and nil-implementation checks)
+- `vibes/capability_clone.go` (deep-clone/merge helpers for capability payload isolation)
+- `vibes/capability_context.go` (read-only context value capability)
+- `vibes/capability_events.go` (event bus capability)
+- `vibes/capability_db.go` (database interfaces, request types, and adapter construction)
+- `vibes/capability_db_calls.go` (database method binding and runtime call handlers)
+- `vibes/capability_db_contracts.go` (database method contracts and argument validation)
+- `vibes/capability_jobqueue.go` (job queue interfaces, request types, and adapter construction)
+- `vibes/capability_jobqueue_calls.go` (job queue method binding and runtime call handlers)
+- `vibes/capability_jobqueue_contracts.go` (job queue method contracts and return validators)
+- `vibes/capability_jobqueue_options.go` (job queue enqueue option parsing/coercion helpers)
+
+## Refactor Constraints
+
+When refactoring internals:
+
+- Preserve runtime error text when possible (tests assert key messages).
+- Keep parser behavior stable unless paired with migration/docs updates.
+- Run `go test ./...` and style gates after every atomic change.

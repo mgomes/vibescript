@@ -47,7 +47,7 @@ func (c *eventsCapability) CapabilityContracts() map[string]CapabilityMethodCont
 	return map[string]CapabilityMethodContract{
 		method: {
 			ValidateArgs:   c.validatePublishContractArgs,
-			ValidateReturn: c.validateMethodReturn(method),
+			ValidateReturn: capabilityValidateAnyReturn(method),
 		},
 	}
 }
@@ -73,7 +73,7 @@ func (c *eventsCapability) callPublish(exec *Execution, receiver Value, args []V
 	if err != nil {
 		return NewNil(), err
 	}
-	return c.cloneMethodResult(c.name+".publish", result)
+	return cloneCapabilityMethodResult(c.name+".publish", result)
 }
 
 func (c *eventsCapability) validatePublishContractArgs(args []Value, kwargs map[string]Value, block Value) error {
@@ -91,17 +91,4 @@ func (c *eventsCapability) validatePublishContractArgs(args []Value, kwargs map[
 		return err
 	}
 	return validateCapabilityKwargsDataOnly(method, kwargs)
-}
-
-func (c *eventsCapability) validateMethodReturn(method string) func(result Value) error {
-	return func(result Value) error {
-		return validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny)
-	}
-}
-
-func (c *eventsCapability) cloneMethodResult(method string, result Value) (Value, error) {
-	if err := validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny); err != nil {
-		return NewNil(), err
-	}
-	return deepCloneValue(result), nil
 }

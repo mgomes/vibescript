@@ -26,6 +26,7 @@ dives on specific topics.
 - `control-flow.md` – conditionals, loops, and ranges.
 - `blocks.md` – using block literals for map/select/reduce style patterns.
 - `tooling.md` – CLI commands for run/format/analyze/repl workflows.
+- `architecture.md` – internal runtime/parser/module architecture map for maintainers.
 - `integration.md` – host integration patterns showing how Go services can
   expose capabilities to scripts.
 - `host_cookbook.md` – production embedding patterns and operational guidance.
