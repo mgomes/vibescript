@@ -3,7 +3,6 @@ package vibes
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -494,9 +493,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "probe.call expects a single int argument") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	requireErrorContains(t, err, "probe.call expects a single int argument")
 	if invocations != 0 {
 		t.Fatalf("capability should not execute when arg contract fails")
 	}
@@ -522,9 +519,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected return contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "probe.call must return string") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	requireErrorContains(t, err, "probe.call must return string")
 	if invocations != 1 {
 		t.Fatalf("expected capability to execute once before return validation, got %d", invocations)
 	}
@@ -545,9 +540,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected duplicate contract error")
 	}
-	if got := err.Error(); !strings.Contains(got, "duplicate capability contract for dup.call") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	requireErrorContains(t, err, "duplicate capability contract for dup.call")
 }
 
 func TestCapabilityContractsDoNotAttachByGlobalBuiltinName(t *testing.T) {
@@ -587,9 +580,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected instance contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "probe.call expects int") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	requireErrorContains(t, err, "probe.call expects int")
 	if invocations != 0 {
 		t.Fatalf("instance capability should not execute when contract fails")
 	}
@@ -610,9 +601,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected class contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "probe.class_call expects int") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	requireErrorContains(t, err, "probe.class_call expects int")
 	if invocations != 0 {
 		t.Fatalf("class capability should not execute when contract fails")
 	}
@@ -634,9 +623,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected factory-returned contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "factory.call expects int") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	requireErrorContains(t, err, "factory.call expects int")
 	if invocations != 0 {
 		t.Fatalf("factory capability should not execute when contract fails")
 	}
@@ -658,9 +645,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected receiver-mutation contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "mut.call expects int") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	requireErrorContains(t, err, "mut.call expects int")
 	if invocations != 0 {
 		t.Fatalf("mutated receiver capability should not execute when contract fails")
 	}
@@ -706,9 +691,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected sibling-mutation contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "peer.call expects int") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	requireErrorContains(t, err, "peer.call expects int")
 	if invocations != 0 {
 		t.Fatalf("sibling mutation capability should not execute when contract fails")
 	}
@@ -757,9 +740,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected argument-mutation contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "cap.call expects int") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	requireErrorContains(t, err, "cap.call expects int")
 	if invocations != 0 {
 		t.Fatalf("argument mutation capability should not execute when contract fails")
 	}
@@ -914,9 +895,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected remap path contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "probe.call expects a single int argument") {
-		t.Fatalf("unexpected remap path error: %s", got)
-	}
+	requireErrorContains(t, err, "probe.call expects a single int argument")
 	if remapInvocations != 0 {
 		t.Fatalf("contract should reject remap path before invoke, got %d calls", remapInvocations)
 	}
@@ -930,9 +909,7 @@ end`)
 	if err == nil {
 		t.Fatalf("expected chunk path contract validation error")
 	}
-	if got := err.Error(); !strings.Contains(got, "probe.call expects a single int argument") {
-		t.Fatalf("unexpected chunk path error: %s", got)
-	}
+	requireErrorContains(t, err, "probe.call expects a single int argument")
 	if chunkInvocations != 0 {
 		t.Fatalf("contract should reject chunk path before invoke, got %d calls", chunkInvocations)
 	}
