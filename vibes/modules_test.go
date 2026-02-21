@@ -93,11 +93,8 @@ end`,
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			script := compileScriptWithEngine(t, engine, tc.source)
-			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-				t.Fatalf("expected alias validation error")
-			} else if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{})
+			requireErrorContains(t, err, tc.wantErr)
 		})
 	}
 }
