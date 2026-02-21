@@ -35,27 +35,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 	rebinder := newCallFunctionRebinder(s, root, callClasses)
 
-	exec := &Execution{
-		engine:                    s.engine,
-		script:                    s,
-		ctx:                       ctx,
-		quota:                     s.engine.config.StepQuota,
-		memoryQuota:               s.engine.config.MemoryQuotaBytes,
-		recursionCap:              s.engine.config.RecursionLimit,
-		callStack:                 make([]callFrame, 0, 8),
-		root:                      root,
-		modules:                   make(map[string]Value),
-		moduleLoading:             make(map[string]bool),
-		moduleLoadStack:           make([]string, 0, 8),
-		moduleStack:               make([]moduleContext, 0, 8),
-		capabilityContracts:       make(map[*Builtin]CapabilityMethodContract),
-		capabilityContractScopes:  make(map[*Builtin]*capabilityContractScope),
-		capabilityContractsByName: make(map[string]CapabilityMethodContract),
-		receiverStack:             make([]Value, 0, 8),
-		envStack:                  make([]*Env, 0, 8),
-		strictEffects:             s.engine.config.StrictEffects,
-		allowRequire:              opts.AllowRequire,
-	}
+	exec := newExecutionForCall(s, ctx, root, opts)
 
 	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
 		return NewNil(), err
