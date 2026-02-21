@@ -36,6 +36,15 @@ func compileScriptFromFileDefault(t testing.TB, path string) *Script {
 	return compileScriptFromFileWithConfig(t, Config{}, path)
 }
 
+func compileScriptFromFileWithEngine(t testing.TB, engine *Engine, path string) *Script {
+	t.Helper()
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return compileScriptWithEngine(t, engine, string(source))
+}
+
 func compileScriptWithEngine(t testing.TB, engine *Engine, source string) *Script {
 	t.Helper()
 	script, err := engine.Compile(source)

@@ -42,13 +42,7 @@ func TestComplexExamplesCompile(t *testing.T) {
 	for _, path := range files {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			full := filepath.Join("..", path)
-			data, err := os.ReadFile(full)
-			if err != nil {
-				t.Fatalf("read %s: %v", full, err)
-			}
-			if _, err := engine.Compile(string(data)); err != nil {
-				t.Fatalf("compile %s: %v", path, err)
-			}
+			_ = compileScriptFromFileWithEngine(t, engine, full)
 		})
 	}
 }
@@ -482,14 +476,7 @@ func TestAllVibeFilesCompileAndRun(t *testing.T) {
 	for _, path := range files {
 		rel, _ := filepath.Rel(testsDir, path)
 		t.Run(rel, func(t *testing.T) {
-			source, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read: %v", err)
-			}
-			script, err := engine.Compile(string(source))
-			if err != nil {
-				t.Fatalf("compile: %v", err)
-			}
+			script := compileScriptFromFileWithEngine(t, engine, path)
 			if fn, ok := script.Function("run"); ok {
 				_, err := script.Call(context.Background(), fn.Name, nil, CallOptions{})
 				if err != nil {
