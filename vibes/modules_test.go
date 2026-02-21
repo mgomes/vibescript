@@ -113,11 +113,7 @@ def run()
   require("helper", as: "helpers")
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected alias conflict error")
-	} else if !strings.Contains(err.Error(), `require: alias "helpers" already defined`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, `require: alias "helpers" already defined`)
 }
 
 func TestRequireAliasConflictDoesNotLeakExportsWhenRescued(t *testing.T) {
@@ -475,11 +471,7 @@ end
   mod.run()
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected symlink escape error")
-	} else if !strings.Contains(err.Error(), "escapes module root") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
 }
 
 func TestRequireSearchPathRejectsSymlinkEscape(t *testing.T) {
@@ -508,11 +500,7 @@ end
   require("link/secret")
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected symlink escape error")
-	} else if !strings.Contains(err.Error(), "escapes module root") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
 }
 
 func TestRequireRelativePathRejectsOutOfRootCachedModule(t *testing.T) {
@@ -550,11 +538,7 @@ end
   entry.run()
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected module root escape error")
-	} else if !strings.Contains(err.Error(), "escapes module root") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
 }
 
 func TestRequireRelativePathUsesCacheBeforeFilesystemResolution(t *testing.T) {
@@ -689,11 +673,7 @@ func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {
   helper(value)
 end`)
 
-	if _, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{}); err == nil {
-		t.Fatalf("expected undefined helper error")
-	} else if !strings.Contains(err.Error(), "undefined variable helper") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", []Value{NewInt(2)}, CallOptions{}, "undefined variable helper")
 }
 
 func TestExportKeywordValidation(t *testing.T) {
@@ -738,11 +718,7 @@ func TestRequirePrivateFunctionsRemainModuleScoped(t *testing.T) {
   _internal(value)
 end`)
 
-	if _, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{}); err == nil {
-		t.Fatalf("expected undefined private function error")
-	} else if !strings.Contains(err.Error(), "undefined variable _internal") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", []Value{NewInt(2)}, CallOptions{}, "undefined variable _internal")
 }
 
 func TestRequireModuleCacheAvoidsDuplicateLoads(t *testing.T) {
@@ -771,11 +747,7 @@ func TestRequireRuntimeModuleRecursionHitsRecursionLimit(t *testing.T) {
   mod.enter()
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected recursion limit error")
-	} else if !strings.Contains(err.Error(), "recursion depth exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "recursion depth exceeded")
 }
 
 func TestRequireAllowsCachedModuleReuseAcrossModuleCalls(t *testing.T) {
@@ -935,11 +907,7 @@ func TestRequireModuleDenyListOverridesAllowList(t *testing.T) {
   require("helper")
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected deny-list error")
-	} else if !strings.Contains(err.Error(), `require: module "helper" denied by policy`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, `require: module "helper" denied by policy`)
 }
 
 func TestModulePolicyPatternValidation(t *testing.T) {
