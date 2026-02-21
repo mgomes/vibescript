@@ -35,6 +35,7 @@ Key files:
 - `vibes/execution_blocks.go` (block literal creation and block/yield invocation)
 - `vibes/execution_operators.go` (unary/index/binary operator evaluation)
 - `vibes/execution_control.go` (range/case/loop/try evaluation)
+- `vibes/execution_try_raise.go` (raise/try-rescue-ensure execution flow)
 - `vibes/execution_rescue_types.go` (rescue type matching and control-signal classification helpers)
 - `vibes/execution_errors.go` (runtime error model, wrapping, and quota/signal sentinels)
 - `vibes/execution_state.go` (runtime call/env/module/receiver stack helpers)
