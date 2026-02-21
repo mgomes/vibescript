@@ -30,6 +30,7 @@ Key files:
 - `vibes/execution_members.go` (member dispatch for runtime values)
 - `vibes/execution_members_hash.go` (hash/object member behavior)
 - `vibes/execution_members_string.go` (string member behavior)
+- `vibes/execution_members_string_helpers.go` (string helper routines for member methods)
 - `vibes/execution_members_duration.go` (duration member behavior)
 - `vibes/execution_members_array.go` (array member behavior)
 - `vibes/execution_types.go` (type-checking + type formatting helpers)
@@ -48,7 +49,8 @@ Key files:
 - `vibes/lexer.go`
 - `vibes/parser.go` (parser core + precedence + token/error helpers)
 - `vibes/parser_expressions.go` (expression-level parsing, call/block literals)
-- `vibes/parser_statements.go` (statement dispatch and expression/assignment statement parsing)
+- `vibes/parser_statements.go` (statement dispatch + return/raise/block parsing)
+- `vibes/parser_expression_statements.go` (expression/assert/assignment statement parsing)
 - `vibes/parser_declarations.go` (function/class/property declaration parsing)
 - `vibes/parser_control.go` (if/loop/begin-rescue-ensure parsing)
 - `vibes/parser_precedence.go` (precedence table + assignable-expression helpers)
