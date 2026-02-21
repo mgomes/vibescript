@@ -2352,18 +2352,10 @@ func TestRandomIdentifierBuiltins(t *testing.T) {
 		t.Fatalf("id_default mismatch: %v", got)
 	}
 
-	if _, err := script.Call(context.Background(), "bad_length_type", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be integer") {
-		t.Fatalf("expected length type error, got %v", err)
-	}
-	if _, err := script.Call(context.Background(), "bad_length_float", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be integer") {
-		t.Fatalf("expected length float error, got %v", err)
-	}
-	if _, err := script.Call(context.Background(), "bad_length_value", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be positive") {
-		t.Fatalf("expected length value error, got %v", err)
-	}
-	if _, err := script.Call(context.Background(), "bad_uuid_args", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "uuid does not take arguments") {
-		t.Fatalf("expected uuid args error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_length_type", nil, CallOptions{}, "random_id length must be integer")
+	requireCallErrorContains(t, script, "bad_length_float", nil, CallOptions{}, "random_id length must be integer")
+	requireCallErrorContains(t, script, "bad_length_value", nil, CallOptions{}, "random_id length must be positive")
+	requireCallErrorContains(t, script, "bad_uuid_args", nil, CallOptions{}, "uuid does not take arguments")
 }
 
 func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
@@ -2373,11 +2365,7 @@ func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
     end
     `)
 
-	var err error
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "random source failed") {
-		t.Fatalf("expected random source failure, got %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "random source failed")
 }
 
 func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
@@ -2404,11 +2392,7 @@ func TestRandomIdentifierBuiltinsRejectsStalledEntropy(t *testing.T) {
     end
     `)
 
-	var err error
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "random_id entropy source rejected too many bytes") {
-		t.Fatalf("expected stalled entropy error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "random_id entropy source rejected too many bytes")
 }
 
 func TestNumericHelpers(t *testing.T) {
