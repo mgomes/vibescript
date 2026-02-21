@@ -41,6 +41,8 @@ Key files:
 - `vibes/execution_errors.go` (runtime error model, wrapping, and quota/signal sentinels)
 - `vibes/execution_state.go` (runtime call/env/module/receiver stack helpers)
 - `vibes/execution_members.go` (member dispatch for runtime values)
+- `vibes/execution_members_class_instance.go` (class/instance member access and callable wrapper binding)
+- `vibes/execution_members_numeric.go` (int/float/money member behavior)
 - `vibes/execution_members_hash.go` (hash/object member dispatch)
 - `vibes/execution_members_hash_query.go` (hash query and enumeration member methods)
 - `vibes/execution_members_hash_transforms.go` (hash filter/transform/member mutation methods)
@@ -92,7 +94,9 @@ Key files:
 - `vibes/parser_control.go` (if/loop/begin-rescue-ensure parsing)
 - `vibes/parser_precedence.go` (precedence table + assignable-expression helpers)
 - `vibes/parser_types.go` (type-expression parsing)
-- `vibes/ast.go`
+- `vibes/ast.go` (core AST interfaces and shared type nodes)
+- `vibes/ast_statements.go` (statement node definitions)
+- `vibes/ast_expressions.go` (expression node definitions)
 - `vibes/execution_compile.go` (AST lowering into compiled script functions/classes)
 - `vibes/execution_compile_functions.go` (function lowering helper for compile)
 - `vibes/execution_compile_classes.go` (class/property/method lowering helpers for compile)
@@ -130,10 +134,33 @@ Builtins are registered during engine initialization:
   - `vibes/builtins.go` (core/id helpers)
   - `vibes/builtins_numeric.go`
   - `vibes/builtins_json.go` (JSON parse/stringify builtins)
-  - `vibes/builtins_json_regex.go` (Regex namespace builtins)
+  - `vibes/builtins_json_convert.go` (JSON <-> runtime value conversion helpers)
+  - `vibes/builtins_json_regex.go` (Regex match builtin)
+  - `vibes/builtins_regex_replace.go` (Regex replace/replace_all builtins and replacement helpers)
 - class/object registration helpers in `vibes/interpreter_builtins_data.go` (`JSON`/`Regex` namespace objects)
 - duration class registration in `vibes/interpreter_builtins_duration.go`
 - time class registration in `vibes/interpreter_builtins_time.go`
+
+## Capability Adapters
+
+Capabilities expose host functionality to scripts through typed contracts and runtime adapters.
+
+Key files:
+
+- `vibes/capability_contracts.go` (capability contract declarations and call boundary enforcement)
+- `vibes/capability_contracts_cycles.go` (cycle detection scan for capability payloads)
+- `vibes/capability_contracts_scanner.go` (callable/builtin scanning and contract binding traversal)
+- `vibes/capability_common.go` (shared validation/name helpers and nil-implementation checks)
+- `vibes/capability_clone.go` (deep-clone/merge helpers for capability payload isolation)
+- `vibes/capability_context.go` (read-only context value capability)
+- `vibes/capability_events.go` (event bus capability)
+- `vibes/capability_db.go` (database interfaces, request types, and adapter construction)
+- `vibes/capability_db_calls.go` (database method binding and runtime call handlers)
+- `vibes/capability_db_contracts.go` (database method contracts and argument validation)
+- `vibes/capability_jobqueue.go` (job queue interfaces, request types, and adapter construction)
+- `vibes/capability_jobqueue_calls.go` (job queue method binding and runtime call handlers)
+- `vibes/capability_jobqueue_contracts.go` (job queue method contracts and return validators)
+- `vibes/capability_jobqueue_options.go` (job queue enqueue option parsing/coercion helpers)
 
 ## Refactor Constraints
 
