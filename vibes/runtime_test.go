@@ -1139,10 +1139,7 @@ func TestBeginRescueEnsure(t *testing.T) {
 		t.Fatalf("ensure_return_override mismatch: %v", got)
 	}
 
-	_, err := script.Call(context.Background(), "ensure_without_rescue", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "division by zero") {
-		t.Fatalf("expected ensure_without_rescue to preserve original error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "ensure_without_rescue", nil, CallOptions{}, "division by zero")
 }
 
 func TestBeginRescueTypedMatching(t *testing.T) {
@@ -1194,10 +1191,8 @@ func TestBeginRescueTypedMatching(t *testing.T) {
 		t.Fatalf("typed_union mismatch: %v", got)
 	}
 
-	_, err := script.Call(context.Background(), "rescue_mismatch", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "division by zero") {
-		t.Fatalf("expected typed rescue mismatch to preserve original error, got %v", err)
-	}
+	err := callScriptErr(t, context.Background(), script, "rescue_mismatch", nil, CallOptions{})
+	requireErrorContains(t, err, "division by zero")
 	var divideErr *RuntimeError
 	if !errors.As(err, &divideErr) {
 		t.Fatalf("expected RuntimeError, got %T", err)
@@ -1206,10 +1201,8 @@ func TestBeginRescueTypedMatching(t *testing.T) {
 		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeBase, divideErr.Type)
 	}
 
-	_, err = script.Call(context.Background(), "assertion_passthrough", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "raw") {
-		t.Fatalf("expected assertion passthrough error, got %v", err)
-	}
+	err = callScriptErr(t, context.Background(), script, "assertion_passthrough", nil, CallOptions{})
+	requireErrorContains(t, err, "raw")
 	var assertionErr *RuntimeError
 	if !errors.As(err, &assertionErr) {
 		t.Fatalf("expected RuntimeError, got %T", err)
@@ -1934,26 +1927,11 @@ func TestNumericConversionBuiltins(t *testing.T) {
 		t.Fatalf("float_from_string mismatch: %v", got["float_from_string"])
 	}
 
-	_, err := script.Call(context.Background(), "bad_int_fraction", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_int cannot convert non-integer float") {
-		t.Fatalf("expected fractional to_int error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_int_string", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_int expects a base-10 integer string") {
-		t.Fatalf("expected string to_int error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_float_string", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_float expects a numeric string") {
-		t.Fatalf("expected string to_float error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_float_nan", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_float expects a finite numeric string") {
-		t.Fatalf("expected NaN to_float error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_float_inf", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_float expects a finite numeric string") {
-		t.Fatalf("expected Inf to_float error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_int_fraction", nil, CallOptions{}, "to_int cannot convert non-integer float")
+	requireCallErrorContains(t, script, "bad_int_string", nil, CallOptions{}, "to_int expects a base-10 integer string")
+	requireCallErrorContains(t, script, "bad_float_string", nil, CallOptions{}, "to_float expects a numeric string")
+	requireCallErrorContains(t, script, "bad_float_nan", nil, CallOptions{}, "to_float expects a finite numeric string")
+	requireCallErrorContains(t, script, "bad_float_inf", nil, CallOptions{}, "to_float expects a finite numeric string")
 }
 
 func TestJSONBuiltins(t *testing.T) {
@@ -2004,15 +1982,8 @@ func TestJSONBuiltins(t *testing.T) {
 		t.Fatalf("stringify mismatch: %q", got)
 	}
 
-	_, err := script.Call(context.Background(), "parse_invalid", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON") {
-		t.Fatalf("expected parse invalid JSON error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "stringify_unsupported", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.stringify unsupported value type function") {
-		t.Fatalf("expected stringify unsupported error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "parse_invalid", nil, CallOptions{}, "JSON.parse invalid JSON")
+	requireCallErrorContains(t, script, "stringify_unsupported", nil, CallOptions{}, "JSON.stringify unsupported value type function")
 }
 
 func TestRegexBuiltins(t *testing.T) {
@@ -2077,10 +2048,7 @@ func TestRegexBuiltins(t *testing.T) {
 		t.Fatalf("replace_boundary mismatch: %v", out["replace_boundary"])
 	}
 
-	_, err := script.Call(context.Background(), "invalid_regex", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.match invalid regex") {
-		t.Fatalf("expected invalid regex error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "invalid_regex", nil, CallOptions{}, "Regex.match invalid regex")
 }
 
 func TestJSONAndRegexMalformedInputs(t *testing.T) {
