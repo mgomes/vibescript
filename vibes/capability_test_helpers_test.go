@@ -21,6 +21,15 @@ func compileScriptDefault(t testing.TB, source string) *Script {
 	return compileScriptWithConfig(t, Config{}, source)
 }
 
+func compileScriptWithEngine(t testing.TB, engine *Engine, source string) *Script {
+	t.Helper()
+	script, err := engine.Compile(source)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	return script
+}
+
 func callScript(t testing.TB, ctx context.Context, script *Script, fn string, args []Value, opts CallOptions) Value {
 	t.Helper()
 	result, err := script.Call(ctx, fn, args, opts)
