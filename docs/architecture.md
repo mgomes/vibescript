@@ -24,6 +24,7 @@ Key files:
 - `vibes/execution_script.go` (script call surface and call-time orchestration)
 - `vibes/execution_script_helpers.go` (compiled script lookup/order/ownership and call-time cloning helpers)
 - `vibes/execution_call_capabilities.go` (call-time capability binding and contract registration)
+- `vibes/execution_call_classes.go` (call-time class body initialization in class-local scope)
 - `vibes/execution_function_args.go` (function argument/default/type/ivar binding helpers)
 - `vibes/execution_calls.go` (callable dispatch + function invocation)
 - `vibes/execution_call_expr.go` (call expression target/args/kwargs/block evaluation)

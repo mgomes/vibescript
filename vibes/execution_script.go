@@ -75,20 +75,8 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), err
 	}
 
-	// initialize class bodies (class vars)
-	for name, classDef := range callClasses {
-		if len(classDef.Body) == 0 {
-			continue
-		}
-		classVal, _ := root.Get(name)
-		env := newEnv(root)
-		env.Define("self", classVal)
-		exec.pushReceiver(classVal)
-		_, _, err := exec.evalStatements(classDef.Body, env)
-		exec.popReceiver()
-		if err != nil {
-			return NewNil(), err
-		}
+	if err := initializeClassBodiesForCall(exec, root, callClasses); err != nil {
+		return NewNil(), err
 	}
 
 	callEnv := newEnv(root)
