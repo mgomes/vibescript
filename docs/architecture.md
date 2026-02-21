@@ -34,7 +34,10 @@ Key files:
 - `vibes/execution_members_string.go` (string member behavior)
 - `vibes/execution_members_string_helpers.go` (string helper routines for member methods)
 - `vibes/execution_members_duration.go` (duration member behavior)
-- `vibes/execution_members_array.go` (array member behavior)
+- `vibes/execution_members_array.go` (array member dispatch)
+- `vibes/execution_members_array_query.go` (array query/enumeration member methods)
+- `vibes/execution_members_array_transforms.go` (array mutation/transform member methods)
+- `vibes/execution_members_array_grouping.go` (array sort/group/tally member methods)
 - `vibes/execution_types.go` (type-checking + type formatting helpers)
 - `vibes/execution_values.go` (value conversion, arithmetic, comparison helpers)
 
