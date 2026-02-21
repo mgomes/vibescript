@@ -11,12 +11,7 @@ import (
 
 func compileScript(t *testing.T, source string) *Script {
 	t.Helper()
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(source)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
-	return script
+	return compileScriptDefault(t, source)
 }
 
 func callFunc(t *testing.T, script *Script, name string, args []Value) Value {
