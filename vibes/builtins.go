@@ -99,10 +99,17 @@ func builtinUUID(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		return NewNil(), err
 	}
 
-	// RFC 4122 v4: set version and variant bits.
-	raw[6] = (raw[6] & 0x0f) | 0x40
+	// RFC 9562 v7: unix timestamp milliseconds + random bits.
+	nowMillis := uint64(time.Now().UTC().UnixMilli())
+	raw[0] = byte(nowMillis >> 40)
+	raw[1] = byte(nowMillis >> 32)
+	raw[2] = byte(nowMillis >> 24)
+	raw[3] = byte(nowMillis >> 16)
+	raw[4] = byte(nowMillis >> 8)
+	raw[5] = byte(nowMillis)
+	raw[6] = (raw[6] & 0x0f) | 0x70
 	raw[8] = (raw[8] & 0x3f) | 0x80
-	return NewString(formatUUIDv4(raw)), nil
+	return NewString(formatUUID(raw)), nil
 }
 
 func builtinRandomID(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -234,7 +241,7 @@ func builtinToFloat(exec *Execution, receiver Value, args []Value, kwargs map[st
 	}
 }
 
-func formatUUIDv4(raw []byte) string {
+func formatUUID(raw []byte) string {
 	hexValue := hex.EncodeToString(raw)
 	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:32]
 }
