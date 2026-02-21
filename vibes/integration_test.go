@@ -13,16 +13,7 @@ import (
 func compileTestProgram(t *testing.T, rel string) *Script {
 	t.Helper()
 	path := filepath.Join("..", "tests", rel)
-	source, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", rel, err)
-	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(string(source))
-	if err != nil {
-		t.Fatalf("compile %s: %v", rel, err)
-	}
-	return script
+	return compileScriptFromFileDefault(t, path)
 }
 
 func compileComplexExample(t *testing.T, rel string) *Script {
@@ -32,16 +23,7 @@ func compileComplexExample(t *testing.T, rel string) *Script {
 func compileComplexExampleWithConfig(t *testing.T, rel string, cfg Config) *Script {
 	t.Helper()
 	path := filepath.Join("..", "tests", "complex", rel)
-	source, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", rel, err)
-	}
-	engine := MustNewEngine(cfg)
-	script, err := engine.Compile(string(source))
-	if err != nil {
-		t.Fatalf("compile %s: %v", rel, err)
-	}
-	return script
+	return compileScriptFromFileWithConfig(t, cfg, path)
 }
 
 func TestComplexExamplesCompile(t *testing.T) {

@@ -2,6 +2,7 @@ package vibes
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,20 @@ func compileScriptWithConfig(t testing.TB, cfg Config, source string) *Script {
 func compileScriptDefault(t testing.TB, source string) *Script {
 	t.Helper()
 	return compileScriptWithConfig(t, Config{}, source)
+}
+
+func compileScriptFromFileWithConfig(t testing.TB, cfg Config, path string) *Script {
+	t.Helper()
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return compileScriptWithConfig(t, cfg, string(source))
+}
+
+func compileScriptFromFileDefault(t testing.TB, path string) *Script {
+	t.Helper()
+	return compileScriptFromFileWithConfig(t, Config{}, path)
 }
 
 func compileScriptWithEngine(t testing.TB, engine *Engine, source string) *Script {
