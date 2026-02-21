@@ -47,7 +47,8 @@ Pipeline:
 Key files:
 
 - `vibes/lexer.go`
-- `vibes/parser.go` (parser core + precedence + token/error helpers)
+- `vibes/parser.go` (parser core initialization + token stream helpers)
+- `vibes/parser_errors.go` (parse errors and token labeling)
 - `vibes/parser_expressions.go` (expression-level parsing, call/block literals)
 - `vibes/parser_statements.go` (statement dispatch + return/raise/block parsing)
 - `vibes/parser_expression_statements.go` (expression/assert/assignment statement parsing)
