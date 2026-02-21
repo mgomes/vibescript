@@ -129,7 +129,8 @@ Builtins are registered during engine initialization:
 - domain files:
   - `vibes/builtins.go` (core/id helpers)
   - `vibes/builtins_numeric.go`
-  - `vibes/builtins_json_regex.go`
+  - `vibes/builtins_json.go` (JSON parse/stringify builtins)
+  - `vibes/builtins_json_regex.go` (Regex namespace builtins)
 - class/object registration helpers in `vibes/interpreter_builtins_data.go` (`JSON`/`Regex` namespace objects)
 - duration class registration in `vibes/interpreter_builtins_duration.go`
 - time class registration in `vibes/interpreter_builtins_time.go`
