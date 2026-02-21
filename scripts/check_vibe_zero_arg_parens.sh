@@ -10,7 +10,8 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 1
 fi
 
-if rg -n --glob '*.vibe' '^\s*(export\s+)?def\s+[A-Za-z_][A-Za-z0-9_!?]*\s*\(\s*\)' >/tmp/vibe_style_defs.txt; then
+def_pattern='^[[:space:]]*(export[[:space:]]+)?def[[:space:]]+[A-Za-z_][A-Za-z0-9_!?]*[[:space:]]*\([[:space:]]*\)'
+if rg -n --glob '*.vibe' "${def_pattern}" >/tmp/vibe_style_defs.txt; then
   echo "style violations: zero-arg method definitions must omit parentheses" >&2
   cat /tmp/vibe_style_defs.txt >&2
   status=1
@@ -23,7 +24,8 @@ else
 fi
 
 # Only check builtins that are auto-invoked without `()`.
-if rg -n --glob '*.vibe' '\b(now|uuid)\s*\(\s*\)' >/tmp/vibe_style_calls.txt; then
+call_pattern='(^|[^A-Za-z0-9_])(now|uuid)[[:space:]]*\([[:space:]]*\)'
+if rg -n --glob '*.vibe' "${call_pattern}" >/tmp/vibe_style_calls.txt; then
   echo "style violations: auto-invoked zero-arg calls must omit parentheses" >&2
   cat /tmp/vibe_style_calls.txt >&2
   status=1

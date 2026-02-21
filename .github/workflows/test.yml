@@ -20,6 +20,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install ripgrep
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ripgrep
+
       - name: Install Just
         if: runner.os != 'Windows'
         uses: taiki-e/install-action@v2
