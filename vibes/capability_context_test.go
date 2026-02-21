@@ -7,13 +7,9 @@ import (
 )
 
 func TestContextCapabilityResolver(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   ctx.user.id
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	type ctxKey string
 	resolver := func(ctx context.Context) (Value, error) {
@@ -30,25 +26,18 @@ end`)
 	ctx := context.WithValue(context.Background(), ctxKey("user_id"), "player-1")
 	ctx = context.WithValue(ctx, ctxKey("role"), "coach")
 
-	result, err := script.Call(ctx, "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewContextCapability("ctx", resolver)},
-	})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
+	result := callScript(t, ctx, script, "run", nil, callOptionsWithCapabilities(
+		MustNewContextCapability("ctx", resolver),
+	))
 	if result.Kind() != KindString || result.String() != "player-1" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 }
 
 func TestContextCapabilityRejectsCallableValue(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   ctx.user.id
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	resolver := func(ctx context.Context) (Value, error) {
 		return NewObject(map[string]Value{
@@ -61,49 +50,31 @@ end`)
 		}), nil
 	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewContextCapability("ctx", resolver)},
-	})
-	if err == nil {
-		t.Fatalf("expected callable context data error")
-	}
-	if got := err.Error(); !strings.Contains(got, "ctx capability value must be data-only") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewContextCapability("ctx", resolver),
+	))
+	requireErrorContains(t, err, "ctx capability value must be data-only")
 }
 
 func TestContextCapabilityRejectsNonObjectValue(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   1
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	resolver := func(ctx context.Context) (Value, error) {
 		return NewString("invalid"), nil
 	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewContextCapability("ctx", resolver)},
-	})
-	if err == nil {
-		t.Fatalf("expected resolver shape error")
-	}
-	if got := err.Error(); !strings.Contains(got, "ctx capability resolver must return hash/object") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewContextCapability("ctx", resolver),
+	))
+	requireErrorContains(t, err, "ctx capability resolver must return hash/object")
 }
 
 func TestContextCapabilityRejectsCyclicValue(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   ctx
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	resolver := func(context.Context) (Value, error) {
 		cyclic := map[string]Value{}
@@ -111,15 +82,10 @@ end`)
 		return NewHash(cyclic), nil
 	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewContextCapability("ctx", resolver)},
-	})
-	if err == nil {
-		t.Fatalf("expected cyclic value error")
-	}
-	if got := err.Error(); !strings.Contains(got, "ctx capability value must not contain cyclic references") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewContextCapability("ctx", resolver),
+	))
+	requireErrorContains(t, err, "ctx capability value must not contain cyclic references")
 }
 
 func TestNewContextCapabilityRejectsInvalidArguments(t *testing.T) {

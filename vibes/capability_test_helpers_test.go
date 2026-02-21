@@ -1,0 +1,54 @@
+package vibes
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+func compileScriptWithConfig(t testing.TB, cfg Config, source string) *Script {
+	t.Helper()
+	engine := MustNewEngine(cfg)
+	script, err := engine.Compile(source)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	return script
+}
+
+func compileScriptDefault(t testing.TB, source string) *Script {
+	t.Helper()
+	return compileScriptWithConfig(t, Config{}, source)
+}
+
+func callScript(t testing.TB, ctx context.Context, script *Script, fn string, args []Value, opts CallOptions) Value {
+	t.Helper()
+	result, err := script.Call(ctx, fn, args, opts)
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	return result
+}
+
+func callScriptErr(t testing.TB, ctx context.Context, script *Script, fn string, args []Value, opts CallOptions) error {
+	t.Helper()
+	_, err := script.Call(ctx, fn, args, opts)
+	if err == nil {
+		t.Fatalf("expected call to fail")
+	}
+	return err
+}
+
+func requireErrorContains(t testing.TB, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected error containing %q, got nil", want)
+	}
+	if got := err.Error(); !strings.Contains(got, want) {
+		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
+func callOptionsWithCapabilities(capabilities ...CapabilityAdapter) CallOptions {
+	return CallOptions{Capabilities: capabilities}
+}
