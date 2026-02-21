@@ -39,10 +39,10 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 		}
 	}
 	for _, fn := range stmt.Methods {
-		classDef.Methods[fn.Name] = &ScriptFunction{Name: fn.Name, Params: fn.Params, ReturnTy: fn.ReturnTy, Body: fn.Body, Pos: fn.Pos(), Private: fn.Private}
+		classDef.Methods[fn.Name] = compileFunctionDef(fn)
 	}
 	for _, fn := range stmt.ClassMethods {
-		classDef.ClassMethods[fn.Name] = &ScriptFunction{Name: fn.Name, Params: fn.Params, ReturnTy: fn.ReturnTy, Body: fn.Body, Pos: fn.Pos(), Private: fn.Private}
+		classDef.ClassMethods[fn.Name] = compileFunctionDef(fn)
 	}
 	return classDef
 }

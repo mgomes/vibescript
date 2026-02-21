@@ -91,6 +91,7 @@ Key files:
 - `vibes/parser_types.go` (type-expression parsing)
 - `vibes/ast.go`
 - `vibes/execution_compile.go` (AST lowering into compiled script functions/classes)
+- `vibes/execution_compile_functions.go` (function lowering helper for compile)
 - `vibes/execution_compile_classes.go` (class/property/method lowering helpers for compile)
 - `vibes/execution_compile_errors.go` (parse error aggregation for compile failures)
 
