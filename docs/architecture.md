@@ -66,6 +66,7 @@ Key files:
 - `vibes/parser_expressions.go` (expression-level parsing and yield/case literals)
 - `vibes/parser_call_literals.go` (call argument parsing, keyword labels, and call blocks)
 - `vibes/parser_literals.go` (identifier and scalar literal parsing)
+- `vibes/parser_collection_literals.go` (array/hash literal parsing and symbol-style hash pairs)
 - `vibes/parser_block_literals.go` (block literals, block params, and typed union param parsing)
 - `vibes/parser_statements.go` (statement dispatch + return/raise/block parsing)
 - `vibes/parser_expression_statements.go` (expression/assert/assignment statement parsing)
