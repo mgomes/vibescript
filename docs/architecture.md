@@ -92,6 +92,7 @@ Key files:
 - `vibes/ast.go`
 - `vibes/execution_compile.go` (AST lowering into compiled script functions/classes)
 - `vibes/execution_compile_classes.go` (class/property/method lowering helpers for compile)
+- `vibes/execution_compile_errors.go` (parse error aggregation for compile failures)
 
 ## Modules (`require`)
 
