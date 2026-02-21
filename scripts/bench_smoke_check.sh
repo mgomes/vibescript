@@ -65,7 +65,7 @@ done < <(
 failures=0
 
 echo
-printf "%-40s %12s %12s %12s %12s\n" "Benchmark" "ns/op" "max_ns/op" "allocs/op" "max_allocs"
+printf "%-40s %12s %12s %12s %12s %12s %14s\n" "Benchmark" "ns/op" "max_ns/op" "delta_ns" "allocs/op" "max_allocs" "delta_allocs"
 for bench in "${benchmarks[@]}"; do
   ns="${actual_ns[$bench]:-}"
   allocs="${actual_allocs[$bench]:-}"
@@ -78,7 +78,9 @@ for bench in "${benchmarks[@]}"; do
     continue
   fi
 
-  printf "%-40s %12s %12s %12s %12s\n" "$bench" "$ns" "$max_ns_value" "$allocs" "$max_allocs_value"
+  ns_delta=$((ns - max_ns_value))
+  allocs_delta=$((allocs - max_allocs_value))
+  printf "%-40s %12s %12s %12d %12s %12s %14d\n" "$bench" "$ns" "$max_ns_value" "$ns_delta" "$allocs" "$max_allocs_value" "$allocs_delta"
 
   if (( ns > max_ns_value )); then
     echo "regression: $bench ns/op $ns exceeds $max_ns_value" >&2
