@@ -370,7 +370,7 @@ Goal: lock the language and embedding API for long-term support.
 
 ---
 
-## v1.1.0 - Performance and Benchmarking
+## v0.20.0 - Performance and Benchmarking (1.0 Push)
 
 Goal: make performance improvements measurable, repeatable, and protected against regressions.
 
@@ -412,9 +412,9 @@ Goal: make performance improvements measurable, repeatable, and protected agains
 - [ ] Add flamegraph generation instructions and hotspot triage checklist.
 - [ ] Add a short "performance playbook" for validating optimizations before merge.
 
-### v1.1.0 Definition of Done
+### v0.20.0 Definition of Done
 
 - [ ] Benchmarks cover runtime, capability, module, and stdlib hot paths.
 - [ ] CI reports benchmark deltas for guarded smoke benchmarks.
-- [ ] Measurable improvements are achieved versus v1.0.0 baselines.
+- [ ] Measurable improvements are achieved before the v1.0.0 release tag.
 - [ ] Performance and benchmarking workflows are documented and maintainable.
