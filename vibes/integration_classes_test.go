@@ -19,10 +19,7 @@ func TestClassErrorCases(t *testing.T) {
 	requireCallErrorContains(t, script, "wrong_init_args", nil, CallOptions{}, "argument")
 
 	// run function should work
-	val, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("run: unexpected error: %v", err)
-	}
+	val := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	if val.Kind() != KindHash {
 		t.Fatalf("run: expected hash, got %v", val.Kind())
 	}
