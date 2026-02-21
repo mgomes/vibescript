@@ -13,16 +13,7 @@ import (
 func compileTestProgram(t *testing.T, rel string) *Script {
 	t.Helper()
 	path := filepath.Join("..", "tests", rel)
-	source, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", rel, err)
-	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(string(source))
-	if err != nil {
-		t.Fatalf("compile %s: %v", rel, err)
-	}
-	return script
+	return compileScriptFromFileDefault(t, path)
 }
 
 func compileComplexExample(t *testing.T, rel string) *Script {
@@ -32,16 +23,7 @@ func compileComplexExample(t *testing.T, rel string) *Script {
 func compileComplexExampleWithConfig(t *testing.T, rel string, cfg Config) *Script {
 	t.Helper()
 	path := filepath.Join("..", "tests", "complex", rel)
-	source, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", rel, err)
-	}
-	engine := MustNewEngine(cfg)
-	script, err := engine.Compile(string(source))
-	if err != nil {
-		t.Fatalf("compile %s: %v", rel, err)
-	}
-	return script
+	return compileScriptFromFileWithConfig(t, cfg, path)
 }
 
 func TestComplexExamplesCompile(t *testing.T) {
@@ -60,13 +42,7 @@ func TestComplexExamplesCompile(t *testing.T) {
 	for _, path := range files {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			full := filepath.Join("..", path)
-			data, err := os.ReadFile(full)
-			if err != nil {
-				t.Fatalf("read %s: %v", full, err)
-			}
-			if _, err := engine.Compile(string(data)); err != nil {
-				t.Fatalf("compile %s: %v", path, err)
-			}
+			_ = compileScriptFromFileWithEngine(t, engine, full)
 		})
 	}
 }
@@ -433,20 +409,9 @@ func TestProgramFixtures(t *testing.T) {
 func TestBlockErrorCases(t *testing.T) {
 	script := compileTestProgram(t, "blocks/error_cases.vibe")
 
-	checkErr := func(fn, contains string) {
-		t.Helper()
-		_, err := script.Call(context.Background(), fn, nil, CallOptions{})
-		if err == nil {
-			t.Fatalf("%s: expected error", fn)
-		}
-		if !strings.Contains(err.Error(), contains) {
-			t.Fatalf("%s: unexpected error %v", fn, err)
-		}
-	}
-
-	checkErr("each_without_block", "requires a block")
-	checkErr("map_without_block", "requires a block")
-	checkErr("reduce_empty_without_init", "requires an initial value")
+	requireCallErrorContains(t, script, "each_without_block", nil, CallOptions{}, "requires a block")
+	requireCallErrorContains(t, script, "map_without_block", nil, CallOptions{}, "requires a block")
+	requireCallErrorContains(t, script, "reduce_empty_without_init", nil, CallOptions{}, "requires an initial value")
 
 	val, err := script.Call(context.Background(), "reduce_empty_with_init", nil, CallOptions{})
 	if err != nil {
@@ -457,13 +422,7 @@ func TestBlockErrorCases(t *testing.T) {
 
 func TestBlockErrorPropagation(t *testing.T) {
 	script := compileTestProgram(t, "blocks/block_error_propagation.vibe")
-	_, err := script.Call(context.Background(), "explode", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected error from block")
-	}
-	if !strings.Contains(err.Error(), "unknown_method") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "explode", nil, CallOptions{}, "unknown_method")
 }
 
 func TestComplexExamplesStress(t *testing.T) {
@@ -517,14 +476,7 @@ func TestAllVibeFilesCompileAndRun(t *testing.T) {
 	for _, path := range files {
 		rel, _ := filepath.Rel(testsDir, path)
 		t.Run(rel, func(t *testing.T) {
-			source, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read: %v", err)
-			}
-			script, err := engine.Compile(string(source))
-			if err != nil {
-				t.Fatalf("compile: %v", err)
-			}
+			script := compileScriptFromFileWithEngine(t, engine, path)
 			if fn, ok := script.Function("run"); ok {
 				_, err := script.Call(context.Background(), fn.Name, nil, CallOptions{})
 				if err != nil {
@@ -538,96 +490,38 @@ func TestAllVibeFilesCompileAndRun(t *testing.T) {
 func TestRuntimeErrorCases(t *testing.T) {
 	script := compileTestProgram(t, "errors/runtime.vibe")
 
-	checkErr := func(fn, contains string) {
-		t.Helper()
-		_, err := script.Call(context.Background(), fn, nil, CallOptions{})
-		if err == nil {
-			t.Fatalf("%s: expected error", fn)
-		}
-		if !strings.Contains(err.Error(), contains) {
-			t.Fatalf("%s: unexpected error '%v', want '%s'", fn, err, contains)
-		}
-	}
-
-	checkErr("div_by_zero", "division by zero")
-	checkErr("mod_by_zero", "modulo by zero")
-	checkErr("array_index_out_of_bounds", "index out of bounds")
-	checkErr("string_index_out_of_bounds", "index out of bounds")
-	checkErr("method_missing", "unknown")
-	checkErr("nil_method", "nil")
+	requireCallErrorContains(t, script, "div_by_zero", nil, CallOptions{}, "division by zero")
+	requireCallErrorContains(t, script, "mod_by_zero", nil, CallOptions{}, "modulo by zero")
+	requireCallErrorContains(t, script, "array_index_out_of_bounds", nil, CallOptions{}, "index out of bounds")
+	requireCallErrorContains(t, script, "string_index_out_of_bounds", nil, CallOptions{}, "index out of bounds")
+	requireCallErrorContains(t, script, "method_missing", nil, CallOptions{}, "unknown")
+	requireCallErrorContains(t, script, "nil_method", nil, CallOptions{}, "nil")
 }
 
 func TestTypeErrorCases(t *testing.T) {
 	script := compileTestProgram(t, "errors/types.vibe")
 
-	checkErr := func(fn, contains string) {
-		t.Helper()
-		_, err := script.Call(context.Background(), fn, nil, CallOptions{})
-		if err == nil {
-			t.Fatalf("%s: expected error", fn)
-		}
-		if !strings.Contains(err.Error(), contains) {
-			t.Fatalf("%s: unexpected error '%v', want '%s'", fn, err, contains)
-		}
-	}
-
-	checkErr("sub_mismatch", "unsupported")
-	checkErr("mul_mismatch", "unsupported")
-	checkErr("div_mismatch", "unsupported")
-	checkErr("unary_mismatch", "unsupported")
-
-	// Test arg_type_mismatch by passing a string instead of int
-	_, err := script.Call(context.Background(), "arg_type_mismatch", []Value{strVal("wrong")}, CallOptions{})
-	if err == nil {
-		t.Fatalf("arg_type_mismatch: expected error")
-	}
-	if !strings.Contains(err.Error(), "argument n expected int, got string") {
-		t.Fatalf("arg_type_mismatch: unexpected error '%v', want argument+expected+actual", err)
-	}
-
-	_, err = script.Call(context.Background(), "return_type_mismatch", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("return_type_mismatch: expected error")
-	}
-	if !strings.Contains(err.Error(), "return value for return_type_mismatch expected int, got string") {
-		t.Fatalf("return_type_mismatch: unexpected error '%v', want expected+actual", err)
-	}
+	requireCallErrorContains(t, script, "sub_mismatch", nil, CallOptions{}, "unsupported")
+	requireCallErrorContains(t, script, "mul_mismatch", nil, CallOptions{}, "unsupported")
+	requireCallErrorContains(t, script, "div_mismatch", nil, CallOptions{}, "unsupported")
+	requireCallErrorContains(t, script, "unary_mismatch", nil, CallOptions{}, "unsupported")
+	requireCallErrorContains(t, script, "arg_type_mismatch", []Value{strVal("wrong")}, CallOptions{}, "argument n expected int, got string")
+	requireCallErrorContains(t, script, "return_type_mismatch", nil, CallOptions{}, "return value for return_type_mismatch expected int, got string")
 }
 
 func TestAttributeErrorCases(t *testing.T) {
 	script := compileTestProgram(t, "errors/attributes.vibe")
 
-	checkErr := func(fn, contains string) {
-		t.Helper()
-		_, err := script.Call(context.Background(), fn, nil, CallOptions{})
-		if err == nil {
-			t.Fatalf("%s: expected error", fn)
-		}
-		if !strings.Contains(err.Error(), contains) {
-			t.Fatalf("%s: unexpected error '%v', want '%s'", fn, err, contains)
-		}
-	}
-
-	checkErr("set_readonly", "read-only property")
+	requireCallErrorContains(t, script, "set_readonly", nil, CallOptions{}, "read-only property")
 }
 
 func TestYieldErrorCases(t *testing.T) {
 	script := compileTestProgram(t, "errors/yield.vibe")
 
-	// yield without a block should error
-	_, err := script.Call(context.Background(), "yield_without_block", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("yield_without_block: expected error")
-	}
-	if !strings.Contains(err.Error(), "no block given") {
-		t.Fatalf("yield_without_block: unexpected error '%v', want 'no block given'", err)
-	}
+	requireCallErrorContains(t, script, "yield_without_block", nil, CallOptions{}, "no block given")
 
 	// run function should work since it uses blocks correctly
-	val, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("run: unexpected error: %v", err)
-	}
+	val := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	assertValueEqual(t, val, hashVal(map[string]Value{
 		"count": intVal(3),
 	}))
@@ -636,25 +530,11 @@ func TestYieldErrorCases(t *testing.T) {
 func TestArgumentErrorCases(t *testing.T) {
 	script := compileTestProgram(t, "errors/arguments.vibe")
 
-	checkErr := func(fn, contains string) {
-		t.Helper()
-		_, err := script.Call(context.Background(), fn, nil, CallOptions{})
-		if err == nil {
-			t.Fatalf("%s: expected error", fn)
-		}
-		if !strings.Contains(err.Error(), contains) {
-			t.Fatalf("%s: unexpected error '%v', want '%s'", fn, err, contains)
-		}
-	}
-
-	checkErr("too_few_args", "argument")
-	checkErr("too_many_args", "argument")
+	requireCallErrorContains(t, script, "too_few_args", nil, CallOptions{}, "argument")
+	requireCallErrorContains(t, script, "too_many_args", nil, CallOptions{}, "argument")
 
 	// run function should work
-	val, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("run: unexpected error: %v", err)
-	}
+	val := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	if val.Kind() != KindHash {
 		t.Fatalf("run: expected hash, got %v", val.Kind())
 	}
@@ -679,11 +559,7 @@ def run
   results
 end
 `
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(source)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+	script := compileScriptDefault(t, source)
 
 	for i := range 100 {
 		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
@@ -710,11 +586,7 @@ def run
   { a: a, b: b }
 end
 `
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(source)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+	script := compileScriptDefault(t, source)
 
 	for i := range 50 {
 		result, err := script.Call(context.Background(), "run", nil, CallOptions{})

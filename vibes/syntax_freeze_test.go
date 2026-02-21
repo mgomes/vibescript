@@ -107,9 +107,7 @@ end`,
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := engine.Compile(tc.source); err != nil {
-				t.Fatalf("compile failed: %v", err)
-			}
+			_ = compileScriptWithEngine(t, engine, tc.source)
 		})
 	}
 }

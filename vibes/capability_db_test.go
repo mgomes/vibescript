@@ -2,7 +2,6 @@ package vibes
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -86,22 +85,15 @@ func TestDBCapabilityFindAndContextPropagation(t *testing.T) {
 			"id": NewString("player-7"),
 		}),
 	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run(id)
+	script := compileScriptDefault(t, `def run(id)
   db.find("Player", id, include: "team")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	type ctxKey string
 	ctx := context.WithValue(context.Background(), ctxKey("trace"), "enabled")
-	result, err := script.Call(ctx, "run", []Value{NewString("player-7")}, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
+	result := callScript(t, ctx, script, "run", []Value{NewString("player-7")}, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
 	if result.Kind() != KindHash || result.Hash()["id"].String() != "player-7" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
@@ -132,24 +124,17 @@ func TestDBCapabilityEachInvokesBlock(t *testing.T) {
 			NewHash(map[string]Value{"amount": NewInt(5)}),
 		},
 	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   total = 0
   db.each("ScoreEntry", where: { player_id: "p-1" }) do |entry|
     total = total + entry[:amount]
   end
   total
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	result, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
+	result := callScript(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
 	if result.Kind() != KindInt || result.Int() != 30 {
 		t.Fatalf("unexpected result: %#v", result)
 	}
@@ -172,8 +157,7 @@ func TestDBCapabilityEachLoopControlCannotCrossCallbackBoundary(t *testing.T) {
 			NewHash(map[string]Value{"id": NewString("p-2")}),
 		},
 	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def break_from_callback()
+	script := compileScriptDefault(t, `def break_from_callback()
   db.each("Player") do |row|
     if row[:id] == "p-2"
       break
@@ -188,90 +172,56 @@ def next_from_callback()
     end
   end
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "break_from_callback", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	})
-	if err == nil || !strings.Contains(err.Error(), "break used outside of loop") {
-		t.Fatalf("expected callback break outside-loop error, got %v", err)
-	}
+	err := callScriptErr(t, context.Background(), script, "break_from_callback", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
+	requireErrorContains(t, err, "break used outside of loop")
 
-	_, err = script.Call(context.Background(), "next_from_callback", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	})
-	if err == nil || !strings.Contains(err.Error(), "next used outside of loop") {
-		t.Fatalf("expected callback next outside-loop error, got %v", err)
-	}
+	err = callScriptErr(t, context.Background(), script, "next_from_callback", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
+	requireErrorContains(t, err, "next used outside of loop")
 }
 
 func TestDBCapabilityRejectsCallableUpdateAttributes(t *testing.T) {
 	stub := &dbCapabilityStub{}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def helper(value)
+	script := compileScriptDefault(t, `def helper(value)
   value
 end
 
 def run()
   db.update("Player", "p-1", { callback: helper })
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	})
-	if err == nil {
-		t.Fatalf("expected callable attributes error")
-	}
-	if got := err.Error(); !strings.Contains(got, "db.update attributes must be data-only") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
+	requireErrorContains(t, err, "db.update attributes must be data-only")
 }
 
 func TestDBCapabilityRejectsNonHashUpdateAttributes(t *testing.T) {
 	stub := &dbCapabilityStub{}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   db.update("Player", "p-1", 123)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	})
-	if err == nil {
-		t.Fatalf("expected non-hash attributes error")
-	}
-	if got := err.Error(); !strings.Contains(got, "db.update attributes expected hash, got int") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
+	requireErrorContains(t, err, "db.update attributes expected hash, got int")
 }
 
 func TestDBCapabilityEachRequiresBlock(t *testing.T) {
 	stub := &dbCapabilityStub{}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   db.each("Player")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	})
-	if err == nil {
-		t.Fatalf("expected block error")
-	}
-	if got := err.Error(); !strings.Contains(got, "db.each requires a block") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
+	requireErrorContains(t, err, "db.each requires a block")
 }
 
 func TestDBCapabilityRejectsCallableReturn(t *testing.T) {
@@ -282,23 +232,14 @@ func TestDBCapabilityRejectsCallableReturn(t *testing.T) {
 			}),
 		}),
 	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   db.find("Player", "p-1")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	})
-	if err == nil {
-		t.Fatalf("expected return contract error")
-	}
-	if got := err.Error(); !strings.Contains(got, "db.find return value must be data-only") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
+	requireErrorContains(t, err, "db.find return value must be data-only")
 }
 
 func TestDBCapabilityRejectsCallableRows(t *testing.T) {
@@ -311,25 +252,16 @@ func TestDBCapabilityRejectsCallableRows(t *testing.T) {
 			}),
 		},
 	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   db.each("Player") do |row|
     row
   end
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	})
-	if err == nil {
-		t.Fatalf("expected callable row error")
-	}
-	if got := err.Error(); !strings.Contains(got, "db.each row 0 must be data-only") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
+	requireErrorContains(t, err, "db.each row 0 must be data-only")
 }
 
 func TestDBCapabilityReturnsAreClonedFromHostState(t *testing.T) {
@@ -347,23 +279,17 @@ func TestDBCapabilityReturnsAreClonedFromHostState(t *testing.T) {
 			}),
 		}),
 	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   player = db.find("Player", "p-1")
   player[:profile][:name] = "script"
 
   rows = db.query("Player")
   rows[0][:profile][:name] = "row-script"
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewDBCapability("db", stub)},
-	}); err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
+	callScript(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", stub),
+	))
 
 	findName := stub.findResult.Hash()["profile"].Hash()["name"]
 	if findName.Kind() != KindString || findName.String() != "host" {
@@ -379,17 +305,14 @@ end`)
 func TestNewDBCapabilityRejectsInvalidArguments(t *testing.T) {
 	stub := &dbCapabilityStub{}
 
-	if _, err := NewDBCapability("", stub); err == nil || !strings.Contains(err.Error(), "name must be non-empty") {
-		t.Fatalf("expected empty name error, got %v", err)
-	}
+	_, err := NewDBCapability("", stub)
+	requireErrorContains(t, err, "name must be non-empty")
 
 	var db Database
-	if _, err := NewDBCapability("db", db); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected nil db error, got %v", err)
-	}
+	_, err = NewDBCapability("db", db)
+	requireErrorContains(t, err, "requires a non-nil implementation")
 
 	var typedNil *dbCapabilityStub
-	if _, err := NewDBCapability("db", typedNil); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected typed nil db error, got %v", err)
-	}
+	_, err = NewDBCapability("db", typedNil)
+	requireErrorContains(t, err, "requires a non-nil implementation")
 }

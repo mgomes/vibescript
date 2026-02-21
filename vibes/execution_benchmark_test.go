@@ -35,17 +35,13 @@ func benchmarkEngine() *Engine {
 }
 
 func BenchmarkExecutionArithmeticLoop(b *testing.B) {
-	engine := benchmarkEngine()
-	script, err := engine.Compile(`def run(n)
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(n)
   total = 0
   for i in 1..n
     total = total + i
   end
   total
 end`)
-	if err != nil {
-		b.Fatalf("compile failed: %v", err)
-	}
 
 	args := []Value{NewInt(400)}
 	b.ReportAllocs()
@@ -58,8 +54,7 @@ end`)
 }
 
 func BenchmarkExecutionArrayPipeline(b *testing.B) {
-	engine := benchmarkEngine()
-	script, err := engine.Compile(`def run(values)
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values)
   mapped = values.map do |v|
     v + 1
   end
@@ -72,9 +67,6 @@ func BenchmarkExecutionArrayPipeline(b *testing.B) {
     acc + v
   end
 end`)
-	if err != nil {
-		b.Fatalf("compile failed: %v", err)
-	}
 
 	values := make([]Value, 600)
 	for i := range values {
@@ -92,8 +84,7 @@ end`)
 }
 
 func BenchmarkExecutionMethodDispatchLoop(b *testing.B) {
-	engine := benchmarkEngine()
-	script, err := engine.Compile(`class Counter
+	script := compileScriptWithEngine(b, benchmarkEngine(), `class Counter
   def initialize(seed)
     @value = seed
   end
@@ -114,9 +105,6 @@ def run(n)
   end
   counter.value
 end`)
-	if err != nil {
-		b.Fatalf("compile failed: %v", err)
-	}
 
 	args := []Value{NewInt(300)}
 	b.ReportAllocs()
@@ -129,8 +117,7 @@ end`)
 }
 
 func BenchmarkExecutionCapabilityFindLoop(b *testing.B) {
-	engine := benchmarkEngine()
-	script, err := engine.Compile(`def run(n)
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(n)
   total = 0
   for i in 1..n
     row = db.find("Player", "player-1")
@@ -138,9 +125,6 @@ func BenchmarkExecutionCapabilityFindLoop(b *testing.B) {
   end
   total
 end`)
-	if err != nil {
-		b.Fatalf("compile failed: %v", err)
-	}
 
 	args := []Value{NewInt(300)}
 	opts := CallOptions{
@@ -159,8 +143,7 @@ end`)
 }
 
 func BenchmarkExecutionJSONParseLoop(b *testing.B) {
-	engine := benchmarkEngine()
-	script, err := engine.Compile(`def run(raw, n)
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(raw, n)
   total = 0
   for i in 1..n
     payload = JSON.parse(raw)
@@ -168,9 +151,6 @@ func BenchmarkExecutionJSONParseLoop(b *testing.B) {
   end
   total
 end`)
-	if err != nil {
-		b.Fatalf("compile failed: %v", err)
-	}
 
 	args := []Value{
 		NewString(`{"score":7,"tags":["a","b","c"],"active":true}`),
@@ -186,17 +166,13 @@ end`)
 }
 
 func BenchmarkExecutionJSONStringifyLoop(b *testing.B) {
-	engine := benchmarkEngine()
-	script, err := engine.Compile(`def run(payload, n)
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(payload, n)
   out = ""
   for i in 1..n
     out = JSON.stringify(payload)
   end
   out
 end`)
-	if err != nil {
-		b.Fatalf("compile failed: %v", err)
-	}
 
 	payload := NewHash(map[string]Value{
 		"id":     NewString("player-7"),
@@ -215,17 +191,13 @@ end`)
 }
 
 func BenchmarkExecutionRegexReplaceAllLoop(b *testing.B) {
-	engine := benchmarkEngine()
-	script, err := engine.Compile(`def run(text, n)
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(text, n)
   out = ""
   for i in 1..n
     out = Regex.replace_all(text, "ID-[0-9]+", "X")
   end
   out
 end`)
-	if err != nil {
-		b.Fatalf("compile failed: %v", err)
-	}
 
 	args := []Value{
 		NewString("ID-12 ID-34 ID-56 ID-78 ID-90"),
@@ -241,17 +213,13 @@ end`)
 }
 
 func BenchmarkExecutionTallyLoop(b *testing.B) {
-	engine := benchmarkEngine()
-	script, err := engine.Compile(`def run(values, n)
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values, n)
   out = {}
   for i in 1..n
     out = values.tally
   end
   out
 end`)
-	if err != nil {
-		b.Fatalf("compile failed: %v", err)
-	}
 
 	values := make([]Value, 600)
 	for i := range values {

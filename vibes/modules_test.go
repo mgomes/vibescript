@@ -10,16 +10,20 @@ import (
 	"testing"
 )
 
-func TestRequireProvidesExports(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+const moduleFixturesRoot = "testdata/modules"
 
-	script, err := engine.Compile(`def run(value)
+func moduleTestEngine(t testing.TB) *Engine {
+	t.Helper()
+	return MustNewEngine(Config{ModulePaths: []string{filepath.FromSlash(moduleFixturesRoot)}})
+}
+
+func TestRequireProvidesExports(t *testing.T) {
+	engine := moduleTestEngine(t)
+
+	script := compileScriptWithEngine(t, engine, `def run(value)
   helpers = require("helper")
   helpers.triple(value) + double(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
 	if err != nil {
@@ -31,16 +35,13 @@ end`)
 }
 
 func TestRequireSupportsModuleAlias(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run(value)
+	script := compileScriptWithEngine(t, engine, `def run(value)
   require("helper", as: "helpers")
   require("helper", as: "helpers")
   helpers.triple(value) + helpers.double(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
 	if err != nil {
@@ -52,7 +53,7 @@ end`)
 }
 
 func TestRequireAliasValidation(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	cases := []struct {
 		name    string
@@ -91,44 +92,31 @@ end`,
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			script, err := engine.Compile(tc.source)
-			if err != nil {
-				t.Fatalf("compile failed: %v", err)
-			}
-			if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-				t.Fatalf("expected alias validation error")
-			} else if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			script := compileScriptWithEngine(t, engine, tc.source)
+			err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{})
+			requireErrorContains(t, err, tc.wantErr)
 		})
 	}
 }
 
 func TestRequireAliasRejectsConflictingGlobal(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def helpers(value)
+	script := compileScriptWithEngine(t, engine, `def helpers(value)
   value
 end
 
 def run()
   require("helper", as: "helpers")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected alias conflict error")
-	} else if !strings.Contains(err.Error(), `require: alias "helpers" already defined`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, `require: alias "helpers" already defined`)
 }
 
 func TestRequireAliasConflictDoesNotLeakExportsWhenRescued(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def helpers(value)
+	script := compileScriptWithEngine(t, engine, `def helpers(value)
   value
 end
 
@@ -145,9 +133,6 @@ def run(value)
     "missing"
   end
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
 	if err != nil {
@@ -159,9 +144,9 @@ end`)
 }
 
 func TestRequirePreservesModuleLocalResolution(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def rate()
+	script := compileScriptWithEngine(t, engine, `def rate()
   100
 end
 
@@ -169,9 +154,6 @@ def run(amount)
   fees = require("collision")
   fees.apply_fee(amount)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(10)}, CallOptions{})
 	if err != nil {
@@ -183,9 +165,9 @@ end`)
 }
 
 func TestRequireNamespaceConflictKeepsExistingGlobalBinding(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def double(value)
+	script := compileScriptWithEngine(t, engine, `def double(value)
   value + 1
 end
 
@@ -196,9 +178,6 @@ def run(value)
     module: mod.double(value)
   }
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
 	if err != nil {
@@ -217,9 +196,9 @@ end`)
 }
 
 func TestRequireNamespaceConflictKeepsFirstModuleBinding(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run(value)
+	script := compileScriptWithEngine(t, engine, `def run(value)
   first = require("helper")
   second = require("helper_alt")
   require("helper_alt", as: "alt")
@@ -230,9 +209,6 @@ func TestRequireNamespaceConflictKeepsFirstModuleBinding(t *testing.T) {
     alias: alt.double(value)
   }
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
 	if err != nil {
@@ -257,34 +233,24 @@ end`)
 }
 
 func TestRequireMissingModule(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("missing")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected missing module error")
-	} else if !strings.Contains(err.Error(), `module "missing" not found`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, `module "missing" not found`)
 }
 
 func TestRequireCachesModules(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("helper")
   require("helper")
   require("helper")
   double(10)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
@@ -315,13 +281,10 @@ end
 	writeModule(1)
 
 	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("dynamic")
   mod.value()
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	first, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
@@ -355,7 +318,7 @@ end`)
 }
 
 func TestRequireRejectsAbsolutePaths(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	absPath := "/etc/passwd"
 	if filepath.Separator == '\\' {
@@ -371,63 +334,39 @@ func TestRequireRejectsAbsolutePaths(t *testing.T) {
   require(%q)
 end`, absPath)
 
-	script, err := engine.Compile(source)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	script := compileScriptWithEngine(t, engine, source)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected error for absolute path")
-	} else if !strings.Contains(err.Error(), "must be relative") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "must be relative")
 }
 
 func TestRequireRejectsPathTraversal(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("nested/../../etc/passwd")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected error for path traversal")
-	} else if !strings.Contains(err.Error(), "escapes search paths") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes search paths")
 }
 
 func TestRequireRejectsBackslashPathTraversal(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("nested\\..\\..\\etc\\passwd")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected error for backslash path traversal")
-	} else if !strings.Contains(err.Error(), "escapes search paths") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes search paths")
 }
 
 func TestRequireNormalizesPathSeparators(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run(value)
+	script := compileScriptWithEngine(t, engine, `def run(value)
   unix_style = require("shared/math")
   windows_style = require("shared\\math")
   unix_style.double(value) + windows_style.double(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
 	if err != nil {
@@ -442,26 +381,19 @@ end`)
 }
 
 func TestRequireRelativePathRequiresModuleCaller(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("./helper")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected relative caller error")
-	} else if !strings.Contains(err.Error(), "requires a module caller") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "requires a module caller")
 }
 
 func TestRequireRelativePathDoesNotLeakFromModuleIntoHostFunction(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def host_relative()
+	script := compileScriptWithEngine(t, engine, `def host_relative()
   require("./helper")
 end
 
@@ -469,27 +401,17 @@ def run()
   mod = require("module_calls_host")
   mod.invoke_host_relative()
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected relative caller error from host function")
-	} else if !strings.Contains(err.Error(), "requires a module caller") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "requires a module caller")
 }
 
 func TestRequireSupportsRelativePathsWithinModuleRoot(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run(value)
+	script := compileScriptWithEngine(t, engine, `def run(value)
   mod = require("relative/root")
   mod.run(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(5)}, CallOptions{})
 	if err != nil {
@@ -501,21 +423,14 @@ end`)
 }
 
 func TestRequireRelativePathRejectsEscapingModuleRoot(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("relative/escape")
   mod.run()
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected module root escape error")
-	} else if !strings.Contains(err.Error(), "escapes module root") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
 }
 
 func TestRequireRelativePathRejectsSymlinkEscape(t *testing.T) {
@@ -548,19 +463,12 @@ end
 	}
 
 	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("entry")
   mod.run()
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected symlink escape error")
-	} else if !strings.Contains(err.Error(), "escapes module root") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
 }
 
 func TestRequireSearchPathRejectsSymlinkEscape(t *testing.T) {
@@ -585,18 +493,11 @@ end
 	}
 
 	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("link/secret")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected symlink escape error")
-	} else if !strings.Contains(err.Error(), "escapes module root") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
 }
 
 func TestRequireRelativePathRejectsOutOfRootCachedModule(t *testing.T) {
@@ -628,20 +529,13 @@ end
 	}
 
 	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("link/secret")
   entry = require("entry")
   entry.run()
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected module root escape error")
-	} else if !strings.Contains(err.Error(), "escapes module root") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
 }
 
 func TestRequireRelativePathUsesCacheBeforeFilesystemResolution(t *testing.T) {
@@ -663,13 +557,10 @@ end
 	}
 
 	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("entry")
   mod.run()
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
@@ -693,9 +584,9 @@ end`)
 }
 
 func TestRequireRelativePathWorksInModuleDefinedBlockYieldedFromHost(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def host_each()
+	script := compileScriptWithEngine(t, engine, `def host_each()
   yield()
 end
 
@@ -703,9 +594,6 @@ def run()
   mod = require("block_host_yield")
   mod.run()
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
@@ -717,9 +605,9 @@ end`)
 }
 
 func TestRequireExportsOnlyNonPrivateFunctions(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run(value)
+	script := compileScriptWithEngine(t, engine, `def run(value)
   mod = require("private_exports")
   if mod["_internal"] != nil
     0
@@ -727,9 +615,6 @@ func TestRequireExportsOnlyNonPrivateFunctions(t *testing.T) {
     visible(value) + mod.call_internal(value)
   end
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{})
 	if err != nil {
@@ -741,9 +626,9 @@ end`)
 }
 
 func TestRequireSupportsPrivateModuleExportOptOut(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run(value)
+	script := compileScriptWithEngine(t, engine, `def run(value)
   mod = require("explicit_exports")
   {
     has_exposed: mod["exposed"] != nil,
@@ -754,9 +639,6 @@ func TestRequireSupportsPrivateModuleExportOptOut(t *testing.T) {
     explicit_hidden: mod._explicit_hidden(value)
   }
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
 	if err != nil {
@@ -781,108 +663,69 @@ end`)
 }
 
 func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run(value)
+	script := compileScriptWithEngine(t, engine, `def run(value)
   require("explicit_exports")
   helper(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{}); err == nil {
-		t.Fatalf("expected undefined helper error")
-	} else if !strings.Contains(err.Error(), "undefined variable helper") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", []Value{NewInt(2)}, CallOptions{}, "undefined variable helper")
 }
 
 func TestExportKeywordValidation(t *testing.T) {
-	engine := MustNewEngine(Config{})
+	requireCompileErrorContainsDefault(t, `export helper`, "expected 'def'")
 
-	_, err := engine.Compile(`export helper`)
-	if err == nil || !strings.Contains(err.Error(), "expected 'def'") {
-		t.Fatalf("expected export def parse error, got %v", err)
-	}
-
-	_, err = engine.Compile(`class Example
+	requireCompileErrorContainsDefault(t, `class Example
   export def value()
     1
   end
-end`)
-	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
-		t.Fatalf("expected top-level export parse error, got %v", err)
-	}
+end`, "export is only supported for top-level functions")
 
-	_, err = engine.Compile(`def outer()
+	requireCompileErrorContainsDefault(t, `def outer()
   if true
     export def nested()
       1
     end
   end
-end`)
-	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
-		t.Fatalf("expected nested export parse error, got %v", err)
-	}
+end`, "export is only supported for top-level functions")
 }
 
 func TestPrivateKeywordValidation(t *testing.T) {
-	engine := MustNewEngine(Config{})
+	requireCompileErrorContainsDefault(t, `private helper`, "expected 'def'")
 
-	_, err := engine.Compile(`private helper`)
-	if err == nil || !strings.Contains(err.Error(), "expected 'def'") {
-		t.Fatalf("expected private def parse error, got %v", err)
-	}
-
-	_, err = engine.Compile(`def outer()
+	requireCompileErrorContainsDefault(t, `def outer()
   if true
     private def nested()
       1
     end
   end
-end`)
-	if err == nil || !strings.Contains(err.Error(), "private is only supported for top-level functions and class methods") {
-		t.Fatalf("expected nested private parse error, got %v", err)
-	}
+end`, "private is only supported for top-level functions and class methods")
 
-	_, err = engine.Compile(`private def self.value()
+	requireCompileErrorContainsDefault(t, `private def self.value()
   1
-end`)
-	if err == nil || !strings.Contains(err.Error(), "private cannot be used with class methods") {
-		t.Fatalf("expected private class-method parse error, got %v", err)
-	}
+end`, "private cannot be used with class methods")
 }
 
 func TestRequirePrivateFunctionsRemainModuleScoped(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run(value)
+	script := compileScriptWithEngine(t, engine, `def run(value)
   require("private_exports")
   _internal(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{}); err == nil {
-		t.Fatalf("expected undefined private function error")
-	} else if !strings.Contains(err.Error(), "undefined variable _internal") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", []Value{NewInt(2)}, CallOptions{}, "undefined variable _internal")
 }
 
 func TestRequireModuleCacheAvoidsDuplicateLoads(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("circular_a")
   require("circular_b")
   "ok"
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
@@ -894,33 +737,23 @@ end`)
 }
 
 func TestRequireRuntimeModuleRecursionHitsRecursionLimit(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("circular_runtime_a")
   mod.enter()
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected recursion limit error")
-	} else if !strings.Contains(err.Error(), "recursion depth exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "recursion depth exceeded")
 }
 
 func TestRequireAllowsCachedModuleReuseAcrossModuleCalls(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("require_cached_a")
   mod.start()
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
@@ -932,15 +765,12 @@ end`)
 }
 
 func TestRequireConcurrentLoading(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("helper")
   double(5)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	const goroutines = 10
 	results := make(chan error, goroutines)
@@ -977,14 +807,11 @@ func TestRequireStrictEffectsRequiresAllowRequire(t *testing.T) {
 		ModulePaths:   []string{filepath.Join("testdata", "modules")},
 	})
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("helper")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err == nil {
 		t.Fatalf("expected strict effects require error")
 	}
@@ -999,13 +826,10 @@ func TestRequireStrictEffectsAllowsRequireWhenOptedIn(t *testing.T) {
 		ModulePaths:   []string{filepath.Join("testdata", "modules")},
 	})
 
-	script, err := engine.Compile(`def run(v)
+	script := compileScriptWithEngine(t, engine, `def run(v)
   helpers = require("helper")
   helpers.triple(v)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(4)}, CallOptions{
 		AllowRequire: true,
@@ -1024,7 +848,7 @@ func TestRequireModuleAllowList(t *testing.T) {
 		ModuleAllowList: []string{"shared/*"},
 	})
 
-	script, err := engine.Compile(`def run_allowed(value)
+	script := compileScriptWithEngine(t, engine, `def run_allowed(value)
   mod = require("shared/math")
   mod.double(value)
 end
@@ -1033,9 +857,6 @@ def run_denied(value)
   mod = require("helper")
   mod.double(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	allowed, err := script.Call(context.Background(), "run_allowed", []Value{NewInt(3)}, CallOptions{})
 	if err != nil {
@@ -1045,11 +866,7 @@ end`)
 		t.Fatalf("expected allowed result 6, got %#v", allowed)
 	}
 
-	if _, err := script.Call(context.Background(), "run_denied", []Value{NewInt(3)}, CallOptions{}); err == nil {
-		t.Fatalf("expected denied module error")
-	} else if !strings.Contains(err.Error(), `require: module "helper" not allowed by policy`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run_denied", []Value{NewInt(3)}, CallOptions{}, `require: module "helper" not allowed by policy`)
 }
 
 func TestRequireModuleAllowListStarMatchesNestedModules(t *testing.T) {
@@ -1058,13 +875,10 @@ func TestRequireModuleAllowListStarMatchesNestedModules(t *testing.T) {
 		ModuleAllowList: []string{"*"},
 	})
 
-	script, err := engine.Compile(`def run(value)
+	script := compileScriptWithEngine(t, engine, `def run(value)
   mod = require("shared/math")
   mod.double(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", []Value{NewInt(4)}, CallOptions{})
 	if err != nil {
@@ -1082,18 +896,11 @@ func TestRequireModuleDenyListOverridesAllowList(t *testing.T) {
 		ModuleDenyList:  []string{"helper"},
 	})
 
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithEngine(t, engine, `def run()
   require("helper")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected deny-list error")
-	} else if !strings.Contains(err.Error(), `require: module "helper" denied by policy`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, `require: module "helper" denied by policy`)
 }
 
 func TestModulePolicyPatternValidation(t *testing.T) {
@@ -1101,9 +908,7 @@ func TestModulePolicyPatternValidation(t *testing.T) {
 		ModulePaths:     []string{filepath.Join("testdata", "modules")},
 		ModuleAllowList: []string{"[invalid"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid module allow-list pattern") {
-		t.Fatalf("expected invalid allow-list pattern error, got %v", err)
-	}
+	requireErrorContains(t, err, "invalid module allow-list pattern")
 }
 
 func TestFormatModuleCycleUsesConciseChain(t *testing.T) {

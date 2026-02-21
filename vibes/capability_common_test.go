@@ -1,7 +1,6 @@
 package vibes
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -26,9 +25,7 @@ func TestValidateCapabilityTypedValueUsesCompositeTypeChecks(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected composite type mismatch")
 	}
-	if !strings.Contains(err.Error(), "payload expected array<int | string>, got array<bool | int>") {
-		t.Fatalf("unexpected composite type mismatch: %v", err)
-	}
+	requireErrorContains(t, err, "payload expected array<int | string>, got array<bool | int>")
 }
 
 func TestValidateCapabilityTypedValueUsesShapeTypeChecks(t *testing.T) {
@@ -50,7 +47,5 @@ func TestValidateCapabilityTypedValueUsesShapeTypeChecks(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected shape type mismatch")
 	}
-	if !strings.Contains(err.Error(), "payload expected { id: string }, got { extra: int, id: string }") {
-		t.Fatalf("unexpected shape type mismatch: %v", err)
-	}
+	requireErrorContains(t, err, "payload expected { id: string }, got { extra: int, id: string }")
 }

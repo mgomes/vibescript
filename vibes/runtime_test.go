@@ -11,12 +11,7 @@ import (
 
 func compileScript(t *testing.T, source string) *Script {
 	t.Helper()
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(source)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
-	return script
+	return compileScriptDefault(t, source)
 }
 
 func callFunc(t *testing.T, script *Script, name string, args []Value) Value {
@@ -29,17 +24,13 @@ func callFunc(t *testing.T, script *Script, name string, args []Value) Value {
 }
 
 func TestCompileMalformedCallTargetDoesNotPanic(t *testing.T) {
-	engine := MustNewEngine(Config{})
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("compile panicked: %v", r)
 		}
 	}()
 
-	_, err := engine.Compile(`be(in (000000000`)
-	if err == nil {
-		t.Fatalf("expected compile error for malformed input")
-	}
+	_ = compileScriptErrorDefault(t, `be(in (000000000`)
 }
 
 func TestHashMergeAndKeys(t *testing.T) {
@@ -603,10 +594,7 @@ func TestArrayChunkWindowValidation(t *testing.T) {
     end
     `)
 
-	_, err := script.Call(context.Background(), "bad_chunk", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
-		t.Fatalf("expected chunk validation error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_chunk", nil, CallOptions{}, "array.chunk size must be a positive integer")
 	nativeMaxInt := int64(^uint(0) >> 1)
 	hugeChunk := callFunc(t, script, "huge_chunk", []Value{NewInt(nativeMaxInt)})
 	if hugeChunk.Kind() != KindArray {
@@ -617,10 +605,7 @@ func TestArrayChunkWindowValidation(t *testing.T) {
 		t.Fatalf("expected one chunk for oversized chunk size, got %d", len(chunks))
 	}
 	compareArrays(t, chunks[0], []Value{NewInt(1), NewInt(2)})
-	_, err = script.Call(context.Background(), "bad_window", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
-		t.Fatalf("expected window validation error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_window", nil, CallOptions{}, "array.window size must be a positive integer")
 	hugeWindow := callFunc(t, script, "huge_window", []Value{NewInt(nativeMaxInt)})
 	if hugeWindow.Kind() != KindArray || len(hugeWindow.Array()) != 0 {
 		t.Fatalf("expected huge window size to return empty array, got %v", hugeWindow)
@@ -628,19 +613,10 @@ func TestArrayChunkWindowValidation(t *testing.T) {
 
 	overflowSize := int64(1 << 62)
 	if nativeMaxInt < overflowSize {
-		_, err = script.Call(context.Background(), "huge_chunk", []Value{NewInt(overflowSize)}, CallOptions{})
-		if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
-			t.Fatalf("expected chunk overflow validation error, got %v", err)
-		}
-		_, err = script.Call(context.Background(), "huge_window", []Value{NewInt(overflowSize)}, CallOptions{})
-		if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
-			t.Fatalf("expected window overflow validation error, got %v", err)
-		}
+		requireCallErrorContains(t, script, "huge_chunk", []Value{NewInt(overflowSize)}, CallOptions{}, "array.chunk size must be a positive integer")
+		requireCallErrorContains(t, script, "huge_window", []Value{NewInt(overflowSize)}, CallOptions{}, "array.window size must be a positive integer")
 	}
-	_, err = script.Call(context.Background(), "bad_group_by_stable", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "array.group_by_stable requires a block") {
-		t.Fatalf("expected group_by_stable block error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_group_by_stable", nil, CallOptions{}, "array.group_by_stable requires a block")
 }
 
 func TestArrayConcatAndSubtract(t *testing.T) {
@@ -665,23 +641,15 @@ func TestArrayConcatAndSubtract(t *testing.T) {
 }
 
 func TestHashLiteralSyntaxRestriction(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	_, err := engine.Compile(`
+	_ = compileScriptErrorDefault(t, `
     def broken()
       { "name" => "alex" }
     end
     `)
-	if err == nil {
-		t.Fatalf("expected compile error for legacy hash syntax")
-	}
 }
 
 func TestParseErrorIncludesCodeFrameAndKeywordMessage(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	_, err := engine.Compile("def broken()\n  call(foo: )\nend\n")
-	if err == nil {
-		t.Fatalf("expected compile error")
-	}
+	err := compileScriptErrorDefault(t, "def broken()\n  call(foo: )\nend\n")
 	msg := err.Error()
 	if !strings.Contains(msg, "missing value for keyword argument foo") {
 		t.Fatalf("expected keyword argument parse error, got: %s", msg)
@@ -716,11 +684,7 @@ func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
 }
 
 func TestParseErrorIncludesBlockParameterHint(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	_, err := engine.Compile("def broken()\n  [1].each do |a,|\n    a\n  end\nend\n")
-	if err == nil {
-		t.Fatalf("expected compile error")
-	}
+	err := compileScriptErrorDefault(t, "def broken()\n  [1].each do |a,|\n    a\n  end\nend\n")
 	msg := err.Error()
 	if !strings.Contains(msg, "trailing comma in block parameter list") {
 		t.Fatalf("expected trailing comma hint, got: %s", msg)
@@ -777,37 +741,23 @@ func TestTypedBlockSignatures(t *testing.T) {
 	})
 	compareArrays(t, untouched, []Value{NewInt(1), NewString("two")})
 
-	_, err := script.Call(context.Background(), "increment_all", []Value{
+	requireCallErrorContains(t, script, "increment_all", []Value{
 		NewArray([]Value{NewInt(1), NewString("oops")}),
-	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument n expected int, got string") {
-		t.Fatalf("expected typed block argument error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "typed_union", []Value{
+	}, CallOptions{}, "argument n expected int, got string")
+	requireCallErrorContains(t, script, "typed_union", []Value{
 		NewArray([]Value{NewBool(true)}),
-	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected int | string, got bool") {
-		t.Fatalf("expected typed union block argument error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "enforce_yield_type", []Value{NewString("bad")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument n expected int, got string") {
-		t.Fatalf("expected typed yield argument error, got %v", err)
-	}
+	}, CallOptions{}, "argument v expected int | string, got bool")
+	requireCallErrorContains(t, script, "enforce_yield_type", []Value{NewString("bad")}, CallOptions{}, "argument n expected int, got string")
 }
 
 func TestArraySumRejectsNonNumeric(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`
+	script := compileScriptDefault(t, `
     def bad()
       ["a"].sum()
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
+	var err error
 	_, err = script.Call(context.Background(), "bad", nil, CallOptions{})
 	if err == nil {
 		t.Fatalf("expected runtime error for non-numeric sum")
@@ -865,8 +815,7 @@ func TestRuntimeErrorStackTrace(t *testing.T) {
 }
 
 func TestRuntimeErrorCondensesDeepStackRendering(t *testing.T) {
-	engine := MustNewEngine(Config{RecursionLimit: 128})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{RecursionLimit: 128}, `
     def recurse(n)
       if n <= 0
         1 / 0
@@ -878,10 +827,8 @@ func TestRuntimeErrorCondensesDeepStackRendering(t *testing.T) {
       recurse(40)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
+	var err error
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
 	if err == nil {
 		t.Fatalf("expected runtime error")
@@ -989,20 +936,13 @@ func TestWhileLoops(t *testing.T) {
 		t.Fatalf("skip_false expected nil, got %v", got)
 	}
 
-	engine := MustNewEngine(Config{StepQuota: 40})
-	spinScript, err := engine.Compile(`
+	spinScript := compileScriptWithConfig(t, Config{StepQuota: 40}, `
     def spin()
       while true
       end
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
-	_, err = spinScript.Call(context.Background(), "spin", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
-		t.Fatalf("expected step quota error for infinite while loop, got %v", err)
-	}
+	requireCallErrorContains(t, spinScript, "spin", nil, CallOptions{}, "step quota exceeded")
 }
 
 func TestUntilLoops(t *testing.T) {
@@ -1044,20 +984,13 @@ func TestUntilLoops(t *testing.T) {
 		t.Fatalf("skip_until_true expected nil, got %v", got)
 	}
 
-	engine := MustNewEngine(Config{StepQuota: 40})
-	spinScript, err := engine.Compile(`
+	spinScript := compileScriptWithConfig(t, Config{StepQuota: 40}, `
     def spin_until()
       until false
       end
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
-	_, err = spinScript.Call(context.Background(), "spin_until", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
-		t.Fatalf("expected step quota error for infinite until loop, got %v", err)
-	}
+	requireCallErrorContains(t, spinScript, "spin_until", nil, CallOptions{}, "step quota exceeded")
 }
 
 func TestCaseWhenExpressions(t *testing.T) {
@@ -1206,10 +1139,7 @@ func TestBeginRescueEnsure(t *testing.T) {
 		t.Fatalf("ensure_return_override mismatch: %v", got)
 	}
 
-	_, err := script.Call(context.Background(), "ensure_without_rescue", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "division by zero") {
-		t.Fatalf("expected ensure_without_rescue to preserve original error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "ensure_without_rescue", nil, CallOptions{}, "division by zero")
 }
 
 func TestBeginRescueTypedMatching(t *testing.T) {
@@ -1261,10 +1191,8 @@ func TestBeginRescueTypedMatching(t *testing.T) {
 		t.Fatalf("typed_union mismatch: %v", got)
 	}
 
-	_, err := script.Call(context.Background(), "rescue_mismatch", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "division by zero") {
-		t.Fatalf("expected typed rescue mismatch to preserve original error, got %v", err)
-	}
+	err := callScriptErr(t, context.Background(), script, "rescue_mismatch", nil, CallOptions{})
+	requireErrorContains(t, err, "division by zero")
 	var divideErr *RuntimeError
 	if !errors.As(err, &divideErr) {
 		t.Fatalf("expected RuntimeError, got %T", err)
@@ -1273,10 +1201,8 @@ func TestBeginRescueTypedMatching(t *testing.T) {
 		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeBase, divideErr.Type)
 	}
 
-	_, err = script.Call(context.Background(), "assertion_passthrough", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "raw") {
-		t.Fatalf("expected assertion passthrough error, got %v", err)
-	}
+	err = callScriptErr(t, context.Background(), script, "assertion_passthrough", nil, CallOptions{})
+	requireErrorContains(t, err, "raw")
 	var assertionErr *RuntimeError
 	if !errors.As(err, &assertionErr) {
 		t.Fatalf("expected RuntimeError, got %T", err)
@@ -1327,8 +1253,7 @@ func TestBeginRescueDoesNotCatchLoopControlSignals(t *testing.T) {
 }
 
 func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
-	engine := MustNewEngine(Config{StepQuota: 60})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{StepQuota: 60}, `
     def run()
       begin
         while true
@@ -1338,19 +1263,12 @@ func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
       end
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
-		t.Fatalf("expected host quota signal to bypass rescue, got %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "step quota exceeded")
 }
 
 func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	_, err := engine.Compile(`
+	requireCompileErrorContainsDefault(t, `
     def bad()
       begin
         1 / 0
@@ -1358,10 +1276,7 @@ func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
         "fallback"
       end
     end
-    `)
-	if err == nil || !strings.Contains(err.Error(), "unknown rescue error type NotARealError") {
-		t.Fatalf("expected unknown rescue type compile error, got %v", err)
-	}
+    `, "unknown rescue error type NotARealError")
 }
 
 func TestBeginRescueReraisePreservesStack(t *testing.T) {
@@ -1403,10 +1318,8 @@ func TestBeginRescueReraisePreservesStack(t *testing.T) {
 		t.Fatalf("catches_reraise mismatch: %v", got)
 	}
 
-	_, err := script.Call(context.Background(), "outer", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("expected reraise error, got %v", err)
-	}
+	err := callScriptErr(t, context.Background(), script, "outer", nil, CallOptions{})
+	requireErrorContains(t, err, "boom")
 	var rtErr *RuntimeError
 	if !errors.As(err, &rtErr) {
 		t.Fatalf("expected RuntimeError, got %T", err)
@@ -1430,15 +1343,9 @@ func TestBeginRescueReraisePreservesStack(t *testing.T) {
 		t.Fatalf("expected outer frame fourth, got %s", rtErr.Frames[3].Function)
 	}
 
-	_, err = script.Call(context.Background(), "raise_outside", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "raise used outside of rescue") {
-		t.Fatalf("expected raise outside rescue error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "raise_new_message", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "custom boom") {
-		t.Fatalf("expected raise message error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "raise_outside", nil, CallOptions{}, "raise used outside of rescue")
+	err = callScriptErr(t, context.Background(), script, "raise_new_message", nil, CallOptions{})
+	requireErrorContains(t, err, "custom boom")
 	var raisedErr *RuntimeError
 	if !errors.As(err, &raisedErr) {
 		t.Fatalf("expected RuntimeError, got %T", err)
@@ -1506,15 +1413,8 @@ func TestLoopControlBreakAndNext(t *testing.T) {
 	whileBreakNext := callFunc(t, script, "while_break_next", nil)
 	compareArrays(t, whileBreakNext, []Value{NewInt(1), NewInt(2), NewInt(4)})
 
-	_, err := script.Call(context.Background(), "break_outside", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "break used outside of loop") {
-		t.Fatalf("expected outside-loop break error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "next_outside", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "next used outside of loop") {
-		t.Fatalf("expected outside-loop next error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "break_outside", nil, CallOptions{}, "break used outside of loop")
+	requireCallErrorContains(t, script, "next_outside", nil, CallOptions{}, "next used outside of loop")
 }
 
 func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
@@ -1610,25 +1510,10 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 	nestedNext := callFunc(t, script, "nested_next", nil)
 	compareArrays(t, nestedNext, []Value{NewInt(11), NewInt(13), NewInt(21), NewInt(23)})
 
-	_, err := script.Call(context.Background(), "break_from_block_boundary", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "break cannot cross call boundary") {
-		t.Fatalf("expected block-boundary break error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "next_from_block_boundary", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
-		t.Fatalf("expected block-boundary next error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "break_from_setter_boundary", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "break cannot cross call boundary") {
-		t.Fatalf("expected setter-boundary break error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "next_from_setter_boundary", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
-		t.Fatalf("expected setter-boundary next error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "break_from_block_boundary", nil, CallOptions{}, "break cannot cross call boundary")
+	requireCallErrorContains(t, script, "next_from_block_boundary", nil, CallOptions{}, "next cannot cross call boundary")
+	requireCallErrorContains(t, script, "break_from_setter_boundary", nil, CallOptions{}, "break cannot cross call boundary")
+	requireCallErrorContains(t, script, "next_from_setter_boundary", nil, CallOptions{}, "next cannot cross call boundary")
 }
 
 func TestLoopControlInsideClassMethods(t *testing.T) {
@@ -1945,9 +1830,7 @@ func TestTimeParseAndAliases(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected parse error")
 	}
-	if !strings.Contains(err.Error(), "could not parse time") {
-		t.Fatalf("unexpected parse error: %v", err)
-	}
+	requireErrorContains(t, err, "could not parse time")
 }
 
 func TestTimeParseCommonLayouts(t *testing.T) {
@@ -2040,26 +1923,11 @@ func TestNumericConversionBuiltins(t *testing.T) {
 		t.Fatalf("float_from_string mismatch: %v", got["float_from_string"])
 	}
 
-	_, err := script.Call(context.Background(), "bad_int_fraction", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_int cannot convert non-integer float") {
-		t.Fatalf("expected fractional to_int error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_int_string", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_int expects a base-10 integer string") {
-		t.Fatalf("expected string to_int error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_float_string", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_float expects a numeric string") {
-		t.Fatalf("expected string to_float error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_float_nan", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_float expects a finite numeric string") {
-		t.Fatalf("expected NaN to_float error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_float_inf", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "to_float expects a finite numeric string") {
-		t.Fatalf("expected Inf to_float error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_int_fraction", nil, CallOptions{}, "to_int cannot convert non-integer float")
+	requireCallErrorContains(t, script, "bad_int_string", nil, CallOptions{}, "to_int expects a base-10 integer string")
+	requireCallErrorContains(t, script, "bad_float_string", nil, CallOptions{}, "to_float expects a numeric string")
+	requireCallErrorContains(t, script, "bad_float_nan", nil, CallOptions{}, "to_float expects a finite numeric string")
+	requireCallErrorContains(t, script, "bad_float_inf", nil, CallOptions{}, "to_float expects a finite numeric string")
 }
 
 func TestJSONBuiltins(t *testing.T) {
@@ -2110,15 +1978,8 @@ func TestJSONBuiltins(t *testing.T) {
 		t.Fatalf("stringify mismatch: %q", got)
 	}
 
-	_, err := script.Call(context.Background(), "parse_invalid", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON") {
-		t.Fatalf("expected parse invalid JSON error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "stringify_unsupported", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.stringify unsupported value type function") {
-		t.Fatalf("expected stringify unsupported error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "parse_invalid", nil, CallOptions{}, "JSON.parse invalid JSON")
+	requireCallErrorContains(t, script, "stringify_unsupported", nil, CallOptions{}, "JSON.stringify unsupported value type function")
 }
 
 func TestRegexBuiltins(t *testing.T) {
@@ -2183,10 +2044,7 @@ func TestRegexBuiltins(t *testing.T) {
 		t.Fatalf("replace_boundary mismatch: %v", out["replace_boundary"])
 	}
 
-	_, err := script.Call(context.Background(), "invalid_regex", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.match invalid regex") {
-		t.Fatalf("expected invalid regex error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "invalid_regex", nil, CallOptions{}, "Regex.match invalid regex")
 }
 
 func TestJSONAndRegexMalformedInputs(t *testing.T) {
@@ -2208,27 +2066,14 @@ func TestJSONAndRegexMalformedInputs(t *testing.T) {
     end
     `)
 
-	_, err := script.Call(context.Background(), "bad_json_trailing", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON: trailing data") {
-		t.Fatalf("expected trailing JSON error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_json_syntax", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.parse invalid JSON") {
-		t.Fatalf("expected malformed JSON syntax error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_regex_replace", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.replace invalid regex") {
-		t.Fatalf("expected regex replace error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_regex_replace_all", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.replace_all invalid regex") {
-		t.Fatalf("expected regex replace_all error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_json_trailing", nil, CallOptions{}, "JSON.parse invalid JSON: trailing data")
+	requireCallErrorContains(t, script, "bad_json_syntax", nil, CallOptions{}, "JSON.parse invalid JSON")
+	requireCallErrorContains(t, script, "bad_regex_replace", nil, CallOptions{}, "Regex.replace invalid regex")
+	requireCallErrorContains(t, script, "bad_regex_replace_all", nil, CallOptions{}, "Regex.replace_all invalid regex")
 }
 
 func TestJSONAndRegexSizeGuards(t *testing.T) {
-	engine := MustNewEngine(Config{MemoryQuotaBytes: 4 << 20})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 << 20}, `
     def parse_raw(raw)
       JSON.parse(raw)
     end
@@ -2245,46 +2090,23 @@ func TestJSONAndRegexSizeGuards(t *testing.T) {
       Regex.replace_all(text, pattern, replacement)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
 	largeJSON := `{"data":"` + strings.Repeat("x", maxJSONPayloadBytes) + `"}`
-	_, err = script.Call(context.Background(), "parse_raw", []Value{NewString(largeJSON)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.parse input exceeds limit") {
-		t.Fatalf("expected JSON.parse size guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "parse_raw", []Value{NewString(largeJSON)}, CallOptions{}, "JSON.parse input exceeds limit")
 
 	largeValue := NewHash(map[string]Value{
 		"data": NewString(strings.Repeat("x", maxJSONPayloadBytes)),
 	})
-	_, err = script.Call(context.Background(), "stringify_value", []Value{largeValue}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "JSON.stringify output exceeds limit") {
-		t.Fatalf("expected JSON.stringify size guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "stringify_value", []Value{largeValue}, CallOptions{}, "JSON.stringify output exceeds limit")
 
 	largePattern := strings.Repeat("a", maxRegexPatternSize+1)
-	_, err = script.Call(context.Background(), "regex_match_guard", []Value{NewString(largePattern), NewString("aaa")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.match pattern exceeds limit") {
-		t.Fatalf("expected Regex.match pattern guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "regex_match_guard", []Value{NewString(largePattern), NewString("aaa")}, CallOptions{}, "Regex.match pattern exceeds limit")
 
 	largeText := strings.Repeat("a", maxRegexInputBytes+1)
-	_, err = script.Call(context.Background(), "regex_match_guard", []Value{NewString("a+"), NewString(largeText)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Regex.match text exceeds limit") {
-		t.Fatalf("expected Regex.match text guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "regex_match_guard", []Value{NewString("a+"), NewString(largeText)}, CallOptions{}, "Regex.match text exceeds limit")
 
 	hugeReplacement := strings.Repeat("x", maxRegexInputBytes/2)
-	_, err = script.Call(
-		context.Background(),
-		"regex_replace_all_guard",
-		[]Value{NewString("abc"), NewString(""), NewString(hugeReplacement)},
-		CallOptions{},
-	)
-	if err == nil || !strings.Contains(err.Error(), "Regex.replace_all output exceeds limit") {
-		t.Fatalf("expected Regex.replace_all output guard error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "regex_replace_all_guard", []Value{NewString("abc"), NewString(""), NewString(hugeReplacement)}, CallOptions{}, "Regex.replace_all output exceeds limit")
 
 	largeRun := strings.Repeat("a", maxRegexInputBytes-1024)
 	replaced, err := script.Call(
@@ -2329,10 +2151,9 @@ func TestLocaleSensitiveOperationsDeterministic(t *testing.T) {
 }
 
 func TestRandomIdentifierBuiltins(t *testing.T) {
-	engine := MustNewEngine(Config{
+	script := compileScriptWithConfig(t, Config{
 		RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xAB}, 128)),
-	})
-	script, err := engine.Compile(`
+	}, `
     def values()
       {
         uuid: uuid(),
@@ -2357,9 +2178,6 @@ func TestRandomIdentifierBuiltins(t *testing.T) {
       uuid(1)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "values", nil, CallOptions{})
 	if err != nil {
@@ -2393,48 +2211,30 @@ func TestRandomIdentifierBuiltins(t *testing.T) {
 		t.Fatalf("id_default mismatch: %v", got)
 	}
 
-	if _, err := script.Call(context.Background(), "bad_length_type", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be integer") {
-		t.Fatalf("expected length type error, got %v", err)
-	}
-	if _, err := script.Call(context.Background(), "bad_length_float", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be integer") {
-		t.Fatalf("expected length float error, got %v", err)
-	}
-	if _, err := script.Call(context.Background(), "bad_length_value", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "random_id length must be positive") {
-		t.Fatalf("expected length value error, got %v", err)
-	}
-	if _, err := script.Call(context.Background(), "bad_uuid_args", nil, CallOptions{}); err == nil || !strings.Contains(err.Error(), "uuid does not take arguments") {
-		t.Fatalf("expected uuid args error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_length_type", nil, CallOptions{}, "random_id length must be integer")
+	requireCallErrorContains(t, script, "bad_length_float", nil, CallOptions{}, "random_id length must be integer")
+	requireCallErrorContains(t, script, "bad_length_value", nil, CallOptions{}, "random_id length must be positive")
+	requireCallErrorContains(t, script, "bad_uuid_args", nil, CallOptions{}, "uuid does not take arguments")
 }
 
 func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
-	engine := MustNewEngine(Config{RandomReader: bytes.NewReader([]byte{1, 2, 3})})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{RandomReader: bytes.NewReader([]byte{1, 2, 3})}, `
     def run()
       uuid()
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "random source failed") {
-		t.Fatalf("expected random source failure, got %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "random source failed")
 }
 
 func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
-	engine := MustNewEngine(Config{RandomReader: bytes.NewReader([]byte{248, 1})})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{RandomReader: bytes.NewReader([]byte{248, 1})}, `
     def run()
       random_id(1)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
+	var err error
 	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
 		t.Fatalf("call failed: %v", err)
@@ -2445,20 +2245,13 @@ func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
 }
 
 func TestRandomIdentifierBuiltinsRejectsStalledEntropy(t *testing.T) {
-	engine := MustNewEngine(Config{RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xFF}, 1024))})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xFF}, 1024))}, `
     def run()
       random_id(4)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "random_id entropy source rejected too many bytes") {
-		t.Fatalf("expected stalled entropy error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "random_id entropy source rejected too many bytes")
 }
 
 func TestNumericHelpers(t *testing.T) {
@@ -2745,94 +2538,52 @@ func TestTypedFunctions(t *testing.T) {
 	if !kwPos.Equal(NewInt(2)) {
 		t.Fatalf("kw_only positional mismatch: %v", kwPos)
 	}
-	_, err := script.Call(context.Background(), "kw_only", []Value{NewInt(1)}, CallOptions{
+	requireCallErrorContains(t, script, "kw_only", []Value{NewInt(1)}, CallOptions{
 		Globals: map[string]Value{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "missing argument m") {
-		t.Fatalf("expected kw_only missing arg error, got %v", err)
-	}
+	}, "missing argument m")
 
 	mixedResult := callFunc(t, script, "mixed", []Value{NewInt(1), NewInt(2)})
 	if !mixedResult.Equal(NewInt(3)) {
 		t.Fatalf("mixed result mismatch: %v", mixedResult)
 	}
 
-	_, err = script.Call(context.Background(), "pick_second", []Value{NewString("bad"), NewInt(2)}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument n expected int, got string") {
-		t.Fatalf("expected argument type error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "pick_second", []Value{NewString("bad"), NewInt(2)}, CallOptions{}, "argument n expected int, got string")
 
-	_, err = script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
-	if err == nil {
-		res, _ := script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
-		t.Fatalf("expected return type error, got value %v (%v)", res, res.Kind())
-	}
-	if !strings.Contains(err.Error(), "return value for bad_return expected int, got string") {
-		t.Fatalf("expected return type error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_return", []Value{NewInt(1)}, CallOptions{}, "return value for bad_return expected int, got string")
 
-	_, err = script.Call(context.Background(), "union_echo", []Value{NewBool(true)}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument v expected int | string, got bool") {
-		t.Fatalf("expected union arg type error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "union_echo", []Value{NewBool(true)}, CallOptions{}, "argument v expected int | string, got bool")
 
-	_, err = script.Call(context.Background(), "union_bad_return", nil, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "return value for union_bad_return expected int | string, got bool") {
-		t.Fatalf("expected union return type error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "union_bad_return", nil, CallOptions{}, "return value for union_bad_return expected int | string, got bool")
 
-	_, err = script.Call(context.Background(), "ints_only", []Value{
+	requireCallErrorContains(t, script, "ints_only", []Value{
 		NewArray([]Value{NewInt(1), NewString("oops")}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument values expected array<int>, got array<int | string>") {
-		t.Fatalf("expected typed array arg error, got %v", err)
-	}
+	}, CallOptions{}, "argument values expected array<int>, got array<int | string>")
 
-	_, err = script.Call(context.Background(), "totals_by_player", []Value{
+	requireCallErrorContains(t, script, "totals_by_player", []Value{
 		NewHash(map[string]Value{"alice": NewString("oops")}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument totals expected hash<string, int>, got { alice: string }") {
-		t.Fatalf("expected typed hash arg error, got %v", err)
-	}
+	}, CallOptions{}, "argument totals expected hash<string, int>, got { alice: string }")
 
-	_, err = script.Call(context.Background(), "mixed_items", []Value{
+	requireCallErrorContains(t, script, "mixed_items", []Value{
 		NewArray([]Value{NewBool(true)}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument values expected array<int | string>, got array<bool>") {
-		t.Fatalf("expected typed union array arg error, got %v", err)
-	}
+	}, CallOptions{}, "argument values expected array<int | string>, got array<bool>")
 
-	_, err = script.Call(context.Background(), "player_payload", []Value{
+	requireCallErrorContains(t, script, "player_payload", []Value{
 		NewHash(map[string]Value{
 			"id":    NewString("p-1"),
 			"score": NewInt(42),
 			"role":  NewString("captain"),
 		}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got { id: string, role: string, score: int }") {
-		t.Fatalf("expected shape extra-field error, got %v", err)
-	}
+	}, CallOptions{}, "argument payload expected { active: bool?, id: string, score: int }, got { id: string, role: string, score: int }")
 
-	_, err = script.Call(context.Background(), "player_payload", []Value{
+	requireCallErrorContains(t, script, "player_payload", []Value{
 		NewHash(map[string]Value{
 			"id":     NewString("p-1"),
 			"score":  NewString("wrong"),
 			"active": NewBool(true),
 		}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got { active: bool, id: string, score: string }") {
-		t.Fatalf("expected shape field-type error, got %v", err)
-	}
+	}, CallOptions{}, "argument payload expected { active: bool?, id: string, score: int }, got { active: bool, id: string, score: string }")
 
-	_, err = script.Call(context.Background(), "shaped_rows", []Value{
+	requireCallErrorContains(t, script, "shaped_rows", []Value{
 		NewArray([]Value{
 			NewHash(map[string]Value{
 				"id": NewString("p-1"),
@@ -2841,11 +2592,7 @@ func TestTypedFunctions(t *testing.T) {
 				}),
 			}),
 		}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument rows expected array<{ id: string, stats: { wins: int } }>, got array<{ id: string, stats: { wins: string } }>") {
-		t.Fatalf("expected nested shape error, got %v", err)
-	}
+	}, CallOptions{}, "argument rows expected array<{ id: string, stats: { wins: int } }>, got array<{ id: string, stats: { wins: string } }>")
 }
 
 func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testing.T) {
@@ -2902,12 +2649,9 @@ func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testi
 		t.Fatalf("accepts_ints int-only mismatch: %v", got)
 	}
 	compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
-	_, err := script.Call(context.Background(), "accepts_ints", []Value{
+	requireCallErrorContains(t, script, "accepts_ints", []Value{
 		NewArray([]Value{NewInt(1), NewFloat(2.5)}),
-	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument values expected array<int>, got array<float | int>") {
-		t.Fatalf("expected container element strictness error, got %v", err)
-	}
+	}, CallOptions{}, "argument values expected array<int>, got array<float | int>")
 
 	if got := callFunc(t, script, "nullable_short", []Value{NewNil()}); got.Kind() != KindNil {
 		t.Fatalf("nullable_short nil mismatch: %#v", got)
@@ -2921,32 +2665,16 @@ func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testi
 	if got := callFunc(t, script, "nullable_union", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
 		t.Fatalf("nullable_union string mismatch: %#v", got)
 	}
-	_, err = script.Call(context.Background(), "nullable_short", []Value{NewInt(1)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected string?, got int") {
-		t.Fatalf("expected nullable shorthand mismatch, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "nullable_union", []Value{NewInt(1)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected string | nil, got int") {
-		t.Fatalf("expected nullable union mismatch, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "takes_int", []Value{NewString("1")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected int, got string") {
-		t.Fatalf("expected no-coercion mismatch, got %v", err)
-	}
+	requireCallErrorContains(t, script, "nullable_short", []Value{NewInt(1)}, CallOptions{}, "argument v expected string?, got int")
+	requireCallErrorContains(t, script, "nullable_union", []Value{NewInt(1)}, CallOptions{}, "argument v expected string | nil, got int")
+	requireCallErrorContains(t, script, "takes_int", []Value{NewString("1")}, CallOptions{}, "argument v expected int, got string")
 
 	extraKw := map[string]Value{
 		"a":     NewInt(1),
 		"extra": NewInt(2),
 	}
-	_, err = script.Call(context.Background(), "typed_kw", nil, CallOptions{Keywords: extraKw})
-	if err == nil || !strings.Contains(err.Error(), "unexpected keyword argument extra") {
-		t.Fatalf("expected typed function unknown kwarg strictness, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "untyped_kw", nil, CallOptions{Keywords: extraKw})
-	if err == nil || !strings.Contains(err.Error(), "unexpected keyword argument extra") {
-		t.Fatalf("expected untyped function unknown kwarg strictness, got %v", err)
-	}
+	requireCallErrorContains(t, script, "typed_kw", nil, CallOptions{Keywords: extraKw}, "unexpected keyword argument extra")
+	requireCallErrorContains(t, script, "untyped_kw", nil, CallOptions{Keywords: extraKw}, "unexpected keyword argument extra")
 }
 
 func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
@@ -2983,10 +2711,7 @@ func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
 	if got := callFunc(t, script, "takes_nullable", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
 		t.Fatalf("takes_nullable string mismatch: %#v", got)
 	}
-	_, err := script.Call(context.Background(), "takes_nullable", []Value{NewInt(1)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected string?, got int") {
-		t.Fatalf("expected nullable type mismatch, got %v", err)
-	}
+	requireCallErrorContains(t, script, "takes_nullable", []Value{NewInt(1)}, CallOptions{}, "argument v expected string?, got int")
 
 	if got := callFunc(t, script, "takes_nullable_union", []Value{NewNil()}); got.Kind() != KindNil {
 		t.Fatalf("takes_nullable_union nil mismatch: %#v", got)
@@ -2994,10 +2719,7 @@ func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
 	if got := callFunc(t, script, "takes_nullable_union", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
 		t.Fatalf("takes_nullable_union string mismatch: %#v", got)
 	}
-	_, err = script.Call(context.Background(), "takes_nullable_union", []Value{NewInt(1)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected string | nil, got int") {
-		t.Fatalf("expected nullable union mismatch, got %v", err)
-	}
+	requireCallErrorContains(t, script, "takes_nullable_union", []Value{NewInt(1)}, CallOptions{}, "argument v expected string | nil, got int")
 }
 
 func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.T) {
@@ -3022,9 +2744,7 @@ func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.
 		if err == nil {
 			t.Fatalf("expected type validation error for cyclic payload")
 		}
-		if !strings.Contains(err.Error(), "argument payload expected hash<string, hash<string, int>>") {
-			t.Fatalf("unexpected type error: %v", err)
-		}
+		requireErrorContains(t, err, "argument payload expected hash<string, hash<string, int>>")
 	case <-time.After(2 * time.Second):
 		t.Fatalf("type validation did not terminate for cyclic payload")
 	}
@@ -3217,18 +2937,9 @@ func TestArrayAndHashHelpers(t *testing.T) {
 		t.Fatalf("amountCents mismatch: %v", event.Hash()["amountCents"])
 	}
 
-	_, err := script.Call(context.Background(), "bad_hash_remap", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "hash.remap_keys mapping values must be symbol or string") {
-		t.Fatalf("expected bad remap error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_deep_transform", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "hash.deep_transform_keys block must return symbol or string") {
-		t.Fatalf("expected bad deep transform error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_deep_transform_cycle", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "hash.deep_transform_keys does not support cyclic structures") {
-		t.Fatalf("expected cyclic deep transform error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_hash_remap", nil, CallOptions{}, "hash.remap_keys mapping values must be symbol or string")
+	requireCallErrorContains(t, script, "bad_deep_transform", nil, CallOptions{}, "hash.deep_transform_keys block must return symbol or string")
+	requireCallErrorContains(t, script, "bad_deep_transform_cycle", nil, CallOptions{}, "hash.deep_transform_keys does not support cyclic structures")
 }
 
 func TestStringHelpers(t *testing.T) {
@@ -4089,9 +3800,7 @@ end`,
 			if err == nil {
 				t.Fatalf("expected error containing %q", tt.errMsg)
 			}
-			if !strings.Contains(err.Error(), tt.errMsg) {
-				t.Fatalf("expected error containing %q, got: %v", tt.errMsg, err)
-			}
+			requireErrorContains(t, err, tt.errMsg)
 		})
 	}
 }

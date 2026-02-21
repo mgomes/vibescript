@@ -2,7 +2,6 @@ package vibes
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -16,15 +15,11 @@ func TestCapabilityFoundationsMixedAdapters(t *testing.T) {
 	events := &eventsCapabilityStub{publishResult: NewNil()}
 	jobs := &jobQueueStub{}
 
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run(player_id)
+	script := compileScriptDefault(t, `def run(player_id)
   player = db.find("Player", player_id)
   events.publish("player_seen", { id: player[:id], actor: ctx.user.id })
   jobs.enqueue("audit_player", { id: player[:id], raised: player[:raised] })
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	ctxCap := MustNewContextCapability("ctx", func(context.Context) (Value, error) {
 		return NewObject(map[string]Value{
@@ -34,17 +29,12 @@ end`)
 		}), nil
 	})
 
-	result, err := script.Call(context.Background(), "run", []Value{NewString("player-1")}, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			MustNewDBCapability("db", db),
-			MustNewEventsCapability("events", events),
-			ctxCap,
-			MustNewJobQueueCapability("jobs", jobs),
-		},
-	})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
+	result := callScript(t, context.Background(), script, "run", []Value{NewString("player-1")}, callOptionsWithCapabilities(
+		MustNewDBCapability("db", db),
+		MustNewEventsCapability("events", events),
+		ctxCap,
+		MustNewJobQueueCapability("jobs", jobs),
+	))
 	if result.Kind() != KindString || result.String() != "queued" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
@@ -74,29 +64,18 @@ func TestCapabilityFoundationsEachRespectsStepQuota(t *testing.T) {
 	}
 	db := &dbCapabilityStub{eachRows: rows}
 
-	engine := MustNewEngine(Config{StepQuota: 50})
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithConfig(t, Config{StepQuota: 50}, `def run()
   total = 0
   db.each("ScoreEntry") do |row|
     total = total + row[:amount]
   end
   total
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			MustNewDBCapability("db", db),
-		},
-	})
-	if err == nil {
-		t.Fatalf("expected step quota error")
-	}
-	if got := err.Error(); !strings.Contains(got, "step quota exceeded") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", db),
+	))
+	requireErrorContains(t, err, "step quota exceeded")
 }
 
 func TestCapabilityFoundationsEachNoopBlockRespectsStepQuota(t *testing.T) {
@@ -106,26 +85,15 @@ func TestCapabilityFoundationsEachNoopBlockRespectsStepQuota(t *testing.T) {
 	}
 	db := &dbCapabilityStub{eachRows: rows}
 
-	engine := MustNewEngine(Config{StepQuota: 20})
-	script, err := engine.Compile(`def run()
+	script := compileScriptWithConfig(t, Config{StepQuota: 20}, `def run()
   db.each("ScoreEntry") do |row|
   end
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			MustNewDBCapability("db", db),
-		},
-	})
-	if err == nil {
-		t.Fatalf("expected step quota error")
-	}
-	if got := err.Error(); !strings.Contains(got, "step quota exceeded") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", db),
+	))
+	requireErrorContains(t, err, "step quota exceeded")
 }
 
 func TestCapabilityFoundationsEachRespectsRecursionLimit(t *testing.T) {
@@ -135,8 +103,7 @@ func TestCapabilityFoundationsEachRespectsRecursionLimit(t *testing.T) {
 		},
 	}
 
-	engine := MustNewEngine(Config{RecursionLimit: 5, StepQuota: 10_000})
-	script, err := engine.Compile(`def recurse(n)
+	script := compileScriptWithConfig(t, Config{RecursionLimit: 5, StepQuota: 10_000}, `def recurse(n)
   if n <= 0
     0
   else
@@ -149,19 +116,9 @@ def run()
     recurse(20)
   end
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{
-			MustNewDBCapability("db", db),
-		},
-	})
-	if err == nil {
-		t.Fatalf("expected recursion limit error")
-	}
-	if got := err.Error(); !strings.Contains(got, "recursion depth exceeded") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewDBCapability("db", db),
+	))
+	requireErrorContains(t, err, "recursion depth exceeded")
 }

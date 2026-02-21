@@ -3,9 +3,7 @@ package vibes
 import (
 	"context"
 	"maps"
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -2041,9 +2039,7 @@ func TestExamples(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected error %q, got nil", tc.wantErr)
 				}
-				if !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("expected error containing %q, got %q", tc.wantErr, err.Error())
-				}
+				requireErrorContains(t, err, tc.wantErr)
 			} else {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -2064,16 +2060,7 @@ func compileExample(t *testing.T, rel string) *Script {
 func compileExampleWithConfig(t *testing.T, rel string, cfg Config) *Script {
 	t.Helper()
 	path := filepath.Join("..", "examples", rel)
-	source, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", rel, err)
-	}
-	engine := MustNewEngine(cfg)
-	script, err := engine.Compile(string(source))
-	if err != nil {
-		t.Fatalf("compile %s: %v", rel, err)
-	}
-	return script
+	return compileScriptFromFileWithConfig(t, cfg, path)
 }
 
 func makeBuiltin(name string, fn builtinAdapter) Value {

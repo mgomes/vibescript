@@ -2,7 +2,6 @@ package vibes
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -24,22 +23,15 @@ func (s *eventsCapabilityStub) Publish(ctx context.Context, req EventPublishRequ
 
 func TestEventsCapabilityPublish(t *testing.T) {
 	stub := &eventsCapabilityStub{publishResult: NewBool(true)}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   events.publish("players_totals", { id: "p-1", total: "55.00 USD" }, trace: "abc")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	type ctxKey string
 	ctx := context.WithValue(context.Background(), ctxKey("request_id"), "req-1")
-	result, err := script.Call(ctx, "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewEventsCapability("events", stub)},
-	})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
+	result := callScript(t, ctx, script, "run", nil, callOptionsWithCapabilities(
+		MustNewEventsCapability("events", stub),
+	))
 	if result.Kind() != KindBool || !result.Bool() {
 		t.Fatalf("unexpected result: %#v", result)
 	}
@@ -63,48 +55,30 @@ end`)
 
 func TestEventsCapabilityRejectsCallablePayload(t *testing.T) {
 	stub := &eventsCapabilityStub{}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def helper(value)
+	script := compileScriptDefault(t, `def helper(value)
   value
 end
 
 def run()
   events.publish("topic", { callback: helper })
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewEventsCapability("events", stub)},
-	})
-	if err == nil {
-		t.Fatalf("expected callable payload error")
-	}
-	if got := err.Error(); !strings.Contains(got, "events.publish payload must be data-only") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewEventsCapability("events", stub),
+	))
+	requireErrorContains(t, err, "events.publish payload must be data-only")
 }
 
 func TestEventsCapabilityRejectsNonHashPayload(t *testing.T) {
 	stub := &eventsCapabilityStub{}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   events.publish("topic", 42)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewEventsCapability("events", stub)},
-	})
-	if err == nil {
-		t.Fatalf("expected non-hash payload error")
-	}
-	if got := err.Error(); !strings.Contains(got, "events.publish payload expected hash, got int") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewEventsCapability("events", stub),
+	))
+	requireErrorContains(t, err, "events.publish payload expected hash, got int")
 }
 
 func TestEventsCapabilityRejectsCallableReturn(t *testing.T) {
@@ -115,23 +89,14 @@ func TestEventsCapabilityRejectsCallableReturn(t *testing.T) {
 			}),
 		}),
 	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   events.publish("topic", { id: "p-1" })
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewEventsCapability("events", stub)},
-	})
-	if err == nil {
-		t.Fatalf("expected return contract error")
-	}
-	if got := err.Error(); !strings.Contains(got, "events.publish return value must be data-only") {
-		t.Fatalf("unexpected error: %s", got)
-	}
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewEventsCapability("events", stub),
+	))
+	requireErrorContains(t, err, "events.publish return value must be data-only")
 }
 
 func TestEventsCapabilityReturnsAreClonedFromHostState(t *testing.T) {
@@ -142,20 +107,14 @@ func TestEventsCapabilityReturnsAreClonedFromHostState(t *testing.T) {
 			}),
 		}),
 	}
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   event = events.publish("topic", { id: "p-1" })
   event[:meta][:trace] = "script"
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{
-		Capabilities: []CapabilityAdapter{MustNewEventsCapability("events", stub)},
-	}); err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
+	callScript(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewEventsCapability("events", stub),
+	))
 
 	trace := stub.publishResult.Hash()["meta"].Hash()["trace"]
 	if trace.Kind() != KindString || trace.String() != "host" {
@@ -165,17 +124,14 @@ end`)
 
 func TestNewEventsCapabilityRejectsInvalidArguments(t *testing.T) {
 	stub := &eventsCapabilityStub{}
-	if _, err := NewEventsCapability("", stub); err == nil || !strings.Contains(err.Error(), "name must be non-empty") {
-		t.Fatalf("expected empty name error, got %v", err)
-	}
+	_, err := NewEventsCapability("", stub)
+	requireErrorContains(t, err, "name must be non-empty")
 
 	var publisher EventPublisher
-	if _, err := NewEventsCapability("events", publisher); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected nil publisher error, got %v", err)
-	}
+	_, err = NewEventsCapability("events", publisher)
+	requireErrorContains(t, err, "requires a non-nil implementation")
 
 	var typedNil *eventsCapabilityStub
-	if _, err := NewEventsCapability("events", typedNil); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected typed nil publisher error, got %v", err)
-	}
+	_, err = NewEventsCapability("events", typedNil)
+	requireErrorContains(t, err, "requires a non-nil implementation")
 }
