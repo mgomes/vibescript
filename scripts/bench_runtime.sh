@@ -10,7 +10,7 @@ Runs VibeScript Go benchmarks with stable defaults and records output.
 options:
   --count <n>        Benchmark count (default: 3)
   --benchtime <dur>  Benchtime passed to `go test` (default: 1s)
-  --pattern <regex>  Benchmark regex (default: ^BenchmarkExecution)
+  --pattern <regex>  Benchmark regex (default: ^Benchmark)
   --package <path>   Go package to benchmark (default: ./vibes)
   --cpu <list>       CPU list for `go test -cpu` (default: 1)
   --out <file>       Output file (default: benchmarks/latest.txt)
@@ -20,7 +20,7 @@ EOF
 
 count="3"
 benchtime="1s"
-pattern="^BenchmarkExecution"
+pattern="^Benchmark"
 pkg="./vibes"
 cpu="1"
 out_file="benchmarks/latest.txt"
