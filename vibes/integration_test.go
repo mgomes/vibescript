@@ -521,10 +521,7 @@ func TestYieldErrorCases(t *testing.T) {
 	requireCallErrorContains(t, script, "yield_without_block", nil, CallOptions{}, "no block given")
 
 	// run function should work since it uses blocks correctly
-	val, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("run: unexpected error: %v", err)
-	}
+	val := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	assertValueEqual(t, val, hashVal(map[string]Value{
 		"count": intVal(3),
 	}))
@@ -537,10 +534,7 @@ func TestArgumentErrorCases(t *testing.T) {
 	requireCallErrorContains(t, script, "too_many_args", nil, CallOptions{}, "argument")
 
 	// run function should work
-	val, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("run: unexpected error: %v", err)
-	}
+	val := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	if val.Kind() != KindHash {
 		t.Fatalf("run: expected hash, got %v", val.Kind())
 	}
