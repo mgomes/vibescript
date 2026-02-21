@@ -41,14 +41,8 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), err
 	}
 
-	if exec.strictEffects {
-		if err := validateStrictGlobals(opts.Globals); err != nil {
-			return NewNil(), err
-		}
-	}
-
-	for n, val := range opts.Globals {
-		root.Define(n, rebinder.rebindValue(val))
+	if err := bindGlobalsForCall(exec, root, rebinder, opts.Globals); err != nil {
+		return NewNil(), err
 	}
 
 	if err := exec.checkMemory(); err != nil {
