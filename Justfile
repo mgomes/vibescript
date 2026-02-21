@@ -4,7 +4,7 @@ test:
 	go test ./...
 
 bench:
-	go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem
+	scripts/bench_runtime.sh
 
 lint:
 	gofmt -l . | (! read)

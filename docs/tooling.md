@@ -66,3 +66,20 @@ REPL command set:
 
 - `:help`, `:vars`, `:globals`, `:functions`, `:types`
 - `:last_error`, `:clear`, `:reset`, `:quit`
+
+## Benchmark Runner
+
+Use the benchmark runner script for stable local perf baselines.
+
+```bash
+scripts/bench_runtime.sh
+```
+
+Common options:
+
+- `--pattern '^BenchmarkExecution(ArrayPipeline|TallyLoop)$'`
+- `--count 5`
+- `--benchtime 2s`
+- `--out benchmarks/array_vs_tally.txt`
+
+The script is also wired into `just bench`.
