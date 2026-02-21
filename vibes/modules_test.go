@@ -246,11 +246,7 @@ func TestRequireMissingModule(t *testing.T) {
   require("missing")
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected missing module error")
-	} else if !strings.Contains(err.Error(), `module "missing" not found`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, `module "missing" not found`)
 }
 
 func TestRequireCachesModules(t *testing.T) {
@@ -347,11 +343,7 @@ end`, absPath)
 
 	script := compileScriptWithEngine(t, engine, source)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected error for absolute path")
-	} else if !strings.Contains(err.Error(), "must be relative") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "must be relative")
 }
 
 func TestRequireRejectsPathTraversal(t *testing.T) {
@@ -361,11 +353,7 @@ func TestRequireRejectsPathTraversal(t *testing.T) {
   require("nested/../../etc/passwd")
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected error for path traversal")
-	} else if !strings.Contains(err.Error(), "escapes search paths") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes search paths")
 }
 
 func TestRequireRejectsBackslashPathTraversal(t *testing.T) {
@@ -375,11 +363,7 @@ func TestRequireRejectsBackslashPathTraversal(t *testing.T) {
   require("nested\\..\\..\\etc\\passwd")
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected error for backslash path traversal")
-	} else if !strings.Contains(err.Error(), "escapes search paths") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes search paths")
 }
 
 func TestRequireNormalizesPathSeparators(t *testing.T) {
@@ -410,11 +394,7 @@ func TestRequireRelativePathRequiresModuleCaller(t *testing.T) {
   require("./helper")
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected relative caller error")
-	} else if !strings.Contains(err.Error(), "requires a module caller") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "requires a module caller")
 }
 
 func TestRequireRelativePathDoesNotLeakFromModuleIntoHostFunction(t *testing.T) {
@@ -429,11 +409,7 @@ def run()
   mod.invoke_host_relative()
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected relative caller error from host function")
-	} else if !strings.Contains(err.Error(), "requires a module caller") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "requires a module caller")
 }
 
 func TestRequireSupportsRelativePathsWithinModuleRoot(t *testing.T) {
@@ -461,11 +437,7 @@ func TestRequireRelativePathRejectsEscapingModuleRoot(t *testing.T) {
   mod.run()
 end`)
 
-	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
-		t.Fatalf("expected module root escape error")
-	} else if !strings.Contains(err.Error(), "escapes module root") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
 }
 
 func TestRequireRelativePathRejectsSymlinkEscape(t *testing.T) {
