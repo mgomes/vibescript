@@ -17,7 +17,14 @@ High-level call path:
 
 Key files:
 
-- `vibes/execution.go` (core evaluator, call orchestration)
+- `vibes/execution.go` (core statement/expression evaluator)
+- `vibes/execution_script.go` (script call surface and function argument binding)
+- `vibes/execution_control.go` (range/case/loop/try evaluation)
+- `vibes/execution_members.go` (member dispatch for runtime values)
+- `vibes/execution_members_hash.go` (hash/object member behavior)
+- `vibes/execution_members_string.go` (string member behavior)
+- `vibes/execution_members_duration.go` (duration member behavior)
+- `vibes/execution_members_array.go` (array member behavior)
 - `vibes/execution_types.go` (type-checking + type formatting helpers)
 - `vibes/execution_values.go` (value conversion, arithmetic, comparison helpers)
 
@@ -33,6 +40,7 @@ Key files:
 
 - `vibes/lexer.go`
 - `vibes/parser.go` (parser core + precedence + token/error helpers)
+- `vibes/parser_expressions.go` (expression-level parsing, call/block literals)
 - `vibes/parser_statements.go` (statement-level parsing)
 - `vibes/parser_types.go` (type-expression parsing)
 - `vibes/ast.go`
