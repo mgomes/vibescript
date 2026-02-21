@@ -25,7 +25,8 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 			continue
 		}
 		scope := &capabilityContractScope{
-			contracts: map[string]CapabilityMethodContract{},
+			contracts:     map[string]CapabilityMethodContract{},
+			knownBuiltins: make(map[*Builtin]struct{}),
 		}
 		if provider, ok := adapter.(CapabilityContractProvider); ok {
 			for methodName, contract := range provider.CapabilityContracts() {

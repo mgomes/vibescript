@@ -4,6 +4,15 @@ import (
 	"errors"
 )
 
+func valueCanContainBuiltins(val Value) bool {
+	switch val.Kind() {
+	case KindBuiltin, KindArray, KindHash, KindObject, KindClass, KindInstance:
+		return true
+	default:
+		return false
+	}
+}
+
 func (exec *Execution) autoInvokeIfNeeded(expr Expression, val Value, receiver Value) (Value, error) {
 	switch val.Kind() {
 	case KindFunction:
@@ -39,18 +48,21 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 		scope := exec.capabilityContractScopes[builtin]
 		var preCallKnownBuiltins map[*Builtin]struct{}
 		if scope != nil && len(scope.contracts) > 0 {
-			preCallKnownBuiltins = make(map[*Builtin]struct{})
+			preCallKnownBuiltins = scope.knownBuiltins
 			preCallScanner := newCapabilityContractScanner()
-			if receiver.Kind() != KindNil {
+			if valueCanContainBuiltins(receiver) {
 				preCallScanner.collectBuiltins(receiver, preCallKnownBuiltins)
 			}
-			for _, root := range scope.roots {
-				preCallScanner.collectBuiltins(root, preCallKnownBuiltins)
-			}
 			for _, arg := range args {
+				if !valueCanContainBuiltins(arg) {
+					continue
+				}
 				preCallScanner.collectBuiltins(arg, preCallKnownBuiltins)
 			}
 			for _, kwarg := range kwargs {
+				if !valueCanContainBuiltins(kwarg) {
+					continue
+				}
 				preCallScanner.collectBuiltins(kwarg, preCallKnownBuiltins)
 			}
 		}
@@ -94,9 +106,15 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 			// Methods can also publish builtins by mutating positional or keyword
 			// argument objects supplied by script code.
 			for _, arg := range args {
+				if !valueCanContainBuiltins(arg) {
+					continue
+				}
 				postCallScanner.bindContracts(arg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 			for _, kwarg := range kwargs {
+				if !valueCanContainBuiltins(kwarg) {
+					continue
+				}
 				postCallScanner.bindContracts(kwarg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 		}

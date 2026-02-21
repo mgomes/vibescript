@@ -51,6 +51,9 @@ func (s *capabilityContractScanner) bindContracts(
 		if _, skip := s.excluded[builtin]; skip {
 			return
 		}
+		if scope != nil && scope.knownBuiltins != nil {
+			scope.knownBuiltins[builtin] = struct{}{}
+		}
 		ownerScope, seen := scopes[builtin]
 		if !seen {
 			scopes[builtin] = scope
