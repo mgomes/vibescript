@@ -76,13 +76,9 @@ func TestNewEngineValidatesConfiguredModulePathAsProvided(t *testing.T) {
 }
 
 func TestCompileAndCallAdd(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def add(a, b)
+	script := compileScriptDefault(t, `def add(a, b)
   a + b
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "add", []Value{NewInt(2), NewInt(3)}, CallOptions{})
 	if err != nil {
@@ -94,13 +90,9 @@ end`)
 }
 
 func TestMoneyBuiltin(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def total
+	script := compileScriptDefault(t, `def total
   money("10.00 USD") + money("5.00 USD")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "total", nil, CallOptions{})
 	if err != nil {
@@ -116,13 +108,9 @@ end`)
 }
 
 func TestGlobalsAccess(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def user_id
+	script := compileScriptDefault(t, `def user_id
   ctx.user.id
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	ctxVal := NewObject(map[string]Value{
 		"user": NewObject(map[string]Value{
@@ -140,13 +128,9 @@ end`)
 }
 
 func TestAssertFailure(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def check
+	script := compileScriptDefault(t, `def check
   assert false, "boom"
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	if _, err := script.Call(context.Background(), "check", nil, CallOptions{}); err == nil {
 		t.Fatalf("expected assertion error")
@@ -154,13 +138,9 @@ end`)
 }
 
 func TestSymbolIndex(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def amount(row)
+	script := compileScriptDefault(t, `def amount(row)
   row[:amount]
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	row := NewHash(map[string]Value{"amount": NewInt(42)})
 	result, err := script.Call(context.Background(), "amount", []Value{row}, CallOptions{})
@@ -173,13 +153,9 @@ end`)
 }
 
 func TestDurationLiteral(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def seconds
+	script := compileScriptDefault(t, `def seconds
   (2.minutes).seconds
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "seconds", nil, CallOptions{})
 	if err != nil {
@@ -191,17 +167,13 @@ end`)
 }
 
 func TestZeroArgCallWithoutParens(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def helper
+	script := compileScriptDefault(t, `def helper
   7
 end
 
 def run
   helper * 6
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
@@ -213,8 +185,7 @@ end`)
 }
 
 func TestNestedZeroArgCalls(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def inner
+	script := compileScriptDefault(t, `def inner
   10
 end
 
@@ -225,9 +196,6 @@ end
 def outer
   middle * 2
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "outer", nil, CallOptions{})
 	if err != nil {
@@ -239,8 +207,7 @@ end`)
 }
 
 func TestMixedZeroArgAndRegularCalls(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def zero_arg
+	script := compileScriptDefault(t, `def zero_arg
   5
 end
 
@@ -251,9 +218,6 @@ end
 def run
   zero_arg + with_args(10, 20)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
@@ -265,14 +229,10 @@ end`)
 }
 
 func TestMethodChainingWithZeroArgMethods(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run
+	script := compileScriptDefault(t, `def run
   values = [1, 2, 3, 4, 5]
   values.sum
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
@@ -284,14 +244,10 @@ end`)
 }
 
 func TestZeroArgMethodChaining(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run
+	script := compileScriptDefault(t, `def run
   values = [1, 2, 2, 3, 3, 3]
   values.uniq.sum
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
