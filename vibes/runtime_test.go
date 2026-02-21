@@ -1318,10 +1318,8 @@ func TestBeginRescueReraisePreservesStack(t *testing.T) {
 		t.Fatalf("catches_reraise mismatch: %v", got)
 	}
 
-	_, err := script.Call(context.Background(), "outer", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("expected reraise error, got %v", err)
-	}
+	err := callScriptErr(t, context.Background(), script, "outer", nil, CallOptions{})
+	requireErrorContains(t, err, "boom")
 	var rtErr *RuntimeError
 	if !errors.As(err, &rtErr) {
 		t.Fatalf("expected RuntimeError, got %T", err)
@@ -2943,18 +2941,9 @@ func TestArrayAndHashHelpers(t *testing.T) {
 		t.Fatalf("amountCents mismatch: %v", event.Hash()["amountCents"])
 	}
 
-	_, err := script.Call(context.Background(), "bad_hash_remap", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "hash.remap_keys mapping values must be symbol or string") {
-		t.Fatalf("expected bad remap error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_deep_transform", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "hash.deep_transform_keys block must return symbol or string") {
-		t.Fatalf("expected bad deep transform error, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "bad_deep_transform_cycle", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "hash.deep_transform_keys does not support cyclic structures") {
-		t.Fatalf("expected cyclic deep transform error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_hash_remap", nil, CallOptions{}, "hash.remap_keys mapping values must be symbol or string")
+	requireCallErrorContains(t, script, "bad_deep_transform", nil, CallOptions{}, "hash.deep_transform_keys block must return symbol or string")
+	requireCallErrorContains(t, script, "bad_deep_transform_cycle", nil, CallOptions{}, "hash.deep_transform_keys does not support cyclic structures")
 }
 
 func TestStringHelpers(t *testing.T) {
