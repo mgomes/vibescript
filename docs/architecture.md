@@ -128,6 +128,7 @@ Builtins are registered during engine initialization:
   - `vibes/builtins_numeric.go`
   - `vibes/builtins_json_regex.go`
 - class/object registration helpers in `vibes/interpreter_builtins_data.go` (`JSON`/`Regex` namespace objects)
+- duration class registration in `vibes/interpreter_builtins_duration.go`
 
 ## Refactor Constraints
 
