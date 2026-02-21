@@ -63,7 +63,8 @@ Key files:
 - `vibes/lexer.go`
 - `vibes/parser.go` (parser core initialization + token stream helpers)
 - `vibes/parser_errors.go` (parse errors and token labeling)
-- `vibes/parser_expressions.go` (expression-level parsing and yield/case literals)
+- `vibes/parser_expressions.go` (expression-level parsing, yield parsing, and operators/member/index)
+- `vibes/parser_case_literals.go` (case/when/else expression parsing)
 - `vibes/parser_call_literals.go` (call argument parsing, keyword labels, and call blocks)
 - `vibes/parser_literals.go` (identifier and scalar literal parsing)
 - `vibes/parser_collection_literals.go` (array/hash literal parsing and symbol-style hash pairs)
