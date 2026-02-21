@@ -53,18 +53,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), err
 	}
 
-	callEnv := newEnv(root)
-	callArgs := rebinder.rebindValues(args)
-	callKeywords := rebinder.rebindKeywords(opts.Keywords)
-	if err := exec.bindFunctionArgs(fn, callEnv, callArgs, callKeywords, fn.Pos); err != nil {
+	callEnv, err := prepareCallEnvForFunction(exec, root, rebinder, fn, args, opts.Keywords)
+	if err != nil {
 		return NewNil(), err
 	}
-	exec.pushEnv(callEnv)
-	if err := exec.checkMemory(); err != nil {
-		exec.popEnv()
-		return NewNil(), err
-	}
-	exec.popEnv()
 
 	if err := exec.pushFrame(fn.Name, fn.Pos); err != nil {
 		return NewNil(), err
