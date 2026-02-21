@@ -18,10 +18,13 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Benchmark smoke gates
+        run: ./scripts/bench_smoke_check.sh
+
       - name: Run benchmarks
         run: |
           mkdir -p .bench
-          go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem | tee .bench/benchmark.txt
+          scripts/bench_runtime.sh --count 1 --out .bench/benchmark.txt
 
       - name: Publish benchmark summary
         run: |

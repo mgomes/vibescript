@@ -83,3 +83,15 @@ Common options:
 - `--out benchmarks/array_vs_tally.txt`
 
 The script is also wired into `just bench`.
+
+## Benchmark Smoke Gates
+
+Use the smoke-check script to catch obvious performance regressions before
+running the full suite:
+
+```bash
+scripts/bench_smoke_check.sh
+```
+
+Thresholds live in `benchmarks/smoke_thresholds.txt` and are checked against
+both `ns/op` and `allocs/op`.

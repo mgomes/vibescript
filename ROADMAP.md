@@ -399,9 +399,9 @@ Goal: make performance improvements measurable, repeatable, and protected agains
 
 ### Benchmark Tooling and CI
 
-- [ ] Add a single benchmark runner command/script with stable flags and output format.
+- [x] Add a single benchmark runner command/script with stable flags and output format.
 - [ ] Persist benchmark baselines in versioned artifacts for release comparison.
-- [ ] Add PR-time benchmark smoke checks with threshold-based alerts.
+- [x] Add PR-time benchmark smoke checks with threshold-based alerts.
 - [ ] Add scheduled full benchmark runs with trend reporting.
 - [ ] Document benchmark interpretation and triage workflow.
 
