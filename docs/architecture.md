@@ -31,6 +31,7 @@ Key files:
 - `vibes/execution_state.go` (runtime call/env/module/receiver stack helpers)
 - `vibes/execution_members.go` (member dispatch for runtime values)
 - `vibes/execution_members_hash.go` (hash/object member behavior)
+- `vibes/execution_members_hash_deep.go` (`hash.deep_transform_keys` recursion/cycle handling)
 - `vibes/execution_members_string.go` (string member dispatch)
 - `vibes/execution_members_string_query.go` (string query/search member methods)
 - `vibes/execution_members_string_transforms.go` (string transform/normalization member methods)
