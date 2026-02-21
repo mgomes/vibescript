@@ -447,24 +447,8 @@ func formatModuleCycle(cycle []string) string {
 	return strings.Join(parts, " -> ")
 }
 
-func isPublicModuleExport(name string) bool {
-	return name != "" && !strings.HasPrefix(name, "_")
-}
-
-func moduleHasExplicitExports(functions map[string]*ScriptFunction) bool {
-	for _, fn := range functions {
-		if fn != nil && fn.Exported {
-			return true
-		}
-	}
-	return false
-}
-
-func shouldExportModuleFunction(name string, fn *ScriptFunction, hasExplicitExports bool) bool {
-	if hasExplicitExports {
-		return fn != nil && fn.Exported
-	}
-	return isPublicModuleExport(name)
+func shouldExportModuleFunction(fn *ScriptFunction) bool {
+	return fn != nil && !fn.Private
 }
 
 func parseRequireAlias(kwargs map[string]Value) (string, error) {
@@ -613,12 +597,11 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 
 	moduleEnv := newEnv(exec.root)
 	exports := make(map[string]Value, len(entry.script.functions))
-	hasExplicitExports := moduleHasExplicitExports(entry.script.functions)
 	for name, fn := range entry.script.functions {
 		clone := cloneFunctionForEnv(fn, moduleEnv)
 		fnVal := NewFunction(clone)
 		moduleEnv.Define(name, fnVal)
-		if shouldExportModuleFunction(name, fn, hasExplicitExports) {
+		if shouldExportModuleFunction(fn) {
 			exports[name] = fnVal
 		}
 	}

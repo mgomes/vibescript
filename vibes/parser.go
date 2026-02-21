@@ -124,6 +124,8 @@ func (p *parser) parseStatement() Statement {
 		return p.parseClassStatement()
 	case tokenExport:
 		return p.parseExportStatement()
+	case tokenPrivate:
+		return p.parsePrivateStatement()
 	case tokenReturn:
 		return p.parseReturnStatement()
 	case tokenRaise:
@@ -253,6 +255,32 @@ func (p *parser) parseExportStatement() Statement {
 		return nil
 	}
 	fn.Exported = true
+	return fn
+}
+
+func (p *parser) parsePrivateStatement() Statement {
+	pos := p.curToken.Pos
+	if p.insideClass || p.statementNesting > 0 {
+		p.addParseError(pos, "private is only supported for top-level functions and class methods")
+		return nil
+	}
+	if !p.expectPeek(tokenDef) {
+		return nil
+	}
+	fnStmt := p.parseFunctionStatement()
+	if fnStmt == nil {
+		return nil
+	}
+	fn, ok := fnStmt.(*FunctionStmt)
+	if !ok {
+		p.addParseError(pos, "private expects a function definition")
+		return nil
+	}
+	if fn.IsClassMethod {
+		p.addParseError(pos, "private cannot be used with class methods")
+		return nil
+	}
+	fn.Private = true
 	return fn
 }
 

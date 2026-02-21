@@ -142,7 +142,7 @@ Regex helpers enforce input guards (max pattern size 16 KiB, max text size 1 MiB
 
 ### `require(module_name, as: alias?)`
 
-Loads a module from configured module search paths and returns an object containing the module's exported functions. Modules can mark exports explicitly with `export def ...`; when no explicit exports are declared, public (non-underscore) functions are exported by default. Exported functions are injected into globals only when the name is still free (existing globals keep precedence), and `as:` can be used to bind the module object explicitly:
+Loads a module from configured module search paths and returns an object containing the module's exported functions. Module functions are exported by default; use `private def ...` to keep helper functions module-local. Exported functions are injected into globals only when the name is still free (existing globals keep precedence), and `as:` can be used to bind the module object explicitly:
 
 ```vibe
 def calculate_total(amount)

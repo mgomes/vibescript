@@ -3856,7 +3856,7 @@ func (e *Engine) Compile(source string) (*Script, error) {
 			if _, exists := functions[s.Name]; exists {
 				return nil, fmt.Errorf("duplicate function %s", s.Name)
 			}
-			functions[s.Name] = &ScriptFunction{Name: s.Name, Params: s.Params, ReturnTy: s.ReturnTy, Body: s.Body, Pos: s.Pos(), Exported: s.Exported}
+			functions[s.Name] = &ScriptFunction{Name: s.Name, Params: s.Params, ReturnTy: s.ReturnTy, Body: s.Body, Pos: s.Pos(), Exported: s.Exported, Private: s.Private}
 		case *ClassStmt:
 			if _, exists := classes[s.Name]; exists {
 				return nil, fmt.Errorf("duplicate class %s", s.Name)

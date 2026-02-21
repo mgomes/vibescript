@@ -2,7 +2,7 @@
 
 This guide helps older scripts move to the current module model.
 
-## 1. Prefer explicit exports
+## 1. Use `private def` for module-only helpers
 
 Before:
 
@@ -15,12 +15,16 @@ end
 After:
 
 ```vibe
-export def apply_fee(amount)
+private def helper_fee(amount)
   amount + 1
+end
+
+def apply_fee(amount)
+  helper_fee(amount)
 end
 ```
 
-If a module has no `export def`, non-underscore functions are still exported.
+Functions are exported by default. Mark non-public helpers with `private def`.
 
 ## 2. Use aliases for namespacing
 
