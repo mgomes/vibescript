@@ -95,3 +95,24 @@ scripts/bench_smoke_check.sh
 
 Thresholds live in `benchmarks/smoke_thresholds.txt` and are checked against
 both `ns/op` and `allocs/op`.
+
+## Benchmark Profiling
+
+Capture benchmark CPU/memory profiles plus `pprof` top summaries:
+
+```bash
+scripts/bench_profile.sh --pattern '^BenchmarkExecutionArrayPipeline$'
+```
+
+Artifacts are written under `benchmarks/profiles/<timestamp>/`:
+
+- `bench.txt`
+- `cpu.out`, `cpu.top.txt`
+- `mem.out`, `mem.top.txt`
+- `meta.txt`
+
+This is also available as:
+
+```bash
+just bench-profile
+```

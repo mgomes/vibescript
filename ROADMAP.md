@@ -407,8 +407,8 @@ Goal: make performance improvements measurable, repeatable, and protected agains
 
 ### Profiling and Diagnostics
 
-- [ ] Add reproducible CPU profile capture workflow for compile and runtime benchmarks.
-- [ ] Add memory profile capture workflow for allocation-heavy scenarios.
+- [x] Add reproducible CPU profile capture workflow for compile and runtime benchmarks.
+- [x] Add memory profile capture workflow for allocation-heavy scenarios.
 - [ ] Add flamegraph generation instructions and hotspot triage checklist.
 - [ ] Add a short "performance playbook" for validating optimizations before merge.
 
