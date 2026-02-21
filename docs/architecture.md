@@ -75,6 +75,7 @@ Key files:
 - `vibes/parser_statements.go` (statement dispatch + return/raise/block parsing)
 - `vibes/parser_expression_statements.go` (expression/assert/assignment statement parsing)
 - `vibes/parser_declarations.go` (function/class declaration parsing)
+- `vibes/parser_function_modifiers.go` (top-level `export`/`private` function declaration parsing)
 - `vibes/parser_declaration_helpers.go` (parameter list and property declaration parsing)
 - `vibes/parser_control.go` (if/loop/begin-rescue-ensure parsing)
 - `vibes/parser_precedence.go` (precedence table + assignable-expression helpers)
