@@ -10,8 +10,15 @@ import (
 	"testing"
 )
 
+const moduleFixturesRoot = "testdata/modules"
+
+func moduleTestEngine(t testing.TB) *Engine {
+	t.Helper()
+	return MustNewEngine(Config{ModulePaths: []string{filepath.FromSlash(moduleFixturesRoot)}})
+}
+
 func TestRequireProvidesExports(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run(value)
   helpers = require("helper")
@@ -31,7 +38,7 @@ end`)
 }
 
 func TestRequireSupportsModuleAlias(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run(value)
   require("helper", as: "helpers")
@@ -52,7 +59,7 @@ end`)
 }
 
 func TestRequireAliasValidation(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	cases := []struct {
 		name    string
@@ -105,7 +112,7 @@ end`,
 }
 
 func TestRequireAliasRejectsConflictingGlobal(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def helpers(value)
   value
@@ -126,7 +133,7 @@ end`)
 }
 
 func TestRequireAliasConflictDoesNotLeakExportsWhenRescued(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def helpers(value)
   value
@@ -159,7 +166,7 @@ end`)
 }
 
 func TestRequirePreservesModuleLocalResolution(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def rate()
   100
@@ -183,7 +190,7 @@ end`)
 }
 
 func TestRequireNamespaceConflictKeepsExistingGlobalBinding(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def double(value)
   value + 1
@@ -217,7 +224,7 @@ end`)
 }
 
 func TestRequireNamespaceConflictKeepsFirstModuleBinding(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run(value)
   first = require("helper")
@@ -257,7 +264,7 @@ end`)
 }
 
 func TestRequireMissingModule(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   require("missing")
@@ -274,7 +281,7 @@ end`)
 }
 
 func TestRequireCachesModules(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   require("helper")
@@ -355,7 +362,7 @@ end`)
 }
 
 func TestRequireRejectsAbsolutePaths(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	absPath := "/etc/passwd"
 	if filepath.Separator == '\\' {
@@ -384,7 +391,7 @@ end`, absPath)
 }
 
 func TestRequireRejectsPathTraversal(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   require("nested/../../etc/passwd")
@@ -401,7 +408,7 @@ end`)
 }
 
 func TestRequireRejectsBackslashPathTraversal(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   require("nested\\..\\..\\etc\\passwd")
@@ -418,7 +425,7 @@ end`)
 }
 
 func TestRequireNormalizesPathSeparators(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run(value)
   unix_style = require("shared/math")
@@ -442,7 +449,7 @@ end`)
 }
 
 func TestRequireRelativePathRequiresModuleCaller(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   require("./helper")
@@ -459,7 +466,7 @@ end`)
 }
 
 func TestRequireRelativePathDoesNotLeakFromModuleIntoHostFunction(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def host_relative()
   require("./helper")
@@ -481,7 +488,7 @@ end`)
 }
 
 func TestRequireSupportsRelativePathsWithinModuleRoot(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run(value)
   mod = require("relative/root")
@@ -501,7 +508,7 @@ end`)
 }
 
 func TestRequireRelativePathRejectsEscapingModuleRoot(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   mod = require("relative/escape")
@@ -693,7 +700,7 @@ end`)
 }
 
 func TestRequireRelativePathWorksInModuleDefinedBlockYieldedFromHost(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def host_each()
   yield()
@@ -717,7 +724,7 @@ end`)
 }
 
 func TestRequireExportsOnlyNonPrivateFunctions(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run(value)
   mod = require("private_exports")
@@ -741,7 +748,7 @@ end`)
 }
 
 func TestRequireSupportsPrivateModuleExportOptOut(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run(value)
   mod = require("explicit_exports")
@@ -781,7 +788,7 @@ end`)
 }
 
 func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run(value)
   require("explicit_exports")
@@ -855,7 +862,7 @@ end`)
 }
 
 func TestRequirePrivateFunctionsRemainModuleScoped(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run(value)
   require("private_exports")
@@ -873,7 +880,7 @@ end`)
 }
 
 func TestRequireModuleCacheAvoidsDuplicateLoads(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   require("circular_a")
@@ -894,7 +901,7 @@ end`)
 }
 
 func TestRequireRuntimeModuleRecursionHitsRecursionLimit(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   mod = require("circular_runtime_a")
@@ -912,7 +919,7 @@ end`)
 }
 
 func TestRequireAllowsCachedModuleReuseAcrossModuleCalls(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   mod = require("require_cached_a")
@@ -932,7 +939,7 @@ end`)
 }
 
 func TestRequireConcurrentLoading(t *testing.T) {
-	engine := MustNewEngine(Config{ModulePaths: []string{filepath.Join("testdata", "modules")}})
+	engine := moduleTestEngine(t)
 
 	script, err := engine.Compile(`def run()
   require("helper")
