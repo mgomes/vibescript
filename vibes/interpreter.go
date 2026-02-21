@@ -70,15 +70,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 		modPaths: append([]string(nil), cfg.ModulePaths...),
 	}
 
-	engine.RegisterBuiltin("assert", builtinAssert)
-	engine.RegisterBuiltin("money", builtinMoney)
-	engine.RegisterBuiltin("money_cents", builtinMoneyCents)
-	engine.RegisterBuiltin("require", builtinRequire)
-	engine.RegisterZeroArgBuiltin("now", builtinNow)
-	engine.RegisterZeroArgBuiltin("uuid", builtinUUID)
-	engine.RegisterBuiltin("random_id", builtinRandomID)
-	engine.RegisterBuiltin("to_int", builtinToInt)
-	engine.RegisterBuiltin("to_float", builtinToFloat)
+	registerCoreBuiltins(engine)
 	engine.builtins["JSON"] = NewObject(map[string]Value{
 		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
 		"stringify": NewBuiltin("JSON.stringify", builtinJSONStringify),
@@ -322,6 +314,30 @@ func (e *Engine) RegisterBuiltin(name string, fn BuiltinFunc) {
 // RegisterZeroArgBuiltin registers a builtin that can be invoked without arguments or parentheses.
 func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
 	e.builtins[name] = NewAutoBuiltin(name, fn)
+}
+
+func registerCoreBuiltins(engine *Engine) {
+	for _, builtin := range []struct {
+		name       string
+		fn         BuiltinFunc
+		autoInvoke bool
+	}{
+		{name: "assert", fn: builtinAssert},
+		{name: "money", fn: builtinMoney},
+		{name: "money_cents", fn: builtinMoneyCents},
+		{name: "require", fn: builtinRequire},
+		{name: "now", fn: builtinNow, autoInvoke: true},
+		{name: "uuid", fn: builtinUUID, autoInvoke: true},
+		{name: "random_id", fn: builtinRandomID},
+		{name: "to_int", fn: builtinToInt},
+		{name: "to_float", fn: builtinToFloat},
+	} {
+		if builtin.autoInvoke {
+			engine.RegisterZeroArgBuiltin(builtin.name, builtin.fn)
+			continue
+		}
+		engine.RegisterBuiltin(builtin.name, builtin.fn)
+	}
 }
 
 // Builtins returns a copy of the registered builtin map.
