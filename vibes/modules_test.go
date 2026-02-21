@@ -869,11 +869,7 @@ end`)
 		t.Fatalf("expected allowed result 6, got %#v", allowed)
 	}
 
-	if _, err := script.Call(context.Background(), "run_denied", []Value{NewInt(3)}, CallOptions{}); err == nil {
-		t.Fatalf("expected denied module error")
-	} else if !strings.Contains(err.Error(), `require: module "helper" not allowed by policy`) {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "run_denied", []Value{NewInt(3)}, CallOptions{}, `require: module "helper" not allowed by policy`)
 }
 
 func TestRequireModuleAllowListStarMatchesNestedModules(t *testing.T) {
