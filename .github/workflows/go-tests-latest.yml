@@ -1,7 +1,5 @@
 name: Go tests against latest deps
 on:
-  push:
-  pull_request:
   schedule: # daily at 10:30 UTC
     - cron: "39 10 * * *"
   workflow_dispatch:
