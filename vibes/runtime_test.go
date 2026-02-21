@@ -594,10 +594,7 @@ func TestArrayChunkWindowValidation(t *testing.T) {
     end
     `)
 
-	_, err := script.Call(context.Background(), "bad_chunk", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
-		t.Fatalf("expected chunk validation error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_chunk", nil, CallOptions{}, "array.chunk size must be a positive integer")
 	nativeMaxInt := int64(^uint(0) >> 1)
 	hugeChunk := callFunc(t, script, "huge_chunk", []Value{NewInt(nativeMaxInt)})
 	if hugeChunk.Kind() != KindArray {
@@ -608,10 +605,7 @@ func TestArrayChunkWindowValidation(t *testing.T) {
 		t.Fatalf("expected one chunk for oversized chunk size, got %d", len(chunks))
 	}
 	compareArrays(t, chunks[0], []Value{NewInt(1), NewInt(2)})
-	_, err = script.Call(context.Background(), "bad_window", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
-		t.Fatalf("expected window validation error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_window", nil, CallOptions{}, "array.window size must be a positive integer")
 	hugeWindow := callFunc(t, script, "huge_window", []Value{NewInt(nativeMaxInt)})
 	if hugeWindow.Kind() != KindArray || len(hugeWindow.Array()) != 0 {
 		t.Fatalf("expected huge window size to return empty array, got %v", hugeWindow)
@@ -619,19 +613,10 @@ func TestArrayChunkWindowValidation(t *testing.T) {
 
 	overflowSize := int64(1 << 62)
 	if nativeMaxInt < overflowSize {
-		_, err = script.Call(context.Background(), "huge_chunk", []Value{NewInt(overflowSize)}, CallOptions{})
-		if err == nil || !strings.Contains(err.Error(), "array.chunk size must be a positive integer") {
-			t.Fatalf("expected chunk overflow validation error, got %v", err)
-		}
-		_, err = script.Call(context.Background(), "huge_window", []Value{NewInt(overflowSize)}, CallOptions{})
-		if err == nil || !strings.Contains(err.Error(), "array.window size must be a positive integer") {
-			t.Fatalf("expected window overflow validation error, got %v", err)
-		}
+		requireCallErrorContains(t, script, "huge_chunk", []Value{NewInt(overflowSize)}, CallOptions{}, "array.chunk size must be a positive integer")
+		requireCallErrorContains(t, script, "huge_window", []Value{NewInt(overflowSize)}, CallOptions{}, "array.window size must be a positive integer")
 	}
-	_, err = script.Call(context.Background(), "bad_group_by_stable", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "array.group_by_stable requires a block") {
-		t.Fatalf("expected group_by_stable block error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_group_by_stable", nil, CallOptions{}, "array.group_by_stable requires a block")
 }
 
 func TestArrayConcatAndSubtract(t *testing.T) {
@@ -756,24 +741,13 @@ func TestTypedBlockSignatures(t *testing.T) {
 	})
 	compareArrays(t, untouched, []Value{NewInt(1), NewString("two")})
 
-	_, err := script.Call(context.Background(), "increment_all", []Value{
+	requireCallErrorContains(t, script, "increment_all", []Value{
 		NewArray([]Value{NewInt(1), NewString("oops")}),
-	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument n expected int, got string") {
-		t.Fatalf("expected typed block argument error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "typed_union", []Value{
+	}, CallOptions{}, "argument n expected int, got string")
+	requireCallErrorContains(t, script, "typed_union", []Value{
 		NewArray([]Value{NewBool(true)}),
-	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected int | string, got bool") {
-		t.Fatalf("expected typed union block argument error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "enforce_yield_type", []Value{NewString("bad")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument n expected int, got string") {
-		t.Fatalf("expected typed yield argument error, got %v", err)
-	}
+	}, CallOptions{}, "argument v expected int | string, got bool")
+	requireCallErrorContains(t, script, "enforce_yield_type", []Value{NewString("bad")}, CallOptions{}, "argument n expected int, got string")
 }
 
 func TestArraySumRejectsNonNumeric(t *testing.T) {
