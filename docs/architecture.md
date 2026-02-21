@@ -84,6 +84,7 @@ Key files:
 - `vibes/parser_precedence.go` (precedence table + assignable-expression helpers)
 - `vibes/parser_types.go` (type-expression parsing)
 - `vibes/ast.go`
+- `vibes/execution_compile.go` (AST lowering into compiled script functions/classes)
 
 ## Modules (`require`)
 
