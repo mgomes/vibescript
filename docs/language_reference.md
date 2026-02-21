@@ -80,6 +80,11 @@ class Counter
 end
 ```
 
+Inheritance is not supported.
+
+See `docs/classes.md` for class methods, `@`/`@@` variables, accessors, and
+privacy semantics.
+
 ## Method Calls
 
 Calls support positional args and keyword args:

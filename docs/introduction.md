@@ -20,6 +20,7 @@ dives on specific topics.
 - `durations.md` – duration literals and time-based helper methods.
 - `time.md` – Time creation, formatting, accessors, and time/duration math.
 - `typing.md` – gradual typing: annotations, nullables, and type-checked calls.
+- `classes.md` – class syntax, class/instance methods, variables, and privacy.
 - `language_reference.md` – consolidated language syntax and semantics reference.
 - `syntax_compatibility.md` – core syntax freeze baseline and compatibility guarantees.
 - `control-flow.md` – conditionals, loops, and ranges.
@@ -40,5 +41,4 @@ dives on specific topics.
 - `compatibility.md` – supported Go versions and CI coverage expectations.
 - `versioning.md` – semantic versioning policy and compatibility contract.
 - `deprecation_policy.md` – lifecycle policy for public Go embedding APIs.
-- `pre_1_0_migration.md` – migration notes for all known pre-1.0 breaking changes.
 - `known_issues.md` – active P0/P1 correctness bug bar.

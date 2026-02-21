@@ -36,4 +36,4 @@ This contract applies to:
 
 Go toolchain support follows `docs/compatibility.md`.
 Core language syntax guarantees are tracked in `docs/syntax_compatibility.md`.
-Pre-1.0 migration notes are tracked in `docs/pre_1_0_migration.md`.
+Pre-1.0 migration guidance is communicated in release notes and pull request descriptions.
