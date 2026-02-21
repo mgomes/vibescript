@@ -835,3 +835,95 @@ func TestAggregateYieldArgumentsAreChecked(t *testing.T) {
 	}
 	requireErrorContains(t, err, "memory quota exceeded")
 }
+
+type highAllocPatternDB struct{}
+
+func (highAllocPatternDB) Find(ctx context.Context, req DBFindRequest) (Value, error) {
+	return NewHash(map[string]Value{
+		"id":    req.ID,
+		"score": NewInt(1),
+	}), nil
+}
+
+func (highAllocPatternDB) Query(ctx context.Context, req DBQueryRequest) (Value, error) {
+	return NewArray(nil), nil
+}
+
+func (highAllocPatternDB) Update(ctx context.Context, req DBUpdateRequest) (Value, error) {
+	return NewNil(), nil
+}
+
+func (highAllocPatternDB) Sum(ctx context.Context, req DBSumRequest) (Value, error) {
+	return NewInt(0), nil
+}
+
+func (highAllocPatternDB) Each(ctx context.Context, req DBEachRequest) ([]Value, error) {
+	return nil, nil
+}
+
+type highAllocPatternEvents struct{}
+
+func (highAllocPatternEvents) Publish(ctx context.Context, req EventPublishRequest) (Value, error) {
+	return NewHash(map[string]Value{
+		"ok": NewBool(true),
+	}), nil
+}
+
+func highAllocPatternContext(context.Context) (Value, error) {
+	return NewHash(map[string]Value{
+		"player_id": NewString("player-1"),
+	}), nil
+}
+
+func TestMemoryQuotaExceededForHighAllocationTypedCallPattern(t *testing.T) {
+	script := compileScriptWithConfig(t, Config{
+		StepQuota:        500000,
+		MemoryQuotaBytes: 8 * 1024,
+	}, `def run(rows: array<{ id: string, values: array<int> }>) -> int
+  total = 0
+  rows.each do |row: { id: string, values: array<int> }|
+    row[:values].each do |value: int|
+      total = total + value
+    end
+  end
+  total
+end`)
+
+	rows := make([]Value, 120)
+	for i := range rows {
+		values := make([]Value, 8)
+		for j := range values {
+			values[j] = NewInt(int64(i + j))
+		}
+		rows[i] = NewHash(map[string]Value{
+			"id":     NewString("row"),
+			"values": NewArray(values),
+		})
+	}
+
+	requireRunMemoryQuotaError(t, script, []Value{NewArray(rows)}, CallOptions{})
+}
+
+func TestMemoryQuotaExceededForCapabilityWorkflowCallPattern(t *testing.T) {
+	script := compileScriptWithConfig(t, Config{
+		StepQuota:        500000,
+		MemoryQuotaBytes: 2 * 1024,
+	}, `def run(n)
+  total = 0
+  for i in 1..n
+    player_id = ctx[:player_id]
+    row = db.find("Player", player_id)
+    events.publish("scores.seen", { player_id: row[:id], score: row[:score] })
+    total = total + row[:score]
+  end
+  total
+end`)
+
+	requireRunMemoryQuotaError(t, script, []Value{NewInt(120)}, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			MustNewDBCapability("db", highAllocPatternDB{}),
+			MustNewEventsCapability("events", highAllocPatternEvents{}),
+			MustNewContextCapability("ctx", highAllocPatternContext),
+		},
+	})
+}
