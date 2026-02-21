@@ -40,17 +40,18 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 		var preCallKnownBuiltins map[*Builtin]struct{}
 		if scope != nil && len(scope.contracts) > 0 {
 			preCallKnownBuiltins = make(map[*Builtin]struct{})
+			preCallScanner := newCapabilityContractScanner()
 			if receiver.Kind() != KindNil {
-				collectCapabilityBuiltins(receiver, preCallKnownBuiltins)
+				preCallScanner.collectBuiltins(receiver, preCallKnownBuiltins)
 			}
 			for _, root := range scope.roots {
-				collectCapabilityBuiltins(root, preCallKnownBuiltins)
+				preCallScanner.collectBuiltins(root, preCallKnownBuiltins)
 			}
 			for _, arg := range args {
-				collectCapabilityBuiltins(arg, preCallKnownBuiltins)
+				preCallScanner.collectBuiltins(arg, preCallKnownBuiltins)
 			}
 			for _, kwarg := range kwargs {
-				collectCapabilityBuiltins(kwarg, preCallKnownBuiltins)
+				preCallScanner.collectBuiltins(kwarg, preCallKnownBuiltins)
 			}
 		}
 		contract, hasContract := exec.capabilityContracts[builtin]
@@ -76,25 +77,27 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 			}
 		}
 		if scope != nil && len(scope.contracts) > 0 {
+			postCallScanner := newCapabilityContractScanner()
+			postCallScanner.excluded = preCallKnownBuiltins
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.
-			bindCapabilityContractsExcluding(result, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+			postCallScanner.bindContracts(result, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			if receiver.Kind() != KindNil {
-				bindCapabilityContractsExcluding(receiver, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+				postCallScanner.bindContracts(receiver, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 			// Methods can mutate sibling scope roots via captured references; refresh
 			// all adapter roots so newly exposed builtins also get bound.
 			for _, root := range scope.roots {
-				bindCapabilityContractsExcluding(root, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+				postCallScanner.bindContracts(root, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 			// Methods can also publish builtins by mutating positional or keyword
 			// argument objects supplied by script code.
 			for _, arg := range args {
-				bindCapabilityContractsExcluding(arg, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+				postCallScanner.bindContracts(arg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 			for _, kwarg := range kwargs {
-				bindCapabilityContractsExcluding(kwarg, scope, exec.capabilityContracts, exec.capabilityContractScopes, preCallKnownBuiltins)
+				postCallScanner.bindContracts(kwarg, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 			}
 		}
 		return result, nil
