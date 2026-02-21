@@ -6,9 +6,6 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		if err != nil {
 			return NewNil(), NewNil(), err
 		}
-		if err := exec.checkMemoryWith(receiver); err != nil {
-			return NewNil(), NewNil(), err
-		}
 		callee, err := exec.getMember(receiver, member.Property, member.Pos())
 		if err != nil {
 			return NewNil(), NewNil(), err
@@ -30,9 +27,6 @@ func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := exec.checkMemoryWith(val); err != nil {
-			return nil, err
-		}
 		args[i] = val
 	}
 	return args, nil
@@ -46,9 +40,6 @@ func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Valu
 	for _, kw := range call.KwArgs {
 		val, err := exec.evalExpressionWithAuto(kw.Value, env, true)
 		if err != nil {
-			return nil, err
-		}
-		if err := exec.checkMemoryWith(val); err != nil {
 			return nil, err
 		}
 		kwargs[kw.Name] = val

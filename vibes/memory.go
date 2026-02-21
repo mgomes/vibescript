@@ -76,15 +76,23 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 
 	total += len(exec.callStack) * estimatedCallFrameBytes
 	total += len(exec.receiverStack) * estimatedValueBytes
-	total += estimatedMapBaseBytes + len(exec.moduleLoading)*estimatedMapEntryBytes
-	for name := range exec.moduleLoading {
-		total += estimatedStringHeaderBytes + len(name)
+	if exec.moduleLoading != nil {
+		total += estimatedMapBaseBytes + len(exec.moduleLoading)*estimatedMapEntryBytes
+		for name := range exec.moduleLoading {
+			total += estimatedStringHeaderBytes + len(name)
+		}
 	}
-	total += estimatedMapBaseBytes + len(exec.capabilityContracts)*estimatedMapEntryBytes
-	total += estimatedMapBaseBytes + len(exec.capabilityContractScopes)*estimatedMapEntryBytes
-	total += estimatedMapBaseBytes + len(exec.capabilityContractsByName)*estimatedMapEntryBytes
-	for name := range exec.capabilityContractsByName {
-		total += estimatedStringHeaderBytes + len(name)
+	if exec.capabilityContracts != nil {
+		total += estimatedMapBaseBytes + len(exec.capabilityContracts)*estimatedMapEntryBytes
+	}
+	if exec.capabilityContractScopes != nil {
+		total += estimatedMapBaseBytes + len(exec.capabilityContractScopes)*estimatedMapEntryBytes
+	}
+	if exec.capabilityContractsByName != nil {
+		total += estimatedMapBaseBytes + len(exec.capabilityContractsByName)*estimatedMapEntryBytes
+		for name := range exec.capabilityContractsByName {
+			total += estimatedStringHeaderBytes + len(name)
+		}
 	}
 	total += estimatedSliceBaseBytes + len(exec.moduleLoadStack)*estimatedStringHeaderBytes
 	for _, key := range exec.moduleLoadStack {

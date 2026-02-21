@@ -9,6 +9,15 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 	if len(capabilities) == 0 {
 		return nil
 	}
+	if exec.capabilityContracts == nil {
+		exec.capabilityContracts = make(map[*Builtin]CapabilityMethodContract)
+	}
+	if exec.capabilityContractScopes == nil {
+		exec.capabilityContractScopes = make(map[*Builtin]*capabilityContractScope)
+	}
+	if exec.capabilityContractsByName == nil {
+		exec.capabilityContractsByName = make(map[string]CapabilityMethodContract)
+	}
 
 	binding := CapabilityBinding{Context: exec.ctx, Engine: exec.engine}
 	for _, adapter := range capabilities {

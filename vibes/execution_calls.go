@@ -104,7 +104,7 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 }
 
 func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
-	callEnv := newEnv(fn.Env)
+	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+2)
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
 	}

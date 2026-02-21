@@ -8,7 +8,14 @@ type Env struct {
 }
 
 func newEnv(parent *Env) *Env {
-	return &Env{parent: parent, values: make(map[string]Value)}
+	return newEnvWithCapacity(parent, 0)
+}
+
+func newEnvWithCapacity(parent *Env, capacity int) *Env {
+	if capacity < 0 {
+		capacity = 0
+	}
+	return &Env{parent: parent, values: make(map[string]Value, capacity)}
 }
 
 func (e *Env) Get(name string) (Value, bool) {
