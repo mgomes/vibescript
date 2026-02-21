@@ -72,7 +72,8 @@ Key files:
 
 Key files:
 
-- `vibes/modules.go` (module request parsing, path resolution, policy, cache/load)
+- `vibes/modules.go` (module request parsing, path resolution, cache/load)
+- `vibes/modules_policy.go` (module allow/deny policy normalization and enforcement)
 - `vibes/modules_require.go` (runtime require execution, export/alias behavior, cycle reporting)
 
 ## Builtins
