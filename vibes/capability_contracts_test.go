@@ -482,13 +482,10 @@ func (stdlibContractLeakProbeCapability) CapabilityContracts() map[string]Capabi
 }
 
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   probe.call("bad")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
@@ -506,13 +503,10 @@ end`)
 }
 
 func TestCapabilityContractRejectsInvalidReturnValue(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   probe.call(1)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
@@ -537,13 +531,10 @@ end`)
 }
 
 func TestDuplicateCapabilityContractsFailBinding(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   1
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
 		Capabilities: []CapabilityAdapter{
@@ -560,15 +551,12 @@ end`)
 }
 
 func TestCapabilityContractsDoNotAttachByGlobalBuiltinName(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   base = { a: 1 }
   override = { b: 2 }
   base.merge(override)
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{
 		Capabilities: []CapabilityAdapter{unrelatedNamedContractCapability{}},
@@ -585,13 +573,10 @@ end`)
 }
 
 func TestCapabilityContractsTraverseInstanceValues(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   box.call("bad")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
@@ -611,13 +596,10 @@ end`)
 }
 
 func TestCapabilityContractsTraverseClassValues(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   holder.call("bad")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
@@ -637,14 +619,11 @@ end`)
 }
 
 func TestCapabilityContractsBindForFactoryReturnedBuiltins(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   worker = factory.make()
   worker.call("bad")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
@@ -664,14 +643,11 @@ end`)
 }
 
 func TestCapabilityContractsBindAfterReceiverMutation(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   mut.install()
   mut.call("bad")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
@@ -691,13 +667,10 @@ end`)
 }
 
 func TestCapabilityContractsAreScopedPerAdapter(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   foo.call("ok")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{
@@ -718,14 +691,11 @@ end`)
 }
 
 func TestCapabilityContractsBindAfterSiblingScopeMutation(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   publisher.install()
   peer.call("bad")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
@@ -745,14 +715,11 @@ end`)
 }
 
 func TestCapabilityContractsDoNotAttachToForeignBuiltinsByName(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   publisher.install()
   publisher.call("ok")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	shared := &foreignBuiltinRef{}
 	invocations := 0
@@ -774,15 +741,12 @@ end`)
 }
 
 func TestCapabilityContractsBindAfterArgumentMutation(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   target = {}
   cap.install(target)
   target.call("bad")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{
@@ -802,15 +766,12 @@ end`)
 }
 
 func TestCapabilityContractsDoNotHijackForeignBuiltinsFromArguments(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   target = { passthrough: foreign.call }
   cap2.install(target)
   target.passthrough("ok")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	invocations := 0
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{
@@ -831,15 +792,12 @@ end`)
 }
 
 func TestCapabilityContractsDoNotHijackReceiverStoredForeignBuiltins(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   cap.foreign = { a: 1 }.merge
   cap.touch()
   cap.foreign({ b: 2 })
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{
 		Capabilities: []CapabilityAdapter{
@@ -858,8 +816,7 @@ end`)
 }
 
 func TestCapabilityContractsDoNotAttachToExpandedStdlibBuiltinsByName(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def run()
+	script := compileScriptDefault(t, `def run()
   cap.touch()
   parsed = JSON.parse("{\"name\":\"alex\"}")
   {
@@ -871,9 +828,7 @@ func TestCapabilityContractsDoNotAttachToExpandedStdlibBuiltinsByName(t *testing
     remap_value: { name: "Alex" }.remap_keys({ name: :player_name }).fetch(:player_name)
   }
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{
 		Capabilities: []CapabilityAdapter{
@@ -908,8 +863,7 @@ end`)
 }
 
 func TestCapabilityContractsStayEnforcedThroughExpandedStdlibTransforms(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`def call_through_transforms()
+	script := compileScriptDefault(t, `def call_through_transforms()
   hash_handler = { handler: probe.call }.remap_keys({ handler: :run }).fetch(:run)
   chunk_handler = [probe.call].chunk(1).first.first
   {
@@ -927,9 +881,7 @@ def fail_through_chunk()
   handler = [probe.call].chunk(1).first.first
   handler("bad")
 end`)
-	if err != nil {
-		t.Fatalf("compile failed: %v", err)
-	}
+	var err error
 
 	successInvocations := 0
 	okResult, err := script.Call(context.Background(), "call_through_transforms", nil, CallOptions{
