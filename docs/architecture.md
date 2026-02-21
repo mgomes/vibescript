@@ -19,7 +19,10 @@ Key files:
 
 - `vibes/execution.go` (core statement/expression evaluator)
 - `vibes/execution_script.go` (script call surface and function argument binding)
+- `vibes/execution_calls.go` (call target resolution, callable dispatch, block/yield invocation)
 - `vibes/execution_control.go` (range/case/loop/try evaluation)
+- `vibes/execution_errors.go` (runtime error model, wrapping, and quota/signal sentinels)
+- `vibes/execution_state.go` (runtime call/env/module/receiver stack helpers)
 - `vibes/execution_members.go` (member dispatch for runtime values)
 - `vibes/execution_members_hash.go` (hash/object member behavior)
 - `vibes/execution_members_string.go` (string member behavior)
