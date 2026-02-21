@@ -65,6 +65,19 @@ func validateCapabilityHashValue(label string, val Value) error {
 	return validateCapabilityTypedValue(label, val, capabilityTypeHash)
 }
 
+func capabilityValidateAnyReturn(method string) func(result Value) error {
+	return func(result Value) error {
+		return validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny)
+	}
+}
+
+func cloneCapabilityMethodResult(method string, result Value) (Value, error) {
+	if err := validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny); err != nil {
+		return NewNil(), err
+	}
+	return deepCloneValue(result), nil
+}
+
 func isNilCapabilityImplementation(impl any) bool {
 	if impl == nil {
 		return true
