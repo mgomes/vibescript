@@ -1830,9 +1830,7 @@ func TestTimeParseAndAliases(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected parse error")
 	}
-	if !strings.Contains(err.Error(), "could not parse time") {
-		t.Fatalf("unexpected parse error: %v", err)
-	}
+	requireErrorContains(t, err, "could not parse time")
 }
 
 func TestTimeParseCommonLayouts(t *testing.T) {
@@ -2746,9 +2744,7 @@ func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.
 		if err == nil {
 			t.Fatalf("expected type validation error for cyclic payload")
 		}
-		if !strings.Contains(err.Error(), "argument payload expected hash<string, hash<string, int>>") {
-			t.Fatalf("unexpected type error: %v", err)
-		}
+		requireErrorContains(t, err, "argument payload expected hash<string, hash<string, int>>")
 	case <-time.After(2 * time.Second):
 		t.Fatalf("type validation did not terminate for cyclic payload")
 	}
@@ -3804,9 +3800,7 @@ end`,
 			if err == nil {
 				t.Fatalf("expected error containing %q", tt.errMsg)
 			}
-			if !strings.Contains(err.Error(), tt.errMsg) {
-				t.Fatalf("expected error containing %q, got: %v", tt.errMsg, err)
-			}
+			requireErrorContains(t, err, tt.errMsg)
 		})
 	}
 }
