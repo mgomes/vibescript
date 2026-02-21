@@ -20,6 +20,7 @@ dives on specific topics.
 - `durations.md` – duration literals and time-based helper methods.
 - `time.md` – Time creation, formatting, accessors, and time/duration math.
 - `typing.md` – gradual typing: annotations, nullables, and type-checked calls.
+- `classes.md` – class syntax, class/instance methods, variables, and privacy.
 - `language_reference.md` – consolidated language syntax and semantics reference.
 - `syntax_compatibility.md` – core syntax freeze baseline and compatibility guarantees.
 - `control-flow.md` – conditionals, loops, and ranges.
