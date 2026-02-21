@@ -29,17 +29,13 @@ func callFunc(t *testing.T, script *Script, name string, args []Value) Value {
 }
 
 func TestCompileMalformedCallTargetDoesNotPanic(t *testing.T) {
-	engine := MustNewEngine(Config{})
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("compile panicked: %v", r)
 		}
 	}()
 
-	_, err := engine.Compile(`be(in (000000000`)
-	if err == nil {
-		t.Fatalf("expected compile error for malformed input")
-	}
+	_ = compileScriptErrorDefault(t, `be(in (000000000`)
 }
 
 func TestHashMergeAndKeys(t *testing.T) {
@@ -665,23 +661,15 @@ func TestArrayConcatAndSubtract(t *testing.T) {
 }
 
 func TestHashLiteralSyntaxRestriction(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	_, err := engine.Compile(`
+	_ = compileScriptErrorDefault(t, `
     def broken()
       { "name" => "alex" }
     end
     `)
-	if err == nil {
-		t.Fatalf("expected compile error for legacy hash syntax")
-	}
 }
 
 func TestParseErrorIncludesCodeFrameAndKeywordMessage(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	_, err := engine.Compile("def broken()\n  call(foo: )\nend\n")
-	if err == nil {
-		t.Fatalf("expected compile error")
-	}
+	err := compileScriptErrorDefault(t, "def broken()\n  call(foo: )\nend\n")
 	msg := err.Error()
 	if !strings.Contains(msg, "missing value for keyword argument foo") {
 		t.Fatalf("expected keyword argument parse error, got: %s", msg)
@@ -716,11 +704,7 @@ func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
 }
 
 func TestParseErrorIncludesBlockParameterHint(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	_, err := engine.Compile("def broken()\n  [1].each do |a,|\n    a\n  end\nend\n")
-	if err == nil {
-		t.Fatalf("expected compile error")
-	}
+	err := compileScriptErrorDefault(t, "def broken()\n  [1].each do |a,|\n    a\n  end\nend\n")
 	msg := err.Error()
 	if !strings.Contains(msg, "trailing comma in block parameter list") {
 		t.Fatalf("expected trailing comma hint, got: %s", msg)
@@ -1349,8 +1333,7 @@ func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
 }
 
 func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	_, err := engine.Compile(`
+	requireCompileErrorContainsDefault(t, `
     def bad()
       begin
         1 / 0
@@ -1358,10 +1341,7 @@ func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
         "fallback"
       end
     end
-    `)
-	if err == nil || !strings.Contains(err.Error(), "unknown rescue error type NotARealError") {
-		t.Fatalf("expected unknown rescue type compile error, got %v", err)
-	}
+    `, "unknown rescue error type NotARealError")
 }
 
 func TestBeginRescueReraisePreservesStack(t *testing.T) {

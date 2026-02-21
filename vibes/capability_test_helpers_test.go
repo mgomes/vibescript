@@ -30,6 +30,32 @@ func compileScriptWithEngine(t testing.TB, engine *Engine, source string) *Scrip
 	return script
 }
 
+func compileScriptErrorWithConfig(t testing.TB, cfg Config, source string) error {
+	t.Helper()
+	engine := MustNewEngine(cfg)
+	_, err := engine.Compile(source)
+	if err == nil {
+		t.Fatalf("expected compile to fail")
+	}
+	return err
+}
+
+func compileScriptErrorDefault(t testing.TB, source string) error {
+	t.Helper()
+	return compileScriptErrorWithConfig(t, Config{}, source)
+}
+
+func requireCompileErrorContainsWithConfig(t testing.TB, cfg Config, source string, want string) {
+	t.Helper()
+	err := compileScriptErrorWithConfig(t, cfg, source)
+	requireErrorContains(t, err, want)
+}
+
+func requireCompileErrorContainsDefault(t testing.TB, source string, want string) {
+	t.Helper()
+	requireCompileErrorContainsWithConfig(t, Config{}, source, want)
+}
+
 func callScript(t testing.TB, ctx context.Context, script *Script, fn string, args []Value, opts CallOptions) Value {
 	t.Helper()
 	result, err := script.Call(ctx, fn, args, opts)

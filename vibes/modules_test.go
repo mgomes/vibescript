@@ -725,59 +725,37 @@ end`)
 }
 
 func TestExportKeywordValidation(t *testing.T) {
-	engine := MustNewEngine(Config{})
+	requireCompileErrorContainsDefault(t, `export helper`, "expected 'def'")
 
-	_, err := engine.Compile(`export helper`)
-	if err == nil || !strings.Contains(err.Error(), "expected 'def'") {
-		t.Fatalf("expected export def parse error, got %v", err)
-	}
-
-	_, err = engine.Compile(`class Example
+	requireCompileErrorContainsDefault(t, `class Example
   export def value()
     1
   end
-end`)
-	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
-		t.Fatalf("expected top-level export parse error, got %v", err)
-	}
+end`, "export is only supported for top-level functions")
 
-	_, err = engine.Compile(`def outer()
+	requireCompileErrorContainsDefault(t, `def outer()
   if true
     export def nested()
       1
     end
   end
-end`)
-	if err == nil || !strings.Contains(err.Error(), "export is only supported for top-level functions") {
-		t.Fatalf("expected nested export parse error, got %v", err)
-	}
+end`, "export is only supported for top-level functions")
 }
 
 func TestPrivateKeywordValidation(t *testing.T) {
-	engine := MustNewEngine(Config{})
+	requireCompileErrorContainsDefault(t, `private helper`, "expected 'def'")
 
-	_, err := engine.Compile(`private helper`)
-	if err == nil || !strings.Contains(err.Error(), "expected 'def'") {
-		t.Fatalf("expected private def parse error, got %v", err)
-	}
-
-	_, err = engine.Compile(`def outer()
+	requireCompileErrorContainsDefault(t, `def outer()
   if true
     private def nested()
       1
     end
   end
-end`)
-	if err == nil || !strings.Contains(err.Error(), "private is only supported for top-level functions and class methods") {
-		t.Fatalf("expected nested private parse error, got %v", err)
-	}
+end`, "private is only supported for top-level functions and class methods")
 
-	_, err = engine.Compile(`private def self.value()
+	requireCompileErrorContainsDefault(t, `private def self.value()
   1
-end`)
-	if err == nil || !strings.Contains(err.Error(), "private cannot be used with class methods") {
-		t.Fatalf("expected private class-method parse error, got %v", err)
-	}
+end`, "private cannot be used with class methods")
 }
 
 func TestRequirePrivateFunctionsRemainModuleScoped(t *testing.T) {
