@@ -1352,15 +1352,9 @@ func TestBeginRescueReraisePreservesStack(t *testing.T) {
 		t.Fatalf("expected outer frame fourth, got %s", rtErr.Frames[3].Function)
 	}
 
-	_, err = script.Call(context.Background(), "raise_outside", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "raise used outside of rescue") {
-		t.Fatalf("expected raise outside rescue error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "raise_new_message", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "custom boom") {
-		t.Fatalf("expected raise message error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "raise_outside", nil, CallOptions{}, "raise used outside of rescue")
+	err = callScriptErr(t, context.Background(), script, "raise_new_message", nil, CallOptions{})
+	requireErrorContains(t, err, "custom boom")
 	var raisedErr *RuntimeError
 	if !errors.As(err, &raisedErr) {
 		t.Fatalf("expected RuntimeError, got %T", err)
@@ -1428,15 +1422,8 @@ func TestLoopControlBreakAndNext(t *testing.T) {
 	whileBreakNext := callFunc(t, script, "while_break_next", nil)
 	compareArrays(t, whileBreakNext, []Value{NewInt(1), NewInt(2), NewInt(4)})
 
-	_, err := script.Call(context.Background(), "break_outside", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "break used outside of loop") {
-		t.Fatalf("expected outside-loop break error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "next_outside", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "next used outside of loop") {
-		t.Fatalf("expected outside-loop next error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "break_outside", nil, CallOptions{}, "break used outside of loop")
+	requireCallErrorContains(t, script, "next_outside", nil, CallOptions{}, "next used outside of loop")
 }
 
 func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
@@ -1532,25 +1519,10 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 	nestedNext := callFunc(t, script, "nested_next", nil)
 	compareArrays(t, nestedNext, []Value{NewInt(11), NewInt(13), NewInt(21), NewInt(23)})
 
-	_, err := script.Call(context.Background(), "break_from_block_boundary", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "break cannot cross call boundary") {
-		t.Fatalf("expected block-boundary break error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "next_from_block_boundary", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
-		t.Fatalf("expected block-boundary next error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "break_from_setter_boundary", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "break cannot cross call boundary") {
-		t.Fatalf("expected setter-boundary break error, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "next_from_setter_boundary", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "next cannot cross call boundary") {
-		t.Fatalf("expected setter-boundary next error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "break_from_block_boundary", nil, CallOptions{}, "break cannot cross call boundary")
+	requireCallErrorContains(t, script, "next_from_block_boundary", nil, CallOptions{}, "next cannot cross call boundary")
+	requireCallErrorContains(t, script, "break_from_setter_boundary", nil, CallOptions{}, "break cannot cross call boundary")
+	requireCallErrorContains(t, script, "next_from_setter_boundary", nil, CallOptions{}, "next cannot cross call boundary")
 }
 
 func TestLoopControlInsideClassMethods(t *testing.T) {
