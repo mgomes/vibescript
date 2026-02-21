@@ -936,20 +936,13 @@ func TestWhileLoops(t *testing.T) {
 		t.Fatalf("skip_false expected nil, got %v", got)
 	}
 
-	engine := MustNewEngine(Config{StepQuota: 40})
-	spinScript, err := engine.Compile(`
+	spinScript := compileScriptWithConfig(t, Config{StepQuota: 40}, `
     def spin()
       while true
       end
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
-	_, err = spinScript.Call(context.Background(), "spin", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
-		t.Fatalf("expected step quota error for infinite while loop, got %v", err)
-	}
+	requireCallErrorContains(t, spinScript, "spin", nil, CallOptions{}, "step quota exceeded")
 }
 
 func TestUntilLoops(t *testing.T) {
@@ -991,20 +984,13 @@ func TestUntilLoops(t *testing.T) {
 		t.Fatalf("skip_until_true expected nil, got %v", got)
 	}
 
-	engine := MustNewEngine(Config{StepQuota: 40})
-	spinScript, err := engine.Compile(`
+	spinScript := compileScriptWithConfig(t, Config{StepQuota: 40}, `
     def spin_until()
       until false
       end
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
-	_, err = spinScript.Call(context.Background(), "spin_until", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
-		t.Fatalf("expected step quota error for infinite until loop, got %v", err)
-	}
+	requireCallErrorContains(t, spinScript, "spin_until", nil, CallOptions{}, "step quota exceeded")
 }
 
 func TestCaseWhenExpressions(t *testing.T) {
@@ -1285,11 +1271,7 @@ func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
     end
     `)
 
-	var err error
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
-		t.Fatalf("expected host quota signal to bypass rescue, got %v", err)
-	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "step quota exceeded")
 }
 
 func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {
