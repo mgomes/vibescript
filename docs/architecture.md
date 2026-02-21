@@ -18,6 +18,10 @@ High-level call path:
 Key files:
 
 - `vibes/execution.go` (core statement/expression evaluator)
+- `vibes/execution.go` (execution engine types/state container)
+- `vibes/execution_statements.go` (statement dispatch and execution)
+- `vibes/execution_expressions.go` (expression dispatch and evaluation)
+- `vibes/execution_assign.go` (assignment targets and member assignment flow)
 - `vibes/execution_script.go` (script call surface and function argument binding)
 - `vibes/execution_calls.go` (call target resolution, callable dispatch, block/yield invocation)
 - `vibes/execution_control.go` (range/case/loop/try evaluation)
