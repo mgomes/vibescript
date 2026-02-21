@@ -17,13 +17,14 @@ High-level call path:
 
 Key files:
 
-- `vibes/execution.go` (core statement/expression evaluator)
 - `vibes/execution.go` (execution engine types/state container)
 - `vibes/execution_statements.go` (statement dispatch and execution)
 - `vibes/execution_expressions.go` (expression dispatch and evaluation)
 - `vibes/execution_assign.go` (assignment targets and member assignment flow)
 - `vibes/execution_script.go` (script call surface and function argument binding)
-- `vibes/execution_calls.go` (call target resolution, callable dispatch, block/yield invocation)
+- `vibes/execution_calls.go` (callable dispatch + function invocation + block invocation)
+- `vibes/execution_call_expr.go` (call expression target/args/kwargs/block evaluation)
+- `vibes/execution_operators.go` (unary/index/binary operator evaluation)
 - `vibes/execution_control.go` (range/case/loop/try evaluation)
 - `vibes/execution_errors.go` (runtime error model, wrapping, and quota/signal sentinels)
 - `vibes/execution_state.go` (runtime call/env/module/receiver stack helpers)
@@ -72,7 +73,8 @@ Key files:
 
 Key files:
 
-- `vibes/modules.go` (module request parsing, path resolution, cache/load)
+- `vibes/modules.go` (module load + cache + compile flow)
+- `vibes/modules_paths.go` (module request parsing and path resolution helpers)
 - `vibes/modules_policy.go` (module allow/deny policy normalization and enforcement)
 - `vibes/modules_require.go` (runtime require execution, export/alias behavior, cycle reporting)
 
