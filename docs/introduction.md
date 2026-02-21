@@ -41,5 +41,4 @@ dives on specific topics.
 - `compatibility.md` – supported Go versions and CI coverage expectations.
 - `versioning.md` – semantic versioning policy and compatibility contract.
 - `deprecation_policy.md` – lifecycle policy for public Go embedding APIs.
-- `pre_1_0_migration.md` – migration notes for all known pre-1.0 breaking changes.
 - `known_issues.md` – active P0/P1 correctness bug bar.
