@@ -295,7 +295,7 @@ end`)
 func TestScriptCallPreservesForeignFunctionEnv(t *testing.T) {
 	engine := MustNewEngine(Config{})
 
-	producer, err := engine.Compile(`def helper(value)
+	producer := compileScriptWithEngine(t, engine, `def helper(value)
   "foreign-" + value
 end
 
@@ -306,16 +306,10 @@ end
 def export_fn
   wrapper
 end`)
-	if err != nil {
-		t.Fatalf("compile producer failed: %v", err)
-	}
 
-	consumer, err := engine.Compile(`def run_with(fn, value)
+	consumer := compileScriptWithEngine(t, engine, `def run_with(fn, value)
   fn(value)
 end`)
-	if err != nil {
-		t.Fatalf("compile consumer failed: %v", err)
-	}
 
 	foreignFn, err := producer.Call(context.Background(), "export_fn", nil, CallOptions{})
 	if err != nil {
