@@ -679,11 +679,7 @@ def run
   results
 end
 `
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(source)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+	script := compileScriptDefault(t, source)
 
 	for i := range 100 {
 		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
@@ -710,11 +706,7 @@ def run
   { a: a, b: b }
 end
 `
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(source)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
+	script := compileScriptDefault(t, source)
 
 	for i := range 50 {
 		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
