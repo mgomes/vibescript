@@ -2369,8 +2369,22 @@ func TestRandomIdentifierBuiltins(t *testing.T) {
 		t.Fatalf("expected hash result, got %v", result.Kind())
 	}
 	out := result.Hash()
-	if !out["uuid"].Equal(NewString("abababab-abab-4bab-abab-abababababab")) {
-		t.Fatalf("uuid mismatch: %v", out["uuid"])
+	uuidValue := out["uuid"]
+	if uuidValue.Kind() != KindString {
+		t.Fatalf("uuid should be string, got %v", uuidValue)
+	}
+	uuidText := uuidValue.String()
+	if len(uuidText) != 36 {
+		t.Fatalf("uuid length mismatch: %q", uuidText)
+	}
+	if uuidText[8] != '-' || uuidText[13] != '-' || uuidText[18] != '-' || uuidText[23] != '-' {
+		t.Fatalf("uuid separator mismatch: %q", uuidText)
+	}
+	if uuidText[14] != '7' {
+		t.Fatalf("uuid version mismatch: %q", uuidText)
+	}
+	if !strings.HasSuffix(uuidText, "-7bab-abab-abababababab") {
+		t.Fatalf("uuid random suffix mismatch: %q", uuidText)
 	}
 	if !out["id8"].Equal(NewString("VVVVVVVV")) {
 		t.Fatalf("id8 mismatch: %v", out["id8"])

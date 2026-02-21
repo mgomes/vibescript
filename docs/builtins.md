@@ -60,7 +60,7 @@ For time manipulation in VibeScript, use the `Time` object (`Time.now`, `Time.pa
 
 ### `uuid`
 
-Returns an RFC 4122 version 4 UUID string:
+Returns an RFC 9562 version 7 UUID string:
 
 ```vibe
 event_id = uuid
