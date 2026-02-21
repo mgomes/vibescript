@@ -62,8 +62,49 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 	return nil
 }
 
+func (exec *Execution) checkMemoryWithCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := exec.estimateMemoryUsageForCallRoots(receiver, args, kwargs, block)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	est := newMemoryEstimator()
+	total := exec.estimateMemoryUsageBase(est)
+	for _, extra := range extras {
+		total += est.value(extra)
+	}
+
+	return total
+}
+
+func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	est := newMemoryEstimator()
+	total := exec.estimateMemoryUsageBase(est)
+
+	if receiver.Kind() != KindNil {
+		total += est.value(receiver)
+	}
+	for _, arg := range args {
+		total += est.value(arg)
+	}
+	for _, kwarg := range kwargs {
+		total += est.value(kwarg)
+	}
+	if !block.IsNil() {
+		total += est.value(block)
+	}
+
+	return total
+}
+
+func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	total := 0
 
 	total += est.env(exec.root)
@@ -101,9 +142,6 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	total += estimatedSliceBaseBytes + len(exec.moduleStack)*estimatedModuleContextSize
 	for _, ctx := range exec.moduleStack {
 		total += estimatedStringHeaderBytes*3 + len(ctx.key) + len(ctx.path) + len(ctx.root)
-	}
-	for _, extra := range extras {
-		total += est.value(extra)
 	}
 
 	return total

@@ -97,21 +97,7 @@ func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs
 		}
 		return exec.checkMemoryWith(args...)
 	}
-	combined := make([]Value, 0, len(args)+len(kwargs)+2)
-	if receiver.Kind() != KindNil {
-		combined = append(combined, receiver)
-	}
-	combined = append(combined, args...)
-	for _, kwVal := range kwargs {
-		combined = append(combined, kwVal)
-	}
-	if !block.IsNil() {
-		combined = append(combined, block)
-	}
-	if len(combined) == 0 {
-		return nil
-	}
-	return exec.checkMemoryWith(combined...)
+	return exec.checkMemoryWithCallRoots(receiver, args, kwargs, block)
 }
 
 func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
