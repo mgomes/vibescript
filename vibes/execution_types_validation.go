@@ -89,6 +89,21 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		}
 		keyType := ty.TypeArgs[0]
 		valueType := ty.TypeArgs[1]
+		if decided, keyMatches := typeAllowsStringHashKey(keyType); decided {
+			if !keyMatches {
+				return false, nil
+			}
+			for _, value := range val.Hash() {
+				valueMatches, err := s.matches(value, valueType)
+				if err != nil {
+					return false, err
+				}
+				if !valueMatches {
+					return false, nil
+				}
+			}
+			return true, nil
+		}
 		for key, value := range val.Hash() {
 			keyMatches, err := s.matches(NewString(key), keyType)
 			if err != nil {
@@ -113,8 +128,11 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 			return false, nil
 		}
 		entries := val.Hash()
+		if len(entries) != len(ty.Shape) {
+			return false, nil
+		}
 		if len(ty.Shape) == 0 {
-			return len(entries) == 0, nil
+			return true, nil
 		}
 		for field, fieldType := range ty.Shape {
 			fieldVal, ok := entries[field]
@@ -174,4 +192,38 @@ func typeValidationVisitFor(val Value, ty *TypeExpr) (typeValidationVisit, bool)
 		valueID:   valueID,
 		ty:        ty,
 	}, true
+}
+
+func typeAllowsStringHashKey(ty *TypeExpr) (bool, bool) {
+	if ty == nil {
+		return false, false
+	}
+
+	switch ty.Kind {
+	case TypeAny, TypeString:
+		return true, true
+	case TypeUnion:
+		allDecided := true
+		for _, option := range ty.Union {
+			decided, matches := typeAllowsStringHashKey(option)
+			if !decided {
+				allDecided = false
+				break
+			}
+			if matches {
+				return true, true
+			}
+		}
+		if allDecided {
+			return true, false
+		}
+		return false, false
+	default:
+		if ty.Nullable {
+			clone := *ty
+			clone.Nullable = false
+			return typeAllowsStringHashKey(&clone)
+		}
+		return true, false
+	}
 }
