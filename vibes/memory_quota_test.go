@@ -40,20 +40,17 @@ def run
 end
 `
 
+func requireRunMemoryQuotaError(t *testing.T, script *Script, args []Value, opts CallOptions) {
+	t.Helper()
+	requireCallErrorContains(t, script, "run", args, opts, "memory quota exceeded")
+}
+
 func TestMemoryQuotaExceeded(t *testing.T) {
 	script := compileScriptWithConfig(t, Config{
 		StepQuota:        20000,
 		MemoryQuotaBytes: 2048,
 	}, quotaFixture)
-
-	var err error
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected memory quota error")
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
 
 func TestMemoryQuotaCountsClassVars(t *testing.T) {
@@ -61,15 +58,7 @@ func TestMemoryQuotaCountsClassVars(t *testing.T) {
 		StepQuota:        20000,
 		MemoryQuotaBytes: 3072,
 	}, classVarFixture)
-
-	var err error
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected memory quota error")
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
 
 func TestMemoryQuotaAllowsExecution(t *testing.T) {
@@ -95,14 +84,7 @@ func TestMemoryQuotaExceededOnCompletion(t *testing.T) {
 	}, splitFixture)
 
 	input := strings.Repeat("a,", 4000)
-	var err error
-	_, err = script.Call(context.Background(), "run", []Value{NewString(input)}, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected memory quota error")
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireRunMemoryQuotaError(t, script, []Value{NewString(input)}, CallOptions{})
 }
 
 func TestMemoryQuotaExceededForEmptyBodyDefaultArg(t *testing.T) {
@@ -116,15 +98,7 @@ func TestMemoryQuotaExceededForEmptyBodyDefaultArg(t *testing.T) {
 end`
 
 	script := compileScriptWithConfig(t, cfg, source)
-
-	var err error
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected memory quota error")
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
 
 func TestMemoryQuotaExceededForBoundArguments(t *testing.T) {
@@ -140,26 +114,12 @@ end`)
 	}
 	largeArg := NewArray(parts)
 
-	var err error
-	_, err = script.Call(context.Background(), "run", []Value{largeArg}, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected memory quota error for positional arg")
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected positional arg error: %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{
+	requireRunMemoryQuotaError(t, script, []Value{largeArg}, CallOptions{})
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{
 		Keywords: map[string]Value{
 			"payload": largeArg,
 		},
 	})
-	if err == nil {
-		t.Fatalf("expected memory quota error for keyword arg")
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected keyword arg error: %v", err)
-	}
 }
 
 func TestMemoryQuotaCountsIndependentEmptySlices(t *testing.T) {
@@ -173,15 +133,7 @@ func TestMemoryQuotaCountsIndependentEmptySlices(t *testing.T) {
   end
   items.size
 end`)
-
-	var err error
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected memory quota error for many independent empty slices")
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
 
 func TestMemoryQuotaExceededWithWhileLoopAllocations(t *testing.T) {
@@ -197,15 +149,7 @@ func TestMemoryQuotaExceededWithWhileLoopAllocations(t *testing.T) {
   end
   items.size
 end`)
-
-	var err error
-	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected memory quota error for while-loop allocations")
-	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
 
 func TestAssignmentPostCheckDoesNotDoubleCountAssignedValue(t *testing.T) {
