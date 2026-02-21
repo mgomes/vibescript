@@ -74,7 +74,8 @@ Key files:
 
 Key files:
 
-- `vibes/modules.go` (module load + cache + compile flow)
+- `vibes/modules.go` (module entry/request types and cache access)
+- `vibes/modules_load.go` (module load workflows for relative/search-path modules)
 - `vibes/modules_paths.go` (module request parsing and path resolution helpers)
 - `vibes/modules_policy.go` (module allow/deny policy normalization and enforcement)
 - `vibes/modules_compile.go` (module compile/cache helpers and function-env cloning)
