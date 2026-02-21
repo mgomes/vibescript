@@ -2542,94 +2542,52 @@ func TestTypedFunctions(t *testing.T) {
 	if !kwPos.Equal(NewInt(2)) {
 		t.Fatalf("kw_only positional mismatch: %v", kwPos)
 	}
-	_, err := script.Call(context.Background(), "kw_only", []Value{NewInt(1)}, CallOptions{
+	requireCallErrorContains(t, script, "kw_only", []Value{NewInt(1)}, CallOptions{
 		Globals: map[string]Value{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "missing argument m") {
-		t.Fatalf("expected kw_only missing arg error, got %v", err)
-	}
+	}, "missing argument m")
 
 	mixedResult := callFunc(t, script, "mixed", []Value{NewInt(1), NewInt(2)})
 	if !mixedResult.Equal(NewInt(3)) {
 		t.Fatalf("mixed result mismatch: %v", mixedResult)
 	}
 
-	_, err = script.Call(context.Background(), "pick_second", []Value{NewString("bad"), NewInt(2)}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument n expected int, got string") {
-		t.Fatalf("expected argument type error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "pick_second", []Value{NewString("bad"), NewInt(2)}, CallOptions{}, "argument n expected int, got string")
 
-	_, err = script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
-	if err == nil {
-		res, _ := script.Call(context.Background(), "bad_return", []Value{NewInt(1)}, CallOptions{})
-		t.Fatalf("expected return type error, got value %v (%v)", res, res.Kind())
-	}
-	if !strings.Contains(err.Error(), "return value for bad_return expected int, got string") {
-		t.Fatalf("expected return type error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "bad_return", []Value{NewInt(1)}, CallOptions{}, "return value for bad_return expected int, got string")
 
-	_, err = script.Call(context.Background(), "union_echo", []Value{NewBool(true)}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument v expected int | string, got bool") {
-		t.Fatalf("expected union arg type error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "union_echo", []Value{NewBool(true)}, CallOptions{}, "argument v expected int | string, got bool")
 
-	_, err = script.Call(context.Background(), "union_bad_return", nil, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "return value for union_bad_return expected int | string, got bool") {
-		t.Fatalf("expected union return type error, got %v", err)
-	}
+	requireCallErrorContains(t, script, "union_bad_return", nil, CallOptions{}, "return value for union_bad_return expected int | string, got bool")
 
-	_, err = script.Call(context.Background(), "ints_only", []Value{
+	requireCallErrorContains(t, script, "ints_only", []Value{
 		NewArray([]Value{NewInt(1), NewString("oops")}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument values expected array<int>, got array<int | string>") {
-		t.Fatalf("expected typed array arg error, got %v", err)
-	}
+	}, CallOptions{}, "argument values expected array<int>, got array<int | string>")
 
-	_, err = script.Call(context.Background(), "totals_by_player", []Value{
+	requireCallErrorContains(t, script, "totals_by_player", []Value{
 		NewHash(map[string]Value{"alice": NewString("oops")}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument totals expected hash<string, int>, got { alice: string }") {
-		t.Fatalf("expected typed hash arg error, got %v", err)
-	}
+	}, CallOptions{}, "argument totals expected hash<string, int>, got { alice: string }")
 
-	_, err = script.Call(context.Background(), "mixed_items", []Value{
+	requireCallErrorContains(t, script, "mixed_items", []Value{
 		NewArray([]Value{NewBool(true)}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument values expected array<int | string>, got array<bool>") {
-		t.Fatalf("expected typed union array arg error, got %v", err)
-	}
+	}, CallOptions{}, "argument values expected array<int | string>, got array<bool>")
 
-	_, err = script.Call(context.Background(), "player_payload", []Value{
+	requireCallErrorContains(t, script, "player_payload", []Value{
 		NewHash(map[string]Value{
 			"id":    NewString("p-1"),
 			"score": NewInt(42),
 			"role":  NewString("captain"),
 		}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got { id: string, role: string, score: int }") {
-		t.Fatalf("expected shape extra-field error, got %v", err)
-	}
+	}, CallOptions{}, "argument payload expected { active: bool?, id: string, score: int }, got { id: string, role: string, score: int }")
 
-	_, err = script.Call(context.Background(), "player_payload", []Value{
+	requireCallErrorContains(t, script, "player_payload", []Value{
 		NewHash(map[string]Value{
 			"id":     NewString("p-1"),
 			"score":  NewString("wrong"),
 			"active": NewBool(true),
 		}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument payload expected { active: bool?, id: string, score: int }, got { active: bool, id: string, score: string }") {
-		t.Fatalf("expected shape field-type error, got %v", err)
-	}
+	}, CallOptions{}, "argument payload expected { active: bool?, id: string, score: int }, got { active: bool, id: string, score: string }")
 
-	_, err = script.Call(context.Background(), "shaped_rows", []Value{
+	requireCallErrorContains(t, script, "shaped_rows", []Value{
 		NewArray([]Value{
 			NewHash(map[string]Value{
 				"id": NewString("p-1"),
@@ -2638,11 +2596,7 @@ func TestTypedFunctions(t *testing.T) {
 				}),
 			}),
 		}),
-	}, CallOptions{})
-	if err == nil ||
-		!strings.Contains(err.Error(), "argument rows expected array<{ id: string, stats: { wins: int } }>, got array<{ id: string, stats: { wins: string } }>") {
-		t.Fatalf("expected nested shape error, got %v", err)
-	}
+	}, CallOptions{}, "argument rows expected array<{ id: string, stats: { wins: int } }>, got array<{ id: string, stats: { wins: string } }>")
 }
 
 func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testing.T) {
@@ -2699,12 +2653,9 @@ func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testi
 		t.Fatalf("accepts_ints int-only mismatch: %v", got)
 	}
 	compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
-	_, err := script.Call(context.Background(), "accepts_ints", []Value{
+	requireCallErrorContains(t, script, "accepts_ints", []Value{
 		NewArray([]Value{NewInt(1), NewFloat(2.5)}),
-	}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument values expected array<int>, got array<float | int>") {
-		t.Fatalf("expected container element strictness error, got %v", err)
-	}
+	}, CallOptions{}, "argument values expected array<int>, got array<float | int>")
 
 	if got := callFunc(t, script, "nullable_short", []Value{NewNil()}); got.Kind() != KindNil {
 		t.Fatalf("nullable_short nil mismatch: %#v", got)
@@ -2718,32 +2669,16 @@ func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testi
 	if got := callFunc(t, script, "nullable_union", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
 		t.Fatalf("nullable_union string mismatch: %#v", got)
 	}
-	_, err = script.Call(context.Background(), "nullable_short", []Value{NewInt(1)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected string?, got int") {
-		t.Fatalf("expected nullable shorthand mismatch, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "nullable_union", []Value{NewInt(1)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected string | nil, got int") {
-		t.Fatalf("expected nullable union mismatch, got %v", err)
-	}
-
-	_, err = script.Call(context.Background(), "takes_int", []Value{NewString("1")}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected int, got string") {
-		t.Fatalf("expected no-coercion mismatch, got %v", err)
-	}
+	requireCallErrorContains(t, script, "nullable_short", []Value{NewInt(1)}, CallOptions{}, "argument v expected string?, got int")
+	requireCallErrorContains(t, script, "nullable_union", []Value{NewInt(1)}, CallOptions{}, "argument v expected string | nil, got int")
+	requireCallErrorContains(t, script, "takes_int", []Value{NewString("1")}, CallOptions{}, "argument v expected int, got string")
 
 	extraKw := map[string]Value{
 		"a":     NewInt(1),
 		"extra": NewInt(2),
 	}
-	_, err = script.Call(context.Background(), "typed_kw", nil, CallOptions{Keywords: extraKw})
-	if err == nil || !strings.Contains(err.Error(), "unexpected keyword argument extra") {
-		t.Fatalf("expected typed function unknown kwarg strictness, got %v", err)
-	}
-	_, err = script.Call(context.Background(), "untyped_kw", nil, CallOptions{Keywords: extraKw})
-	if err == nil || !strings.Contains(err.Error(), "unexpected keyword argument extra") {
-		t.Fatalf("expected untyped function unknown kwarg strictness, got %v", err)
-	}
+	requireCallErrorContains(t, script, "typed_kw", nil, CallOptions{Keywords: extraKw}, "unexpected keyword argument extra")
+	requireCallErrorContains(t, script, "untyped_kw", nil, CallOptions{Keywords: extraKw}, "unexpected keyword argument extra")
 }
 
 func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
@@ -2780,10 +2715,7 @@ func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
 	if got := callFunc(t, script, "takes_nullable", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
 		t.Fatalf("takes_nullable string mismatch: %#v", got)
 	}
-	_, err := script.Call(context.Background(), "takes_nullable", []Value{NewInt(1)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected string?, got int") {
-		t.Fatalf("expected nullable type mismatch, got %v", err)
-	}
+	requireCallErrorContains(t, script, "takes_nullable", []Value{NewInt(1)}, CallOptions{}, "argument v expected string?, got int")
 
 	if got := callFunc(t, script, "takes_nullable_union", []Value{NewNil()}); got.Kind() != KindNil {
 		t.Fatalf("takes_nullable_union nil mismatch: %#v", got)
@@ -2791,10 +2723,7 @@ func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
 	if got := callFunc(t, script, "takes_nullable_union", []Value{NewString("ok")}); got.Kind() != KindString || got.String() != "ok" {
 		t.Fatalf("takes_nullable_union string mismatch: %#v", got)
 	}
-	_, err = script.Call(context.Background(), "takes_nullable_union", []Value{NewInt(1)}, CallOptions{})
-	if err == nil || !strings.Contains(err.Error(), "argument v expected string | nil, got int") {
-		t.Fatalf("expected nullable union mismatch, got %v", err)
-	}
+	requireCallErrorContains(t, script, "takes_nullable_union", []Value{NewInt(1)}, CallOptions{}, "argument v expected string | nil, got int")
 }
 
 func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.T) {
