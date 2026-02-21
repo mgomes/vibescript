@@ -307,9 +307,7 @@ func TestTransientExpressionAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for transient expression allocation")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
 
 func TestIndexedTransientAllocationsAreChecked(t *testing.T) {
@@ -363,9 +361,7 @@ func TestIndexedTransientAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for indexed transient allocation")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
 
 func TestTransientMethodCallReceiverAllocationsAreChecked(t *testing.T) {
@@ -422,9 +418,7 @@ func TestTransientMethodCallReceiverAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for transient method-call receiver allocation")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
 
 func TestIfConditionTransientAllocationsAreChecked(t *testing.T) {
@@ -480,9 +474,7 @@ func TestIfConditionTransientAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for if-condition transient allocation")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
 
 func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
@@ -541,9 +533,7 @@ func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for aggregate builtin arguments")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
 
 func TestTransientAssignmentValueIsCheckedBeforeAssign(t *testing.T) {
@@ -612,9 +602,7 @@ func TestTransientAssignmentValueIsCheckedBeforeAssign(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for transient assignment value")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
 
 func TestTransientUnaryOperandAllocationsAreChecked(t *testing.T) {
@@ -668,9 +656,7 @@ func TestTransientUnaryOperandAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for unary transient operand")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
 
 func TestTransientBinaryOperandsAreChecked(t *testing.T) {
@@ -725,9 +711,7 @@ func TestTransientBinaryOperandsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for binary transient operands")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
 
 func TestAssignmentTargetExpressionsAreChecked(t *testing.T) {
@@ -789,9 +773,7 @@ func TestAssignmentTargetExpressionsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for assignment target transient allocation")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
 
 func TestAggregateYieldArgumentsAreChecked(t *testing.T) {
@@ -851,7 +833,5 @@ func TestAggregateYieldArgumentsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for aggregate yield arguments")
 	}
-	if !strings.Contains(err.Error(), "memory quota exceeded") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireErrorContains(t, err, "memory quota exceeded")
 }
