@@ -23,8 +23,7 @@ func FuzzCompileScriptDoesNotPanic(f *testing.F) {
 }
 
 func FuzzRuntimeEdgeCasesDoNotPanic(f *testing.F) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`
+	script := compileScriptDefault(f, `
 def run(text, pattern)
   stable_groups = text.split("").group_by_stable do |char|
     if char == ""
@@ -45,9 +44,6 @@ def run(text, pattern)
   }
 end
 `)
-	if err != nil {
-		f.Fatalf("compile failed: %v", err)
-	}
 
 	f.Add("", "a*")
 	f.Add("ID-12 ID-34", "ID-[0-9]+")
