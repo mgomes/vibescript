@@ -2,39 +2,21 @@ package vibes
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
 func TestClassPrivacyEnforced(t *testing.T) {
 	script := compileTestProgram(t, "classes/privacy.vibe")
-	_, err := script.Call(context.Background(), "violate", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected privacy violation")
-	}
-	if !strings.Contains(err.Error(), "private method secret") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "violate", nil, CallOptions{}, "private method secret")
 }
 
 func TestClassErrorCases(t *testing.T) {
 	script := compileTestProgram(t, "errors/classes.vibe")
 
-	checkErr := func(fn, contains string) {
-		t.Helper()
-		_, err := script.Call(context.Background(), fn, nil, CallOptions{})
-		if err == nil {
-			t.Fatalf("%s: expected error", fn)
-		}
-		if !strings.Contains(err.Error(), contains) {
-			t.Fatalf("%s: unexpected error '%v', want '%s'", fn, err, contains)
-		}
-	}
-
-	checkErr("undefined_method", "unknown")
-	checkErr("private_method_external", "private method")
-	checkErr("write_to_readonly", "read-only property")
-	checkErr("wrong_init_args", "argument")
+	requireCallErrorContains(t, script, "undefined_method", nil, CallOptions{}, "unknown")
+	requireCallErrorContains(t, script, "private_method_external", nil, CallOptions{}, "private method")
+	requireCallErrorContains(t, script, "write_to_readonly", nil, CallOptions{}, "read-only property")
+	requireCallErrorContains(t, script, "wrong_init_args", nil, CallOptions{}, "argument")
 
 	// run function should work
 	val, err := script.Call(context.Background(), "run", nil, CallOptions{})

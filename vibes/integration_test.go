@@ -415,20 +415,9 @@ func TestProgramFixtures(t *testing.T) {
 func TestBlockErrorCases(t *testing.T) {
 	script := compileTestProgram(t, "blocks/error_cases.vibe")
 
-	checkErr := func(fn, contains string) {
-		t.Helper()
-		_, err := script.Call(context.Background(), fn, nil, CallOptions{})
-		if err == nil {
-			t.Fatalf("%s: expected error", fn)
-		}
-		if !strings.Contains(err.Error(), contains) {
-			t.Fatalf("%s: unexpected error %v", fn, err)
-		}
-	}
-
-	checkErr("each_without_block", "requires a block")
-	checkErr("map_without_block", "requires a block")
-	checkErr("reduce_empty_without_init", "requires an initial value")
+	requireCallErrorContains(t, script, "each_without_block", nil, CallOptions{}, "requires a block")
+	requireCallErrorContains(t, script, "map_without_block", nil, CallOptions{}, "requires a block")
+	requireCallErrorContains(t, script, "reduce_empty_without_init", nil, CallOptions{}, "requires an initial value")
 
 	val, err := script.Call(context.Background(), "reduce_empty_with_init", nil, CallOptions{})
 	if err != nil {
@@ -439,13 +428,7 @@ func TestBlockErrorCases(t *testing.T) {
 
 func TestBlockErrorPropagation(t *testing.T) {
 	script := compileTestProgram(t, "blocks/block_error_propagation.vibe")
-	_, err := script.Call(context.Background(), "explode", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected error from block")
-	}
-	if !strings.Contains(err.Error(), "unknown_method") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireCallErrorContains(t, script, "explode", nil, CallOptions{}, "unknown_method")
 }
 
 func TestComplexExamplesStress(t *testing.T) {
