@@ -198,7 +198,7 @@ func stringTemplateOption(kwargs map[string]Value) (bool, error) {
 
 func stringTemplateLookup(context Value, keyPath string) (Value, bool) {
 	current := context
-	for _, segment := range strings.Split(keyPath, ".") {
+	for segment := range strings.SplitSeq(keyPath, ".") {
 		if segment == "" {
 			return NewNil(), false
 		}

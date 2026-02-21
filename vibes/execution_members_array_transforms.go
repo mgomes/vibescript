@@ -192,10 +192,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			chunks := make([]Value, 0, chunkCapacity)
 			for i := 0; i < len(arr); i += size {
-				end := i + size
-				if end > len(arr) {
-					end = len(arr)
-				}
+				end := min(i+size, len(arr))
 				part := make([]Value, end-i)
 				copy(part, arr[i:end])
 				chunks = append(chunks, NewArray(part))

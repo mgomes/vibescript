@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -345,15 +346,11 @@ func completionItems() []map[string]any {
 }
 
 func classifyWord(word string) string {
-	for _, keyword := range lspKeywords {
-		if keyword == word {
-			return "keyword"
-		}
+	if slices.Contains(lspKeywords, word) {
+		return "keyword"
 	}
-	for _, builtin := range lspBuiltins {
-		if builtin == word {
-			return "builtin"
-		}
+	if slices.Contains(lspBuiltins, word) {
+		return "builtin"
 	}
 	return "symbol"
 }
@@ -372,10 +369,7 @@ func wordAtPosition(source string, line, character int) string {
 	if character < 0 {
 		character = 0
 	}
-	character = utf16OffsetToRuneIndex(lineText, character)
-	if character > len(runes) {
-		character = len(runes)
-	}
+	character = min(utf16OffsetToRuneIndex(lineText, character), len(runes))
 
 	cursor := character
 	if cursor == len(runes) {

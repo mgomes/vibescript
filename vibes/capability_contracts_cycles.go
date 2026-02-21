@@ -1,5 +1,7 @@
 package vibes
 
+import "slices"
+
 import "reflect"
 
 type capabilityCycleScanner struct {
@@ -34,10 +36,8 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 			return true
 		}
 		s.visitingArrays[id] = struct{}{}
-		for _, item := range values {
-			if s.containsCycle(item) {
-				return true
-			}
+		if slices.ContainsFunc(values, s.containsCycle) {
+			return true
 		}
 		delete(s.visitingArrays, id)
 		s.seenArrays[id] = struct{}{}
