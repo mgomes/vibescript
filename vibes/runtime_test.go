@@ -782,16 +782,13 @@ func TestTypedBlockSignatures(t *testing.T) {
 }
 
 func TestArraySumRejectsNonNumeric(t *testing.T) {
-	engine := MustNewEngine(Config{})
-	script, err := engine.Compile(`
+	script := compileScriptDefault(t, `
     def bad()
       ["a"].sum()
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
+	var err error
 	_, err = script.Call(context.Background(), "bad", nil, CallOptions{})
 	if err == nil {
 		t.Fatalf("expected runtime error for non-numeric sum")
@@ -849,8 +846,7 @@ func TestRuntimeErrorStackTrace(t *testing.T) {
 }
 
 func TestRuntimeErrorCondensesDeepStackRendering(t *testing.T) {
-	engine := MustNewEngine(Config{RecursionLimit: 128})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{RecursionLimit: 128}, `
     def recurse(n)
       if n <= 0
         1 / 0
@@ -862,10 +858,8 @@ func TestRuntimeErrorCondensesDeepStackRendering(t *testing.T) {
       recurse(40)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
+	var err error
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
 	if err == nil {
 		t.Fatalf("expected runtime error")
@@ -1311,8 +1305,7 @@ func TestBeginRescueDoesNotCatchLoopControlSignals(t *testing.T) {
 }
 
 func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
-	engine := MustNewEngine(Config{StepQuota: 60})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{StepQuota: 60}, `
     def run()
       begin
         while true
@@ -1322,10 +1315,8 @@ func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
       end
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
+	var err error
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "step quota exceeded") {
 		t.Fatalf("expected host quota signal to bypass rescue, got %v", err)
@@ -2207,8 +2198,7 @@ func TestJSONAndRegexMalformedInputs(t *testing.T) {
 }
 
 func TestJSONAndRegexSizeGuards(t *testing.T) {
-	engine := MustNewEngine(Config{MemoryQuotaBytes: 4 << 20})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 << 20}, `
     def parse_raw(raw)
       JSON.parse(raw)
     end
@@ -2225,11 +2215,9 @@ func TestJSONAndRegexSizeGuards(t *testing.T) {
       Regex.replace_all(text, pattern, replacement)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
 	largeJSON := `{"data":"` + strings.Repeat("x", maxJSONPayloadBytes) + `"}`
+	var err error
 	_, err = script.Call(context.Background(), "parse_raw", []Value{NewString(largeJSON)}, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "JSON.parse input exceeds limit") {
 		t.Fatalf("expected JSON.parse size guard error, got %v", err)
@@ -2309,10 +2297,9 @@ func TestLocaleSensitiveOperationsDeterministic(t *testing.T) {
 }
 
 func TestRandomIdentifierBuiltins(t *testing.T) {
-	engine := MustNewEngine(Config{
+	script := compileScriptWithConfig(t, Config{
 		RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xAB}, 128)),
-	})
-	script, err := engine.Compile(`
+	}, `
     def values()
       {
         uuid: uuid(),
@@ -2337,9 +2324,6 @@ func TestRandomIdentifierBuiltins(t *testing.T) {
       uuid(1)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
 	result, err := script.Call(context.Background(), "values", nil, CallOptions{})
 	if err != nil {
@@ -2388,16 +2372,13 @@ func TestRandomIdentifierBuiltins(t *testing.T) {
 }
 
 func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
-	engine := MustNewEngine(Config{RandomReader: bytes.NewReader([]byte{1, 2, 3})})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{RandomReader: bytes.NewReader([]byte{1, 2, 3})}, `
     def run()
       uuid()
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
+	var err error
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "random source failed") {
 		t.Fatalf("expected random source failure, got %v", err)
@@ -2405,16 +2386,13 @@ func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
 }
 
 func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
-	engine := MustNewEngine(Config{RandomReader: bytes.NewReader([]byte{248, 1})})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{RandomReader: bytes.NewReader([]byte{248, 1})}, `
     def run()
       random_id(1)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
+	var err error
 	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
 	if err != nil {
 		t.Fatalf("call failed: %v", err)
@@ -2425,16 +2403,13 @@ func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
 }
 
 func TestRandomIdentifierBuiltinsRejectsStalledEntropy(t *testing.T) {
-	engine := MustNewEngine(Config{RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xFF}, 1024))})
-	script, err := engine.Compile(`
+	script := compileScriptWithConfig(t, Config{RandomReader: bytes.NewReader(bytes.Repeat([]byte{0xFF}, 1024))}, `
     def run()
       random_id(4)
     end
     `)
-	if err != nil {
-		t.Fatalf("compile error: %v", err)
-	}
 
+	var err error
 	_, err = script.Call(context.Background(), "run", nil, CallOptions{})
 	if err == nil || !strings.Contains(err.Error(), "random_id entropy source rejected too many bytes") {
 		t.Fatalf("expected stalled entropy error, got %v", err)
