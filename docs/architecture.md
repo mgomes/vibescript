@@ -34,6 +34,7 @@ Key files:
 - `vibes/execution_members_string.go` (string member dispatch)
 - `vibes/execution_members_string_query.go` (string query/search member methods)
 - `vibes/execution_members_string_transforms.go` (string transform/normalization member methods)
+- `vibes/execution_members_string_textops.go` (string substitution/splitting/template member methods)
 - `vibes/execution_members_string_helpers.go` (string helper routines for member methods)
 - `vibes/execution_members_duration.go` (duration member behavior)
 - `vibes/execution_members_array.go` (array member dispatch)
