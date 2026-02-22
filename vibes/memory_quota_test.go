@@ -421,6 +421,38 @@ func TestTransientMethodCallReceiverAllocationsAreChecked(t *testing.T) {
 	requireErrorContains(t, err, "memory quota exceeded")
 }
 
+func TestTransientMethodCallReceiverLookupErrorsAreChecked(t *testing.T) {
+	pos := Position{Line: 1, Column: 1}
+	elements := make([]Expression, 1200)
+	for i := range elements {
+		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+	}
+
+	stmt := &ExprStmt{
+		Expr: &CallExpr{
+			Callee: &MemberExpr{
+				Object:   &ArrayLiteral{Elements: elements, position: pos},
+				Property: "missing",
+				position: pos,
+			},
+			position: pos,
+		},
+		position: pos,
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   1,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	_, _, err := exec.evalStatements([]Statement{stmt}, env)
+	if err == nil {
+		t.Fatalf("expected memory quota error for transient method-call lookup receiver")
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+}
+
 func TestIfConditionTransientAllocationsAreChecked(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)

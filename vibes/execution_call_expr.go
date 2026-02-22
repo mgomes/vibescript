@@ -6,6 +6,9 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		if err != nil {
 			return NewNil(), NewNil(), err
 		}
+		if err := exec.checkMemoryWith(receiver); err != nil {
+			return NewNil(), NewNil(), err
+		}
 		if directCallee, handled, err := exec.evalDirectMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
 			if err != nil {
 				return NewNil(), NewNil(), err
