@@ -76,6 +76,12 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 				}
 				preCallScanner.collectBuiltins(kwarg, preCallKnownBuiltins)
 			}
+			for _, root := range scope.roots {
+				if !valueCanContainBuiltins(root) {
+					continue
+				}
+				preCallScanner.collectBuiltins(root, preCallKnownBuiltins)
+			}
 		}
 		contract, hasContract := exec.capabilityContracts[builtin]
 		if hasContract && contract.ValidateArgs != nil {
