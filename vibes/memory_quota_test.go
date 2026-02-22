@@ -61,6 +61,63 @@ func TestMemoryQuotaCountsClassVars(t *testing.T) {
 	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
 
+func TestMemoryQuotaCountsCapabilityScopeKnownBuiltins(t *testing.T) {
+	scopeWithKnown := &capabilityContractScope{
+		knownBuiltins: make(map[*Builtin]struct{}),
+	}
+	for range 400 {
+		scopeWithKnown.knownBuiltins[NewBuiltin("cap.dynamic", builtinAssert).Builtin()] = struct{}{}
+	}
+	scopeWithoutKnown := &capabilityContractScope{
+		knownBuiltins: make(map[*Builtin]struct{}),
+	}
+
+	withKnown := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+		capabilityContractScopes: map[*Builtin]*capabilityContractScope{
+			NewBuiltin("cap.call", builtinAssert).Builtin(): scopeWithKnown,
+		},
+	}
+	withoutKnown := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+		capabilityContractScopes: map[*Builtin]*capabilityContractScope{
+			NewBuiltin("cap.call", builtinAssert).Builtin(): scopeWithoutKnown,
+		},
+	}
+
+	withKnownBytes := withKnown.estimateMemoryUsage()
+	withoutKnownBytes := withoutKnown.estimateMemoryUsage()
+	if withKnownBytes <= withoutKnownBytes {
+		t.Fatalf("expected known builtin cache to increase memory estimate (%d <= %d)", withKnownBytes, withoutKnownBytes)
+	}
+
+	quota := withoutKnownBytes + (withKnownBytes-withoutKnownBytes)/2
+	if quota <= withoutKnownBytes {
+		quota = withoutKnownBytes + 1
+	}
+	if quota >= withKnownBytes {
+		quota = withKnownBytes - 1
+	}
+
+	enforced := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+		capabilityContractScopes: map[*Builtin]*capabilityContractScope{
+			NewBuiltin("cap.call", builtinAssert).Builtin(): scopeWithKnown,
+		},
+	}
+	err := enforced.checkMemory()
+	if err == nil {
+		t.Fatalf("expected memory quota error when known builtin cache grows")
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+}
+
 func TestMemoryQuotaAllowsExecution(t *testing.T) {
 	script := compileScriptWithConfig(t, Config{
 		StepQuota:        20000,

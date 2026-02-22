@@ -128,6 +128,17 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	}
 	if exec.capabilityContractScopes != nil {
 		total += estimatedMapBaseBytes + len(exec.capabilityContractScopes)*estimatedMapEntryBytes
+		seenScopes := make(map[*capabilityContractScope]struct{}, len(exec.capabilityContractScopes))
+		for _, scope := range exec.capabilityContractScopes {
+			if scope == nil {
+				continue
+			}
+			if _, seen := seenScopes[scope]; seen {
+				continue
+			}
+			seenScopes[scope] = struct{}{}
+			total += estimatedMapBaseBytes + len(scope.knownBuiltins)*estimatedMapEntryBytes
+		}
 	}
 	if exec.capabilityContractsByName != nil {
 		total += estimatedMapBaseBytes + len(exec.capabilityContractsByName)*estimatedMapEntryBytes
