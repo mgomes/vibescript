@@ -568,6 +568,50 @@ func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
 	requireErrorContains(t, err, "memory quota exceeded")
 }
 
+func TestCallArgumentMemoryChecksFailFastBeforeLaterSideEffects(t *testing.T) {
+	pos := Position{Line: 1, Column: 1}
+	payload := strings.Repeat("a", 5000)
+	tickCount := 0
+
+	stmt := &ExprStmt{
+		Expr: &CallExpr{
+			Callee: &Identifier{Name: "noop", position: pos},
+			Args: []Expression{
+				&StringLiteral{Value: payload, position: pos},
+				&CallExpr{
+					Callee:   &Identifier{Name: "tick", position: pos},
+					position: pos,
+				},
+			},
+			position: pos,
+		},
+		position: pos,
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   2048,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	env.Define("noop", NewBuiltin("noop", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewNil(), nil
+	}))
+	env.Define("tick", NewBuiltin("tick", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		tickCount++
+		return NewInt(1), nil
+	}))
+
+	_, _, err := exec.evalStatements([]Statement{stmt}, env)
+	if err == nil {
+		t.Fatalf("expected memory quota error for oversized first argument")
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+	if tickCount != 0 {
+		t.Fatalf("expected later argument side effects to be skipped, got %d", tickCount)
+	}
+}
+
 func TestTransientAssignmentValueIsCheckedBeforeAssign(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)

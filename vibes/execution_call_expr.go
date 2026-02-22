@@ -66,6 +66,9 @@ func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return nil, err
+		}
 		args[i] = val
 	}
 	return args, nil
@@ -81,6 +84,9 @@ func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Valu
 		if err != nil {
 			return nil, err
 		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return nil, err
+		}
 		kwargs[kw.Name] = val
 	}
 	return kwargs, nil
@@ -90,7 +96,14 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 	if call.Block == nil {
 		return NewNil(), nil
 	}
-	return exec.evalBlockLiteral(call.Block, env)
+	block, err := exec.evalBlockLiteral(call.Block, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(block); err != nil {
+		return NewNil(), err
+	}
+	return block, nil
 }
 
 func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
