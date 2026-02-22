@@ -13,6 +13,17 @@ func valueCanContainBuiltins(val Value) bool {
 	}
 }
 
+func cloneBuiltinSet(src map[*Builtin]struct{}) map[*Builtin]struct{} {
+	if len(src) == 0 {
+		return make(map[*Builtin]struct{})
+	}
+	out := make(map[*Builtin]struct{}, len(src))
+	for builtin := range src {
+		out[builtin] = struct{}{}
+	}
+	return out
+}
+
 func (exec *Execution) autoInvokeIfNeeded(expr Expression, val Value, receiver Value) (Value, error) {
 	switch val.Kind() {
 	case KindFunction:
@@ -48,7 +59,7 @@ func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value
 		scope := exec.capabilityContractScopes[builtin]
 		var preCallKnownBuiltins map[*Builtin]struct{}
 		if scope != nil && len(scope.contracts) > 0 {
-			preCallKnownBuiltins = scope.knownBuiltins
+			preCallKnownBuiltins = cloneBuiltinSet(scope.knownBuiltins)
 			preCallScanner := newCapabilityContractScanner()
 			if valueCanContainBuiltins(receiver) {
 				preCallScanner.collectBuiltins(receiver, preCallKnownBuiltins)
