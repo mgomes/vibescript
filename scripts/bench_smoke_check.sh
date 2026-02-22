@@ -64,6 +64,14 @@ done < <(
 
 failures=0
 
+float_delta() {
+  awk -v actual="$1" -v limit="$2" 'BEGIN { printf "%.4f", actual - limit }'
+}
+
+float_exceeds() {
+  awk -v actual="$1" -v limit="$2" 'BEGIN { exit (actual > limit) ? 0 : 1 }'
+}
+
 echo
 printf "%-40s %12s %12s %12s %12s %12s %14s\n" "Benchmark" "ns/op" "max_ns/op" "delta_ns" "allocs/op" "max_allocs" "delta_allocs"
 for bench in "${benchmarks[@]}"; do
@@ -78,15 +86,15 @@ for bench in "${benchmarks[@]}"; do
     continue
   fi
 
-  ns_delta=$((ns - max_ns_value))
-  allocs_delta=$((allocs - max_allocs_value))
-  printf "%-40s %12s %12s %12d %12s %12s %14d\n" "$bench" "$ns" "$max_ns_value" "$ns_delta" "$allocs" "$max_allocs_value" "$allocs_delta"
+  ns_delta="$(float_delta "$ns" "$max_ns_value")"
+  allocs_delta="$(float_delta "$allocs" "$max_allocs_value")"
+  printf "%-40s %12s %12s %12s %12s %12s %14s\n" "$bench" "$ns" "$max_ns_value" "$ns_delta" "$allocs" "$max_allocs_value" "$allocs_delta"
 
-  if (( ns > max_ns_value )); then
+  if float_exceeds "$ns" "$max_ns_value"; then
     echo "regression: $bench ns/op $ns exceeds $max_ns_value" >&2
     failures=$((failures + 1))
   fi
-  if (( allocs > max_allocs_value )); then
+  if float_exceeds "$allocs" "$max_allocs_value"; then
     echo "regression: $bench allocs/op $allocs exceeds $max_allocs_value" >&2
     failures=$((failures + 1))
   fi
