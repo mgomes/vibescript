@@ -1,7 +1,7 @@
 package vibes
 
 func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctionRebinder, fn *ScriptFunction, args []Value, keywords map[string]Value) (*Env, error) {
-	callEnv := newEnv(root)
+	callEnv := newEnvWithCapacity(root, len(fn.Params))
 	callArgs := rebinder.rebindValues(args)
 	callKeywords := rebinder.rebindKeywords(keywords)
 	if err := exec.bindFunctionArgs(fn, callEnv, callArgs, callKeywords, fn.Pos); err != nil {

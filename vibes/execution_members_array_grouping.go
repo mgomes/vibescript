@@ -15,13 +15,16 @@ func arrayMemberGrouping(property string) (Value, error) {
 			arr := receiver.Array()
 			out := make([]Value, len(arr))
 			copy(out, arr)
+			var comparatorArgs [2]Value
 			var sortErr error
 			sort.SliceStable(out, func(i, j int) bool {
 				if sortErr != nil {
 					return false
 				}
 				if block.Block() != nil {
-					cmpValue, err := exec.CallBlock(block, []Value{out[i], out[j]})
+					comparatorArgs[0] = out[i]
+					comparatorArgs[1] = out[j]
+					cmpValue, err := exec.CallBlock(block, comparatorArgs[:])
 					if err != nil {
 						sortErr = err
 						return false
@@ -60,8 +63,10 @@ func arrayMemberGrouping(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			withKeys := make([]itemWithSortKey, len(arr))
+			var blockArg [1]Value
 			for i, item := range arr {
-				sortKey, err := exec.CallBlock(block, []Value{item})
+				blockArg[0] = item
+				sortKey, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -102,8 +107,10 @@ func arrayMemberGrouping(property string) (Value, error) {
 			arr := receiver.Array()
 			left := make([]Value, 0, len(arr))
 			right := make([]Value, 0, len(arr))
+			var blockArg [1]Value
 			for _, item := range arr {
-				match, err := exec.CallBlock(block, []Value{item})
+				blockArg[0] = item
+				match, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -125,8 +132,10 @@ func arrayMemberGrouping(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			groups := make(map[string][]Value, len(arr))
+			var blockArg [1]Value
 			for _, item := range arr {
-				groupValue, err := exec.CallBlock(block, []Value{item})
+				blockArg[0] = item
+				groupValue, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -154,8 +163,10 @@ func arrayMemberGrouping(property string) (Value, error) {
 			order := make([]string, 0, len(arr))
 			keyValues := make(map[string]Value, len(arr))
 			groups := make(map[string][]Value, len(arr))
+			var blockArg [1]Value
 			for _, item := range arr {
-				groupValue, err := exec.CallBlock(block, []Value{item})
+				blockArg[0] = item
+				groupValue, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -186,10 +197,12 @@ func arrayMemberGrouping(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			counts := make(map[string]int64, len(arr))
+			var blockArg [1]Value
 			for _, item := range arr {
 				keyValue := item
 				if block.Block() != nil {
-					mapped, err := exec.CallBlock(block, []Value{item})
+					blockArg[0] = item
+					mapped, err := exec.CallBlock(block, blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}

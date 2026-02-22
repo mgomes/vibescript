@@ -8,6 +8,15 @@ import (
 )
 
 func checkValueType(val Value, ty *TypeExpr) error {
+	if handled, matches := quickTypeCheck(val, ty); handled {
+		if matches {
+			return nil
+		}
+		return &typeMismatchError{
+			Expected: formatTypeExpr(ty),
+			Actual:   formatValueTypeExpr(val),
+		}
+	}
 	matches, err := valueMatchesType(val, ty)
 	if err != nil {
 		return err
@@ -18,6 +27,77 @@ func checkValueType(val Value, ty *TypeExpr) error {
 	return &typeMismatchError{
 		Expected: formatTypeExpr(ty),
 		Actual:   formatValueTypeExpr(val),
+	}
+}
+
+func quickTypeCheck(val Value, ty *TypeExpr) (bool, bool) {
+	if ty == nil {
+		return false, false
+	}
+	if ty.Nullable && val.Kind() == KindNil {
+		return true, true
+	}
+
+	switch ty.Kind {
+	case TypeAny:
+		return true, true
+	case TypeInt:
+		return true, val.Kind() == KindInt
+	case TypeFloat:
+		return true, val.Kind() == KindFloat
+	case TypeNumber:
+		return true, val.Kind() == KindInt || val.Kind() == KindFloat
+	case TypeString:
+		return true, val.Kind() == KindString
+	case TypeBool:
+		return true, val.Kind() == KindBool
+	case TypeNil:
+		return true, val.Kind() == KindNil
+	case TypeDuration:
+		return true, val.Kind() == KindDuration
+	case TypeTime:
+		return true, val.Kind() == KindTime
+	case TypeMoney:
+		return true, val.Kind() == KindMoney
+	case TypeFunction:
+		return true, val.Kind() == KindFunction
+	case TypeArray:
+		if len(ty.TypeArgs) == 0 {
+			return true, val.Kind() == KindArray
+		}
+		return false, false
+	case TypeHash:
+		if len(ty.TypeArgs) == 0 {
+			return true, val.Kind() == KindHash || val.Kind() == KindObject
+		}
+		return false, false
+	case TypeShape:
+		if len(ty.Shape) == 0 {
+			if val.Kind() != KindHash && val.Kind() != KindObject {
+				return true, false
+			}
+			return true, len(val.Hash()) == 0
+		}
+		return false, false
+	case TypeUnion:
+		allHandled := true
+		for _, option := range ty.Union {
+			handled, matches := quickTypeCheck(val, option)
+			if handled {
+				if matches {
+					return true, true
+				}
+				continue
+			}
+			allHandled = false
+			break
+		}
+		if allHandled {
+			return true, false
+		}
+		return false, false
+	default:
+		return false, false
 	}
 }
 

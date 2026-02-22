@@ -39,6 +39,9 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		return NewNil(), fmt.Errorf("require: circular dependency detected: %s", formatModuleCycle(cycle))
 	}
 
+	if exec.modules == nil {
+		exec.modules = make(map[string]Value)
+	}
 	if cached, ok := exec.modules[entry.key]; ok {
 		if err := bindRequireAlias(exec.root, alias, cached); err != nil {
 			return NewNil(), err
@@ -50,6 +53,9 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		return NewNil(), fmt.Errorf("require: circular dependency detected: %s", formatModuleCycle(cycle))
 	}
 
+	if exec.moduleLoading == nil {
+		exec.moduleLoading = make(map[string]bool)
+	}
 	if exec.moduleLoading[entry.key] {
 		cycle := append(append([]string(nil), exec.moduleLoadStack...), entry.key)
 		return NewNil(), fmt.Errorf("require: circular dependency detected: %s", formatModuleCycle(cycle))

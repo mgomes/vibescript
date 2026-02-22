@@ -9,6 +9,12 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		if err := exec.checkMemoryWith(receiver); err != nil {
 			return NewNil(), NewNil(), err
 		}
+		if directCallee, handled, err := exec.evalDirectMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
+			if err != nil {
+				return NewNil(), NewNil(), err
+			}
+			return directCallee, receiver, nil
+		}
 		callee, err := exec.getMember(receiver, member.Property, member.Pos())
 		if err != nil {
 			return NewNil(), NewNil(), err
@@ -21,6 +27,36 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		return NewNil(), NewNil(), err
 	}
 	return callee, NewNil(), nil
+}
+
+func (exec *Execution) evalDirectMemberMethodCall(receiver Value, property string, pos Position) (Value, bool, error) {
+	switch receiver.Kind() {
+	case KindClass:
+		if property == "new" {
+			return NewNil(), false, nil
+		}
+		classDef := receiver.Class()
+		fn, ok := classDef.ClassMethods[property]
+		if !ok {
+			return NewNil(), false, nil
+		}
+		if fn.Private && !exec.isCurrentReceiver(receiver) {
+			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
+		}
+		return NewFunction(fn), true, nil
+	case KindInstance:
+		instance := receiver.Instance()
+		fn, ok := instance.Class.Methods[property]
+		if !ok {
+			return NewNil(), false, nil
+		}
+		if fn.Private && !exec.isCurrentReceiver(receiver) {
+			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
+		}
+		return NewFunction(fn), true, nil
+	default:
+		return NewNil(), false, nil
+	}
 }
 
 func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
@@ -60,7 +96,14 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 	if call.Block == nil {
 		return NewNil(), nil
 	}
-	return exec.evalBlockLiteral(call.Block, env)
+	block, err := exec.evalBlockLiteral(call.Block, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(block); err != nil {
+		return NewNil(), err
+	}
+	return block, nil
 }
 
 func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
@@ -70,21 +113,7 @@ func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs
 		}
 		return exec.checkMemoryWith(args...)
 	}
-	combined := make([]Value, 0, len(args)+len(kwargs)+2)
-	if receiver.Kind() != KindNil {
-		combined = append(combined, receiver)
-	}
-	combined = append(combined, args...)
-	for _, kwVal := range kwargs {
-		combined = append(combined, kwVal)
-	}
-	if !block.IsNil() {
-		combined = append(combined, block)
-	}
-	if len(combined) == 0 {
-		return nil
-	}
-	return exec.checkMemoryWith(combined...)
+	return exec.checkMemoryWithCallRoots(receiver, args, kwargs, block)
 }
 
 func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {

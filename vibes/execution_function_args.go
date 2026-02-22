@@ -1,7 +1,10 @@
 package vibes
 
 func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Value, kwargs map[string]Value, pos Position) error {
-	usedKw := make(map[string]bool, len(kwargs))
+	var usedKw map[string]bool
+	if len(kwargs) > 0 {
+		usedKw = make(map[string]bool, len(kwargs))
+	}
 	argIdx := 0
 
 	for _, param := range fn.Params {
@@ -11,7 +14,9 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 			argIdx++
 		} else if kw, ok := kwargs[param.Name]; ok {
 			val = kw
-			usedKw[param.Name] = true
+			if usedKw != nil {
+				usedKw[param.Name] = true
+			}
 		} else if param.DefaultVal != nil {
 			defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
 			if err != nil {
@@ -41,9 +46,11 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 	if argIdx < len(args) {
 		return exec.errorAt(pos, "unexpected positional arguments")
 	}
-	for name := range kwargs {
-		if !usedKw[name] {
-			return exec.errorAt(pos, "unexpected keyword argument %s", name)
+	if usedKw != nil {
+		for name := range kwargs {
+			if !usedKw[name] {
+				return exec.errorAt(pos, "unexpected keyword argument %s", name)
+			}
 		}
 	}
 	return nil

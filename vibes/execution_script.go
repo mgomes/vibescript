@@ -15,7 +15,8 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), fmt.Errorf("function %s not found", name)
 	}
 
-	root := newEnv(nil)
+	rootCapacity := len(s.engine.builtins) + len(s.functions) + len(s.classes) + len(opts.Globals) + len(opts.Capabilities)*2
+	root := newEnvWithCapacity(nil, rootCapacity)
 	for n, builtin := range s.engine.builtins {
 		root.Define(n, builtin)
 	}

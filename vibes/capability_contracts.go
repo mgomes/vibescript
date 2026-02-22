@@ -56,11 +56,3 @@ func bindCapabilityContractsExcluding(
 	scanner.excluded = excluded
 	scanner.bindContracts(val, scope, target, scopes)
 }
-
-func collectCapabilityBuiltins(val Value, out map[*Builtin]struct{}) {
-	if out == nil {
-		return
-	}
-	scanner := newCapabilityContractScanner()
-	scanner.collectBuiltins(val, out)
-}

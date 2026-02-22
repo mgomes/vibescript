@@ -16,8 +16,10 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err := ensureBlock(block, "array.each"); err != nil {
 				return NewNil(), err
 			}
+			var blockArg [1]Value
 			for _, item := range receiver.Array() {
-				if _, err := exec.CallBlock(block, []Value{item}); err != nil {
+				blockArg[0] = item
+				if _, err := exec.CallBlock(block, blockArg[:]); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -30,8 +32,10 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			result := make([]Value, len(arr))
+			var blockArg [1]Value
 			for i, item := range arr {
-				val, err := exec.CallBlock(block, []Value{item})
+				blockArg[0] = item
+				val, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -46,8 +50,10 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			out := make([]Value, 0, len(arr))
+			var blockArg [1]Value
 			for _, item := range arr {
-				val, err := exec.CallBlock(block, []Value{item})
+				blockArg[0] = item
+				val, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -65,8 +71,10 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err := ensureBlock(block, "array.find"); err != nil {
 				return NewNil(), err
 			}
+			var blockArg [1]Value
 			for _, item := range receiver.Array() {
-				match, err := exec.CallBlock(block, []Value{item})
+				blockArg[0] = item
+				match, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -84,8 +92,10 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err := ensureBlock(block, "array.find_index"); err != nil {
 				return NewNil(), err
 			}
+			var blockArg [1]Value
 			for idx, item := range receiver.Array() {
-				match, err := exec.CallBlock(block, []Value{item})
+				blockArg[0] = item
+				match, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -115,8 +125,11 @@ func arrayMemberQuery(property string) (Value, error) {
 				acc = arr[0]
 				start = 1
 			}
+			var blockArgs [2]Value
 			for i := start; i < len(arr); i++ {
-				next, err := exec.CallBlock(block, []Value{acc, arr[i]})
+				blockArgs[0] = acc
+				blockArgs[1] = arr[i]
+				next, err := exec.CallBlock(block, blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -212,8 +225,10 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewInt(int64(len(arr))), nil
 			}
 			total := int64(0)
+			var blockArg [1]Value
 			for _, item := range arr {
-				include, err := exec.CallBlock(block, []Value{item})
+				blockArg[0] = item
+				include, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -228,9 +243,11 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.any? does not take arguments")
 			}
+			var blockArg [1]Value
 			for _, item := range receiver.Array() {
 				if block.Block() != nil {
-					val, err := exec.CallBlock(block, []Value{item})
+					blockArg[0] = item
+					val, err := exec.CallBlock(block, blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}
@@ -250,9 +267,11 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.all? does not take arguments")
 			}
+			var blockArg [1]Value
 			for _, item := range receiver.Array() {
 				if block.Block() != nil {
-					val, err := exec.CallBlock(block, []Value{item})
+					blockArg[0] = item
+					val, err := exec.CallBlock(block, blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}
@@ -272,9 +291,11 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.none? does not take arguments")
 			}
+			var blockArg [1]Value
 			for _, item := range receiver.Array() {
 				if block.Block() != nil {
-					val, err := exec.CallBlock(block, []Value{item})
+					blockArg[0] = item
+					val, err := exec.CallBlock(block, blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}

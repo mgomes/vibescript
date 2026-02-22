@@ -8,7 +8,10 @@ import (
 type benchmarkDBCapability struct{}
 
 func (benchmarkDBCapability) Find(ctx context.Context, req DBFindRequest) (Value, error) {
-	return NewHash(map[string]Value{"score": NewInt(1)}), nil
+	return NewHash(map[string]Value{
+		"id":    req.ID,
+		"score": NewInt(1),
+	}), nil
 }
 
 func (benchmarkDBCapability) Query(ctx context.Context, req DBQueryRequest) (Value, error) {
