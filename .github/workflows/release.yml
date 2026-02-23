@@ -21,6 +21,26 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Clear existing release assets for reruns
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "No existing release for $RELEASE_TAG"
+            exit 0
+          fi
+
+          mapfile -t assets < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "Release $RELEASE_TAG has no assets to clean"
+            exit 0
+          fi
+
+          for asset in "${assets[@]}"; do
+            gh release delete-asset "$RELEASE_TAG" "$asset" --yes
+          done
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v5
         with:
