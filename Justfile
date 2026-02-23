@@ -4,7 +4,10 @@ test:
 	go test ./...
 
 bench:
-	go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem
+	scripts/bench_runtime.sh
+
+bench-profile pattern='^BenchmarkExecutionArrayPipeline$':
+	scripts/bench_profile.sh --pattern "{{pattern}}"
 
 lint:
 	gofmt -l . | (! read)

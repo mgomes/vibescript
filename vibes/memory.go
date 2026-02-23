@@ -62,8 +62,49 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 	return nil
 }
 
+func (exec *Execution) checkMemoryWithCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := exec.estimateMemoryUsageForCallRoots(receiver, args, kwargs, block)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	est := newMemoryEstimator()
+	total := exec.estimateMemoryUsageBase(est)
+	for _, extra := range extras {
+		total += est.value(extra)
+	}
+
+	return total
+}
+
+func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	est := newMemoryEstimator()
+	total := exec.estimateMemoryUsageBase(est)
+
+	if receiver.Kind() != KindNil {
+		total += est.value(receiver)
+	}
+	for _, arg := range args {
+		total += est.value(arg)
+	}
+	for _, kwarg := range kwargs {
+		total += est.value(kwarg)
+	}
+	if !block.IsNil() {
+		total += est.value(block)
+	}
+
+	return total
+}
+
+func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	total := 0
 
 	total += est.env(exec.root)
@@ -76,15 +117,34 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 
 	total += len(exec.callStack) * estimatedCallFrameBytes
 	total += len(exec.receiverStack) * estimatedValueBytes
-	total += estimatedMapBaseBytes + len(exec.moduleLoading)*estimatedMapEntryBytes
-	for name := range exec.moduleLoading {
-		total += estimatedStringHeaderBytes + len(name)
+	if exec.moduleLoading != nil {
+		total += estimatedMapBaseBytes + len(exec.moduleLoading)*estimatedMapEntryBytes
+		for name := range exec.moduleLoading {
+			total += estimatedStringHeaderBytes + len(name)
+		}
 	}
-	total += estimatedMapBaseBytes + len(exec.capabilityContracts)*estimatedMapEntryBytes
-	total += estimatedMapBaseBytes + len(exec.capabilityContractScopes)*estimatedMapEntryBytes
-	total += estimatedMapBaseBytes + len(exec.capabilityContractsByName)*estimatedMapEntryBytes
-	for name := range exec.capabilityContractsByName {
-		total += estimatedStringHeaderBytes + len(name)
+	if exec.capabilityContracts != nil {
+		total += estimatedMapBaseBytes + len(exec.capabilityContracts)*estimatedMapEntryBytes
+	}
+	if exec.capabilityContractScopes != nil {
+		total += estimatedMapBaseBytes + len(exec.capabilityContractScopes)*estimatedMapEntryBytes
+		seenScopes := make(map[*capabilityContractScope]struct{}, len(exec.capabilityContractScopes))
+		for _, scope := range exec.capabilityContractScopes {
+			if scope == nil {
+				continue
+			}
+			if _, seen := seenScopes[scope]; seen {
+				continue
+			}
+			seenScopes[scope] = struct{}{}
+			total += estimatedMapBaseBytes + len(scope.knownBuiltins)*estimatedMapEntryBytes
+		}
+	}
+	if exec.capabilityContractsByName != nil {
+		total += estimatedMapBaseBytes + len(exec.capabilityContractsByName)*estimatedMapEntryBytes
+		for name := range exec.capabilityContractsByName {
+			total += estimatedStringHeaderBytes + len(name)
+		}
 	}
 	total += estimatedSliceBaseBytes + len(exec.moduleLoadStack)*estimatedStringHeaderBytes
 	for _, key := range exec.moduleLoadStack {
@@ -93,9 +153,6 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	total += estimatedSliceBaseBytes + len(exec.moduleStack)*estimatedModuleContextSize
 	for _, ctx := range exec.moduleStack {
 		total += estimatedStringHeaderBytes*3 + len(ctx.key) + len(ctx.path) + len(ctx.root)
-	}
-	for _, extra := range extras {
-		total += est.value(extra)
 	}
 
 	return total

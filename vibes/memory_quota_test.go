@@ -61,6 +61,63 @@ func TestMemoryQuotaCountsClassVars(t *testing.T) {
 	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
 
+func TestMemoryQuotaCountsCapabilityScopeKnownBuiltins(t *testing.T) {
+	scopeWithKnown := &capabilityContractScope{
+		knownBuiltins: make(map[*Builtin]struct{}),
+	}
+	for range 400 {
+		scopeWithKnown.knownBuiltins[NewBuiltin("cap.dynamic", builtinAssert).Builtin()] = struct{}{}
+	}
+	scopeWithoutKnown := &capabilityContractScope{
+		knownBuiltins: make(map[*Builtin]struct{}),
+	}
+
+	withKnown := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+		capabilityContractScopes: map[*Builtin]*capabilityContractScope{
+			NewBuiltin("cap.call", builtinAssert).Builtin(): scopeWithKnown,
+		},
+	}
+	withoutKnown := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+		capabilityContractScopes: map[*Builtin]*capabilityContractScope{
+			NewBuiltin("cap.call", builtinAssert).Builtin(): scopeWithoutKnown,
+		},
+	}
+
+	withKnownBytes := withKnown.estimateMemoryUsage()
+	withoutKnownBytes := withoutKnown.estimateMemoryUsage()
+	if withKnownBytes <= withoutKnownBytes {
+		t.Fatalf("expected known builtin cache to increase memory estimate (%d <= %d)", withKnownBytes, withoutKnownBytes)
+	}
+
+	quota := withoutKnownBytes + (withKnownBytes-withoutKnownBytes)/2
+	if quota <= withoutKnownBytes {
+		quota = withoutKnownBytes + 1
+	}
+	if quota >= withKnownBytes {
+		quota = withKnownBytes - 1
+	}
+
+	enforced := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+		capabilityContractScopes: map[*Builtin]*capabilityContractScope{
+			NewBuiltin("cap.call", builtinAssert).Builtin(): scopeWithKnown,
+		},
+	}
+	err := enforced.checkMemory()
+	if err == nil {
+		t.Fatalf("expected memory quota error when known builtin cache grows")
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+}
+
 func TestMemoryQuotaAllowsExecution(t *testing.T) {
 	script := compileScriptWithConfig(t, Config{
 		StepQuota:        20000,
@@ -421,6 +478,38 @@ func TestTransientMethodCallReceiverAllocationsAreChecked(t *testing.T) {
 	requireErrorContains(t, err, "memory quota exceeded")
 }
 
+func TestTransientMethodCallReceiverLookupErrorsAreChecked(t *testing.T) {
+	pos := Position{Line: 1, Column: 1}
+	elements := make([]Expression, 1200)
+	for i := range elements {
+		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+	}
+
+	stmt := &ExprStmt{
+		Expr: &CallExpr{
+			Callee: &MemberExpr{
+				Object:   &ArrayLiteral{Elements: elements, position: pos},
+				Property: "missing",
+				position: pos,
+			},
+			position: pos,
+		},
+		position: pos,
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   1,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	_, _, err := exec.evalStatements([]Statement{stmt}, env)
+	if err == nil {
+		t.Fatalf("expected memory quota error for transient method-call lookup receiver")
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+}
+
 func TestIfConditionTransientAllocationsAreChecked(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)
@@ -534,6 +623,50 @@ func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
 		t.Fatalf("expected memory quota error for aggregate builtin arguments")
 	}
 	requireErrorContains(t, err, "memory quota exceeded")
+}
+
+func TestCallArgumentMemoryChecksFailFastBeforeLaterSideEffects(t *testing.T) {
+	pos := Position{Line: 1, Column: 1}
+	payload := strings.Repeat("a", 5000)
+	tickCount := 0
+
+	stmt := &ExprStmt{
+		Expr: &CallExpr{
+			Callee: &Identifier{Name: "noop", position: pos},
+			Args: []Expression{
+				&StringLiteral{Value: payload, position: pos},
+				&CallExpr{
+					Callee:   &Identifier{Name: "tick", position: pos},
+					position: pos,
+				},
+			},
+			position: pos,
+		},
+		position: pos,
+	}
+
+	exec := &Execution{
+		quota:         10000,
+		memoryQuota:   2048,
+		moduleLoading: make(map[string]bool),
+	}
+	env := newEnv(nil)
+	env.Define("noop", NewBuiltin("noop", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewNil(), nil
+	}))
+	env.Define("tick", NewBuiltin("tick", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		tickCount++
+		return NewInt(1), nil
+	}))
+
+	_, _, err := exec.evalStatements([]Statement{stmt}, env)
+	if err == nil {
+		t.Fatalf("expected memory quota error for oversized first argument")
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+	if tickCount != 0 {
+		t.Fatalf("expected later argument side effects to be skipped, got %d", tickCount)
+	}
 }
 
 func TestTransientAssignmentValueIsCheckedBeforeAssign(t *testing.T) {
@@ -834,4 +967,96 @@ func TestAggregateYieldArgumentsAreChecked(t *testing.T) {
 		t.Fatalf("expected memory quota error for aggregate yield arguments")
 	}
 	requireErrorContains(t, err, "memory quota exceeded")
+}
+
+type highAllocPatternDB struct{}
+
+func (highAllocPatternDB) Find(ctx context.Context, req DBFindRequest) (Value, error) {
+	return NewHash(map[string]Value{
+		"id":    req.ID,
+		"score": NewInt(1),
+	}), nil
+}
+
+func (highAllocPatternDB) Query(ctx context.Context, req DBQueryRequest) (Value, error) {
+	return NewArray(nil), nil
+}
+
+func (highAllocPatternDB) Update(ctx context.Context, req DBUpdateRequest) (Value, error) {
+	return NewNil(), nil
+}
+
+func (highAllocPatternDB) Sum(ctx context.Context, req DBSumRequest) (Value, error) {
+	return NewInt(0), nil
+}
+
+func (highAllocPatternDB) Each(ctx context.Context, req DBEachRequest) ([]Value, error) {
+	return nil, nil
+}
+
+type highAllocPatternEvents struct{}
+
+func (highAllocPatternEvents) Publish(ctx context.Context, req EventPublishRequest) (Value, error) {
+	return NewHash(map[string]Value{
+		"ok": NewBool(true),
+	}), nil
+}
+
+func highAllocPatternContext(context.Context) (Value, error) {
+	return NewHash(map[string]Value{
+		"player_id": NewString("player-1"),
+	}), nil
+}
+
+func TestMemoryQuotaExceededForHighAllocationTypedCallPattern(t *testing.T) {
+	script := compileScriptWithConfig(t, Config{
+		StepQuota:        500000,
+		MemoryQuotaBytes: 8 * 1024,
+	}, `def run(rows: array<{ id: string, values: array<int> }>) -> int
+  total = 0
+  rows.each do |row: { id: string, values: array<int> }|
+    row[:values].each do |value: int|
+      total = total + value
+    end
+  end
+  total
+end`)
+
+	rows := make([]Value, 120)
+	for i := range rows {
+		values := make([]Value, 8)
+		for j := range values {
+			values[j] = NewInt(int64(i + j))
+		}
+		rows[i] = NewHash(map[string]Value{
+			"id":     NewString("row"),
+			"values": NewArray(values),
+		})
+	}
+
+	requireRunMemoryQuotaError(t, script, []Value{NewArray(rows)}, CallOptions{})
+}
+
+func TestMemoryQuotaExceededForCapabilityWorkflowCallPattern(t *testing.T) {
+	script := compileScriptWithConfig(t, Config{
+		StepQuota:        500000,
+		MemoryQuotaBytes: 2 * 1024,
+	}, `def run(n)
+  total = 0
+  for i in 1..n
+    player_id = ctx[:player_id]
+    row = db.find("Player", player_id)
+    events.publish("scores.seen", { player_id: row[:id], score: row[:score] })
+    total = total + row[:score]
+  end
+  total
+end`)
+
+	requireRunMemoryQuotaError(t, script, []Value{NewInt(120)}, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			MustNewDBCapability("db", highAllocPatternDB{}),
+			MustNewEventsCapability("events", highAllocPatternEvents{}),
+			MustNewContextCapability("ctx", highAllocPatternContext),
+		},
+	})
 }

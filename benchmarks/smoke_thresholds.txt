@@ -1,0 +1,18 @@
+# Benchmark smoke thresholds for CI guardrails.
+# Format:
+# <benchmark_name> <max_ns_per_op> <max_allocs_per_op>
+#
+# Keep thresholds intentionally loose enough to avoid platform flake,
+# but tight enough to catch obvious regressions.
+
+BenchmarkExecutionArithmeticLoop 5000000 1000
+BenchmarkExecutionArrayPipeline 30000000 20000
+BenchmarkExecutionMethodDispatchLoop 8000000 6000
+BenchmarkExecutionCapabilityFindLoop 12000000 9000
+BenchmarkExecutionCapabilityWorkflowLoop 15000000 15000
+BenchmarkExecutionJSONParseLoop 3000000 5000
+BenchmarkExecutionJSONStringifyLoop 3000000 4000
+BenchmarkExecutionRegexReplaceAllLoop 4000000 4000
+BenchmarkExecutionTallyLoop 10000000 2000
+BenchmarkCallShortScript 20000 60
+BenchmarkModuleRequireCacheHit 120000 220

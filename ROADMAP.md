@@ -367,3 +367,54 @@ Goal: lock the language and embedding API for long-term support.
 - [x] Zero known P0/P1 correctness bugs.
 - [x] CI green across supported platforms and Go versions.
 - [x] Release process rehearsed and repeatable.
+
+---
+
+## v0.20.0 - Performance and Benchmarking (1.0 Push)
+
+Goal: make performance improvements measurable, repeatable, and protected against regressions.
+
+### Runtime Performance
+
+- [x] Profile evaluator hotspots and prioritize top 3 CPU paths by cumulative time.
+- [x] Reduce `Script.Call` overhead for short-running scripts (frame/env setup and teardown).
+- [x] Optimize method dispatch and member access fast paths.
+- [x] Reduce allocations in common collection transforms (`map`, `select`, `reduce`, `chunk`, `window`).
+- [x] Optimize typed argument/return validation for nested composite types.
+
+### Memory and Allocation Discipline
+
+- [x] Reduce transient allocations in stdlib JSON/Regex/String helper paths.
+- [x] Reduce temporary map/array churn in module and capability boundary code paths.
+- [x] Add per-benchmark allocation targets (`allocs/op`) for hot runtime paths.
+- [x] Add focused regression tests for high-allocation call patterns.
+
+### Benchmark Coverage
+
+- [x] Expand benchmark suite for compile, call, control-flow, and typed-runtime workloads.
+- [x] Add capability-heavy benchmarks (db/events/context adapters + contract validation).
+- [x] Add module-system benchmarks (`require`, cache hits, cache misses, cycle paths).
+- [x] Add stdlib benchmarks for JSON/Regex/Time/String/Array/Hash hot operations.
+- [x] Add representative end-to-end benchmarks using `tests/complex/*.vibe` workloads.
+
+### Benchmark Tooling and CI
+
+- [x] Add a single benchmark runner command/script with stable flags and output format.
+- [x] Persist benchmark baselines in versioned artifacts for release comparison.
+- [x] Add PR-time benchmark smoke checks with threshold-based alerts.
+- [x] Add scheduled full benchmark runs with trend reporting.
+- [x] Document benchmark interpretation and triage workflow.
+
+### Profiling and Diagnostics
+
+- [x] Add reproducible CPU profile capture workflow for compile and runtime benchmarks.
+- [x] Add memory profile capture workflow for allocation-heavy scenarios.
+- [x] Add flamegraph generation instructions and hotspot triage checklist.
+- [x] Add a short "performance playbook" for validating optimizations before merge.
+
+### v0.20.0 Definition of Done
+
+- [x] Benchmarks cover runtime, capability, module, and stdlib hot paths.
+- [x] CI reports benchmark deltas for guarded smoke benchmarks.
+- [x] Measurable improvements are achieved before the v1.0.0 release tag.
+- [x] Performance and benchmarking workflows are documented and maintainable.

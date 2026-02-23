@@ -59,8 +59,9 @@ type Execution struct {
 }
 
 type capabilityContractScope struct {
-	contracts map[string]CapabilityMethodContract
-	roots     []Value
+	contracts     map[string]CapabilityMethodContract
+	roots         []Value
+	knownBuiltins map[*Builtin]struct{}
 }
 
 type moduleContext struct {

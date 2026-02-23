@@ -349,6 +349,32 @@ func (c importingContractCapability) CapabilityContracts() map[string]Capability
 	}
 }
 
+type siblingRootForeignLeakProbeCapability struct{}
+
+func (siblingRootForeignLeakProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"publisher": NewObject(map[string]Value{
+			"touch": NewBuiltin("publisher.touch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				return NewString("ok"), nil
+			}),
+		}),
+		"peer": NewObject(map[string]Value{}),
+	}, nil
+}
+
+func (siblingRootForeignLeakProbeCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"foo.call": {
+			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
+				if len(args) != 1 || args[0].Kind() != KindInt {
+					return fmt.Errorf("provider foo.call expects int")
+				}
+				return nil
+			},
+		},
+	}
+}
+
 type argMutationContractCapability struct {
 	invokeCount *int
 }
@@ -717,6 +743,33 @@ end`)
 	}
 	if invocations != 1 {
 		t.Fatalf("expected legacy foreign call once, got %d", invocations)
+	}
+	if result.Kind() != KindString || result.String() != "legacy-foreign" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestCapabilityContractsDoNotHijackForeignBuiltinsFromSiblingRoots(t *testing.T) {
+	script := compileScriptDefault(t, `def run()
+  peer.call = foreign.call
+  publisher.touch()
+  peer.call("ok")
+end`)
+	var err error
+
+	shared := &foreignBuiltinRef{}
+	invocations := 0
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{
+			legacyForeignFooCapability{shared: shared, invokeCount: &invocations},
+			siblingRootForeignLeakProbeCapability{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if invocations != 1 {
+		t.Fatalf("expected foreign call once, got %d", invocations)
 	}
 	if result.Kind() != KindString || result.String() != "legacy-foreign" {
 		t.Fatalf("unexpected result: %#v", result)
