@@ -67,6 +67,21 @@ REPL command set:
 - `:help`, `:vars`, `:globals`, `:functions`, `:types`
 - `:last_error`, `:clear`, `:reset`, `:quit`
 
+## Installing the CLI
+
+Use `just install` to install `vibes` into your Go bin directory:
+
+```bash
+just install
+```
+
+By default this uses `$GOBIN`, or `$GOPATH/bin` when `GOBIN` is unset.
+To choose a custom destination:
+
+```bash
+just install /usr/local/bin
+```
+
 ## Benchmark Runner
 
 Use the benchmark runner script for stable local perf baselines.
