@@ -133,6 +133,7 @@ The REPL maintains a persistent environment, so variables assigned in one expres
 
 Vibescript now has a tree-sitter plugin and an official Zed extension for syntax highlighting and editor support:
 
+- https://github.com/mgomes/tree-sitter-vibescript
 - https://zed.dev/extensions/vibescript
 
 ## Examples
