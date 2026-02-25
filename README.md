@@ -129,6 +129,12 @@ The REPL maintains a persistent environment, so variables assigned in one expres
 | `ctrl+c` | Quit                   |
 | `Tab`    | Autocomplete           |
 
+## Editor Support
+
+Vibescript now has a tree-sitter plugin and an official Zed extension for syntax highlighting and editor support:
+
+- https://zed.dev/extensions/vibescript
+
 ## Examples
 
 Representative `.vibe` programs are grouped under `examples/`:
