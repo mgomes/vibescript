@@ -191,6 +191,7 @@ Long-form guides live in `docs/`:
 This repository uses [Just](https://github.com/casey/just) for common tasks:
 
 - `just test` runs the full Go test suite (`go test ./...`).
+- `just test-race` runs the full Go test suite with the race detector (`go test -race ./...`).
 - `just bench` runs the core execution benchmarks (`go test ./vibes -run '^$' -bench '^BenchmarkExecution' -benchmem`).
 - `just lint` checks formatting (`gofmt`) and runs `golangci-lint` with a generous timeout.
 - `just install` installs the `vibes` binary to `$GOBIN` (or `$GOPATH/bin` when `GOBIN` is unset); pass a custom directory with `just install /usr/local/bin`.
