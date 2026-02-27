@@ -3,6 +3,9 @@ set shell := ["bash", "-lc"]
 test:
 	go test ./...
 
+test-race:
+	go test -race ./...
+
 bench:
 	scripts/bench_runtime.sh
 
