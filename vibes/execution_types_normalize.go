@@ -273,14 +273,17 @@ func resolveEnumType(ty *TypeExpr, ctx typeContext) (*EnumDef, error) {
 }
 
 func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool) {
-	if env == nil {
-		return nil, false
+	for scope := env; scope != nil; scope = scope.parent {
+		val, ok := scope.values[name]
+		if !ok {
+			continue
+		}
+		if val.Kind() != KindEnum {
+			continue
+		}
+		return val.Enum(), true
 	}
-	val, ok := env.Get(name)
-	if !ok || val.Kind() != KindEnum {
-		return nil, false
-	}
-	return val.Enum(), true
+	return nil, false
 }
 
 func errorAsTypeMismatch(err error, target **typeMismatchError) bool {

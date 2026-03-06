@@ -173,6 +173,32 @@ end
 	}
 }
 
+func TestLookupEnumInEnvSkipsNonEnumShadowBindings(t *testing.T) {
+	enumDef, err := compileEnumDef(&EnumStmt{
+		Name: "Status",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+
+	root := newEnv(nil)
+	root.Define("Status", NewEnum(enumDef))
+
+	shadow := newEnv(root)
+	shadow.Define("Status", NewString("shadow"))
+
+	got, ok := lookupEnumInEnv(shadow, "Status")
+	if !ok {
+		t.Fatalf("expected lookup to resolve parent enum")
+	}
+	if got != enumDef {
+		t.Fatalf("expected parent enum def, got %#v", got)
+	}
+}
+
 func TestEnumModuleExportsAndTypedCalls(t *testing.T) {
 	engine := moduleTestEngine(t)
 	script := compileScriptWithEngine(t, engine, `def run()
