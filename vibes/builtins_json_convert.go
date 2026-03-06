@@ -62,6 +62,11 @@ func vibeValueToJSONValue(val Value, state *jsonStringifyState) (any, error) {
 		return val.Float(), nil
 	case KindString, KindSymbol:
 		return val.String(), nil
+	case KindEnumValue:
+		if member := val.EnumValue(); member != nil {
+			return member.Symbol, nil
+		}
+		return nil, fmt.Errorf("JSON.stringify unsupported enum value")
 	case KindArray:
 		arr := val.Array()
 		id := reflect.ValueOf(arr).Pointer()

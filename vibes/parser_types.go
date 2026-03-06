@@ -87,6 +87,9 @@ func (p *parser) parseTypeAtom() *TypeExpr {
 	kind, nullable := resolveType(p.curToken.Literal)
 	ty.Kind = kind
 	ty.Nullable = nullable
+	if ty.Kind == TypeUnknown && p.curToken.Type == tokenIdent {
+		ty.Kind = TypeEnum
+	}
 
 	if p.peekToken.Type == tokenLT {
 		if ty.Kind != TypeArray && ty.Kind != TypeHash {

@@ -23,8 +23,10 @@ func NewBlock(params []Param, body []Statement, env *Env) Value {
 	return Value{kind: KindBlock, data: &Block{Params: params, Body: body, Env: env}}
 }
 
-func NewClass(def *ClassDef) Value     { return Value{kind: KindClass, data: def} }
-func NewInstance(inst *Instance) Value { return Value{kind: KindInstance, data: inst} }
+func NewEnum(def *EnumDef) Value           { return Value{kind: KindEnum, data: def} }
+func NewEnumValue(def *EnumValueDef) Value { return Value{kind: KindEnumValue, data: def} }
+func NewClass(def *ClassDef) Value         { return Value{kind: KindClass, data: def} }
+func NewInstance(inst *Instance) Value     { return Value{kind: KindInstance, data: inst} }
 
 func newBuiltin(name string, fn BuiltinFunc, autoInvoke bool) Value {
 	return Value{kind: KindBuiltin, data: &Builtin{Name: name, Fn: fn, AutoInvoke: autoInvoke}}

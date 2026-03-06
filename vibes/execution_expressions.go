@@ -93,6 +93,16 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 			return exec.autoInvokeIfNeeded(e, member, obj)
 		}
 		return member, nil
+	case *ScopeExpr:
+		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		member, err := exec.getScopedMember(obj, e.Property, e.Pos())
+		if err != nil {
+			return NewNil(), err
+		}
+		return member, nil
 	case *IndexExpr:
 		return exec.evalIndexExpr(e, env)
 	case *IvarExpr:

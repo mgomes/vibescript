@@ -15,7 +15,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), fmt.Errorf("function %s not found", name)
 	}
 
-	rootCapacity := len(s.engine.builtins) + len(s.functions) + len(s.classes) + len(opts.Globals) + len(opts.Capabilities)*2
+	rootCapacity := len(s.engine.builtins) + len(s.functions) + len(s.classes) + len(s.enums) + len(opts.Globals) + len(opts.Capabilities)*2
 	root := newEnvWithCapacity(nil, rootCapacity)
 	for n, builtin := range s.engine.builtins {
 		root.Define(n, builtin)
@@ -33,6 +33,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	callClasses := cloneClassesForCall(s.classes, root)
 	for n, classDef := range callClasses {
 		root.Define(n, NewClass(classDef))
+	}
+	for n, enumDef := range s.enums {
+		root.Define(n, NewEnum(enumDef))
 	}
 	rebinder := newCallFunctionRebinder(s, root, callClasses)
 

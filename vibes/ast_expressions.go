@@ -101,6 +101,15 @@ type MemberExpr struct {
 func (e *MemberExpr) exprNode()     {}
 func (e *MemberExpr) Pos() Position { return e.position }
 
+type ScopeExpr struct {
+	Object   Expression
+	Property string
+	position Position
+}
+
+func (e *ScopeExpr) exprNode()     {}
+func (e *ScopeExpr) Pos() Position { return e.position }
+
 type IndexExpr struct {
 	Object   Expression
 	Index    Expression

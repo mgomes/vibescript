@@ -7,7 +7,7 @@ Even in these constrained environments, non-technical users still need a way to 
 **Key Features**
 
 - Ruby-like syntax: blocks, ranges, zero-paren defs, symbol hashes.
-- Gradual typing: optional annotations, nullable `?`, positional/keyword args, return checks.
+- Gradual typing: optional annotations, nullable `?`, enums, positional/keyword args, return checks.
 - Time & Duration helpers: literals, math, offsets (`ago`/`after`), Go-layout `format`.
 - Money type and helpers.
 - Embeddable in Go with capabilities and `require`-style modules.
@@ -175,6 +175,7 @@ Long-form guides live in `docs/`:
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.
 - `docs/typing.md` – gradual typing: annotations, nullable `?`, positional/keyword binding, and return checks.
+- `docs/enums.md` – nominal enums, `::` member access, and typed symbol coercion.
 - `docs/language_reference.md` – consolidated language syntax and semantics reference.
 - `docs/syntax_compatibility.md` – core syntax freeze baseline and compatibility guarantees.
 - `docs/examples/` – runnable scenario guides (campaign reporting, rewards, notifications, module usage, and more).

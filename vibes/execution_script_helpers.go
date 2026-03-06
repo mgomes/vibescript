@@ -36,6 +36,20 @@ func (s *Script) Classes() []*ClassDef {
 	return out
 }
 
+// Enums returns compiled enums in deterministic name order.
+func (s *Script) Enums() []*EnumDef {
+	names := make([]string, 0, len(s.enums))
+	for name := range s.enums {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]*EnumDef, 0, len(names))
+	for _, name := range names {
+		out = append(out, s.enums[name])
+	}
+	return out
+}
+
 func (s *Script) bindFunctionOwnership() {
 	for _, fn := range s.functions {
 		fn.owner = s
@@ -48,6 +62,9 @@ func (s *Script) bindFunctionOwnership() {
 		for _, fn := range classDef.ClassMethods {
 			fn.owner = s
 		}
+	}
+	for _, enumDef := range s.enums {
+		enumDef.owner = s
 	}
 }
 

@@ -7,7 +7,7 @@ Use this with focused guides in `docs/` for deeper examples.
 
 - Files are UTF-8 text, typically with `.vibe` extension.
 - `#` starts a comment that runs to end-of-line.
-- Top-level declarations are functions and classes.
+- Top-level declarations are functions, classes, and enums.
 - Expressions can be used as statements.
 
 ## Values and Literals
@@ -84,6 +84,25 @@ Inheritance is not supported.
 
 See `docs/classes.md` for class methods, `@`/`@@` variables, accessors, and
 privacy semantics.
+
+## Enums
+
+Enums declare nominal state sets:
+
+```vibe
+enum Status
+  Draft
+  Published
+end
+```
+
+Members are accessed with `::`:
+
+```vibe
+Status::Draft
+```
+
+See `docs/enums.md` for coercion, equality, and serialization behavior.
 
 ## Method Calls
 

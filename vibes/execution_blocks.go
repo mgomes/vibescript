@@ -47,9 +47,14 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 			val = NewNil()
 		}
 		if param.Type != nil {
-			if err := checkValueType(val, param.Type); err != nil {
+			normalized, err := normalizeValueForType(val, param.Type, typeContext{
+				env:      blk.Env,
+				fallback: exec.root,
+			})
+			if err != nil {
 				return NewNil(), exec.errorAt(param.Type.position, "%s", formatArgumentTypeMismatch(param.Name, err))
 			}
+			val = normalized
 		}
 		blockEnv.Define(param.Name, val)
 	}

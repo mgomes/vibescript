@@ -21,6 +21,8 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		return arrayMember(obj, property)
 	case KindString:
 		return stringMember(obj, property)
+	case KindEnumValue:
+		return exec.enumValueMember(obj, property, pos)
 	case KindClass:
 		return exec.classMember(obj, property, pos)
 	case KindInstance:

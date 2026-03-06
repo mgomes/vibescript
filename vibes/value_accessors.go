@@ -111,3 +111,17 @@ func (v Value) Block() *Block {
 	}
 	return v.data.(*Block)
 }
+
+func (v Value) Enum() *EnumDef {
+	if v.kind != KindEnum {
+		return nil
+	}
+	return v.data.(*EnumDef)
+}
+
+func (v Value) EnumValue() *EnumValueDef {
+	if v.kind != KindEnumValue {
+		return nil
+	}
+	return v.data.(*EnumValueDef)
+}

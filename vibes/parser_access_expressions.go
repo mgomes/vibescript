@@ -8,6 +8,16 @@ func (p *parser) parseMemberExpression(object Expression) Expression {
 	return &MemberExpr{Object: object, Property: p.curToken.Literal, position: object.Pos()}
 }
 
+func (p *parser) parseScopeExpression(object Expression) Expression {
+	if object == nil {
+		return nil
+	}
+	if !p.expectPeek(tokenIdent) {
+		return nil
+	}
+	return &ScopeExpr{Object: object, Property: p.curToken.Literal, position: object.Pos()}
+}
+
 func (p *parser) parseIndexExpression(object Expression) Expression {
 	pos := p.curToken.Pos
 	p.nextToken()
