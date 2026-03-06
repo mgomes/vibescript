@@ -112,7 +112,7 @@ jobs:
         run: ./scripts/check_known_issues.sh
 
       - name: Gate parser fuzz target
-        run: go test ./vibes -run '^$' -fuzz=FuzzCompileScriptDoesNotPanic -fuzztime=5s
+        run: go test ./vibes -run '^$' -fuzz=FuzzCompileScriptDoesNotPanic -fuzztime=10000x
 
       - name: Gate runtime fuzz target
-        run: go test ./vibes -run '^$' -fuzz=FuzzRuntimeEdgeCasesDoNotPanic -fuzztime=5s
+        run: go test ./vibes -run '^$' -fuzz=FuzzRuntimeEdgeCasesDoNotPanic -fuzztime=10000x
