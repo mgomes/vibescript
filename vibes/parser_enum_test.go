@@ -71,6 +71,36 @@ end`
 	}
 }
 
+func TestParserNullableEnumTypeUsesCanonicalEnumName(t *testing.T) {
+	source := `enum Status
+  Draft
+end
+
+def run(status: Status?) -> Status?
+  status
+end`
+
+	p := newParser(source)
+	program, errs := p.ParseProgram()
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	fn, ok := program.Statements[1].(*FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", program.Statements[1])
+	}
+	if len(fn.Params) != 1 || fn.Params[0].Type == nil {
+		t.Fatalf("expected typed enum param, got %#v", fn.Params)
+	}
+	if fn.Params[0].Type.Kind != TypeEnum || fn.Params[0].Type.Name != "Status" || !fn.Params[0].Type.Nullable {
+		t.Fatalf("expected nullable Status enum param, got %#v", fn.Params[0].Type)
+	}
+	if fn.ReturnTy == nil || fn.ReturnTy.Kind != TypeEnum || fn.ReturnTy.Name != "Status" || !fn.ReturnTy.Nullable {
+		t.Fatalf("expected nullable Status enum return type, got %#v", fn.ReturnTy)
+	}
+}
+
 func TestParserEnumRejectsNestedDeclarations(t *testing.T) {
 	source := `def run()
   enum Status

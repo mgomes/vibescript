@@ -89,6 +89,9 @@ func (p *parser) parseTypeAtom() *TypeExpr {
 	ty.Nullable = nullable
 	if ty.Kind == TypeUnknown && p.curToken.Type == tokenIdent {
 		ty.Kind = TypeEnum
+		if nullable {
+			ty.Name = strings.TrimSuffix(ty.Name, "?")
+		}
 	}
 
 	if p.peekToken.Type == tokenLT {

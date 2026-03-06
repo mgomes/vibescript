@@ -145,6 +145,34 @@ end`)
 	requireCallErrorContains(t, script, "bad_return", nil, CallOptions{}, "return value for bad_return expected Status, got ReviewState")
 }
 
+func TestNullableEnumTypesAcceptNilAndEnumValues(t *testing.T) {
+	script := compileScript(t, `
+enum Status
+  Draft
+  Published
+end
+
+def echo(status: Status?) -> Status?
+  status
+end
+`)
+
+	if got := callFunc(t, script, "echo", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("expected nil echo result, got %#v", got)
+	}
+
+	statusDraft := enumTestValue(t, script, "Status", "Draft")
+	got := callFunc(t, script, "echo", []Value{NewSymbol("draft")})
+	if !got.Equal(statusDraft) {
+		t.Fatalf("expected symbol arg to coerce to Status::Draft, got %#v", got)
+	}
+
+	got = callFunc(t, script, "echo", []Value{statusDraft})
+	if !got.Equal(statusDraft) {
+		t.Fatalf("expected enum arg to round-trip, got %#v", got)
+	}
+}
+
 func TestEnumModuleExportsAndTypedCalls(t *testing.T) {
 	engine := moduleTestEngine(t)
 	script := compileScriptWithEngine(t, engine, `def run()
