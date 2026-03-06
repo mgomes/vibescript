@@ -3,6 +3,7 @@ package vibes
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -257,55 +258,93 @@ func resolveEnumType(ty *TypeExpr, ctx typeContext) (*EnumDef, error) {
 	if ty.Kind != TypeEnum {
 		return nil, fmt.Errorf("unknown type %s", ty.Name)
 	}
-	if enumDef, ok := lookupEnumDef(ctx.owner, ty.Name); ok {
+	if enumDef, ok, err := lookupEnumDef(ctx.owner, ty.Name); err != nil {
+		return nil, err
+	} else if ok {
 		return enumDef, nil
 	}
-	if enumDef, ok := lookupEnumInEnv(ctx.env, ty.Name); ok {
+	if enumDef, ok, err := lookupEnumInEnv(ctx.env, ty.Name); err != nil {
+		return nil, err
+	} else if ok {
 		return enumDef, nil
 	}
 	if ctx.fallback != ctx.env {
-		if enumDef, ok := lookupEnumInEnv(ctx.fallback, ty.Name); ok {
+		if enumDef, ok, err := lookupEnumInEnv(ctx.fallback, ty.Name); err != nil {
+			return nil, err
+		} else if ok {
 			return enumDef, nil
 		}
 	}
 	return nil, fmt.Errorf("unknown type %s", ty.Name)
 }
 
-func lookupEnumDef(owner *Script, name string) (*EnumDef, bool) {
+func lookupEnumDef(owner *Script, name string) (*EnumDef, bool, error) {
 	if owner == nil || len(owner.enums) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 	if enumDef, ok := owner.enums[name]; ok {
-		return enumDef, true
+		return enumDef, true, nil
 	}
+	var match *EnumDef
+	matches := make([]string, 0, 2)
 	for enumName, enumDef := range owner.enums {
-		if strings.EqualFold(enumName, name) {
-			return enumDef, true
+		if !strings.EqualFold(enumName, name) {
+			continue
+		}
+		matches = append(matches, enumName)
+		if match == nil {
+			match = enumDef
+			continue
+		}
+		if match != enumDef {
+			return nil, false, ambiguousEnumTypeError(name, matches)
 		}
 	}
-	return nil, false
+	if match != nil {
+		return match, true, nil
+	}
+	return nil, false, nil
 }
 
-func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool) {
+func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool, error) {
 	for scope := env; scope != nil; scope = scope.parent {
-		if enumDef, ok := lookupEnumValue(scope.values, name); ok {
-			return enumDef, true
+		if enumDef, ok, err := lookupEnumValue(scope.values, name); err != nil {
+			return nil, false, err
+		} else if ok {
+			return enumDef, true, nil
 		}
 	}
-	return nil, false
+	return nil, false, nil
 }
 
-func lookupEnumValue(values map[string]Value, name string) (*EnumDef, bool) {
+func lookupEnumValue(values map[string]Value, name string) (*EnumDef, bool, error) {
 	if val, ok := values[name]; ok && val.Kind() == KindEnum {
-		return val.Enum(), true
+		return val.Enum(), true, nil
 	}
+	var match *EnumDef
+	matches := make([]string, 0, 2)
 	for key, val := range values {
 		if key == name || !strings.EqualFold(key, name) || val.Kind() != KindEnum {
 			continue
 		}
-		return val.Enum(), true
+		matches = append(matches, key)
+		if match == nil {
+			match = val.Enum()
+			continue
+		}
+		if match != val.Enum() {
+			return nil, false, ambiguousEnumTypeError(name, matches)
+		}
 	}
-	return nil, false
+	if match != nil {
+		return match, true, nil
+	}
+	return nil, false, nil
+}
+
+func ambiguousEnumTypeError(name string, matches []string) error {
+	sort.Strings(matches)
+	return fmt.Errorf("ambiguous enum type %s matches %s", name, strings.Join(matches, ", "))
 }
 
 func errorAsTypeMismatch(err error, target **typeMismatchError) bool {

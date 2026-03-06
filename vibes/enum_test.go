@@ -215,12 +215,45 @@ func TestLookupEnumInEnvSkipsNonEnumShadowBindings(t *testing.T) {
 	shadow := newEnv(root)
 	shadow.Define("Status", NewString("shadow"))
 
-	got, ok := lookupEnumInEnv(shadow, "Status")
+	got, ok, err := lookupEnumInEnv(shadow, "Status")
+	if err != nil {
+		t.Fatalf("lookup enum: %v", err)
+	}
 	if !ok {
 		t.Fatalf("expected lookup to resolve parent enum")
 	}
 	if got != enumDef {
 		t.Fatalf("expected parent enum def, got %#v", got)
+	}
+}
+
+func TestLookupEnumInEnvRejectsAmbiguousCaseInsensitiveMatches(t *testing.T) {
+	statusDef, err := compileEnumDef(&EnumStmt{
+		Name: "Status",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+	statusUpperDef, err := compileEnumDef(&EnumStmt{
+		Name: "STATUS",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+
+	env := newEnv(nil)
+	env.Define("Status", NewEnum(statusDef))
+	env.Define("STATUS", NewEnum(statusUpperDef))
+
+	_, _, err = lookupEnumInEnv(env, "status")
+	if err == nil || err.Error() != "ambiguous enum type status matches STATUS, Status" {
+		t.Fatalf("expected deterministic ambiguity error, got %v", err)
 	}
 }
 
@@ -252,6 +285,24 @@ end
 
 	owners := callFunc(t, script, "owners", []Value{NewArray([]Value{NewSymbol("draft")})})
 	compareArrays(t, owners, []Value{NewEnum(script.enums["Status"])})
+}
+
+func TestEnumTypeAnnotationsRejectAmbiguousCaseInsensitiveMatches(t *testing.T) {
+	script := compileScript(t, `
+enum Status
+  Draft
+end
+
+enum STATUS
+  Draft
+end
+
+def echo(status: status) -> status
+  status
+end
+`)
+
+	requireCallErrorContains(t, script, "echo", []Value{NewSymbol("draft")}, CallOptions{}, "ambiguous enum type status matches STATUS, Status")
 }
 
 func TestEnumModuleExportsAndTypedCalls(t *testing.T) {
