@@ -3,6 +3,7 @@ package vibes
 import (
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 type typeContext struct {
@@ -256,10 +257,8 @@ func resolveEnumType(ty *TypeExpr, ctx typeContext) (*EnumDef, error) {
 	if ty.Kind != TypeEnum {
 		return nil, fmt.Errorf("unknown type %s", ty.Name)
 	}
-	if ctx.owner != nil && ctx.owner.enums != nil {
-		if enumDef, ok := ctx.owner.enums[ty.Name]; ok {
-			return enumDef, nil
-		}
+	if enumDef, ok := lookupEnumDef(ctx.owner, ty.Name); ok {
+		return enumDef, nil
 	}
 	if enumDef, ok := lookupEnumInEnv(ctx.env, ty.Name); ok {
 		return enumDef, nil
@@ -272,13 +271,36 @@ func resolveEnumType(ty *TypeExpr, ctx typeContext) (*EnumDef, error) {
 	return nil, fmt.Errorf("unknown type %s", ty.Name)
 }
 
+func lookupEnumDef(owner *Script, name string) (*EnumDef, bool) {
+	if owner == nil || len(owner.enums) == 0 {
+		return nil, false
+	}
+	if enumDef, ok := owner.enums[name]; ok {
+		return enumDef, true
+	}
+	for enumName, enumDef := range owner.enums {
+		if strings.EqualFold(enumName, name) {
+			return enumDef, true
+		}
+	}
+	return nil, false
+}
+
 func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool) {
 	for scope := env; scope != nil; scope = scope.parent {
-		val, ok := scope.values[name]
-		if !ok {
-			continue
+		if enumDef, ok := lookupEnumValue(scope.values, name); ok {
+			return enumDef, true
 		}
-		if val.Kind() != KindEnum {
+	}
+	return nil, false
+}
+
+func lookupEnumValue(values map[string]Value, name string) (*EnumDef, bool) {
+	if val, ok := values[name]; ok && val.Kind() == KindEnum {
+		return val.Enum(), true
+	}
+	for key, val := range values {
+		if key == name || !strings.EqualFold(key, name) || val.Kind() != KindEnum {
 			continue
 		}
 		return val.Enum(), true

@@ -224,6 +224,36 @@ func TestLookupEnumInEnvSkipsNonEnumShadowBindings(t *testing.T) {
 	}
 }
 
+func TestEnumTypeAnnotationsResolveCaseInsensitive(t *testing.T) {
+	script := compileScript(t, `
+enum Status
+  Draft
+  Published
+end
+
+def echo(status: status?) -> status?
+  status
+end
+
+def owners(values)
+  values.map do |status: status|
+    status.enum
+  end
+end
+`)
+
+	statusDraft := enumTestValue(t, script, "Status", "Draft")
+	if got := callFunc(t, script, "echo", []Value{NewSymbol("draft")}); !got.Equal(statusDraft) {
+		t.Fatalf("expected lowercase type annotation to coerce Status::Draft, got %#v", got)
+	}
+	if got := callFunc(t, script, "echo", []Value{NewNil()}); got.Kind() != KindNil {
+		t.Fatalf("expected lowercase nullable enum type to accept nil, got %#v", got)
+	}
+
+	owners := callFunc(t, script, "owners", []Value{NewArray([]Value{NewSymbol("draft")})})
+	compareArrays(t, owners, []Value{NewEnum(script.enums["Status"])})
+}
+
 func TestEnumModuleExportsAndTypedCalls(t *testing.T) {
 	engine := moduleTestEngine(t)
 	script := compileScriptWithEngine(t, engine, `def run()
