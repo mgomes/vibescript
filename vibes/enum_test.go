@@ -174,6 +174,30 @@ end
 	}
 }
 
+func TestEnumMemberNamedEnumSupportsScopedAndReflectiveAccess(t *testing.T) {
+	script := compileScript(t, `
+enum Status
+  enum
+end
+
+def member() -> Status
+  Status::enum
+end
+
+def owner()
+  Status::enum.enum
+end
+`)
+
+	member := enumTestValue(t, script, "Status", "enum")
+	if got := callFunc(t, script, "member", nil); !got.Equal(member) {
+		t.Fatalf("expected Status::enum, got %#v", got)
+	}
+	if got := callFunc(t, script, "owner", nil); !got.Equal(NewEnum(script.enums["Status"])) {
+		t.Fatalf("expected enum reflection to return owner enum, got %#v", got)
+	}
+}
+
 func TestLookupEnumInEnvSkipsNonEnumShadowBindings(t *testing.T) {
 	enumDef, err := compileEnumDef(&EnumStmt{
 		Name: "Status",

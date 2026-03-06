@@ -12,7 +12,9 @@ func (p *parser) parseScopeExpression(object Expression) Expression {
 	if object == nil {
 		return nil
 	}
-	if !p.expectPeek(tokenIdent) {
+	p.nextToken()
+	if p.curToken.Type != tokenIdent && p.curToken.Type != tokenEnum {
+		p.errorExpected(p.curToken, "identifier")
 		return nil
 	}
 	return &ScopeExpr{Object: object, Property: p.curToken.Literal, position: object.Pos()}

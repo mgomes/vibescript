@@ -22,7 +22,7 @@ func (p *parser) parseEnumStatement() Statement {
 	memberNames := make(map[string]struct{})
 
 	for p.curToken.Type != tokenEnd && p.curToken.Type != tokenEOF {
-		if p.curToken.Type != tokenIdent {
+		if p.curToken.Type != tokenIdent && p.curToken.Type != tokenEnum {
 			p.errorExpected(p.curToken, "enum member name")
 			return nil
 		}
