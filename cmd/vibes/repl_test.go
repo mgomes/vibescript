@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mgomes/vibescript/vibes"
 )
 
@@ -15,7 +15,7 @@ func TestUpdateQuitCommandReturnsQuit(t *testing.T) {
 	}
 	m.textInput.SetValue(":quit")
 
-	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	rm, ok := model.(replModel)
 	if !ok {
 		t.Fatalf("unexpected model type %T", model)
@@ -44,7 +44,7 @@ func TestUpdateNonQuitCommandDoesNotReturnCmd(t *testing.T) {
 	}
 	m.textInput.SetValue(":help")
 
-	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	rm, ok := model.(replModel)
 	if !ok {
 		t.Fatalf("unexpected model type %T", model)

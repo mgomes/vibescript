@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mgomes/vibescript/vibes"
 )
 
@@ -204,9 +204,12 @@ func newREPLModel() (replModel, error) {
 	ti.Placeholder = "type an expression..."
 	ti.Focus()
 	ti.CharLimit = 500
-	ti.Width = 60
-	ti.PromptStyle = promptStyle
+	ti.SetWidth(60)
 	ti.Prompt = "vibes> "
+	styles := textinput.DefaultDarkStyles()
+	styles.Focused.Prompt = promptStyle
+	styles.Blurred.Prompt = promptStyle
+	ti.SetStyles(styles)
 
 	engine, err := vibes.NewEngine(vibes.Config{})
 	if err != nil {
@@ -226,7 +229,7 @@ func newREPLModel() (replModel, error) {
 }
 
 func (m replModel) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, tea.EnterAltScreen)
+	return textinput.Blink
 }
 
 func (m replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -236,11 +239,11 @@ func (m replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.textInput.Width = msg.Width - 10
+		m.textInput.SetWidth(max(msg.Width-10, 0))
 		m.initialized = true
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, keys.CtrlC), key.Matches(msg, keys.CtrlD):
 			m.quitting = true
@@ -546,13 +549,13 @@ func typesSnapshot(env map[string]vibes.Value) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m replModel) View() string {
+func (m replModel) View() tea.View {
 	if !m.initialized {
-		return "Loading..."
+		return altScreenView("Loading...")
 	}
 
 	if m.quitting {
-		return mutedStyle.Render("Goodbye!\n")
+		return altScreenView(mutedStyle.Render("Goodbye!\n"))
 	}
 
 	var b strings.Builder
@@ -607,7 +610,13 @@ func (m replModel) View() string {
 		helpKeyStyle.Render("ctrl+c") + helpDescStyle.Render(" quit")
 	b.WriteString(footer)
 
-	return b.String()
+	return altScreenView(b.String())
+}
+
+func altScreenView(content string) tea.View {
+	view := tea.NewView(content)
+	view.AltScreen = true
+	return view
 }
 
 func renderVarsPanel(env map[string]vibes.Value, width int) string {
@@ -662,7 +671,7 @@ func runREPL() error {
 	if err != nil {
 		return err
 	}
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	_, err = p.Run()
 	return err
 }
