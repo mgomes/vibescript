@@ -126,6 +126,7 @@ end`)
 
 	requireCallErrorContains(t, script, "identity", []Value{reviewDraft}, CallOptions{}, "argument status expected Status, got ReviewState")
 	requireCallErrorContains(t, script, "identity", []Value{NewSymbol("missing")}, CallOptions{}, "argument status expected Status, got symbol")
+	requireCallErrorContains(t, script, "identity", []Value{NewEnum(script.enums["Status"])}, CallOptions{}, "argument status expected Status, got enum Status")
 }
 
 func TestEnumReturnTypeRejectsWrongEnum(t *testing.T) {
