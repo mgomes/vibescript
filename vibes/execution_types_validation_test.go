@@ -24,20 +24,18 @@ func TestTypeAllowsStringHashKeyDefersUnknownUnions(t *testing.T) {
 }
 
 func TestTypeAllowsStringHashKeyDefersEnumUnions(t *testing.T) {
-	keyType := &TypeExpr{
-		Kind: TypeUnion,
-		Union: []*TypeExpr{
-			{Name: "stauts", Kind: TypeEnum},
-			{Name: "string", Kind: TypeString},
-		},
-	}
-
-	decided, matches := typeAllowsStringHashKey(keyType)
-	if decided {
-		t.Fatalf("expected enum key union to defer to full matcher")
-	}
-	if matches {
-		t.Fatalf("unexpected string-key fast-path match for enum key union")
+	for _, order := range [][]*TypeExpr{
+		{{Name: "stauts", Kind: TypeEnum}, {Name: "string", Kind: TypeString}},
+		{{Name: "string", Kind: TypeString}, {Name: "stauts", Kind: TypeEnum}},
+	} {
+		keyType := &TypeExpr{Kind: TypeUnion, Union: order}
+		decided, matches := typeAllowsStringHashKey(keyType)
+		if decided {
+			t.Fatalf("expected enum key union to defer to full matcher (order: %v)", order)
+		}
+		if matches {
+			t.Fatalf("unexpected string-key fast-path match for enum key union (order: %v)", order)
+		}
 	}
 }
 

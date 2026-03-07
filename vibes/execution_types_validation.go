@@ -208,21 +208,17 @@ func typeAllowsStringHashKey(ty *TypeExpr) (bool, bool) {
 	case TypeAny, TypeString:
 		return true, true
 	case TypeUnion:
-		allDecided := true
+		anyMatches := false
 		for _, option := range ty.Union {
 			decided, matches := typeAllowsStringHashKey(option)
 			if !decided {
-				allDecided = false
-				break
+				return false, false
 			}
 			if matches {
-				return true, true
+				anyMatches = true
 			}
 		}
-		if allDecided {
-			return true, false
-		}
-		return false, false
+		return true, anyMatches
 	default:
 		if ty.Nullable {
 			clone := *ty
