@@ -4,8 +4,9 @@ import "fmt"
 
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
 	blockValue := NewBlock(block.Params, block.Body, env)
+	blk := blockValue.Block()
+	blk.owner = exec.script
 	if ctx := exec.currentModuleContext(); ctx != nil {
-		blk := blockValue.Block()
 		blk.moduleKey = ctx.key
 		blk.modulePath = ctx.path
 		blk.moduleRoot = ctx.root
@@ -48,6 +49,7 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		}
 		if param.Type != nil {
 			normalized, err := normalizeValueForType(val, param.Type, typeContext{
+				owner:    blk.owner,
 				env:      blk.Env,
 				fallback: exec.root,
 			})
