@@ -287,6 +287,25 @@ func TestProgramFixtures(t *testing.T) {
 			}),
 		},
 		{
+			name:     "enums_fixture",
+			file:     "enums_fixture.vibe",
+			function: "run",
+			want: hashVal(map[string]Value{
+				"member_name":    strVal("Draft"),
+				"published_name": strVal("Published"),
+				"names":          arrayVal(strVal("Draft"), strVal("Published")),
+				"facts": hashVal(map[string]Value{
+					"same":            boolVal(true),
+					"symbol_same":     boolVal(false),
+					"cross_enum_same": boolVal(false),
+					"name":            strVal("Draft"),
+					"symbol":          symbolVal("draft"),
+					"render":          strVal("status=draft"),
+					"payload":         strVal(`{"status":"draft"}`),
+				}),
+			}),
+		},
+		{
 			name:     "collections_fixture",
 			file:     "collections_fixture.vibe",
 			function: "run",
@@ -404,6 +423,37 @@ func TestProgramFixtures(t *testing.T) {
 			assertValueEqual(t, result, tc.want)
 		})
 	}
+}
+
+func TestEnumFixtureTypedCalls(t *testing.T) {
+	script := compileTestProgram(t, "enums_fixture.vibe")
+
+	statusDraft := enumTestValue(t, script, "Status", "Draft")
+	statusPublished := enumTestValue(t, script, "Status", "Published")
+
+	if got := callFunc(t, script, "member", nil); !got.Equal(statusDraft) {
+		t.Fatalf("expected member to return Status::Draft, got %#v", got)
+	}
+
+	if got := callFunc(t, script, "publish", []Value{NewSymbol("published")}); !got.Equal(statusPublished) {
+		t.Fatalf("expected symbol arg to coerce to Status::Published, got %#v", got)
+	}
+
+	names := callFunc(t, script, "block_names", []Value{
+		arrayVal(NewSymbol("draft"), statusPublished),
+	})
+	compareArrays(t, names, []Value{NewString("Draft"), NewString("Published")})
+
+	facts := callFunc(t, script, "facts", nil)
+	assertValueEqual(t, facts, hashVal(map[string]Value{
+		"same":            boolVal(true),
+		"symbol_same":     boolVal(false),
+		"cross_enum_same": boolVal(false),
+		"name":            strVal("Draft"),
+		"symbol":          symbolVal("draft"),
+		"render":          strVal("status=draft"),
+		"payload":         strVal(`{"status":"draft"}`),
+	}))
 }
 
 func TestBlockErrorCases(t *testing.T) {

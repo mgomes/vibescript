@@ -143,6 +143,7 @@ Representative `.vibe` programs are grouped under `examples/`:
 - `examples/basics/` – literals, arithmetic, and simple function composition.
 - `examples/collections/` – array, hash, and symbol usage including mutation and lookups.
 - `examples/control_flow/` – conditionals and recursion examples.
+- `examples/enums/` – nominal enum values, typed coercion, and serialization.
 - `examples/strings/` – string normalization, predicates, and splitting helpers.
 - `examples/blocks/` – block-friendly transformations (map/select/reduce) over collections.
 - `examples/hashes/` – symbol-keyed hash manipulation, merging, and reporting helpers.
