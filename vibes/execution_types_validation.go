@@ -200,9 +200,10 @@ func typeAllowsStringHashKey(ty *TypeExpr) (bool, bool) {
 	}
 
 	switch ty.Kind {
-	case TypeUnknown:
-		// Unknown key types must flow through full matching so callers preserve
-		// unknown-type errors instead of silently treating them as mismatches.
+	case TypeUnknown, TypeEnum:
+		// Unknown and enum key types must flow through full matching so callers
+		// preserve unknown-type/resolution errors instead of silently treating
+		// them as mismatches.
 		return false, false
 	case TypeAny, TypeString:
 		return true, true
