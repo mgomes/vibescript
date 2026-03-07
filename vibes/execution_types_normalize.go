@@ -7,16 +7,23 @@ import (
 	"strings"
 )
 
+const maxNormalizeDepth = 64
+
 type typeContext struct {
 	owner    *Script
 	env      *Env
 	fallback *Env
+	depth    int
 }
 
 func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
 	if ty == nil {
 		return val, nil
 	}
+	if ctx.depth >= maxNormalizeDepth {
+		return NewNil(), fmt.Errorf("type normalization exceeded maximum depth")
+	}
+	ctx.depth++
 	if ty.Nullable && val.Kind() == KindNil {
 		return val, nil
 	}
