@@ -163,9 +163,10 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	ctx := moduleContext{}
 	if fn.owner != nil {
 		ctx = moduleContext{
-			key:  fn.owner.moduleKey,
-			path: fn.owner.modulePath,
-			root: fn.owner.moduleRoot,
+			key:    fn.owner.moduleKey,
+			path:   fn.owner.modulePath,
+			root:   fn.owner.moduleRoot,
+			script: fn.owner,
 		}
 	}
 	exec.pushModuleContext(ctx)

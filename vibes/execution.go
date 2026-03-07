@@ -66,9 +66,10 @@ type capabilityContractScope struct {
 }
 
 type moduleContext struct {
-	key  string
-	path string
-	root string
+	key    string
+	path   string
+	root   string
+	script *Script
 }
 
 type callFrame struct {

@@ -5,7 +5,11 @@ import "fmt"
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
 	blockValue := NewBlock(block.Params, block.Body, env)
 	blk := blockValue.Block()
-	blk.owner = exec.script
+	if ctx := exec.currentModuleContext(); ctx != nil && ctx.script != nil {
+		blk.owner = ctx.script
+	} else {
+		blk.owner = exec.script
+	}
 	if ctx := exec.currentModuleContext(); ctx != nil {
 		blk.moduleKey = ctx.key
 		blk.modulePath = ctx.path
@@ -33,9 +37,10 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	}
 	blk := block.Block()
 	exec.pushModuleContext(moduleContext{
-		key:  blk.moduleKey,
-		path: blk.modulePath,
-		root: blk.moduleRoot,
+		key:    blk.moduleKey,
+		path:   blk.modulePath,
+		root:   blk.moduleRoot,
+		script: blk.owner,
 	})
 	defer exec.popModuleContext()
 
