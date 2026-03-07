@@ -87,6 +87,12 @@ func (p *parser) parseTypeAtom() *TypeExpr {
 	kind, nullable := resolveType(p.curToken.Literal)
 	ty.Kind = kind
 	ty.Nullable = nullable
+	if ty.Kind == TypeUnknown && p.curToken.Type == tokenIdent {
+		ty.Kind = TypeEnum
+		if nullable {
+			ty.Name = strings.TrimSuffix(ty.Name, "?")
+		}
+	}
 
 	if p.peekToken.Type == tokenLT {
 		if ty.Kind != TypeArray && ty.Kind != TypeHash {
@@ -191,7 +197,7 @@ func (p *parser) parseTypeShape() *TypeExpr {
 
 func (p *parser) parseTypeShapeFieldName() (string, bool) {
 	switch p.curToken.Type {
-	case tokenIdent, tokenString, tokenSymbol:
+	case tokenIdent, tokenString, tokenSymbol, tokenEnum:
 		return p.curToken.Literal, true
 	default:
 		p.errorExpected(p.curToken, "shape field name")

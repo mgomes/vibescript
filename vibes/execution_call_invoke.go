@@ -10,9 +10,15 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 		return NewNil(), err
 	}
 	if fn.ReturnTy != nil {
-		if err := checkValueType(val, fn.ReturnTy); err != nil {
+		normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
+			owner:    fn.owner,
+			env:      fn.Env,
+			fallback: exec.root,
+		})
+		if err != nil {
 			return NewNil(), exec.errorAt(fn.Pos, "%s", formatReturnTypeMismatch(fn.Name, err))
 		}
+		val = normalized
 	}
 	if err := exec.checkMemoryWith(val); err != nil {
 		return NewNil(), err

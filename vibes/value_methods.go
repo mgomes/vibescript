@@ -40,6 +40,10 @@ func (k ValueKind) String() string {
 		return "range"
 	case KindBlock:
 		return "block"
+	case KindEnum:
+		return "enum"
+	case KindEnumValue:
+		return "enum"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
@@ -88,6 +92,12 @@ func (v Value) String() string {
 	case KindRange:
 		r := v.data.(Range)
 		return fmt.Sprintf("%d..%d", r.Start, r.End)
+	case KindEnum:
+		enum := v.data.(*EnumDef)
+		return fmt.Sprintf("<Enum %s>", enum.Name)
+	case KindEnumValue:
+		member := v.data.(*EnumValueDef)
+		return fmt.Sprintf("%s::%s", member.Enum.Name, member.Name)
 	case KindClass:
 		cl := v.data.(*ClassDef)
 		return fmt.Sprintf("<Class %s>", cl.Name)
@@ -115,7 +125,7 @@ func (v Value) Truthy() bool {
 		return len(v.data.([]Value)) > 0
 	case KindHash:
 		return len(v.data.(map[string]Value)) > 0
-	case KindClass, KindInstance:
+	case KindEnum, KindEnumValue, KindClass, KindInstance:
 		return true
 	default:
 		return true
@@ -145,6 +155,10 @@ func (v Value) Equal(other Value) bool {
 		return v.data.(time.Time).Equal(other.data.(time.Time))
 	case KindRange:
 		return v.data.(Range) == other.data.(Range)
+	case KindEnum:
+		return v.data.(*EnumDef) == other.data.(*EnumDef)
+	case KindEnumValue:
+		return v.data.(*EnumValueDef) == other.data.(*EnumValueDef)
 	case KindClass:
 		return v.data.(*ClassDef) == other.data.(*ClassDef)
 	case KindInstance:

@@ -57,6 +57,8 @@ func tokenLabel(tt TokenType) string {
 		return "'def'"
 	case tokenClass:
 		return "'class'"
+	case tokenEnum:
+		return "'enum'"
 	case tokenExport:
 		return "'export'"
 	case tokenSelf:

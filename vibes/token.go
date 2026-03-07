@@ -31,6 +31,7 @@ const (
 
 	tokenComma    TokenType = ","
 	tokenColon    TokenType = ":"
+	tokenScope    TokenType = "::"
 	tokenDot      TokenType = "."
 	tokenRange    TokenType = ".."
 	tokenLParen   TokenType = "("
@@ -46,6 +47,7 @@ const (
 
 	tokenDef      TokenType = "DEF"
 	tokenClass    TokenType = "CLASS"
+	tokenEnum     TokenType = "ENUM"
 	tokenExport   TokenType = "EXPORT"
 	tokenSelf     TokenType = "SELF"
 	tokenPrivate  TokenType = "PRIVATE"

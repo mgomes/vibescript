@@ -123,6 +123,13 @@ func (l *lexer) NextToken() Token {
 		tok = l.makeToken(tokenComma, ",")
 		l.readRune()
 	case ':':
+		if l.peekRune() == ':' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(tokenScope, string(first)+string(l.ch))
+			l.readRune()
+			return tok
+		}
 		if isIdentifierRune(l.peekRune()) {
 			l.readRune()
 			start := l.currentOffset()
@@ -395,6 +402,8 @@ func lookupIdent(ident string) TokenType {
 		return tokenDef
 	case "class":
 		return tokenClass
+	case "enum":
+		return tokenEnum
 	case "export":
 		return tokenExport
 	case "self":

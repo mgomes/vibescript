@@ -128,3 +128,17 @@ type ClassStmt struct {
 
 func (s *ClassStmt) stmtNode()     {}
 func (s *ClassStmt) Pos() Position { return s.position }
+
+type EnumMemberStmt struct {
+	Name     string
+	position Position
+}
+
+type EnumStmt struct {
+	Name     string
+	Members  []EnumMemberStmt
+	position Position
+}
+
+func (s *EnumStmt) stmtNode()     {}
+func (s *EnumStmt) Pos() Position { return s.position }

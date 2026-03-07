@@ -19,6 +19,8 @@ const (
 	KindObject
 	KindRange
 	KindBlock
+	KindEnum
+	KindEnumValue
 	KindClass
 	KindInstance
 )

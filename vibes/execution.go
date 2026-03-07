@@ -20,6 +20,7 @@ type Script struct {
 	engine     *Engine
 	functions  map[string]*ScriptFunction
 	classes    map[string]*ClassDef
+	enums      map[string]*EnumDef
 	source     string
 	moduleKey  string
 	modulePath string

@@ -10,6 +10,7 @@ Type names are case-insensitive:
 - `string`, `bool`, `nil`
 - `duration`, `time`, `money`
 - `array`, `hash`/`object`, `function`
+- top-level enum names such as `Status`
 - `any` (no checks)
 
 Parametric containers:
@@ -209,6 +210,8 @@ Typed checks do not perform implicit coercion.
 
 - `int` does not accept `"1"`.
 - `string` does not accept `1`.
+- Enum-typed boundaries may coerce matching symbols such as `:draft` into
+  their enum member value.
 
 Convert explicitly before calling typed boundaries (for example `.to_i`, `.to_f`, `.string`, parsers/builders for time and duration).
 
