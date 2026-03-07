@@ -7,6 +7,9 @@ import (
 )
 
 func compileEnumDef(stmt *EnumStmt) (*EnumDef, error) {
+	if strings.HasSuffix(stmt.Name, "?") {
+		return nil, fmt.Errorf("enum name %s must not end with '?'", stmt.Name)
+	}
 	if typ, _ := resolveType(stmt.Name); typ != TypeUnknown {
 		return nil, fmt.Errorf("enum name %s conflicts with built-in type", stmt.Name)
 	}

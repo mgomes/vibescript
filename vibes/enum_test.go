@@ -336,6 +336,16 @@ end`)
 	})
 }
 
+func TestCompileEnumRejectsQuestionMarkSuffix(t *testing.T) {
+	_, err := compileEnumDef(&EnumStmt{
+		Name:    "Status?",
+		Members: []EnumMemberStmt{{Name: "Draft"}},
+	})
+	if err == nil {
+		t.Fatalf("expected error for enum named Status?, got nil")
+	}
+}
+
 func TestCompileEnumRejectsBuiltInTypeNames(t *testing.T) {
 	builtins := []string{"String", "Int", "Float", "Bool", "Array", "Hash", "Any", "Nil", "Duration", "Time", "Money", "Number", "Function", "Object"}
 	for _, name := range builtins {
