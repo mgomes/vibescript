@@ -197,7 +197,7 @@ func (p *parser) parseTypeShape() *TypeExpr {
 
 func (p *parser) parseTypeShapeFieldName() (string, bool) {
 	switch p.curToken.Type {
-	case tokenIdent, tokenString, tokenSymbol:
+	case tokenIdent, tokenString, tokenSymbol, tokenEnum:
 		return p.curToken.Literal, true
 	default:
 		p.errorExpected(p.curToken, "shape field name")

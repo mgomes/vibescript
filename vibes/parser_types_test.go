@@ -82,6 +82,39 @@ end`
 	}
 }
 
+func TestParserTypeShapeAllowsEnumFieldName(t *testing.T) {
+	source := `def run(payload: { enum: string, nested: { enum: int } })
+  payload
+end`
+
+	p := newParser(source)
+	program, errs := p.ParseProgram()
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+	if len(program.Statements) != 1 {
+		t.Fatalf("expected 1 statement, got %d", len(program.Statements))
+	}
+	fn, ok := program.Statements[0].(*FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", program.Statements[0])
+	}
+	payloadType := fn.Params[0].Type
+	if payloadType == nil || payloadType.Kind != TypeShape {
+		t.Fatalf("expected shape payload type, got %#v", payloadType)
+	}
+	if field, ok := payloadType.Shape["enum"]; !ok || field.Kind != TypeString {
+		t.Fatalf("expected enum string field, got %#v", field)
+	}
+	nestedType, ok := payloadType.Shape["nested"]
+	if !ok || nestedType.Kind != TypeShape {
+		t.Fatalf("expected nested shape field, got %#v", nestedType)
+	}
+	if field, ok := nestedType.Shape["enum"]; !ok || field.Kind != TypeInt {
+		t.Fatalf("expected nested enum int field, got %#v", field)
+	}
+}
+
 func TestParserTypeSyntaxTypedBlockParameters(t *testing.T) {
 	source := `def run(values)
   values.map do |value: int | string, label: string?|
