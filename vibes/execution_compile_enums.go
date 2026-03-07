@@ -7,6 +7,9 @@ import (
 )
 
 func compileEnumDef(stmt *EnumStmt) (*EnumDef, error) {
+	if typ, _ := resolveType(stmt.Name); typ != TypeUnknown {
+		return nil, fmt.Errorf("enum name %s conflicts with built-in type", stmt.Name)
+	}
 	enumDef := &EnumDef{
 		Name:         stmt.Name,
 		Members:      make(map[string]*EnumValueDef, len(stmt.Members)),

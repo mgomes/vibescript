@@ -336,6 +336,19 @@ end`)
 	})
 }
 
+func TestCompileEnumRejectsBuiltInTypeNames(t *testing.T) {
+	builtins := []string{"String", "Int", "Float", "Bool", "Array", "Hash", "Any", "Nil", "Duration", "Time", "Money", "Number", "Function", "Object"}
+	for _, name := range builtins {
+		_, err := compileEnumDef(&EnumStmt{
+			Name:    name,
+			Members: []EnumMemberStmt{{Name: "A"}},
+		})
+		if err == nil {
+			t.Errorf("expected error for enum named %s, got nil", name)
+		}
+	}
+}
+
 func enumTestValue(t *testing.T, script *Script, enumName string, member string) Value {
 	t.Helper()
 	enumDef, ok := script.enums[enumName]
