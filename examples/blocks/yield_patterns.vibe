@@ -22,7 +22,7 @@ end
 
 def benchmark
   start = Time.now
-  result = yield
+  result = yield()
   elapsed = Time.now - start
   { result: result, elapsed: elapsed }
 end
