@@ -454,3 +454,32 @@ Goal: add first-class nominal enums and harden the typed runtime around enum res
 - [x] Enum syntax and typed-runtime behavior are documented and exercised by runnable examples and tests.
 - [x] Enum resolution behaves correctly across modules, blocks, shadowed scopes, and typed normalization paths.
 - [x] Tooling and release automation changes are documented and stable for the next release cycle.
+
+---
+
+## v0.26.2 - Rosetta Port Compatibility Patch (completed 2026-03-08)
+
+Goal: remove a handful of parser and runtime edge cases that were blocking direct ports of Ruby-flavored RosettaCode examples.
+
+### Parsing and Control Flow
+
+- [x] Stop `if`, `elsif`, `while`, `until`, `for`, `return`, and `raise` from accidentally consuming next-line literals and indexing expressions.
+- [x] Preserve explicit multiline continuations in line-limited headers for chained calls and operators.
+- [x] Support bare `return` in line-terminated statement form.
+
+### Runtime Semantics
+
+- [x] Make `&&` and `||` evaluate lazily so guard expressions short-circuit correctly.
+- [x] Align signed `int / int` and `int % int` behavior with floor-style Ruby semantics.
+- [x] Add `array.length`, `array.empty?`, and `array.fetch` for lower-friction Ruby ports.
+- [x] Reject fractional numeric indices in `array.fetch` instead of truncating silently.
+
+### Coverage and Release Confidence
+
+- [x] Add regression tests for multiline control-flow headers, guard short-circuiting, signed integer arithmetic, and array helper behavior.
+- [x] Keep integration expectations aligned with the updated integer arithmetic semantics.
+
+### v0.26.2 Definition of Done
+
+- [x] Rosetta-style ports no longer fail on newline-sensitive control-flow parsing, eager boolean guards, or missing array aliases.
+- [x] Signed integer arithmetic and `array.fetch` behavior are covered by targeted regressions and the full `go test ./vibes` suite.
