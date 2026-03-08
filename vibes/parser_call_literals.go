@@ -65,7 +65,7 @@ func (p *parser) parseCallArgument(args *[]Expression, kwargs *[]KeywordArg) {
 func isLabelNameToken(tt TokenType) bool {
 	switch tt {
 	case tokenIdent,
-		tokenDef, tokenClass, tokenSelf, tokenPrivate, tokenProperty, tokenGetter, tokenSetter,
+		tokenDef, tokenClass, tokenEnum, tokenSelf, tokenPrivate, tokenProperty, tokenGetter, tokenSetter,
 		tokenEnd, tokenReturn, tokenYield, tokenDo, tokenFor, tokenWhile, tokenUntil,
 		tokenBreak, tokenNext, tokenIn, tokenIf, tokenCase, tokenWhen, tokenElsif, tokenElse,
 		tokenTrue, tokenFalse, tokenNil:

@@ -19,6 +19,8 @@ const (
 	KindObject
 	KindRange
 	KindBlock
+	KindEnum
+	KindEnumValue
 	KindClass
 	KindInstance
 )
@@ -45,6 +47,7 @@ type Block struct {
 	Params     []Param
 	Body       []Statement
 	Env        *Env
+	owner      *Script
 	moduleKey  string
 	modulePath string
 	moduleRoot string

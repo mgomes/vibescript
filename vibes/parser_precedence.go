@@ -40,5 +40,6 @@ var precedences = map[TokenType]int{
 	tokenPercent:  precProduct,
 	tokenLParen:   precCall,
 	tokenDot:      precCall,
+	tokenScope:    precCall,
 	tokenLBracket: precCall,
 }

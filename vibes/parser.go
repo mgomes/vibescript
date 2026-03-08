@@ -63,6 +63,7 @@ func newParser(input string) *parser {
 	p.infixFns[tokenOr] = p.parseInfixExpression
 	p.infixFns[tokenLParen] = p.parseCallExpression
 	p.infixFns[tokenDot] = p.parseMemberExpression
+	p.infixFns[tokenScope] = p.parseScopeExpression
 	p.infixFns[tokenLBracket] = p.parseIndexExpression
 
 	p.nextToken()

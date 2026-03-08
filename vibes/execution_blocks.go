@@ -4,8 +4,13 @@ import "fmt"
 
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
 	blockValue := NewBlock(block.Params, block.Body, env)
+	blk := blockValue.Block()
+	if ctx := exec.currentModuleContext(); ctx != nil && ctx.script != nil {
+		blk.owner = ctx.script
+	} else {
+		blk.owner = exec.script
+	}
 	if ctx := exec.currentModuleContext(); ctx != nil {
-		blk := blockValue.Block()
 		blk.moduleKey = ctx.key
 		blk.modulePath = ctx.path
 		blk.moduleRoot = ctx.root
@@ -32,9 +37,10 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	}
 	blk := block.Block()
 	exec.pushModuleContext(moduleContext{
-		key:  blk.moduleKey,
-		path: blk.modulePath,
-		root: blk.moduleRoot,
+		key:    blk.moduleKey,
+		path:   blk.modulePath,
+		root:   blk.moduleRoot,
+		script: blk.owner,
 	})
 	defer exec.popModuleContext()
 
@@ -47,9 +53,15 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 			val = NewNil()
 		}
 		if param.Type != nil {
-			if err := checkValueType(val, param.Type); err != nil {
+			normalized, err := normalizeValueForType(val, param.Type, typeContext{
+				owner:    blk.owner,
+				env:      blk.Env,
+				fallback: exec.root,
+			})
+			if err != nil {
 				return NewNil(), exec.errorAt(param.Type.position, "%s", formatArgumentTypeMismatch(param.Name, err))
 			}
+			val = normalized
 		}
 		blockEnv.Define(param.Name, val)
 	}

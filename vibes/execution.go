@@ -20,6 +20,7 @@ type Script struct {
 	engine     *Engine
 	functions  map[string]*ScriptFunction
 	classes    map[string]*ClassDef
+	enums      map[string]*EnumDef
 	source     string
 	moduleKey  string
 	modulePath string
@@ -65,9 +66,10 @@ type capabilityContractScope struct {
 }
 
 type moduleContext struct {
-	key  string
-	path string
-	root string
+	key    string
+	path   string
+	root   string
+	script *Script
 }
 
 type callFrame struct {

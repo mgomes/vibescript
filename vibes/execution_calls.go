@@ -163,9 +163,10 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	ctx := moduleContext{}
 	if fn.owner != nil {
 		ctx = moduleContext{
-			key:  fn.owner.moduleKey,
-			path: fn.owner.modulePath,
-			root: fn.owner.moduleRoot,
+			key:    fn.owner.moduleKey,
+			path:   fn.owner.modulePath,
+			root:   fn.owner.moduleRoot,
+			script: fn.owner,
 		}
 	}
 	exec.pushModuleContext(ctx)
@@ -178,9 +179,15 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 		return NewNil(), err
 	}
 	if fn.ReturnTy != nil {
-		if err := checkValueType(val, fn.ReturnTy); err != nil {
+		normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
+			owner:    fn.owner,
+			env:      fn.Env,
+			fallback: exec.root,
+		})
+		if err != nil {
 			return NewNil(), exec.errorAt(pos, "%s", formatReturnTypeMismatch(fn.Name, err))
 		}
+		val = normalized
 	}
 	if returned {
 		return val, nil

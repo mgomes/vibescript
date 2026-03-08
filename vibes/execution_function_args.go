@@ -28,9 +28,15 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 		}
 
 		if param.Type != nil {
-			if err := checkValueType(val, param.Type); err != nil {
+			normalized, err := normalizeValueForType(val, param.Type, typeContext{
+				owner:    fn.owner,
+				env:      fn.Env,
+				fallback: exec.root,
+			})
+			if err != nil {
 				return exec.errorAt(pos, "%s", formatArgumentTypeMismatch(param.Name, err))
 			}
+			val = normalized
 		}
 		env.Define(param.Name, val)
 		if param.IsIvar {

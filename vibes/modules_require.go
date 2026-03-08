@@ -70,7 +70,12 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	}()
 
 	moduleEnv := newEnv(exec.root)
-	exports := make(map[string]Value, len(entry.script.functions))
+	exports := make(map[string]Value, len(entry.script.functions)+len(entry.script.enums))
+	for name, enumDef := range entry.script.enums {
+		enumVal := NewEnum(enumDef)
+		moduleEnv.Define(name, enumVal)
+		exports[name] = enumVal
+	}
 	for name, fn := range entry.script.functions {
 		clone := cloneFunctionForEnv(fn, moduleEnv)
 		fnVal := NewFunction(clone)

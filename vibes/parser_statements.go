@@ -6,6 +6,8 @@ func (p *parser) parseStatement() Statement {
 		return p.parseFunctionStatement()
 	case tokenClass:
 		return p.parseClassStatement()
+	case tokenEnum:
+		return p.parseEnumStatement()
 	case tokenExport:
 		return p.parseExportStatement()
 	case tokenPrivate:
