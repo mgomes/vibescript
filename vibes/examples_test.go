@@ -3,6 +3,7 @@ package vibes
 import (
 	"context"
 	"maps"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -2104,6 +2105,34 @@ func TestExamples(t *testing.T) {
 			if tc.after != nil {
 				tc.after(t, env, result, err)
 			}
+		})
+	}
+}
+
+func TestAllExampleFilesCompile(t *testing.T) {
+	examplesDir := filepath.Join("..", "examples")
+	var files []string
+	err := filepath.Walk(examplesDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && filepath.Ext(path) == ".vibe" {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk examples dir: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no .vibe files found in examples/")
+	}
+
+	engine := MustNewEngine(Config{})
+	for _, path := range files {
+		rel, _ := filepath.Rel(examplesDir, path)
+		t.Run(rel, func(t *testing.T) {
+			_ = compileScriptFromFileWithEngine(t, engine, path)
 		})
 	}
 }

@@ -17,7 +17,7 @@ func (p *parser) parseYieldExpression() Expression {
 				return nil
 			}
 		}
-	} else if p.prefixFns[p.peekToken.Type] != nil {
+	} else if p.peekToken.Pos.Line == pos.Line && p.prefixFns[p.peekToken.Type] != nil {
 		p.nextToken()
 		args = append(args, p.parseExpression(lowestPrec))
 	}
