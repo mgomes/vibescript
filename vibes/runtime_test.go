@@ -3651,12 +3651,12 @@ func TestMethodErrorHandling(t *testing.T) {
 		},
 		{
 			name:   "array.fetch with missing index",
-			script: `def run() [1, 2, 3].fetch end`,
+			script: `def run [1, 2, 3].fetch end`,
 			errMsg: "expects index and optional default",
 		},
 		{
 			name:   "array.fetch with non-integer index",
-			script: `def run() [1, 2, 3].fetch("1") end`,
+			script: `def run [1, 2, 3].fetch("1") end`,
 			errMsg: "index must be integer",
 		},
 		{
