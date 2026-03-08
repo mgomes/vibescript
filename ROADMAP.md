@@ -454,3 +454,27 @@ Goal: add first-class nominal enums and harden the typed runtime around enum res
 - [x] Enum syntax and typed-runtime behavior are documented and exercised by runnable examples and tests.
 - [x] Enum resolution behaves correctly across modules, blocks, shadowed scopes, and typed normalization paths.
 - [x] Tooling and release automation changes are documented and stable for the next release cycle.
+
+---
+
+## v0.21.1 - Yield Parsing and Example Coverage (completed 2026-03-08)
+
+Goal: close the gap between curated example tests and stricter startup paths while fixing zero-arg `yield` parsing in multiline assignment contexts.
+
+### Parser Correctness
+
+- [x] Allow bare zero-arg `yield` to terminate cleanly at line boundaries instead of consuming the next line as an implicit argument.
+- [x] Preserve inline `yield value` parsing for same-line implicit argument forms.
+- [x] Add parser regression coverage for zero-arg and inline-arg `yield` assignments.
+
+### Example Coverage
+
+- [x] Compile every `.vibe` file under `examples/` in CI instead of only relying on the curated `TestExamples` matrix.
+- [x] Fix `examples/blocks/yield_patterns.vibe` to match the intended zero-paren `yield` behavior.
+- [x] Ensure the full `./vibes` package remains green with the new compile-all-examples guard enabled.
+
+### v0.21.1 Definition of Done
+
+- [x] Bare zero-arg `yield` works in multiline assignment and expression contexts without requiring `yield()`.
+- [x] Example startup paths and CI now agree on whether every file under `examples/` compiles.
+- [x] Patch release notes and roadmap entries are ready for tagging.

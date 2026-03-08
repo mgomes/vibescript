@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 - Ongoing work toward the next pre-1.0 release.
 
+## v0.21.1 - 2026-03-08
+
+- Fixed bare zero-arg `yield` parsing so newline-separated assignments and expressions no longer get misparsed as implicit yield arguments.
+- Added parser regression coverage for zero-arg and inline-arg `yield` forms.
+- Added a compile-all `examples/` test to catch unreferenced example parse failures in CI and fixed `examples/blocks/yield_patterns.vibe` to use the intended zero-paren `yield` form again.
+
 ## v0.21.0 - 2026-03-08
 
 - Added nominal enums with `::` member access, reflective member helpers, and typed symbol coercion across function and block boundaries.
