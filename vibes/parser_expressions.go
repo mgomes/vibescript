@@ -28,7 +28,7 @@ func (p *parser) parseExpressionWithLineLimit(precedence int, limitLine int, lin
 	}
 
 	for p.peekToken.Type != tokenEOF && precedence < p.peekPrecedence() {
-		if lineLimited && p.peekToken.Pos.Line > limitLine {
+		if lineLimited && p.peekToken.Pos.Line > limitLine && !lineLimitedContinuationToken(p.peekToken.Type) {
 			return left
 		}
 		infix := p.infixFns[p.peekToken.Type]
@@ -40,7 +40,19 @@ func (p *parser) parseExpressionWithLineLimit(precedence int, limitLine int, lin
 		if left == nil {
 			return nil
 		}
+		if lineLimited {
+			limitLine = p.curToken.Pos.Line
+		}
 	}
 
 	return left
+}
+
+func lineLimitedContinuationToken(tt TokenType) bool {
+	switch tt {
+	case tokenDot, tokenScope, tokenPlus, tokenSlash, tokenAsterisk, tokenPercent, tokenRange, tokenEQ, tokenNotEQ, tokenLT, tokenLTE, tokenGT, tokenGTE, tokenAnd, tokenOr:
+		return true
+	default:
+		return false
+	}
 }

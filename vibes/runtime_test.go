@@ -723,8 +723,13 @@ func TestIntegerDivisionAndModulo(t *testing.T) {
     def arithmetic
       {
         int_div: 7 / 2,
+        neg_div_left: -7 / 2,
+        neg_div_right: 7 / -2,
+        neg_div_both: -7 / -2,
         float_div: 7.0 / 2,
         mod_chain: 10 / 2 % 3,
+        neg_mod_left: -7 % 2,
+        neg_mod_right: 7 % -2,
         gcd: gcd(54, 24),
         hailstone: hailstone(7)
       }
@@ -739,11 +744,17 @@ func TestIntegerDivisionAndModulo(t *testing.T) {
 	if !got["int_div"].Equal(NewInt(3)) {
 		t.Fatalf("int_div mismatch: %v", got["int_div"])
 	}
+	if !got["neg_div_left"].Equal(NewInt(-4)) || !got["neg_div_right"].Equal(NewInt(-4)) || !got["neg_div_both"].Equal(NewInt(3)) {
+		t.Fatalf("negative division mismatch: left=%v right=%v both=%v", got["neg_div_left"], got["neg_div_right"], got["neg_div_both"])
+	}
 	if got["float_div"].Kind() != KindFloat || got["float_div"].Float() != 3.5 {
 		t.Fatalf("float_div mismatch: %v", got["float_div"])
 	}
 	if !got["mod_chain"].Equal(NewInt(2)) {
 		t.Fatalf("mod_chain mismatch: %v", got["mod_chain"])
+	}
+	if !got["neg_mod_left"].Equal(NewInt(1)) || !got["neg_mod_right"].Equal(NewInt(-1)) {
+		t.Fatalf("negative modulo mismatch: left=%v right=%v", got["neg_mod_left"], got["neg_mod_right"])
 	}
 	if !got["gcd"].Equal(NewInt(6)) {
 		t.Fatalf("gcd mismatch: %v", got["gcd"])
@@ -1134,6 +1145,16 @@ func TestLineTerminatedHeadersAndStatements(t *testing.T) {
       end
     end
 
+    def if_chain(values)
+      if values
+        .reverse
+        .include?(1)
+        "hit"
+      else
+        "miss"
+      end
+    end
+
     def while_body
       seen = []
       i = 0
@@ -1191,6 +1212,12 @@ func TestLineTerminatedHeadersAndStatements(t *testing.T) {
 		t.Fatalf("if_hash expected hash, got %v", hashResult.Kind())
 	}
 	compareHash(t, hashResult.Hash(), map[string]Value{"a": NewInt(1)})
+	if got := callFunc(t, script, "if_chain", []Value{NewArray([]Value{NewInt(2), NewInt(1)})}); !got.Equal(NewString("hit")) {
+		t.Fatalf("if_chain hit mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "if_chain", []Value{NewArray([]Value{NewInt(2)})}); !got.Equal(NewString("miss")) {
+		t.Fatalf("if_chain miss mismatch: %v", got)
+	}
 
 	compareArrays(t, callFunc(t, script, "while_body", nil), []Value{NewInt(0)})
 	compareArrays(t, callFunc(t, script, "until_body", nil), []Value{NewInt(0)})
