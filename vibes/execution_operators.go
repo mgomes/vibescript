@@ -81,6 +81,36 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkMemoryWith(left); err != nil {
+		return NewNil(), err
+	}
+	switch expr.Operator {
+	case tokenAnd:
+		if !left.Truthy() {
+			return NewBool(false), nil
+		}
+		right, err := exec.evalExpression(expr.Right, env)
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(left, right); err != nil {
+			return NewNil(), err
+		}
+		return NewBool(right.Truthy()), nil
+	case tokenOr:
+		if left.Truthy() {
+			return NewBool(true), nil
+		}
+		right, err := exec.evalExpression(expr.Right, env)
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(left, right); err != nil {
+			return NewNil(), err
+		}
+		return NewBool(right.Truthy()), nil
+	}
+
 	right, err := exec.evalExpression(expr.Right, env)
 	if err != nil {
 		return NewNil(), err
@@ -113,10 +143,6 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		return compareValues(expr, left, right, func(c int) bool { return c > 0 })
 	case tokenGTE:
 		return compareValues(expr, left, right, func(c int) bool { return c >= 0 })
-	case tokenAnd:
-		return NewBool(left.Truthy() && right.Truthy()), nil
-	case tokenOr:
-		return NewBool(left.Truthy() || right.Truthy()), nil
 	default:
 		return NewNil(), exec.errorAt(expr.Pos(), "unsupported operator")
 	}

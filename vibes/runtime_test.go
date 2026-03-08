@@ -640,6 +640,43 @@ func TestArrayConcatAndSubtract(t *testing.T) {
 	compareArrays(t, subtracted, []Value{NewInt(1)})
 }
 
+func TestLogicalOperatorsShortCircuit(t *testing.T) {
+	script := compileScript(t, `
+    def bad_index()
+      [1][4]
+    end
+
+    def explode()
+      raise "boom"
+    end
+
+    def false_and_bad_index()
+      false && bad_index()
+    end
+
+    def true_or_explode()
+      true || explode()
+    end
+
+    def adjacent_run(values, index)
+      index + 1 < values.size && values[index + 1] == values[index] + 1
+    end
+    `)
+
+	if got := callFunc(t, script, "false_and_bad_index", nil); !got.Equal(NewBool(false)) {
+		t.Fatalf("false_and_bad_index mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "true_or_explode", nil); !got.Equal(NewBool(true)) {
+		t.Fatalf("true_or_explode mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "adjacent_run", []Value{NewArray([]Value{NewInt(5)}), NewInt(0)}); !got.Equal(NewBool(false)) {
+		t.Fatalf("adjacent_run single mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "adjacent_run", []Value{NewArray([]Value{NewInt(5), NewInt(6)}), NewInt(0)}); !got.Equal(NewBool(true)) {
+		t.Fatalf("adjacent_run pair mismatch: %v", got)
+	}
+}
+
 func TestHashLiteralSyntaxRestriction(t *testing.T) {
 	_ = compileScriptErrorDefault(t, `
     def broken()
