@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 - Ongoing work toward the next pre-1.0 release.
 
+## v0.26.3 - 2026-03-08
+
+- Followed up the Rosetta compatibility patch by preserving explicit multiline continuations in line-limited control-flow headers and statement expressions.
+- Matched Ruby-style floor semantics for signed `int / int` and `int % int`, so negative-input algorithms stay in the expected integer space.
+- Hardened `array.fetch` to reject fractional numeric indices instead of truncating them silently.
+- Added regression coverage for multiline chained header conditions, signed integer arithmetic, and stricter `array.fetch` index validation.
+
 ## v0.26.2 - 2026-03-08
 
 - Fixed newline-sensitive parsing in control-flow headers and statement expressions so next-line literals no longer get consumed accidentally while explicit multiline continuations still work.

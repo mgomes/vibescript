@@ -483,3 +483,29 @@ Goal: remove a handful of parser and runtime edge cases that were blocking direc
 
 - [x] Rosetta-style ports no longer fail on newline-sensitive control-flow parsing, eager boolean guards, or missing array aliases.
 - [x] Signed integer arithmetic and `array.fetch` behavior are covered by targeted regressions and the full `go test ./vibes` suite.
+
+---
+
+## v0.26.3 - Rosetta Compatibility Follow-up (completed 2026-03-08)
+
+Goal: close the edge cases uncovered while hardening the 0.26.2 Rosetta portability patch.
+
+### Header Continuations
+
+- [x] Preserve explicit multiline chained continuations in line-limited `if`, `elsif`, `while`, `until`, `for`, `return`, and `raise` expressions.
+- [x] Keep next-line literals and index expressions from being pulled into control-flow headers by accident.
+
+### Signed Integer Arithmetic
+
+- [x] Match Ruby-style floor semantics for signed `int / int` division.
+- [x] Keep signed `int % int` consistent with floor division for negative operands.
+
+### Validation and Coverage
+
+- [x] Reject fractional numeric indices in `array.fetch` instead of truncating them.
+- [x] Add regression coverage for multiline chained header conditions, signed integer arithmetic, and stricter `array.fetch` validation.
+
+### v0.26.3 Definition of Done
+
+- [x] Multiline control-flow formatting works for explicit chained continuations without reintroducing next-line literal capture bugs.
+- [x] Signed integer division, modulo, and `array.fetch` validation behave consistently under targeted regressions and the full `go test ./vibes` suite.
