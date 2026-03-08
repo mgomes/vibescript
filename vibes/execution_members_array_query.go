@@ -1,15 +1,26 @@
 package vibes
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 func arrayMemberQuery(property string) (Value, error) {
 	switch property {
-	case "size":
-		return NewAutoBuiltin("array.size", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	case "size", "length":
+		name := property
+		return NewAutoBuiltin("array."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.size does not take arguments")
+				return NewNil(), fmt.Errorf("array.%s does not take arguments", name)
 			}
 			return NewInt(int64(len(receiver.Array()))), nil
+		}), nil
+	case "empty?":
+		return NewAutoBuiltin("array.empty?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.empty? does not take arguments")
+			}
+			return NewBool(len(receiver.Array()) == 0), nil
 		}), nil
 	case "each":
 		return NewAutoBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -200,6 +211,27 @@ func arrayMemberQuery(property string) (Value, error) {
 				if arr[idx].Equal(args[0]) {
 					return NewInt(int64(idx)), nil
 				}
+			}
+			return NewNil(), nil
+		}), nil
+	case "fetch":
+		return NewAutoBuiltin("array.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) < 1 || len(args) > 2 {
+				return NewNil(), fmt.Errorf("array.fetch expects index and optional default")
+			}
+			index, err := valueToInt(args[0])
+			if err != nil {
+				return NewNil(), fmt.Errorf("array.fetch index must be integer")
+			}
+			if args[0].Kind() == KindFloat && math.Trunc(args[0].Float()) != args[0].Float() {
+				return NewNil(), fmt.Errorf("array.fetch index must be integer")
+			}
+			arr := receiver.Array()
+			if index >= 0 && index < len(arr) {
+				return arr[index], nil
+			}
+			if len(args) == 2 {
+				return args[1], nil
 			}
 			return NewNil(), nil
 		}), nil

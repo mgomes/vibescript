@@ -24,6 +24,9 @@ func (p *parser) parseIndexExpression(object Expression) Expression {
 	pos := p.curToken.Pos
 	p.nextToken()
 	index := p.parseExpression(lowestPrec)
+	if index == nil {
+		return nil
+	}
 	if !p.expectPeek(tokenRBracket) {
 		return nil
 	}

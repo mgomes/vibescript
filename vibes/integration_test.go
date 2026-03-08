@@ -65,7 +65,7 @@ func TestComplexExamplesRun(t *testing.T) {
 				"total":   intVal(21),
 				"top":     intVal(9),
 				"names":   arrayVal(strVal("alex"), strVal("bea"), strVal("cam")),
-				"average": floatVal(7),
+				"average": intVal(7),
 				"active": arrayVal(
 					hashVal(map[string]Value{"name": strVal("alex"), "score": intVal(5), "last_seen": intVal(100)}),
 					hashVal(map[string]Value{"name": strVal("cam"), "score": intVal(7), "last_seen": intVal(120)}),

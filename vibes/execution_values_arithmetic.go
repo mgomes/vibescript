@@ -121,6 +121,11 @@ func multiplyValues(left, right Value) (Value, error) {
 
 func divideValues(left, right Value) (Value, error) {
 	switch {
+	case left.Kind() == KindInt && right.Kind() == KindInt:
+		if right.Int() == 0 {
+			return NewNil(), errors.New("division by zero")
+		}
+		return NewInt(floorDivInt(left.Int(), right.Int())), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		if right.Float() == 0 {
 			return NewNil(), errors.New("division by zero")
@@ -156,7 +161,7 @@ func moduloValues(left, right Value) (Value, error) {
 		if right.Int() == 0 {
 			return NewNil(), errors.New("modulo by zero")
 		}
-		return NewInt(left.Int() % right.Int()), nil
+		return NewInt(floorModInt(left.Int(), right.Int())), nil
 	}
 	if left.Kind() == KindDuration && right.Kind() == KindDuration {
 		if right.Duration().Seconds() == 0 {
@@ -165,6 +170,23 @@ func moduloValues(left, right Value) (Value, error) {
 		return NewDuration(Duration{seconds: left.Duration().Seconds() % right.Duration().Seconds()}), nil
 	}
 	return NewNil(), fmt.Errorf("unsupported modulo operands")
+}
+
+func floorDivInt(left, right int64) int64 {
+	quotient := left / right
+	remainder := left % right
+	if remainder != 0 && ((remainder < 0) != (right < 0)) {
+		quotient--
+	}
+	return quotient
+}
+
+func floorModInt(left, right int64) int64 {
+	remainder := left % right
+	if remainder != 0 && ((remainder < 0) != (right < 0)) {
+		remainder += right
+	}
+	return remainder
 }
 
 func compareValues(expr *BinaryExpr, left, right Value, cmp func(int) bool) (Value, error) {

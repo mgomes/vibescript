@@ -39,6 +39,9 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		val, err := exec.evalExpression(s.Expr, env)
 		return val, false, err
 	case *ReturnStmt:
+		if s.Value == nil {
+			return NewNil(), true, nil
+		}
 		val, err := exec.evalExpression(s.Value, env)
 		return val, true, err
 	case *RaiseStmt:

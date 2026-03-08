@@ -404,6 +404,10 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
       end
 
       {
+        size: values.size,
+        length: values.length,
+        empty_false: values.empty?,
+        empty_true: [].empty?,
         include_hit: values.include?(2),
         include_miss: values.include?(9),
         index_hit: values.index(1),
@@ -412,6 +416,9 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
         rindex_hit: values.rindex(1),
         rindex_offset_hit: values.rindex(1, 2),
         rindex_miss: values.rindex(9),
+        fetch_hit: values.fetch(2),
+        fetch_default: values.fetch(9, 42),
+        fetch_miss: values.fetch(9),
         find_hit: find_hit,
         find_miss: find_miss,
         find_index_hit: find_index_hit,
@@ -446,6 +453,12 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 		t.Fatalf("expected hash, got %v", result.Kind())
 	}
 	got := result.Hash()
+	if !got["size"].Equal(NewInt(4)) || !got["length"].Equal(NewInt(4)) {
+		t.Fatalf("size/length mismatch: size=%v length=%v", got["size"], got["length"])
+	}
+	if got["empty_false"].Bool() || !got["empty_true"].Bool() {
+		t.Fatalf("empty? mismatch: false=%v true=%v", got["empty_false"], got["empty_true"])
+	}
 	if !got["include_hit"].Bool() || got["include_miss"].Bool() {
 		t.Fatalf("include? mismatch: %#v", got)
 	}
@@ -460,6 +473,12 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 	}
 	if got["rindex_miss"].Kind() != KindNil {
 		t.Fatalf("rindex_miss expected nil, got %v", got["rindex_miss"])
+	}
+	if !got["fetch_hit"].Equal(NewInt(2)) || !got["fetch_default"].Equal(NewInt(42)) {
+		t.Fatalf("fetch mismatch: hit=%v default=%v", got["fetch_hit"], got["fetch_default"])
+	}
+	if got["fetch_miss"].Kind() != KindNil {
+		t.Fatalf("fetch_miss expected nil, got %v", got["fetch_miss"])
 	}
 	if !got["find_hit"].Equal(NewInt(3)) || got["find_miss"].Kind() != KindNil {
 		t.Fatalf("find mismatch: hit=%v miss=%v", got["find_hit"], got["find_miss"])
@@ -638,6 +657,113 @@ func TestArrayConcatAndSubtract(t *testing.T) {
 
 	subtracted := callFunc(t, script, "subtract", []Value{first, second})
 	compareArrays(t, subtracted, []Value{NewInt(1)})
+}
+
+func TestLogicalOperatorsShortCircuit(t *testing.T) {
+	script := compileScript(t, `
+    def bad_index
+      [1][4]
+    end
+
+    def explode
+      raise "boom"
+    end
+
+    def false_and_bad_index
+      false && bad_index
+    end
+
+    def true_or_explode
+      true || explode
+    end
+
+    def adjacent_run(values, index)
+      index + 1 < values.size && values[index + 1] == values[index] + 1
+    end
+    `)
+
+	if got := callFunc(t, script, "false_and_bad_index", nil); !got.Equal(NewBool(false)) {
+		t.Fatalf("false_and_bad_index mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "true_or_explode", nil); !got.Equal(NewBool(true)) {
+		t.Fatalf("true_or_explode mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "adjacent_run", []Value{NewArray([]Value{NewInt(5)}), NewInt(0)}); !got.Equal(NewBool(false)) {
+		t.Fatalf("adjacent_run single mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "adjacent_run", []Value{NewArray([]Value{NewInt(5), NewInt(6)}), NewInt(0)}); !got.Equal(NewBool(true)) {
+		t.Fatalf("adjacent_run pair mismatch: %v", got)
+	}
+}
+
+func TestIntegerDivisionAndModulo(t *testing.T) {
+	script := compileScript(t, `
+    def gcd(a, b)
+      while b != 0
+        next_value = a % b
+        a = b
+        b = next_value
+      end
+      a
+    end
+
+    def hailstone(n)
+      out = [n]
+      while n != 1
+        if n % 2 == 0
+          n = n / 2
+        else
+          n = n * 3 + 1
+        end
+        out = out + [n]
+      end
+      out
+    end
+
+    def arithmetic
+      {
+        int_div: 7 / 2,
+        neg_div_left: -7 / 2,
+        neg_div_right: 7 / -2,
+        neg_div_both: -7 / -2,
+        float_div: 7.0 / 2,
+        mod_chain: 10 / 2 % 3,
+        neg_mod_left: -7 % 2,
+        neg_mod_right: 7 % -2,
+        gcd: gcd(54, 24),
+        hailstone: hailstone(7)
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "arithmetic", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	if !got["int_div"].Equal(NewInt(3)) {
+		t.Fatalf("int_div mismatch: %v", got["int_div"])
+	}
+	if !got["neg_div_left"].Equal(NewInt(-4)) || !got["neg_div_right"].Equal(NewInt(-4)) || !got["neg_div_both"].Equal(NewInt(3)) {
+		t.Fatalf("negative division mismatch: left=%v right=%v both=%v", got["neg_div_left"], got["neg_div_right"], got["neg_div_both"])
+	}
+	if got["float_div"].Kind() != KindFloat || got["float_div"].Float() != 3.5 {
+		t.Fatalf("float_div mismatch: %v", got["float_div"])
+	}
+	if !got["mod_chain"].Equal(NewInt(2)) {
+		t.Fatalf("mod_chain mismatch: %v", got["mod_chain"])
+	}
+	if !got["neg_mod_left"].Equal(NewInt(1)) || !got["neg_mod_right"].Equal(NewInt(-1)) {
+		t.Fatalf("negative modulo mismatch: left=%v right=%v", got["neg_mod_left"], got["neg_mod_right"])
+	}
+	if !got["gcd"].Equal(NewInt(6)) {
+		t.Fatalf("gcd mismatch: %v", got["gcd"])
+	}
+	compareArrays(t, got["hailstone"], []Value{
+		NewInt(7), NewInt(22), NewInt(11), NewInt(34), NewInt(17), NewInt(52),
+		NewInt(26), NewInt(13), NewInt(40), NewInt(20), NewInt(10), NewInt(5),
+		NewInt(16), NewInt(8), NewInt(4), NewInt(2), NewInt(1),
+	})
 }
 
 func TestHashLiteralSyntaxRestriction(t *testing.T) {
@@ -989,8 +1115,121 @@ func TestUntilLoops(t *testing.T) {
       until false
       end
     end
-    `)
+	`)
 	requireCallErrorContains(t, spinScript, "spin_until", nil, CallOptions{}, "step quota exceeded")
+}
+
+func TestLineTerminatedHeadersAndStatements(t *testing.T) {
+	script := compileScript(t, `
+    def if_empty_array
+      if true
+        []
+      else
+        [2]
+      end
+    end
+
+    def if_array
+      if true
+        [1]
+      else
+        [2]
+      end
+    end
+
+    def if_hash
+      if false
+        [1]
+      else
+        { a: 1 }
+      end
+    end
+
+    def if_chain(values)
+      if values
+        .reverse
+        .include?(1)
+        "hit"
+      else
+        "miss"
+      end
+    end
+
+    def while_body
+      seen = []
+      i = 0
+      while i < 1
+        [i]
+        seen = seen + [i]
+        i = i + 1
+      end
+      seen
+    end
+
+    def until_body
+      seen = []
+      i = 0
+      until i == 1
+        { i: i }
+        seen = seen + [i]
+        i = i + 1
+      end
+      seen
+    end
+
+    def for_body
+      seen = []
+      for item in [1, 2]
+        [item]
+        seen = seen + [item]
+      end
+      seen
+    end
+
+    def return_value
+      return true
+      [1]
+    end
+
+    def bare_return
+      return
+      [1]
+    end
+
+    def raise_message
+      raise "boom"
+      [1]
+    end
+    `)
+
+	if got := callFunc(t, script, "if_empty_array", nil); got.Kind() != KindArray || len(got.Array()) != 0 {
+		t.Fatalf("if_empty_array mismatch: %v", got)
+	}
+	compareArrays(t, callFunc(t, script, "if_array", nil), []Value{NewInt(1)})
+
+	hashResult := callFunc(t, script, "if_hash", nil)
+	if hashResult.Kind() != KindHash {
+		t.Fatalf("if_hash expected hash, got %v", hashResult.Kind())
+	}
+	compareHash(t, hashResult.Hash(), map[string]Value{"a": NewInt(1)})
+	if got := callFunc(t, script, "if_chain", []Value{NewArray([]Value{NewInt(2), NewInt(1)})}); !got.Equal(NewString("hit")) {
+		t.Fatalf("if_chain hit mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "if_chain", []Value{NewArray([]Value{NewInt(2)})}); !got.Equal(NewString("miss")) {
+		t.Fatalf("if_chain miss mismatch: %v", got)
+	}
+
+	compareArrays(t, callFunc(t, script, "while_body", nil), []Value{NewInt(0)})
+	compareArrays(t, callFunc(t, script, "until_body", nil), []Value{NewInt(0)})
+	compareArrays(t, callFunc(t, script, "for_body", nil), []Value{NewInt(1), NewInt(2)})
+
+	if got := callFunc(t, script, "return_value", nil); !got.Equal(NewBool(true)) {
+		t.Fatalf("return_value mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "bare_return", nil); got.Kind() != KindNil {
+		t.Fatalf("bare_return expected nil, got %v", got)
+	}
+	requireCallErrorContains(t, script, "raise_message", nil, CallOptions{}, "boom")
 }
 
 func TestCaseWhenExpressions(t *testing.T) {
@@ -1118,7 +1357,7 @@ func TestBeginRescueEnsure(t *testing.T) {
     end
     `)
 
-	if got := callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(2)}); !got.Equal(NewFloat(5)) {
+	if got := callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(2)}); !got.Equal(NewInt(5)) {
 		t.Fatalf("safe_div success mismatch: %v", got)
 	}
 	if got := callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(0)}); !got.Equal(NewString("fallback")) {
@@ -3436,6 +3675,21 @@ func TestMethodErrorHandling(t *testing.T) {
 			name:   "array.rindex validates offset on empty array",
 			script: `def run() [].rindex(1, -1) end`,
 			errMsg: "offset must be non-negative integer",
+		},
+		{
+			name:   "array.fetch with missing index",
+			script: `def run [1, 2, 3].fetch end`,
+			errMsg: "expects index and optional default",
+		},
+		{
+			name:   "array.fetch with non-integer index",
+			script: `def run [1, 2, 3].fetch("1") end`,
+			errMsg: "index must be integer",
+		},
+		{
+			name:   "array.fetch with fractional float index",
+			script: `def run [1, 2, 3].fetch(1.5) end`,
+			errMsg: "index must be integer",
 		},
 		{
 			name: "array.count with argument and block",

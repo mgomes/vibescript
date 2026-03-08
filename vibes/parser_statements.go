@@ -42,18 +42,24 @@ func (p *parser) parseStatement() Statement {
 
 func (p *parser) parseReturnStatement() Statement {
 	pos := p.curToken.Pos
+	if p.peekToken.Type == tokenEOF || p.peekToken.Type == tokenEnd || p.peekToken.Type == tokenElse || p.peekToken.Type == tokenElsif || p.peekToken.Type == tokenEnsure || p.peekToken.Type == tokenRescue || p.peekToken.Pos.Line != pos.Line {
+		return &ReturnStmt{position: pos}
+	}
 	p.nextToken()
-	value := p.parseExpression(lowestPrec)
+	value := p.parseLineExpression(lowestPrec)
+	if value == nil {
+		return nil
+	}
 	return &ReturnStmt{Value: value, position: pos}
 }
 
 func (p *parser) parseRaiseStatement() Statement {
 	pos := p.curToken.Pos
-	if p.peekToken.Type == tokenEOF || p.peekToken.Type == tokenEnd || p.peekToken.Type == tokenEnsure || p.peekToken.Type == tokenRescue || p.peekToken.Pos.Line != pos.Line {
+	if p.peekToken.Type == tokenEOF || p.peekToken.Type == tokenEnd || p.peekToken.Type == tokenElse || p.peekToken.Type == tokenElsif || p.peekToken.Type == tokenEnsure || p.peekToken.Type == tokenRescue || p.peekToken.Pos.Line != pos.Line {
 		return &RaiseStmt{position: pos}
 	}
 	p.nextToken()
-	value := p.parseExpression(lowestPrec)
+	value := p.parseLineExpression(lowestPrec)
 	if value == nil {
 		return nil
 	}
