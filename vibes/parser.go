@@ -18,6 +18,7 @@ type parser struct {
 
 	insideClass      bool
 	privateNext      bool
+	lineLimitedExprs int
 	statementNesting int
 }
 

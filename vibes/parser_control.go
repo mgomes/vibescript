@@ -5,7 +5,10 @@ import "fmt"
 func (p *parser) parseIfStatement() Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseExpression(lowestPrec)
+	condition := p.parseLineExpression(lowestPrec)
+	if condition == nil {
+		return nil
+	}
 
 	p.nextToken()
 	consequent := p.parseBlock(tokenEnd, tokenElse, tokenElsif)
@@ -13,7 +16,10 @@ func (p *parser) parseIfStatement() Statement {
 	var elseifClauses []*IfStmt
 	for p.curToken.Type == tokenElsif {
 		p.nextToken()
-		cond := p.parseExpression(lowestPrec)
+		cond := p.parseLineExpression(lowestPrec)
+		if cond == nil {
+			return nil
+		}
 		p.nextToken()
 		body := p.parseBlock(tokenEnd, tokenElse, tokenElsif)
 		clause := &IfStmt{Condition: cond, Consequent: body, position: cond.Pos()}
@@ -45,7 +51,10 @@ func (p *parser) parseForStatement() Statement {
 	}
 
 	p.nextToken()
-	iterable := p.parseExpression(lowestPrec)
+	iterable := p.parseLineExpression(lowestPrec)
+	if iterable == nil {
+		return nil
+	}
 
 	p.nextToken()
 	body := p.parseBlock(tokenEnd)
@@ -60,7 +69,10 @@ func (p *parser) parseForStatement() Statement {
 func (p *parser) parseWhileStatement() Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseExpression(lowestPrec)
+	condition := p.parseLineExpression(lowestPrec)
+	if condition == nil {
+		return nil
+	}
 
 	p.nextToken()
 	body := p.parseBlock(tokenEnd)
@@ -75,7 +87,10 @@ func (p *parser) parseWhileStatement() Statement {
 func (p *parser) parseUntilStatement() Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseExpression(lowestPrec)
+	condition := p.parseLineExpression(lowestPrec)
+	if condition == nil {
+		return nil
+	}
 
 	p.nextToken()
 	body := p.parseBlock(tokenEnd)

@@ -1,6 +1,21 @@
 package vibes
 
 func (p *parser) parseExpression(precedence int) Expression {
+	if p.lineLimitedExprs > 0 {
+		return p.parseExpressionWithLineLimit(precedence, p.curToken.Pos.Line, true)
+	}
+	return p.parseExpressionWithLineLimit(precedence, 0, false)
+}
+
+func (p *parser) parseLineExpression(precedence int) Expression {
+	p.lineLimitedExprs++
+	defer func() {
+		p.lineLimitedExprs--
+	}()
+	return p.parseExpression(precedence)
+}
+
+func (p *parser) parseExpressionWithLineLimit(precedence int, limitLine int, lineLimited bool) Expression {
 	prefix := p.prefixFns[p.curToken.Type]
 	if prefix == nil {
 		p.errorUnexpected(p.curToken)
@@ -13,6 +28,9 @@ func (p *parser) parseExpression(precedence int) Expression {
 	}
 
 	for p.peekToken.Type != tokenEOF && precedence < p.peekPrecedence() {
+		if lineLimited && p.peekToken.Pos.Line > limitLine {
+			return left
+		}
 		infix := p.infixFns[p.peekToken.Type]
 		if infix == nil {
 			return left

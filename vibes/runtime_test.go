@@ -989,8 +989,105 @@ func TestUntilLoops(t *testing.T) {
       until false
       end
     end
-    `)
+	`)
 	requireCallErrorContains(t, spinScript, "spin_until", nil, CallOptions{}, "step quota exceeded")
+}
+
+func TestLineTerminatedHeadersAndStatements(t *testing.T) {
+	script := compileScript(t, `
+    def if_empty_array()
+      if true
+        []
+      else
+        [2]
+      end
+    end
+
+    def if_array()
+      if true
+        [1]
+      else
+        [2]
+      end
+    end
+
+    def if_hash()
+      if false
+        [1]
+      else
+        { a: 1 }
+      end
+    end
+
+    def while_body()
+      seen = []
+      i = 0
+      while i < 1
+        [i]
+        seen = seen + [i]
+        i = i + 1
+      end
+      seen
+    end
+
+    def until_body()
+      seen = []
+      i = 0
+      until i == 1
+        { i: i }
+        seen = seen + [i]
+        i = i + 1
+      end
+      seen
+    end
+
+    def for_body()
+      seen = []
+      for item in [1, 2]
+        [item]
+        seen = seen + [item]
+      end
+      seen
+    end
+
+    def return_value()
+      return true
+      [1]
+    end
+
+    def bare_return()
+      return
+      [1]
+    end
+
+    def raise_message()
+      raise "boom"
+      [1]
+    end
+    `)
+
+	if got := callFunc(t, script, "if_empty_array", nil); got.Kind() != KindArray || len(got.Array()) != 0 {
+		t.Fatalf("if_empty_array mismatch: %v", got)
+	}
+	compareArrays(t, callFunc(t, script, "if_array", nil), []Value{NewInt(1)})
+
+	hashResult := callFunc(t, script, "if_hash", nil)
+	if hashResult.Kind() != KindHash {
+		t.Fatalf("if_hash expected hash, got %v", hashResult.Kind())
+	}
+	compareHash(t, hashResult.Hash(), map[string]Value{"a": NewInt(1)})
+
+	compareArrays(t, callFunc(t, script, "while_body", nil), []Value{NewInt(0)})
+	compareArrays(t, callFunc(t, script, "until_body", nil), []Value{NewInt(0)})
+	compareArrays(t, callFunc(t, script, "for_body", nil), []Value{NewInt(1), NewInt(2)})
+
+	if got := callFunc(t, script, "return_value", nil); !got.Equal(NewBool(true)) {
+		t.Fatalf("return_value mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "bare_return", nil); got.Kind() != KindNil {
+		t.Fatalf("bare_return expected nil, got %v", got)
+	}
+	requireCallErrorContains(t, script, "raise_message", nil, CallOptions{}, "boom")
 }
 
 func TestCaseWhenExpressions(t *testing.T) {
