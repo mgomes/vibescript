@@ -1,6 +1,9 @@
 package vibes
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 func arrayMemberQuery(property string) (Value, error) {
 	switch property {
@@ -218,6 +221,9 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			index, err := valueToInt(args[0])
 			if err != nil {
+				return NewNil(), fmt.Errorf("array.fetch index must be integer")
+			}
+			if args[0].Kind() == KindFloat && math.Trunc(args[0].Float()) != args[0].Float() {
 				return NewNil(), fmt.Errorf("array.fetch index must be integer")
 			}
 			arr := receiver.Array()

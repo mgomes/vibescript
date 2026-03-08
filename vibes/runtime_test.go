@@ -3660,6 +3660,11 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "index must be integer",
 		},
 		{
+			name:   "array.fetch with fractional float index",
+			script: `def run [1, 2, 3].fetch(1.5) end`,
+			errMsg: "index must be integer",
+		},
+		{
 			name: "array.count with argument and block",
 			script: `def run()
   [1, 1].count(1) do |v|
