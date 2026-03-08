@@ -121,6 +121,11 @@ func multiplyValues(left, right Value) (Value, error) {
 
 func divideValues(left, right Value) (Value, error) {
 	switch {
+	case left.Kind() == KindInt && right.Kind() == KindInt:
+		if right.Int() == 0 {
+			return NewNil(), errors.New("division by zero")
+		}
+		return NewInt(left.Int() / right.Int()), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		if right.Float() == 0 {
 			return NewNil(), errors.New("division by zero")
