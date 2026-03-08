@@ -418,3 +418,39 @@ Goal: make performance improvements measurable, repeatable, and protected agains
 - [x] CI reports benchmark deltas for guarded smoke benchmarks.
 - [x] Measurable improvements are achieved before the v1.0.0 release tag.
 - [x] Performance and benchmarking workflows are documented and maintainable.
+
+---
+
+## v0.21.0 - Nominal Enums and Type Hardening (completed 2026-03-08)
+
+Goal: add first-class nominal enums and harden the typed runtime around enum resolution and coercion.
+
+### Enum Language Support
+
+- [x] Add top-level `enum` declarations with scoped `::` member access.
+- [x] Add enum member reflection via `.name`, `.symbol`, and `.enum`.
+- [x] Add enum-aware serialization for `JSON.stringify` and `string.template`.
+- [x] Add typed enum annotations and matching symbol coercion across function and block boundaries.
+- [x] Export top-level enums through `require` alongside module functions.
+
+### Resolution and Correctness
+
+- [x] Resolve enum types case-insensitively while rejecting ambiguous matches.
+- [x] Preserve enum-named member access and allow enum labels in typed shape fields.
+- [x] Reject enum names that shadow built-in types or use reserved suffix forms.
+- [x] Fix enum lookup across shadowed envs, nullable types, block owner resolution, and union/hash-key normalization paths.
+- [x] Guard recursive normalization against cyclic values.
+
+### Tooling and Coverage
+
+- [x] Add runnable enum examples and integration coverage aligned with `docs/enums.md`.
+- [x] Upgrade the REPL to Bubble Tea v2.
+- [x] Add race-detector coverage and tighten fuzz/benchmark quality gates.
+- [x] Add a `just install` workflow for the CLI and document editor support integrations.
+- [x] Make release workflow reruns idempotent for existing tags.
+
+### v0.21.0 Definition of Done
+
+- [x] Enum syntax and typed-runtime behavior are documented and exercised by runnable examples and tests.
+- [x] Enum resolution behaves correctly across modules, blocks, shadowed scopes, and typed normalization paths.
+- [x] Tooling and release automation changes are documented and stable for the next release cycle.
