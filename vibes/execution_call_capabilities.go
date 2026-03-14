@@ -43,7 +43,7 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 		}
 		globals, err := adapter.Bind(binding)
 		if err != nil {
-			return err
+			return fmt.Errorf("bind capability: %w", err)
 		}
 		for name, val := range globals {
 			rebound := rebinder.rebindValue(val)

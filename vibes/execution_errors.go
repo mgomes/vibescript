@@ -7,11 +7,15 @@ import (
 	"strings"
 )
 
+var _ error = (*RuntimeError)(nil)
+
+// StackFrame represents a single entry in a runtime error's call stack.
 type StackFrame struct {
 	Function string
 	Pos      Position
 }
 
+// RuntimeError represents a Vibescript runtime error with a call stack and source context.
 type RuntimeError struct {
 	Type      string
 	Message   string
@@ -42,6 +46,7 @@ var (
 	stringTemplatePattern  = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}`)
 )
 
+// Error returns the error message with a code frame and formatted stack trace.
 func (re *RuntimeError) Error() string {
 	var b strings.Builder
 	b.WriteString(re.Message)

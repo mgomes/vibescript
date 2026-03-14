@@ -4,6 +4,7 @@ import (
 	"context"
 )
 
+// ScriptFunction represents a user-defined function within a Vibescript module.
 type ScriptFunction struct {
 	Name     string
 	Params   []Param
@@ -16,6 +17,7 @@ type ScriptFunction struct {
 	owner    *Script
 }
 
+// Script represents a parsed Vibescript module ready for execution.
 type Script struct {
 	engine     *Engine
 	functions  map[string]*ScriptFunction
@@ -27,6 +29,7 @@ type Script struct {
 	moduleRoot string
 }
 
+// CallOptions configures globals, capabilities, and other settings for a script invocation.
 type CallOptions struct {
 	Globals      map[string]Value
 	Capabilities []CapabilityAdapter
@@ -34,6 +37,7 @@ type CallOptions struct {
 	Keywords     map[string]Value
 }
 
+// Execution holds the runtime state for a single script evaluation.
 type Execution struct {
 	engine                    *Engine
 	script                    *Script
