@@ -1,5 +1,6 @@
 package vibes
 
+// FunctionStmt represents a function or method definition.
 type FunctionStmt struct {
 	Name          string
 	Params        []Param
@@ -14,6 +15,7 @@ type FunctionStmt struct {
 func (s *FunctionStmt) stmtNode()     {}
 func (s *FunctionStmt) Pos() Position { return s.position }
 
+// ReturnStmt represents a return statement.
 type ReturnStmt struct {
 	Value    Expression
 	position Position
@@ -22,6 +24,7 @@ type ReturnStmt struct {
 func (s *ReturnStmt) stmtNode()     {}
 func (s *ReturnStmt) Pos() Position { return s.position }
 
+// RaiseStmt represents a raise statement that throws an error.
 type RaiseStmt struct {
 	Value    Expression
 	position Position
@@ -30,6 +33,7 @@ type RaiseStmt struct {
 func (s *RaiseStmt) stmtNode()     {}
 func (s *RaiseStmt) Pos() Position { return s.position }
 
+// AssignStmt represents a variable assignment.
 type AssignStmt struct {
 	Target   Expression
 	Value    Expression
@@ -39,6 +43,7 @@ type AssignStmt struct {
 func (s *AssignStmt) stmtNode()     {}
 func (s *AssignStmt) Pos() Position { return s.position }
 
+// ExprStmt wraps an expression used as a statement.
 type ExprStmt struct {
 	Expr     Expression
 	position Position
@@ -47,6 +52,7 @@ type ExprStmt struct {
 func (s *ExprStmt) stmtNode()     {}
 func (s *ExprStmt) Pos() Position { return s.position }
 
+// IfStmt represents an if/elsif/else conditional statement.
 type IfStmt struct {
 	Condition  Expression
 	Consequent []Statement
@@ -58,6 +64,7 @@ type IfStmt struct {
 func (s *IfStmt) stmtNode()     {}
 func (s *IfStmt) Pos() Position { return s.position }
 
+// ForStmt represents a for-in loop.
 type ForStmt struct {
 	Iterator string
 	Iterable Expression
@@ -68,6 +75,7 @@ type ForStmt struct {
 func (s *ForStmt) stmtNode()     {}
 func (s *ForStmt) Pos() Position { return s.position }
 
+// WhileStmt represents a while loop.
 type WhileStmt struct {
 	Condition Expression
 	Body      []Statement
@@ -77,6 +85,7 @@ type WhileStmt struct {
 func (s *WhileStmt) stmtNode()     {}
 func (s *WhileStmt) Pos() Position { return s.position }
 
+// UntilStmt represents an until loop (loops while condition is false).
 type UntilStmt struct {
 	Condition Expression
 	Body      []Statement
@@ -86,6 +95,7 @@ type UntilStmt struct {
 func (s *UntilStmt) stmtNode()     {}
 func (s *UntilStmt) Pos() Position { return s.position }
 
+// BreakStmt represents a break statement that exits a loop.
 type BreakStmt struct {
 	position Position
 }
@@ -93,6 +103,7 @@ type BreakStmt struct {
 func (s *BreakStmt) stmtNode()     {}
 func (s *BreakStmt) Pos() Position { return s.position }
 
+// NextStmt represents a next statement that skips to the next loop iteration.
 type NextStmt struct {
 	position Position
 }
@@ -100,6 +111,7 @@ type NextStmt struct {
 func (s *NextStmt) stmtNode()     {}
 func (s *NextStmt) Pos() Position { return s.position }
 
+// TryStmt represents a begin/rescue/ensure error-handling block.
 type TryStmt struct {
 	Body     []Statement
 	RescueTy *TypeExpr
@@ -111,12 +123,14 @@ type TryStmt struct {
 func (s *TryStmt) stmtNode()     {}
 func (s *TryStmt) Pos() Position { return s.position }
 
+// PropertyDecl represents a property, getter, or setter declaration in a class.
 type PropertyDecl struct {
 	Names    []string
 	Kind     string // property/getter/setter
 	position Position
 }
 
+// ClassStmt represents a class definition.
 type ClassStmt struct {
 	Name         string
 	Methods      []*FunctionStmt
@@ -129,11 +143,13 @@ type ClassStmt struct {
 func (s *ClassStmt) stmtNode()     {}
 func (s *ClassStmt) Pos() Position { return s.position }
 
+// EnumMemberStmt represents a single member in an enum definition.
 type EnumMemberStmt struct {
 	Name     string
 	position Position
 }
 
+// EnumStmt represents an enum definition.
 type EnumStmt struct {
 	Name     string
 	Members  []EnumMemberStmt

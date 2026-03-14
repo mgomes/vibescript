@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+var _ error = (*parseError)(nil)
+
 type parseError struct {
 	pos    Position
 	msg    string

@@ -27,7 +27,7 @@ func fmtCommand(args []string) error {
 
 	files, err := collectVibeFiles(targets)
 	if err != nil {
-		return err
+		return fmt.Errorf("collect files: %w", err)
 	}
 	if len(files) == 0 {
 		return nil

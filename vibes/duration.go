@@ -12,8 +12,10 @@ type Duration struct {
 	seconds int64
 }
 
+// Seconds returns the duration as a whole number of seconds.
 func (d Duration) Seconds() int64 { return d.seconds }
 
+// String returns the duration formatted as "<n>s".
 func (d Duration) String() string {
 	return fmt.Sprintf("%ds", d.seconds)
 }

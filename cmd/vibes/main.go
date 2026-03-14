@@ -67,11 +67,11 @@ func runCommand(args []string) error {
 	}
 	moduleDirs, err := computeModulePaths(absScriptPath, modulePaths)
 	if err != nil {
-		return err
+		return fmt.Errorf("compute module paths: %w", err)
 	}
 	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs})
 	if err != nil {
-		return err
+		return fmt.Errorf("create engine: %w", err)
 	}
 	script, err := engine.Compile(string(input))
 	if err != nil {

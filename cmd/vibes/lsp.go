@@ -128,7 +128,7 @@ func (s *lspServer) serve() error {
 			if err == io.EOF {
 				return nil
 			}
-			return err
+			return fmt.Errorf("lsp read: %w", err)
 		}
 
 		var incoming lspInboundMessage
@@ -139,7 +139,7 @@ func (s *lspServer) serve() error {
 		messages := s.handleMessage(incoming)
 		for _, msg := range messages {
 			if err := s.writePayload(msg); err != nil {
-				return err
+				return fmt.Errorf("lsp write: %w", err)
 			}
 		}
 
@@ -460,13 +460,13 @@ func (s *lspServer) readPayload() ([]byte, error) {
 func (s *lspServer) writePayload(msg lspOutboundMessage) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal response: %w", err)
 	}
 	if _, err := fmt.Fprintf(s.writer, "Content-Length: %d\r\n\r\n", len(data)); err != nil {
-		return err
+		return fmt.Errorf("write header: %w", err)
 	}
 	if _, err := s.writer.Write(data); err != nil {
-		return err
+		return fmt.Errorf("write payload: %w", err)
 	}
 	return s.writer.Flush()
 }

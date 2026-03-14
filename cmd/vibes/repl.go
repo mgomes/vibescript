@@ -213,7 +213,7 @@ func newREPLModel() (replModel, error) {
 
 	engine, err := vibes.NewEngine(vibes.Config{})
 	if err != nil {
-		return replModel{}, err
+		return replModel{}, fmt.Errorf("init engine: %w", err)
 	}
 
 	return replModel{
@@ -669,9 +669,11 @@ func renderHelpPanel(width int) string {
 func runREPL() error {
 	model, err := newREPLModel()
 	if err != nil {
-		return err
+		return fmt.Errorf("init repl: %w", err)
 	}
 	p := tea.NewProgram(model)
-	_, err = p.Run()
-	return err
+	if _, err = p.Run(); err != nil {
+		return fmt.Errorf("repl: %w", err)
+	}
+	return nil
 }

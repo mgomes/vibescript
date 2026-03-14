@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// String returns the human-readable name of the ValueKind.
 func (k ValueKind) String() string {
 	switch k {
 	case KindNil:
@@ -49,6 +50,7 @@ func (k ValueKind) String() string {
 	}
 }
 
+// String returns the string representation of v.
 func (v Value) String() string {
 	switch v.kind {
 	case KindString:
@@ -109,6 +111,7 @@ func (v Value) String() string {
 	}
 }
 
+// Truthy reports whether v is considered true in a boolean context.
 func (v Value) Truthy() bool {
 	switch v.kind {
 	case KindNil:
@@ -132,6 +135,7 @@ func (v Value) Truthy() bool {
 	}
 }
 
+// Equal reports whether v and other hold the same kind and value.
 func (v Value) Equal(other Value) bool {
 	if v.kind != other.kind {
 		return false
