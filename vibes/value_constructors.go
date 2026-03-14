@@ -19,10 +19,12 @@ func NewString(s string) Value { return Value{kind: KindString, data: s} }
 
 // NewArray returns an array Value.
 func NewArray(a []Value) Value { return Value{kind: KindArray, data: a} }
+
 // NewHash returns a hash (map) Value.
 func NewHash(h map[string]Value) Value {
 	return Value{kind: KindHash, data: h}
 }
+
 // NewMoney returns a money Value.
 func NewMoney(m Money) Value { return Value{kind: KindMoney, data: m} }
 
@@ -34,12 +36,15 @@ func NewTime(t time.Time) Value { return Value{kind: KindTime, data: t} }
 
 // NewSymbol returns a symbol Value.
 func NewSymbol(name string) Value { return Value{kind: KindSymbol, data: name} }
+
 // NewObject returns an object Value with the given attributes.
 func NewObject(attrs map[string]Value) Value {
 	return Value{kind: KindObject, data: attrs}
 }
+
 // NewRange returns a range Value.
 func NewRange(r Range) Value { return Value{kind: KindRange, data: r} }
+
 // NewBlock returns a block (closure) Value.
 func NewBlock(params []Param, body []Statement, env *Env) Value {
 	return Value{kind: KindBlock, data: &Block{Params: params, Body: body, Env: env}}

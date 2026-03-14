@@ -15,6 +15,7 @@ type Money struct {
 
 // Currency returns the ISO-4217 currency code.
 func (m Money) Currency() string { return m.currency }
+
 // Cents returns the amount in the smallest currency unit.
 func (m Money) Cents() int64 { return m.cents }
 
