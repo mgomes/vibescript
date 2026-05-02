@@ -2,6 +2,7 @@ package vibes
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -30,7 +31,7 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 	if err := decoder.Decode(&decoded); err != nil {
 		return NewNil(), fmt.Errorf("JSON.parse invalid JSON: %v", err)
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return NewNil(), fmt.Errorf("JSON.parse invalid JSON: trailing data")
 	}
 

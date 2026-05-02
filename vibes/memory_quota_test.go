@@ -42,7 +42,7 @@ end
 
 func requireRunMemoryQuotaError(t *testing.T, script *Script, args []Value, opts CallOptions) {
 	t.Helper()
-	requireCallErrorContains(t, script, "run", args, opts, "memory quota exceeded")
+	requireCallErrorIs(t, script, "run", args, opts, errMemoryQuotaExceeded)
 }
 
 func TestMemoryQuotaExceeded(t *testing.T) {
@@ -115,7 +115,7 @@ func TestMemoryQuotaCountsCapabilityScopeKnownBuiltins(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error when known builtin cache grows")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestMemoryQuotaAllowsExecution(t *testing.T) {
@@ -364,7 +364,7 @@ func TestTransientExpressionAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for transient expression allocation")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestIndexedTransientAllocationsAreChecked(t *testing.T) {
@@ -418,7 +418,7 @@ func TestIndexedTransientAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for indexed transient allocation")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestTransientMethodCallReceiverAllocationsAreChecked(t *testing.T) {
@@ -475,7 +475,7 @@ func TestTransientMethodCallReceiverAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for transient method-call receiver allocation")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestTransientMethodCallReceiverLookupErrorsAreChecked(t *testing.T) {
@@ -507,7 +507,7 @@ func TestTransientMethodCallReceiverLookupErrorsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for transient method-call lookup receiver")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestIfConditionTransientAllocationsAreChecked(t *testing.T) {
@@ -563,7 +563,7 @@ func TestIfConditionTransientAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for if-condition transient allocation")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
@@ -622,7 +622,7 @@ func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for aggregate builtin arguments")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestCallArgumentMemoryChecksFailFastBeforeLaterSideEffects(t *testing.T) {
@@ -663,7 +663,7 @@ func TestCallArgumentMemoryChecksFailFastBeforeLaterSideEffects(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for oversized first argument")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 	if tickCount != 0 {
 		t.Fatalf("expected later argument side effects to be skipped, got %d", tickCount)
 	}
@@ -735,7 +735,7 @@ func TestTransientAssignmentValueIsCheckedBeforeAssign(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for transient assignment value")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestTransientUnaryOperandAllocationsAreChecked(t *testing.T) {
@@ -789,7 +789,7 @@ func TestTransientUnaryOperandAllocationsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for unary transient operand")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestTransientBinaryOperandsAreChecked(t *testing.T) {
@@ -844,7 +844,7 @@ func TestTransientBinaryOperandsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for binary transient operands")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestAssignmentTargetExpressionsAreChecked(t *testing.T) {
@@ -906,7 +906,7 @@ func TestAssignmentTargetExpressionsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for assignment target transient allocation")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestAggregateYieldArgumentsAreChecked(t *testing.T) {
@@ -966,7 +966,7 @@ func TestAggregateYieldArgumentsAreChecked(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected memory quota error for aggregate yield arguments")
 	}
-	requireErrorContains(t, err, "memory quota exceeded")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 type highAllocPatternDB struct{}

@@ -2,6 +2,7 @@ package vibes
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -104,6 +105,12 @@ func requireCallErrorContains(t testing.TB, script *Script, fn string, args []Va
 	requireErrorContains(t, err, want)
 }
 
+func requireCallErrorIs(t testing.TB, script *Script, fn string, args []Value, opts CallOptions, target error) {
+	t.Helper()
+	err := callScriptErr(t, context.Background(), script, fn, args, opts)
+	requireErrorIs(t, err, target)
+}
+
 func requireErrorContains(t testing.TB, err error, want string) {
 	t.Helper()
 	if err == nil {
@@ -111,6 +118,16 @@ func requireErrorContains(t testing.TB, err error, want string) {
 	}
 	if got := err.Error(); !strings.Contains(got, want) {
 		t.Fatalf("unexpected error: %s", got)
+	}
+}
+
+func requireErrorIs(t testing.TB, err error, target error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected error matching %v, got nil", target)
+	}
+	if !errors.Is(err, target) {
+		t.Fatalf("expected error matching %v, got %v", target, err)
 	}
 }
 

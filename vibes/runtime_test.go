@@ -1053,7 +1053,7 @@ func TestWhileLoops(t *testing.T) {
       end
     end
     `)
-	requireCallErrorContains(t, spinScript, "spin", nil, CallOptions{}, "step quota exceeded")
+	requireCallErrorIs(t, spinScript, "spin", nil, CallOptions{}, errStepQuotaExceeded)
 }
 
 func TestUntilLoops(t *testing.T) {
@@ -1101,7 +1101,7 @@ func TestUntilLoops(t *testing.T) {
       end
     end
 	`)
-	requireCallErrorContains(t, spinScript, "spin_until", nil, CallOptions{}, "step quota exceeded")
+	requireCallErrorIs(t, spinScript, "spin_until", nil, CallOptions{}, errStepQuotaExceeded)
 }
 
 func TestLineTerminatedHeadersAndStatements(t *testing.T) {
@@ -1488,7 +1488,7 @@ func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
     end
     `)
 
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "step quota exceeded")
+	requireCallErrorIs(t, script, "run", nil, CallOptions{}, errStepQuotaExceeded)
 }
 
 func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {

@@ -75,7 +75,7 @@ end`)
 	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
 		MustNewDBCapability("db", db),
 	))
-	requireErrorContains(t, err, "step quota exceeded")
+	requireErrorIs(t, err, errStepQuotaExceeded)
 }
 
 func TestCapabilityFoundationsEachNoopBlockRespectsStepQuota(t *testing.T) {
@@ -93,7 +93,7 @@ end`)
 	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
 		MustNewDBCapability("db", db),
 	))
-	requireErrorContains(t, err, "step quota exceeded")
+	requireErrorIs(t, err, errStepQuotaExceeded)
 }
 
 func TestCapabilityFoundationsEachRespectsRecursionLimit(t *testing.T) {
