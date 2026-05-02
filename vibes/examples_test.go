@@ -2212,66 +2212,8 @@ func ctxCapability(id, role string) CapabilityAdapter {
 
 func assertValueEqual(t *testing.T, got, want Value) {
 	t.Helper()
-	if got.Kind() != want.Kind() {
-		t.Fatalf("kind mismatch: got %v want %v", got.Kind(), want.Kind())
-	}
-	switch got.Kind() {
-	case KindNil:
-		return
-	case KindBool:
-		if got.Bool() != want.Bool() {
-			t.Fatalf("bool mismatch: got %v want %v", got.Bool(), want.Bool())
-		}
-	case KindInt:
-		if got.Int() != want.Int() {
-			t.Fatalf("int mismatch: got %d want %d", got.Int(), want.Int())
-		}
-	case KindFloat:
-		if got.Float() != want.Float() {
-			t.Fatalf("float mismatch: got %g want %g", got.Float(), want.Float())
-		}
-	case KindString, KindSymbol:
-		if got.String() != want.String() {
-			t.Fatalf("string mismatch: got %q want %q", got.String(), want.String())
-		}
-	case KindMoney:
-		gm := got.Money()
-		wm := want.Money()
-		if gm.cents != wm.cents || gm.currency != wm.currency {
-			t.Fatalf("money mismatch: got %s want %s", gm.String(), wm.String())
-		}
-	case KindDuration:
-		if got.Duration().Seconds() != want.Duration().Seconds() {
-			t.Fatalf("duration mismatch: got %d want %d", got.Duration().Seconds(), want.Duration().Seconds())
-		}
-	case KindTime:
-		if !got.Time().Equal(want.Time()) {
-			t.Fatalf("time mismatch: got %s want %s", got.Time(), want.Time())
-		}
-	case KindArray:
-		gArr := got.Array()
-		wArr := want.Array()
-		if len(gArr) != len(wArr) {
-			t.Fatalf("array length mismatch: got %d want %d", len(gArr), len(wArr))
-		}
-		for i := range gArr {
-			assertValueEqual(t, gArr[i], wArr[i])
-		}
-	case KindHash, KindObject:
-		gMap := got.Hash()
-		wMap := want.Hash()
-		if len(gMap) != len(wMap) {
-			t.Fatalf("hash length mismatch: got %d want %d", len(gMap), len(wMap))
-		}
-		for key, wantVal := range wMap {
-			gotVal, ok := gMap[key]
-			if !ok {
-				t.Fatalf("missing key %s", key)
-			}
-			assertValueEqual(t, gotVal, wantVal)
-		}
-	default:
-		t.Fatalf("unsupported kind %v", got.Kind())
+	if diff := valueDiff(want, got); diff != "" {
+		t.Fatalf("value mismatch (-want +got):\n%s", diff)
 	}
 }
 
