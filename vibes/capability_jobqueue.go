@@ -24,7 +24,7 @@ type JobQueueJob struct {
 	Options JobQueueEnqueueOptions
 }
 
-// JobQueueEnqueueOptions represent keyword arguments supplied to enqueue.
+// JobQueueEnqueueOptions represents keyword arguments supplied to enqueue.
 type JobQueueEnqueueOptions struct {
 	Delay  *time.Duration
 	Key    *string

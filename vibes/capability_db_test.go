@@ -28,6 +28,8 @@ type dbCapabilityStub struct {
 	eachErr      error
 }
 
+var _ Database = (*dbCapabilityStub)(nil)
+
 func (s *dbCapabilityStub) Find(ctx context.Context, req DBFindRequest) (Value, error) {
 	s.findCalls = append(s.findCalls, req)
 	s.findCtx = append(s.findCtx, ctx)

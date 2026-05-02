@@ -22,6 +22,9 @@ type sharedReturnQueue struct {
 	retryResult   Value
 }
 
+var _ JobQueue = (*jobQueueStub)(nil)
+var _ JobQueueWithRetry = (*jobQueueStub)(nil)
+
 func (s *jobQueueStub) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
 	s.enqueueCalls = append(s.enqueueCalls, job)
 	s.enqueueCtx = append(s.enqueueCtx, ctx)

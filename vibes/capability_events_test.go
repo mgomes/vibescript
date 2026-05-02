@@ -12,6 +12,8 @@ type eventsCapabilityStub struct {
 	publishErr    error
 }
 
+var _ EventPublisher = (*eventsCapabilityStub)(nil)
+
 func (s *eventsCapabilityStub) Publish(ctx context.Context, req EventPublishRequest) (Value, error) {
 	s.publishCalls = append(s.publishCalls, req)
 	s.publishCtx = append(s.publishCtx, ctx)
