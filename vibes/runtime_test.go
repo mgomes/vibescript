@@ -283,30 +283,15 @@ func compareArrays(t *testing.T, value Value, want []Value) {
 	if value.Kind() != KindArray {
 		t.Fatalf("expected array, got %v", value.Kind())
 	}
-	arr := value.Array()
-	if len(arr) != len(want) {
-		t.Fatalf("length mismatch: got %d want %d", len(arr), len(want))
-	}
-	for i := range arr {
-		if !arr[i].Equal(want[i]) {
-			t.Fatalf("element %d mismatch: got %v want %v", i, arr[i], want[i])
-		}
+	if diff := valuesDiff(want, value.Array()); diff != "" {
+		t.Fatalf("array mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func compareHash(t *testing.T, got map[string]Value, want map[string]Value) {
 	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("hash length mismatch: got %d want %d", len(got), len(want))
-	}
-	for key, wantValue := range want {
-		gotValue, ok := got[key]
-		if !ok {
-			t.Fatalf("missing key %q", key)
-		}
-		if !gotValue.Equal(wantValue) {
-			t.Fatalf("key %q mismatch: got %v want %v", key, gotValue, wantValue)
-		}
+	if diff := valueMapDiff(want, got); diff != "" {
+		t.Fatalf("hash mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -1068,7 +1053,7 @@ func TestWhileLoops(t *testing.T) {
       end
     end
     `)
-	requireCallErrorContains(t, spinScript, "spin", nil, CallOptions{}, "step quota exceeded")
+	requireCallErrorIs(t, spinScript, "spin", nil, CallOptions{}, errStepQuotaExceeded)
 }
 
 func TestUntilLoops(t *testing.T) {
@@ -1116,7 +1101,7 @@ func TestUntilLoops(t *testing.T) {
       end
     end
 	`)
-	requireCallErrorContains(t, spinScript, "spin_until", nil, CallOptions{}, "step quota exceeded")
+	requireCallErrorIs(t, spinScript, "spin_until", nil, CallOptions{}, errStepQuotaExceeded)
 }
 
 func TestLineTerminatedHeadersAndStatements(t *testing.T) {
@@ -1503,7 +1488,7 @@ func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
     end
     `)
 
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "step quota exceeded")
+	requireCallErrorIs(t, script, "run", nil, CallOptions{}, errStepQuotaExceeded)
 }
 
 func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {

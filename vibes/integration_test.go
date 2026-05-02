@@ -524,7 +524,10 @@ func TestAllVibeFilesCompileAndRun(t *testing.T) {
 
 	engine := MustNewEngine(Config{StepQuota: 5_000_000})
 	for _, path := range files {
-		rel, _ := filepath.Rel(testsDir, path)
+		rel, err := filepath.Rel(testsDir, path)
+		if err != nil {
+			t.Fatalf("relative test fixture path: %v", err)
+		}
 		t.Run(rel, func(t *testing.T) {
 			script := compileScriptFromFileWithEngine(t, engine, path)
 			if fn, ok := script.Function("run"); ok {

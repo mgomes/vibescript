@@ -205,8 +205,14 @@ func TestComputeModulePathsIncludesScriptDirAndDedupesExtras(t *testing.T) {
 		t.Fatalf("expected 2 dirs, got %d (%v)", len(dirs), dirs)
 	}
 
-	wantScript, _ := filepath.Abs(scriptDir)
-	wantExtra, _ := filepath.Abs(extraDir)
+	wantScript, err := filepath.Abs(scriptDir)
+	if err != nil {
+		t.Fatalf("abs script dir: %v", err)
+	}
+	wantExtra, err := filepath.Abs(extraDir)
+	if err != nil {
+		t.Fatalf("abs extra dir: %v", err)
+	}
 	if dirs[0] != wantScript {
 		t.Fatalf("expected first dir %q, got %q", wantScript, dirs[0])
 	}
@@ -250,15 +256,22 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 		t.Fatalf("pipe: %v", err)
 	}
 	os.Stdout = w
+	defer func() {
+		os.Stdout = orig
+	}()
 
 	runErr := fn()
-	_ = w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
 	os.Stdout = orig
 
 	var buf bytes.Buffer
 	if _, copyErr := io.Copy(&buf, r); copyErr != nil {
 		t.Fatalf("read stdout: %v", copyErr)
 	}
-	_ = r.Close()
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stdout reader: %v", err)
+	}
 	return buf.String(), runErr
 }

@@ -63,7 +63,10 @@ func (c *eventsCapability) callPublish(exec *Execution, receiver Value, args []V
 	if err := c.validatePublishContractArgs(args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
-	topic, _ := capabilityNameArg(c.name+".publish", "topic", args[0])
+	topic, err := capabilityNameArg(c.name+".publish", "topic", args[0])
+	if err != nil {
+		return NewNil(), err
+	}
 	req := EventPublishRequest{
 		Topic:   topic,
 		Payload: cloneHash(args[1].Hash()),

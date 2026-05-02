@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -773,27 +774,37 @@ func TestRequireConcurrentLoading(t *testing.T) {
 end`)
 
 	const goroutines = 10
-	results := make(chan error, goroutines)
-
-	for range goroutines {
-		go func() {
-			result, err := script.Call(context.Background(), "run", nil, CallOptions{})
-			if err != nil {
-				results <- err
-				return
-			}
-			if result.Kind() != KindInt || result.Int() != 10 {
-				results <- fmt.Errorf("expected 10, got %#v", result)
-				return
-			}
-			results <- nil
-		}()
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+	recordErr := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		errs = append(errs, err)
 	}
 
 	for range goroutines {
-		if err := <-results; err != nil {
-			t.Fatalf("concurrent call failed: %v", err)
-		}
+		wg.Go(func() {
+			result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+			if err != nil {
+				recordErr(err)
+				return
+			}
+			if result.Kind() != KindInt || result.Int() != 10 {
+				recordErr(fmt.Errorf("expected 10, got %#v", result))
+				return
+			}
+		})
+	}
+
+	wg.Wait()
+	if len(errs) > 0 {
+		t.Fatalf("concurrent call failed: %v", errs[0])
 	}
 
 	if len(engine.modules) != 1 {

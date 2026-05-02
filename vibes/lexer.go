@@ -57,7 +57,7 @@ func (l *lexer) peekRuneN(n int) rune {
 	idx := l.offset
 	var r rune
 	var w int
-	for i := 0; i <= n; i++ {
+	for i := range n + 1 {
 		if idx >= len(l.input) {
 			return 0
 		}

@@ -102,8 +102,8 @@ func stringCapitalize(text string) string {
 		return ""
 	}
 	runes[0] = unicode.ToUpper(runes[0])
-	for i := 1; i < len(runes); i++ {
-		runes[i] = unicode.ToLower(runes[i])
+	for i := range len(runes) - 1 {
+		runes[i+1] = unicode.ToLower(runes[i+1])
 	}
 	return string(runes)
 }
