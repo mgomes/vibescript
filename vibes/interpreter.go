@@ -5,7 +5,6 @@ import (
 	cryptorand "crypto/rand"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -61,6 +60,10 @@ func NewEngine(cfg Config) (*Engine, error) {
 	if err := validateModulePolicyPatterns(cfg.ModuleDenyList, "deny"); err != nil {
 		return nil, err
 	}
+
+	cfg.ModulePaths = append([]string(nil), cfg.ModulePaths...)
+	cfg.ModuleAllowList = append([]string(nil), cfg.ModuleAllowList...)
+	cfg.ModuleDenyList = append([]string(nil), cfg.ModuleDenyList...)
 
 	engine := &Engine{
 		config:   cfg,
@@ -152,8 +155,18 @@ func registerCoreBuiltins(engine *Engine) {
 // Builtins returns a copy of the registered builtin map.
 func (e *Engine) Builtins() map[string]Value {
 	out := make(map[string]Value, len(e.builtins))
-	maps.Copy(out, e.builtins)
+	for name, builtin := range e.builtins {
+		out[name] = cloneBuiltinValue(builtin)
+	}
 	return out
+}
+
+func cloneBuiltinValue(val Value) Value {
+	builtin := val.Builtin()
+	if builtin == nil {
+		return val
+	}
+	return newBuiltin(builtin.Name, builtin.Fn, builtin.AutoInvoke)
 }
 
 // ClearModuleCache drops all cached modules and returns the number of entries removed.

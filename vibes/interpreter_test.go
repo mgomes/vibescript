@@ -68,6 +68,62 @@ func TestNewEngineValidatesConfiguredModulePathAsProvided(t *testing.T) {
 	}
 }
 
+func TestNewEngineCopiesConfigSlices(t *testing.T) {
+	root := t.TempDir()
+	modulePaths := []string{root}
+	allowList := []string{"allowed"}
+	denyList := []string{"blocked"}
+
+	engine, err := NewEngine(Config{
+		ModulePaths:     modulePaths,
+		ModuleAllowList: allowList,
+		ModuleDenyList:  denyList,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine failed: %v", err)
+	}
+
+	modulePaths[0] = filepath.Join(root, "other")
+	allowList[0] = "other"
+	denyList[0] = "allowed"
+
+	if got := engine.config.ModulePaths[0]; got != root {
+		t.Fatalf("engine.config.ModulePaths[0] = %q, want %q", got, root)
+	}
+	if err := engine.enforceModulePolicy("allowed.vibe"); err != nil {
+		t.Fatalf("engine policy changed after caller mutated config slices: %v", err)
+	}
+}
+
+func TestBuiltinsReturnsIsolatedBuiltinValues(t *testing.T) {
+	engine := MustNewEngine(Config{})
+
+	builtins := engine.Builtins()
+	assertBuiltin := builtins["assert"].Builtin()
+	if assertBuiltin == nil {
+		t.Fatalf("Builtins()[assert].Builtin() = nil, want builtin")
+	}
+	assertBuiltin.Name = "mutated"
+	assertBuiltin.AutoInvoke = true
+	assertBuiltin.Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewString("mutated"), nil
+	}
+
+	freshAssert := engine.Builtins()["assert"].Builtin()
+	if freshAssert == nil {
+		t.Fatalf("fresh Builtins()[assert].Builtin() = nil, want builtin")
+	}
+	if freshAssert.Name != "assert" {
+		t.Fatalf("fresh assert builtin name = %q, want %q", freshAssert.Name, "assert")
+	}
+	if freshAssert.AutoInvoke {
+		t.Fatalf("fresh assert builtin AutoInvoke = true, want false")
+	}
+	if _, err := freshAssert.Fn(nil, NewNil(), []Value{NewBool(false)}, nil, NewNil()); err == nil {
+		t.Fatalf("fresh assert builtin returned nil error after caller mutated previous snapshot")
+	}
+}
+
 func TestCompileAndCallAdd(t *testing.T) {
 	script := compileScriptDefault(t, `def add(a, b)
   a + b
