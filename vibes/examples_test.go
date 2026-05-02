@@ -2130,7 +2130,10 @@ func TestAllExampleFilesCompile(t *testing.T) {
 
 	engine := MustNewEngine(Config{})
 	for _, path := range files {
-		rel, _ := filepath.Rel(examplesDir, path)
+		rel, err := filepath.Rel(examplesDir, path)
+		if err != nil {
+			t.Fatalf("relative example path: %v", err)
+		}
 		t.Run(rel, func(t *testing.T) {
 			_ = compileScriptFromFileWithEngine(t, engine, path)
 		})

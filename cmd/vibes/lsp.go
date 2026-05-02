@@ -289,9 +289,13 @@ func diagnosticsForSource(engine *vibes.Engine, source string) []map[string]any 
 
 	out := make([]map[string]any, 0, len(matches))
 	for _, match := range matches {
-		line, _ := strconv.Atoi(match[1])
-		column, _ := strconv.Atoi(match[2])
 		message := match[3]
+		line, lineErr := strconv.Atoi(match[1])
+		column, columnErr := strconv.Atoi(match[2])
+		if lineErr != nil || columnErr != nil {
+			out = append(out, newDiagnostic(0, 0, message))
+			continue
+		}
 		lineIdx := max(0, line-1)
 		colIdx := max(0, column-1)
 		out = append(out, newDiagnostic(lineIdx, colIdx, message))

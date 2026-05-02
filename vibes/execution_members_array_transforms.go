@@ -215,7 +215,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 				return NewArray([]Value{}), nil
 			}
 			windows := make([]Value, 0, len(arr)-size+1)
-			for i := 0; i+size <= len(arr); i++ {
+			for i := range len(arr) - size + 1 {
 				part := make([]Value, size)
 				copy(part, arr[i:i+size])
 				windows = append(windows, NewArray(part))

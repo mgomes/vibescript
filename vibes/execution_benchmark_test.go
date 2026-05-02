@@ -49,7 +49,7 @@ end`)
 	args := []Value{NewInt(400)}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
 			b.Fatalf("call failed: %v", err)
 		}
@@ -79,7 +79,7 @@ end`)
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
 			b.Fatalf("call failed: %v", err)
 		}
@@ -112,7 +112,7 @@ end`)
 	args := []Value{NewInt(300)}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
 			b.Fatalf("call failed: %v", err)
 		}
@@ -138,7 +138,7 @@ end`)
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := script.Call(context.Background(), "run", args, opts); err != nil {
 			b.Fatalf("call failed: %v", err)
 		}
@@ -161,7 +161,7 @@ end`)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
 			b.Fatalf("call failed: %v", err)
 		}
@@ -186,7 +186,7 @@ end`)
 	args := []Value{payload, NewInt(80)}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
 			b.Fatalf("call failed: %v", err)
 		}
@@ -208,7 +208,7 @@ end`)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
 			b.Fatalf("call failed: %v", err)
 		}
@@ -236,7 +236,7 @@ end`)
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
 			b.Fatalf("call failed: %v", err)
 		}

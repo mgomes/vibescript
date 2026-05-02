@@ -22,7 +22,9 @@ func TestRunCLIStartsLSPAndExitsOnEOF(t *testing.T) {
 	os.Stdin = r
 	defer func() {
 		os.Stdin = origStdin
-		_ = r.Close()
+		if err := r.Close(); err != nil {
+			t.Errorf("close read pipe: %v", err)
+		}
 	}()
 
 	if err := runCLI([]string{"vibes", "lsp"}); err != nil {

@@ -17,7 +17,10 @@ func (c *dbCapability) callFind(exec *Execution, receiver Value, args []Value, k
 	if err := c.validateFindContractArgs(args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
-	collection, _ := capabilityNameArg(c.name+".find", "collection", args[0])
+	collection, err := capabilityNameArg(c.name+".find", "collection", args[0])
+	if err != nil {
+		return NewNil(), err
+	}
 	req := DBFindRequest{
 		Collection: collection,
 		ID:         deepCloneValue(args[1]),
@@ -34,7 +37,10 @@ func (c *dbCapability) callQuery(exec *Execution, receiver Value, args []Value, 
 	if err := c.validateQueryContractArgs(args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
-	collection, _ := capabilityNameArg(c.name+".query", "collection", args[0])
+	collection, err := capabilityNameArg(c.name+".query", "collection", args[0])
+	if err != nil {
+		return NewNil(), err
+	}
 	req := DBQueryRequest{
 		Collection: collection,
 		Options:    cloneCapabilityKwargs(kwargs),
@@ -50,7 +56,10 @@ func (c *dbCapability) callUpdate(exec *Execution, receiver Value, args []Value,
 	if err := c.validateUpdateContractArgs(args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
-	collection, _ := capabilityNameArg(c.name+".update", "collection", args[0])
+	collection, err := capabilityNameArg(c.name+".update", "collection", args[0])
+	if err != nil {
+		return NewNil(), err
+	}
 	req := DBUpdateRequest{
 		Collection: collection,
 		ID:         deepCloneValue(args[1]),
@@ -68,8 +77,14 @@ func (c *dbCapability) callSum(exec *Execution, receiver Value, args []Value, kw
 	if err := c.validateSumContractArgs(args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
-	collection, _ := capabilityNameArg(c.name+".sum", "collection", args[0])
-	field, _ := capabilityNameArg(c.name+".sum", "field", args[1])
+	collection, err := capabilityNameArg(c.name+".sum", "collection", args[0])
+	if err != nil {
+		return NewNil(), err
+	}
+	field, err := capabilityNameArg(c.name+".sum", "field", args[1])
+	if err != nil {
+		return NewNil(), err
+	}
 	req := DBSumRequest{
 		Collection: collection,
 		Field:      field,
@@ -86,7 +101,10 @@ func (c *dbCapability) callEach(exec *Execution, receiver Value, args []Value, k
 	if err := c.validateEachContractArgs(args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
-	collection, _ := capabilityNameArg(c.name+".each", "collection", args[0])
+	collection, err := capabilityNameArg(c.name+".each", "collection", args[0])
+	if err != nil {
+		return NewNil(), err
+	}
 	req := DBEachRequest{
 		Collection: collection,
 		Options:    cloneCapabilityKwargs(kwargs),

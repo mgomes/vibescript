@@ -66,19 +66,19 @@ func timeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	if len(args) < 3 {
 		return time.Time{}, fmt.Errorf("Time.new expects at least year, month, day") //nolint:staticcheck // class.method reference
 	}
-	getInt := func(idx int) (int, error) {
+	getInt := func(idx int) int {
 		if idx >= len(args) {
-			return 0, nil
+			return 0
 		}
-		return int(args[idx].Int()), nil
+		return int(args[idx].Int())
 	}
 
-	year, _ := getInt(0)
-	month, _ := getInt(1)
-	day, _ := getInt(2)
-	hour, _ := getInt(3)
-	min, _ := getInt(4)
-	sec, _ := getInt(5)
+	year := getInt(0)
+	month := getInt(1)
+	day := getInt(2)
+	hour := getInt(3)
+	min := getInt(4)
+	sec := getInt(5)
 
 	loc := defaultLoc
 	if len(args) >= 7 {
