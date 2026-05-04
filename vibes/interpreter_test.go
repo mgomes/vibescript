@@ -45,11 +45,11 @@ func TestNewEngineNormalizesModulePathsAtCreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get cwd: %v", err)
 	}
-	t.Cleanup(func() {
+	defer func() {
 		if err := os.Chdir(previousDir); err != nil {
 			t.Fatalf("restore cwd: %v", err)
 		}
-	})
+	}()
 
 	root := t.TempDir()
 	mods := filepath.Join(root, "mods")
