@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -61,7 +62,8 @@ func NewEngine(cfg Config) (*Engine, error) {
 		cfg.RandomReader = cryptorand.Reader
 	}
 
-	if err := validateModulePaths(cfg.ModulePaths); err != nil {
+	modulePaths, err := normalizeModulePaths(cfg.ModulePaths)
+	if err != nil {
 		return nil, err
 	}
 	if err := validateModulePolicyPatterns(cfg.ModuleAllowList, "allow"); err != nil {
@@ -71,7 +73,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 
-	cfg.ModulePaths = append([]string(nil), cfg.ModulePaths...)
+	cfg.ModulePaths = modulePaths
 	cfg.ModuleAllowList = append([]string(nil), cfg.ModuleAllowList...)
 	cfg.ModuleDenyList = append([]string(nil), cfg.ModuleDenyList...)
 
@@ -103,20 +105,30 @@ func (e *Engine) randomBytes(n int) ([]byte, error) {
 	return buf, nil
 }
 
-func validateModulePaths(paths []string) error {
+func normalizeModulePaths(paths []string) ([]string, error) {
+	normalized := make([]string, 0, len(paths))
 	for _, path := range paths {
 		if strings.TrimSpace(path) == "" {
-			return fmt.Errorf("vibes: module path cannot be empty")
+			return nil, fmt.Errorf("vibes: module path cannot be empty")
 		}
-		stat, err := os.Stat(path)
+		absPath, err := filepath.Abs(path)
 		if err != nil {
-			return fmt.Errorf("vibes: invalid module path %q: %w", path, err)
+			return nil, fmt.Errorf("vibes: invalid module path %q: %w", path, err)
+		}
+		stat, err := os.Stat(absPath)
+		if err != nil {
+			return nil, fmt.Errorf("vibes: invalid module path %q: %w", path, err)
 		}
 		if !stat.IsDir() {
-			return fmt.Errorf("vibes: module path %q is not a directory", path)
+			return nil, fmt.Errorf("vibes: module path %q is not a directory", path)
 		}
+		resolvedPath, err := filepath.EvalSymlinks(absPath)
+		if err != nil {
+			return nil, fmt.Errorf("vibes: invalid module path %q: %w", path, err)
+		}
+		normalized = append(normalized, filepath.Clean(resolvedPath))
 	}
-	return nil
+	return normalized, nil
 }
 
 // MustNewEngine constructs an Engine or panics if the config is invalid.

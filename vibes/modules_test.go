@@ -318,6 +318,112 @@ end`)
 	}
 }
 
+func TestRequireUsesModulePathResolvedAtEngineCreation(t *testing.T) {
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(previousDir); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	}()
+
+	root := t.TempDir()
+	safeCwd := filepath.Join(root, "safe")
+	otherCwd := filepath.Join(root, "other")
+	for _, dir := range []string{filepath.Join(safeCwd, "mods"), filepath.Join(otherCwd, "mods")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(safeCwd, "mods", "picked.vibe"), []byte("def value() 1 end\n"), 0o644); err != nil {
+		t.Fatalf("write safe module: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(otherCwd, "mods", "picked.vibe"), []byte("def value() 2 end\n"), 0o644); err != nil {
+		t.Fatalf("write other module: %v", err)
+	}
+
+	if err := os.Chdir(safeCwd); err != nil {
+		t.Fatalf("chdir safe: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{"mods"}})
+	if err := os.Chdir(otherCwd); err != nil {
+		t.Fatalf("chdir other: %v", err)
+	}
+
+	script := compileScriptWithEngine(t, engine, `def run()
+  mod = require("picked")
+  mod.value()
+end`)
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if !result.Equal(NewInt(1)) {
+		t.Fatalf("require after cwd change = %#v, want 1 from original module root", result)
+	}
+}
+
+func TestRequireUsesSymlinkTargetResolvedAtEngineCreation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-specific on Windows")
+	}
+
+	root := t.TempDir()
+	safeRoot := filepath.Join(root, "safe")
+	otherRoot := filepath.Join(root, "other")
+	for _, dir := range []string{safeRoot, otherRoot} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(safeRoot, "picked.vibe"), []byte("def value() 1 end\n"), 0o644); err != nil {
+		t.Fatalf("write safe module: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(otherRoot, "picked.vibe"), []byte("def value() 2 end\n"), 0o644); err != nil {
+		t.Fatalf("write other module: %v", err)
+	}
+
+	linkRoot := filepath.Join(root, "mods")
+	if err := os.Symlink(safeRoot, linkRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{linkRoot}})
+	if err := os.Remove(linkRoot); err != nil {
+		t.Fatalf("remove module symlink: %v", err)
+	}
+	if err := os.Symlink(otherRoot, linkRoot); err != nil {
+		t.Fatalf("retarget module symlink: %v", err)
+	}
+
+	script := compileScriptWithEngine(t, engine, `def run()
+  mod = require("picked")
+  mod.value()
+end`)
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	if !result.Equal(NewInt(1)) {
+		t.Fatalf("require after symlink retarget = %#v, want 1 from original module root", result)
+	}
+}
+
+func TestRequireRejectsNonRegularModuleFile(t *testing.T) {
+	moduleRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(moduleRoot, "notfile.vibe"), 0o755); err != nil {
+		t.Fatalf("mkdir module directory: %v", err)
+	}
+
+	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	script := compileScriptWithEngine(t, engine, `def run()
+  require("notfile")
+end`)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "not a regular file")
+}
+
 func TestRequireRejectsAbsolutePaths(t *testing.T) {
 	engine := moduleTestEngine(t)
 
