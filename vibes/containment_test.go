@@ -47,6 +47,26 @@ end`)
 	}
 }
 
+func TestScriptCallReturnsIsolatedBuiltinFunctions(t *testing.T) {
+	script := compileScriptDefault(t, `def leak
+  to_int
+end
+
+def convert
+  to_int("7")
+end`)
+
+	leaked := callScript(t, context.Background(), script, "leak", nil, CallOptions{})
+	leaked.Builtin().Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewInt(99), nil
+	}
+
+	result := callScript(t, context.Background(), script, "convert", nil, CallOptions{})
+	if !result.Equal(NewInt(7)) {
+		t.Fatalf("convert after host-mutated returned to_int = %#v, want 7", result)
+	}
+}
+
 func TestValueEqualityForContainersDoesNotPanic(t *testing.T) {
 	script := compileScriptDefault(t, `def facts
   a = []

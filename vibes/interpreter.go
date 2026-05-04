@@ -196,8 +196,37 @@ func (e *Engine) defineBuiltinsForCall(root *Env) {
 	defer e.builtinsMu.RUnlock()
 
 	for name, builtin := range e.builtins {
-		root.Define(name, cloneBuiltinValue(builtin))
+		root.Define(name, cloneBuiltinValueForCall(builtin))
 	}
+}
+
+func cloneBuiltinValueForCall(val Value) Value {
+	switch val.Kind() {
+	case KindArray:
+		arr := val.Array()
+		cloned := make([]Value, len(arr))
+		for i, elem := range arr {
+			cloned[i] = cloneBuiltinValueForCall(elem)
+		}
+		return NewArray(cloned)
+	case KindHash:
+		return NewHash(cloneBuiltinMapForCall(val.Hash()))
+	case KindObject:
+		return NewObject(cloneBuiltinMapForCall(val.Hash()))
+	default:
+		return val
+	}
+}
+
+func cloneBuiltinMapForCall(src map[string]Value) map[string]Value {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]Value, len(src))
+	for name, val := range src {
+		out[name] = cloneBuiltinValueForCall(val)
+	}
+	return out
 }
 
 func cloneBuiltinValue(val Value) Value {

@@ -53,21 +53,6 @@ func (k ValueKind) String() string {
 
 // String returns the string representation of v.
 func (v Value) String() string {
-	if v.kind != KindArray && v.kind != KindHash {
-		return v.stringWithState(nil)
-	}
-	return v.stringWithState(&valueStringState{
-		arrays: make(map[sliceIdentity]struct{}),
-		maps:   make(map[uintptr]struct{}),
-	})
-}
-
-type valueStringState struct {
-	arrays map[sliceIdentity]struct{}
-	maps   map[uintptr]struct{}
-}
-
-func (v Value) stringWithState(state *valueStringState) string {
 	switch v.kind {
 	case KindString:
 		return v.data.(string)
@@ -90,6 +75,44 @@ func (v Value) stringWithState(state *valueStringState) string {
 		return v.data.(Duration).String()
 	case KindTime:
 		return v.data.(time.Time).Format(time.RFC3339Nano)
+	case KindArray:
+		return v.stringWithState(newValueStringState())
+	case KindHash:
+		return v.stringWithState(newValueStringState())
+	case KindRange:
+		r := v.data.(Range)
+		return fmt.Sprintf("%d..%d", r.Start, r.End)
+	case KindEnum:
+		enum := v.data.(*EnumDef)
+		return fmt.Sprintf("<Enum %s>", enum.Name)
+	case KindEnumValue:
+		member := v.data.(*EnumValueDef)
+		return fmt.Sprintf("%s::%s", member.Enum.Name, member.Name)
+	case KindClass:
+		cl := v.data.(*ClassDef)
+		return fmt.Sprintf("<Class %s>", cl.Name)
+	case KindInstance:
+		inst := v.data.(*Instance)
+		return fmt.Sprintf("<%s instance>", inst.Class.Name)
+	default:
+		return fmt.Sprintf("<%v>", v.kind)
+	}
+}
+
+type valueStringState struct {
+	arrays map[sliceIdentity]struct{}
+	maps   map[uintptr]struct{}
+}
+
+func newValueStringState() *valueStringState {
+	return &valueStringState{
+		arrays: make(map[sliceIdentity]struct{}),
+		maps:   make(map[uintptr]struct{}),
+	}
+}
+
+func (v Value) stringWithState(state *valueStringState) string {
+	switch v.kind {
 	case KindArray:
 		elems := v.data.([]Value)
 		id := sliceIdentity{
@@ -127,23 +150,8 @@ func (v Value) stringWithState(state *valueStringState) string {
 			parts = append(parts, fmt.Sprintf("%s: %s", k, val.stringWithState(state)))
 		}
 		return fmt.Sprintf("{%s}", strings.Join(parts, ", "))
-	case KindRange:
-		r := v.data.(Range)
-		return fmt.Sprintf("%d..%d", r.Start, r.End)
-	case KindEnum:
-		enum := v.data.(*EnumDef)
-		return fmt.Sprintf("<Enum %s>", enum.Name)
-	case KindEnumValue:
-		member := v.data.(*EnumValueDef)
-		return fmt.Sprintf("%s::%s", member.Enum.Name, member.Name)
-	case KindClass:
-		cl := v.data.(*ClassDef)
-		return fmt.Sprintf("<Class %s>", cl.Name)
-	case KindInstance:
-		inst := v.data.(*Instance)
-		return fmt.Sprintf("<%s instance>", inst.Class.Name)
 	default:
-		return fmt.Sprintf("<%v>", v.kind)
+		return v.String()
 	}
 }
 
