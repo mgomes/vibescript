@@ -162,11 +162,38 @@ func (e *Engine) Builtins() map[string]Value {
 }
 
 func cloneBuiltinValue(val Value) Value {
-	builtin := val.Builtin()
-	if builtin == nil {
+	switch val.Kind() {
+	case KindBuiltin:
+		builtin := val.Builtin()
+		if builtin == nil {
+			return val
+		}
+		return newBuiltin(builtin.Name, builtin.Fn, builtin.AutoInvoke)
+	case KindArray:
+		arr := val.Array()
+		cloned := make([]Value, len(arr))
+		for i, elem := range arr {
+			cloned[i] = cloneBuiltinValue(elem)
+		}
+		return NewArray(cloned)
+	case KindHash:
+		return NewHash(cloneBuiltinMap(val.Hash()))
+	case KindObject:
+		return NewObject(cloneBuiltinMap(val.Hash()))
+	default:
 		return val
 	}
-	return newBuiltin(builtin.Name, builtin.Fn, builtin.AutoInvoke)
+}
+
+func cloneBuiltinMap(src map[string]Value) map[string]Value {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]Value, len(src))
+	for name, val := range src {
+		out[name] = cloneBuiltinValue(val)
+	}
+	return out
 }
 
 // ClearModuleCache drops all cached modules and returns the number of entries removed.

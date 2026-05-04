@@ -124,6 +124,75 @@ func TestBuiltinsReturnsIsolatedBuiltinValues(t *testing.T) {
 	}
 }
 
+func TestBuiltinsReturnsIsolatedObjectValues(t *testing.T) {
+	mutatedBuiltin := func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewString("mutated"), nil
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, methods map[string]Value)
+	}{
+		{
+			name: "method builtin pointer",
+			mutate: func(t *testing.T, methods map[string]Value) {
+				t.Helper()
+				parseBuiltin := methods["parse"].Builtin()
+				if parseBuiltin == nil {
+					t.Fatalf("Builtins()[JSON].Hash()[parse].Builtin() = nil, want builtin")
+				}
+				parseBuiltin.Name = "mutated.JSON.parse"
+				parseBuiltin.AutoInvoke = true
+				parseBuiltin.Fn = mutatedBuiltin
+			},
+		},
+		{
+			name: "method table entry",
+			mutate: func(t *testing.T, methods map[string]Value) {
+				t.Helper()
+				methods["parse"] = NewBuiltin("mutated.JSON.parse", mutatedBuiltin)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := MustNewEngine(Config{})
+
+			jsonBuiltin := engine.Builtins()["JSON"]
+			if jsonBuiltin.Kind() != KindObject {
+				t.Fatalf("Builtins()[JSON].Kind() = %s, want object", jsonBuiltin.Kind())
+			}
+			tt.mutate(t, jsonBuiltin.Hash())
+
+			freshParse := engine.Builtins()["JSON"].Hash()["parse"].Builtin()
+			if freshParse == nil {
+				t.Fatalf("fresh Builtins()[JSON].Hash()[parse].Builtin() = nil, want builtin")
+			}
+			if freshParse.Name != "JSON.parse" {
+				t.Fatalf("fresh JSON.parse builtin name = %q, want %q", freshParse.Name, "JSON.parse")
+			}
+			if freshParse.AutoInvoke {
+				t.Fatalf("fresh JSON.parse builtin AutoInvoke = true, want false")
+			}
+
+			script, err := engine.Compile(`def parse_name
+  JSON.parse("{\"name\":\"alex\"}")[:name]
+end`)
+			if err != nil {
+				t.Fatalf("Compile(parse_name) failed: %v", err)
+			}
+			result, err := script.Call(context.Background(), "parse_name", nil, CallOptions{})
+			if err != nil {
+				t.Fatalf("parse_name call failed after caller mutated Builtins()[JSON]: %v", err)
+			}
+			if !result.Equal(NewString("alex")) {
+				t.Fatalf("parse_name after caller mutated Builtins()[JSON] = %#v, want alex", result)
+			}
+		})
+	}
+}
+
 func TestCompileAndCallAdd(t *testing.T) {
 	script := compileScriptDefault(t, `def add(a, b)
   a + b
