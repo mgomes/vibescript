@@ -133,7 +133,7 @@ func snapshotValue(val Value) valueSnapshot {
 		enumDef := val.Enum()
 		if enumDef != nil {
 			snapshot.Data = enumSnapshot{
-				Identity: fmt.Sprintf("%p", enumDef),
+				Identity: enumSnapshotIdentity(enumDef),
 				Name:     enumDef.Name,
 				Order:    append([]string(nil), enumDef.Order...),
 			}
@@ -146,7 +146,7 @@ func snapshotValue(val Value) valueSnapshot {
 				enumName = enumValue.Enum.Name
 			}
 			snapshot.Data = enumValueSnapshot{
-				Identity: fmt.Sprintf("%p", enumValue),
+				Identity: enumValueSnapshotIdentity(enumValue),
 				Enum:     enumName,
 				Name:     enumValue.Name,
 				Symbol:   enumValue.Symbol,
@@ -178,6 +178,23 @@ func snapshotValue(val Value) valueSnapshot {
 	}
 
 	return snapshot
+}
+
+func enumSnapshotIdentity(enumDef *EnumDef) string {
+	if enumDef == nil {
+		return ""
+	}
+	if enumDef.owner != nil {
+		return fmt.Sprintf("%p:%s", enumDef.owner, enumDef.Name)
+	}
+	return fmt.Sprintf("%p", enumDef)
+}
+
+func enumValueSnapshotIdentity(enumValue *EnumValueDef) string {
+	if enumValue == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s:%s:%d", enumSnapshotIdentity(enumValue.Enum), enumValue.Symbol, enumValue.Index)
 }
 
 func snapshotValues(values []Value) []valueSnapshot {

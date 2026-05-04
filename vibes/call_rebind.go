@@ -6,17 +6,19 @@ type callFunctionRebinder struct {
 	script        *Script
 	root          *Env
 	callClasses   map[string]*ClassDef
+	callEnums     map[string]*EnumDef
 	seenFunctions map[*ScriptFunction]*ScriptFunction
 	seenInstances map[*Instance]Value
 	seenArrays    map[sliceIdentity]Value
 	seenMaps      map[uintptr]map[string]Value
 }
 
-func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef) *callFunctionRebinder {
+func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
 	return &callFunctionRebinder{
 		script:        script,
 		root:          root,
 		callClasses:   callClasses,
+		callEnums:     callEnums,
 		seenFunctions: make(map[*ScriptFunction]*ScriptFunction),
 		seenInstances: make(map[*Instance]Value),
 		seenArrays:    make(map[sliceIdentity]Value),
@@ -52,6 +54,29 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		if rebound, ok := r.callClasses[classDef.Name]; ok {
 			return NewClass(rebound)
+		}
+		return val
+	case KindEnum:
+		enumDef := val.Enum()
+		if enumDef == nil || enumDef.owner != r.script {
+			return val
+		}
+		if rebound, ok := r.callEnums[enumDef.Name]; ok {
+			return NewEnum(rebound)
+		}
+		return val
+	case KindEnumValue:
+		member := val.EnumValue()
+		if member == nil || member.Enum == nil || member.Enum.owner != r.script {
+			return val
+		}
+		if reboundEnum, ok := r.callEnums[member.Enum.Name]; ok {
+			if reboundMember, ok := reboundEnum.Members[member.Name]; ok {
+				return NewEnumValue(reboundMember)
+			}
+			if reboundMember, ok := reboundEnum.MembersByKey[member.Symbol]; ok {
+				return NewEnumValue(reboundMember)
+			}
 		}
 		return val
 	case KindFunction:

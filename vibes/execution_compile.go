@@ -5,6 +5,10 @@ import (
 )
 
 func (e *Engine) Compile(source string) (*Script, error) {
+	if e.config.MaxSourceBytes > 0 && len(source) > e.config.MaxSourceBytes {
+		return nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", len(source), e.config.MaxSourceBytes)
+	}
+
 	p := newParser(source)
 	program, parseErrors := p.ParseProgram()
 	if len(parseErrors) > 0 {
