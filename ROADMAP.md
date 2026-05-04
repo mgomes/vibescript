@@ -483,3 +483,33 @@ Goal: remove a handful of parser and runtime edge cases that were blocking direc
 
 - [x] Rosetta-style ports no longer fail on newline-sensitive control-flow parsing, eager boolean guards, or missing array aliases.
 - [x] Signed integer arithmetic and `array.fetch` behavior are covered by targeted regressions and the full `go test ./vibes` suite.
+
+---
+
+## v0.27.0 - Engine Containment Hardening (completed 2026-05-04)
+
+Goal: close remaining host-facing containment gaps before the next pre-1.0 release.
+
+### API Boundary Isolation
+
+- [x] Return isolated script inspection snapshots for globals, types, functions, classes, enums, and modules.
+- [x] Deep-clone object-valued builtin snapshots so public `Engine.Builtins()` callers cannot mutate stdlib method tables.
+- [x] Preserve scalar string conversion and metadata lookup fast paths while adding snapshot hardening.
+
+### Module Containment
+
+- [x] Resolve and store module roots when an engine is constructed.
+- [x] Prevent later cwd changes or symlink retargeting from redirecting `require`.
+- [x] Reject non-regular module files before source reads.
+
+### Runtime Breakout Guards
+
+- [x] Enforce regex pattern, input, replacement, and output limits for regex-backed string member helpers.
+- [x] Reject cyclic host-provided arrays in `array.flatten`.
+- [x] Add focused containment regressions for mutable snapshots, module root drift, regex guard bypasses, and cyclic flattening.
+
+### v0.27.0 Definition of Done
+
+- [x] Engine-owned mutable state is not exposed through public snapshot APIs.
+- [x] Module resolution remains anchored to engine construction-time roots.
+- [x] Security hardening passes full tests, race-detector coverage, and benchmark smoke gates.
