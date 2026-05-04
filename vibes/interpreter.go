@@ -184,6 +184,22 @@ func (e *Engine) builtinSnapshot() map[string]Value {
 	return out
 }
 
+func (e *Engine) builtinCount() int {
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	return len(e.builtins)
+}
+
+func (e *Engine) defineBuiltinsForCall(root *Env) {
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	for name, builtin := range e.builtins {
+		root.Define(name, cloneBuiltinValue(builtin))
+	}
+}
+
 func cloneBuiltinValue(val Value) Value {
 	switch val.Kind() {
 	case KindBuiltin:

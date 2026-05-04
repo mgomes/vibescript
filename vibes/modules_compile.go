@@ -40,12 +40,9 @@ func (e *Engine) compileAndCacheModule(key, root, relative, fullPath string, con
 	return entry, nil
 }
 
-// cloneFunctionForEnv creates an isolated copy of a ScriptFunction with a different environment.
+// cloneFunctionForEnv creates a per-call function value with a different environment.
 func cloneFunctionForEnv(fn *ScriptFunction, env *Env) *ScriptFunction {
 	clone := *fn
-	clone.Params = cloneParams(fn.Params)
-	clone.ReturnTy = cloneTypeExpr(fn.ReturnTy)
-	clone.Body = cloneStatements(fn.Body)
 	clone.Env = env
 	return &clone
 }

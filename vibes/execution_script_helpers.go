@@ -87,7 +87,7 @@ func cloneClassesForCall(classes map[string]*ClassDef, env *Env) map[string]*Cla
 			Methods:      make(map[string]*ScriptFunction, len(classDef.Methods)),
 			ClassMethods: make(map[string]*ScriptFunction, len(classDef.ClassMethods)),
 			ClassVars:    make(map[string]Value),
-			Body:         cloneStatements(classDef.Body),
+			Body:         classDef.Body,
 			owner:        classDef.owner,
 		}
 		for methodName, method := range classDef.Methods {
