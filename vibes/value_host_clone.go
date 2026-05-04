@@ -220,17 +220,6 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 	}
 }
 
-func cloneFunctionForHost(fn *ScriptFunction) *ScriptFunction {
-	state := hostValueCloneState{
-		arrays:    make(map[sliceIdentity]Value),
-		maps:      make(map[uintptr]map[string]Value),
-		instances: make(map[*Instance]Value),
-		classes:   make(map[*ClassDef]*ClassDef),
-		envs:      make(map[*Env]*Env),
-	}
-	return cloneFunctionForHostWithState(fn, state)
-}
-
 func cloneFunctionForHostWithState(fn *ScriptFunction, state hostValueCloneState) *ScriptFunction {
 	if fn == nil {
 		return nil
@@ -241,17 +230,6 @@ func cloneFunctionForHostWithState(fn *ScriptFunction, state hostValueCloneState
 	clone.Body = cloneStatements(fn.Body)
 	clone.Env = cloneEnvForHost(fn.Env, state)
 	return &clone
-}
-
-func cloneClassForHost(classDef *ClassDef) *ClassDef {
-	state := hostValueCloneState{
-		arrays:    make(map[sliceIdentity]Value),
-		maps:      make(map[uintptr]map[string]Value),
-		instances: make(map[*Instance]Value),
-		classes:   make(map[*ClassDef]*ClassDef),
-		envs:      make(map[*Env]*Env),
-	}
-	return cloneClassForHostWithState(classDef, state)
 }
 
 func cloneClassForHostWithState(classDef *ClassDef, state hostValueCloneState) *ClassDef {
