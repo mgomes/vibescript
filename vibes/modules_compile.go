@@ -40,8 +40,7 @@ func (e *Engine) compileAndCacheModule(key, root, relative, fullPath string, con
 	return entry, nil
 }
 
-// cloneFunctionForEnv creates a shallow copy of a ScriptFunction with a different environment.
-// This is safe because ScriptFunction fields are immutable except for Env which we explicitly override.
+// cloneFunctionForEnv creates a per-call function value with a different environment.
 func cloneFunctionForEnv(fn *ScriptFunction, env *Env) *ScriptFunction {
 	clone := *fn
 	clone.Env = env

@@ -2,6 +2,7 @@ package vibes
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -75,22 +76,9 @@ func (v Value) String() string {
 	case KindTime:
 		return v.data.(time.Time).Format(time.RFC3339Nano)
 	case KindArray:
-		elems := v.data.([]Value)
-		parts := make([]string, len(elems))
-		for i, e := range elems {
-			parts[i] = e.String()
-		}
-		return fmt.Sprintf("[%s]", strings.Join(parts, ", "))
+		return v.stringWithState(newValueStringState())
 	case KindHash:
-		entries := v.data.(map[string]Value)
-		if len(entries) == 0 {
-			return "{}"
-		}
-		parts := make([]string, 0, len(entries))
-		for k, val := range entries {
-			parts = append(parts, fmt.Sprintf("%s: %s", k, val.String()))
-		}
-		return fmt.Sprintf("{%s}", strings.Join(parts, ", "))
+		return v.stringWithState(newValueStringState())
 	case KindRange:
 		r := v.data.(Range)
 		return fmt.Sprintf("%d..%d", r.Start, r.End)
@@ -108,6 +96,62 @@ func (v Value) String() string {
 		return fmt.Sprintf("<%s instance>", inst.Class.Name)
 	default:
 		return fmt.Sprintf("<%v>", v.kind)
+	}
+}
+
+type valueStringState struct {
+	arrays map[sliceIdentity]struct{}
+	maps   map[uintptr]struct{}
+}
+
+func newValueStringState() *valueStringState {
+	return &valueStringState{
+		arrays: make(map[sliceIdentity]struct{}),
+		maps:   make(map[uintptr]struct{}),
+	}
+}
+
+func (v Value) stringWithState(state *valueStringState) string {
+	switch v.kind {
+	case KindArray:
+		elems := v.data.([]Value)
+		id := sliceIdentity{
+			ptr: reflect.ValueOf(elems).Pointer(),
+			len: len(elems),
+			cap: cap(elems),
+		}
+		if id.ptr != 0 {
+			if _, seen := state.arrays[id]; seen {
+				return "<cycle>"
+			}
+			state.arrays[id] = struct{}{}
+			defer delete(state.arrays, id)
+		}
+		parts := make([]string, len(elems))
+		for i, e := range elems {
+			parts[i] = e.stringWithState(state)
+		}
+		return fmt.Sprintf("[%s]", strings.Join(parts, ", "))
+	case KindHash:
+		entries := v.data.(map[string]Value)
+		if len(entries) == 0 {
+			return "{}"
+		}
+		ptr := reflect.ValueOf(entries).Pointer()
+		if ptr != 0 {
+			if _, seen := state.maps[ptr]; seen {
+				return "<cycle>"
+			}
+			state.maps[ptr] = struct{}{}
+			defer delete(state.maps, ptr)
+		}
+		parts := make([]string, 0, len(entries))
+		for k, val := range entries {
+			parts = append(parts, fmt.Sprintf("%s: %s", k, val.stringWithState(state)))
+		}
+		return fmt.Sprintf("{%s}", strings.Join(parts, ", "))
+	default:
+		return v.String()
 	}
 }
 
@@ -137,6 +181,18 @@ func (v Value) Truthy() bool {
 
 // Equal reports whether v and other hold the same kind and value.
 func (v Value) Equal(other Value) bool {
+	return valuesEqual(v, other, make(map[valueEqualityPair]struct{}))
+}
+
+type valueEqualityPair struct {
+	kind     ValueKind
+	leftPtr  uintptr
+	rightPtr uintptr
+	leftLen  int
+	rightLen int
+}
+
+func valuesEqual(v Value, other Value, seen map[valueEqualityPair]struct{}) bool {
 	if v.kind != other.kind {
 		return false
 	}
@@ -159,15 +215,122 @@ func (v Value) Equal(other Value) bool {
 		return v.data.(time.Time).Equal(other.data.(time.Time))
 	case KindRange:
 		return v.data.(Range) == other.data.(Range)
+	case KindArray:
+		left := v.Array()
+		right := other.Array()
+		if len(left) != len(right) {
+			return false
+		}
+		leftID := sliceIdentity{
+			ptr: reflect.ValueOf(left).Pointer(),
+			len: len(left),
+			cap: cap(left),
+		}
+		rightID := sliceIdentity{
+			ptr: reflect.ValueOf(right).Pointer(),
+			len: len(right),
+			cap: cap(right),
+		}
+		if leftID.ptr != 0 && leftID == rightID {
+			return true
+		}
+		pair := valueEqualityPair{
+			kind:     KindArray,
+			leftPtr:  leftID.ptr,
+			rightPtr: rightID.ptr,
+			leftLen:  len(left),
+			rightLen: len(right),
+		}
+		if pair.leftPtr != 0 || pair.rightPtr != 0 {
+			if _, ok := seen[pair]; ok {
+				return true
+			}
+			seen[pair] = struct{}{}
+		}
+		for i := range left {
+			if !valuesEqual(left[i], right[i], seen) {
+				return false
+			}
+		}
+		return true
+	case KindHash, KindObject:
+		left := v.Hash()
+		right := other.Hash()
+		if len(left) != len(right) {
+			return false
+		}
+		leftPtr := reflect.ValueOf(left).Pointer()
+		rightPtr := reflect.ValueOf(right).Pointer()
+		if leftPtr != 0 && leftPtr == rightPtr {
+			return true
+		}
+		pair := valueEqualityPair{
+			kind:     v.kind,
+			leftPtr:  leftPtr,
+			rightPtr: rightPtr,
+			leftLen:  len(left),
+			rightLen: len(right),
+		}
+		if pair.leftPtr != 0 || pair.rightPtr != 0 {
+			if _, ok := seen[pair]; ok {
+				return true
+			}
+			seen[pair] = struct{}{}
+		}
+		for key, leftValue := range left {
+			rightValue, ok := right[key]
+			if !ok {
+				return false
+			}
+			if !valuesEqual(leftValue, rightValue, seen) {
+				return false
+			}
+		}
+		return true
+	case KindFunction:
+		return v.data.(*ScriptFunction) == other.data.(*ScriptFunction)
+	case KindBuiltin:
+		return v.data.(*Builtin) == other.data.(*Builtin)
+	case KindBlock:
+		return v.data.(*Block) == other.data.(*Block)
 	case KindEnum:
-		return v.data.(*EnumDef) == other.data.(*EnumDef)
+		return enumDefsEqual(v.data.(*EnumDef), other.data.(*EnumDef))
 	case KindEnumValue:
-		return v.data.(*EnumValueDef) == other.data.(*EnumValueDef)
+		return enumValueDefsEqual(v.data.(*EnumValueDef), other.data.(*EnumValueDef))
 	case KindClass:
 		return v.data.(*ClassDef) == other.data.(*ClassDef)
 	case KindInstance:
 		return v.data.(*Instance) == other.data.(*Instance)
 	default:
-		return v.data == other.data
+		return false
 	}
+}
+
+func enumDefsEqual(left *EnumDef, right *EnumDef) bool {
+	if left == right {
+		return true
+	}
+	if left == nil || right == nil {
+		return false
+	}
+	if left.Name != right.Name {
+		return false
+	}
+	if left.owner == nil || right.owner == nil {
+		return false
+	}
+	return left.owner == right.owner
+}
+
+func enumValueDefsEqual(left *EnumValueDef, right *EnumValueDef) bool {
+	if left == right {
+		return true
+	}
+	if left == nil || right == nil {
+		return false
+	}
+	return left.Name == right.Name &&
+		left.Symbol == right.Symbol &&
+		left.Index == right.Index &&
+		enumDefsEqual(left.Enum, right.Enum)
 }

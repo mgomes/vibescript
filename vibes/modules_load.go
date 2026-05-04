@@ -47,7 +47,7 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 		return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
 	}
 
-	data, readErr := os.ReadFile(candidate)
+	data, readErr := e.readModuleSource(candidate)
 	if readErr != nil {
 		if errors.Is(readErr, fs.ErrNotExist) {
 			return moduleEntry{}, fmt.Errorf("require: module %q not found", request.raw)
@@ -74,7 +74,7 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		if entry, ok := e.getCachedModule(key); ok {
 			return entry, nil
 		}
-		data, readErr := os.ReadFile(candidate)
+		data, readErr := e.readModuleSource(candidate)
 		if readErr != nil {
 			if errors.Is(readErr, fs.ErrNotExist) {
 				continue
@@ -86,4 +86,15 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 	}
 
 	return moduleEntry{}, fmt.Errorf("require: module %q not found", request.raw)
+}
+
+func (e *Engine) readModuleSource(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if e.config.MaxSourceBytes > 0 && info.Size() > int64(e.config.MaxSourceBytes) {
+		return nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", info.Size(), e.config.MaxSourceBytes)
+	}
+	return os.ReadFile(path)
 }

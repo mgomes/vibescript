@@ -10,6 +10,8 @@ import (
 	"sync"
 )
 
+const defaultMaxSourceBytes = 1 << 20
+
 // Config controls interpreter execution bounds and enforcement modes.
 type Config struct {
 	StepQuota        int
@@ -21,16 +23,18 @@ type Config struct {
 	ModuleDenyList   []string
 	RandomReader     io.Reader
 	MaxCachedModules int
+	MaxSourceBytes   int
 }
 
 // Engine executes VibeScript programs with deterministic limits.
 type Engine struct {
-	config   Config
-	builtins map[string]Value
-	modules  map[string]moduleEntry
-	modPaths []string
-	modMu    sync.RWMutex
-	randomMu sync.Mutex
+	config     Config
+	builtins   map[string]Value
+	builtinsMu sync.RWMutex
+	modules    map[string]moduleEntry
+	modPaths   []string
+	modMu      sync.RWMutex
+	randomMu   sync.Mutex
 }
 
 // NewEngine constructs an Engine with sane defaults and registers built-ins.
@@ -46,6 +50,12 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}
 	if cfg.MaxCachedModules == 0 {
 		cfg.MaxCachedModules = 1000
+	}
+	if cfg.MaxSourceBytes < 0 {
+		return nil, fmt.Errorf("vibes: max source bytes cannot be negative")
+	}
+	if cfg.MaxSourceBytes == 0 {
+		cfg.MaxSourceBytes = defaultMaxSourceBytes
 	}
 	if cfg.RandomReader == nil {
 		cfg.RandomReader = cryptorand.Reader
@@ -120,11 +130,17 @@ func MustNewEngine(cfg Config) *Engine {
 
 // RegisterBuiltin registers a callable global available to scripts.
 func (e *Engine) RegisterBuiltin(name string, fn BuiltinFunc) {
+	e.builtinsMu.Lock()
+	defer e.builtinsMu.Unlock()
+
 	e.builtins[name] = NewBuiltin(name, fn)
 }
 
 // RegisterZeroArgBuiltin registers a builtin that can be invoked without arguments or parentheses.
 func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
+	e.builtinsMu.Lock()
+	defer e.builtinsMu.Unlock()
+
 	e.builtins[name] = NewAutoBuiltin(name, fn)
 }
 
@@ -154,9 +170,61 @@ func registerCoreBuiltins(engine *Engine) {
 
 // Builtins returns a copy of the registered builtin map.
 func (e *Engine) Builtins() map[string]Value {
+	return e.builtinSnapshot()
+}
+
+func (e *Engine) builtinSnapshot() map[string]Value {
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
 	out := make(map[string]Value, len(e.builtins))
 	for name, builtin := range e.builtins {
 		out[name] = cloneBuiltinValue(builtin)
+	}
+	return out
+}
+
+func (e *Engine) builtinCount() int {
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	return len(e.builtins)
+}
+
+func (e *Engine) defineBuiltinsForCall(root *Env) {
+	e.builtinsMu.RLock()
+	defer e.builtinsMu.RUnlock()
+
+	for name, builtin := range e.builtins {
+		root.Define(name, cloneBuiltinValueForCall(builtin))
+	}
+}
+
+func cloneBuiltinValueForCall(val Value) Value {
+	switch val.Kind() {
+	case KindArray:
+		arr := val.Array()
+		cloned := make([]Value, len(arr))
+		for i, elem := range arr {
+			cloned[i] = cloneBuiltinValueForCall(elem)
+		}
+		return NewArray(cloned)
+	case KindHash:
+		return NewHash(cloneBuiltinMapForCall(val.Hash()))
+	case KindObject:
+		return NewObject(cloneBuiltinMapForCall(val.Hash()))
+	default:
+		return val
+	}
+}
+
+func cloneBuiltinMapForCall(src map[string]Value) map[string]Value {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]Value, len(src))
+	for name, val := range src {
+		out[name] = cloneBuiltinValueForCall(val)
 	}
 	return out
 }
@@ -209,6 +277,15 @@ func (e *Engine) ClearModuleCache() int {
 
 // Execute compiles the provided source ensuring it is valid under current config.
 func (e *Engine) Execute(ctx context.Context, script string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	_, err := e.Compile(script)
 	if err != nil {
 		return err
