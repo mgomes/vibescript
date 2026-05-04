@@ -122,6 +122,54 @@ end`)
 	runContainmentSubprocess(t, "string-cycle", "TestValueStringHandlesCycles")
 }
 
+func TestArrayFlattenRejectsCycles(t *testing.T) {
+	if os.Getenv("VIBES_CONTAINMENT_SUBPROCESS") == "flatten-cycle" {
+		script := compileScriptDefault(t, `def run(a)
+  a.flatten
+end`)
+
+		items := make([]Value, 1)
+		cyclic := NewArray(items)
+		items[0] = cyclic
+
+		_, err := script.Call(context.Background(), "run", []Value{cyclic}, CallOptions{})
+		requireErrorContains(t, err, "array.flatten does not support cyclic structures")
+		return
+	}
+
+	runContainmentSubprocess(t, "flatten-cycle", "TestArrayFlattenRejectsCycles")
+}
+
+func TestStringRegexMembersEnforceSizeGuards(t *testing.T) {
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 8 << 20}, `def match_text(text, pattern)
+  text.match(pattern)
+end
+
+def scan_text(text, pattern)
+  text.scan(pattern)
+end
+
+def sub_text(text, pattern, replacement)
+  text.sub(pattern, replacement, regex: true)
+end
+
+def gsub_text(text, pattern, replacement)
+  text.gsub(pattern, replacement, regex: true)
+end`)
+
+	largePattern := strings.Repeat("a", maxRegexPatternSize+1)
+	requireCallErrorContains(t, script, "match_text", []Value{NewString("aaa"), NewString(largePattern)}, CallOptions{}, "string.match pattern exceeds limit")
+
+	largeText := strings.Repeat("a", maxRegexInputBytes+1)
+	requireCallErrorContains(t, script, "scan_text", []Value{NewString(largeText), NewString("a")}, CallOptions{}, "string.scan text exceeds limit")
+
+	largeReplacement := strings.Repeat("x", maxRegexInputBytes+1)
+	requireCallErrorContains(t, script, "sub_text", []Value{NewString("a"), NewString("a"), NewString(largeReplacement)}, CallOptions{}, "string.sub replacement exceeds limit")
+
+	outputReplacement := strings.Repeat("x", maxRegexInputBytes)
+	requireCallErrorContains(t, script, "gsub_text", []Value{NewString("aa"), NewString("a"), NewString(outputReplacement)}, CallOptions{}, "string.gsub output exceeds limit")
+}
+
 func TestScriptInspectionAPIsReturnIsolatedSnapshots(t *testing.T) {
 	script := compileScriptDefault(t, `class Box
   def value

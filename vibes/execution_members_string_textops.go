@@ -22,9 +22,9 @@ func stringMemberTextOps(property string) (Value, error) {
 			if args[1].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.sub replacement must be string")
 			}
-			updated, err := stringSub(receiver.String(), args[0].String(), args[1].String(), regex)
+			updated, err := stringSub("string.sub", receiver.String(), args[0].String(), args[1].String(), regex)
 			if err != nil {
-				return NewNil(), fmt.Errorf("string.sub invalid regex: %v", err)
+				return NewNil(), err
 			}
 			return NewString(updated), nil
 		}), nil
@@ -43,9 +43,9 @@ func stringMemberTextOps(property string) (Value, error) {
 			if args[1].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.sub! replacement must be string")
 			}
-			updated, err := stringSub(receiver.String(), args[0].String(), args[1].String(), regex)
+			updated, err := stringSub("string.sub!", receiver.String(), args[0].String(), args[1].String(), regex)
 			if err != nil {
-				return NewNil(), fmt.Errorf("string.sub! invalid regex: %v", err)
+				return NewNil(), err
 			}
 			return stringBangResult(receiver.String(), updated), nil
 		}), nil
@@ -64,9 +64,9 @@ func stringMemberTextOps(property string) (Value, error) {
 			if args[1].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.gsub replacement must be string")
 			}
-			updated, err := stringGSub(receiver.String(), args[0].String(), args[1].String(), regex)
+			updated, err := stringGSub("string.gsub", receiver.String(), args[0].String(), args[1].String(), regex)
 			if err != nil {
-				return NewNil(), fmt.Errorf("string.gsub invalid regex: %v", err)
+				return NewNil(), err
 			}
 			return NewString(updated), nil
 		}), nil
@@ -85,9 +85,9 @@ func stringMemberTextOps(property string) (Value, error) {
 			if args[1].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.gsub! replacement must be string")
 			}
-			updated, err := stringGSub(receiver.String(), args[0].String(), args[1].String(), regex)
+			updated, err := stringGSub("string.gsub!", receiver.String(), args[0].String(), args[1].String(), regex)
 			if err != nil {
-				return NewNil(), fmt.Errorf("string.gsub! invalid regex: %v", err)
+				return NewNil(), err
 			}
 			return stringBangResult(receiver.String(), updated), nil
 		}), nil

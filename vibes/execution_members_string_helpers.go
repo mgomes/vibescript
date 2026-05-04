@@ -144,31 +144,64 @@ func stringRegexOption(method string, kwargs map[string]Value) (bool, error) {
 	return regexVal.Bool(), nil
 }
 
-func stringSub(text, pattern, replacement string, regex bool) (string, error) {
+func validateRegexTextPattern(method, text, pattern string) error {
+	if len(pattern) > maxRegexPatternSize {
+		return fmt.Errorf("%s pattern exceeds limit %d bytes", method, maxRegexPatternSize)
+	}
+	if len(text) > maxRegexInputBytes {
+		return fmt.Errorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
+	return nil
+}
+
+func validateRegexReplacement(method, replacement string) error {
+	if len(replacement) > maxRegexInputBytes {
+		return fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
+	return nil
+}
+
+func stringSub(method, text, pattern, replacement string, regex bool) (string, error) {
 	if !regex {
 		return strings.Replace(text, pattern, replacement, 1), nil
 	}
+	if err := validateRegexTextPattern(method, text, pattern); err != nil {
+		return "", err
+	}
+	if err := validateRegexReplacement(method, replacement); err != nil {
+		return "", err
+	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%s invalid regex: %v", method, err)
 	}
 	loc := re.FindStringSubmatchIndex(text)
 	if loc == nil {
 		return text, nil
 	}
 	replaced := re.ExpandString(nil, replacement, text, loc)
+	outputLen := len(text) - (loc[1] - loc[0]) + len(replaced)
+	if outputLen > maxRegexInputBytes {
+		return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
 	return text[:loc[0]] + string(replaced) + text[loc[1]:], nil
 }
 
-func stringGSub(text, pattern, replacement string, regex bool) (string, error) {
+func stringGSub(method, text, pattern, replacement string, regex bool) (string, error) {
 	if !regex {
 		return strings.ReplaceAll(text, pattern, replacement), nil
 	}
-	re, err := regexp.Compile(pattern)
-	if err != nil {
+	if err := validateRegexTextPattern(method, text, pattern); err != nil {
 		return "", err
 	}
-	return re.ReplaceAllString(text, replacement), nil
+	if err := validateRegexReplacement(method, replacement); err != nil {
+		return "", err
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return "", fmt.Errorf("%s invalid regex: %v", method, err)
+	}
+	return regexReplaceAllWithLimit(re, text, replacement, method)
 }
 
 func stringBangResult(original, updated string) Value {

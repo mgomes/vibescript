@@ -168,7 +168,10 @@ func arrayMemberTransforms(property string) (Value, error) {
 				depth = n
 			}
 			arr := receiver.Array()
-			out := flattenValues(arr, depth)
+			out, err := flattenValues(arr, depth)
+			if err != nil {
+				return NewNil(), err
+			}
 			return NewArray(out), nil
 		}), nil
 	case "chunk":

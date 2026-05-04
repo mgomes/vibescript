@@ -2,7 +2,6 @@ package vibes
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,30 +40,36 @@ func TestNewEngineAcceptsValidModulePaths(t *testing.T) {
 	}
 }
 
-func TestNewEngineValidatesConfiguredModulePathAsProvided(t *testing.T) {
+func TestNewEngineNormalizesModulePathsAtCreation(t *testing.T) {
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previousDir); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
 	root := t.TempDir()
 	mods := filepath.Join(root, "mods")
 	if err := os.Mkdir(mods, 0o755); err != nil {
 		t.Fatalf("mkdir mods: %v", err)
 	}
-
-	weirdPath := fmt.Sprintf("%s%cmissing%c..%cmods", root, os.PathSeparator, os.PathSeparator, os.PathSeparator)
-	_, statErr := os.Stat(weirdPath)
-
-	engine, err := NewEngine(Config{ModulePaths: []string{weirdPath}})
-	if statErr != nil {
-		if err == nil {
-			t.Fatalf("expected NewEngine to reject module path that os.Stat rejects")
-		}
-		requireErrorContains(t, err, "invalid module path")
-		return
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
 	}
 
+	engine, err := NewEngine(Config{ModulePaths: []string{"mods"}})
 	if err != nil {
-		t.Fatalf("expected NewEngine to accept module path that os.Stat accepts: %v", err)
+		t.Fatalf("NewEngine failed: %v", err)
 	}
-	if engine == nil {
-		t.Fatalf("expected non-nil engine")
+	want, err := filepath.EvalSymlinks(mods)
+	if err != nil {
+		t.Fatalf("resolve module path: %v", err)
+	}
+	if got := engine.config.ModulePaths[0]; got != filepath.Clean(want) {
+		t.Fatalf("engine.config.ModulePaths[0] = %q, want %q", got, want)
 	}
 }
 
@@ -87,8 +92,12 @@ func TestNewEngineCopiesConfigSlices(t *testing.T) {
 	allowList[0] = "other"
 	denyList[0] = "allowed"
 
-	if got := engine.config.ModulePaths[0]; got != root {
-		t.Fatalf("engine.config.ModulePaths[0] = %q, want %q", got, root)
+	wantModulePath, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve module path: %v", err)
+	}
+	if got := engine.config.ModulePaths[0]; got != filepath.Clean(wantModulePath) {
+		t.Fatalf("engine.config.ModulePaths[0] = %q, want %q", got, wantModulePath)
 	}
 	if err := engine.enforceModulePolicy("allowed.vibe"); err != nil {
 		t.Fatalf("engine policy changed after caller mutated config slices: %v", err)

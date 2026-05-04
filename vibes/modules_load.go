@@ -93,6 +93,9 @@ func (e *Engine) readModuleSource(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
 	if e.config.MaxSourceBytes > 0 && info.Size() > int64(e.config.MaxSourceBytes) {
 		return nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", info.Size(), e.config.MaxSourceBytes)
 	}

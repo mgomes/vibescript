@@ -3,7 +3,10 @@ package vibes
 import (
 	"fmt"
 	"math"
+	"reflect"
 )
+
+const maxFlattenDepth = 1024
 
 func valueToHashKey(val Value) (string, error) {
 	switch val.Kind() {
@@ -151,7 +154,40 @@ func arraySortCompareValues(left, right Value) (int, error) {
 // depth=-1 means flatten completely (no limit).
 // depth=0 means don't flatten at all.
 // depth=1 means flatten one level, etc.
-func flattenValues(values []Value, depth int) []Value {
+type flattenState struct {
+	arrays map[sliceIdentity]struct{}
+	depth  int
+}
+
+func flattenValues(values []Value, depth int) ([]Value, error) {
+	return flattenValuesWithState(values, depth, &flattenState{
+		arrays: make(map[sliceIdentity]struct{}),
+	})
+}
+
+func flattenValuesWithState(values []Value, depth int, state *flattenState) ([]Value, error) {
+	if state.depth >= maxFlattenDepth {
+		return nil, fmt.Errorf("array.flatten exceeded maximum depth")
+	}
+
+	id := sliceIdentity{
+		ptr: reflect.ValueOf(values).Pointer(),
+		len: len(values),
+		cap: cap(values),
+	}
+	if id.ptr != 0 {
+		if _, visiting := state.arrays[id]; visiting {
+			return nil, fmt.Errorf("array.flatten does not support cyclic structures")
+		}
+		state.arrays[id] = struct{}{}
+		defer delete(state.arrays, id)
+	}
+
+	state.depth++
+	defer func() {
+		state.depth--
+	}()
+
 	out := make([]Value, 0, len(values))
 	for _, v := range values {
 		if v.Kind() == KindArray && depth != 0 {
@@ -159,12 +195,16 @@ func flattenValues(values []Value, depth int) []Value {
 			if nextDepth > 0 {
 				nextDepth--
 			}
-			out = append(out, flattenValues(v.Array(), nextDepth)...)
+			flattened, err := flattenValuesWithState(v.Array(), nextDepth, state)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, flattened...)
 		} else {
 			out = append(out, v)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func floatToInt64Checked(v float64, method string) (int64, error) {

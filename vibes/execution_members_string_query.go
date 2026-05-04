@@ -129,11 +129,14 @@ func stringMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.match pattern must be string")
 			}
 			pattern := args[0].String()
+			text := receiver.String()
+			if err := validateRegexTextPattern("string.match", text, pattern); err != nil {
+				return NewNil(), err
+			}
 			re, err := regexp.Compile(pattern)
 			if err != nil {
 				return NewNil(), fmt.Errorf("string.match invalid regex: %v", err)
 			}
-			text := receiver.String()
 			indices := re.FindStringSubmatchIndex(text)
 			if indices == nil {
 				return NewNil(), nil
@@ -162,11 +165,15 @@ func stringMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.scan pattern must be string")
 			}
 			pattern := args[0].String()
+			text := receiver.String()
+			if err := validateRegexTextPattern("string.scan", text, pattern); err != nil {
+				return NewNil(), err
+			}
 			re, err := regexp.Compile(pattern)
 			if err != nil {
 				return NewNil(), fmt.Errorf("string.scan invalid regex: %v", err)
 			}
-			matches := re.FindAllString(receiver.String(), -1)
+			matches := re.FindAllString(text, -1)
 			values := make([]Value, len(matches))
 			for i, m := range matches {
 				values[i] = NewString(m)
