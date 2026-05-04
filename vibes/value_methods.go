@@ -53,6 +53,9 @@ func (k ValueKind) String() string {
 
 // String returns the string representation of v.
 func (v Value) String() string {
+	if v.kind != KindArray && v.kind != KindHash {
+		return v.stringWithState(nil)
+	}
 	return v.stringWithState(&valueStringState{
 		arrays: make(map[sliceIdentity]struct{}),
 		maps:   make(map[uintptr]struct{}),
