@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -193,6 +196,42 @@ func TestWordAtPositionUsesUTF16CharacterOffsets(t *testing.T) {
 	word := wordAtPosition(source, 0, 4)
 	if word != "x" {
 		t.Fatalf("expected x, got %q", word)
+	}
+}
+
+func TestReadPayloadAllowsJSONFramingAboveSourceLimit(t *testing.T) {
+	source := strings.Repeat("\n", 1<<20)
+	params := map[string]any{
+		"textDocument": map[string]any{
+			"uri":  "file:///tmp/large.vibe",
+			"text": source,
+		},
+	}
+	rawParams, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal(params) failed: %v", err)
+	}
+	msg := lspInboundMessage{
+		JSONRPC: "2.0",
+		Method:  "textDocument/didOpen",
+		Params:  rawParams,
+	}
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("json.Marshal(lsp message) failed: %v", err)
+	}
+	if len(payload) <= 1<<20 {
+		t.Fatalf("framed LSP payload length = %d, want larger than source limit", len(payload))
+	}
+
+	wire := append([]byte("Content-Length: "+strconv.Itoa(len(payload))+"\r\n\r\n"), payload...)
+	server := &lspServer{reader: bufio.NewReader(bytes.NewReader(wire))}
+	got, err := server.readPayload()
+	if err != nil {
+		t.Fatalf("lspServer.readPayload(%d-byte framed source) failed: %v", len(payload), err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("lspServer.readPayload(%d-byte framed source) returned mismatched payload", len(payload))
 	}
 }
 

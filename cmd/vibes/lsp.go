@@ -19,7 +19,7 @@ import (
 
 var parseErrorPattern = regexp.MustCompile(`parse error at ([0-9]+):([0-9]+): ([^\n]+)`)
 
-const maxLSPPayloadBytes = 1 << 20
+const maxLSPPayloadBytes = 8 << 20
 
 var lspKeywords = []string{
 	"and",
