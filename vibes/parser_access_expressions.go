@@ -5,6 +5,10 @@ func (p *parser) parseMemberExpression(object Expression) Expression {
 		return nil
 	}
 	p.nextToken()
+	if !isLabelNameToken(p.curToken.Type) {
+		p.errorExpected(p.curToken, "member name")
+		return nil
+	}
 	return &MemberExpr{Object: object, Property: p.curToken.Literal, position: object.Pos()}
 }
 

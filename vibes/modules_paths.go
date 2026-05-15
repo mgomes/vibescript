@@ -22,9 +22,6 @@ func parseModuleRequest(name string) (moduleRequest, error) {
 		raw:              name,
 		explicitRelative: isExplicitRelativeModulePath(trimmed),
 	}
-	if filepath.Ext(normalizedName) == "" {
-		normalizedName += ".vibe"
-	}
 
 	request.normalized = filepath.Clean(normalizedName)
 	if request.normalized == "." {
@@ -35,6 +32,12 @@ func parseModuleRequest(name string) (moduleRequest, error) {
 	}
 	if !request.explicitRelative && containsPathTraversal(request.normalized) {
 		return moduleRequest{}, fmt.Errorf("require: module name %q escapes search paths", name)
+	}
+	if base := filepath.Base(request.normalized); base == "." || base == ".." {
+		return moduleRequest{}, fmt.Errorf("require: module name %q resolves to a directory", name)
+	}
+	if filepath.Ext(request.normalized) == "" {
+		request.normalized += ".vibe"
 	}
 
 	return request, nil

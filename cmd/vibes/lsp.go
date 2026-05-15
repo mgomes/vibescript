@@ -19,6 +19,8 @@ import (
 
 var parseErrorPattern = regexp.MustCompile(`parse error at ([0-9]+):([0-9]+): ([^\n]+)`)
 
+const maxLSPPayloadBytes = 8 << 20
+
 var lspKeywords = []string{
 	"and",
 	"break",
@@ -454,6 +456,9 @@ func (s *lspServer) readPayload() ([]byte, error) {
 
 	if contentLength < 0 {
 		return nil, fmt.Errorf("missing Content-Length header")
+	}
+	if contentLength > maxLSPPayloadBytes {
+		return nil, fmt.Errorf("Content-Length exceeds maximum (%d > %d bytes)", contentLength, maxLSPPayloadBytes)
 	}
 	payload := make([]byte, contentLength)
 	if _, err := io.ReadFull(s.reader, payload); err != nil {

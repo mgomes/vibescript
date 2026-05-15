@@ -6,6 +6,38 @@ test:
 test-race:
 	go test -race ./...
 
+fuzz fuzztime='10s':
+	#!/usr/bin/env bash
+	set -euo pipefail
+
+	fuzztime="{{fuzztime}}"
+
+	for target in \
+		FuzzFormatVibeSource \
+		FuzzCLIArgumentAndPathInputs \
+		FuzzREPLInputFlow \
+		FuzzLSPPayloadAndMessageHandling
+	do
+		go test ./cmd/vibes -run=^$ -fuzz="$target" -fuzztime="$fuzztime"
+	done
+
+	for target in \
+		FuzzLexerTokenStreamTerminates \
+		FuzzParserSuccessfulProgramsHaveCompleteAST \
+		FuzzCompileScriptDoesNotPanic \
+		FuzzGeneratedScriptSemantics \
+		FuzzRuntimeEdgeCasesDoNotPanic \
+		FuzzJSONValueRoundTripPreservesStructure \
+		FuzzValueOperationsPreserveInvariants \
+		FuzzModuleRequestNormalization \
+		FuzzModuleAliasValidation \
+		FuzzScalarInputParsersAndConversions \
+		FuzzModulePolicyValidation \
+		FuzzCapabilityInputValidation
+	do
+		go test ./vibes -run=^$ -fuzz="$target" -fuzztime="$fuzztime"
+	done
+
 bench:
 	scripts/bench_runtime.sh
 

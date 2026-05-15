@@ -41,10 +41,18 @@ func (p *parser) parseSymbolLiteral() Expression {
 }
 
 func (p *parser) parseIvarLiteral() Expression {
+	if p.curToken.Literal == "" {
+		p.errorExpected(p.curToken, "instance variable name")
+		return nil
+	}
 	return &IvarExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
 }
 
 func (p *parser) parseClassVarLiteral() Expression {
+	if p.curToken.Literal == "" {
+		p.errorExpected(p.curToken, "class variable name")
+		return nil
+	}
 	return &ClassVarExpr{Name: p.curToken.Literal, position: p.curToken.Pos}
 }
 
