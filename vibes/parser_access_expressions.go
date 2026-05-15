@@ -5,7 +5,7 @@ func (p *parser) parseMemberExpression(object Expression) Expression {
 		return nil
 	}
 	p.nextToken()
-	if !isLabelNameToken(p.curToken.Type) {
+	if !isMemberNameToken(p.curToken.Type) {
 		p.errorExpected(p.curToken, "member name")
 		return nil
 	}
@@ -35,4 +35,16 @@ func (p *parser) parseIndexExpression(object Expression) Expression {
 		return nil
 	}
 	return &IndexExpr{Object: object, Index: index, position: pos}
+}
+
+func isMemberNameToken(tt TokenType) bool {
+	if isLabelNameToken(tt) {
+		return true
+	}
+	switch tt {
+	case tokenExport, tokenBegin, tokenRescue, tokenEnsure, tokenRaise:
+		return true
+	default:
+		return false
+	}
 }
