@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +292,269 @@ func FuzzModuleRequestNormalization(f *testing.F) {
 	})
 }
 
+func FuzzModuleAliasValidation(f *testing.F) {
+	f.Add("", 0)
+	f.Add("helpers", 1)
+	f.Add(" if ", 2)
+	f.Add("123bad", 3)
+	f.Add("héllo", 4)
+	f.Add("helper_name", 5)
+
+	f.Fuzz(func(t *testing.T, raw string, selector int) {
+		raw = limitFuzzString(raw, 256)
+
+		aliasValue := fuzzModuleAliasValue(raw, selector)
+		alias, err := parseRequireAlias(map[string]Value{"as": aliasValue})
+		if err == nil {
+			if !isValidModuleAlias(alias) {
+				t.Fatalf("parseRequireAlias(as: %s) = %q, want valid alias", aliasValue.String(), alias)
+			}
+			if alias != strings.TrimSpace(aliasValue.String()) {
+				t.Fatalf("parseRequireAlias(as: %s) = %q, want trimmed value", aliasValue.String(), alias)
+			}
+
+			module := NewObject(map[string]Value{"value": NewInt(1)})
+			root := newEnv(nil)
+			if err := validateRequireAliasBinding(root, alias, module); err != nil {
+				t.Fatalf("validateRequireAliasBinding(empty root, %q) failed: %v", alias, err)
+			}
+
+			conflicting := newEnv(nil)
+			conflicting.Define(alias, NewString("existing"))
+			if err := validateRequireAliasBinding(conflicting, alias, module); err == nil {
+				t.Fatalf("validateRequireAliasBinding(conflicting root, %q) = nil, want conflict", alias)
+			}
+		}
+
+		_, _ = parseRequireAlias(nil)
+		_, _ = parseRequireAlias(map[string]Value{raw: aliasValue})
+		_, _ = parseRequireAlias(map[string]Value{
+			"as": aliasValue,
+			raw:  NewString("extra"),
+		})
+	})
+}
+
+func FuzzScalarInputParsersAndConversions(f *testing.F) {
+	f.Add("", "", float64(0))
+	f.Add("42", "2006-01-02", float64(42))
+	f.Add("12.34 USD", "2006-01-02T15:04:05Z07:00", float64(12.5))
+	f.Add("usd", "", float64(0))
+	f.Add("PT1H30M", "", float64(-3))
+	f.Add("2024-01-02T03:04:05Z", time.RFC3339, float64(1.25))
+	f.Add("-92233720368547758.08 USD", "", float64(math.NaN()))
+
+	f.Fuzz(func(t *testing.T, text string, layout string, floatInput float64) {
+		text = limitFuzzString(text, 512)
+		layout = limitFuzzString(layout, 256)
+
+		if money, err := parseMoneyLiteral(text); err == nil {
+			reparsed, reparseErr := parseMoneyLiteral(money.String())
+			if reparseErr != nil {
+				t.Fatalf("parseMoneyLiteral(%q) succeeded as %s, but parseMoneyLiteral(String()) failed: %v", text, money.String(), reparseErr)
+			}
+			if reparsed != money {
+				t.Fatalf("parseMoneyLiteral(%q).String() round trip = %#v, want %#v", text, reparsed, money)
+			}
+		}
+
+		if duration, err := parseDurationString(text); err == nil {
+			reparsed, reparseErr := parseDurationString(duration.iso8601())
+			if reparseErr != nil {
+				t.Fatalf("parseDurationString(%q) succeeded as %s, but parseDurationString(iso8601()) failed: %v", text, duration.iso8601(), reparseErr)
+			}
+			if reparsed != duration {
+				t.Fatalf("parseDurationString(%q).iso8601() round trip = %#v, want %#v", text, reparsed, duration)
+			}
+		}
+
+		loc, locErr := parseLocationString(text)
+		if locErr == nil && text == "" && loc != nil {
+			t.Fatalf("parseLocationString(\"\") = %v, want nil location", loc)
+		}
+
+		hasLayout := strings.TrimSpace(layout) != ""
+		if parsed, err := parseTimeString(text, layout, hasLayout, nil); err == nil {
+			if year := parsed.Year(); year >= 1 && year <= 9999 {
+				roundTrip, reparseErr := parseTimeString(parsed.Format(time.RFC3339Nano), "", false, nil)
+				if reparseErr != nil {
+					t.Fatalf("parseTimeString(%q, %q) succeeded as %s, but RFC3339Nano reparse failed: %v", text, layout, parsed.Format(time.RFC3339Nano), reparseErr)
+				}
+				if !roundTrip.Equal(parsed) {
+					t.Fatalf("parseTimeString(%q, %q) RFC3339Nano round trip = %s, want %s", text, layout, roundTrip.Format(time.RFC3339Nano), parsed.Format(time.RFC3339Nano))
+				}
+			}
+		}
+		if locErr == nil {
+			_, _ = parseTimeString(text, layout, hasLayout, loc)
+		}
+
+		if got, err := builtinToInt(nil, NewNil(), []Value{NewString(text)}, nil, NewNil()); err == nil {
+			want, parseErr := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+			if parseErr != nil {
+				t.Fatalf("to_int(%q) succeeded with %s, but strconv.ParseInt failed: %v", text, got.String(), parseErr)
+			}
+			if got.Kind() != KindInt || got.Int() != want {
+				t.Fatalf("to_int(%q) = %s, want %d", text, got.String(), want)
+			}
+		}
+		if got, err := builtinToFloat(nil, NewNil(), []Value{NewString(text)}, nil, NewNil()); err == nil {
+			if got.Kind() != KindFloat {
+				t.Fatalf("to_float(%q) kind = %s, want float", text, got.Kind())
+			}
+			if math.IsNaN(got.Float()) || math.IsInf(got.Float(), 0) {
+				t.Fatalf("to_float(%q) = %v, want finite float", text, got.Float())
+			}
+		}
+		if got, err := builtinToInt(nil, NewNil(), []Value{NewFloat(floatInput)}, nil, NewNil()); err == nil && got.Kind() != KindInt {
+			t.Fatalf("to_int(%v) kind = %s, want int", floatInput, got.Kind())
+		}
+		if got, err := builtinToFloat(nil, NewNil(), []Value{NewFloat(floatInput)}, nil, NewNil()); err == nil && got.Kind() != KindFloat {
+			t.Fatalf("to_float(%v) kind = %s, want float", floatInput, got.Kind())
+		}
+
+		for _, cents := range []int64{0, int64(1<<63 - 1), int64(-1 << 63)} {
+			if money, err := newMoneyFromCents(cents, text); err == nil {
+				currency := money.Currency()
+				if len(currency) != 3 {
+					t.Fatalf("newMoneyFromCents(%d, %q).Currency() = %q, want 3-byte currency", cents, text, currency)
+				}
+				for i := range 3 {
+					if currency[i] < 'A' || currency[i] > 'Z' {
+						t.Fatalf("newMoneyFromCents(%d, %q).Currency() = %q, want uppercase ASCII currency", cents, text, currency)
+					}
+				}
+				reparsed, reparseErr := parseMoneyLiteral(money.String())
+				if reparseErr != nil {
+					t.Fatalf("newMoneyFromCents(%d, %q) formatted as %q, but parseMoneyLiteral failed: %v", cents, text, money.String(), reparseErr)
+				}
+				if reparsed != money {
+					t.Fatalf("newMoneyFromCents(%d, %q).String() round trip = %#v, want %#v", cents, text, reparsed, money)
+				}
+			}
+		}
+	})
+}
+
+func FuzzModulePolicyValidation(f *testing.F) {
+	f.Add("", "", "allow")
+	f.Add("*", "helper.vibe", "allow")
+	f.Add("shared/*", "shared/math.vibe", "deny")
+	f.Add("[", "helper", "allow")
+	f.Add("./nested\\*.vibe,admin/*", "nested/tool.vibe", "")
+
+	f.Fuzz(func(t *testing.T, rawPatterns string, rawModule string, label string) {
+		rawPatterns = limitFuzzString(rawPatterns, 512)
+		rawModule = limitFuzzString(rawModule, 512)
+		label = limitFuzzString(label, 64)
+		patterns := fuzzPolicyPatterns(rawPatterns)
+
+		for _, pattern := range patterns {
+			normalized := normalizeModulePolicyPattern(pattern)
+			if normalized != "" && normalizeModulePolicyPattern(normalized) != normalized {
+				t.Fatalf("normalizeModulePolicyPattern(%q) = %q, want idempotent normalization", pattern, normalized)
+			}
+		}
+		module := normalizeModulePolicyModuleName(rawModule)
+		if module != "" && normalizeModulePolicyModuleName(module) != module {
+			t.Fatalf("normalizeModulePolicyModuleName(%q) = %q, want idempotent normalization", rawModule, module)
+		}
+
+		err := validateModulePolicyPatterns(patterns, label)
+		if err != nil {
+			return
+		}
+
+		matches := modulePolicyAnyMatch(patterns, module)
+		allowEngine, err := NewEngine(Config{ModuleAllowList: patterns})
+		if err != nil {
+			t.Fatalf("NewEngine(ModuleAllowList: %v) failed after validation: %v", patterns, err)
+		}
+		allowErr := allowEngine.enforceModulePolicy(rawModule)
+		if module == "" || matches {
+			if allowErr != nil {
+				t.Fatalf("allow-list %v rejected matching module %q: %v", patterns, rawModule, allowErr)
+			}
+		} else if allowErr == nil {
+			t.Fatalf("allow-list %v accepted non-matching module %q", patterns, rawModule)
+		}
+
+		denyEngine, err := NewEngine(Config{ModuleDenyList: patterns})
+		if err != nil {
+			t.Fatalf("NewEngine(ModuleDenyList: %v) failed after validation: %v", patterns, err)
+		}
+		denyErr := denyEngine.enforceModulePolicy(rawModule)
+		if module != "" && matches {
+			if denyErr == nil {
+				t.Fatalf("deny-list %v accepted matching module %q", patterns, rawModule)
+			}
+		} else if denyErr != nil {
+			t.Fatalf("deny-list %v rejected non-matching module %q: %v", patterns, rawModule, denyErr)
+		}
+	})
+}
+
+func FuzzCapabilityInputValidation(f *testing.F) {
+	for _, seed := range [][]byte{
+		[]byte(""),
+		[]byte("payload"),
+		[]byte("typed arrays and hashes"),
+		[]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		data := newFuzzData(limitFuzzBytes(raw, 256))
+		value := data.value(4)
+
+		if err := validateCapabilityDataOnlyValue("payload", value); err != nil {
+			t.Fatalf("validateCapabilityDataOnlyValue(payload, %s) failed for generated data-only value: %v", value.String(), err)
+		}
+		if err := validateCapabilityTypedValue("payload", value, capabilityTypeAny); err != nil {
+			t.Fatalf("validateCapabilityTypedValue(payload, %s, any) failed: %v", value.String(), err)
+		}
+		clone, err := cloneCapabilityMethodResult("capability.method", value)
+		if err != nil {
+			t.Fatalf("cloneCapabilityMethodResult(%s) failed: %v", value.String(), err)
+		}
+		if !clone.Equal(value) {
+			t.Fatalf("cloneCapabilityMethodResult(%s) = %s, want equal value", value.String(), clone.String())
+		}
+
+		ty := data.typeExpr(3)
+		_ = validateCapabilityTypedValue("payload", value, ty)
+		_ = validateCapabilityKwargsDataOnly("method", map[string]Value{
+			data.key(0): value,
+			data.key(1): data.value(2),
+		})
+
+		options, err := parseJobQueueEnqueueOptions("Jobs", fuzzJobQueueKwargs(data, value))
+		if err == nil {
+			if options.Delay != nil && *options.Delay < 0 {
+				t.Fatalf("parseJobQueueEnqueueOptions returned negative delay %s", options.Delay.String())
+			}
+			if options.Key != nil && *options.Key == "" {
+				t.Fatalf("parseJobQueueEnqueueOptions returned empty key")
+			}
+		}
+
+		callable := NewBuiltin("fuzz.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return NewNil(), nil
+		})
+		if err := validateCapabilityDataOnlyValue("callable", callable); err == nil {
+			t.Fatalf("validateCapabilityDataOnlyValue(callable builtin) = nil, want data-only error")
+		}
+		if _, err := cloneCapabilityMethodResult("capability.method", callable); err == nil {
+			t.Fatalf("cloneCapabilityMethodResult(callable builtin) = nil error, want data-only error")
+		}
+		nestedCallable := NewArray([]Value{value, callable})
+		if err := validateCapabilityDataOnlyValue("nested callable", nestedCallable); err == nil {
+			t.Fatalf("validateCapabilityDataOnlyValue(nested callable) = nil, want data-only error")
+		}
+	})
+}
+
 func generatedScriptCase(data *fuzzData) (string, int64, Value) {
 	base := data.int64(-20, 20)
 	delta := data.int64(-20, 20)
@@ -389,6 +653,72 @@ func generatedHelper(n int64, evenMultiplier int64, oddMultiplier int64, offset 
 		return n*evenMultiplier + offset
 	}
 	return n*oddMultiplier - offset
+}
+
+func fuzzPolicyPatterns(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\t'
+	})
+	if len(fields) == 0 {
+		return []string{raw}
+	}
+	if len(fields) > 4 {
+		fields = fields[:4]
+	}
+	return fields
+}
+
+func modulePolicyAnyMatch(patterns []string, module string) bool {
+	for _, raw := range patterns {
+		pattern := normalizeModulePolicyPattern(raw)
+		if pattern == "" {
+			continue
+		}
+		if modulePolicyMatch(pattern, module) {
+			return true
+		}
+	}
+	return false
+}
+
+func fuzzModuleAliasValue(raw string, selector int) Value {
+	choice := selector % 4
+	if choice < 0 {
+		choice += 4
+	}
+	switch choice {
+	case 0:
+		return NewString(raw)
+	case 1:
+		return NewString(" " + raw + " ")
+	case 2:
+		return NewSymbol(strings.TrimSpace(raw))
+	default:
+		return NewInt(int64(selector))
+	}
+}
+
+func fuzzJobQueueKwargs(data *fuzzData, value Value) map[string]Value {
+	kwargs := map[string]Value{
+		data.key(0): value,
+	}
+	switch data.intn(5) {
+	case 0:
+		kwargs["delay"] = NewDuration(Duration{seconds: data.int64(0, 3600)})
+	case 1:
+		kwargs["delay"] = NewDuration(Duration{seconds: data.int64(-3600, -1)})
+	case 2:
+		kwargs["delay"] = NewInt(data.int64(-3600, 3600))
+	case 3:
+		kwargs["delay"] = NewString(data.text(16))
+	default:
+	}
+	if data.intn(3) == 0 {
+		kwargs["key"] = NewString(data.text(16))
+	} else if data.intn(3) == 1 {
+		kwargs["key"] = value
+	}
+	return kwargs
 }
 
 type fuzzData struct {

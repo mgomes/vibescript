@@ -563,7 +563,7 @@ func (m replModel) View() tea.View {
 	header := headerStyle.Render("VibeScript REPL")
 	version := mutedStyle.Render("v0.27.0")
 	b.WriteString(header + " " + version + "\n")
-	b.WriteString(mutedStyle.Render(strings.Repeat("─", min(m.width-2, 60))) + "\n\n")
+	b.WriteString(mutedStyle.Render(strings.Repeat("─", max(min(m.width-2, 60), 0))) + "\n\n")
 
 	reservedLines := 8 // header, input, help hint, etc.
 	if m.showHelp {

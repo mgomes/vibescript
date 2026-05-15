@@ -12,7 +12,7 @@ func normalizeModulePolicyPattern(pattern string) string {
 	normalized = strings.ReplaceAll(normalized, "\\", "/")
 	normalized = strings.TrimPrefix(normalized, "./")
 	normalized = strings.TrimSuffix(normalized, ".vibe")
-	normalized = path.Clean(normalized)
+	normalized = strings.TrimSpace(path.Clean(normalized))
 	if normalized == "." {
 		return ""
 	}
@@ -21,6 +21,7 @@ func normalizeModulePolicyPattern(pattern string) string {
 
 func normalizeModulePolicyModuleName(relative string) string {
 	normalized := filepath.ToSlash(filepath.Clean(relative))
+	normalized = strings.TrimSpace(normalized)
 	normalized = strings.TrimPrefix(normalized, "./")
 	normalized = strings.TrimSuffix(normalized, ".vibe")
 	if normalized == "." {

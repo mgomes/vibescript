@@ -12,7 +12,14 @@ fuzz fuzztime='10s':
 
 	fuzztime="{{fuzztime}}"
 
-	go test ./cmd/vibes -run=^$ -fuzz=FuzzFormatVibeSource -fuzztime="$fuzztime"
+	for target in \
+		FuzzFormatVibeSource \
+		FuzzCLIArgumentAndPathInputs \
+		FuzzREPLInputFlow \
+		FuzzLSPPayloadAndMessageHandling
+	do
+		go test ./cmd/vibes -run=^$ -fuzz="$target" -fuzztime="$fuzztime"
+	done
 
 	for target in \
 		FuzzLexerTokenStreamTerminates \
@@ -22,7 +29,11 @@ fuzz fuzztime='10s':
 		FuzzRuntimeEdgeCasesDoNotPanic \
 		FuzzJSONValueRoundTripPreservesStructure \
 		FuzzValueOperationsPreserveInvariants \
-		FuzzModuleRequestNormalization
+		FuzzModuleRequestNormalization \
+		FuzzModuleAliasValidation \
+		FuzzScalarInputParsersAndConversions \
+		FuzzModulePolicyValidation \
+		FuzzCapabilityInputValidation
 	do
 		go test ./vibes -run=^$ -fuzz="$target" -fuzztime="$fuzztime"
 	done

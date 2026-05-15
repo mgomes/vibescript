@@ -22,10 +22,12 @@ func (m Money) Cents() int64 { return m.cents }
 // String returns the amount formatted as "X.XX CUR".
 func (m Money) String() string {
 	sign := ""
-	cents := m.cents
-	if cents < 0 {
+	var cents uint64
+	if m.cents < 0 {
 		sign = "-"
-		cents = -cents
+		cents = uint64(-(m.cents + 1)) + 1
+	} else {
+		cents = uint64(m.cents)
 	}
 	dollars := cents / 100
 	rem := cents % 100
@@ -62,7 +64,11 @@ func parseMoneyLiteral(input string) (Money, error) {
 	if len(parts) != 2 {
 		return Money{}, fmt.Errorf("invalid money literal %q", input)
 	}
-	amount, currency := parts[0], strings.ToUpper(parts[1])
+	amount := parts[0]
+	currency, err := normalizeMoneyCurrency(parts[1])
+	if err != nil {
+		return Money{}, err
+	}
 	negative := false
 	if trimmed, ok := strings.CutPrefix(amount, "-"); ok {
 		negative = true
@@ -79,6 +85,15 @@ func parseMoneyLiteral(input string) (Money, error) {
 		fraction = split[1]
 	}
 
+	if whole == "" && fraction == "" {
+		return Money{}, fmt.Errorf("invalid money amount %q", input)
+	}
+	if whole != "" && !isDecimalDigits(whole) {
+		return Money{}, fmt.Errorf("invalid money amount %q", input)
+	}
+	if fraction != "" && !isDecimalDigits(fraction) {
+		return Money{}, fmt.Errorf("invalid money amount %q", input)
+	}
 	if len(fraction) > 2 {
 		return Money{}, fmt.Errorf("money literal supports at most 2 decimal places: %q", input)
 	}
@@ -101,17 +116,57 @@ func parseMoneyLiteral(input string) (Money, error) {
 		return Money{}, fmt.Errorf("invalid money amount %q", input)
 	}
 
-	total := dollars*100 + centsPart
+	limit := uint64(1<<63 - 1)
 	if negative {
-		total = -total
+		limit = uint64(1) << 63
+	}
+	magnitudeDollars := uint64(dollars)
+	magnitudeCents := uint64(centsPart)
+	if magnitudeDollars > (limit-magnitudeCents)/100 {
+		return Money{}, fmt.Errorf("invalid money amount %q", input)
+	}
+	magnitude := magnitudeDollars*100 + magnitudeCents
+	total := int64(magnitude)
+	if negative {
+		if magnitude == uint64(1)<<63 {
+			total = int64(-1 << 63)
+		} else {
+			total = -total
+		}
 	}
 
 	return Money{cents: total, currency: currency}, nil
 }
 
 func newMoneyFromCents(cents int64, currency string) (Money, error) {
-	if len(currency) != 3 {
-		return Money{}, fmt.Errorf("currency must be 3 letters, got %q", currency)
+	normalized, err := normalizeMoneyCurrency(currency)
+	if err != nil {
+		return Money{}, err
 	}
-	return Money{cents: cents, currency: strings.ToUpper(currency)}, nil
+	return Money{cents: cents, currency: normalized}, nil
+}
+
+func isDecimalDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := range len(s) {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeMoneyCurrency(currency string) (string, error) {
+	if len(currency) != 3 {
+		return "", fmt.Errorf("currency must be 3 letters, got %q", currency)
+	}
+	for i := range 3 {
+		b := currency[i]
+		if (b < 'A' || b > 'Z') && (b < 'a' || b > 'z') {
+			return "", fmt.Errorf("currency must be 3 letters, got %q", currency)
+		}
+	}
+	return strings.ToUpper(currency), nil
 }
