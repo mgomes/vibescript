@@ -168,7 +168,9 @@ func clonePropertyDecls(properties []PropertyDecl) []PropertyDecl {
 	out := make([]PropertyDecl, len(properties))
 	for i, property := range properties {
 		out[i] = property
-		out[i].Names = append([]string(nil), property.Names...)
+		if property.Names != nil {
+			out[i].Names = append([]string{}, property.Names...)
+		}
 	}
 	return out
 }

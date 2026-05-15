@@ -41,17 +41,19 @@ func (p *parser) parsePropertyDecl(kind TokenType) PropertyDecl {
 	pos := p.curToken.Pos
 	names := []string{}
 	p.nextToken()
-	if p.curToken.Type == tokenIdent {
-		names = append(names, p.curToken.Literal)
-		for p.peekToken.Type == tokenComma {
-			p.nextToken()
-			p.nextToken()
-			if p.curToken.Type != tokenIdent {
-				p.errorExpected(p.curToken, "property name")
-				break
-			}
-			names = append(names, p.curToken.Literal)
+	if p.curToken.Type != tokenIdent {
+		p.errorExpected(p.curToken, "property name")
+		return PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), position: pos}
+	}
+	names = append(names, p.curToken.Literal)
+	for p.peekToken.Type == tokenComma {
+		p.nextToken()
+		p.nextToken()
+		if p.curToken.Type != tokenIdent {
+			p.errorExpected(p.curToken, "property name")
+			break
 		}
+		names = append(names, p.curToken.Literal)
 	}
 	return PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), position: pos}
 }
