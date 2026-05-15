@@ -64,6 +64,20 @@ func TestHashMergeAndKeys(t *testing.T) {
 	compareArrays(t, keys, wantKeys)
 }
 
+func TestMemberAccessAllowsKeywordNamedHashKeys(t *testing.T) {
+	script := compileScript(t, `
+    def keyword_members()
+      payload = JSON.parse("{\"raise\":1,\"begin\":2,\"rescue\":3,\"ensure\":4,\"export\":5}")
+      payload.raise + payload.begin + payload.rescue + payload.ensure + payload.export
+    end
+    `)
+
+	result := callFunc(t, script, "keyword_members", nil)
+	if !result.Equal(NewInt(15)) {
+		t.Fatalf("keyword_members = %v, want 15", result)
+	}
+}
+
 func TestHashExpandedHelpers(t *testing.T) {
 	script := compileScript(t, `
     def helpers()
