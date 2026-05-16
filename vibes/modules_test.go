@@ -1039,6 +1039,8 @@ func TestModulePolicyNormalizationIsIdempotent(t *testing.T) {
 		"./.vibe",
 		"0.vibe.vibe",
 		"helper.vibe.vibe.vibe",
+		"0.vibe .vibe",
+		"  helper .vibe .vibe  ",
 	} {
 		normalized := normalizeModulePolicyPattern(pattern)
 		if got := normalizeModulePolicyPattern(normalized); got != normalized {
@@ -1056,6 +1058,8 @@ func TestModulePolicyNormalizationIsIdempotent(t *testing.T) {
 		"./.vibe",
 		"0.vibe.vibe",
 		"helper.vibe.vibe.vibe",
+		"0.vibe .vibe",
+		"  helper .vibe .vibe  ",
 	} {
 		normalized := normalizeModulePolicyModuleName(module)
 		if got := normalizeModulePolicyModuleName(normalized); got != normalized {

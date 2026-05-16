@@ -21,11 +21,11 @@ func normalizeModulePolicyValue(value string) string {
 	if trimmed == normalized {
 		return normalized
 	}
-	if strings.HasSuffix(trimmed, ".vibe") {
-		return normalized
-	}
 	cleaned := normalizeModulePolicyPath(trimmed)
-	if cleaned == "" {
+	// Skip the strip when it would collapse to empty, or when path
+	// cleaning exposed another ".vibe" suffix (which would chain another
+	// strip on the next call and break idempotency).
+	if cleaned == "" || strings.HasSuffix(cleaned, ".vibe") {
 		return normalized
 	}
 	return cleaned
