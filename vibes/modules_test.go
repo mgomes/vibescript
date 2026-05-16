@@ -1028,6 +1028,30 @@ func TestModulePolicyPatternValidation(t *testing.T) {
 	requireErrorContains(t, err, "invalid module allow-list pattern")
 }
 
+func TestModulePolicyNormalizationIsIdempotent(t *testing.T) {
+	for _, pattern := range []string{
+		"0/ /",
+		"./nested\\*.vibe",
+		" shared/math.vibe ",
+	} {
+		normalized := normalizeModulePolicyPattern(pattern)
+		if got := normalizeModulePolicyPattern(normalized); got != normalized {
+			t.Errorf("normalizeModulePolicyPattern(%q) normalized twice = %q, want %q", pattern, got, normalized)
+		}
+	}
+
+	for _, module := range []string{
+		"0/ /",
+		"./nested\\tool.vibe",
+		" shared/math.vibe ",
+	} {
+		normalized := normalizeModulePolicyModuleName(module)
+		if got := normalizeModulePolicyModuleName(normalized); got != normalized {
+			t.Errorf("normalizeModulePolicyModuleName(%q) normalized twice = %q, want %q", module, got, normalized)
+		}
+	}
+}
+
 func TestFormatModuleCycleUsesConciseChain(t *testing.T) {
 	root := filepath.Join("tmp", "modules")
 	a := moduleCacheKey(root, filepath.Join("nested", "a.vibe"))

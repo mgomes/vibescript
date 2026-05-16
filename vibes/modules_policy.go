@@ -8,22 +8,31 @@ import (
 )
 
 func normalizeModulePolicyPattern(pattern string) string {
-	normalized := strings.TrimSpace(pattern)
-	normalized = strings.ReplaceAll(normalized, "\\", "/")
-	normalized = strings.TrimPrefix(normalized, "./")
+	normalized := normalizeModulePolicyPath(pattern)
 	normalized = strings.TrimSuffix(normalized, ".vibe")
-	normalized = strings.TrimSpace(path.Clean(normalized))
-	if normalized == "." {
-		return ""
-	}
-	return normalized
+	return normalizeModulePolicyPath(normalized)
 }
 
 func normalizeModulePolicyModuleName(relative string) string {
-	normalized := filepath.ToSlash(filepath.Clean(relative))
-	normalized = strings.TrimSpace(normalized)
-	normalized = strings.TrimPrefix(normalized, "./")
+	normalized := normalizeModulePolicyPath(relative)
 	normalized = strings.TrimSuffix(normalized, ".vibe")
+	return normalizeModulePolicyPath(normalized)
+}
+
+func normalizeModulePolicyPath(value string) string {
+	normalized := strings.TrimSpace(value)
+	normalized = strings.ReplaceAll(normalized, "\\", "/")
+	normalized = filepath.ToSlash(normalized)
+	normalized = strings.TrimPrefix(normalized, "./")
+	normalized = path.Clean(normalized)
+	if normalized == "." {
+		return ""
+	}
+	parts := strings.Split(normalized, "/")
+	for i, part := range parts {
+		parts[i] = strings.TrimSpace(part)
+	}
+	normalized = path.Clean(strings.Join(parts, "/"))
 	if normalized == "." {
 		return ""
 	}
