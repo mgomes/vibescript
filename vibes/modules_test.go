@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1028,42 +1029,204 @@ func TestModulePolicyPatternValidation(t *testing.T) {
 	requireErrorContains(t, err, "invalid module allow-list pattern")
 }
 
+// Inputs that the module-policy normalization must reduce to a stable
+// canonical form. Every entry below was either part of the original
+// suite, written by hand to probe an edge case, or surfaced as a fuzz
+// crasher.
+var modulePolicyNormalizationInputs = []string{
+	// original cases
+	"0/ /",
+	"./nested\\*.vibe",
+	" shared/math.vibe ",
+	"./nested\\tool.vibe",
+
+	// dot-prefix files (no base name) — must NOT collapse to empty
+	".vibe",
+	".vibe.vibe",
+	".vibe.vibe.vibe",
+	"..vibe",
+	"...vibe",
+	"./.vibe",
+
+	// numeric base name (path.Clean does not touch dots inside it)
+	"0",
+	"0.vibe",
+	"0.vibe.vibe",
+	"0.vibe.vibe.vibe",
+
+	// hidden ".vibe" exposed by per-segment whitespace trimming
+	"0.vibe .vibe",
+	"0.vibe\t.vibe",
+	"0.vibe .vibe .vibe",
+	"  helper .vibe .vibe  ",
+	".vibe .vibe",
+	".vibe  .vibe",
+	".vibe\t.vibe",
+
+	// whitespace surrounding
+	"  helper  ",
+	"  helper.vibe  ",
+	"\thelper.vibe\t",
+	"helper ",
+	" .vibe ",
+
+	// multiple ".vibe" extensions
+	"helper.vibe",
+	"helper.vibe.vibe",
+	"helper.vibe.vibe.vibe",
+	"helper" + strings.Repeat(".vibe", 32),
+
+	// multi-segment paths — directory ".vibe" must not be collapsed
+	"helper/foo",
+	"helper/foo.vibe",
+	"helper/foo.vibe.vibe",
+	"helper.vibe/foo",
+	"helper.vibe/foo.vibe",
+	"helper.vibe/foo.vibe.vibe",
+	"helper.vibe/.vibe",
+	"helper/.vibe",
+	"helper/.vibe.vibe",
+	" nested / foo .vibe ",
+
+	// glob patterns
+	"*",
+	"*.vibe",
+	"*.vibe.vibe",
+	"nested/*.vibe",
+
+	// backslash paths
+	"nested\\foo.vibe",
+	"./nested\\*.vibe",
+
+	// path normalization corners
+	"foo/../bar.vibe",
+	"foo///bar.vibe",
+	"./helper.vibe",
+
+	// edge cases that should normalize to empty (truly empty inputs)
+	"",
+	" ",
+	"\t",
+	".",
+	"./",
+	"./.",
+
+	// fuzz crashers preserved verbatim
+	"0.vibe .vibe",
+}
+
+// Every input must reach a fixed point under one application of the
+// normalizer — calling it a second time must return the same value.
 func TestModulePolicyNormalizationIsIdempotent(t *testing.T) {
-	for _, pattern := range []string{
-		"0/ /",
-		"./nested\\*.vibe",
-		" shared/math.vibe ",
-		".vibe.vibe",
-		".vibe",
-		"..vibe",
-		"./.vibe",
-		"0.vibe.vibe",
-		"helper.vibe.vibe.vibe",
-		"0.vibe .vibe",
-		"  helper .vibe .vibe  ",
-	} {
-		normalized := normalizeModulePolicyPattern(pattern)
-		if got := normalizeModulePolicyPattern(normalized); got != normalized {
-			t.Errorf("normalizeModulePolicyPattern(%q) normalized twice = %q, want %q", pattern, got, normalized)
+	for _, raw := range modulePolicyNormalizationInputs {
+		t.Run("pattern:"+strconv.Quote(raw), func(t *testing.T) {
+			first := normalizeModulePolicyPattern(raw)
+			second := normalizeModulePolicyPattern(first)
+			if first != second {
+				t.Errorf("normalizeModulePolicyPattern(%q) = %q; normalized again = %q (not idempotent)", raw, first, second)
+			}
+		})
+		t.Run("module:"+strconv.Quote(raw), func(t *testing.T) {
+			first := normalizeModulePolicyModuleName(raw)
+			second := normalizeModulePolicyModuleName(first)
+			if first != second {
+				t.Errorf("normalizeModulePolicyModuleName(%q) = %q; normalized again = %q (not idempotent)", raw, first, second)
+			}
+		})
+	}
+}
+
+// Distinct spellings of the same logical module name must produce the
+// same canonical form so pattern/module comparison via path.Match is
+// consistent regardless of how the admin writes the pattern or how the
+// user wrote the require argument.
+func TestModulePolicyNormalizationCanonicalizesEquivalents(t *testing.T) {
+	groups := [][]string{
+		{
+			"helper",
+			"helper.vibe",
+			"helper.vibe.vibe",
+			"helper.vibe.vibe.vibe",
+			"./helper",
+			"./helper.vibe",
+			"  helper  ",
+			" helper.vibe ",
+			"helper" + strings.Repeat(".vibe", 8),
+		},
+		{
+			"nested/helper",
+			"nested/helper.vibe",
+			"./nested/helper.vibe",
+			"nested\\helper.vibe",
+			" nested / helper.vibe ",
+			"nested///helper.vibe",
+		},
+		{
+			"nested/*",
+			"nested/*.vibe",
+			"./nested/*.vibe",
+		},
+		{
+			".vibe",
+			".vibe.vibe",
+			".vibe.vibe.vibe",
+			"  .vibe  ",
+		},
+		{
+			"",
+			" ",
+			"\t",
+			".",
+			"./",
+		},
+	}
+	for _, group := range groups {
+		t.Run(group[0], func(t *testing.T) {
+			want := normalizeModulePolicyPattern(group[0])
+			for _, raw := range group[1:] {
+				if got := normalizeModulePolicyPattern(raw); got != want {
+					t.Errorf("normalizeModulePolicyPattern(%q) = %q, want %q (same canonical form as %q)", raw, got, want, group[0])
+				}
+			}
+		})
+	}
+}
+
+// Directory components must not be treated as carrying a ".vibe"
+// extension to strip — that would silently let pattern "helper" match
+// modules anywhere under a "helper.vibe/" directory.
+func TestModulePolicyNormalizationPreservesDirectoryDots(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{"helper.vibe/foo", "helper.vibe/foo"},
+		{"helper.vibe/foo.vibe", "helper.vibe/foo"},
+		{"helper.vibe/foo.vibe.vibe", "helper.vibe/foo"},
+		{"a.vibe/b.vibe/c.vibe", "a.vibe/b.vibe/c"},
+	}
+	for _, c := range cases {
+		if got := normalizeModulePolicyPattern(c.raw); got != c.want {
+			t.Errorf("normalizeModulePolicyPattern(%q) = %q, want %q", c.raw, got, c.want)
 		}
 	}
+}
 
-	for _, module := range []string{
-		"0/ /",
-		"./nested\\tool.vibe",
-		" shared/math.vibe ",
-		".vibe.vibe",
+// Inputs whose basename is exactly ".vibe" (or any string that would
+// empty after stripping) must be preserved, not collapsed — collapsing
+// to "" used to bypass policy entirely in enforceModulePolicy.
+func TestModulePolicyNormalizationDoesNotCollapseToEmpty(t *testing.T) {
+	preserveNonEmpty := []string{
 		".vibe",
-		"..vibe",
-		"./.vibe",
-		"0.vibe.vibe",
-		"helper.vibe.vibe.vibe",
-		"0.vibe .vibe",
-		"  helper .vibe .vibe  ",
-	} {
-		normalized := normalizeModulePolicyModuleName(module)
-		if got := normalizeModulePolicyModuleName(normalized); got != normalized {
-			t.Errorf("normalizeModulePolicyModuleName(%q) normalized twice = %q, want %q", module, got, normalized)
+		".vibe.vibe",
+		".vibe.vibe.vibe",
+		"helper/.vibe",
+		"helper.vibe/.vibe",
+		"nested/dir/.vibe",
+	}
+	for _, raw := range preserveNonEmpty {
+		if got := normalizeModulePolicyPattern(raw); got == "" {
+			t.Errorf("normalizeModulePolicyPattern(%q) = \"\", want non-empty (would otherwise bypass policy)", raw)
 		}
 	}
 }

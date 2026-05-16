@@ -15,20 +15,38 @@ func normalizeModulePolicyModuleName(relative string) string {
 	return normalizeModulePolicyValue(relative)
 }
 
+// normalizeModulePolicyValue canonicalizes a pattern or module name for
+// policy comparison. After path normalization it iteratively strips
+// ".vibe" suffixes from the *basename* only, never from intermediate
+// directory components, until either no ".vibe" suffix remains or
+// stripping the next one would empty the basename (so ".vibe" and
+// "helper/.vibe" are preserved rather than collapsing to "").
+//
+// The function is idempotent: normalize(normalize(x)) == normalize(x)
+// for every input. Equivalent spellings of the same logical module —
+// "helper", "helper.vibe", "./helper.vibe", "helper.vibe.vibe" — all
+// reduce to "helper". Directory names keep their dots:
+// "helper.vibe/foo.vibe" reduces to "helper.vibe/foo".
 func normalizeModulePolicyValue(value string) string {
-	normalized := normalizeModulePolicyPath(value)
-	trimmed := strings.TrimSuffix(normalized, ".vibe")
-	if trimmed == normalized {
-		return normalized
+	current := normalizeModulePolicyPath(value)
+	for {
+		if current == "" {
+			return ""
+		}
+		dir, base := path.Split(current)
+		if !strings.HasSuffix(base, ".vibe") {
+			return current
+		}
+		trimmed := strings.TrimSuffix(base, ".vibe")
+		if trimmed == "" {
+			return current
+		}
+		next := normalizeModulePolicyPath(dir + trimmed)
+		if next == "" {
+			return current
+		}
+		current = next
 	}
-	cleaned := normalizeModulePolicyPath(trimmed)
-	// Skip the strip when it would collapse to empty, or when path
-	// cleaning exposed another ".vibe" suffix (which would chain another
-	// strip on the next call and break idempotency).
-	if cleaned == "" || strings.HasSuffix(cleaned, ".vibe") {
-		return normalized
-	}
-	return cleaned
 }
 
 func normalizeModulePolicyPath(value string) string {
