@@ -1145,13 +1145,10 @@ func TestModulePolicyNormalizationCanonicalizesEquivalents(t *testing.T) {
 		{
 			"helper",
 			"helper.vibe",
-			"helper.vibe.vibe",
-			"helper.vibe.vibe.vibe",
 			"./helper",
 			"./helper.vibe",
 			"  helper  ",
 			" helper.vibe ",
-			"helper" + strings.Repeat(".vibe", 8),
 		},
 		{
 			"nested/helper",
@@ -1168,8 +1165,6 @@ func TestModulePolicyNormalizationCanonicalizesEquivalents(t *testing.T) {
 		},
 		{
 			".vibe",
-			".vibe.vibe",
-			".vibe.vibe.vibe",
 			"  .vibe  ",
 		},
 		{
@@ -1202,7 +1197,7 @@ func TestModulePolicyNormalizationPreservesDirectoryDots(t *testing.T) {
 	}{
 		{"helper.vibe/foo", "helper.vibe/foo"},
 		{"helper.vibe/foo.vibe", "helper.vibe/foo"},
-		{"helper.vibe/foo.vibe.vibe", "helper.vibe/foo"},
+		{"helper.vibe/foo.vibe.vibe", "helper.vibe/foo.vibe.vibe"},
 		{"a.vibe/b.vibe/c.vibe", "a.vibe/b.vibe/c"},
 	}
 	for _, c := range cases {
@@ -1227,6 +1222,32 @@ func TestModulePolicyNormalizationDoesNotCollapseToEmpty(t *testing.T) {
 	for _, raw := range preserveNonEmpty {
 		if got := normalizeModulePolicyPattern(raw); got == "" {
 			t.Errorf("normalizeModulePolicyPattern(%q) = \"\", want non-empty (would otherwise bypass policy)", raw)
+		}
+	}
+}
+
+// parseModuleRequest only appends ".vibe" to require arguments that
+// have no extension, so "helper" and "helper.vibe" load the same file
+// while "helper.vibe.vibe" loads a separate on-disk file. Policy
+// normalization must reflect that, otherwise an allow-list of
+// ["helper"] would also grant access to the sibling file
+// "helper.vibe.vibe".
+func TestModulePolicyNormalizationDistinguishesDoubleExtensions(t *testing.T) {
+	pairs := []struct{ a, b string }{
+		{"helper", "helper.vibe.vibe"},
+		{"helper.vibe", "helper.vibe.vibe"},
+		{"helper.vibe.vibe", "helper.vibe.vibe.vibe"},
+		{".vibe", ".vibe.vibe"},
+		{".vibe.vibe", ".vibe.vibe.vibe"},
+		{"helper/foo", "helper/foo.vibe.vibe"},
+		{"helper.vibe/foo", "helper.vibe/foo.vibe.vibe"},
+		{"helper/.vibe", "helper/.vibe.vibe"},
+	}
+	for _, p := range pairs {
+		gotA := normalizeModulePolicyPattern(p.a)
+		gotB := normalizeModulePolicyPattern(p.b)
+		if gotA == gotB {
+			t.Errorf("normalizeModulePolicyPattern(%q) == normalizeModulePolicyPattern(%q) = %q; want distinct canonical forms (loader resolves them to different files)", p.a, p.b, gotA)
 		}
 	}
 }

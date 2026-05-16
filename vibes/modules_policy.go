@@ -16,37 +16,43 @@ func normalizeModulePolicyModuleName(relative string) string {
 }
 
 // normalizeModulePolicyValue canonicalizes a pattern or module name for
-// policy comparison. After path normalization it iteratively strips
-// ".vibe" suffixes from the *basename* only, never from intermediate
-// directory components, until either no ".vibe" suffix remains or
-// stripping the next one would empty the basename (so ".vibe" and
-// "helper/.vibe" are preserved rather than collapsing to "").
+// policy comparison. After path normalization it strips at most one
+// trailing ".vibe" suffix from the *basename* — matching the single
+// ".vibe" that parseModuleRequest appends when the require argument
+// has no extension. Inputs whose basename already carries more than
+// one ".vibe" (e.g. "helper.vibe.vibe") are preserved verbatim,
+// because the loader resolves them to a literal on-disk file of that
+// name and an allow-list of "helper" must not grant access to the
+// sibling file "helper.vibe.vibe".
 //
-// The function is idempotent: normalize(normalize(x)) == normalize(x)
-// for every input. Equivalent spellings of the same logical module —
-// "helper", "helper.vibe", "./helper.vibe", "helper.vibe.vibe" — all
-// reduce to "helper". Directory names keep their dots:
+// The function is idempotent. Equivalent spellings of the same
+// logical module — "helper", "helper.vibe", "./helper.vibe" — all
+// reduce to "helper". Distinct files — "helper" (loads helper.vibe)
+// and "helper.vibe.vibe" (loads helper.vibe.vibe) — produce distinct
+// canonical forms. Directory names keep their dots:
 // "helper.vibe/foo.vibe" reduces to "helper.vibe/foo".
 func normalizeModulePolicyValue(value string) string {
 	current := normalizeModulePolicyPath(value)
-	for {
-		if current == "" {
-			return ""
-		}
-		dir, base := path.Split(current)
-		if !strings.HasSuffix(base, ".vibe") {
-			return current
-		}
-		trimmed := strings.TrimSuffix(base, ".vibe")
-		if trimmed == "" {
-			return current
-		}
-		next := normalizeModulePolicyPath(dir + trimmed)
-		if next == "" {
-			return current
-		}
-		current = next
+	if current == "" {
+		return ""
 	}
+	dir, base := path.Split(current)
+	if !strings.HasSuffix(base, ".vibe") {
+		return current
+	}
+	trimmed := strings.TrimSuffix(base, ".vibe")
+	if trimmed == "" {
+		return current
+	}
+	candidate := normalizeModulePolicyPath(dir + trimmed)
+	if candidate == "" {
+		return current
+	}
+	_, candidateBase := path.Split(candidate)
+	if strings.HasSuffix(candidateBase, ".vibe") {
+		return current
+	}
+	return candidate
 }
 
 func normalizeModulePolicyPath(value string) string {
