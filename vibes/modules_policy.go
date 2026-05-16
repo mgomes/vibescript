@@ -8,15 +8,21 @@ import (
 )
 
 func normalizeModulePolicyPattern(pattern string) string {
-	normalized := normalizeModulePolicyPath(pattern)
-	normalized = strings.TrimSuffix(normalized, ".vibe")
-	return normalizeModulePolicyPath(normalized)
+	return normalizeModulePolicyValue(pattern)
 }
 
 func normalizeModulePolicyModuleName(relative string) string {
-	normalized := normalizeModulePolicyPath(relative)
-	normalized = strings.TrimSuffix(normalized, ".vibe")
-	return normalizeModulePolicyPath(normalized)
+	return normalizeModulePolicyValue(relative)
+}
+
+func normalizeModulePolicyValue(value string) string {
+	normalized := normalizeModulePolicyPath(value)
+	trimmed := strings.TrimSuffix(normalized, ".vibe")
+	cleaned := normalizeModulePolicyPath(trimmed)
+	if cleaned == "" {
+		return normalized
+	}
+	return cleaned
 }
 
 func normalizeModulePolicyPath(value string) string {
@@ -66,6 +72,9 @@ func modulePolicyMatch(pattern string, module string) bool {
 func (e *Engine) enforceModulePolicy(relative string) error {
 	module := normalizeModulePolicyModuleName(relative)
 	if module == "" {
+		if len(e.config.ModuleAllowList) > 0 || len(e.config.ModuleDenyList) > 0 {
+			return fmt.Errorf("require: module name %q is invalid", relative)
+		}
 		return nil
 	}
 

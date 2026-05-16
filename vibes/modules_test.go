@@ -1033,6 +1033,10 @@ func TestModulePolicyNormalizationIsIdempotent(t *testing.T) {
 		"0/ /",
 		"./nested\\*.vibe",
 		" shared/math.vibe ",
+		".vibe.vibe",
+		".vibe",
+		"..vibe",
+		"./.vibe",
 	} {
 		normalized := normalizeModulePolicyPattern(pattern)
 		if got := normalizeModulePolicyPattern(normalized); got != normalized {
@@ -1044,12 +1048,51 @@ func TestModulePolicyNormalizationIsIdempotent(t *testing.T) {
 		"0/ /",
 		"./nested\\tool.vibe",
 		" shared/math.vibe ",
+		".vibe.vibe",
+		".vibe",
+		"..vibe",
+		"./.vibe",
 	} {
 		normalized := normalizeModulePolicyModuleName(module)
 		if got := normalizeModulePolicyModuleName(normalized); got != normalized {
 			t.Errorf("normalizeModulePolicyModuleName(%q) normalized twice = %q, want %q", module, got, normalized)
 		}
 	}
+}
+
+// Inputs whose policy normalization collapses to empty must not silently
+// bypass deny/allow checks. Previously enforceModulePolicy short-circuited
+// to allow when the module name was empty, so any require argument that
+// normalized to "" (e.g. " ", whitespace-only paths) skipped policy.
+func TestEnforceModulePolicyDeniesEmptyModuleWhenPolicyConfigured(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{"deny-list set", Config{ModuleDenyList: []string{"*"}}},
+		{"allow-list set", Config{ModuleAllowList: []string{"*"}}},
+		{"both set", Config{ModuleAllowList: []string{"*"}, ModuleDenyList: []string{"x"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, err := NewEngine(tc.cfg)
+			if err != nil {
+				t.Fatalf("NewEngine failed: %v", err)
+			}
+			for _, raw := range []string{"", "   ", ".", "./"} {
+				if err := engine.enforceModulePolicy(raw); err == nil {
+					t.Errorf("enforceModulePolicy(%q) = nil, want denial", raw)
+				}
+			}
+		})
+	}
+
+	t.Run("no policy configured allows empty", func(t *testing.T) {
+		engine := MustNewEngine(Config{})
+		if err := engine.enforceModulePolicy(""); err != nil {
+			t.Errorf("enforceModulePolicy(\"\") with no policy = %v, want nil", err)
+		}
+	})
 }
 
 func TestFormatModuleCycleUsesConciseChain(t *testing.T) {
