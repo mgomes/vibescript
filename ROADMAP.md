@@ -541,3 +541,21 @@ Goal: make hostile or malformed user input exercise the same public surfaces use
 - [x] User-input entry points have focused fuzz coverage for panic and invariant regressions.
 - [x] Heavy fuzzing runs nightly rather than blocking every PR.
 - [x] Codex review follow-ups are fixed, reviewed, and merged.
+
+---
+
+## v0.28.1 - Module Policy Normalization Patch (completed 2026-05-15)
+
+Goal: ship the module policy normalization fix found by the local fuzz corpus after `v0.28.0`.
+
+### Patch Scope
+
+- [x] Make module policy pattern normalization idempotent for whitespace-only path segments.
+- [x] Apply the same canonicalization path to policy module names.
+- [x] Commit the fuzz-minimized regression case for replay by normal tests and future fuzz runs.
+
+### v0.28.1 Definition of Done
+
+- [x] The minimized `FuzzModulePolicyValidation` input passes.
+- [x] Full tests pass.
+- [x] Three full local `just fuzz` sweeps pass after the fix.

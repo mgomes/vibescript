@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 - Ongoing work toward the next pre-1.0 release.
 
+## v0.28.1 - 2026-05-15
+
+- Fixed module policy normalization so whitespace-only path segments cannot produce non-idempotent policy patterns or module names.
+- Added the fuzz-minimized module policy case to the committed corpus so the regression is replayed by normal tests and future fuzz runs.
+
 ## v0.28.0 - 2026-05-15
 
 - Added broad fuzz coverage across command input paths, formatting, lexing, parsing, compilation, runtime execution, JSON/value conversion, module handling, capability validation, and scalar input helpers.
