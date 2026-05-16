@@ -18,6 +18,12 @@ func normalizeModulePolicyModuleName(relative string) string {
 func normalizeModulePolicyValue(value string) string {
 	normalized := normalizeModulePolicyPath(value)
 	trimmed := strings.TrimSuffix(normalized, ".vibe")
+	if trimmed == normalized {
+		return normalized
+	}
+	if strings.HasSuffix(trimmed, ".vibe") {
+		return normalized
+	}
 	cleaned := normalizeModulePolicyPath(trimmed)
 	if cleaned == "" {
 		return normalized
