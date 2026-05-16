@@ -1048,6 +1048,13 @@ var modulePolicyNormalizationInputs = []string{
 	"...vibe",
 	"./.vibe",
 
+	// dot-only basenames under a directory: stripping the .vibe leaves
+	// "." or ".." which path.Clean would absorb into the parent — must
+	// NOT collapse into the parent's name.
+	"pkg/..vibe",
+	"pkg/...vibe",
+	"a/b/..vibe",
+
 	// numeric base name (path.Clean does not touch dots inside it)
 	"0",
 	"0.vibe",
@@ -1242,6 +1249,12 @@ func TestModulePolicyNormalizationDistinguishesDoubleExtensions(t *testing.T) {
 		{"helper/foo", "helper/foo.vibe.vibe"},
 		{"helper.vibe/foo", "helper.vibe/foo.vibe.vibe"},
 		{"helper/.vibe", "helper/.vibe.vibe"},
+		// Dot-only basenames must not collapse via path.Clean into the
+		// parent directory: "pkg/..vibe" is a literal file under pkg/,
+		// distinct from "pkg" (which loads "pkg.vibe").
+		{"pkg", "pkg/..vibe"},
+		{"pkg", "pkg/...vibe"},
+		{"helper", "helper/..vibe"},
 	}
 	for _, p := range pairs {
 		gotA := normalizeModulePolicyPattern(p.a)

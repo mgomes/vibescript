@@ -41,7 +41,7 @@ func normalizeModulePolicyValue(value string) string {
 		return current
 	}
 	trimmed := strings.TrimSuffix(base, ".vibe")
-	if trimmed == "" {
+	if trimmed == "" || trimmed == "." || trimmed == ".." {
 		return current
 	}
 	candidate := normalizeModulePolicyPath(dir + trimmed)
