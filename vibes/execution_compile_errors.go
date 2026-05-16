@@ -1,17 +1,17 @@
 package vibes
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 func combineErrors(errs []error) error {
 	if len(errs) == 1 {
 		return errs[0]
 	}
-	msg := ""
-	for _, err := range errs {
-		if msg != "" {
-			msg += "\n\n"
-		}
-		msg += err.Error()
+	msgs := make([]string, len(errs))
+	for i, err := range errs {
+		msgs[i] = err.Error()
 	}
-	return errors.New(msg)
+	return errors.New(strings.Join(msgs, "\n\n"))
 }

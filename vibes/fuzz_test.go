@@ -471,12 +471,15 @@ func FuzzModulePolicyValidation(f *testing.F) {
 			t.Fatalf("NewEngine(ModuleAllowList: %v) failed after validation: %v", patterns, err)
 		}
 		allowErr := allowEngine.enforceModulePolicy(rawModule)
-		if module == "" || matches {
-			if allowErr != nil {
-				t.Fatalf("allow-list %v rejected matching module %q: %v", patterns, rawModule, allowErr)
-			}
-		} else if allowErr == nil {
-			t.Fatalf("allow-list %v accepted non-matching module %q", patterns, rawModule)
+		// With no allow-list configured, all modules (including empty-
+		// normalized ones) are allowed. Otherwise the module must
+		// normalize non-empty and match a pattern.
+		wantAllow := len(patterns) == 0 || (module != "" && matches)
+		if wantAllow && allowErr != nil {
+			t.Fatalf("allow-list %v rejected expected-allowed module %q: %v", patterns, rawModule, allowErr)
+		}
+		if !wantAllow && allowErr == nil {
+			t.Fatalf("allow-list %v accepted expected-denied module %q", patterns, rawModule)
 		}
 
 		denyEngine, err := NewEngine(Config{ModuleDenyList: patterns})
@@ -484,12 +487,15 @@ func FuzzModulePolicyValidation(f *testing.F) {
 			t.Fatalf("NewEngine(ModuleDenyList: %v) failed after validation: %v", patterns, err)
 		}
 		denyErr := denyEngine.enforceModulePolicy(rawModule)
-		if module != "" && matches {
-			if denyErr == nil {
-				t.Fatalf("deny-list %v accepted matching module %q", patterns, rawModule)
-			}
-		} else if denyErr != nil {
-			t.Fatalf("deny-list %v rejected non-matching module %q: %v", patterns, rawModule, denyErr)
+		// With a deny-list configured, empty-normalized modules are
+		// rejected as invalid (no policy bypass) and matching modules
+		// are denied. Everything else passes.
+		wantDeny := len(patterns) > 0 && (module == "" || matches)
+		if wantDeny && denyErr == nil {
+			t.Fatalf("deny-list %v accepted expected-denied module %q", patterns, rawModule)
+		}
+		if !wantDeny && denyErr != nil {
+			t.Fatalf("deny-list %v rejected expected-allowed module %q: %v", patterns, rawModule, denyErr)
 		}
 	})
 }

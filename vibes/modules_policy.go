@@ -8,15 +8,51 @@ import (
 )
 
 func normalizeModulePolicyPattern(pattern string) string {
-	normalized := normalizeModulePolicyPath(pattern)
-	normalized = strings.TrimSuffix(normalized, ".vibe")
-	return normalizeModulePolicyPath(normalized)
+	return normalizeModulePolicyValue(pattern)
 }
 
 func normalizeModulePolicyModuleName(relative string) string {
-	normalized := normalizeModulePolicyPath(relative)
-	normalized = strings.TrimSuffix(normalized, ".vibe")
-	return normalizeModulePolicyPath(normalized)
+	return normalizeModulePolicyValue(relative)
+}
+
+// normalizeModulePolicyValue canonicalizes a pattern or module name for
+// policy comparison. After path normalization it strips at most one
+// trailing ".vibe" suffix from the *basename* — matching the single
+// ".vibe" that parseModuleRequest appends when the require argument
+// has no extension. Inputs whose basename already carries more than
+// one ".vibe" (e.g. "helper.vibe.vibe") are preserved verbatim,
+// because the loader resolves them to a literal on-disk file of that
+// name and an allow-list of "helper" must not grant access to the
+// sibling file "helper.vibe.vibe".
+//
+// The function is idempotent. Equivalent spellings of the same
+// logical module — "helper", "helper.vibe", "./helper.vibe" — all
+// reduce to "helper". Distinct files — "helper" (loads helper.vibe)
+// and "helper.vibe.vibe" (loads helper.vibe.vibe) — produce distinct
+// canonical forms. Directory names keep their dots:
+// "helper.vibe/foo.vibe" reduces to "helper.vibe/foo".
+func normalizeModulePolicyValue(value string) string {
+	current := normalizeModulePolicyPath(value)
+	if current == "" {
+		return ""
+	}
+	dir, base := path.Split(current)
+	if !strings.HasSuffix(base, ".vibe") {
+		return current
+	}
+	trimmed := strings.TrimSuffix(base, ".vibe")
+	if trimmed == "" || trimmed == "." || trimmed == ".." {
+		return current
+	}
+	candidate := normalizeModulePolicyPath(dir + trimmed)
+	if candidate == "" {
+		return current
+	}
+	_, candidateBase := path.Split(candidate)
+	if strings.HasSuffix(candidateBase, ".vibe") {
+		return current
+	}
+	return candidate
 }
 
 func normalizeModulePolicyPath(value string) string {
@@ -66,6 +102,9 @@ func modulePolicyMatch(pattern string, module string) bool {
 func (e *Engine) enforceModulePolicy(relative string) error {
 	module := normalizeModulePolicyModuleName(relative)
 	if module == "" {
+		if len(e.config.ModuleAllowList) > 0 || len(e.config.ModuleDenyList) > 0 {
+			return fmt.Errorf("require: module name %q is invalid", relative)
+		}
 		return nil
 	}
 
