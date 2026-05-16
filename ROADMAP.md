@@ -513,3 +513,31 @@ Goal: close remaining host-facing containment gaps before the next pre-1.0 relea
 - [x] Engine-owned mutable state is not exposed through public snapshot APIs.
 - [x] Module resolution remains anchored to engine construction-time roots.
 - [x] Security hardening passes full tests, race-detector coverage, and benchmark smoke gates.
+
+---
+
+## v0.28.0 - Fuzz Coverage and Input Hardening (completed 2026-05-15)
+
+Goal: make hostile or malformed user input exercise the same public surfaces users and tools reach in normal Vibescript workflows.
+
+### Fuzz Coverage
+
+- [x] Cover CLI argument/path handling, REPL input flow, LSP payload handling, and formatter input.
+- [x] Cover lexer, parser, compiler, generated-script semantics, runtime edge cases, value operations, JSON round trips, module request normalization, module alias validation, module policy validation, capability input validation, and scalar input conversion helpers.
+- [x] Keep seed cases focused on real boundary shapes instead of broad random text alone.
+
+### Automation
+
+- [x] Add `just fuzz` with a 10-second default for repeatable local sweeps.
+- [x] Add a nightly GitHub Actions fuzz workflow so heavier coverage runs outside normal PR latency.
+
+### Review Follow-ups
+
+- [x] Preserve valid near-1 MiB source support when source text is wrapped in JSON-RPC LSP messages.
+- [x] Keep keyword-named hash/object members reachable through dot access after parser access-expression hardening.
+
+### v0.28.0 Definition of Done
+
+- [x] User-input entry points have focused fuzz coverage for panic and invariant regressions.
+- [x] Heavy fuzzing runs nightly rather than blocking every PR.
+- [x] Codex review follow-ups are fixed, reviewed, and merged.
