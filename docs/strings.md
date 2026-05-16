@@ -1,6 +1,6 @@
 # String Methods
 
-VibeScript provides several methods for string manipulation.
+Vibescript provides several methods for string manipulation.
 
 ## Locale Behavior
 
@@ -251,7 +251,7 @@ Removes the suffix when present:
 
 ## Compatibility Methods
 
-VibeScript strings are immutable, so mutating-style Ruby methods return a new string.
+Vibescript strings are immutable, so mutating-style Ruby methods return a new string.
 
 ### `clear`
 

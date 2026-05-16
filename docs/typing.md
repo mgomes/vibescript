@@ -1,6 +1,6 @@
 # Gradual Typing
 
-VibeScript supports optional type annotations on parameters and return values. Unannotated code is not type-checked; annotations opt you into runtime checks.
+Vibescript supports optional type annotations on parameters and return values. Unannotated code is not type-checked; annotations opt you into runtime checks.
 
 ## Supported types
 

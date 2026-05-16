@@ -1,6 +1,6 @@
 # Versioning and Compatibility Contract
 
-VibeScript uses [Semantic Versioning](https://semver.org/) for tags (`vMAJOR.MINOR.PATCH`).
+Vibescript uses [Semantic Versioning](https://semver.org/) for tags (`vMAJOR.MINOR.PATCH`).
 
 ## Meaning of Version Components
 
@@ -30,7 +30,7 @@ After `v1.0.0`:
 
 This contract applies to:
 
-- VibeScript syntax and runtime behavior.
+- Vibescript syntax and runtime behavior.
 - Public Go embedding APIs in the `vibes` module.
 - CLI command surface (`vibes run`, `vibes fmt`, `vibes analyze`, `vibes lsp`, `vibes repl`).
 

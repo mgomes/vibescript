@@ -1,6 +1,6 @@
 # Go Compatibility Matrix
 
-VibeScript currently targets the Go toolchain version declared in `go.mod`.
+Vibescript currently targets the Go toolchain version declared in `go.mod`.
 
 | Go Version | Status | CI Coverage | Notes |
 | --- | --- | --- | --- |

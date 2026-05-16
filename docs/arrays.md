@@ -1,4 +1,4 @@
-# Arrays in VibeScript
+# Arrays in Vibescript
 
 Arrays are ordered collections. Use square brackets to declare literals:
 

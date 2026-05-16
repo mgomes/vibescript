@@ -1,6 +1,6 @@
 # Errors and Debugging
 
-VibeScript surfaces both parse-time and runtime failures with line and column information.
+Vibescript surfaces both parse-time and runtime failures with line and column information.
 
 ## Parse Errors
 

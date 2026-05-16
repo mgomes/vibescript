@@ -1,4 +1,4 @@
-# VibeScript benchmark run
+# Vibescript benchmark run
 # timestamp: 2026-02-21T18:34:37Z
 # git_commit: cbe5e6a
 # go_version: go version go1.26.0 darwin/arm64

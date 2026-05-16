@@ -1,6 +1,6 @@
 # Core Syntax Compatibility Guarantees
 
-This document defines the VibeScript core syntax freeze baseline for the `v1.0`
+This document defines the Vibescript core syntax freeze baseline for the `v1.0`
 stabilization track.
 
 ## Freeze Baseline

@@ -1,6 +1,6 @@
 # Public API Deprecation Policy
 
-This document defines how VibeScript evolves the public Go embedding API in
+This document defines how Vibescript evolves the public Go embedding API in
 the `vibes` module.
 
 ## Scope

@@ -1,6 +1,6 @@
 # Duration Methods
 
-VibeScript provides duration literals and helper methods for time-based calculations.
+Vibescript provides duration literals and helper methods for time-based calculations.
 
 ## Creating Durations
 

@@ -1,6 +1,6 @@
 # Starter Templates
 
-VibeScript ships starter scaffolds in `templates/embedding/` for common host
+Vibescript ships starter scaffolds in `templates/embedding/` for common host
 integration scenarios.
 
 ## Included Scenarios

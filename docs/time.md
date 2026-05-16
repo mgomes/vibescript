@@ -1,6 +1,6 @@
 # Time
 
-VibeScript provides a `Time` object for working with instants in time, plus helpers on `Duration` for producing `Time` values (`ago`, `after`, `since`, etc.). Method declarations omit parentheses when there are no arguments:
+Vibescript provides a `Time` object for working with instants in time, plus helpers on `Duration` for producing `Time` values (`ago`, `after`, `since`, etc.). Method declarations omit parentheses when there are no arguments:
 
 ```vibe
 def midnight_utc

@@ -56,7 +56,7 @@ def run
     delete_suffix: "report.csv".delete_suffix(".csv"),
     split_default: "one two  three".split,
     split_custom: "a,b,c".split(","),
-    tags: split_tags(" Ruby, Go,  VibeScript  "),
+    tags: split_tags(" Ruby, Go,  Vibescript  "),
     empty_true: "".empty?,
     empty_false: "x".empty?,
     starts: "vibescript".start_with?("vibe"),

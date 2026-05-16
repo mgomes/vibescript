@@ -1,6 +1,6 @@
 # Classes
 
-VibeScript classes group related state and behavior using instance methods,
+Vibescript classes group related state and behavior using instance methods,
 class methods, instance variables, and class variables.
 
 Inheritance is not supported. Class definitions do not support
@@ -129,7 +129,7 @@ end
 
 When assigning through a member (`obj.name = ...`):
 
-- If `name=` exists, VibeScript calls that setter method.
+- If `name=` exists, Vibescript calls that setter method.
 - If only `name` exists (getter without setter), assignment raises a read-only
   property error.
 

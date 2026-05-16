@@ -27,7 +27,7 @@ type Config struct {
 	MaxSourceBytes   int
 }
 
-// Engine executes VibeScript programs with deterministic limits.
+// Engine executes Vibescript programs with deterministic limits.
 type Engine struct {
 	config     Config
 	builtins   map[string]Value

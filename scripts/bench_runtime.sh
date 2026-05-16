@@ -5,7 +5,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: scripts/bench_runtime.sh [options]
 
-Runs VibeScript Go benchmarks with stable defaults and records output.
+Runs Vibescript Go benchmarks with stable defaults and records output.
 
 options:
   --count <n>        Benchmark count (default: 3)
@@ -80,7 +80,7 @@ command=(
 )
 
 {
-  echo "# VibeScript benchmark run"
+  echo "# Vibescript benchmark run"
   echo "# timestamp: $timestamp"
   echo "# git_commit: $git_commit"
   echo "# go_version: $go_version"

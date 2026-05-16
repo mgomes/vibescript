@@ -1,6 +1,6 @@
 # Control Flow and Ranges
 
-VibeScript supports these control-flow forms:
+Vibescript supports these control-flow forms:
 
 - `if` / `elsif` / `else`
 - `case` / `when` expressions

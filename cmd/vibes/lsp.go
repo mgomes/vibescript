@@ -244,7 +244,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				Result: map[string]any{
 					"contents": map[string]any{
 						"kind":  "markdown",
-						"value": fmt.Sprintf("`%s`\n\nVibeScript %s", word, kind),
+						"value": fmt.Sprintf("`%s`\n\nVibescript %s", word, kind),
 					},
 				},
 			},

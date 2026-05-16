@@ -1,6 +1,6 @@
 # Built-in Functions
 
-VibeScript provides several built-in functions available globally in all scripts.
+Vibescript provides several built-in functions available globally in all scripts.
 
 ## Assertions
 
@@ -54,7 +54,7 @@ end
 
 **Note:** The `now` function returns a string, not a time object. This is suitable for logging and timestamping.
 
-For time manipulation in VibeScript, use the `Time` object (`Time.now`, `Time.parse`, `Time.utc`, etc.). See `docs/time.md`.
+For time manipulation in Vibescript, use the `Time` object (`Time.now`, `Time.parse`, `Time.utc`, etc.). See `docs/time.md`.
 
 ## Random IDs
 
@@ -94,7 +94,7 @@ ratio = to_float("1.25")
 
 ### `JSON.parse(string)`
 
-Parses a JSON string into VibeScript values (`hash`, `array`, `string`, `int`,
+Parses a JSON string into Vibescript values (`hash`, `array`, `string`, `int`,
 `float`, `bool`, `nil`):
 
 ```vibe

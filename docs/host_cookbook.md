@@ -95,7 +95,7 @@ errors user-visible only when messages are sanitized for your domain.
 
 ## 6. Upgrade Workflow
 
-For each VibeScript version bump:
+For each Vibescript version bump:
 
 1. Run `go test ./...` and representative script smoke tests.
 2. Re-run docs/examples smoke checks in CI.

@@ -1,4 +1,4 @@
-# Integrating VibeScript in Go
+# Integrating Vibescript in Go
 
 The interpreter runs entirely in Go. Create an engine, compile scripts, and
 call functions like so. For API lifecycle guarantees, also see
@@ -125,7 +125,7 @@ wiring builtins.
 
 ### First-Party Capability Helpers
 
-VibeScript ships capability helpers for common integration points:
+Vibescript ships capability helpers for common integration points:
 
 - `NewDBCapability(name, db)` for `find/query/update/sum/each`.
 - `NewEventsCapability(name, publisher)` for `publish`.
@@ -165,7 +165,7 @@ call:
 2. Build a data-only payload in script code.
 3. Publish notifications via `events.publish` or queue work via `jobs.enqueue`.
 
-This keeps business logic in VibeScript while side effects stay behind typed
+This keeps business logic in Vibescript while side effects stay behind typed
 host adapters.
 
 ### Capability Failure Handling

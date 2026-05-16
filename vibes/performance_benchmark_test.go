@@ -212,7 +212,7 @@ func BenchmarkExecutionStringNormalizeLoop(b *testing.B) {
   out
 end`)
 
-	args := []Value{NewString("  VibeScript   Runtime   Benchmarks  "), NewInt(80)}
+	args := []Value{NewString("  Vibescript   Runtime   Benchmarks  "), NewInt(80)}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {

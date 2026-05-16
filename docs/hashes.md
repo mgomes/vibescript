@@ -1,4 +1,4 @@
-# Hashes in VibeScript
+# Hashes in Vibescript
 
 Hashes are symbol-keyed dictionaries. Declare them with Ruby-style shorthand:
 

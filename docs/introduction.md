@@ -1,6 +1,6 @@
-# VibeScript Overview
+# Vibescript Overview
 
-VibeScript is a Ruby-inspired DSL for describing fundraising workflows. It
+Vibescript is a Ruby-inspired DSL for describing fundraising workflows. It
 supports literals, collections, hashes, numeric ranges, blocks, and built-in
 helpers for money and durations. Many of the examples mirror core Ruby
 enumerable patterns, letting non-programmers write expressive scripts that

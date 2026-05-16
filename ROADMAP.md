@@ -1,6 +1,6 @@
-# VibeScript Roadmap and Implementation Checklist
+# Vibescript Roadmap and Implementation Checklist
 
-This is the working implementation TODO for upcoming VibeScript releases.
+This is the working implementation TODO for upcoming Vibescript releases.
 
 How to use this file:
 

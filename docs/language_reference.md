@@ -1,6 +1,6 @@
 # Language Reference
 
-This is the consolidated reference for VibeScript syntax and core semantics.
+This is the consolidated reference for Vibescript syntax and core semantics.
 Use this with focused guides in `docs/` for deeper examples.
 
 ## Source Structure
@@ -12,7 +12,7 @@ Use this with focused guides in `docs/` for deeper examples.
 
 ## Values and Literals
 
-VibeScript supports these literal/value categories:
+Vibescript supports these literal/value categories:
 
 - `nil`, `true`, `false`
 - integers and floats (`1`, `42`, `3.14`)
