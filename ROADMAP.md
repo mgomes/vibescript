@@ -559,3 +559,23 @@ Goal: ship the module policy normalization fix found by the local fuzz corpus af
 - [x] The minimized `FuzzModulePolicyValidation` input passes.
 - [x] Full tests pass.
 - [x] Three full local `just fuzz` sweeps pass after the fix.
+
+---
+
+## v0.28.2 - DoS and Module Policy Bypass Patch (completed 2026-05-16)
+
+Goal: close the quadratic `combineErrors` DoS and the empty/dot-only module-policy bypass classes surfaced by local fuzz sweeps after `v0.28.1`.
+
+### Patch Scope
+
+- [x] Replace the quadratic error-message concatenation in `combineErrors` with a linear join so invalid-UTF-8 input cannot drive CPU usage that scales with the square of the parse-error count.
+- [x] Fail-close `enforceModulePolicy` on require arguments that normalize to empty whenever any allow- or deny-list is configured.
+- [x] Strip at most one implicit `.vibe` from policy keys so allow-lists do not widen to sibling files like `helper.vibe.vibe` or `pkg/..vibe`.
+- [x] Pin the bypass classes with new invariant tests and add the fuzz-minimized inputs to the committed corpus.
+
+### v0.28.2 Definition of Done
+
+- [x] Targeted regression tests for the DoS and policy bypasses pass.
+- [x] Full tests pass.
+- [x] Multiple full local `just fuzz` sweeps pass after the fixes.
+- [x] Codex review follow-ups for this patch are fixed, reviewed, and merged.
