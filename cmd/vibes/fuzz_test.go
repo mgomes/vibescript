@@ -4,19 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mgomes/vibescript/vibes"
 	"github.com/mgomes/vibescript/vibes/value"
 )
-
-var fuzzStdoutMu sync.Mutex
 
 func FuzzFormatVibeSource(f *testing.F) {
 	for _, seed := range []string{
@@ -130,7 +126,7 @@ func FuzzCLIArgumentAndPathInputs(f *testing.F) {
 		case 2:
 			_ = runCommand([]string{"-check", rawArg})
 		case 3:
-			_, _ = captureStdoutForFuzz(t, func() error {
+			_, _ = captureStdout(t, func() error {
 				return analyzeCommand([]string{scriptPath})
 			})
 		case 4:
@@ -318,38 +314,6 @@ func mustMarshalFuzzJSON(value any) json.RawMessage {
 		panic(err)
 	}
 	return payload
-}
-
-func captureStdoutForFuzz(t *testing.T, fn func() error) (string, error) {
-	t.Helper()
-
-	fuzzStdoutMu.Lock()
-	defer fuzzStdoutMu.Unlock()
-
-	orig := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	defer func() {
-		os.Stdout = orig
-	}()
-
-	runErr := fn()
-	if err := w.Close(); err != nil {
-		t.Fatalf("close stdout writer: %v", err)
-	}
-	os.Stdout = orig
-
-	var buf bytes.Buffer
-	if _, copyErr := io.Copy(&buf, r); copyErr != nil {
-		t.Fatalf("read stdout: %v", copyErr)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatalf("close stdout reader: %v", err)
-	}
-	return buf.String(), runErr
 }
 
 func positiveMod(n, mod int) int {

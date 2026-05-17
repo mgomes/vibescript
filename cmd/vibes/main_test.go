@@ -1,115 +1,134 @@
 package main
 
 import (
-	"bytes"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestRunCLIHelp(t *testing.T) {
-	if err := runCLI([]string{"vibes", "help"}); err != nil {
-		t.Fatalf("runCLI help failed: %v", err)
+func TestRunCLI(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "help", args: []string{"help"}},
+		{name: "invalid_command", args: []string{"unknown"}, wantErr: "invalid command"},
+		{name: "missing_command", args: nil, wantErr: "invalid command"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := dispatchCLI(t, tc.args...)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("dispatchCLI(%v) err = %v, want nil", tc.args, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("dispatchCLI(%v) err = nil, want %q", tc.args, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("dispatchCLI(%v) err = %v, want substring %q", tc.args, err, tc.wantErr)
+			}
+		})
 	}
 }
 
-func TestRunCLIInvalidCommand(t *testing.T) {
-	err := runCLI([]string{"vibes", "unknown"})
-	if err == nil {
-		t.Fatalf("expected invalid command error")
-	}
-	if !strings.Contains(err.Error(), "invalid command") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestRunCLIWithoutCommand(t *testing.T) {
-	err := runCLI([]string{"vibes"})
-	if err == nil {
-		t.Fatalf("expected invalid command error")
-	}
-	if !strings.Contains(err.Error(), "invalid command") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestRunCommandCheckOnly(t *testing.T) {
-	scriptPath := writeScript(t, `def run
+func TestRunCommand(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		script  string
+		args    func(scriptPath string) []string
+		wantOut string
+		wantErr string
+	}{
+		{
+			name: "check_only",
+			script: `def run
   "ok"
-end`)
-
-	if err := runCommand([]string{"-check", scriptPath}); err != nil {
-		t.Fatalf("runCommand check failed: %v", err)
-	}
-}
-
-func TestRunCommandExecutesFunctionAndPrintsResult(t *testing.T) {
-	scriptPath := writeScript(t, `def greet(name)
+end`,
+			args: func(p string) []string { return []string{"-check", p} },
+		},
+		{
+			name: "executes_function_and_prints_result",
+			script: `def greet(name)
   name
-end`)
-
-	out, err := captureStdout(t, func() error {
-		return runCommand([]string{"-function", "greet", scriptPath, "hello"})
-	})
-	if err != nil {
-		t.Fatalf("runCommand failed: %v", err)
+end`,
+			args:    func(p string) []string { return []string{"-function", "greet", p, "hello"} },
+			wantOut: "hello",
+		},
+		{
+			name:    "requires_script_path",
+			args:    func(string) []string { return nil },
+			wantErr: "script path required",
+		},
 	}
-	if got := strings.TrimSpace(out); got != "hello" {
-		t.Fatalf("unexpected stdout: %q", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var args []string
+			if tc.script != "" {
+				args = tc.args(writeVibeScript(t, tc.script))
+			} else {
+				args = tc.args("")
+			}
+			out, err := captureStdout(t, func() error {
+				return runCommand(args)
+			})
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("runCommand(%v) err = nil, want %q", args, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("runCommand(%v) err = %v, want substring %q", args, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("runCommand(%v) err = %v, want nil", args, err)
+			}
+			if tc.wantOut != "" {
+				if got := strings.TrimSpace(out); got != tc.wantOut {
+					t.Fatalf("runCommand(%v) stdout = %q, want %q", args, got, tc.wantOut)
+				}
+			}
+		})
 	}
 }
 
-func TestRunCommandRequiresScriptPath(t *testing.T) {
-	err := runCommand(nil)
-	if err == nil {
-		t.Fatalf("expected script path error")
-	}
-	if !strings.Contains(err.Error(), "script path required") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestAnalyzeCommandNoIssues(t *testing.T) {
-	scriptPath := writeScript(t, `def run()
+func TestAnalyzeCommand(t *testing.T) {
+	tests := []struct {
+		name        string
+		script      string
+		wantOut     []string
+		notWantOut  []string
+		wantErr     string
+		expectNoErr bool
+	}{
+		{
+			name: "no_issues",
+			script: `def run()
   value = 1
   value
-end`)
-
-	out, err := captureStdout(t, func() error {
-		return analyzeCommand([]string{scriptPath})
-	})
-	if err != nil {
-		t.Fatalf("analyzeCommand failed: %v", err)
-	}
-	if !strings.Contains(out, "No issues found") {
-		t.Fatalf("unexpected analyze output: %q", out)
-	}
-}
-
-func TestAnalyzeCommandReportsUnreachableStatements(t *testing.T) {
-	scriptPath := writeScript(t, `def run()
+end`,
+			wantOut:     []string{"No issues found"},
+			expectNoErr: true,
+		},
+		{
+			name: "unreachable_statements",
+			script: `def run()
   return 1
   2
-end`)
-
-	out, err := captureStdout(t, func() error {
-		return analyzeCommand([]string{scriptPath})
-	})
-	if err == nil {
-		t.Fatalf("expected analyze command to report lint failures")
-	}
-	if !strings.Contains(err.Error(), "analysis found 1 issue(s)") {
-		t.Fatalf("unexpected analyze error: %v", err)
-	}
-	if !strings.Contains(out, "unreachable statement") {
-		t.Fatalf("expected unreachable statement warning, got %q", out)
-	}
-}
-
-func TestAnalyzeCommandReportsUnreachableAfterTerminatingElsifChain(t *testing.T) {
-	scriptPath := writeScript(t, `def run()
+end`,
+			wantOut: []string{"unreachable statement"},
+			wantErr: "analysis found 1 issue(s)",
+		},
+		{
+			name: "unreachable_after_terminating_elsif_chain",
+			script: `def run()
   if false
     return 1
   elsif true
@@ -118,48 +137,26 @@ func TestAnalyzeCommandReportsUnreachableAfterTerminatingElsifChain(t *testing.T
     return 3
   end
   4
-end`)
-
-	out, err := captureStdout(t, func() error {
-		return analyzeCommand([]string{scriptPath})
-	})
-	if err == nil {
-		t.Fatalf("expected analyze command to report lint failures")
-	}
-	if !strings.Contains(err.Error(), "analysis found 1 issue(s)") {
-		t.Fatalf("unexpected analyze error: %v", err)
-	}
-	if !strings.Contains(out, "unreachable statement") {
-		t.Fatalf("expected unreachable statement warning, got %q", out)
-	}
-}
-
-func TestAnalyzeCommandReportsUnreachableAfterBeginEnsureWithoutRescue(t *testing.T) {
-	scriptPath := writeScript(t, `def run()
+end`,
+			wantOut: []string{"unreachable statement"},
+			wantErr: "analysis found 1 issue(s)",
+		},
+		{
+			name: "unreachable_after_begin_ensure_without_rescue",
+			script: `def run()
   begin
     return 1
   ensure
     value = 2
   end
   3
-end`)
-
-	out, err := captureStdout(t, func() error {
-		return analyzeCommand([]string{scriptPath})
-	})
-	if err == nil {
-		t.Fatalf("expected analyze command to report lint failures")
-	}
-	if !strings.Contains(err.Error(), "analysis found 1 issue(s)") {
-		t.Fatalf("unexpected analyze error: %v", err)
-	}
-	if !strings.Contains(out, "unreachable statement") {
-		t.Fatalf("expected unreachable statement warning, got %q", out)
-	}
-}
-
-func TestAnalyzeCommandReportsUnreachableStatementsInClassMethods(t *testing.T) {
-	scriptPath := writeScript(t, `class Reporter
+end`,
+			wantOut: []string{"unreachable statement"},
+			wantErr: "analysis found 1 issue(s)",
+		},
+		{
+			name: "unreachable_statements_in_class_methods",
+			script: `class Reporter
   def instance_path()
     return 1
     2
@@ -173,29 +170,48 @@ end
 
 def run()
   Reporter.new.instance_path
-end`)
-
-	out, err := captureStdout(t, func() error {
-		return analyzeCommand([]string{scriptPath})
-	})
-	if err == nil {
-		t.Fatalf("expected analyze command to report lint failures")
+end`,
+			wantOut: []string{"(Reporter#instance_path)", "(Reporter.class_path)"},
+			wantErr: "analysis found 2 issue(s)",
+		},
 	}
-	if !strings.Contains(err.Error(), "analysis found 2 issue(s)") {
-		t.Fatalf("unexpected analyze error: %v", err)
-	}
-	if !strings.Contains(out, "(Reporter#instance_path)") {
-		t.Fatalf("expected instance method warning, got %q", out)
-	}
-	if !strings.Contains(out, "(Reporter.class_path)") {
-		t.Fatalf("expected class method warning, got %q", out)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			scriptPath := writeVibeScript(t, tc.script)
+			out, err := captureStdout(t, func() error {
+				return analyzeCommand([]string{scriptPath})
+			})
+			if tc.expectNoErr {
+				if err != nil {
+					t.Fatalf("analyzeCommand(%q) err = %v, want nil", scriptPath, err)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("analyzeCommand(%q) err = nil, want %q", scriptPath, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("analyzeCommand(%q) err = %v, want substring %q", scriptPath, err, tc.wantErr)
+				}
+			}
+			for _, want := range tc.wantOut {
+				if !strings.Contains(out, want) {
+					t.Fatalf("analyzeCommand(%q) stdout = %q, want substring %q", scriptPath, out, want)
+				}
+			}
+			for _, notWant := range tc.notWantOut {
+				if strings.Contains(out, notWant) {
+					t.Fatalf("analyzeCommand(%q) stdout = %q, must not contain %q", scriptPath, out, notWant)
+				}
+			}
+		})
 	}
 }
 
 func TestComputeModulePathsIncludesScriptDirAndDedupesExtras(t *testing.T) {
-	scriptDir := t.TempDir()
+	t.Parallel()
+	scriptDir := newTestCLI(t)
 	scriptPath := filepath.Join(scriptDir, "main.vibe")
-	extraDir := t.TempDir()
+	extraDir := newTestCLI(t)
 
 	dirs, err := computeModulePaths(scriptPath, []string{scriptDir, extraDir, extraDir})
 	if err != nil {
@@ -222,9 +238,10 @@ func TestComputeModulePathsIncludesScriptDirAndDedupesExtras(t *testing.T) {
 }
 
 func TestComputeModulePathsRejectsNonDirectoryExtra(t *testing.T) {
-	scriptDir := t.TempDir()
+	t.Parallel()
+	scriptDir := newTestCLI(t)
 	scriptPath := filepath.Join(scriptDir, "main.vibe")
-	file := filepath.Join(t.TempDir(), "not-a-dir")
+	file := filepath.Join(newTestCLI(t), "not-a-dir")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write temp file: %v", err)
 	}
@@ -236,42 +253,4 @@ func TestComputeModulePathsRejectsNonDirectoryExtra(t *testing.T) {
 	if !strings.Contains(err.Error(), "is not a directory") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-}
-
-func writeScript(t *testing.T, source string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "script.vibe")
-	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
-	return path
-}
-
-func captureStdout(t *testing.T, fn func() error) (string, error) {
-	t.Helper()
-
-	orig := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-	defer func() {
-		os.Stdout = orig
-	}()
-
-	runErr := fn()
-	if err := w.Close(); err != nil {
-		t.Fatalf("close stdout writer: %v", err)
-	}
-	os.Stdout = orig
-
-	var buf bytes.Buffer
-	if _, copyErr := io.Copy(&buf, r); copyErr != nil {
-		t.Fatalf("read stdout: %v", copyErr)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatalf("close stdout reader: %v", err)
-	}
-	return buf.String(), runErr
 }
