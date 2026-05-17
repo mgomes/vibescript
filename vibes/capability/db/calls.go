@@ -121,7 +121,7 @@ func (c *Capability) CallEach(exec ExecutionContext, args []value.Value, kwargs 
 		if err := exec.Step(); err != nil {
 			return value.NewNil(), err
 		}
-		if err := capabilitycontract.ValidateAnyValue(fmt.Sprintf("%s.each row %d", c.name, idx), row); err != nil {
+		if err := capabilitycontract.ValidateDataOnlyValue(fmt.Sprintf("%s.each row %d", c.name, idx), row); err != nil {
 			return value.NewNil(), err
 		}
 		if _, err := exec.CallBlock(block, []value.Value{capabilitycontract.DeepCloneValue(row)}); err != nil {

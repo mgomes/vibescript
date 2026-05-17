@@ -47,7 +47,7 @@ func (c *Capability) validateFindContractArgs(args []value.Value, kwargs map[str
 	if _, err := capabilitycontract.NameArg(method, "collection", args[0]); err != nil {
 		return err
 	}
-	if err := capabilitycontract.ValidateAnyValue(method+" id", args[1]); err != nil {
+	if err := capabilitycontract.ValidateDataOnlyValue(method+" id", args[1]); err != nil {
 		return err
 	}
 	return capabilitycontract.ValidateKwargsDataOnly(method, kwargs)
@@ -78,7 +78,7 @@ func (c *Capability) validateUpdateContractArgs(args []value.Value, kwargs map[s
 	if _, err := capabilitycontract.NameArg(method, "collection", args[0]); err != nil {
 		return err
 	}
-	if err := capabilitycontract.ValidateAnyValue(method+" id", args[1]); err != nil {
+	if err := capabilitycontract.ValidateDataOnlyValue(method+" id", args[1]); err != nil {
 		return err
 	}
 	if err := capabilitycontract.ValidateHashValue(method+" attributes", args[2]); err != nil {

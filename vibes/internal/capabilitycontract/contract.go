@@ -7,7 +7,6 @@ package capabilitycontract
 
 import (
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -85,20 +84,6 @@ func DeepCloneValue(val value.Value) value.Value {
 	}
 }
 
-// MergeHash copies src entries into dest, allocating dest when nil.
-// Provided for symmetry with the in-package helper it replaced even
-// though the db carve does not currently use it.
-func MergeHash(dest, src map[string]value.Value) map[string]value.Value {
-	if len(src) == 0 {
-		return dest
-	}
-	if dest == nil {
-		dest = make(map[string]value.Value, len(src))
-	}
-	maps.Copy(dest, src)
-	return dest
-}
-
 // IsNilImplementation reports whether impl is a nil interface or a
 // typed-nil pointer / channel / func / map / slice. Capability
 // constructors use it to reject zero-value implementations that would
@@ -142,12 +127,6 @@ func ValidateDataOnlyValue(label string, val value.Value) error {
 	return nil
 }
 
-// ValidateAnyValue is the value-side check for "any" capability typed
-// arguments: data-only and acyclic, no further kind constraints.
-func ValidateAnyValue(label string, val value.Value) error {
-	return ValidateDataOnlyValue(label, val)
-}
-
 // ValidateHashValue checks that val is a hash (or object) and data-only.
 // The error string format matches the original validateCapabilityHashValue
 // wrapper so capability tests that grep on it continue to pass.
@@ -161,11 +140,11 @@ func ValidateHashValue(label string, val value.Value) error {
 	return nil
 }
 
-// ValidateKwargsDataOnly applies ValidateAnyValue to every keyword
+// ValidateKwargsDataOnly applies ValidateDataOnlyValue to every keyword
 // argument, labeling errors with method and keyword name.
 func ValidateKwargsDataOnly(method string, kwargs map[string]value.Value) error {
 	for key, val := range kwargs {
-		if err := ValidateAnyValue(fmt.Sprintf("%s keyword %s", method, key), val); err != nil {
+		if err := ValidateDataOnlyValue(fmt.Sprintf("%s keyword %s", method, key), val); err != nil {
 			return err
 		}
 	}
@@ -177,14 +156,14 @@ func ValidateKwargsDataOnly(method string, kwargs map[string]value.Value) error 
 // allow any data-only return value.
 func ValidateAnyReturn(method string) func(result value.Value) error {
 	return func(result value.Value) error {
-		return ValidateAnyValue(method+" return value", result)
+		return ValidateDataOnlyValue(method+" return value", result)
 	}
 }
 
 // CloneMethodResult validates and deep-copies a host-returned Value so
 // the host's mutable state is not aliased into the script heap.
 func CloneMethodResult(method string, result value.Value) (value.Value, error) {
-	if err := ValidateAnyValue(method+" return value", result); err != nil {
+	if err := ValidateDataOnlyValue(method+" return value", result); err != nil {
 		return value.NewNil(), err
 	}
 	return DeepCloneValue(result), nil
