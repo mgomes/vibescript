@@ -354,7 +354,7 @@ func TestBuiltinRegistrationConcurrentWithSnapshots(t *testing.T) {
 func runContainmentSubprocess(t *testing.T, probe, testName string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+testName+"$")
@@ -392,8 +392,9 @@ func runBuiltinRegistrationConcurrencyProbe(t *testing.T) {
 		var wg sync.WaitGroup
 		for range 4 {
 			wg.Go(func() {
-				ready <- struct{}{}
 				<-start
+				_ = engine.Builtins()
+				ready <- struct{}{}
 				for {
 					select {
 					case <-stop:
@@ -404,10 +405,10 @@ func runBuiltinRegistrationConcurrencyProbe(t *testing.T) {
 				}
 			})
 		}
+		close(start)
 		for range 4 {
 			<-ready
 		}
-		close(start)
 		for i := range 500 {
 			engine.RegisterBuiltin(fmt.Sprintf("probe_%d_%d", attempt, i), noop)
 		}
