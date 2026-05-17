@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 func TestUpdateQuitCommandReturnsQuit(t *testing.T) {
@@ -79,7 +80,7 @@ func TestEvaluateAssignmentStoresVariable(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected score to be stored in repl env")
 	}
-	if score.Kind() != vibes.KindInt || score.Int() != 42 {
+	if score.Kind() != value.KindInt || score.Int() != 42 {
 		t.Fatalf("unexpected score value: %#v", score)
 	}
 }
@@ -89,7 +90,7 @@ func TestEvaluateEqualityDoesNotOverwriteVariable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
-	m.env["a"] = vibes.NewInt(5)
+	m.env["a"] = value.NewInt(5)
 
 	output, isErr := m.evaluate("a == 5")
 	if isErr {
@@ -97,7 +98,7 @@ func TestEvaluateEqualityDoesNotOverwriteVariable(t *testing.T) {
 	}
 
 	a := m.env["a"]
-	if a.Kind() != vibes.KindInt || a.Int() != 5 {
+	if a.Kind() != value.KindInt || a.Int() != 5 {
 		t.Fatalf("variable a was clobbered by equality expression: %#v", a)
 	}
 }
@@ -117,7 +118,7 @@ func TestEvaluateSetsUnderscoreToLastResult(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected underscore variable to be set")
 	}
-	if last.Kind() != vibes.KindInt || last.Int() != 42 {
+	if last.Kind() != value.KindInt || last.Int() != 42 {
 		t.Fatalf("unexpected underscore value: %#v", last)
 	}
 }
@@ -206,8 +207,8 @@ func TestGlobalsCommandPrintsSortedGlobals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
-	m.env["zeta"] = vibes.NewString("last")
-	m.env["alpha"] = vibes.NewInt(1)
+	m.env["zeta"] = value.NewString("last")
+	m.env["alpha"] = value.NewInt(1)
 
 	m, _ = m.handleCommand(":globals")
 	if len(m.history) == 0 {
@@ -227,10 +228,10 @@ func TestFunctionsCommandListsBuiltinsAndEnvCallables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
-	m.env["worker"] = vibes.NewBuiltin("worker.call", func(exec *vibes.Execution, receiver vibes.Value, args []vibes.Value, kwargs map[string]vibes.Value, block vibes.Value) (vibes.Value, error) {
-		return vibes.NewString("ok"), nil
+	m.env["worker"] = vibes.NewBuiltin("worker.call", func(exec *vibes.Execution, receiver value.Value, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
+		return value.NewString("ok"), nil
 	})
-	m.env["count"] = vibes.NewInt(1)
+	m.env["count"] = value.NewInt(1)
 
 	m, _ = m.handleCommand(":functions")
 	if len(m.history) == 0 {
@@ -256,8 +257,8 @@ func TestTypesCommandShowsKinds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
-	m.env["count"] = vibes.NewInt(1)
-	m.env["name"] = vibes.NewString("alex")
+	m.env["count"] = value.NewInt(1)
+	m.env["name"] = value.NewString("alex")
 
 	m, _ = m.handleCommand(":types")
 	if len(m.history) == 0 {
@@ -313,7 +314,7 @@ func TestAutocompleteUsesEnvVariables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
 	}
-	m.env["tenant_id"] = vibes.NewString("acme")
+	m.env["tenant_id"] = value.NewString("acme")
 	m.textInput.SetValue("tenant")
 
 	m = m.handleAutocomplete()

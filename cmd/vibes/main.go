@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 func main() {
@@ -80,9 +81,9 @@ func runCommand(args []string) error {
 	if *checkOnly {
 		return nil
 	}
-	argsValues := make([]vibes.Value, len(remaining)-1)
+	argsValues := make([]value.Value, len(remaining)-1)
 	for i, raw := range remaining[1:] {
-		argsValues[i] = vibes.NewString(raw)
+		argsValues[i] = value.NewString(raw)
 	}
 	result, err := script.Call(context.Background(), *function, argsValues, vibes.CallOptions{})
 	if err != nil {

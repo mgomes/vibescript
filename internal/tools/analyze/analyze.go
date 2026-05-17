@@ -10,7 +10,7 @@ import (
 	"sort"
 
 	"github.com/mgomes/vibescript/internal/ast"
-	"github.com/mgomes/vibescript/vibes"
+	"github.com/mgomes/vibescript/internal/runtime"
 	"github.com/mgomes/vibescript/vibes/source"
 )
 
@@ -24,7 +24,7 @@ type Warning struct {
 // Script returns warnings collected from the given compiled script.
 // The returned slice is sorted by position then function name for
 // deterministic output.
-func Script(script *vibes.Script) []Warning {
+func Script(script *runtime.Script) []Warning {
 	var warnings []Warning
 	for _, fn := range script.Functions() {
 		lintStatements(fn.Name, fn.Body, &warnings)
@@ -51,13 +51,13 @@ func Script(script *vibes.Script) []Warning {
 	return warnings
 }
 
-func sortedFunctionsByName(functions map[string]*vibes.ScriptFunction) []*vibes.ScriptFunction {
+func sortedFunctionsByName(functions map[string]*runtime.ScriptFunction) []*runtime.ScriptFunction {
 	names := make([]string, 0, len(functions))
 	for name := range functions {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	sorted := make([]*vibes.ScriptFunction, 0, len(names))
+	sorted := make([]*runtime.ScriptFunction, 0, len(names))
 	for _, name := range names {
 		sorted = append(sorted, functions[name])
 	}

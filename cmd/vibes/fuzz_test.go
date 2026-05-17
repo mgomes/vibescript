@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 var fuzzStdoutMu sync.Mutex
@@ -159,7 +160,7 @@ func FuzzREPLInputFlow(f *testing.F) {
 		if err != nil {
 			t.Fatalf("newREPLModel failed: %v", err)
 		}
-		model.env["seed"] = vibes.NewString(input)
+		model.env["seed"] = value.NewString(input)
 
 		commandInput := ":" + strings.TrimSpace(strings.TrimPrefix(input, ":"))
 		model, cmd := model.handleCommand(commandInput)

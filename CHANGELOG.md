@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Confirmed `vibes/value` as the home of `Money`, `Duration`, `Range` rather than carving a separate `vibes/domain`; the Value-payload coupling outweighs the organizational benefit.
+- **Breaking (embedders): deprecation aliases from PR-2.x removed.** Update
+  imports:
+  - `vibes.Value`/`Money`/`Duration`/`Range`/`KindXxx`/`NewXxx` → import
+    `github.com/mgomes/vibescript/vibes/value` and qualify (`value.Value`,
+    `value.NewInt`, etc.).
+  - `vibes.Database`/`DatabaseReader`/`DatabaseWriter`/`DBFindRequest` and
+    the other request types → import
+    `github.com/mgomes/vibescript/vibes/capability/db`.
+  - `vibes.EventPublisher`/`EventPublishRequest` → `events.Publisher`,
+    `events.PublishRequest` (import
+    `github.com/mgomes/vibescript/vibes/capability/events`).
+  - `vibes.JobQueue`/`JobQueueWithRetry`/`JobQueueJob`/
+    `JobQueueEnqueueOptions`/`JobQueueRetryRequest` → drop the prefix and
+    import `github.com/mgomes/vibescript/vibes/capability/jobqueue`.
+  - `vibes.ContextCapabilityResolver` → `contextcap.Resolver` (import
+    `github.com/mgomes/vibescript/vibes/capability/contextcap`).
+  - AST types under `vibes` (`Program`, `FunctionStmt`, `Identifier`,
+    `TypeKind`, `Token*`, etc.) are removed outright; they were already
+    `Deprecated:` and pointed at the now-private `internal/ast`. Drive
+    scripts through `vibes.Engine` / `vibes.Script` instead.
+  The `vibes.NewXxxCapability` / `MustNewXxxCapability` constructors keep
+  their names and now consume the subpackage types directly
+  (`db.Database`, `events.Publisher`, `jobqueue.JobQueue`,
+  `contextcap.Resolver`); call sites just need the new imports.
+- Trimmed the public `vibes` package to the curated surface. Engine,
+  Script, CallOptions, Execution, Builtin/BuiltinFunc/NewBuiltin/
+  NewAutoBuiltin/Builtins, the capability contract types
+  (`CapabilityAdapter`, `CapabilityBinding`,
+  `CapabilityMethodContract`, `CapabilityContractProvider`),
+  RuntimeError/StackFrame, Position, and the capability constructors
+  remain. Direct constructors and accessors for blocks, classes,
+  instances, enums, and script functions (`NewBlock`, `NewClass`,
+  `NewInstance`, `NewEnum`, `NewEnumValue`, `NewFunction`, `BlockOf`,
+  `ClassOf`, `InstanceOf`, `FunctionOf`, `EnumOf`, `EnumValueOf`,
+  `BuiltinOf`, `ClassDef`, `Instance`, `EnumDef`, `EnumValueDef`,
+  `Block`, `ScriptFunction`, `Env`) are no longer exported from `vibes`;
+  use the typed payload markers on `value.Value` or work through the
+  documented public APIs.
+- Migrated `internal/tools/analyze` off the `vibes` facade so it imports
+  `internal/runtime` directly for `*runtime.Script` and
+  `*runtime.ScriptFunction`. The vibes CLI keeps calling
+  `analyze.Script(*vibes.Script)` since `vibes.Script` aliases the
+  runtime type.
 - Hid the runtime (interpreter, execution engine, module loader, builtins,
   capability adapters) under `internal/runtime`; outside callers can no
   longer import it. `vibes` keeps source-compatible type aliases for
