@@ -1,6 +1,7 @@
 package vibes
 
 import (
+	"github.com/mgomes/vibescript/internal/runtime"
 	"github.com/mgomes/vibescript/vibes/capability/jobqueue"
 )
 
@@ -18,15 +19,10 @@ type (
 // NewJobQueueCapability constructs a CapabilityAdapter bound to the
 // provided name. The returned adapter delegates to a *jobqueue.Capability.
 func NewJobQueueCapability(name string, impl JobQueue) (CapabilityAdapter, error) {
-	inner, err := jobqueue.NewCapability(name, impl)
-	if err != nil {
-		return nil, err
-	}
-	return &jobQueueCapability{inner: inner}, nil
+	return runtime.NewJobQueueCapability(name, impl)
 }
 
-// MustNewJobQueueCapability is the panicking variant of
-// NewJobQueueCapability.
+// MustNewJobQueueCapability is the panicking variant of NewJobQueueCapability.
 func MustNewJobQueueCapability(name string, impl JobQueue) CapabilityAdapter {
 	adapter, err := NewJobQueueCapability(name, impl)
 	if err != nil {

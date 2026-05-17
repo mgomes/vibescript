@@ -1,82 +1,9 @@
 package vibes
 
-import (
-	"context"
-)
-
-// ScriptFunction represents a user-defined function within a Vibescript module.
-type ScriptFunction struct {
-	Name     string
-	Params   []Param
-	ReturnTy *TypeExpr
-	Body     []Statement
-	Pos      Position
-	Env      *Env
-	Exported bool
-	Private  bool
-	owner    *Script
-}
-
-// Script represents a parsed Vibescript module ready for execution.
-type Script struct {
-	engine     *Engine
-	functions  map[string]*ScriptFunction
-	classes    map[string]*ClassDef
-	enums      map[string]*EnumDef
-	source     string
-	moduleKey  string
-	modulePath string
-	moduleRoot string
-}
-
-// CallOptions configures globals, capabilities, and other settings for a script invocation.
-type CallOptions struct {
-	Globals      map[string]Value
-	Capabilities []CapabilityAdapter
-	AllowRequire bool
-	Keywords     map[string]Value
-}
+import "github.com/mgomes/vibescript/internal/runtime"
 
 // Execution holds the runtime state for a single script evaluation.
-type Execution struct {
-	engine                    *Engine
-	script                    *Script
-	ctx                       context.Context
-	quota                     int
-	memoryQuota               int
-	recursionCap              int
-	steps                     int
-	callStack                 []callFrame
-	root                      *Env
-	modules                   map[string]Value
-	moduleLoading             map[string]bool
-	moduleLoadStack           []string
-	moduleStack               []moduleContext
-	capabilityContracts       map[*Builtin]CapabilityMethodContract
-	capabilityContractScopes  map[*Builtin]*capabilityContractScope
-	capabilityContractsByName map[string]CapabilityMethodContract
-	receiverStack             []Value
-	envStack                  []*Env
-	loopDepth                 int
-	rescuedErrors             []error
-	strictEffects             bool
-	allowRequire              bool
-}
-
-type capabilityContractScope struct {
-	contracts     map[string]CapabilityMethodContract
-	roots         []Value
-	knownBuiltins map[*Builtin]struct{}
-}
-
-type moduleContext struct {
-	key    string
-	path   string
-	root   string
-	script *Script
-}
-
-type callFrame struct {
-	Function string
-	Pos      Position
-}
+// It is the per-call handle passed to builtin functions and capability
+// adapters. Embedders should not rely on its internal shape; treat it
+// as opaque and use the exported methods (Context, Step, CallBlock).
+type Execution = runtime.Execution
