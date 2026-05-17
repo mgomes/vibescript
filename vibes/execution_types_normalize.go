@@ -265,21 +265,27 @@ func resolveEnumType(ty *TypeExpr, ctx typeContext) (*EnumDef, error) {
 	if ty.Kind != TypeEnum {
 		return nil, fmt.Errorf("unknown type %s", ty.Name)
 	}
-	if enumDef, ok, err := lookupEnumInEnv(ctx.env, ty.Name); err != nil {
+	enumDef, ok, err := lookupEnumInEnv(ctx.env, ty.Name)
+	if err != nil {
 		return nil, err
-	} else if ok {
+	}
+	if ok {
 		return enumDef, nil
 	}
 	if ctx.fallback != ctx.env {
-		if enumDef, ok, err := lookupEnumInEnv(ctx.fallback, ty.Name); err != nil {
+		enumDef, ok, err := lookupEnumInEnv(ctx.fallback, ty.Name)
+		if err != nil {
 			return nil, err
-		} else if ok {
+		}
+		if ok {
 			return enumDef, nil
 		}
 	}
-	if enumDef, ok, err := lookupEnumDef(ctx.owner, ty.Name); err != nil {
+	enumDef, ok, err = lookupEnumDef(ctx.owner, ty.Name)
+	if err != nil {
 		return nil, err
-	} else if ok {
+	}
+	if ok {
 		return enumDef, nil
 	}
 	return nil, fmt.Errorf("unknown type %s", ty.Name)
