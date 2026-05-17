@@ -19,43 +19,367 @@ func moduleTestEngine(t testing.TB) *Engine {
 	return MustNewEngine(Config{ModulePaths: []string{filepath.FromSlash(moduleFixturesRoot)}})
 }
 
-func TestRequireProvidesExports(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run(value)
-  helpers = require("helper")
-  helpers.triple(value) + double(value)
-end`)
-
-	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindInt || result.Int() != 15 {
-		t.Fatalf("expected 15, got %#v", result)
-	}
+// requireBehaviorCase describes a "compile script, call function, assert"
+// scenario against the shared module fixtures.
+type requireBehaviorCase struct {
+	name    string
+	source  string
+	fn      string
+	args    []Value
+	opts    CallOptions
+	wantInt int64
+	want    Value
+	wantErr string
+	verify  func(t *testing.T, result Value)
 }
 
-func TestRequireSupportsModuleAlias(t *testing.T) {
-	engine := moduleTestEngine(t)
+// TestRequireBehavior aggregates the formerly individual TestRequire*
+// scenarios that all share the same shape: build an engine pointed at
+// testdata/modules, compile a script, call one function, and either
+// assert a value or assert an error substring. Cases needing extra
+// setup (file mutation, symlinks, cwd switching, cache assertions)
+// remain as standalone tests below.
+func TestRequireBehavior(t *testing.T) {
+	t.Parallel()
 
-	script := compileScriptWithEngine(t, engine, `def run(value)
+	cases := []requireBehaviorCase{
+		{
+			name: "provides_exports",
+			source: `def run(value)
+  helpers = require("helper")
+  helpers.triple(value) + double(value)
+end`,
+			fn:      "run",
+			args:    []Value{NewInt(3)},
+			wantInt: 15,
+		},
+		{
+			name: "supports_module_alias",
+			source: `def run(value)
   require("helper", as: "helpers")
   require("helper", as: "helpers")
   helpers.triple(value) + helpers.double(value)
-end`)
+end`,
+			fn:      "run",
+			args:    []Value{NewInt(3)},
+			wantInt: 15,
+		},
+		{
+			name: "alias_conflicts_with_global_function",
+			source: `def helpers(value)
+  value
+end
 
-	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
+def run()
+  require("helper", as: "helpers")
+end`,
+			fn:      "run",
+			wantErr: `require: alias "helpers" already defined`,
+		},
+		{
+			name: "alias_conflict_does_not_leak_exports_when_rescued",
+			source: `def helpers(value)
+  value
+end
+
+def run(value)
+  begin
+    require("helper", as: "helpers")
+  rescue
+    nil
+  end
+
+  begin
+    double(value)
+  rescue
+    "missing"
+  end
+end`,
+			fn:   "run",
+			args: []Value{NewInt(3)},
+			want: NewString("missing"),
+		},
+		{
+			name: "preserves_module_local_resolution",
+			source: `def rate()
+  100
+end
+
+def run(amount)
+  fees = require("collision")
+  fees.apply_fee(amount)
+end`,
+			fn:      "run",
+			args:    []Value{NewInt(10)},
+			wantInt: 11,
+		},
+		{
+			name: "namespace_conflict_keeps_existing_global_binding",
+			source: `def double(value)
+  value + 1
+end
+
+def run(value)
+  mod = require("helper")
+  {
+    global: double(value),
+    module: mod.double(value)
+  }
+end`,
+			fn:   "run",
+			args: []Value{NewInt(3)},
+			verify: func(t *testing.T, result Value) {
+				t.Helper()
+				if result.Kind() != KindHash {
+					t.Fatalf("expected hash result, got %#v", result)
+				}
+				out := result.Hash()
+				if !out["global"].Equal(NewInt(4)) {
+					t.Fatalf("expected global binding to stay at 4, got %#v", out["global"])
+				}
+				if !out["module"].Equal(NewInt(6)) {
+					t.Fatalf("expected module object function to return 6, got %#v", out["module"])
+				}
+			},
+		},
+		{
+			name: "namespace_conflict_keeps_first_module_binding",
+			source: `def run(value)
+  first = require("helper")
+  second = require("helper_alt")
+  require("helper_alt", as: "alt")
+  {
+    global: double(value),
+    first: first.double(value),
+    second: second.double(value),
+    alias: alt.double(value)
+  }
+end`,
+			fn:   "run",
+			args: []Value{NewInt(3)},
+			verify: func(t *testing.T, result Value) {
+				t.Helper()
+				if result.Kind() != KindHash {
+					t.Fatalf("expected hash result, got %#v", result)
+				}
+				out := result.Hash()
+				expected := map[string]int64{"global": 6, "first": 6, "second": 30, "alias": 30}
+				for key, want := range expected {
+					if !out[key].Equal(NewInt(want)) {
+						t.Fatalf("expected %s=%d, got %#v", key, want, out[key])
+					}
+				}
+			},
+		},
+		{
+			name: "missing_module",
+			source: `def run()
+  require("missing")
+end`,
+			fn:      "run",
+			wantErr: `module "missing" not found`,
+		},
+		{
+			name: "rejects_path_traversal",
+			source: `def run()
+  require("nested/../../etc/passwd")
+end`,
+			fn:      "run",
+			wantErr: "escapes search paths",
+		},
+		{
+			name: "rejects_backslash_path_traversal",
+			source: `def run()
+  require("nested\\..\\..\\etc\\passwd")
+end`,
+			fn:      "run",
+			wantErr: "escapes search paths",
+		},
+		{
+			name: "relative_path_requires_module_caller",
+			source: `def run()
+  require("./helper")
+end`,
+			fn:      "run",
+			wantErr: "requires a module caller",
+		},
+		{
+			name: "relative_path_does_not_leak_from_module_into_host_function",
+			source: `def host_relative()
+  require("./helper")
+end
+
+def run()
+  mod = require("module_calls_host")
+  mod.invoke_host_relative()
+end`,
+			fn:      "run",
+			wantErr: "requires a module caller",
+		},
+		{
+			name: "supports_relative_paths_within_module_root",
+			source: `def run(value)
+  mod = require("relative/root")
+  mod.run(value)
+end`,
+			fn:      "run",
+			args:    []Value{NewInt(5)},
+			wantInt: 16,
+		},
+		{
+			name: "relative_path_rejects_escaping_module_root",
+			source: `def run()
+  mod = require("relative/escape")
+  mod.run()
+end`,
+			fn:      "run",
+			wantErr: "escapes module root",
+		},
+		{
+			name: "relative_path_works_in_module_defined_block_yielded_from_host",
+			source: `def host_each()
+  yield()
+end
+
+def run()
+  mod = require("block_host_yield")
+  mod.run()
+end`,
+			fn:      "run",
+			wantInt: 33,
+		},
+		{
+			name: "exports_only_non_private_functions",
+			source: `def run(value)
+  mod = require("private_exports")
+  if mod["_internal"] != nil
+    0
+  else
+    visible(value) + mod.call_internal(value)
+  end
+end`,
+			fn:      "run",
+			args:    []Value{NewInt(2)},
+			wantInt: 105,
+		},
+		{
+			name: "supports_private_module_export_opt_out",
+			source: `def run(value)
+  mod = require("explicit_exports")
+  {
+    has_exposed: mod["exposed"] != nil,
+    has_explicit_hidden: mod["_explicit_hidden"] != nil,
+    has_helper: mod["helper"] != nil,
+    has_internal: mod["_internal"] != nil,
+    exposed: mod.exposed(value),
+    explicit_hidden: mod._explicit_hidden(value)
+  }
+end`,
+			fn:   "run",
+			args: []Value{NewInt(3)},
+			verify: func(t *testing.T, result Value) {
+				t.Helper()
+				if result.Kind() != KindHash {
+					t.Fatalf("expected hash result, got %#v", result)
+				}
+				out := result.Hash()
+				if !out["has_exposed"].Bool() || !out["has_explicit_hidden"].Bool() {
+					t.Fatalf("expected non-private exports to be present, got %#v", out)
+				}
+				if out["has_helper"].Bool() || out["has_internal"].Bool() {
+					t.Fatalf("expected private helpers to be hidden, got %#v", out)
+				}
+				if !out["exposed"].Equal(NewInt(10)) {
+					t.Fatalf("expected exposed(3)=10, got %#v", out["exposed"])
+				}
+				if !out["explicit_hidden"].Equal(NewInt(103)) {
+					t.Fatalf("expected _explicit_hidden(3)=103, got %#v", out["explicit_hidden"])
+				}
+			},
+		},
+		{
+			name: "private_functions_are_not_injected_as_globals",
+			source: `def run(value)
+  require("explicit_exports")
+  helper(value)
+end`,
+			fn:      "run",
+			args:    []Value{NewInt(2)},
+			wantErr: "undefined variable helper",
+		},
+		{
+			name: "private_functions_remain_module_scoped",
+			source: `def run(value)
+  require("private_exports")
+  _internal(value)
+end`,
+			fn:      "run",
+			args:    []Value{NewInt(2)},
+			wantErr: "undefined variable _internal",
+		},
+		{
+			name: "module_cache_avoids_duplicate_loads",
+			source: `def run()
+  require("circular_a")
+  require("circular_b")
+  "ok"
+end`,
+			fn:   "run",
+			want: NewString("ok"),
+		},
+		{
+			name: "runtime_module_recursion_hits_recursion_limit",
+			source: `def run()
+  mod = require("circular_runtime_a")
+  mod.enter()
+end`,
+			fn:      "run",
+			wantErr: "recursion depth exceeded",
+		},
+		{
+			name: "allows_cached_module_reuse_across_module_calls",
+			source: `def run()
+  mod = require("require_cached_a")
+  mod.start()
+end`,
+			fn:      "run",
+			wantInt: 21,
+		},
 	}
-	if result.Kind() != KindInt || result.Int() != 15 {
-		t.Fatalf("expected 15, got %#v", result)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			engine := moduleTestEngine(t)
+			script := compileScriptWithEngine(t, engine, tc.source)
+
+			if tc.wantErr != "" {
+				requireCallErrorContains(t, script, tc.fn, tc.args, tc.opts, tc.wantErr)
+				return
+			}
+
+			result, err := script.Call(context.Background(), tc.fn, tc.args, tc.opts)
+			if err != nil {
+				t.Fatalf("call failed: %v", err)
+			}
+			switch {
+			case tc.verify != nil:
+				tc.verify(t, result)
+			case tc.want.Kind() != KindNil:
+				if !result.Equal(tc.want) {
+					t.Fatalf("result mismatch: got %#v, want %#v", result, tc.want)
+				}
+			default:
+				if !result.Equal(NewInt(tc.wantInt)) {
+					t.Fatalf("expected %d, got %#v", tc.wantInt, result)
+				}
+			}
+		})
 	}
 }
 
 func TestRequireAliasValidation(t *testing.T) {
-	engine := moduleTestEngine(t)
+	t.Parallel()
 
 	cases := []struct {
 		name    string
@@ -94,6 +418,8 @@ end`,
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			engine := moduleTestEngine(t)
 			script := compileScriptWithEngine(t, engine, tc.source)
 			err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{})
 			requireErrorContains(t, err, tc.wantErr)
@@ -101,150 +427,8 @@ end`,
 	}
 }
 
-func TestRequireAliasRejectsConflictingGlobal(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def helpers(value)
-  value
-end
-
-def run()
-  require("helper", as: "helpers")
-end`)
-
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, `require: alias "helpers" already defined`)
-}
-
-func TestRequireAliasConflictDoesNotLeakExportsWhenRescued(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def helpers(value)
-  value
-end
-
-def run(value)
-  begin
-    require("helper", as: "helpers")
-  rescue
-    nil
-  end
-
-  begin
-    double(value)
-  rescue
-    "missing"
-  end
-end`)
-
-	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindString || result.String() != "missing" {
-		t.Fatalf("expected leaked export lookup to fail, got %#v", result)
-	}
-}
-
-func TestRequirePreservesModuleLocalResolution(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def rate()
-  100
-end
-
-def run(amount)
-  fees = require("collision")
-  fees.apply_fee(amount)
-end`)
-
-	result, err := script.Call(context.Background(), "run", []Value{NewInt(10)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindInt || result.Int() != 11 {
-		t.Fatalf("expected module-local rate to be used, got %#v", result)
-	}
-}
-
-func TestRequireNamespaceConflictKeepsExistingGlobalBinding(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def double(value)
-  value + 1
-end
-
-def run(value)
-  mod = require("helper")
-  {
-    global: double(value),
-    module: mod.double(value)
-  }
-end`)
-
-	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindHash {
-		t.Fatalf("expected hash result, got %#v", result)
-	}
-	out := result.Hash()
-	if out["global"].Kind() != KindInt || out["global"].Int() != 4 {
-		t.Fatalf("expected global binding to stay at 4, got %#v", out["global"])
-	}
-	if out["module"].Kind() != KindInt || out["module"].Int() != 6 {
-		t.Fatalf("expected module object function to return 6, got %#v", out["module"])
-	}
-}
-
-func TestRequireNamespaceConflictKeepsFirstModuleBinding(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run(value)
-  first = require("helper")
-  second = require("helper_alt")
-  require("helper_alt", as: "alt")
-  {
-    global: double(value),
-    first: first.double(value),
-    second: second.double(value),
-    alias: alt.double(value)
-  }
-end`)
-
-	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindHash {
-		t.Fatalf("expected hash result, got %#v", result)
-	}
-	out := result.Hash()
-	if out["global"].Kind() != KindInt || out["global"].Int() != 6 {
-		t.Fatalf("expected first module binding to stay global at 6, got %#v", out["global"])
-	}
-	if out["first"].Kind() != KindInt || out["first"].Int() != 6 {
-		t.Fatalf("expected first module object to return 6, got %#v", out["first"])
-	}
-	if out["second"].Kind() != KindInt || out["second"].Int() != 30 {
-		t.Fatalf("expected second module object to return 30, got %#v", out["second"])
-	}
-	if out["alias"].Kind() != KindInt || out["alias"].Int() != 30 {
-		t.Fatalf("expected alias module object to return 30, got %#v", out["alias"])
-	}
-}
-
-func TestRequireMissingModule(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run()
-  require("missing")
-end`)
-
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, `module "missing" not found`)
-}
-
 func TestRequireCachesModules(t *testing.T) {
+	t.Parallel()
 	engine := moduleTestEngine(t)
 
 	script := compileScriptWithEngine(t, engine, `def run()
@@ -268,8 +452,15 @@ end`)
 }
 
 func TestClearModuleCacheForcesModuleReload(t *testing.T) {
-	moduleRoot := t.TempDir()
-	modulePath := filepath.Join(moduleRoot, "dynamic.vibe")
+	t.Parallel()
+	root := tempModuleTree(t, moduleFile{
+		path: "dynamic.vibe",
+		content: `def value()
+  1
+end
+`,
+	})
+	modulePath := filepath.Join(root, "dynamic.vibe")
 	writeModule := func(v int) {
 		content := fmt.Sprintf(`def value()
   %d
@@ -280,9 +471,7 @@ end
 		}
 	}
 
-	writeModule(1)
-
-	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	engine := mustNewEngineWithModuleRoot(t, root)
 	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("dynamic")
   mod.value()
@@ -367,6 +556,7 @@ end`)
 }
 
 func TestRequireUsesSymlinkTargetResolvedAtEngineCreation(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink behavior is environment-specific on Windows")
 	}
@@ -390,7 +580,7 @@ func TestRequireUsesSymlinkTargetResolvedAtEngineCreation(t *testing.T) {
 	if err := os.Symlink(safeRoot, linkRoot); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	engine := MustNewEngine(Config{ModulePaths: []string{linkRoot}})
+	engine := mustNewEngineWithModuleRoot(t, linkRoot)
 	if err := os.Remove(linkRoot); err != nil {
 		t.Fatalf("remove module symlink: %v", err)
 	}
@@ -412,12 +602,13 @@ end`)
 }
 
 func TestRequireRejectsNonRegularModuleFile(t *testing.T) {
+	t.Parallel()
 	moduleRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(moduleRoot, "notfile.vibe"), 0o755); err != nil {
 		t.Fatalf("mkdir module directory: %v", err)
 	}
 
-	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	engine := mustNewEngineWithModuleRoot(t, moduleRoot)
 	script := compileScriptWithEngine(t, engine, `def run()
   require("notfile")
 end`)
@@ -426,6 +617,7 @@ end`)
 }
 
 func TestRequireRejectsAbsolutePaths(t *testing.T) {
+	t.Parallel()
 	engine := moduleTestEngine(t)
 
 	absPath := "/etc/passwd"
@@ -447,27 +639,8 @@ end`, absPath)
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "must be relative")
 }
 
-func TestRequireRejectsPathTraversal(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run()
-  require("nested/../../etc/passwd")
-end`)
-
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes search paths")
-}
-
-func TestRequireRejectsBackslashPathTraversal(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run()
-  require("nested\\..\\..\\etc\\passwd")
-end`)
-
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes search paths")
-}
-
 func TestRequireNormalizesPathSeparators(t *testing.T) {
+	t.Parallel()
 	engine := moduleTestEngine(t)
 
 	script := compileScriptWithEngine(t, engine, `def run(value)
@@ -488,89 +661,33 @@ end`)
 	}
 }
 
-func TestRequireRelativePathRequiresModuleCaller(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run()
-  require("./helper")
-end`)
-
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "requires a module caller")
-}
-
-func TestRequireRelativePathDoesNotLeakFromModuleIntoHostFunction(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def host_relative()
-  require("./helper")
-end
-
-def run()
-  mod = require("module_calls_host")
-  mod.invoke_host_relative()
-end`)
-
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "requires a module caller")
-}
-
-func TestRequireSupportsRelativePathsWithinModuleRoot(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run(value)
-  mod = require("relative/root")
-  mod.run(value)
-end`)
-
-	result, err := script.Call(context.Background(), "run", []Value{NewInt(5)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindInt || result.Int() != 16 {
-		t.Fatalf("expected 16, got %#v", result)
-	}
-}
-
-func TestRequireRelativePathRejectsEscapingModuleRoot(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run()
-  mod = require("relative/escape")
-  mod.run()
-end`)
-
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
-}
-
 func TestRequireRelativePathRejectsSymlinkEscape(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink behavior is environment-specific on Windows")
 	}
 
-	moduleRoot := t.TempDir()
-	outsideRoot := t.TempDir()
-
-	secretModule := filepath.Join(outsideRoot, "secret.vibe")
-	if err := os.WriteFile(secretModule, []byte(`def hidden()
+	moduleRoot := tempModuleTree(t, moduleFile{
+		path: "entry.vibe",
+		content: `def run()
+  require("./link/secret")
+end
+`,
+	})
+	outsideRoot := tempModuleTree(t, moduleFile{
+		path: "secret.vibe",
+		content: `def hidden()
   42
 end
-`), 0o644); err != nil {
-		t.Fatalf("write secret module: %v", err)
-	}
+`,
+	})
 
 	symlinkPath := filepath.Join(moduleRoot, "link")
 	if err := os.Symlink(outsideRoot, symlinkPath); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	entryModule := filepath.Join(moduleRoot, "entry.vibe")
-	if err := os.WriteFile(entryModule, []byte(`def run()
-  require("./link/secret")
-end
-`), 0o644); err != nil {
-		t.Fatalf("write entry module: %v", err)
-	}
-
-	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	engine := mustNewEngineWithModuleRoot(t, moduleRoot)
 	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("entry")
   mod.run()
@@ -580,27 +697,26 @@ end`)
 }
 
 func TestRequireSearchPathRejectsSymlinkEscape(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink behavior is environment-specific on Windows")
 	}
 
 	moduleRoot := t.TempDir()
-	outsideRoot := t.TempDir()
-
-	secretModule := filepath.Join(outsideRoot, "secret.vibe")
-	if err := os.WriteFile(secretModule, []byte(`def hidden()
+	outsideRoot := tempModuleTree(t, moduleFile{
+		path: "secret.vibe",
+		content: `def hidden()
   42
 end
-`), 0o644); err != nil {
-		t.Fatalf("write secret module: %v", err)
-	}
+`,
+	})
 
 	symlinkPath := filepath.Join(moduleRoot, "link")
 	if err := os.Symlink(outsideRoot, symlinkPath); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	engine := mustNewEngineWithModuleRoot(t, moduleRoot)
 	script := compileScriptWithEngine(t, engine, `def run()
   require("link/secret")
 end`)
@@ -609,34 +725,33 @@ end`)
 }
 
 func TestRequireRelativePathRejectsOutOfRootCachedModule(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink behavior is environment-specific on Windows")
 	}
 
-	moduleRoot := t.TempDir()
-	outsideRoot := t.TempDir()
-
-	if err := os.WriteFile(filepath.Join(outsideRoot, "secret.vibe"), []byte(`def value()
+	moduleRoot := tempModuleTree(t, moduleFile{
+		path: "entry.vibe",
+		content: `def run()
+  dep = require("./link/secret")
+  dep.value()
+end
+`,
+	})
+	outsideRoot := tempModuleTree(t, moduleFile{
+		path: "secret.vibe",
+		content: `def value()
   9
 end
-`), 0o644); err != nil {
-		t.Fatalf("write secret module: %v", err)
-	}
+`,
+	})
 
 	symlinkPath := filepath.Join(moduleRoot, "link")
 	if err := os.Symlink(outsideRoot, symlinkPath); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(moduleRoot, "entry.vibe"), []byte(`def run()
-  dep = require("./link/secret")
-  dep.value()
-end
-`), 0o644); err != nil {
-		t.Fatalf("write entry module: %v", err)
-	}
-
-	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	engine := mustNewEngineWithModuleRoot(t, moduleRoot)
 	script := compileScriptWithEngine(t, engine, `def run()
   require("link/secret")
   entry = require("entry")
@@ -647,24 +762,26 @@ end`)
 }
 
 func TestRequireRelativePathUsesCacheBeforeFilesystemResolution(t *testing.T) {
-	moduleRoot := t.TempDir()
-
-	depPath := filepath.Join(moduleRoot, "dep.vibe")
-	if err := os.WriteFile(depPath, []byte(`def value()
+	t.Parallel()
+	moduleRoot := tempModuleTree(t,
+		moduleFile{
+			path: "dep.vibe",
+			content: `def value()
   7
 end
-`), 0o644); err != nil {
-		t.Fatalf("write dep module: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(moduleRoot, "entry.vibe"), []byte(`def run()
+`,
+		},
+		moduleFile{
+			path: "entry.vibe",
+			content: `def run()
   dep = require("./dep")
   dep.value()
 end
-`), 0o644); err != nil {
-		t.Fatalf("write entry module: %v", err)
-	}
+`,
+		},
+	)
 
-	engine := MustNewEngine(Config{ModulePaths: []string{moduleRoot}})
+	engine := mustNewEngineWithModuleRoot(t, moduleRoot)
 	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("entry")
   mod.run()
@@ -678,7 +795,7 @@ end`)
 		t.Fatalf("expected first call result 7, got %#v", result)
 	}
 
-	if err := os.Remove(depPath); err != nil {
+	if err := os.Remove(filepath.Join(moduleRoot, "dep.vibe")); err != nil {
 		t.Fatalf("remove dep module: %v", err)
 	}
 
@@ -691,97 +808,8 @@ end`)
 	}
 }
 
-func TestRequireRelativePathWorksInModuleDefinedBlockYieldedFromHost(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def host_each()
-  yield()
-end
-
-def run()
-  mod = require("block_host_yield")
-  mod.run()
-end`)
-
-	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindInt || result.Int() != 33 {
-		t.Fatalf("expected 33, got %#v", result)
-	}
-}
-
-func TestRequireExportsOnlyNonPrivateFunctions(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run(value)
-  mod = require("private_exports")
-  if mod["_internal"] != nil
-    0
-  else
-    visible(value) + mod.call_internal(value)
-  end
-end`)
-
-	result, err := script.Call(context.Background(), "run", []Value{NewInt(2)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindInt || result.Int() != 105 {
-		t.Fatalf("expected 105, got %#v", result)
-	}
-}
-
-func TestRequireSupportsPrivateModuleExportOptOut(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run(value)
-  mod = require("explicit_exports")
-  {
-    has_exposed: mod["exposed"] != nil,
-    has_explicit_hidden: mod["_explicit_hidden"] != nil,
-    has_helper: mod["helper"] != nil,
-    has_internal: mod["_internal"] != nil,
-    exposed: mod.exposed(value),
-    explicit_hidden: mod._explicit_hidden(value)
-  }
-end`)
-
-	result, err := script.Call(context.Background(), "run", []Value{NewInt(3)}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindHash {
-		t.Fatalf("expected hash result, got %#v", result)
-	}
-	out := result.Hash()
-	if !out["has_exposed"].Bool() || !out["has_explicit_hidden"].Bool() {
-		t.Fatalf("expected non-private exports to be present, got %#v", out)
-	}
-	if out["has_helper"].Bool() || out["has_internal"].Bool() {
-		t.Fatalf("expected private helpers to be hidden, got %#v", out)
-	}
-	if out["exposed"].Kind() != KindInt || out["exposed"].Int() != 10 {
-		t.Fatalf("expected exposed(3)=10, got %#v", out["exposed"])
-	}
-	if out["explicit_hidden"].Kind() != KindInt || out["explicit_hidden"].Int() != 103 {
-		t.Fatalf("expected _explicit_hidden(3)=103, got %#v", out["explicit_hidden"])
-	}
-}
-
-func TestRequirePrivateFunctionsAreNotInjectedAsGlobals(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run(value)
-  require("explicit_exports")
-  helper(value)
-end`)
-
-	requireCallErrorContains(t, script, "run", []Value{NewInt(2)}, CallOptions{}, "undefined variable helper")
-}
-
 func TestExportKeywordValidation(t *testing.T) {
+	t.Parallel()
 	requireCompileErrorContainsDefault(t, `export helper`, "expected 'def'")
 
 	requireCompileErrorContainsDefault(t, `class Example
@@ -800,6 +828,7 @@ end`, "export is only supported for top-level functions")
 }
 
 func TestPrivateKeywordValidation(t *testing.T) {
+	t.Parallel()
 	requireCompileErrorContainsDefault(t, `private helper`, "expected 'def'")
 
 	requireCompileErrorContainsDefault(t, `def outer()
@@ -815,64 +844,8 @@ end`, "private is only supported for top-level functions and class methods")
 end`, "private cannot be used with class methods")
 }
 
-func TestRequirePrivateFunctionsRemainModuleScoped(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run(value)
-  require("private_exports")
-  _internal(value)
-end`)
-
-	requireCallErrorContains(t, script, "run", []Value{NewInt(2)}, CallOptions{}, "undefined variable _internal")
-}
-
-func TestRequireModuleCacheAvoidsDuplicateLoads(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run()
-  require("circular_a")
-  require("circular_b")
-  "ok"
-end`)
-
-	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.String() != "ok" {
-		t.Fatalf("expected ok, got %#v", result)
-	}
-}
-
-func TestRequireRuntimeModuleRecursionHitsRecursionLimit(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run()
-  mod = require("circular_runtime_a")
-  mod.enter()
-end`)
-
-	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "recursion depth exceeded")
-}
-
-func TestRequireAllowsCachedModuleReuseAcrossModuleCalls(t *testing.T) {
-	engine := moduleTestEngine(t)
-
-	script := compileScriptWithEngine(t, engine, `def run()
-  mod = require("require_cached_a")
-  mod.start()
-end`)
-
-	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
-	if err != nil {
-		t.Fatalf("call failed: %v", err)
-	}
-	if result.Kind() != KindInt || result.Int() != 21 {
-		t.Fatalf("expected 21, got %#v", result)
-	}
-}
-
 func TestRequireConcurrentLoading(t *testing.T) {
+	t.Parallel()
 	engine := moduleTestEngine(t)
 
 	script := compileScriptWithEngine(t, engine, `def run()
@@ -920,6 +893,7 @@ end`)
 }
 
 func TestRequireStrictEffectsRequiresAllowRequire(t *testing.T) {
+	t.Parallel()
 	engine := MustNewEngine(Config{
 		StrictEffects: true,
 		ModulePaths:   []string{filepath.Join("testdata", "modules")},
@@ -939,6 +913,7 @@ end`)
 }
 
 func TestRequireStrictEffectsAllowsRequireWhenOptedIn(t *testing.T) {
+	t.Parallel()
 	engine := MustNewEngine(Config{
 		StrictEffects: true,
 		ModulePaths:   []string{filepath.Join("testdata", "modules")},
@@ -961,6 +936,7 @@ end`)
 }
 
 func TestRequireModuleAllowList(t *testing.T) {
+	t.Parallel()
 	engine := MustNewEngine(Config{
 		ModulePaths:     []string{filepath.Join("testdata", "modules")},
 		ModuleAllowList: []string{"shared/*"},
@@ -988,6 +964,7 @@ end`)
 }
 
 func TestRequireModuleAllowListStarMatchesNestedModules(t *testing.T) {
+	t.Parallel()
 	engine := MustNewEngine(Config{
 		ModulePaths:     []string{filepath.Join("testdata", "modules")},
 		ModuleAllowList: []string{"*"},
@@ -1008,6 +985,7 @@ end`)
 }
 
 func TestRequireModuleDenyListOverridesAllowList(t *testing.T) {
+	t.Parallel()
 	engine := MustNewEngine(Config{
 		ModulePaths:     []string{filepath.Join("testdata", "modules")},
 		ModuleAllowList: []string{"*"},
@@ -1022,6 +1000,7 @@ end`)
 }
 
 func TestModulePolicyPatternValidation(t *testing.T) {
+	t.Parallel()
 	_, err := NewEngine(Config{
 		ModulePaths:     []string{filepath.Join("testdata", "modules")},
 		ModuleAllowList: []string{"[invalid"},
@@ -1125,8 +1104,10 @@ var modulePolicyNormalizationInputs = []string{
 // Every input must reach a fixed point under one application of the
 // normalizer — calling it a second time must return the same value.
 func TestModulePolicyNormalizationIsIdempotent(t *testing.T) {
+	t.Parallel()
 	for _, raw := range modulePolicyNormalizationInputs {
 		t.Run("pattern:"+strconv.Quote(raw), func(t *testing.T) {
+			t.Parallel()
 			first := normalizeModulePolicyPattern(raw)
 			second := normalizeModulePolicyPattern(first)
 			if first != second {
@@ -1134,6 +1115,7 @@ func TestModulePolicyNormalizationIsIdempotent(t *testing.T) {
 			}
 		})
 		t.Run("module:"+strconv.Quote(raw), func(t *testing.T) {
+			t.Parallel()
 			first := normalizeModulePolicyModuleName(raw)
 			second := normalizeModulePolicyModuleName(first)
 			if first != second {
@@ -1148,6 +1130,7 @@ func TestModulePolicyNormalizationIsIdempotent(t *testing.T) {
 // consistent regardless of how the admin writes the pattern or how the
 // user wrote the require argument.
 func TestModulePolicyNormalizationCanonicalizesEquivalents(t *testing.T) {
+	t.Parallel()
 	groups := [][]string{
 		{
 			"helper",
@@ -1184,6 +1167,7 @@ func TestModulePolicyNormalizationCanonicalizesEquivalents(t *testing.T) {
 	}
 	for _, group := range groups {
 		t.Run(group[0], func(t *testing.T) {
+			t.Parallel()
 			want := normalizeModulePolicyPattern(group[0])
 			for _, raw := range group[1:] {
 				if got := normalizeModulePolicyPattern(raw); got != want {
@@ -1198,6 +1182,7 @@ func TestModulePolicyNormalizationCanonicalizesEquivalents(t *testing.T) {
 // extension to strip — that would silently let pattern "helper" match
 // modules anywhere under a "helper.vibe/" directory.
 func TestModulePolicyNormalizationPreservesDirectoryDots(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		raw  string
 		want string
@@ -1218,6 +1203,7 @@ func TestModulePolicyNormalizationPreservesDirectoryDots(t *testing.T) {
 // empty after stripping) must be preserved, not collapsed — collapsing
 // to "" used to bypass policy entirely in enforceModulePolicy.
 func TestModulePolicyNormalizationDoesNotCollapseToEmpty(t *testing.T) {
+	t.Parallel()
 	preserveNonEmpty := []string{
 		".vibe",
 		".vibe.vibe",
@@ -1240,6 +1226,7 @@ func TestModulePolicyNormalizationDoesNotCollapseToEmpty(t *testing.T) {
 // ["helper"] would also grant access to the sibling file
 // "helper.vibe.vibe".
 func TestModulePolicyNormalizationDistinguishesDoubleExtensions(t *testing.T) {
+	t.Parallel()
 	pairs := []struct{ a, b string }{
 		{"helper", "helper.vibe.vibe"},
 		{"helper.vibe", "helper.vibe.vibe"},
@@ -1270,6 +1257,7 @@ func TestModulePolicyNormalizationDistinguishesDoubleExtensions(t *testing.T) {
 // to allow when the module name was empty, so any require argument that
 // normalized to "" (e.g. " ", whitespace-only paths) skipped policy.
 func TestEnforceModulePolicyDeniesEmptyModuleWhenPolicyConfigured(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		cfg  Config
@@ -1280,6 +1268,7 @@ func TestEnforceModulePolicyDeniesEmptyModuleWhenPolicyConfigured(t *testing.T) 
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			engine, err := NewEngine(tc.cfg)
 			if err != nil {
 				t.Fatalf("NewEngine failed: %v", err)
@@ -1293,6 +1282,7 @@ func TestEnforceModulePolicyDeniesEmptyModuleWhenPolicyConfigured(t *testing.T) 
 	}
 
 	t.Run("no policy configured allows empty", func(t *testing.T) {
+		t.Parallel()
 		engine := MustNewEngine(Config{})
 		if err := engine.enforceModulePolicy(""); err != nil {
 			t.Errorf("enforceModulePolicy(\"\") with no policy = %v, want nil", err)
@@ -1301,6 +1291,7 @@ func TestEnforceModulePolicyDeniesEmptyModuleWhenPolicyConfigured(t *testing.T) 
 }
 
 func TestFormatModuleCycleUsesConciseChain(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join("tmp", "modules")
 	a := moduleCacheKey(root, filepath.Join("nested", "a.vibe"))
 	b := moduleCacheKey(root, filepath.Join("nested", "b.vibe"))
@@ -1313,6 +1304,7 @@ func TestFormatModuleCycleUsesConciseChain(t *testing.T) {
 }
 
 func TestModuleDisplayNameTrimsExtension(t *testing.T) {
+	t.Parallel()
 	key := moduleCacheKey(filepath.Join("tmp", "modules"), filepath.Join("pkg", "helper.vibe"))
 	got := moduleDisplayName(key)
 	want := filepath.ToSlash(filepath.Join("pkg", "helper"))
