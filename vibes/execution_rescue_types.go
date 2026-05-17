@@ -3,6 +3,8 @@ package vibes
 import (
 	"context"
 	"errors"
+
+	"github.com/mgomes/vibescript/internal/ast"
 )
 
 func isLoopControlSignal(err error) bool {
@@ -40,7 +42,7 @@ func rescueTypeMatchesErrorKind(ty *TypeExpr, errKind string) bool {
 		}
 		return false
 	}
-	canonical, ok := canonicalRuntimeErrorType(ty.Name)
+	canonical, ok := ast.CanonicalRuntimeErrorType(ty.Name)
 	if !ok {
 		return false
 	}

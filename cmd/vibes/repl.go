@@ -10,6 +10,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes"
 )
 
@@ -478,12 +479,12 @@ func (m *replModel) extractAssignments(script *vibes.Script, result vibes.Value)
 		return
 	}
 
-	assign, ok := fn.Body[0].(*vibes.AssignStmt)
+	assign, ok := fn.Body[0].(*ast.AssignStmt)
 	if !ok {
 		return
 	}
 
-	ident, ok := assign.Target.(*vibes.Identifier)
+	ident, ok := assign.Target.(*ast.Identifier)
 	if !ok {
 		return
 	}

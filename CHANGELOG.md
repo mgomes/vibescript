@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Hid the AST and parser under `internal/ast` and `internal/parser`; outside
+  callers can no longer import these packages. `vibes` keeps `Deprecated:`
+  type aliases for every previously exported AST node so existing embedders
+  keep compiling, and the aliases will be removed in v0.29.0. Future AST
+  consumers should drive scripts through the `vibes.Engine` / `vibes.Script`
+  surface instead.
+- Moved `Position` to a new public `github.com/mgomes/vibescript/vibes/source`
+  package so the AST (internal) and the public error surface
+  (`RuntimeError.Frames[i].Pos`, etc.) can share a single definition without
+  forcing AST consumers to import vibes. `vibes.Position` is now a type alias
+  for `source.Position`.
+- Extracted `cmd/vibes analyze` into `internal/tools/analyze` so the CLI no
+  longer touches AST internals directly.
 - **Breaking (embedders): `Value` runtime-bound accessors now return marker-interface payloads.**
   `Value.Builtin()`, `Value.Class()`, `Value.Instance()`, `Value.Function()`,
   `Value.Block()`, `Value.Enum()`, and `Value.EnumValue()` now return

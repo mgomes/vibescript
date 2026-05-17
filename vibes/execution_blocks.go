@@ -59,7 +59,7 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 				fallback: exec.root,
 			})
 			if err != nil {
-				return NewNil(), exec.errorAt(param.Type.position, "%s", formatArgumentTypeMismatch(param.Name, err))
+				return NewNil(), exec.errorAt(param.Type.Position, "%s", formatArgumentTypeMismatch(param.Name, err))
 			}
 			val = normalized
 		}

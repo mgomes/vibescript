@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/mgomes/vibescript/internal/ast"
+	"github.com/mgomes/vibescript/vibes/source"
 )
 
 var _ error = (*RuntimeError)(nil)
@@ -32,8 +35,8 @@ func (e *assertionFailureError) Error() string {
 }
 
 const (
-	runtimeErrorTypeBase      = "RuntimeError"
-	runtimeErrorTypeAssertion = "AssertionError"
+	runtimeErrorTypeBase      = ast.RuntimeErrorTypeBase
+	runtimeErrorTypeAssertion = ast.RuntimeErrorTypeAssertion
 	runtimeErrorFrameHead     = 8
 	runtimeErrorFrameTail     = 8
 )
@@ -89,17 +92,6 @@ func (re *RuntimeError) Unwrap() error {
 	return nil
 }
 
-func canonicalRuntimeErrorType(name string) (string, bool) {
-	switch {
-	case strings.EqualFold(name, runtimeErrorTypeBase), strings.EqualFold(name, "Error"):
-		return runtimeErrorTypeBase, true
-	case strings.EqualFold(name, runtimeErrorTypeAssertion):
-		return runtimeErrorTypeAssertion, true
-	default:
-		return "", false
-	}
-}
-
 func classifyRuntimeErrorType(err error) string {
 	if err == nil {
 		return runtimeErrorTypeBase
@@ -110,7 +102,7 @@ func classifyRuntimeErrorType(err error) string {
 	}
 	var runtimeErr *RuntimeError
 	if errors.As(err, &runtimeErr) {
-		if kind, known := canonicalRuntimeErrorType(runtimeErr.Type); known {
+		if kind, known := ast.CanonicalRuntimeErrorType(runtimeErr.Type); known {
 			return kind
 		}
 	}
@@ -150,7 +142,7 @@ func (exec *Execution) newRuntimeError(message string, pos Position) error {
 }
 
 func (exec *Execution) newRuntimeErrorWithType(kind, message string, pos Position) error {
-	if canonical, ok := canonicalRuntimeErrorType(kind); ok {
+	if canonical, ok := ast.CanonicalRuntimeErrorType(kind); ok {
 		kind = canonical
 	} else {
 		kind = runtimeErrorTypeBase
@@ -174,7 +166,7 @@ func (exec *Execution) newRuntimeErrorWithType(kind, message string, pos Positio
 	}
 	codeFrame := ""
 	if exec.script != nil {
-		codeFrame = formatCodeFrame(exec.script.source, pos)
+		codeFrame = source.FormatCodeFrame(exec.script.source, pos)
 	}
 	return &RuntimeError{Type: kind, Message: message, CodeFrame: codeFrame, Frames: frames}
 }

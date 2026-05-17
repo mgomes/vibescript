@@ -6,16 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 
+	"github.com/mgomes/vibescript/internal/tools/analyze"
 	"github.com/mgomes/vibescript/vibes"
 )
-
-type lintWarning struct {
-	Function string
-	Pos      vibes.Position
-	Message  string
-}
 
 func analyzeCommand(args []string) error {
 	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
@@ -44,7 +38,7 @@ func analyzeCommand(args []string) error {
 		return fmt.Errorf("analysis compile failed: %w", err)
 	}
 
-	warnings := analyzeScriptWarnings(script)
+	warnings := analyze.Script(script)
 	if len(warnings) == 0 {
 		fmt.Println("No issues found")
 		return nil
@@ -63,114 +57,4 @@ func analyzeCommand(args []string) error {
 	}
 
 	return fmt.Errorf("analysis found %d issue(s)", len(warnings))
-}
-
-func analyzeScriptWarnings(script *vibes.Script) []lintWarning {
-	var warnings []lintWarning
-	for _, fn := range script.Functions() {
-		lintStatements(fn.Name, fn.Body, &warnings)
-	}
-	for _, classDef := range script.Classes() {
-		for _, method := range sortedFunctionsByName(classDef.Methods) {
-			lintStatements(classDef.Name+"#"+method.Name, method.Body, &warnings)
-		}
-		for _, method := range sortedFunctionsByName(classDef.ClassMethods) {
-			lintStatements(classDef.Name+"."+method.Name, method.Body, &warnings)
-		}
-	}
-
-	sort.SliceStable(warnings, func(i, j int) bool {
-		if warnings[i].Pos.Line != warnings[j].Pos.Line {
-			return warnings[i].Pos.Line < warnings[j].Pos.Line
-		}
-		if warnings[i].Pos.Column != warnings[j].Pos.Column {
-			return warnings[i].Pos.Column < warnings[j].Pos.Column
-		}
-		return warnings[i].Function < warnings[j].Function
-	})
-
-	return warnings
-}
-
-func sortedFunctionsByName(functions map[string]*vibes.ScriptFunction) []*vibes.ScriptFunction {
-	names := make([]string, 0, len(functions))
-	for name := range functions {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	sorted := make([]*vibes.ScriptFunction, 0, len(names))
-	for _, name := range names {
-		sorted = append(sorted, functions[name])
-	}
-	return sorted
-}
-
-func lintStatements(function string, statements []vibes.Statement, warnings *[]lintWarning) bool {
-	terminated := false
-	for _, stmt := range statements {
-		if terminated {
-			*warnings = append(*warnings, lintWarning{
-				Function: function,
-				Pos:      stmt.Pos(),
-				Message:  "unreachable statement",
-			})
-			continue
-		}
-		if statementTerminates(function, stmt, warnings) {
-			terminated = true
-		}
-	}
-	return terminated
-}
-
-func statementTerminates(function string, stmt vibes.Statement, warnings *[]lintWarning) bool {
-	switch typed := stmt.(type) {
-	case *vibes.ReturnStmt, *vibes.RaiseStmt:
-		return true
-	case *vibes.IfStmt:
-		return ifStatementTerminates(function, typed, warnings)
-	case *vibes.ForStmt:
-		lintStatements(function, typed.Body, warnings)
-		return false
-	case *vibes.WhileStmt:
-		lintStatements(function, typed.Body, warnings)
-		return false
-	case *vibes.UntilStmt:
-		lintStatements(function, typed.Body, warnings)
-		return false
-	case *vibes.TryStmt:
-		bodyTerminated := lintStatements(function, typed.Body, warnings)
-		rescueTerminated := false
-		if len(typed.Rescue) > 0 {
-			rescueTerminated = lintStatements(function, typed.Rescue, warnings)
-		}
-		ensureTerminated := false
-		if len(typed.Ensure) > 0 {
-			ensureTerminated = lintStatements(function, typed.Ensure, warnings)
-		}
-		if ensureTerminated {
-			return true
-		}
-		if len(typed.Rescue) == 0 {
-			return bodyTerminated
-		}
-		return bodyTerminated && rescueTerminated
-	default:
-		return false
-	}
-}
-
-func ifStatementTerminates(function string, stmt *vibes.IfStmt, warnings *[]lintWarning) bool {
-	consequentTerminated := lintStatements(function, stmt.Consequent, warnings)
-	elseIfAllTerminated := true
-	for _, elseIf := range stmt.ElseIf {
-		if !lintStatements(function, elseIf.Consequent, warnings) {
-			elseIfAllTerminated = false
-		}
-	}
-	if len(stmt.Alternate) == 0 {
-		return false
-	}
-	alternateTerminated := lintStatements(function, stmt.Alternate, warnings)
-	return consequentTerminated && elseIfAllTerminated && alternateTerminated
 }

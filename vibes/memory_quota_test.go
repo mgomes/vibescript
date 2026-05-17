@@ -213,9 +213,9 @@ func TestAssignmentPostCheckDoesNotDoubleCountAssignedValue(t *testing.T) {
 	payload := strings.Repeat("abcdefghij", 300)
 
 	stmt := &AssignStmt{
-		Target:   &Identifier{Name: "x", position: Position{Line: 1, Column: 1}},
-		Value:    &StringLiteral{Value: payload, position: Position{Line: 1, Column: 5}},
-		position: Position{Line: 1, Column: 1},
+		Target:   &Identifier{Name: "x", Position: Position{Line: 1, Column: 1}},
+		Value:    &StringLiteral{Value: payload, Position: Position{Line: 1, Column: 5}},
+		Position: Position{Line: 1, Column: 1},
 	}
 
 	probeExec := &Execution{
@@ -270,8 +270,8 @@ func TestAssignmentPostCheckDoesNotDoubleCountAssignedValue(t *testing.T) {
 func TestExpressionAliasPostCheckDoesNotDoubleCountString(t *testing.T) {
 	payload := strings.Repeat("abcdefghij", 300)
 	stmt := &ExprStmt{
-		Expr:     &Identifier{Name: "payload", position: Position{Line: 1, Column: 1}},
-		position: Position{Line: 1, Column: 1},
+		Expr:     &Identifier{Name: "payload", Position: Position{Line: 1, Column: 1}},
+		Position: Position{Line: 1, Column: 1},
 	}
 
 	probeExec := &Execution{
@@ -312,17 +312,17 @@ func TestTransientExpressionAllocationsAreChecked(t *testing.T) {
 		Expr: &MemberExpr{
 			Object: &CallExpr{
 				Callee: &MemberExpr{
-					Object:   &Identifier{Name: "input", position: pos},
+					Object:   &Identifier{Name: "input", Position: pos},
 					Property: "split",
-					position: pos,
+					Position: pos,
 				},
-				Args:     []Expression{&StringLiteral{Value: ",", position: pos}},
-				position: pos,
+				Args:     []Expression{&StringLiteral{Value: ",", Position: pos}},
+				Position: pos,
 			},
 			Property: "size",
-			position: pos,
+			Position: pos,
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	input := strings.Repeat("a,", 1500)
@@ -371,16 +371,16 @@ func TestIndexedTransientAllocationsAreChecked(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)
 	for i := range elements {
-		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+		elements[i] = &StringLiteral{Value: "abcdefghij", Position: pos}
 	}
 
 	stmt := &ExprStmt{
 		Expr: &IndexExpr{
-			Object:   &ArrayLiteral{Elements: elements, position: pos},
-			Index:    &IntegerLiteral{Value: 0, position: pos},
-			position: pos,
+			Object:   &ArrayLiteral{Elements: elements, Position: pos},
+			Index:    &IntegerLiteral{Value: 0, Position: pos},
+			Position: pos,
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	probeExec := &Execution{
@@ -425,19 +425,19 @@ func TestTransientMethodCallReceiverAllocationsAreChecked(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)
 	for i := range elements {
-		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+		elements[i] = &StringLiteral{Value: "abcdefghij", Position: pos}
 	}
 
 	stmt := &ExprStmt{
 		Expr: &CallExpr{
 			Callee: &MemberExpr{
-				Object:   &ArrayLiteral{Elements: elements, position: pos},
+				Object:   &ArrayLiteral{Elements: elements, Position: pos},
 				Property: "size",
-				position: pos,
+				Position: pos,
 			},
-			position: pos,
+			Position: pos,
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	probeExec := &Execution{
@@ -482,19 +482,19 @@ func TestTransientMethodCallReceiverLookupErrorsAreChecked(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)
 	for i := range elements {
-		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+		elements[i] = &StringLiteral{Value: "abcdefghij", Position: pos}
 	}
 
 	stmt := &ExprStmt{
 		Expr: &CallExpr{
 			Callee: &MemberExpr{
-				Object:   &ArrayLiteral{Elements: elements, position: pos},
+				Object:   &ArrayLiteral{Elements: elements, Position: pos},
 				Property: "missing",
-				position: pos,
+				Position: pos,
 			},
-			position: pos,
+			Position: pos,
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	exec := &Execution{
@@ -514,18 +514,18 @@ func TestIfConditionTransientAllocationsAreChecked(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)
 	for i := range elements {
-		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+		elements[i] = &StringLiteral{Value: "abcdefghij", Position: pos}
 	}
 
 	stmt := &IfStmt{
-		Condition: &ArrayLiteral{Elements: elements, position: pos},
+		Condition: &ArrayLiteral{Elements: elements, Position: pos},
 		Consequent: []Statement{
 			&ExprStmt{
-				Expr:     &IntegerLiteral{Value: 1, position: pos},
-				position: pos,
+				Expr:     &IntegerLiteral{Value: 1, Position: pos},
+				Position: pos,
 			},
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	probeExec := &Execution{
@@ -573,14 +573,14 @@ func TestAggregateBuiltinArgumentsAreChecked(t *testing.T) {
 
 	stmt := &ExprStmt{
 		Expr: &CallExpr{
-			Callee: &Identifier{Name: "assert", position: pos},
+			Callee: &Identifier{Name: "assert", Position: pos},
 			Args: []Expression{
-				&StringLiteral{Value: payloadA, position: pos},
-				&StringLiteral{Value: payloadB, position: pos},
+				&StringLiteral{Value: payloadA, Position: pos},
+				&StringLiteral{Value: payloadB, Position: pos},
 			},
-			position: pos,
+			Position: pos,
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	probeExec := &Execution{
@@ -632,17 +632,17 @@ func TestCallArgumentMemoryChecksFailFastBeforeLaterSideEffects(t *testing.T) {
 
 	stmt := &ExprStmt{
 		Expr: &CallExpr{
-			Callee: &Identifier{Name: "noop", position: pos},
+			Callee: &Identifier{Name: "noop", Position: pos},
 			Args: []Expression{
-				&StringLiteral{Value: payload, position: pos},
+				&StringLiteral{Value: payload, Position: pos},
 				&CallExpr{
-					Callee:   &Identifier{Name: "tick", position: pos},
-					position: pos,
+					Callee:   &Identifier{Name: "tick", Position: pos},
+					Position: pos,
 				},
 			},
-			position: pos,
+			Position: pos,
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	exec := &Execution{
@@ -673,24 +673,24 @@ func TestTransientAssignmentValueIsCheckedBeforeAssign(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)
 	for i := range elements {
-		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+		elements[i] = &StringLiteral{Value: "abcdefghij", Position: pos}
 	}
 
 	assignStmt := &AssignStmt{
 		Target: &IndexExpr{
 			Object: &CallExpr{
-				Callee:   &Identifier{Name: "mk", position: pos},
-				position: pos,
+				Callee:   &Identifier{Name: "mk", Position: pos},
+				Position: pos,
 			},
-			Index:    &StringLiteral{Value: "x", position: pos},
-			position: pos,
+			Index:    &StringLiteral{Value: "x", Position: pos},
+			Position: pos,
 		},
-		Value:    &ArrayLiteral{Elements: elements, position: pos},
-		position: pos,
+		Value:    &ArrayLiteral{Elements: elements, Position: pos},
+		Position: pos,
 	}
 	returnStmt := &ExprStmt{
-		Expr:     &IntegerLiteral{Value: 1, position: pos},
-		position: pos,
+		Expr:     &IntegerLiteral{Value: 1, Position: pos},
+		Position: pos,
 	}
 	stmts := []Statement{assignStmt, returnStmt}
 
@@ -742,16 +742,16 @@ func TestTransientUnaryOperandAllocationsAreChecked(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)
 	for i := range elements {
-		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+		elements[i] = &StringLiteral{Value: "abcdefghij", Position: pos}
 	}
 
 	stmt := &ExprStmt{
 		Expr: &UnaryExpr{
 			Operator: tokenBang,
-			Right:    &ArrayLiteral{Elements: elements, position: pos},
-			position: pos,
+			Right:    &ArrayLiteral{Elements: elements, Position: pos},
+			Position: pos,
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	probeExec := &Execution{
@@ -796,17 +796,17 @@ func TestTransientBinaryOperandsAreChecked(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)
 	for i := range elements {
-		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+		elements[i] = &StringLiteral{Value: "abcdefghij", Position: pos}
 	}
 
 	stmt := &ExprStmt{
 		Expr: &BinaryExpr{
-			Left:     &ArrayLiteral{Elements: elements, position: pos},
+			Left:     &ArrayLiteral{Elements: elements, Position: pos},
 			Operator: tokenAnd,
-			Right:    &BoolLiteral{Value: false, position: pos},
-			position: pos,
+			Right:    &BoolLiteral{Value: false, Position: pos},
+			Position: pos,
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	probeExec := &Execution{
@@ -851,23 +851,23 @@ func TestAssignmentTargetExpressionsAreChecked(t *testing.T) {
 	pos := Position{Line: 1, Column: 1}
 	elements := make([]Expression, 1200)
 	for i := range elements {
-		elements[i] = &StringLiteral{Value: "abcdefghij", position: pos}
+		elements[i] = &StringLiteral{Value: "abcdefghij", Position: pos}
 	}
 
 	assignStmt := &AssignStmt{
 		Target: &IndexExpr{
-			Object:   &ArrayLiteral{Elements: elements, position: pos},
-			Index:    &IntegerLiteral{Value: 0, position: pos},
-			position: pos,
+			Object:   &ArrayLiteral{Elements: elements, Position: pos},
+			Index:    &IntegerLiteral{Value: 0, Position: pos},
+			Position: pos,
 		},
-		Value:    &IntegerLiteral{Value: 1, position: pos},
-		position: pos,
+		Value:    &IntegerLiteral{Value: 1, Position: pos},
+		Position: pos,
 	}
 	stmts := []Statement{
 		assignStmt,
 		&ExprStmt{
-			Expr:     &IntegerLiteral{Value: 1, position: pos},
-			position: pos,
+			Expr:     &IntegerLiteral{Value: 1, Position: pos},
+			Position: pos,
 		},
 	}
 
@@ -917,12 +917,12 @@ func TestAggregateYieldArgumentsAreChecked(t *testing.T) {
 	stmt := &ExprStmt{
 		Expr: &YieldExpr{
 			Args: []Expression{
-				&StringLiteral{Value: payloadA, position: pos},
-				&StringLiteral{Value: payloadB, position: pos},
+				&StringLiteral{Value: payloadA, Position: pos},
+				&StringLiteral{Value: payloadB, Position: pos},
 			},
-			position: pos,
+			Position: pos,
 		},
-		position: pos,
+		Position: pos,
 	}
 
 	blockVal := NewBlock(nil, nil, newEnv(nil))

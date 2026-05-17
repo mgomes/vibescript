@@ -2,6 +2,8 @@ package vibes
 
 import (
 	"fmt"
+
+	"github.com/mgomes/vibescript/internal/parser"
 )
 
 func (e *Engine) Compile(source string) (*Script, error) {
@@ -9,8 +11,7 @@ func (e *Engine) Compile(source string) (*Script, error) {
 		return nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", len(source), e.config.MaxSourceBytes)
 	}
 
-	p := newParser(source)
-	program, parseErrors := p.ParseProgram()
+	program, parseErrors := parser.Parse(source)
 	if len(parseErrors) > 0 {
 		return nil, combineErrors(parseErrors)
 	}
