@@ -386,11 +386,10 @@ func wordAtPosition(source string, line, character int) string {
 		return ""
 	}
 	if !isWordRune(runes[cursor]) {
-		if cursor > 0 && isWordRune(runes[cursor-1]) {
-			cursor--
-		} else {
+		if cursor == 0 || !isWordRune(runes[cursor-1]) {
 			return ""
 		}
+		cursor--
 	}
 
 	start := cursor

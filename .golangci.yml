@@ -15,6 +15,7 @@ linters:
     - ineffassign
     - unused
     - misspell
+    - revive
 
   settings:
     errcheck:
@@ -33,6 +34,26 @@ linters:
 
     misspell:
       locale: US
+
+    revive:
+      severity: warning
+      rules:
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: early-return
+        - name: error-return
+        - name: error-naming
+        - name: errorf
+        - name: receiver-naming
+        - name: var-declaration
+        - name: var-naming
+        - name: range
+        - name: increment-decrement
+        - name: dot-imports
+        - name: blank-imports
+        - name: context-keys-type
+        - name: time-naming
+        - name: unreachable-code
 
   exclusions:
     generated: lax
