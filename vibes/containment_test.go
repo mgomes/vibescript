@@ -373,8 +373,8 @@ func runBuiltinRegistrationConcurrencyProbe(t *testing.T) {
 	defer runtime.GOMAXPROCS(previousProcs)
 
 	engine := MustNewEngine(Config{})
-	slowMethods := make(map[string]Value, 12_000)
-	for i := range 12_000 {
+	slowMethods := make(map[string]Value, 256)
+	for i := range 256 {
 		slowMethods[fmt.Sprintf("method_%d", i)] = NewInt(int64(i))
 	}
 	for i := range 16 {
@@ -387,22 +387,31 @@ func runBuiltinRegistrationConcurrencyProbe(t *testing.T) {
 
 	for attempt := range 12 {
 		start := make(chan struct{})
+		stop := make(chan struct{})
 		ready := make(chan struct{}, 4)
 		var wg sync.WaitGroup
 		for range 4 {
 			wg.Go(func() {
 				ready <- struct{}{}
 				<-start
-				_ = engine.Builtins()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						_ = engine.Builtins()
+					}
+				}
 			})
 		}
 		for range 4 {
 			<-ready
 		}
 		close(start)
-		for i := range 1_500 {
+		for i := range 500 {
 			engine.RegisterBuiltin(fmt.Sprintf("probe_%d_%d", attempt, i), noop)
 		}
+		close(stop)
 		wg.Wait()
 	}
 }
