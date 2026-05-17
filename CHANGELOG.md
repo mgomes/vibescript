@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- **Breaking (embedders): `Value` runtime-bound accessors now return marker-interface payloads.**
+  `Value.Builtin()`, `Value.Class()`, `Value.Instance()`, `Value.Function()`,
+  `Value.Block()`, `Value.Enum()`, and `Value.EnumValue()` now return
+  `value.BuiltinPayload` / `value.ClassPayload` / etc. instead of the concrete
+  `*vibes.Builtin` / `*vibes.ClassDef` / etc. Migrate by using the typed
+  companions `vibes.BuiltinOf(v)`, `vibes.ClassOf(v)`, `vibes.InstanceOf(v)`,
+  `vibes.FunctionOf(v)`, `vibes.EnumValueOf(v)`, or by type-asserting against
+  the concrete `*vibes.*` types. Data-only accessors (`Bool`, `Int`, `Float`,
+  `String`, `Array`, `Hash`, `Money`, `Duration`, `Time`, `Range`) are
+  unchanged.
+- Carved value-system types into a new `github.com/mgomes/vibescript/vibes/value`
+  subpackage. `vibes` re-exports the surface via type aliases and constructor
+  wrappers so existing imports keep compiling; the aliases will be removed in
+  v0.29.0 alongside direct migration of internal references.
 - Ongoing work toward the next pre-1.0 release.
 
 ## v0.28.2 - 2026-05-16

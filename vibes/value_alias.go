@@ -10,6 +10,19 @@ import (
 // vibes package source-compatible with external embedders and with the
 // rest of vibes during the transition. They will be removed in v0.29.0
 // once direct vibes/value imports replace these forwarders.
+//
+// Known intentional break in this carve: runtime-bound accessors on
+// Value (Builtin, Class, Instance, Function, Block, Enum, EnumValue)
+// now return marker-interface payloads defined in value (e.g.
+// value.BuiltinPayload) instead of the concrete *vibes.Builtin etc.
+// The concrete types live in this package and would create an import
+// cycle if value referenced them directly, and Go does not allow
+// methods on aliased types to be redefined in the alias package. Use
+// the typed companions in value_runtime.go (BuiltinOf, ClassOf,
+// InstanceOf, FunctionOf, EnumValueOf) for direct access, or
+// type-assert against the concrete *vibes.* types. Data-only
+// accessors (Bool, Int, Float, String, Array, Hash, Money, Duration,
+// Time, Range) keep their original signatures unchanged.
 type (
 	Value     = value.Value
 	ValueKind = value.ValueKind
