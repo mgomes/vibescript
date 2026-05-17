@@ -18,7 +18,11 @@ func NewContextCapability(name string, resolver ContextCapabilityResolver) (Capa
 	return runtime.NewContextCapability(name, resolver)
 }
 
-// MustNewContextCapability constructs a context capability or panics.
+// MustNewContextCapability is like NewContextCapability but panics if
+// name or resolver is invalid. Intended for package-level variable
+// initialization and tests where invalid input is a programmer error
+// and recovery is not meaningful. In production code prefer
+// NewContextCapability and handle the error.
 //
 // Deprecated: prefer contextcap.MustNewCapability. Will be removed in
 // v0.29.0.
