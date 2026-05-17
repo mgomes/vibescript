@@ -622,10 +622,11 @@ func renderVarsPanel(env map[string]vibes.Value, width int) string {
 		return borderStyle.Render(mutedStyle.Render("No variables defined"))
 	}
 
-	var lines []string
+	keys := sortedEnvKeys(env)
+	lines := make([]string, 0, 1+len(keys))
 	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render("Variables"))
 	varNameStyle := lipgloss.NewStyle().Foreground(highlightColor)
-	for _, name := range sortedEnvKeys(env) {
+	for _, name := range keys {
 		val := env[name]
 		line := fmt.Sprintf("  %s = %s", varNameStyle.Render(name), val.String())
 		lines = append(lines, line)
