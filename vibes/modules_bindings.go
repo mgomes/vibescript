@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/mgomes/vibescript/internal/ast"
 )
 
 func shouldExportModuleFunction(fn *ScriptFunction) bool {
@@ -51,15 +53,15 @@ func isValidModuleAlias(name string) bool {
 		return false
 	}
 	runes := []rune(name)
-	if len(runes) == 0 || !isIdentifierStart(runes[0]) {
+	if len(runes) == 0 || !ast.IsIdentifierStart(runes[0]) {
 		return false
 	}
 	for _, r := range runes[1:] {
-		if !isIdentifierRune(r) {
+		if !ast.IsIdentifierRune(r) {
 			return false
 		}
 	}
-	return lookupIdent(name) == tokenIdent
+	return ast.LookupIdent(name) == ast.TokenIdent
 }
 
 func bindRequireAlias(root *Env, alias string, module Value) error {

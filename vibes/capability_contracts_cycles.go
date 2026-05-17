@@ -1,8 +1,9 @@
 package vibes
 
-import "slices"
-
-import "reflect"
+import (
+	"reflect"
+	"slices"
+)
 
 type capabilityCycleScanner struct {
 	visitingArrays map[sliceIdentity]struct{}

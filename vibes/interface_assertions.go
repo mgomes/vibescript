@@ -12,11 +12,3 @@ var (
 	_ CapabilityContractProvider = (*eventsCapability)(nil)
 	_ CapabilityContractProvider = (*jobQueueCapability)(nil)
 )
-
-var (
-	_ Node       = (*Program)(nil)
-	_ Statement  = (*FunctionStmt)(nil)
-	_ Expression = (*Identifier)(nil)
-	_ StringPart = StringText{}
-	_ StringPart = StringExpr{}
-)

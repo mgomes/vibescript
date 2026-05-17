@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mgomes/vibescript/internal/parser"
 	"github.com/mgomes/vibescript/vibes/capability/jobqueue"
 )
 
@@ -33,7 +34,7 @@ func FuzzLexerTokenStreamTerminates(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		source := string(limitFuzzBytes(raw, fuzzMaxSourceBytes))
-		lexer := newLexer(source)
+		lexer := parser.NewLexer(source)
 		last := Position{Line: 1, Column: 0}
 		tokenBudget := max(len(source)+2, 32)
 
@@ -72,8 +73,7 @@ func FuzzParserSuccessfulProgramsHaveCompleteAST(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, source string) {
 		source = limitFuzzString(source, fuzzMaxSourceBytes)
-		parser := newParser(source)
-		program, parseErrors := parser.ParseProgram()
+		program, parseErrors := parser.Parse(source)
 		if len(parseErrors) > 0 {
 			return
 		}

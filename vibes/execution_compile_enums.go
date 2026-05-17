@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/mgomes/vibescript/internal/ast"
 )
 
 func compileEnumDef(stmt *EnumStmt) (*EnumDef, error) {
 	if strings.HasSuffix(stmt.Name, "?") {
 		return nil, fmt.Errorf("enum name %s must not end with '?'", stmt.Name)
 	}
-	if typ, _ := resolveType(stmt.Name); typ != TypeUnknown {
+	if typ, _ := ast.ResolveType(stmt.Name); typ != TypeUnknown {
 		return nil, fmt.Errorf("enum name %s conflicts with built-in type", stmt.Name)
 	}
 	enumDef := &EnumDef{
