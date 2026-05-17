@@ -22,7 +22,11 @@ func NewEventsCapability(name string, publisher EventPublisher) (CapabilityAdapt
 	return runtime.NewEventsCapability(name, publisher)
 }
 
-// MustNewEventsCapability is the panicking variant of NewEventsCapability.
+// MustNewEventsCapability is like NewEventsCapability but panics if
+// name or publisher is invalid. Intended for package-level variable
+// initialization and tests where invalid input is a programmer error
+// and recovery is not meaningful. In production code prefer
+// NewEventsCapability and handle the error.
 //
 // Deprecated: use events.MustNewCapability. Will be removed in v0.29.0.
 func MustNewEventsCapability(name string, publisher EventPublisher) CapabilityAdapter {

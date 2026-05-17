@@ -22,7 +22,11 @@ func NewJobQueueCapability(name string, impl JobQueue) (CapabilityAdapter, error
 	return runtime.NewJobQueueCapability(name, impl)
 }
 
-// MustNewJobQueueCapability is the panicking variant of NewJobQueueCapability.
+// MustNewJobQueueCapability is like NewJobQueueCapability but panics
+// if name or impl is invalid. Intended for package-level variable
+// initialization and tests where invalid input is a programmer error
+// and recovery is not meaningful. In production code prefer
+// NewJobQueueCapability and handle the error.
 func MustNewJobQueueCapability(name string, impl JobQueue) CapabilityAdapter {
 	adapter, err := NewJobQueueCapability(name, impl)
 	if err != nil {

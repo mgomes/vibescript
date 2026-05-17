@@ -27,8 +27,11 @@ func NewDBCapability(name string, impl Database) (CapabilityAdapter, error) {
 	return runtime.NewDBCapability(name, impl)
 }
 
-// MustNewDBCapability constructs a database capability adapter or
-// panics when name is empty or impl is a nil implementation.
+// MustNewDBCapability is like NewDBCapability but panics if name or
+// impl is invalid. Intended for package-level variable initialization
+// and tests where invalid input is a programmer error and recovery is
+// not meaningful. In production code prefer NewDBCapability and
+// handle the error.
 func MustNewDBCapability(name string, impl Database) CapabilityAdapter {
 	cap, err := NewDBCapability(name, impl)
 	if err != nil {

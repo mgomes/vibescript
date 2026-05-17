@@ -1,14 +1,23 @@
-// Package vibes implements the Vibescript execution engine. The initial
-// version supports a Ruby-flavored syntax with the following constructs:
-//   - Function definitions via `def name(args...) ... end` with implicit return.
-//   - Literals for ints, floats, strings, bools, nil, arrays, hashes, and symbols.
-//   - Arithmetic and comparison expressions (+, -, *, /, >, <, ==, !=).
-//   - Logical operators (and/or/not) and parentheses for grouping.
-//   - Indexing via `object[expr]` and property access via `object.attr`.
-//   - Function and method calls with positional and keyword arguments.
-//   - Built-ins such as `assert`, `money`, and `money_cents`; capabilities are
-//     provided by the host and accessed as globals (ctx, db, jobs, etc.).
+// Package vibes is the embedder API for the Vibescript scripting
+// language. Hosts compile a .vibe source into a Script and invoke its
+// functions through an Engine:
 //
-// Comments beginning with `#` are ignored. The interpreter enforces a simple
-// step quota, rejecting scripts that exceed configured execution limits.
+//	engine, _ := vibes.NewEngine(vibes.Config{StepQuota: 50_000})
+//	script, _ := engine.Compile(source)
+//	result, _ := script.Call(
+//	    ctx,
+//	    "greet",
+//	    []vibes.Value{vibes.NewString("world")},
+//	    vibes.CallOptions{},
+//	)
+//
+// The package exposes runtime values (Value, with kind-specific
+// constructors and accessors), host-provided capability adapters
+// (Database, EventPublisher, JobQueue, ContextCapabilityResolver) and
+// the per-call Execution handle that builtins receive. Engine
+// execution is bounded by Config (step and memory quotas, recursion
+// limit, strict-effects mode, module allow/deny policies).
+//
+// See ../README.md for the language reference and
+// ../docs/architecture.md for the runtime design.
 package vibes
