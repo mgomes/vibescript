@@ -16,6 +16,7 @@ linters:
     - ineffassign
     - unused
     - misspell
+    - nolintlint
     - prealloc
     - revive
 
@@ -42,6 +43,11 @@ linters:
 
     misspell:
       locale: US
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
 
     prealloc:
       simple: true

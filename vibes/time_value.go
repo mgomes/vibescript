@@ -64,7 +64,7 @@ func parseLocationString(spec string) (*time.Location, error) {
 
 func timeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	if len(args) < 3 {
-		return time.Time{}, fmt.Errorf("Time.new expects at least year, month, day") //nolint:staticcheck // class.method reference
+		return time.Time{}, fmt.Errorf("Time.new expects at least year, month, day")
 	}
 	getInt := func(idx int) int {
 		if idx >= len(args) {
@@ -108,7 +108,7 @@ func timeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
 		seconds = int64(f)
 		nanos = int64((f - float64(seconds)) * 1e9)
 	default:
-		return time.Time{}, fmt.Errorf("Time.at expects numeric seconds") //nolint:staticcheck // class.method reference
+		return time.Time{}, fmt.Errorf("Time.at expects numeric seconds")
 	}
 	if loc == nil {
 		loc = time.Local
@@ -125,7 +125,7 @@ func parseTimeString(input, layout string, hasLayout bool, loc *time.Location) (
 	if hasLayout {
 		parsed, err := time.ParseInLocation(layout, input, parseLoc)
 		if err != nil {
-			return time.Time{}, fmt.Errorf("Time.parse could not parse time: %w", err) //nolint:staticcheck // class.method reference
+			return time.Time{}, fmt.Errorf("Time.parse could not parse time: %w", err)
 		}
 		if loc != nil {
 			return parsed.In(loc), nil
