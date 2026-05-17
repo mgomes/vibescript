@@ -1,5 +1,5 @@
-// Package runtime implements the Vibescript interpreter, execution engine,
-// module loader, builtins, and capability adapters. It is an internal
-// package: external embedders depend on the github.com/mgomes/vibescript/vibes
-// facade, which forwards to the types and functions defined here.
+// Package runtime implements the Vibescript execution engine — the
+// Engine, Script, Execution, environment, memory accounting, module
+// loader, and built-in registration. It is hidden from external
+// embedders behind the vibes facade.
 package runtime
