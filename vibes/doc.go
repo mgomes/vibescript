@@ -7,16 +7,18 @@
 //	result, _ := script.Call(
 //	    ctx,
 //	    "greet",
-//	    []vibes.Value{vibes.NewString("world")},
+//	    []value.Value{value.NewString("world")},
 //	    vibes.CallOptions{},
 //	)
 //
-// The package exposes runtime values (Value, with kind-specific
-// constructors and accessors), host-provided capability adapters
-// (Database, EventPublisher, JobQueue, ContextCapabilityResolver) and
-// the per-call Execution handle that builtins receive. Engine
-// execution is bounded by Config (step and memory quotas, recursion
-// limit, strict-effects mode, module allow/deny policies).
+// Runtime values live in github.com/mgomes/vibescript/vibes/value.
+// Host-provided capability contracts live under
+// github.com/mgomes/vibescript/vibes/capability. This package provides
+// the Engine/Script execution surface, capability adapter constructors,
+// runtime errors, and the per-call Execution handle that builtins
+// receive. Engine execution is bounded by Config (step and memory
+// quotas, recursion limit, strict-effects mode, module allow/deny
+// policies).
 //
 // See ../README.md for the language reference and
 // ../docs/architecture.md for the runtime design.

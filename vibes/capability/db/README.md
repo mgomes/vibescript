@@ -4,9 +4,9 @@ Host-side database capability adapter for Vibescript. Exposes the
 `db.find`, `db.query`, `db.update`, `db.sum`, and `db.each` builtins to
 scripts and dispatches them to a host-provided implementation.
 
-The public surface is re-exported by the top-level `vibes` package via
-`vibes/capability_db_alias.go`, so embedders normally write
-`vibes.Database` rather than importing this package directly.
+Embedders implement the interfaces in this package directly. The top-level
+`vibes.NewDBCapability` helper wraps a `db.Database` implementation in a
+script-visible capability adapter.
 
 ## Interface segregation
 
@@ -50,7 +50,7 @@ func (readOnly) Update(context.Context, db.DBUpdateRequest) (value.Value, error)
 cap, err := vibes.NewDBCapability("db", readOnly{reader})
 ```
 
-`vibes.NewDBCapability` accepts any `vibes.Database`, so the composed
+`vibes.NewDBCapability` accepts any `db.Database`, so the composed
 value plugs in without further wiring.
 
 ## Request shapes

@@ -14,6 +14,7 @@ import (
     "fmt"
 
     "github.com/mgomes/vibescript/vibes"
+    "github.com/mgomes/vibescript/vibes/value"
 )
 
 func main() {
@@ -36,7 +37,7 @@ func main() {
     result, err := script.Call(
         context.Background(),
         "total_with_bonus",
-        []vibes.Value{vibes.NewInt(100), vibes.NewInt(25)},
+        []value.Value{value.NewInt(100), value.NewInt(25)},
         vibes.CallOptions{},
     )
     if err != nil {
@@ -96,16 +97,16 @@ outside configured module roots are blocked.
 ### Capability Adapters
 
 Use `CallOptions.Capabilities` to install first-class, typed integrations. The
-`vibes.NewJobQueueCapability` helper wraps a host `JobQueue` implementation and
-exposes `enqueue` (and `retry` when supported) with automatic argument parsing
-and context propagation.
+`vibes.NewJobQueueCapability` helper wraps a host
+`jobqueue.JobQueue` implementation and exposes `enqueue` (and `retry` when
+supported) with automatic argument parsing and context propagation.
 
 ```go
 type jobQueue struct{}
 
-func (jobQueue) Enqueue(ctx context.Context, job vibes.JobQueueJob) (vibes.Value, error) {
+func (jobQueue) Enqueue(ctx context.Context, job jobqueue.JobQueueJob) (value.Value, error) {
     log.Printf("queue %s with payload %+v", job.Name, job.Payload)
-    return vibes.NewString("queued"), nil
+    return value.NewString("queued"), nil
 }
 
 cap, err := vibes.NewJobQueueCapability("jobs", jobQueue{})
@@ -127,22 +128,25 @@ wiring builtins.
 
 Vibescript ships capability helpers for common integration points:
 
-- `NewDBCapability(name, db)` for `find/query/update/sum/each`.
-- `NewEventsCapability(name, publisher)` for `publish`.
-- `NewJobQueueCapability(name, queue)` for `enqueue/retry`.
-- `NewContextCapability(name, resolver)` for data-only request metadata.
+- `NewDBCapability(name, db)` for `find/query/update/sum/each` with
+  `db.Database`.
+- `NewEventsCapability(name, publisher)` for `publish` with `events.Publisher`.
+- `NewJobQueueCapability(name, queue)` for `enqueue/retry` with
+  `jobqueue.JobQueue`.
+- `NewContextCapability(name, resolver)` for data-only request metadata with
+  `contextcap.Resolver`.
 
 ```go
 dbCap := vibes.MustNewDBCapability("db", myDB)
 eventsCap := vibes.MustNewEventsCapability("events", myEvents)
 jobsCap := vibes.MustNewJobQueueCapability("jobs", myJobs)
-ctxCap := vibes.MustNewContextCapability("ctx", func(ctx context.Context) (vibes.Value, error) {
+ctxCap := vibes.MustNewContextCapability("ctx", func(ctx context.Context) (value.Value, error) {
     userID, _ := ctx.Value("user_id").(string)
     role, _ := ctx.Value("role").(string)
-    return vibes.NewObject(map[string]vibes.Value{
-        "user": vibes.NewObject(map[string]vibes.Value{
-            "id":   vibes.NewString(userID),
-            "role": vibes.NewString(role),
+    return value.NewObject(map[string]value.Value{
+        "user": value.NewObject(map[string]value.Value{
+            "id":   value.NewString(userID),
+            "role": value.NewString(role),
         }),
     }), nil
 })
@@ -182,7 +186,7 @@ and log adapter-specific method names from the error text (for example
 
 ### Handling Dynamic Types
 
-Every call returns a `vibes.Value`. Inspect the `Kind()` before consuming it:
+Every call returns a `value.Value`. Inspect the `Kind()` before consuming it:
 
 ```go
 result, err := script.Call(ctx, "handler", args, vibes.CallOptions{})
@@ -191,11 +195,11 @@ if err != nil {
 }
 
 switch result.Kind() {
-case vibes.KindInt:
+case value.KindInt:
     fmt.Println("int:", result.Int())
-case vibes.KindHash:
+case value.KindHash:
     fmt.Println("hash keys:", result.Hash())
-case vibes.KindNil:
+case value.KindNil:
     // nothing returned
 default:
     return fmt.Errorf("unexpected return type: %v", result.Kind())

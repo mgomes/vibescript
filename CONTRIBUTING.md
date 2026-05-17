@@ -55,7 +55,8 @@ just bench                      # runtime benchmarks
 ### Table-driven test template
 
 New tests should follow the table-driven pattern that Wave 4 PRs are landing
-across the codebase:
+across the codebase. Runtime values come from
+`github.com/mgomes/vibescript/vibes/value`:
 
 ```go
 func TestFoo(t *testing.T) {
@@ -65,16 +66,16 @@ func TestFoo(t *testing.T) {
         name    string
         source  string
         fn      string
-        args    []vibes.Value
-        want    vibes.Value
+        args    []value.Value
+        want    value.Value
         wantErr string
     }{
         {
             name:   "adds two ints",
             source: `def add(a, b); a + b; end`,
             fn:     "add",
-            args:   []vibes.Value{vibes.NewInt(2), vibes.NewInt(3)},
-            want:   vibes.NewInt(5),
+            args:   []value.Value{value.NewInt(2), value.NewInt(3)},
+            want:   value.NewInt(5),
         },
     }
 
@@ -93,7 +94,7 @@ Notes:
   state forbids it.
 - Use `cmp.Diff` for non-trivial assertions and report the diff in `t.Errorf`.
 - Helpers belong in `_test.go` files; see
-  `vibes/capability_test_helpers_test.go` for the shared compile/call
+  `internal/runtime/testhelpers_compile_test.go` for the shared compile/call
   utilities.
 
 ## Linting and formatting
@@ -121,16 +122,21 @@ The lint contract lives in `.golangci.yml`. Enabled linters: `errcheck`,
 Capabilities are the supported extension point for exposing host
 functionality to scripts. The general checklist:
 
-1. Define the host interface in `vibes/` (e.g. `JobQueue`, `Database`).
+1. Define the host interface in `vibes/capability/<name>`.
 2. Provide constructors named `NewXxxCapability(...) (CapabilityAdapter, error)`
    and `MustNewXxxCapability(...) CapabilityAdapter`. Follow the existing
    pattern in `vibes/capability_jobqueue.go`.
-3. Register the capability's contract through the capability contract scanner
-   (`vibes/capability_contracts*.go`) so the engine can validate calls.
-4. Write tests using helpers from `vibes/capability_test_helpers_test.go`.
+3. Keep the host-facing request/contract types in a focused
+   `vibes/capability/<name>` package, and keep runtime binding logic under
+   `internal/runtime`.
+4. Register the capability's contract through the runtime adapter path so the
+   engine can validate calls.
+5. Write tests close to the package that owns the behavior, using
+   `internal/runtime/testhelpers_compile_test.go` when you need a script
+   compile/call harness.
    Aim for both unit tests and a `.vibe` fixture that exercises the adapter
    end-to-end.
-5. Add a godoc `Example` so the API surfaces on pkg.go.dev.
+6. Add a godoc `Example` so the API surfaces on pkg.go.dev.
 
 ## Commit messages
 
