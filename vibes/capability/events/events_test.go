@@ -28,24 +28,36 @@ func (s *stubPublisher) Publish(ctx context.Context, req PublishRequest) (value.
 }
 
 func TestNewCapabilityRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
+
 	stub := &stubPublisher{}
-
-	if _, err := NewCapability("", stub); err == nil || !strings.Contains(err.Error(), "name must be non-empty") {
-		t.Fatalf("expected name error, got %v", err)
-	}
-
-	var publisher Publisher
-	if _, err := NewCapability("events", publisher); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected nil interface error, got %v", err)
-	}
-
+	var nilPublisher Publisher
 	var typedNil *stubPublisher
-	if _, err := NewCapability("events", typedNil); err == nil || !strings.Contains(err.Error(), "requires a non-nil implementation") {
-		t.Fatalf("expected typed-nil error, got %v", err)
+
+	tests := []struct {
+		name      string
+		capName   string
+		publisher Publisher
+		wantErr   string
+	}{
+		{name: "empty_name", capName: "", publisher: stub, wantErr: "name must be non-empty"},
+		{name: "nil_interface", capName: "events", publisher: nilPublisher, wantErr: "requires a non-nil implementation"},
+		{name: "typed_nil", capName: "events", publisher: typedNil, wantErr: "requires a non-nil implementation"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewCapability(tc.capName, tc.publisher)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 
 func TestMustNewCapabilityPanicsOnInvalidArguments(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic on invalid arguments")
@@ -55,6 +67,7 @@ func TestMustNewCapabilityPanicsOnInvalidArguments(t *testing.T) {
 }
 
 func TestCapabilityPublishCallsHostAndClonesResult(t *testing.T) {
+	t.Parallel()
 	stub := &stubPublisher{
 		result: value.NewHash(map[string]value.Value{
 			"meta": value.NewHash(map[string]value.Value{
@@ -76,7 +89,6 @@ func TestCapabilityPublishCallsHostAndClonesResult(t *testing.T) {
 		t.Fatalf("unexpected return: %s", got)
 	}
 
-	// Mutating the cloned return must not affect the host-side state.
 	result.Hash()["meta"].Hash()["trace"] = value.NewString("mutated")
 	if stub.result.Hash()["meta"].Hash()["trace"].String() != "host" {
 		t.Fatalf("clone leaked host state")
@@ -96,28 +108,53 @@ func TestCapabilityPublishCallsHostAndClonesResult(t *testing.T) {
 	}
 }
 
-func TestCapabilityPublishRejectsBadArgs(t *testing.T) {
-	stub := &stubPublisher{result: value.NewNil()}
-	cap := MustNewCapability("events", stub)
+func TestValidatePublishArgsRejectsInvalid(t *testing.T) {
+	t.Parallel()
 
-	if err := cap.ValidatePublishArgs(nil, nil, false); err == nil || !strings.Contains(err.Error(), "expects topic and payload") {
-		t.Fatalf("expected arity error, got %v", err)
+	tests := []struct {
+		name    string
+		args    []value.Value
+		kwargs  map[string]value.Value
+		block   bool
+		wantErr string
+	}{
+		{
+			name:    "no_args",
+			args:    nil,
+			wantErr: "expects topic and payload",
+		},
+		{
+			name:    "payload_wrong_type",
+			args:    []value.Value{value.NewString("topic"), value.NewInt(42)},
+			wantErr: "expected hash, got int",
+		},
+		{
+			name:    "block_provided",
+			args:    []value.Value{value.NewString("topic"), value.NewHash(nil)},
+			block:   true,
+			wantErr: "does not accept blocks",
+		},
+		{
+			name:    "empty_topic",
+			args:    []value.Value{value.NewString(""), value.NewHash(nil)},
+			wantErr: "non-empty string or symbol",
+		},
 	}
 
-	if err := cap.ValidatePublishArgs([]value.Value{value.NewString("topic"), value.NewInt(42)}, nil, false); err == nil || !strings.Contains(err.Error(), "expected hash, got int") {
-		t.Fatalf("expected hash type error, got %v", err)
-	}
-
-	if err := cap.ValidatePublishArgs([]value.Value{value.NewString("topic"), value.NewHash(nil)}, nil, true); err == nil || !strings.Contains(err.Error(), "does not accept blocks") {
-		t.Fatalf("expected block rejection, got %v", err)
-	}
-
-	if err := cap.ValidatePublishArgs([]value.Value{value.NewString(""), value.NewHash(nil)}, nil, false); err == nil || !strings.Contains(err.Error(), "non-empty string or symbol") {
-		t.Fatalf("expected empty topic error, got %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cap := MustNewCapability("events", &stubPublisher{result: value.NewNil()})
+			err := cap.ValidatePublishArgs(tc.args, tc.kwargs, tc.block)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 
 func TestCapabilityPublishPropagatesHostError(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("boom")
 	stub := &stubPublisher{failure: boom}
 	cap := MustNewCapability("events", stub)
@@ -130,6 +167,7 @@ func TestCapabilityPublishPropagatesHostError(t *testing.T) {
 }
 
 func TestCapabilityPublishRejectsCyclicPayload(t *testing.T) {
+	t.Parallel()
 	stub := &stubPublisher{result: value.NewNil()}
 	cap := MustNewCapability("events", stub)
 

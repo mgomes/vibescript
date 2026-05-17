@@ -87,6 +87,7 @@ func (s *dbCapabilityStub) Each(ctx context.Context, req db.DBEachRequest) ([]va
 }
 
 func TestDBCapabilityFindAndContextPropagation(t *testing.T) {
+	t.Parallel()
 	stub := &dbCapabilityStub{
 		findResult: value.NewHash(map[string]value.Value{
 			"id": value.NewString("player-7"),
@@ -124,6 +125,7 @@ end`)
 }
 
 func TestDBCapabilityEachInvokesBlock(t *testing.T) {
+	t.Parallel()
 	stub := &dbCapabilityStub{
 		eachRows: []value.Value{
 			value.NewHash(map[string]value.Value{"amount": value.NewInt(10)}),
@@ -158,13 +160,16 @@ end`)
 }
 
 func TestDBCapabilityEachLoopControlCannotCrossCallbackBoundary(t *testing.T) {
-	stub := &dbCapabilityStub{
-		eachRows: []value.Value{
-			value.NewHash(map[string]value.Value{"id": value.NewString("p-1")}),
-			value.NewHash(map[string]value.Value{"id": value.NewString("p-2")}),
-		},
+	t.Parallel()
+	tests := []struct {
+		name    string
+		fn      string
+		wantErr string
+	}{
+		{name: "break_from_callback", fn: "break_from_callback", wantErr: "break used outside of loop"},
+		{name: "next_from_callback", fn: "next_from_callback", wantErr: "next used outside of loop"},
 	}
-	script := compileScriptDefault(t, `def break_from_callback()
+	source := `def break_from_callback()
   db.each("Player") do |row|
     if row[:id] == "p-2"
       break
@@ -178,100 +183,117 @@ def next_from_callback()
       next
     end
   end
-end`)
+end`
 
-	err := callScriptErr(t, context.Background(), script, "break_from_callback", nil, callOptionsWithCapabilities(
-		vibes.MustNewDBCapability("db", stub),
-	))
-	requireErrorContains(t, err, "break used outside of loop")
-
-	err = callScriptErr(t, context.Background(), script, "next_from_callback", nil, callOptionsWithCapabilities(
-		vibes.MustNewDBCapability("db", stub),
-	))
-	requireErrorContains(t, err, "next used outside of loop")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stub := &dbCapabilityStub{
+				eachRows: []value.Value{
+					value.NewHash(map[string]value.Value{"id": value.NewString("p-1")}),
+					value.NewHash(map[string]value.Value{"id": value.NewString("p-2")}),
+				},
+			}
+			script := compileScriptDefault(t, source)
+			err := callScriptErr(t, context.Background(), script, tc.fn, nil, callOptionsWithCapabilities(
+				vibes.MustNewDBCapability("db", stub),
+			))
+			requireErrorContains(t, err, tc.wantErr)
+		})
+	}
 }
 
-func TestDBCapabilityRejectsCallableUpdateAttributes(t *testing.T) {
-	stub := &dbCapabilityStub{}
-	script := compileScriptDefault(t, `def helper(value)
+func TestDBCapabilityRejectsInvalidScriptInputs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		fn      string
+		stub    *dbCapabilityStub
+		wantErr string
+	}{
+		{
+			name: "callable_update_attributes",
+			source: `def helper(value)
   value
 end
 
 def run()
   db.update("Player", "p-1", { callback: helper })
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		vibes.MustNewDBCapability("db", stub),
-	))
-	requireErrorContains(t, err, "db.update attributes must be data-only")
-}
-
-func TestDBCapabilityRejectsNonHashUpdateAttributes(t *testing.T) {
-	stub := &dbCapabilityStub{}
-	script := compileScriptDefault(t, `def run()
-  db.update("Player", "p-1", 123)
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		vibes.MustNewDBCapability("db", stub),
-	))
-	requireErrorContains(t, err, "db.update attributes expected hash, got int")
-}
-
-func TestDBCapabilityEachRequiresBlock(t *testing.T) {
-	stub := &dbCapabilityStub{}
-	script := compileScriptDefault(t, `def run()
-  db.each("Player")
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		vibes.MustNewDBCapability("db", stub),
-	))
-	requireErrorContains(t, err, "db.each requires a block")
-}
-
-func TestDBCapabilityRejectsCallableReturn(t *testing.T) {
-	stub := &dbCapabilityStub{
-		findResult: value.NewObject(map[string]value.Value{
-			"save": vibes.NewBuiltin("leak.save", func(exec *vibes.Execution, receiver value.Value, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
-				return value.NewString("ok"), nil
-			}),
-		}),
-	}
-	script := compileScriptDefault(t, `def run()
-  db.find("Player", "p-1")
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		vibes.MustNewDBCapability("db", stub),
-	))
-	requireErrorContains(t, err, "db.find return value must be data-only")
-}
-
-func TestDBCapabilityRejectsCallableRows(t *testing.T) {
-	stub := &dbCapabilityStub{
-		eachRows: []value.Value{
-			value.NewObject(map[string]value.Value{
-				"run": vibes.NewBuiltin("row.run", func(exec *vibes.Execution, receiver value.Value, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
-					return value.NewNil(), nil
-				}),
-			}),
+end`,
+			fn:      "run",
+			stub:    &dbCapabilityStub{},
+			wantErr: "db.update attributes must be data-only",
 		},
-	}
-	script := compileScriptDefault(t, `def run()
+		{
+			name: "non_hash_update_attributes",
+			source: `def run()
+  db.update("Player", "p-1", 123)
+end`,
+			fn:      "run",
+			stub:    &dbCapabilityStub{},
+			wantErr: "db.update attributes expected hash, got int",
+		},
+		{
+			name: "each_missing_block",
+			source: `def run()
+  db.each("Player")
+end`,
+			fn:      "run",
+			stub:    &dbCapabilityStub{},
+			wantErr: "db.each requires a block",
+		},
+		{
+			name: "callable_find_return",
+			source: `def run()
+  db.find("Player", "p-1")
+end`,
+			fn: "run",
+			stub: &dbCapabilityStub{
+				findResult: value.NewObject(map[string]value.Value{
+					"save": vibes.NewBuiltin("leak.save", func(exec *vibes.Execution, receiver value.Value, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
+						return value.NewString("ok"), nil
+					}),
+				}),
+			},
+			wantErr: "db.find return value must be data-only",
+		},
+		{
+			name: "callable_each_row",
+			source: `def run()
   db.each("Player") do |row|
     row
   end
-end`)
+end`,
+			fn: "run",
+			stub: &dbCapabilityStub{
+				eachRows: []value.Value{
+					value.NewObject(map[string]value.Value{
+						"run": vibes.NewBuiltin("row.run", func(exec *vibes.Execution, receiver value.Value, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
+							return value.NewNil(), nil
+						}),
+					}),
+				},
+			},
+			wantErr: "db.each row 0 must be data-only",
+		},
+	}
 
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		vibes.MustNewDBCapability("db", stub),
-	))
-	requireErrorContains(t, err, "db.each row 0 must be data-only")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, tc.source)
+			err := callScriptErr(t, context.Background(), script, tc.fn, nil, callOptionsWithCapabilities(
+				vibes.MustNewDBCapability("db", tc.stub),
+			))
+			requireErrorContains(t, err, tc.wantErr)
+		})
+	}
 }
 
 func TestDBCapabilityReturnsAreClonedFromHostState(t *testing.T) {
+	t.Parallel()
 	stub := &dbCapabilityStub{
 		findResult: value.NewHash(map[string]value.Value{
 			"profile": value.NewHash(map[string]value.Value{
@@ -310,18 +332,30 @@ end`)
 }
 
 func TestNewDBCapabilityRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
+
 	stub := &dbCapabilityStub{}
-
-	_, err := vibes.NewDBCapability("", stub)
-	requireErrorContains(t, err, "name must be non-empty")
-
 	var nilImpl db.Database
-	_, err = vibes.NewDBCapability("db", nilImpl)
-	requireErrorContains(t, err, "requires a non-nil implementation")
-
 	var typedNil *dbCapabilityStub
-	_, err = vibes.NewDBCapability("db", typedNil)
-	requireErrorContains(t, err, "requires a non-nil implementation")
+
+	tests := []struct {
+		name    string
+		capName string
+		impl    db.Database
+		wantErr string
+	}{
+		{name: "empty_name", capName: "", impl: stub, wantErr: "name must be non-empty"},
+		{name: "nil_interface", capName: "db", impl: nilImpl, wantErr: "requires a non-nil implementation"},
+		{name: "typed_nil", capName: "db", impl: typedNil, wantErr: "requires a non-nil implementation"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := vibes.NewDBCapability(tc.capName, tc.impl)
+			requireErrorContains(t, err, tc.wantErr)
+		})
+	}
 }
 
 // Inline harness helpers — the in-package vibes test helpers cannot be

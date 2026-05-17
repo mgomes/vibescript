@@ -507,6 +507,7 @@ func (stdlibContractLeakProbeCapability) CapabilityContracts() map[string]Capabi
 }
 
 func TestCapabilityContractRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   probe.call("bad")
 end`)
@@ -526,6 +527,7 @@ end`)
 }
 
 func TestCapabilityContractRejectsInvalidReturnValue(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   probe.call(1)
 end`)
@@ -552,6 +554,7 @@ end`)
 }
 
 func TestDuplicateCapabilityContractsFailBinding(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   1
 end`)
@@ -570,6 +573,7 @@ end`)
 }
 
 func TestCapabilityContractsDoNotAttachByGlobalBuiltinName(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   base = { a: 1 }
   override = { b: 2 }
@@ -592,6 +596,7 @@ end`)
 }
 
 func TestCapabilityContractsTraverseInstanceValues(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   box.call("bad")
 end`)
@@ -613,6 +618,7 @@ end`)
 }
 
 func TestCapabilityContractsTraverseClassValues(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   holder.call("bad")
 end`)
@@ -634,6 +640,7 @@ end`)
 }
 
 func TestCapabilityContractsBindForFactoryReturnedBuiltins(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   worker = factory.make()
   worker.call("bad")
@@ -656,6 +663,7 @@ end`)
 }
 
 func TestCapabilityContractsBindAfterReceiverMutation(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   mut.install()
   mut.call("bad")
@@ -678,6 +686,7 @@ end`)
 }
 
 func TestCapabilityContractsAreScopedPerAdapter(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   foo.call("ok")
 end`)
@@ -702,6 +711,7 @@ end`)
 }
 
 func TestCapabilityContractsBindAfterSiblingScopeMutation(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   publisher.install()
   peer.call("bad")
@@ -724,6 +734,7 @@ end`)
 }
 
 func TestCapabilityContractsDoNotAttachToForeignBuiltinsByName(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   publisher.install()
   publisher.call("ok")
@@ -750,6 +761,7 @@ end`)
 }
 
 func TestCapabilityContractsDoNotHijackForeignBuiltinsFromSiblingRoots(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   peer.call = foreign.call
   publisher.touch()
@@ -777,6 +789,7 @@ end`)
 }
 
 func TestCapabilityContractsBindAfterArgumentMutation(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   target = {}
   cap.install(target)
@@ -800,6 +813,7 @@ end`)
 }
 
 func TestCapabilityContractsDoNotHijackForeignBuiltinsFromArguments(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   target = { passthrough: foreign.call }
   cap2.install(target)
@@ -826,6 +840,7 @@ end`)
 }
 
 func TestCapabilityContractsDoNotHijackReceiverStoredForeignBuiltins(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   cap.foreign = { a: 1 }.merge
   cap.touch()
@@ -850,6 +865,7 @@ end`)
 }
 
 func TestCapabilityContractsDoNotAttachToExpandedStdlibBuiltinsByName(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   cap.touch()
   parsed = JSON.parse("{\"name\":\"alex\"}")
@@ -897,6 +913,7 @@ end`)
 }
 
 func TestCapabilityContractsStayEnforcedThroughExpandedStdlibTransforms(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def call_through_transforms()
   hash_handler = { handler: probe.call }.remap_keys({ handler: :run }).fetch(:run)
   chunk_handler = [probe.call].chunk(1).first.first

@@ -79,6 +79,7 @@ func (s *sharedReturnQueue) Retry(ctx context.Context, req JobQueueRetryRequest)
 }
 
 func TestJobQueueCapabilityEnqueue(t *testing.T) {
+	t.Parallel()
 	stub := &jobQueueStub{}
 	script := compileScriptDefault(t, `def run()
   jobs.enqueue("demo", { foo: "bar" }, delay: 2.seconds, key: "abc", queue: "standard")
@@ -132,6 +133,7 @@ end`)
 }
 
 func TestJobQueueCapabilityRetry(t *testing.T) {
+	t.Parallel()
 	stub := &jobQueueStub{}
 	script := compileScriptDefault(t, `def run()
   jobs.retry("job-7", attempts: 3, priority: "high")
@@ -163,6 +165,7 @@ end`)
 }
 
 func TestJobQueueCapabilityEnqueueOptionsAreClonedFromScriptState(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   payload = { foo: "script-payload" }
   meta = { trace: "script-meta" }
@@ -183,6 +186,7 @@ end`)
 }
 
 func TestJobQueueCapabilityRetryOptionsAreClonedFromScriptState(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   arg = { attempt: { value: "script-attempt" } }
   kw = { value: "script-kw" }
@@ -203,6 +207,7 @@ end`)
 }
 
 func TestJobQueueCapabilityReturnsAreClonedFromHostState(t *testing.T) {
+	t.Parallel()
 	stub := &sharedReturnQueue{
 		enqueueResult: NewHash(map[string]Value{
 			"meta": NewHash(map[string]Value{
@@ -238,35 +243,91 @@ end`)
 	}
 }
 
-func TestJobQueueCapabilityRejectsInvalidPayload(t *testing.T) {
-	stub := &jobQueueStub{}
-	script := compileScriptDefault(t, `def run()
+func TestJobQueueCapabilityRejectsInvalidScriptInputs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		queue   JobQueue
+		wantErr string
+	}{
+		{
+			name: "non_hash_payload",
+			source: `def run()
   jobs.enqueue("demo", 42)
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		MustNewJobQueueCapability("jobs", stub),
-	))
-	requireErrorContains(t, err, "jobs.enqueue payload expected hash, got int")
-}
-
-func TestJobQueueCapabilityRejectsCallablePayload(t *testing.T) {
-	stub := &jobQueueStub{}
-	script := compileScriptDefault(t, `def helper(value)
+end`,
+			queue:   &jobQueueStub{},
+			wantErr: "jobs.enqueue payload expected hash, got int",
+		},
+		{
+			name: "callable_payload",
+			source: `def helper(value)
   value
 end
 
 def run()
   jobs.enqueue("demo", { callback: helper })
-end`)
+end`,
+			queue:   &jobQueueStub{},
+			wantErr: "jobs.enqueue payload must be data-only",
+		},
+		{
+			name: "negative_delay",
+			source: `def run()
+  jobs.enqueue("demo", { foo: "bar" }, delay: -5)
+end`,
+			queue:   &jobQueueStub{},
+			wantErr: "jobs.enqueue delay must be non-negative",
+		},
+		{
+			name: "unexpected_enqueue_positional",
+			source: `def run()
+  jobs.enqueue("demo", { foo: "bar" }, { extra: true })
+end`,
+			queue:   &jobQueueStub{},
+			wantErr: "jobs.enqueue expects job name and payload",
+		},
+		{
+			name: "empty_key",
+			source: `def run()
+  jobs.enqueue("demo", { foo: "bar" }, key: "")
+end`,
+			queue:   &jobQueueStub{},
+			wantErr: "jobs.enqueue key must be non-empty",
+		},
+		{
+			name: "unexpected_retry_positional",
+			source: `def run()
+  jobs.retry("job-7", { attempts: 1 }, { force: true })
+end`,
+			queue:   &jobQueueStub{},
+			wantErr: "jobs.retry expects job id and optional options hash",
+		},
+		{
+			name: "callable_return_value",
+			source: `def run()
+  jobs.enqueue("demo", { foo: "bar" })
+end`,
+			queue:   invalidReturnQueue{},
+			wantErr: "jobs.enqueue return value must be data-only",
+		},
+	}
 
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		MustNewJobQueueCapability("jobs", stub),
-	))
-	requireErrorContains(t, err, "jobs.enqueue payload must be data-only")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, tc.source)
+			err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+				MustNewJobQueueCapability("jobs", tc.queue),
+			))
+			requireErrorContains(t, err, tc.wantErr)
+		})
+	}
 }
 
 func TestNilCapabilityAdapterFiltering(t *testing.T) {
+	t.Parallel()
 	stub := &jobQueueStub{}
 	script := compileScriptDefault(t, `def run()
   jobs.enqueue("test", { foo: "bar" })
@@ -285,92 +346,34 @@ end`)
 	}
 }
 
-func TestJobQueueRejectsNegativeDelay(t *testing.T) {
+func TestNewJobQueueCapabilityRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
+
 	stub := &jobQueueStub{}
-	script := compileScriptDefault(t, `def run()
-  jobs.enqueue("demo", { foo: "bar" }, delay: -5)
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		MustNewJobQueueCapability("jobs", stub),
-	))
-	requireErrorContains(t, err, "jobs.enqueue delay must be non-negative")
-}
-
-func TestJobQueueRejectsUnexpectedEnqueuePositionalArgs(t *testing.T) {
-	stub := &jobQueueStub{}
-	script := compileScriptDefault(t, `def run()
-  jobs.enqueue("demo", { foo: "bar" }, { extra: true })
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		MustNewJobQueueCapability("jobs", stub),
-	))
-	requireErrorContains(t, err, "jobs.enqueue expects job name and payload")
-}
-
-func TestJobQueueRejectsEmptyKey(t *testing.T) {
-	stub := &jobQueueStub{}
-	script := compileScriptDefault(t, `def run()
-  jobs.enqueue("demo", { foo: "bar" }, key: "")
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		MustNewJobQueueCapability("jobs", stub),
-	))
-	requireErrorContains(t, err, "jobs.enqueue key must be non-empty")
-}
-
-func TestJobQueueRejectsUnexpectedRetryPositionalArgs(t *testing.T) {
-	stub := &jobQueueStub{}
-	script := compileScriptDefault(t, `def run()
-  jobs.retry("job-7", { attempts: 1 }, { force: true })
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		MustNewJobQueueCapability("jobs", stub),
-	))
-	requireErrorContains(t, err, "jobs.retry expects job id and optional options hash")
-}
-
-func TestJobQueueRejectsCallableReturnValue(t *testing.T) {
-	script := compileScriptDefault(t, `def run()
-  jobs.enqueue("demo", { foo: "bar" })
-end`)
-
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		MustNewJobQueueCapability("jobs", invalidReturnQueue{}),
-	))
-	requireErrorContains(t, err, "jobs.enqueue return value must be data-only")
-}
-
-func TestNewJobQueueCapabilityRejectsEmptyName(t *testing.T) {
-	stub := &jobQueueStub{}
-	_, err := NewJobQueueCapability("", stub)
-	if err == nil {
-		t.Fatalf("expected empty capability name to fail")
-	}
-	if got := err.Error(); !strings.Contains(got, "name must be non-empty") {
-		t.Fatalf("unexpected error: %s", got)
-	}
-}
-
-func TestNewJobQueueCapabilityRejectsNilQueue(t *testing.T) {
-	var queue JobQueue
-	_, err := NewJobQueueCapability("jobs", queue)
-	if err == nil {
-		t.Fatalf("expected nil queue to fail")
-	}
-	if got := err.Error(); !strings.Contains(got, "requires a non-nil implementation") {
-		t.Fatalf("unexpected error: %s", got)
-	}
-
+	var nilImpl JobQueue
 	var typedNil *jobQueueStub
-	_, err = NewJobQueueCapability("jobs", typedNil)
-	if err == nil {
-		t.Fatalf("expected typed nil queue to fail")
+
+	tests := []struct {
+		name    string
+		capName string
+		queue   JobQueue
+		wantErr string
+	}{
+		{name: "empty_name", capName: "", queue: stub, wantErr: "name must be non-empty"},
+		{name: "nil_interface", capName: "jobs", queue: nilImpl, wantErr: "requires a non-nil implementation"},
+		{name: "typed_nil", capName: "jobs", queue: typedNil, wantErr: "requires a non-nil implementation"},
 	}
-	if got := err.Error(); !strings.Contains(got, "requires a non-nil implementation") {
-		t.Fatalf("unexpected typed nil error: %s", got)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewJobQueueCapability(tc.capName, tc.queue)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if got := err.Error(); !strings.Contains(got, tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %s", tc.wantErr, got)
+			}
+		})
 	}
 }
