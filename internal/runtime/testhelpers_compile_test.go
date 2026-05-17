@@ -4,9 +4,43 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// moduleFile describes one .vibe file written into a temporary module tree.
+type moduleFile struct {
+	path    string
+	content string
+}
+
+// tempModuleTree creates a temporary directory and populates it with the
+// given module files. Any intermediate directories in each path are
+// created automatically. The directory is cleaned up by t.
+func tempModuleTree(t testing.TB, files ...moduleFile) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, f := range files {
+		full := filepath.Join(root, filepath.FromSlash(f.path))
+		if dir := filepath.Dir(full); dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", dir, err)
+			}
+		}
+		if err := os.WriteFile(full, []byte(f.content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", full, err)
+		}
+	}
+	return root
+}
+
+// mustNewEngineWithModuleRoot constructs an engine whose only module
+// search path is root.
+func mustNewEngineWithModuleRoot(t testing.TB, root string) *Engine {
+	t.Helper()
+	return MustNewEngine(Config{ModulePaths: []string{root}})
+}
 
 func compileScriptWithConfig(t testing.TB, cfg Config, source string) *Script {
 	t.Helper()
