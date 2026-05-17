@@ -30,7 +30,7 @@ pattern="^($(IFS='|'; echo "${benchmarks[*]}"))$"
 tmp_out="$(mktemp)"
 trap 'rm -f "$tmp_out"' EXIT
 
-go test ./vibes \
+go test ./internal/runtime \
   -run '^$' \
   -bench "$pattern" \
   -benchmem \

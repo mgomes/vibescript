@@ -11,7 +11,7 @@ options:
   --count <n>        Benchmark count (default: 3)
   --benchtime <dur>  Benchtime passed to `go test` (default: 1s)
   --pattern <regex>  Benchmark regex (default: ^Benchmark)
-  --package <path>   Go package to benchmark (default: ./vibes)
+  --package <path>   Go package to benchmark (default: ./internal/runtime)
   --cpu <list>       CPU list for `go test -cpu` (default: 1)
   --out <file>       Output file (default: benchmarks/latest.txt)
   -h, --help         Show this help
@@ -21,7 +21,7 @@ EOF
 count="3"
 benchtime="1s"
 pattern="^Benchmark"
-pkg="./vibes"
+pkg="./internal/runtime"
 cpu="1"
 out_file="benchmarks/latest.txt"
 
