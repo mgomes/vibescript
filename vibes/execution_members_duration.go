@@ -32,9 +32,9 @@ func durationMember(d Duration, property string, pos Position) (Value, error) {
 	case "in_years":
 		return NewFloat(float64(d.Seconds()) / (365 * 86400)), nil
 	case "iso8601":
-		return NewString(d.iso8601()), nil
+		return NewString(d.ISO8601()), nil
 	case "parts":
-		p := d.parts()
+		p := d.Parts()
 		return NewHash(map[string]Value{
 			"days":    NewInt(p["days"]),
 			"hours":   NewInt(p["hours"]),

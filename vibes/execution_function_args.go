@@ -41,7 +41,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 		env.Define(param.Name, val)
 		if param.IsIvar {
 			if selfVal, ok := env.Get("self"); ok && selfVal.Kind() == KindInstance {
-				inst := selfVal.Instance()
+				inst := valueInstance(selfVal)
 				if inst != nil {
 					inst.Ivars[param.Name] = val
 				}

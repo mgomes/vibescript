@@ -29,7 +29,7 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	switch val.Kind() {
 	case KindInstance:
-		inst := val.Instance()
+		inst := valueInstance(val)
 		if inst == nil || inst.Class == nil || inst.Class.owner != r.script {
 			return val
 		}
@@ -48,7 +48,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		return cloned
 	case KindClass:
-		classDef := val.Class()
+		classDef := valueClass(val)
 		if classDef == nil || classDef.owner != r.script {
 			return val
 		}
@@ -57,7 +57,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		return val
 	case KindEnum:
-		enumDef := val.Enum()
+		enumDef := valueEnum(val)
 		if enumDef == nil || enumDef.owner != r.script {
 			return val
 		}
@@ -66,7 +66,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		return val
 	case KindEnumValue:
-		member := val.EnumValue()
+		member := valueEnumValue(val)
 		if member == nil || member.Enum == nil || member.Enum.owner != r.script {
 			return val
 		}
@@ -80,7 +80,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		return val
 	case KindFunction:
-		fn := val.Function()
+		fn := valueFunction(val)
 		if fn == nil || fn.owner != r.script || fn.Env == r.root {
 			return val
 		}
@@ -93,9 +93,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	case KindArray:
 		items := val.Array()
 		id := sliceIdentity{
-			ptr: reflect.ValueOf(items).Pointer(),
-			len: len(items),
-			cap: cap(items),
+			Ptr: reflect.ValueOf(items).Pointer(),
+			Len: len(items),
+			Cap: cap(items),
 		}
 		if clone, seen := r.seenArrays[id]; seen {
 			return clone

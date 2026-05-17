@@ -35,7 +35,7 @@ func (exec *Execution) evalDirectMemberMethodCall(receiver Value, property strin
 		if property == "new" {
 			return NewNil(), false, nil
 		}
-		classDef := receiver.Class()
+		classDef := valueClass(receiver)
 		fn, ok := classDef.ClassMethods[property]
 		if !ok {
 			return NewNil(), false, nil
@@ -45,7 +45,7 @@ func (exec *Execution) evalDirectMemberMethodCall(receiver Value, property strin
 		}
 		return NewFunction(fn), true, nil
 	case KindInstance:
-		instance := receiver.Instance()
+		instance := valueInstance(receiver)
 		fn, ok := instance.Class.Methods[property]
 		if !ok {
 			return NewNil(), false, nil

@@ -108,7 +108,7 @@ func TestBuiltinsReturnsIsolatedBuiltinValues(t *testing.T) {
 	engine := MustNewEngine(Config{})
 
 	builtins := engine.Builtins()
-	assertBuiltin := builtins["assert"].Builtin()
+	assertBuiltin := valueBuiltin(builtins["assert"])
 	if assertBuiltin == nil {
 		t.Fatalf("Builtins()[assert].Builtin() = nil, want builtin")
 	}
@@ -118,7 +118,7 @@ func TestBuiltinsReturnsIsolatedBuiltinValues(t *testing.T) {
 		return NewString("mutated"), nil
 	}
 
-	freshAssert := engine.Builtins()["assert"].Builtin()
+	freshAssert := valueBuiltin(engine.Builtins()["assert"])
 	if freshAssert == nil {
 		t.Fatalf("fresh Builtins()[assert].Builtin() = nil, want builtin")
 	}
@@ -146,7 +146,7 @@ func TestBuiltinsReturnsIsolatedObjectValues(t *testing.T) {
 			name: "method builtin pointer",
 			mutate: func(t *testing.T, methods map[string]Value) {
 				t.Helper()
-				parseBuiltin := methods["parse"].Builtin()
+				parseBuiltin := valueBuiltin(methods["parse"])
 				if parseBuiltin == nil {
 					t.Fatalf("Builtins()[JSON].Hash()[parse].Builtin() = nil, want builtin")
 				}
@@ -174,7 +174,7 @@ func TestBuiltinsReturnsIsolatedObjectValues(t *testing.T) {
 			}
 			tt.mutate(t, jsonBuiltin.Hash())
 
-			freshParse := engine.Builtins()["JSON"].Hash()["parse"].Builtin()
+			freshParse := valueBuiltin(engine.Builtins()["JSON"].Hash()["parse"])
 			if freshParse == nil {
 				t.Fatalf("fresh Builtins()[JSON].Hash()[parse].Builtin() = nil, want builtin")
 			}

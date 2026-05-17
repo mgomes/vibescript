@@ -10,7 +10,7 @@ func registerDurationBuiltins(engine *Engine) {
 				if err != nil {
 					return NewNil(), err
 				}
-				return NewDuration(Duration{seconds: secs}), nil
+				return NewDuration(durationFromSeconds(secs)), nil
 			}
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("Duration.build accepts either seconds or named parts, not both")

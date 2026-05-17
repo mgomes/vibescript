@@ -66,7 +66,7 @@ func (exec *Execution) intMember(obj Value, property string, pos Position) (Valu
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("int.times does not take arguments")
 			}
-			if block.Block() == nil {
+			if valueBlock(block) == nil {
 				return NewNil(), fmt.Errorf("int.times requires a block")
 			}
 			count := receiver.Int()

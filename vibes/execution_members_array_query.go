@@ -242,7 +242,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			if len(args) == 1 {
-				if block.Block() != nil {
+				if valueBlock(block) != nil {
 					return NewNil(), fmt.Errorf("array.count does not accept both argument and block")
 				}
 				total := int64(0)
@@ -253,7 +253,7 @@ func arrayMemberQuery(property string) (Value, error) {
 				}
 				return NewInt(total), nil
 			}
-			if block.Block() == nil {
+			if valueBlock(block) == nil {
 				return NewInt(int64(len(arr))), nil
 			}
 			total := int64(0)
@@ -277,7 +277,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
-				if block.Block() != nil {
+				if valueBlock(block) != nil {
 					blockArg[0] = item
 					val, err := exec.CallBlock(block, blockArg[:])
 					if err != nil {
@@ -301,7 +301,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
-				if block.Block() != nil {
+				if valueBlock(block) != nil {
 					blockArg[0] = item
 					val, err := exec.CallBlock(block, blockArg[:])
 					if err != nil {
@@ -325,7 +325,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
-				if block.Block() != nil {
+				if valueBlock(block) != nil {
 					blockArg[0] = item
 					val, err := exec.CallBlock(block, blockArg[:])
 					if err != nil {

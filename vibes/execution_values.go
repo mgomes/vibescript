@@ -19,17 +19,6 @@ func valueToHashKey(val Value) (string, error) {
 	}
 }
 
-func valueToInt64(val Value) (int64, error) {
-	switch val.Kind() {
-	case KindInt:
-		return val.Int(), nil
-	case KindFloat:
-		return int64(val.Float()), nil
-	default:
-		return 0, fmt.Errorf("expected integer value")
-	}
-}
-
 func valueToInt(val Value) (int, error) {
 	switch val.Kind() {
 	case KindInt:
@@ -171,11 +160,11 @@ func flattenValuesWithState(values []Value, depth int, state *flattenState) ([]V
 	}
 
 	id := sliceIdentity{
-		ptr: reflect.ValueOf(values).Pointer(),
-		len: len(values),
-		cap: cap(values),
+		Ptr: reflect.ValueOf(values).Pointer(),
+		Len: len(values),
+		Cap: cap(values),
 	}
-	if id.ptr != 0 {
+	if id.Ptr != 0 {
 		if _, visiting := state.arrays[id]; visiting {
 			return nil, fmt.Errorf("array.flatten does not support cyclic structures")
 		}

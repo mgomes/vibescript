@@ -25,9 +25,9 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 	case KindArray:
 		values := val.Array()
 		id := sliceIdentity{
-			ptr: reflect.ValueOf(values).Pointer(),
-			len: len(values),
-			cap: cap(values),
+			Ptr: reflect.ValueOf(values).Pointer(),
+			Len: len(values),
+			Cap: cap(values),
 		}
 		if _, seen := s.seenArrays[id]; seen {
 			return false

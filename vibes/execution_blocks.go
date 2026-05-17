@@ -4,7 +4,7 @@ import "fmt"
 
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
 	blockValue := NewBlock(block.Params, block.Body, env)
-	blk := blockValue.Block()
+	blk := valueBlock(blockValue)
 	if ctx := exec.currentModuleContext(); ctx != nil && ctx.script != nil {
 		blk.owner = ctx.script
 	} else {
@@ -19,7 +19,7 @@ func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, e
 }
 
 func ensureBlock(block Value, name string) error {
-	if block.Block() == nil {
+	if valueBlock(block) == nil {
 		if name != "" {
 			return fmt.Errorf("%s requires a block", name)
 		}
@@ -35,7 +35,7 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	if err := ensureBlock(block, ""); err != nil {
 		return NewNil(), err
 	}
-	blk := block.Block()
+	blk := valueBlock(block)
 	exec.pushModuleContext(moduleContext{
 		key:    blk.moduleKey,
 		path:   blk.modulePath,

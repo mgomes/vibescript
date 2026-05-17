@@ -66,7 +66,7 @@ func TestMemoryQuotaCountsCapabilityScopeKnownBuiltins(t *testing.T) {
 		knownBuiltins: make(map[*Builtin]struct{}),
 	}
 	for range 400 {
-		scopeWithKnown.knownBuiltins[NewBuiltin("cap.dynamic", builtinAssert).Builtin()] = struct{}{}
+		scopeWithKnown.knownBuiltins[valueBuiltin(NewBuiltin("cap.dynamic", builtinAssert))] = struct{}{}
 	}
 	scopeWithoutKnown := &capabilityContractScope{
 		knownBuiltins: make(map[*Builtin]struct{}),
@@ -77,7 +77,7 @@ func TestMemoryQuotaCountsCapabilityScopeKnownBuiltins(t *testing.T) {
 		memoryQuota:   0,
 		moduleLoading: make(map[string]bool),
 		capabilityContractScopes: map[*Builtin]*capabilityContractScope{
-			NewBuiltin("cap.call", builtinAssert).Builtin(): scopeWithKnown,
+			valueBuiltin(NewBuiltin("cap.call", builtinAssert)): scopeWithKnown,
 		},
 	}
 	withoutKnown := &Execution{
@@ -85,7 +85,7 @@ func TestMemoryQuotaCountsCapabilityScopeKnownBuiltins(t *testing.T) {
 		memoryQuota:   0,
 		moduleLoading: make(map[string]bool),
 		capabilityContractScopes: map[*Builtin]*capabilityContractScope{
-			NewBuiltin("cap.call", builtinAssert).Builtin(): scopeWithoutKnown,
+			valueBuiltin(NewBuiltin("cap.call", builtinAssert)): scopeWithoutKnown,
 		},
 	}
 
@@ -108,7 +108,7 @@ func TestMemoryQuotaCountsCapabilityScopeKnownBuiltins(t *testing.T) {
 		memoryQuota:   quota,
 		moduleLoading: make(map[string]bool),
 		capabilityContractScopes: map[*Builtin]*capabilityContractScope{
-			NewBuiltin("cap.call", builtinAssert).Builtin(): scopeWithKnown,
+			valueBuiltin(NewBuiltin("cap.call", builtinAssert)): scopeWithKnown,
 		},
 	}
 	err := enforced.checkMemory()

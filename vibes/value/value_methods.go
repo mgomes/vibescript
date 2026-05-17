@@ -1,4 +1,4 @@
-package vibes
+package value
 
 import (
 	"fmt"
@@ -51,6 +51,19 @@ func (k ValueKind) String() string {
 	}
 }
 
+// RuntimeStringer is the hook used by Value.String to format runtime-only
+// kinds (function, builtin, block, enum, enum value, class, instance) whose
+// payload types live in the vibes package. The vibes package installs this
+// hook during initialization. If unset, those kinds fall back to a generic
+// rendering of the underlying payload.
+var RuntimeStringer func(v Value) (string, bool)
+
+// RuntimeEqualer is the hook used by Value.Equal to compare runtime-only
+// kinds whose payload types live in the vibes package. The vibes package
+// installs this hook during initialization. If unset, equality for those
+// kinds falls back to pointer identity of the underlying payload.
+var RuntimeEqualer func(left, right Value) (bool, bool)
+
 // String returns the string representation of v.
 func (v Value) String() string {
 	switch v.kind {
@@ -82,31 +95,24 @@ func (v Value) String() string {
 	case KindRange:
 		r := v.data.(Range)
 		return fmt.Sprintf("%d..%d", r.Start, r.End)
-	case KindEnum:
-		enum := v.data.(*EnumDef)
-		return fmt.Sprintf("<Enum %s>", enum.Name)
-	case KindEnumValue:
-		member := v.data.(*EnumValueDef)
-		return fmt.Sprintf("%s::%s", member.Enum.Name, member.Name)
-	case KindClass:
-		cl := v.data.(*ClassDef)
-		return fmt.Sprintf("<Class %s>", cl.Name)
-	case KindInstance:
-		inst := v.data.(*Instance)
-		return fmt.Sprintf("<%s instance>", inst.Class.Name)
 	default:
+		if RuntimeStringer != nil {
+			if s, ok := RuntimeStringer(v); ok {
+				return s
+			}
+		}
 		return fmt.Sprintf("<%v>", v.kind)
 	}
 }
 
 type valueStringState struct {
-	arrays map[sliceIdentity]struct{}
+	arrays map[SliceIdentity]struct{}
 	maps   map[uintptr]struct{}
 }
 
 func newValueStringState() *valueStringState {
 	return &valueStringState{
-		arrays: make(map[sliceIdentity]struct{}),
+		arrays: make(map[SliceIdentity]struct{}),
 		maps:   make(map[uintptr]struct{}),
 	}
 }
@@ -115,12 +121,12 @@ func (v Value) stringWithState(state *valueStringState) string {
 	switch v.kind {
 	case KindArray:
 		elems := v.data.([]Value)
-		id := sliceIdentity{
-			ptr: reflect.ValueOf(elems).Pointer(),
-			len: len(elems),
-			cap: cap(elems),
+		id := SliceIdentity{
+			Ptr: reflect.ValueOf(elems).Pointer(),
+			Len: len(elems),
+			Cap: cap(elems),
 		}
-		if id.ptr != 0 {
+		if id.Ptr != 0 {
 			if _, seen := state.arrays[id]; seen {
 				return "<cycle>"
 			}
@@ -221,23 +227,23 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 		if len(left) != len(right) {
 			return false
 		}
-		leftID := sliceIdentity{
-			ptr: reflect.ValueOf(left).Pointer(),
-			len: len(left),
-			cap: cap(left),
+		leftID := SliceIdentity{
+			Ptr: reflect.ValueOf(left).Pointer(),
+			Len: len(left),
+			Cap: cap(left),
 		}
-		rightID := sliceIdentity{
-			ptr: reflect.ValueOf(right).Pointer(),
-			len: len(right),
-			cap: cap(right),
+		rightID := SliceIdentity{
+			Ptr: reflect.ValueOf(right).Pointer(),
+			Len: len(right),
+			Cap: cap(right),
 		}
-		if leftID.ptr != 0 && leftID == rightID {
+		if leftID.Ptr != 0 && leftID == rightID {
 			return true
 		}
 		pair := valueEqualityPair{
 			kind:     KindArray,
-			leftPtr:  leftID.ptr,
-			rightPtr: rightID.ptr,
+			leftPtr:  leftID.Ptr,
+			rightPtr: rightID.Ptr,
 			leftLen:  len(left),
 			rightLen: len(right),
 		}
@@ -287,50 +293,12 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 			}
 		}
 		return true
-	case KindFunction:
-		return v.data.(*ScriptFunction) == other.data.(*ScriptFunction)
-	case KindBuiltin:
-		return v.data.(*Builtin) == other.data.(*Builtin)
-	case KindBlock:
-		return v.data.(*Block) == other.data.(*Block)
-	case KindEnum:
-		return enumDefsEqual(v.data.(*EnumDef), other.data.(*EnumDef))
-	case KindEnumValue:
-		return enumValueDefsEqual(v.data.(*EnumValueDef), other.data.(*EnumValueDef))
-	case KindClass:
-		return v.data.(*ClassDef) == other.data.(*ClassDef)
-	case KindInstance:
-		return v.data.(*Instance) == other.data.(*Instance)
 	default:
-		return false
+		if RuntimeEqualer != nil {
+			if result, ok := RuntimeEqualer(v, other); ok {
+				return result
+			}
+		}
+		return reflect.DeepEqual(v.data, other.data)
 	}
-}
-
-func enumDefsEqual(left, right *EnumDef) bool {
-	if left == right {
-		return true
-	}
-	if left == nil || right == nil {
-		return false
-	}
-	if left.Name != right.Name {
-		return false
-	}
-	if left.owner == nil || right.owner == nil {
-		return false
-	}
-	return left.owner == right.owner
-}
-
-func enumValueDefsEqual(left, right *EnumValueDef) bool {
-	if left == right {
-		return true
-	}
-	if left == nil || right == nil {
-		return false
-	}
-	return left.Name == right.Name &&
-		left.Symbol == right.Symbol &&
-		left.Index == right.Index &&
-		enumDefsEqual(left.Enum, right.Enum)
 }

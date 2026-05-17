@@ -272,7 +272,7 @@ func (c siblingMutationContractCapability) Bind(binding CapabilityBinding) (map[
 	return map[string]Value{
 		"publisher": NewObject(map[string]Value{
 			"install": NewBuiltin("publisher.install", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-				peer.Instance().Ivars["call"] = NewBuiltin("peer.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				valueInstance(peer).Ivars["call"] = NewBuiltin("peer.call", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 					*c.invokeCount = *c.invokeCount + 1
 					return NewString("ok"), nil
 				})

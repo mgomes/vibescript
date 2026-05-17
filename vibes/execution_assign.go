@@ -9,11 +9,11 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 
 	switch obj.Kind() {
 	case KindInstance:
-		methods = obj.Instance().Class.Methods
-		vars = obj.Instance().Ivars
+		methods = valueInstance(obj).Class.Methods
+		vars = valueInstance(obj).Ivars
 	case KindClass:
-		methods = obj.Class().ClassMethods
-		vars = obj.Class().ClassVars
+		methods = valueClass(obj).ClassMethods
+		vars = valueClass(obj).ClassVars
 	default:
 		return exec.errorAt(pos, "cannot assign to %s", obj.Kind())
 	}
@@ -70,7 +70,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if !ok || self.Kind() != KindInstance {
 			return exec.errorAt(target.Pos(), "no instance context for ivar")
 		}
-		self.Instance().Ivars[t.Name] = value
+		valueInstance(self).Ivars[t.Name] = value
 		return nil
 	case *ClassVarExpr:
 		self, ok := env.Get("self")
@@ -79,10 +79,10 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		}
 		switch self.Kind() {
 		case KindInstance:
-			self.Instance().Class.ClassVars[t.Name] = value
+			valueInstance(self).Class.ClassVars[t.Name] = value
 			return nil
 		case KindClass:
-			self.Class().ClassVars[t.Name] = value
+			valueClass(self).ClassVars[t.Name] = value
 			return nil
 		default:
 			return exec.errorAt(target.Pos(), "no class context for class var")

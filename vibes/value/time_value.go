@@ -1,4 +1,4 @@
-package vibes
+package value
 
 import (
 	"fmt"
@@ -7,7 +7,9 @@ import (
 	"time"
 )
 
-var defaultTimeParseLayouts = []string{
+// DefaultTimeParseLayouts is the ordered list of layouts attempted by
+// ParseTimeString when no explicit layout is supplied.
+var DefaultTimeParseLayouts = []string{
 	time.RFC3339Nano,
 	time.RFC3339,
 	time.RFC1123Z,
@@ -21,10 +23,12 @@ var defaultTimeParseLayouts = []string{
 	"01/02/2006",
 }
 
-func parseLocation(val Value) (*time.Location, error) {
+// ParseLocation parses a timezone specifier carried in a Value into a
+// time.Location, returning (nil, nil) when val is nil.
+func ParseLocation(val Value) (*time.Location, error) {
 	switch val.Kind() {
 	case KindString:
-		return parseLocationString(val.String())
+		return ParseLocationString(val.String())
 	case KindNil:
 		return nil, nil
 	default:
@@ -32,7 +36,9 @@ func parseLocation(val Value) (*time.Location, error) {
 	}
 }
 
-func parseLocationString(spec string) (*time.Location, error) {
+// ParseLocationString parses a timezone specifier string (named zone,
+// fixed offset, or empty).
+func ParseLocationString(spec string) (*time.Location, error) {
 	if spec == "" {
 		return nil, nil
 	}
@@ -62,7 +68,9 @@ func parseLocationString(spec string) (*time.Location, error) {
 	return loc, nil
 }
 
-func timeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
+// TimeFromParts constructs a time.Time from year/month/day positional
+// arguments, with optional hour/minute/second and timezone arguments.
+func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	if len(args) < 3 {
 		return time.Time{}, fmt.Errorf("Time.new expects at least year, month, day")
 	}
@@ -83,7 +91,7 @@ func timeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	loc := defaultLoc
 	if len(args) >= 7 {
 		locVal := args[6]
-		parsed, err := parseLocation(locVal)
+		parsed, err := ParseLocation(locVal)
 		if err != nil {
 			return time.Time{}, err
 		}
@@ -97,7 +105,9 @@ func timeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	return time.Date(year, time.Month(month), day, hour, min, sec, 0, loc), nil
 }
 
-func timeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
+// TimeFromEpoch converts a numeric epoch value into a time.Time anchored
+// to the supplied (or local) location.
+func TimeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
 	var seconds int64
 	var nanos int64
 	switch val.Kind() {
@@ -116,7 +126,9 @@ func timeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
 	return time.Unix(seconds, nanos).In(loc), nil
 }
 
-func parseTimeString(input, layout string, hasLayout bool, loc *time.Location) (time.Time, error) {
+// ParseTimeString parses a time string, optionally using a caller-supplied
+// layout. When hasLayout is false the default layouts are tried in order.
+func ParseTimeString(input, layout string, hasLayout bool, loc *time.Location) (time.Time, error) {
 	parseLoc := time.Local
 	if loc != nil {
 		parseLoc = loc
@@ -133,7 +145,7 @@ func parseTimeString(input, layout string, hasLayout bool, loc *time.Location) (
 		return parsed, nil
 	}
 
-	for _, candidate := range defaultTimeParseLayouts {
+	for _, candidate := range DefaultTimeParseLayouts {
 		var (
 			parsed time.Time
 			err    error

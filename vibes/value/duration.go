@@ -1,4 +1,4 @@
-package vibes
+package value
 
 import (
 	"fmt"
@@ -15,12 +15,18 @@ type Duration struct {
 // Seconds returns the duration as a whole number of seconds.
 func (d Duration) Seconds() int64 { return d.seconds }
 
+// DurationFromSeconds builds a Duration from a whole-second count.
+func DurationFromSeconds(seconds int64) Duration {
+	return Duration{seconds: seconds}
+}
+
 // String returns the duration formatted as "<n>s".
 func (d Duration) String() string {
 	return fmt.Sprintf("%ds", d.seconds)
 }
 
-func (d Duration) iso8601() string {
+// ISO8601 returns the duration formatted as an ISO-8601 string.
+func (d Duration) ISO8601() string {
 	secs := d.seconds
 	if secs == 0 {
 		return "PT0S"
@@ -58,7 +64,8 @@ func (d Duration) iso8601() string {
 	return b.String()
 }
 
-func (d Duration) parts() map[string]int64 {
+// Parts decomposes the duration into days, hours, minutes, and seconds.
+func (d Duration) Parts() map[string]int64 {
 	secs := d.seconds
 	sign := int64(1)
 	if secs < 0 {
@@ -79,7 +86,9 @@ func (d Duration) parts() map[string]int64 {
 	}
 }
 
-func parseDurationString(input string) (Duration, error) {
+// ParseDurationString parses a duration in Go's time.ParseDuration format
+// or in ISO-8601 form.
+func ParseDurationString(input string) (Duration, error) {
 	if input == "" {
 		return Duration{}, fmt.Errorf("empty duration string")
 	}
@@ -191,21 +200,28 @@ func parseDurationString(input string) (Duration, error) {
 	return Duration{seconds: total * sign}, nil
 }
 
-func numericToSeconds(val Value) (int64, error) {
+// NumericToSeconds converts an integer or floating-point Value to a count
+// of whole seconds.
+func NumericToSeconds(val Value) (int64, error) {
 	switch val.Kind() {
 	case KindInt, KindFloat:
-		return valueToInt64(val)
+		return ValueToInt64(val)
 	default:
 		return 0, fmt.Errorf("duration expects numeric seconds")
 	}
 }
 
-func durationFromParts(weeks, days, hours, minutes, seconds int64) Duration {
+// DurationFromParts assembles a Duration from week, day, hour, minute, and
+// second components.
+func DurationFromParts(weeks, days, hours, minutes, seconds int64) Duration {
 	total := weeks*7*86400 + days*86400 + hours*3600 + minutes*60 + seconds
 	return Duration{seconds: total}
 }
 
-func secondsDuration(value int64, unit string) Duration {
+// SecondsDuration returns a Duration corresponding to the given integer
+// value interpreted in the named time unit (seconds, minutes, hours,
+// days, weeks, and their singular forms).
+func SecondsDuration(value int64, unit string) Duration {
 	factor := map[string]int64{
 		"seconds": 1,
 		"second":  1,

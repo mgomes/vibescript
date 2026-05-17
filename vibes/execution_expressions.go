@@ -110,7 +110,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if !ok || self.Kind() != KindInstance {
 			return NewNil(), exec.errorAt(e.Pos(), "no instance context for ivar")
 		}
-		val, ok := self.Instance().Ivars[e.Name]
+		val, ok := valueInstance(self).Ivars[e.Name]
 		if !ok {
 			return NewNil(), nil
 		}
@@ -122,13 +122,13 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		}
 		switch self.Kind() {
 		case KindInstance:
-			val, ok := self.Instance().Class.ClassVars[e.Name]
+			val, ok := valueInstance(self).Class.ClassVars[e.Name]
 			if !ok {
 				return NewNil(), nil
 			}
 			return val, nil
 		case KindClass:
-			val, ok := self.Class().ClassVars[e.Name]
+			val, ok := valueClass(self).ClassVars[e.Name]
 			if !ok {
 				return NewNil(), nil
 			}

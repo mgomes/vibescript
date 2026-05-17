@@ -27,12 +27,12 @@ func cloneBuiltinSet(src map[*Builtin]struct{}) map[*Builtin]struct{} {
 func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) (Value, error) {
 	switch val.Kind() {
 	case KindFunction:
-		fn := val.Function()
+		fn := valueFunction(val)
 		if fn != nil && len(fn.Params) == 0 {
 			return exec.invokeCallable(val, receiver, nil, nil, NewNil(), expr.Pos())
 		}
 	case KindBuiltin:
-		builtin := val.Builtin()
+		builtin := valueBuiltin(val)
 		if builtin != nil && builtin.AutoInvoke {
 			return exec.invokeCallable(val, receiver, nil, nil, NewNil(), expr.Pos())
 		}
@@ -43,7 +43,7 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) 
 func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	switch callee.Kind() {
 	case KindFunction:
-		result, err := exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)
+		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
 				return NewNil(), exec.errorAt(pos, "break cannot cross call boundary")
@@ -55,7 +55,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		}
 		return result, nil
 	case KindBuiltin:
-		builtin := callee.Builtin()
+		builtin := valueBuiltin(callee)
 		scope := exec.capabilityContractScopes[builtin]
 		var preCallKnownBuiltins map[*Builtin]struct{}
 		if scope != nil && len(scope.contracts) > 0 {

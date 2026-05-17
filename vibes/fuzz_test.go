@@ -359,9 +359,9 @@ func FuzzScalarInputParsersAndConversions(f *testing.F) {
 		}
 
 		if duration, err := parseDurationString(text); err == nil {
-			reparsed, reparseErr := parseDurationString(duration.iso8601())
+			reparsed, reparseErr := parseDurationString(duration.ISO8601())
 			if reparseErr != nil {
-				t.Fatalf("parseDurationString(%q) succeeded as %s, but parseDurationString(iso8601()) failed: %v", text, duration.iso8601(), reparseErr)
+				t.Fatalf("parseDurationString(%q) succeeded as %s, but parseDurationString(iso8601()) failed: %v", text, duration.ISO8601(), reparseErr)
 			}
 			if reparsed != duration {
 				t.Fatalf("parseDurationString(%q).iso8601() round trip = %#v, want %#v", text, reparsed, duration)
@@ -710,9 +710,9 @@ func fuzzJobQueueKwargs(data *fuzzData, value Value) map[string]Value {
 	}
 	switch data.intn(5) {
 	case 0:
-		kwargs["delay"] = NewDuration(Duration{seconds: data.int64(0, 3600)})
+		kwargs["delay"] = NewDuration(durationFromSeconds(data.int64(0, 3600)))
 	case 1:
-		kwargs["delay"] = NewDuration(Duration{seconds: data.int64(-3600, -1)})
+		kwargs["delay"] = NewDuration(durationFromSeconds(data.int64(-3600, -1)))
 	case 2:
 		kwargs["delay"] = NewInt(data.int64(-3600, 3600))
 	case 3:
@@ -836,9 +836,10 @@ func (d *fuzzData) value(depth int) Value {
 	case 1:
 		return NewFloat(float64(d.int64(-1000, 1000)) / 4)
 	case 2:
-		return NewMoney(Money{cents: d.int64(-100000, 100000), currency: "USD"})
+		money, _ := newMoneyFromCents(d.int64(-100000, 100000), "USD")
+		return NewMoney(money)
 	case 3:
-		return NewDuration(Duration{seconds: d.int64(-100000, 100000)})
+		return NewDuration(durationFromSeconds(d.int64(-100000, 100000)))
 	case 4:
 		return NewTime(time.Unix(d.int64(0, 4_102_444_800), 0).UTC())
 	case 5:

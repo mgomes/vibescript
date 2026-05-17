@@ -244,7 +244,7 @@ func cloneBuiltinMapForCall(src map[string]Value) map[string]Value {
 func cloneBuiltinValue(val Value) Value {
 	switch val.Kind() {
 	case KindBuiltin:
-		builtin := val.Builtin()
+		builtin := valueBuiltin(val)
 		if builtin == nil {
 			return val
 		}
