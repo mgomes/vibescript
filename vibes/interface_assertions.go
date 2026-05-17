@@ -1,7 +1,7 @@
 package vibes
 
 var (
-	_ CapabilityAdapter = (*contextCapability)(nil)
+	_ CapabilityAdapter = (*contextCapabilityAdapter)(nil)
 	_ CapabilityAdapter = (*dbCapabilityAdapter)(nil)
 	_ CapabilityAdapter = (*eventsCapability)(nil)
 	_ CapabilityAdapter = (*jobQueueCapability)(nil)
