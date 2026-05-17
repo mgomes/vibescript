@@ -173,7 +173,7 @@ func stringSub(method, text, pattern, replacement string, regex bool) (string, e
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return "", fmt.Errorf("%s invalid regex: %v", method, err)
+		return "", fmt.Errorf("%s invalid regex: %w", method, err)
 	}
 	loc := re.FindStringSubmatchIndex(text)
 	if loc == nil {
@@ -199,7 +199,7 @@ func stringGSub(method, text, pattern, replacement string, regex bool) (string, 
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return "", fmt.Errorf("%s invalid regex: %v", method, err)
+		return "", fmt.Errorf("%s invalid regex: %w", method, err)
 	}
 	return regexReplaceAllWithLimit(re, text, replacement, method)
 }

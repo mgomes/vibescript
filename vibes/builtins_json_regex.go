@@ -29,7 +29,7 @@ func builtinRegexMatch(exec *Execution, receiver Value, args []Value, kwargs map
 
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return NewNil(), fmt.Errorf("Regex.match invalid regex: %v", err)
+		return NewNil(), fmt.Errorf("Regex.match invalid regex: %w", err)
 	}
 	indices := re.FindStringIndex(text)
 	if indices == nil {

@@ -29,7 +29,7 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 
 	var decoded any
 	if err := decoder.Decode(&decoded); err != nil {
-		return NewNil(), fmt.Errorf("JSON.parse invalid JSON: %v", err)
+		return NewNil(), fmt.Errorf("JSON.parse invalid JSON: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return NewNil(), fmt.Errorf("JSON.parse invalid JSON: trailing data")
@@ -64,7 +64,7 @@ func builtinJSONStringify(exec *Execution, receiver Value, args []Value, kwargs 
 
 	payload, err := json.Marshal(encoded)
 	if err != nil {
-		return NewNil(), fmt.Errorf("JSON.stringify failed: %v", err)
+		return NewNil(), fmt.Errorf("JSON.stringify failed: %w", err)
 	}
 	if len(payload) > maxJSONPayloadBytes {
 		return NewNil(), fmt.Errorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)

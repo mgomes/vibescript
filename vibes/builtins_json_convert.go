@@ -82,7 +82,7 @@ func vibeValueToJSONValue(val Value, state *jsonStringifyState) (any, error) {
 		for i, item := range arr {
 			converted, err := vibeValueToJSONValue(item, state)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("JSON.stringify array index %d: %w", i, err)
 			}
 			out[i] = converted
 		}
@@ -102,7 +102,7 @@ func vibeValueToJSONValue(val Value, state *jsonStringifyState) (any, error) {
 		for key, item := range hash {
 			converted, err := vibeValueToJSONValue(item, state)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("JSON.stringify key %q: %w", key, err)
 			}
 			out[key] = converted
 		}

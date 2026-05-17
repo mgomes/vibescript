@@ -36,7 +36,7 @@ type contextCapability struct {
 func (c *contextCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
 	val, err := c.resolver(binding.Context)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve %s capability: %w", c.name, err)
 	}
 	if val.Kind() != KindHash && val.Kind() != KindObject {
 		return nil, fmt.Errorf("%s capability resolver must return hash/object", c.name)

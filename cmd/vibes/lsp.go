@@ -432,7 +432,7 @@ func (s *lspServer) readPayload() ([]byte, error) {
 	for {
 		line, err := s.reader.ReadString('\n')
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read header line: %w", err)
 		}
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
@@ -461,7 +461,7 @@ func (s *lspServer) readPayload() ([]byte, error) {
 	}
 	payload := make([]byte, contentLength)
 	if _, err := io.ReadFull(s.reader, payload); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read payload body: %w", err)
 	}
 	return payload, nil
 }
