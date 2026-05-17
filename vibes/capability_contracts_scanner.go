@@ -12,9 +12,9 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 	case KindArray:
 		values := val.Array()
 		id := sliceIdentity{
-			ptr: reflect.ValueOf(values).Pointer(),
-			len: len(values),
-			cap: cap(values),
+			Ptr: reflect.ValueOf(values).Pointer(),
+			Len: len(values),
+			Cap: cap(values),
 		}
 		if _, seen := s.seenArrays[id]; seen {
 			return false
@@ -47,7 +47,7 @@ func (s *capabilityContractScanner) bindContracts(
 ) {
 	switch val.Kind() {
 	case KindBuiltin:
-		builtin := val.Builtin()
+		builtin := valueBuiltin(val)
 		if _, skip := s.excluded[builtin]; skip {
 			return
 		}
@@ -70,9 +70,9 @@ func (s *capabilityContractScanner) bindContracts(
 	case KindArray:
 		values := val.Array()
 		id := sliceIdentity{
-			ptr: reflect.ValueOf(values).Pointer(),
-			len: len(values),
-			cap: cap(values),
+			Ptr: reflect.ValueOf(values).Pointer(),
+			Len: len(values),
+			Cap: cap(values),
 		}
 		if _, seen := s.seenArrays[id]; seen {
 			return
@@ -92,7 +92,7 @@ func (s *capabilityContractScanner) bindContracts(
 			s.bindContracts(item, scope, target, scopes)
 		}
 	case KindClass:
-		classDef := val.Class()
+		classDef := valueClass(val)
 		if classDef == nil {
 			return
 		}
@@ -104,7 +104,7 @@ func (s *capabilityContractScanner) bindContracts(
 			s.bindContracts(item, scope, target, scopes)
 		}
 	case KindInstance:
-		instance := val.Instance()
+		instance := valueInstance(val)
 		if instance == nil {
 			return
 		}
@@ -124,13 +124,13 @@ func (s *capabilityContractScanner) bindContracts(
 func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]struct{}) {
 	switch val.Kind() {
 	case KindBuiltin:
-		out[val.Builtin()] = struct{}{}
+		out[valueBuiltin(val)] = struct{}{}
 	case KindArray:
 		values := val.Array()
 		id := sliceIdentity{
-			ptr: reflect.ValueOf(values).Pointer(),
-			len: len(values),
-			cap: cap(values),
+			Ptr: reflect.ValueOf(values).Pointer(),
+			Len: len(values),
+			Cap: cap(values),
 		}
 		if _, seen := s.seenArrays[id]; seen {
 			return
@@ -150,7 +150,7 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 			s.collectBuiltins(item, out)
 		}
 	case KindClass:
-		classDef := val.Class()
+		classDef := valueClass(val)
 		if classDef == nil {
 			return
 		}
@@ -162,7 +162,7 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 			s.collectBuiltins(item, out)
 		}
 	case KindInstance:
-		instance := val.Instance()
+		instance := valueInstance(val)
 		if instance == nil {
 			return
 		}

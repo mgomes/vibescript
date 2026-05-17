@@ -1,6 +1,10 @@
 package vibes
 
-import "reflect"
+import (
+	"reflect"
+
+	"github.com/mgomes/vibescript/vibes/value"
+)
 
 type hostValueCloneState struct {
 	arrays    map[sliceIdentity]Value
@@ -90,11 +94,11 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 	case KindArray:
 		items := val.Array()
 		id := sliceIdentity{
-			ptr: reflect.ValueOf(items).Pointer(),
-			len: len(items),
-			cap: cap(items),
+			Ptr: reflect.ValueOf(items).Pointer(),
+			Len: len(items),
+			Cap: cap(items),
 		}
-		if id.ptr != 0 {
+		if id.Ptr != 0 {
 			if _, ok := state.arrays[id]; ok {
 				return false
 			}
@@ -142,18 +146,18 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 	case KindArray:
 		items := val.Array()
 		id := sliceIdentity{
-			ptr: reflect.ValueOf(items).Pointer(),
-			len: len(items),
-			cap: cap(items),
+			Ptr: reflect.ValueOf(items).Pointer(),
+			Len: len(items),
+			Cap: cap(items),
 		}
-		if id.ptr != 0 {
+		if id.Ptr != 0 {
 			if clone, ok := state.arrays[id]; ok {
 				return clone
 			}
 		}
 		clonedItems := make([]Value, len(items))
 		cloned := NewArray(clonedItems)
-		if id.ptr != 0 {
+		if id.Ptr != 0 {
 			state.arrays[id] = cloned
 		}
 		for i, item := range items {
@@ -165,11 +169,11 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 	case KindObject:
 		return cloneHostMapValue(val, state, NewObject)
 	case KindFunction:
-		return NewFunction(cloneFunctionForHostWithState(val.Function(), state))
+		return NewFunction(cloneFunctionForHostWithState(valueFunction(val), state))
 	case KindClass:
-		return NewClass(cloneClassForHostWithState(val.Class(), state))
+		return NewClass(cloneClassForHostWithState(valueClass(val), state))
 	case KindInstance:
-		inst := val.Instance()
+		inst := valueInstance(val)
 		if inst == nil {
 			return val
 		}
@@ -188,10 +192,10 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		}
 		return cloned
 	case KindEnum:
-		enumDef := val.Enum()
+		enumDef := valueEnum(val)
 		return NewEnum(cloneEnumDef(enumDef, enumOwner(enumDef)))
 	case KindEnumValue:
-		member := val.EnumValue()
+		member := valueEnumValue(val)
 		if member == nil || member.Enum == nil {
 			return val
 		}
@@ -204,7 +208,7 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		}
 		return val
 	case KindBlock:
-		block := val.Block()
+		block := valueBlock(val)
 		if block == nil {
 			return val
 		}
@@ -212,7 +216,7 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		clone.Params = cloneParams(block.Params)
 		clone.Body = cloneStatements(block.Body)
 		clone.Env = cloneEnvForHost(block.Env, state)
-		return Value{kind: KindBlock, data: &clone}
+		return value.NewValue(KindBlock, &clone)
 	case KindBuiltin:
 		return cloneBuiltinValue(val)
 	default:

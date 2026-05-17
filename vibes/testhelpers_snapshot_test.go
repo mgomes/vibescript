@@ -91,8 +91,8 @@ func snapshotValue(val Value) valueSnapshot {
 	case KindMoney:
 		money := val.Money()
 		snapshot.Data = moneySnapshot{
-			Cents:    money.cents,
-			Currency: money.currency,
+			Cents:    money.Cents(),
+			Currency: money.Currency(),
 		}
 	case KindDuration:
 		snapshot.Data = val.Duration().Seconds()
@@ -101,7 +101,7 @@ func snapshotValue(val Value) valueSnapshot {
 	case KindRange:
 		snapshot.Data = val.Range()
 	case KindFunction:
-		fn := val.Function()
+		fn := valueFunction(val)
 		if fn != nil {
 			snapshot.Data = functionSnapshot{
 				Identity: fmt.Sprintf("%p", fn),
@@ -109,7 +109,7 @@ func snapshotValue(val Value) valueSnapshot {
 			}
 		}
 	case KindBuiltin:
-		builtin := val.Builtin()
+		builtin := valueBuiltin(val)
 		if builtin != nil {
 			snapshot.Data = builtinSnapshot{
 				Identity:   fmt.Sprintf("%p", builtin),
@@ -118,7 +118,7 @@ func snapshotValue(val Value) valueSnapshot {
 			}
 		}
 	case KindBlock:
-		block := val.Block()
+		block := valueBlock(val)
 		if block != nil {
 			params := make([]string, len(block.Params))
 			for i, param := range block.Params {
@@ -130,7 +130,7 @@ func snapshotValue(val Value) valueSnapshot {
 			}
 		}
 	case KindEnum:
-		enumDef := val.Enum()
+		enumDef := valueEnum(val)
 		if enumDef != nil {
 			snapshot.Data = enumSnapshot{
 				Identity: enumSnapshotIdentity(enumDef),
@@ -139,7 +139,7 @@ func snapshotValue(val Value) valueSnapshot {
 			}
 		}
 	case KindEnumValue:
-		enumValue := val.EnumValue()
+		enumValue := valueEnumValue(val)
 		if enumValue != nil {
 			enumName := ""
 			if enumValue.Enum != nil {
@@ -154,7 +154,7 @@ func snapshotValue(val Value) valueSnapshot {
 			}
 		}
 	case KindClass:
-		classDef := val.Class()
+		classDef := valueClass(val)
 		if classDef != nil {
 			snapshot.Data = classSnapshot{
 				Identity:  fmt.Sprintf("%p", classDef),
@@ -163,7 +163,7 @@ func snapshotValue(val Value) valueSnapshot {
 			}
 		}
 	case KindInstance:
-		inst := val.Instance()
+		inst := valueInstance(val)
 		if inst != nil {
 			className := ""
 			if inst.Class != nil {

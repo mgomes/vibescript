@@ -4,7 +4,7 @@ func (exec *Execution) getScopedMember(obj Value, property string, pos Position)
 	if obj.Kind() != KindEnum {
 		return NewNil(), exec.errorAt(pos, "scoped member access is only supported on enums")
 	}
-	enumDef := obj.Enum()
+	enumDef := valueEnum(obj)
 	if enumDef == nil {
 		return NewNil(), exec.errorAt(pos, "unknown enum %s", property)
 	}
@@ -16,7 +16,7 @@ func (exec *Execution) getScopedMember(obj Value, property string, pos Position)
 }
 
 func (exec *Execution) enumValueMember(obj Value, property string, pos Position) (Value, error) {
-	member := obj.EnumValue()
+	member := valueEnumValue(obj)
 	if member == nil {
 		return NewNil(), exec.errorAt(pos, "unknown enum member")
 	}

@@ -43,12 +43,12 @@ func (s *valueTypeFormatState) format(val Value) string {
 	case KindRange:
 		return "range"
 	case KindEnum:
-		if enumDef := val.Enum(); enumDef != nil {
+		if enumDef := valueEnum(val); enumDef != nil {
 			return "enum " + enumDef.Name
 		}
 		return "enum"
 	case KindEnumValue:
-		if member := val.EnumValue(); member != nil && member.Enum != nil {
+		if member := valueEnumValue(val); member != nil && member.Enum != nil {
 			return member.Enum.Name
 		}
 		return "enum"

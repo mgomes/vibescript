@@ -189,7 +189,7 @@ func (est *memoryEstimator) value(val Value) int {
 	case KindHash, KindObject:
 		size += est.hash(val.Hash())
 	case KindClass:
-		cl := val.Class()
+		cl := valueClass(val)
 		if cl == nil {
 			return size
 		}
@@ -199,7 +199,7 @@ func (est *memoryEstimator) value(val Value) int {
 		est.seenClasses[cl] = struct{}{}
 		size += est.hash(cl.ClassVars)
 	case KindInstance:
-		inst := val.Instance()
+		inst := valueInstance(val)
 		if inst == nil {
 			return size
 		}
@@ -210,7 +210,7 @@ func (est *memoryEstimator) value(val Value) int {
 		size += estimatedInstanceBytes
 		size += est.hash(inst.Ivars)
 	case KindBlock:
-		blk := val.Block()
+		blk := valueBlock(val)
 		if blk == nil {
 			return size
 		}

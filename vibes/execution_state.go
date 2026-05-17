@@ -22,9 +22,9 @@ func (exec *Execution) isCurrentReceiver(v Value) bool {
 	cur := exec.currentReceiver()
 	switch {
 	case v.Kind() == KindInstance && cur.Kind() == KindInstance:
-		return v.Instance() == cur.Instance()
+		return valueInstance(v) == valueInstance(cur)
 	case v.Kind() == KindClass && cur.Kind() == KindClass:
-		return v.Class() == cur.Class()
+		return valueClass(v) == valueClass(cur)
 	default:
 		return false
 	}

@@ -1,4 +1,4 @@
-package vibes
+package value
 
 import (
 	"errors"
@@ -34,32 +34,38 @@ func (m Money) String() string {
 	return fmt.Sprintf("%s%d.%02d %s", sign, dollars, rem, m.currency)
 }
 
-func (m Money) add(other Money) (Money, error) {
+// Add returns the sum of m and other, or an error if their currencies differ.
+func (m Money) Add(other Money) (Money, error) {
 	if m.currency != other.currency {
 		return Money{}, errors.New("money currency mismatch")
 	}
 	return Money{cents: m.cents + other.cents, currency: m.currency}, nil
 }
 
-func (m Money) sub(other Money) (Money, error) {
+// Sub returns m minus other, or an error if their currencies differ.
+func (m Money) Sub(other Money) (Money, error) {
 	if m.currency != other.currency {
 		return Money{}, errors.New("money currency mismatch")
 	}
 	return Money{cents: m.cents - other.cents, currency: m.currency}, nil
 }
 
-func (m Money) mulInt(factor int64) Money {
+// MulInt multiplies m by the given integer factor, preserving the currency.
+func (m Money) MulInt(factor int64) Money {
 	return Money{cents: m.cents * factor, currency: m.currency}
 }
 
-func (m Money) divInt(divisor int64) (Money, error) {
+// DivInt divides m by the given integer divisor, returning an error on
+// division by zero.
+func (m Money) DivInt(divisor int64) (Money, error) {
 	if divisor == 0 {
 		return Money{}, errors.New("division by zero")
 	}
 	return Money{cents: m.cents / divisor, currency: m.currency}, nil
 }
 
-func parseMoneyLiteral(input string) (Money, error) {
+// ParseMoneyLiteral parses a textual money literal of the form "X.XX CUR".
+func ParseMoneyLiteral(input string) (Money, error) {
 	parts := strings.Fields(input)
 	if len(parts) != 2 {
 		return Money{}, fmt.Errorf("invalid money literal %q", input)
@@ -138,7 +144,9 @@ func parseMoneyLiteral(input string) (Money, error) {
 	return Money{cents: total, currency: currency}, nil
 }
 
-func newMoneyFromCents(cents int64, currency string) (Money, error) {
+// NewMoneyFromCents constructs a Money from an integer cents value and a
+// currency code.
+func NewMoneyFromCents(cents int64, currency string) (Money, error) {
 	normalized, err := normalizeMoneyCurrency(currency)
 	if err != nil {
 		return Money{}, err

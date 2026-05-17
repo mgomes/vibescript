@@ -117,7 +117,7 @@ func (m *dbMock) Value() Value {
 			if m.eachFunc != nil {
 				return m.eachFunc(exec, args, kwargs, block)
 			}
-			if block.Block() == nil {
+			if valueBlock(block) == nil {
 				m.t.Fatalf("db.each requires a block")
 			}
 			rows := cloneValues(m.eachRows)
@@ -150,7 +150,7 @@ func (m *jobsMock) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) 
 		kwargs = map[string]Value{}
 	}
 	if job.Options.Delay != nil {
-		kwargs["delay"] = NewDuration(Duration{seconds: int64(job.Options.Delay.Seconds())})
+		kwargs["delay"] = NewDuration(durationFromSeconds(int64(job.Options.Delay.Seconds())))
 	}
 	if job.Options.Key != nil {
 		kwargs["key"] = NewString(*job.Options.Key)
@@ -2187,7 +2187,7 @@ func objectVal(entries map[string]Value) Value {
 
 func symbolVal(name string) Value { return NewSymbol(name) }
 
-func durationVal(seconds int64) Value { return NewDuration(Duration{seconds: seconds}) }
+func durationVal(seconds int64) Value { return NewDuration(durationFromSeconds(seconds)) }
 
 func mustMoney(lit string) Value {
 	m, err := parseMoneyLiteral(lit)
@@ -2243,7 +2243,7 @@ func valueToString(t *testing.T, v Value) string {
 	case KindString:
 		return v.String()
 	case KindBuiltin:
-		out, err := v.Builtin().Fn(nil, NewNil(), nil, nil, NewNil())
+		out, err := valueBuiltin(v).Fn(nil, NewNil(), nil, nil, NewNil())
 		if err != nil {
 			t.Fatalf("format builtin failed: %v", err)
 		}

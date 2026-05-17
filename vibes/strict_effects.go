@@ -6,12 +6,6 @@ import (
 	"slices"
 )
 
-type sliceIdentity struct {
-	ptr uintptr
-	len int
-	cap int
-}
-
 type strictGlobalsScanner struct {
 	seenArrays map[sliceIdentity]struct{}
 	seenMaps   map[uintptr]struct{}
@@ -40,9 +34,9 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 	case KindArray:
 		values := val.Array()
 		id := sliceIdentity{
-			ptr: reflect.ValueOf(values).Pointer(),
-			len: len(values),
-			cap: cap(values),
+			Ptr: reflect.ValueOf(values).Pointer(),
+			Len: len(values),
+			Cap: cap(values),
 		}
 		if _, seen := s.seenArrays[id]; seen {
 			return false

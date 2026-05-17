@@ -1,7 +1,7 @@
 package vibes
 
 func (exec *Execution) classMember(obj Value, property string, pos Position) (Value, error) {
-	cl := obj.Class()
+	cl := valueClass(obj)
 	if property == "new" {
 		return NewAutoBuiltin(cl.Name+".new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			inst := &Instance{Class: cl, Ivars: make(map[string]Value)}
@@ -29,7 +29,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position) (Va
 }
 
 func (exec *Execution) instanceMember(obj Value, property string, pos Position) (Value, error) {
-	inst := obj.Instance()
+	inst := valueInstance(obj)
 	if property == "class" {
 		return NewClass(inst.Class), nil
 	}

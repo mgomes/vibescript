@@ -252,7 +252,7 @@ func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
 	case KindNil, KindBool, KindInt, KindFloat, KindString, KindSymbol, KindMoney, KindDuration, KindTime:
 		return value.String(), nil
 	case KindEnumValue:
-		member := value.EnumValue()
+		member := valueEnumValue(value)
 		if member == nil {
 			return "", fmt.Errorf("string.template placeholder %s value must be scalar", keyPath)
 		}

@@ -21,7 +21,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if sortErr != nil {
 					return false
 				}
-				if block.Block() != nil {
+				if valueBlock(block) != nil {
 					comparatorArgs[0] = out[i]
 					comparatorArgs[1] = out[j]
 					cmpValue, err := exec.CallBlock(block, comparatorArgs[:])
@@ -200,7 +200,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			var blockArg [1]Value
 			for _, item := range arr {
 				keyValue := item
-				if block.Block() != nil {
+				if valueBlock(block) != nil {
 					blockArg[0] = item
 					mapped, err := exec.CallBlock(block, blockArg[:])
 					if err != nil {

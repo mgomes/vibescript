@@ -57,7 +57,7 @@ def convert
 end`)
 
 	leaked := callScript(t, context.Background(), script, "leak", nil, CallOptions{})
-	leaked.Builtin().Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	valueBuiltin(leaked).Fn = func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		return NewInt(99), nil
 	}
 
@@ -288,7 +288,7 @@ def enum_name
   Status::Draft.name
 end`)
 
-	exportedFunction := callScript(t, context.Background(), script, "export_function", nil, CallOptions{}).Function()
+	exportedFunction := valueFunction(callScript(t, context.Background(), script, "export_function", nil, CallOptions{}))
 	returnStmt, ok := exportedFunction.Body[0].(*ReturnStmt)
 	if !ok {
 		t.Fatalf("exported answer body[0] = %T, want *ReturnStmt", exportedFunction.Body[0])
@@ -302,7 +302,7 @@ end`)
 		t.Fatalf("exported_answer after mutating returned function = %#v, want 7", result)
 	}
 
-	exportedClass := callScript(t, context.Background(), script, "export_class", nil, CallOptions{}).Class()
+	exportedClass := valueClass(callScript(t, context.Background(), script, "export_class", nil, CallOptions{}))
 	returnStmt, ok = exportedClass.Methods["value"].Body[0].(*ReturnStmt)
 	if !ok {
 		t.Fatalf("exported Box.value body[0] = %T, want *ReturnStmt", exportedClass.Methods["value"].Body[0])
@@ -316,7 +316,7 @@ end`)
 		t.Fatalf("class_value after mutating returned class = %#v, want 3", result)
 	}
 
-	exportedEnum := callScript(t, context.Background(), script, "export_enum", nil, CallOptions{}).Enum()
+	exportedEnum := valueEnum(callScript(t, context.Background(), script, "export_enum", nil, CallOptions{}))
 	exportedEnum.Members["Draft"].Name = "Mutated"
 	if result := callScript(t, context.Background(), script, "enum_name", nil, CallOptions{}); !result.Equal(NewString("Draft")) {
 		t.Fatalf("enum_name after mutating returned enum = %#v, want Draft", result)

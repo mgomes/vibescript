@@ -244,7 +244,7 @@ func normalizeEnumForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 
 	switch val.Kind() {
 	case KindEnumValue:
-		if member := val.EnumValue(); member != nil && member.Enum == enumDef {
+		if member := valueEnumValue(val); member != nil && member.Enum == enumDef {
 			return val, nil
 		}
 	case KindSymbol:
@@ -333,7 +333,7 @@ func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool, error) {
 
 func lookupEnumValue(values map[string]Value, name string) (*EnumDef, bool, error) {
 	if val, ok := values[name]; ok && val.Kind() == KindEnum {
-		return val.Enum(), true, nil
+		return valueEnum(val), true, nil
 	}
 	var match *EnumDef
 	matches := make([]string, 0, 2)
@@ -343,10 +343,10 @@ func lookupEnumValue(values map[string]Value, name string) (*EnumDef, bool, erro
 		}
 		matches = append(matches, key)
 		if match == nil {
-			match = val.Enum()
+			match = valueEnum(val)
 			continue
 		}
-		if match != val.Enum() {
+		if match != valueEnum(val) {
 			return nil, false, ambiguousEnumTypeError(name, matches)
 		}
 	}

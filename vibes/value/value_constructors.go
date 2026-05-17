@@ -1,4 +1,4 @@
-package vibes
+package value
 
 import "time"
 
@@ -44,39 +44,3 @@ func NewObject(attrs map[string]Value) Value {
 
 // NewRange returns a range Value.
 func NewRange(r Range) Value { return Value{kind: KindRange, data: r} }
-
-// NewBlock returns a block (closure) Value.
-func NewBlock(params []Param, body []Statement, env *Env) Value {
-	return Value{kind: KindBlock, data: &Block{Params: params, Body: body, Env: env}}
-}
-
-// NewEnum returns an enum definition Value.
-func NewEnum(def *EnumDef) Value { return Value{kind: KindEnum, data: def} }
-
-// NewEnumValue returns an enum member Value.
-func NewEnumValue(def *EnumValueDef) Value { return Value{kind: KindEnumValue, data: def} }
-
-// NewClass returns a class definition Value.
-func NewClass(def *ClassDef) Value { return Value{kind: KindClass, data: def} }
-
-// NewInstance returns a class instance Value.
-func NewInstance(inst *Instance) Value { return Value{kind: KindInstance, data: inst} }
-
-func newBuiltin(name string, fn BuiltinFunc, autoInvoke bool) Value {
-	return Value{kind: KindBuiltin, data: &Builtin{Name: name, Fn: fn, AutoInvoke: autoInvoke}}
-}
-
-// NewBuiltin returns a builtin function Value.
-func NewBuiltin(name string, fn BuiltinFunc) Value {
-	return newBuiltin(name, fn, false)
-}
-
-// NewAutoBuiltin returns a builtin function Value that auto-invokes without parentheses.
-func NewAutoBuiltin(name string, fn BuiltinFunc) Value {
-	return newBuiltin(name, fn, true)
-}
-
-// NewFunction returns a script-defined function Value.
-func NewFunction(fn *ScriptFunction) Value {
-	return Value{kind: KindFunction, data: fn}
-}
