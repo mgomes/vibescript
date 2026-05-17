@@ -34,6 +34,9 @@ type Value struct {
 }
 
 // Range represents an integer range with inclusive start and end.
+// It is a domain-shaped scalar that also serves as a Value payload
+// (KindRange); it lives in the value package alongside Value itself
+// because of that coupling. See doc.go for the rationale.
 type Range struct {
 	Start int64
 	End   int64

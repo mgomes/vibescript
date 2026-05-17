@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Confirmed `vibes/value` as the home of `Money`, `Duration`, `Range` rather than carving a separate `vibes/domain`; the Value-payload coupling outweighs the organizational benefit.
 - Hid the runtime (interpreter, execution engine, module loader, builtins,
   capability adapters) under `internal/runtime`; outside callers can no
   longer import it. `vibes` keeps source-compatible type aliases for
