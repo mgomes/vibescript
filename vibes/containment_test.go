@@ -387,15 +387,19 @@ func runBuiltinRegistrationConcurrencyProbe(t *testing.T) {
 
 	for attempt := range 12 {
 		start := make(chan struct{})
+		ready := make(chan struct{}, 4)
 		var wg sync.WaitGroup
 		for range 4 {
 			wg.Go(func() {
+				ready <- struct{}{}
 				<-start
 				_ = engine.Builtins()
 			})
 		}
+		for range 4 {
+			<-ready
+		}
 		close(start)
-		time.Sleep(200 * time.Microsecond)
 		for i := range 1_500 {
 			engine.RegisterBuiltin(fmt.Sprintf("probe_%d_%d", attempt, i), noop)
 		}
