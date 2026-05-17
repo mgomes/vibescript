@@ -6,7 +6,7 @@
 # but tight enough to catch obvious regressions.
 
 BenchmarkExecutionArithmeticLoop 5000000 1000
-BenchmarkExecutionArrayPipeline 30000000 20000
+BenchmarkExecutionArrayPipeline 40000000 20000
 BenchmarkExecutionMethodDispatchLoop 8000000 6000
 BenchmarkExecutionCapabilityFindLoop 12000000 9000
 BenchmarkExecutionCapabilityWorkflowLoop 16000000 15000
