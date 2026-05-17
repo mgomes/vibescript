@@ -351,7 +351,7 @@ func TestBuiltinRegistrationConcurrentWithSnapshots(t *testing.T) {
 	runContainmentSubprocess(t, "builtin-registration", "TestBuiltinRegistrationConcurrentWithSnapshots")
 }
 
-func runContainmentSubprocess(t *testing.T, probe string, testName string) {
+func runContainmentSubprocess(t *testing.T, probe, testName string) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

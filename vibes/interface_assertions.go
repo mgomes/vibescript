@@ -1,16 +1,22 @@
 package vibes
 
-var _ CapabilityAdapter = (*contextCapability)(nil)
-var _ CapabilityAdapter = (*dbCapability)(nil)
-var _ CapabilityAdapter = (*eventsCapability)(nil)
-var _ CapabilityAdapter = (*jobQueueCapability)(nil)
+var (
+	_ CapabilityAdapter = (*contextCapability)(nil)
+	_ CapabilityAdapter = (*dbCapability)(nil)
+	_ CapabilityAdapter = (*eventsCapability)(nil)
+	_ CapabilityAdapter = (*jobQueueCapability)(nil)
+)
 
-var _ CapabilityContractProvider = (*dbCapability)(nil)
-var _ CapabilityContractProvider = (*eventsCapability)(nil)
-var _ CapabilityContractProvider = (*jobQueueCapability)(nil)
+var (
+	_ CapabilityContractProvider = (*dbCapability)(nil)
+	_ CapabilityContractProvider = (*eventsCapability)(nil)
+	_ CapabilityContractProvider = (*jobQueueCapability)(nil)
+)
 
-var _ Node = (*Program)(nil)
-var _ Statement = (*FunctionStmt)(nil)
-var _ Expression = (*Identifier)(nil)
-var _ StringPart = StringText{}
-var _ StringPart = StringExpr{}
+var (
+	_ Node       = (*Program)(nil)
+	_ Statement  = (*FunctionStmt)(nil)
+	_ Expression = (*Identifier)(nil)
+	_ StringPart = StringText{}
+	_ StringPart = StringExpr{}
+)

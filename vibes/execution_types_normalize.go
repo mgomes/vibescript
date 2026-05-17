@@ -366,7 +366,7 @@ func errorAsTypeMismatch(err error, target **typeMismatchError) bool {
 	return true
 }
 
-func sameNormalizedValue(left Value, right Value) bool {
+func sameNormalizedValue(left, right Value) bool {
 	if left.Kind() != right.Kind() {
 		return false
 	}

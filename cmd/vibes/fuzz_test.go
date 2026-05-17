@@ -66,7 +66,7 @@ func FuzzCLIArgumentAndPathInputs(f *testing.F) {
 	f.Add(3, "analyze", "nested/path")
 	f.Add(4, string([]byte{0xff, 0xfe, 0xfd}), "arg")
 
-	f.Fuzz(func(t *testing.T, selector int, rawArg string, rawExtra string) {
+	f.Fuzz(func(t *testing.T, selector int, rawArg, rawExtra string) {
 		rawArg = limitFormatFuzzString(rawArg, 256)
 		rawExtra = limitFormatFuzzString(rawExtra, 256)
 
@@ -210,7 +210,7 @@ func FuzzLSPPayloadAndMessageHandling(f *testing.F) {
 	f.Add(2, "assert true", "")
 	f.Add(3, string([]byte{0xff, 0xfe, 0xfd}), "not a uri")
 
-	f.Fuzz(func(t *testing.T, selector int, source string, uri string) {
+	f.Fuzz(func(t *testing.T, selector int, source, uri string) {
 		source = limitFormatFuzzString(source, 2048)
 		uri = limitFormatFuzzString(uri, 512)
 
@@ -280,7 +280,7 @@ func FuzzLSPPayloadAndMessageHandling(f *testing.F) {
 	})
 }
 
-func fuzzLSPMessage(selector int, uri string, source string) lspInboundMessage {
+func fuzzLSPMessage(selector int, uri, source string) lspInboundMessage {
 	idRaw := json.RawMessage(`"fuzz"`)
 	switch positiveMod(selector, 7) {
 	case 0:
@@ -351,7 +351,7 @@ func captureStdoutForFuzz(t *testing.T, fn func() error) (string, error) {
 	return buf.String(), runErr
 }
 
-func positiveMod(n int, mod int) int {
+func positiveMod(n, mod int) int {
 	if mod <= 0 {
 		return 0
 	}

@@ -14,16 +14,20 @@ type jobQueueStub struct {
 	retryCtx     []context.Context
 }
 
-type invalidReturnQueue struct{}
-type mutatingInputQueue struct{}
+type (
+	invalidReturnQueue struct{}
+	mutatingInputQueue struct{}
+)
 
 type sharedReturnQueue struct {
 	enqueueResult Value
 	retryResult   Value
 }
 
-var _ JobQueue = (*jobQueueStub)(nil)
-var _ JobQueueWithRetry = (*jobQueueStub)(nil)
+var (
+	_ JobQueue          = (*jobQueueStub)(nil)
+	_ JobQueueWithRetry = (*jobQueueStub)(nil)
+)
 
 func (s *jobQueueStub) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
 	s.enqueueCalls = append(s.enqueueCalls, job)

@@ -5,7 +5,7 @@ import (
 	"reflect"
 )
 
-func deepTransformKeys(exec *Execution, value Value, block Value) (Value, error) {
+func deepTransformKeys(exec *Execution, value, block Value) (Value, error) {
 	return deepTransformKeysWithState(exec, value, block, &deepTransformState{
 		seenHashes: make(map[uintptr]struct{}),
 		seenArrays: make(map[uintptr]struct{}),
@@ -17,7 +17,7 @@ type deepTransformState struct {
 	seenArrays map[uintptr]struct{}
 }
 
-func deepTransformKeysWithState(exec *Execution, value Value, block Value, state *deepTransformState) (Value, error) {
+func deepTransformKeysWithState(exec *Execution, value, block Value, state *deepTransformState) (Value, error) {
 	switch value.Kind() {
 	case KindHash, KindObject:
 		entries := value.Hash()

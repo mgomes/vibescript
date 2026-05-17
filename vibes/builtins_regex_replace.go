@@ -71,7 +71,7 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 	return NewString(text[:loc[0]] + replaced + text[loc[1]:]), nil
 }
 
-func regexReplaceAllWithLimit(re *regexp.Regexp, text string, replacement string, method string) (string, error) {
+func regexReplaceAllWithLimit(re *regexp.Regexp, text, replacement, method string) (string, error) {
 	out := make([]byte, 0, len(text))
 	lastAppended := 0
 	searchStart := 0

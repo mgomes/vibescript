@@ -359,7 +359,7 @@ func TestCompileEnumRejectsBuiltInTypeNames(t *testing.T) {
 	}
 }
 
-func enumTestValue(t *testing.T, script *Script, enumName string, member string) Value {
+func enumTestValue(t *testing.T, script *Script, enumName, member string) Value {
 	t.Helper()
 	enumDef, ok := script.enums[enumName]
 	if !ok {

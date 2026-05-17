@@ -148,7 +148,7 @@ func (exec *Execution) newRuntimeError(message string, pos Position) error {
 	return exec.newRuntimeErrorWithType(runtimeErrorTypeBase, message, pos)
 }
 
-func (exec *Execution) newRuntimeErrorWithType(kind string, message string, pos Position) error {
+func (exec *Execution) newRuntimeErrorWithType(kind, message string, pos Position) error {
 	if canonical, ok := canonicalRuntimeErrorType(kind); ok {
 		kind = canonical
 	} else {

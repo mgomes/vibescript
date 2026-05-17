@@ -45,8 +45,12 @@ bench-profile pattern='^BenchmarkExecutionArrayPipeline$':
 	scripts/bench_profile.sh --pattern "{{pattern}}"
 
 lint:
-	gofmt -l . | (! read)
+	golangci-lint fmt --diff
 	golangci-lint run --timeout=10m
+
+lint-fix:
+	golangci-lint fmt
+	golangci-lint run --timeout=10m --fix
 
 repl:
 	go build -o vibes-cli ./cmd/vibes && ./vibes-cli repl
