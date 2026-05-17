@@ -32,7 +32,7 @@ just lint
 
 ```bash
 just install            # installs `vibes` into $GOBIN (or $GOPATH/bin)
-vibes run examples/basics/arithmetic.vibe
+vibes run examples/control_flow/case_when.vibe
 vibes repl              # interactive REPL
 ```
 
