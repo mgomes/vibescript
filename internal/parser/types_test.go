@@ -4,10 +4,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/mgomes/vibescript/internal/ast"
 )
 
 func TestParserTypeSyntaxCompositeForms(t *testing.T) {
+	t.Parallel()
 	source := `def run(
   rows: array<int | string>,
   payload: { id: string, stats: { wins: int } }
@@ -15,129 +18,129 @@ func TestParserTypeSyntaxCompositeForms(t *testing.T) {
   payload
 end`
 
-	p := newParser(source)
-	program, errs := p.parseProgram()
+	got, errs := parseSource(t, source)
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
-	if len(program.Statements) != 1 {
-		t.Fatalf("expected 1 statement, got %d", len(program.Statements))
-	}
-	fn, ok := program.Statements[0].(*ast.FunctionStmt)
-	if !ok {
-		t.Fatalf("expected function statement, got %T", program.Statements[0])
-	}
-	if len(fn.Params) != 2 {
-		t.Fatalf("expected 2 params, got %d", len(fn.Params))
+
+	want := &ast.Program{
+		Statements: []ast.Statement{
+			&ast.FunctionStmt{
+				Name: "run",
+				Params: []ast.Param{
+					{
+						Name: "rows",
+						Type: &ast.TypeExpr{
+							Name: "array",
+							Kind: ast.TypeArray,
+							TypeArgs: []*ast.TypeExpr{
+								{
+									Name: "int | string",
+									Kind: ast.TypeUnion,
+									Union: []*ast.TypeExpr{
+										{Name: "int", Kind: ast.TypeInt},
+										{Name: "string", Kind: ast.TypeString},
+									},
+								},
+							},
+						},
+					},
+					{
+						Name: "payload",
+						Type: &ast.TypeExpr{
+							Kind: ast.TypeShape,
+							Shape: map[string]*ast.TypeExpr{
+								"id": {Name: "string", Kind: ast.TypeString},
+								"stats": {
+									Kind: ast.TypeShape,
+									Shape: map[string]*ast.TypeExpr{
+										"wins": {Name: "int", Kind: ast.TypeInt},
+									},
+								},
+							},
+						},
+					},
+				},
+				ReturnTy: &ast.TypeExpr{
+					Name: "hash",
+					Kind: ast.TypeHash,
+					TypeArgs: []*ast.TypeExpr{
+						{Name: "string", Kind: ast.TypeString},
+						{
+							Kind: ast.TypeShape,
+							Shape: map[string]*ast.TypeExpr{
+								"score": {
+									Name: "int | nil",
+									Kind: ast.TypeUnion,
+									Union: []*ast.TypeExpr{
+										{Name: "int", Kind: ast.TypeInt},
+										{Name: "nil", Kind: ast.TypeNil},
+									},
+								},
+							},
+						},
+					},
+				},
+				Body: []ast.Statement{
+					&ast.ExprStmt{Expr: &ast.Identifier{Name: "payload"}},
+				},
+			},
+		},
 	}
 
-	rowsType := fn.Params[0].Type
-	if rowsType == nil || rowsType.Kind != ast.TypeArray || len(rowsType.TypeArgs) != 1 {
-		t.Fatalf("expected array<T> param, got %#v", rowsType)
-	}
-	elemType := rowsType.TypeArgs[0]
-	if elemType.Kind != ast.TypeUnion || len(elemType.Union) != 2 {
-		t.Fatalf("expected union element type, got %#v", elemType)
-	}
-
-	payloadType := fn.Params[1].Type
-	if payloadType == nil || payloadType.Kind != ast.TypeShape {
-		t.Fatalf("expected shape payload type, got %#v", payloadType)
-	}
-	if _, ok := payloadType.Shape["id"]; !ok {
-		t.Fatalf("expected shape field id")
-	}
-	statsType, ok := payloadType.Shape["stats"]
-	if !ok || statsType.Kind != ast.TypeShape {
-		t.Fatalf("expected nested stats shape, got %#v", statsType)
-	}
-	winsType, ok := statsType.Shape["wins"]
-	if !ok || winsType.Kind != ast.TypeInt {
-		t.Fatalf("expected stats.wins int type, got %#v", winsType)
-	}
-
-	if fn.ReturnTy == nil || fn.ReturnTy.Kind != ast.TypeHash || len(fn.ReturnTy.TypeArgs) != 2 {
-		t.Fatalf("expected hash<K,V> return type, got %#v", fn.ReturnTy)
-	}
-	valueType := fn.ReturnTy.TypeArgs[1]
-	if valueType.Kind != ast.TypeShape {
-		t.Fatalf("expected shaped hash value type, got %#v", valueType)
-	}
-	scoreType, ok := valueType.Shape["score"]
-	if !ok || scoreType.Kind != ast.TypeUnion || len(scoreType.Union) != 2 {
-		t.Fatalf("expected score union type, got %#v", scoreType)
-	}
-}
-
-func TestParserTypeShapeRejectsDuplicateFields(t *testing.T) {
-	source := `def run(payload: { id: string, id: int })
-  payload
-end`
-
-	p := newParser(source)
-	_, errs := p.parseProgram()
-	if len(errs) == 0 {
-		t.Fatalf("expected parse errors")
-	}
-	if got := errs[0].Error(); !strings.Contains(got, "duplicate shape field id") {
-		t.Fatalf("unexpected parse error: %s", got)
+	if diff := cmp.Diff(want, got, astCmpOpts); diff != "" {
+		t.Fatalf("program mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestParserTypeShapeAllowsEnumFieldName(t *testing.T) {
+	t.Parallel()
 	source := `def run(payload: { enum: string, nested: { enum: int } })
   payload
 end`
 
-	p := newParser(source)
-	program, errs := p.parseProgram()
+	got, errs := parseSource(t, source)
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
-	if len(program.Statements) != 1 {
-		t.Fatalf("expected 1 statement, got %d", len(program.Statements))
-	}
-	fn, ok := program.Statements[0].(*ast.FunctionStmt)
+
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
 	if !ok {
-		t.Fatalf("expected function statement, got %T", program.Statements[0])
+		t.Fatalf("expected function statement, got %T", got.Statements[0])
 	}
-	payloadType := fn.Params[0].Type
-	if payloadType == nil || payloadType.Kind != ast.TypeShape {
-		t.Fatalf("expected shape payload type, got %#v", payloadType)
+	wantType := &ast.TypeExpr{
+		Kind: ast.TypeShape,
+		Shape: map[string]*ast.TypeExpr{
+			"enum": {Name: "string", Kind: ast.TypeString},
+			"nested": {
+				Kind: ast.TypeShape,
+				Shape: map[string]*ast.TypeExpr{
+					"enum": {Name: "int", Kind: ast.TypeInt},
+				},
+			},
+		},
 	}
-	if field, ok := payloadType.Shape["enum"]; !ok || field.Kind != ast.TypeString {
-		t.Fatalf("expected enum string field, got %#v", field)
-	}
-	nestedType, ok := payloadType.Shape["nested"]
-	if !ok || nestedType.Kind != ast.TypeShape {
-		t.Fatalf("expected nested shape field, got %#v", nestedType)
-	}
-	if field, ok := nestedType.Shape["enum"]; !ok || field.Kind != ast.TypeInt {
-		t.Fatalf("expected nested enum int field, got %#v", field)
+	if diff := cmp.Diff(wantType, fn.Params[0].Type, astCmpOpts); diff != "" {
+		t.Fatalf("payload type mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestParserTypeSyntaxTypedBlockParameters(t *testing.T) {
+	t.Parallel()
 	source := `def run(values)
   values.map do |value: int | string, label: string?|
     label
   end
 end`
 
-	p := newParser(source)
-	program, errs := p.parseProgram()
+	got, errs := parseSource(t, source)
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
-	if len(program.Statements) != 1 {
-		t.Fatalf("expected 1 statement, got %d", len(program.Statements))
-	}
-	fn, ok := program.Statements[0].(*ast.FunctionStmt)
+
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
 	if !ok {
-		t.Fatalf("expected function statement, got %T", program.Statements[0])
-	}
-	if len(fn.Body) != 1 {
-		t.Fatalf("expected 1 body statement, got %d", len(fn.Body))
+		t.Fatalf("expected function statement, got %T", got.Statements[0])
 	}
 	exprStmt, ok := fn.Body[0].(*ast.ExprStmt)
 	if !ok {
@@ -150,76 +153,75 @@ end`
 	if call.Block == nil {
 		t.Fatalf("expected call block")
 	}
-	if len(call.Block.Params) != 2 {
-		t.Fatalf("expected 2 block params, got %d", len(call.Block.Params))
-	}
 
-	first := call.Block.Params[0]
-	if first.Name != "value" {
-		t.Fatalf("expected first param name value, got %q", first.Name)
+	wantParams := []ast.Param{
+		{
+			Name: "value",
+			Type: &ast.TypeExpr{
+				Name: "int | string",
+				Kind: ast.TypeUnion,
+				Union: []*ast.TypeExpr{
+					{Name: "int", Kind: ast.TypeInt},
+					{Name: "string", Kind: ast.TypeString},
+				},
+			},
+		},
+		{
+			Name: "label",
+			Type: &ast.TypeExpr{Name: "string?", Kind: ast.TypeString, Nullable: true},
+		},
 	}
-	if first.Type == nil || first.Type.Kind != ast.TypeUnion || len(first.Type.Union) != 2 {
-		t.Fatalf("expected first param union type, got %#v", first.Type)
-	}
-	if first.Type.Union[0].Kind != ast.TypeInt || first.Type.Union[1].Kind != ast.TypeString {
-		t.Fatalf("expected union int|string, got %#v", first.Type.Union)
-	}
-
-	second := call.Block.Params[1]
-	if second.Name != "label" {
-		t.Fatalf("expected second param name label, got %q", second.Name)
-	}
-	if second.Type == nil || second.Type.Kind != ast.TypeString || !second.Type.Nullable {
-		t.Fatalf("expected nullable string type, got %#v", second.Type)
+	if diff := cmp.Diff(wantParams, call.Block.Params, astCmpOpts); diff != "" {
+		t.Fatalf("block params mismatch (-want +got):\n%s", diff)
 	}
 }
 
-func TestParserTypeSyntaxRejectsGenericArgsOnScalars(t *testing.T) {
-	source := `def run(value: int<string>)
-  value
-end`
-
-	p := newParser(source)
-	_, errs := p.parseProgram()
-	if len(errs) == 0 {
-		t.Fatalf("expected parse errors")
-	}
-	if got := errs[0].Error(); !strings.Contains(got, "type int does not accept type arguments") {
-		t.Fatalf("unexpected parse error: %s", got)
-	}
-}
-
-func TestParserTypeSyntaxRejectsGenericArityMismatch(t *testing.T) {
+func TestParserTypeErrorCases(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		source  string
-		message string
+		wantErr string
 	}{
 		{
-			name: "array with two args",
+			name: "duplicate_shape_field",
+			source: `def run(payload: { id: string, id: int })
+  payload
+end`,
+			wantErr: "duplicate shape field id",
+		},
+		{
+			name: "generic_args_on_scalar",
+			source: `def run(value: int<string>)
+  value
+end`,
+			wantErr: "type int does not accept type arguments",
+		},
+		{
+			name: "array_with_two_args",
 			source: `def run(values: array<int, string>)
   values
 end`,
-			message: "array type expects exactly 1 type argument",
+			wantErr: "array type expects exactly 1 type argument",
 		},
 		{
-			name: "hash with one arg",
+			name: "hash_with_one_arg",
 			source: `def run(values: hash<string>)
   values
 end`,
-			message: "hash type expects exactly 2 type arguments",
+			wantErr: "hash type expects exactly 2 type arguments",
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := newParser(tt.source)
-			_, errs := p.parseProgram()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, errs := parseSource(t, tc.source)
 			if len(errs) == 0 {
-				t.Fatalf("expected parse errors")
+				t.Fatalf("expected parse errors, got none")
 			}
-			if got := errs[0].Error(); !strings.Contains(got, tt.message) {
-				t.Fatalf("unexpected parse error: %s", got)
+			if got := errs[0].Error(); !strings.Contains(got, tc.wantErr) {
+				t.Errorf("got error %q, want substring %q", got, tc.wantErr)
 			}
 		})
 	}

@@ -5,41 +5,60 @@ import (
 	"testing"
 )
 
-func TestTypeAllowsStringHashKeyDefersUnknownUnions(t *testing.T) {
-	keyType := &TypeExpr{
-		Kind: TypeUnion,
-		Union: []*TypeExpr{
-			{Name: "typo", Kind: TypeUnknown},
-			{Name: "string", Kind: TypeString},
+func TestTypeAllowsStringHashKeyDefersForAmbiguousUnions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		keyType *TypeExpr
+	}{
+		{
+			name: "unknown_in_union",
+			keyType: &TypeExpr{
+				Kind: TypeUnion,
+				Union: []*TypeExpr{
+					{Name: "typo", Kind: TypeUnknown},
+					{Name: "string", Kind: TypeString},
+				},
+			},
+		},
+		{
+			name: "enum_before_string",
+			keyType: &TypeExpr{
+				Kind: TypeUnion,
+				Union: []*TypeExpr{
+					{Name: "stauts", Kind: TypeEnum},
+					{Name: "string", Kind: TypeString},
+				},
+			},
+		},
+		{
+			name: "string_before_enum",
+			keyType: &TypeExpr{
+				Kind: TypeUnion,
+				Union: []*TypeExpr{
+					{Name: "string", Kind: TypeString},
+					{Name: "stauts", Kind: TypeEnum},
+				},
+			},
 		},
 	}
 
-	decided, matches := typeAllowsStringHashKey(keyType)
-	if decided {
-		t.Fatalf("expected unknown key union to defer to full matcher")
-	}
-	if matches {
-		t.Fatalf("unexpected string-key fast-path match for unknown key union")
-	}
-}
-
-func TestTypeAllowsStringHashKeyDefersEnumUnions(t *testing.T) {
-	for _, order := range [][]*TypeExpr{
-		{{Name: "stauts", Kind: TypeEnum}, {Name: "string", Kind: TypeString}},
-		{{Name: "string", Kind: TypeString}, {Name: "stauts", Kind: TypeEnum}},
-	} {
-		keyType := &TypeExpr{Kind: TypeUnion, Union: order}
-		decided, matches := typeAllowsStringHashKey(keyType)
-		if decided {
-			t.Fatalf("expected enum key union to defer to full matcher (order: %v)", order)
-		}
-		if matches {
-			t.Fatalf("unexpected string-key fast-path match for enum key union (order: %v)", order)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			decided, matches := typeAllowsStringHashKey(tc.keyType)
+			if decided {
+				t.Fatalf("expected union to defer to full matcher")
+			}
+			if matches {
+				t.Fatalf("expected no fast-path match for deferring union")
+			}
+		})
 	}
 }
 
 func TestValueMatchesTypeHashUnknownKeyUnionReturnsError(t *testing.T) {
+	t.Parallel()
 	hashType := &TypeExpr{
 		Kind: TypeHash,
 		TypeArgs: []*TypeExpr{

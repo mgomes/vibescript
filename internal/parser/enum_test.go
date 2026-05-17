@@ -4,10 +4,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+
 	"github.com/mgomes/vibescript/internal/ast"
 )
 
+// astCmpOpts ignores source positions so tests focus on structural shape.
+var astCmpOpts = cmp.Options{
+	cmpopts.IgnoreFields(ast.Position{}, "Line", "Column"),
+}
+
 func TestParserEnumSyntax(t *testing.T) {
+	t.Parallel()
 	source := `enum Status
   Draft
   Published
@@ -17,63 +26,48 @@ def run(status: Status) -> Status
   Status::Draft
 end`
 
-	p := newParser(source)
-	program, errs := p.parseProgram()
+	got, errs := parseSource(t, source)
+
+	want := &ast.Program{
+		Statements: []ast.Statement{
+			&ast.EnumStmt{
+				Name: "Status",
+				Members: []ast.EnumMemberStmt{
+					{Name: "Draft"},
+					{Name: "Published"},
+				},
+			},
+			&ast.FunctionStmt{
+				Name: "run",
+				Params: []ast.Param{
+					{
+						Name: "status",
+						Type: &ast.TypeExpr{Name: "Status", Kind: ast.TypeEnum},
+					},
+				},
+				ReturnTy: &ast.TypeExpr{Name: "Status", Kind: ast.TypeEnum},
+				Body: []ast.Statement{
+					&ast.ExprStmt{
+						Expr: &ast.ScopeExpr{
+							Object:   &ast.Identifier{Name: "Status"},
+							Property: "Draft",
+						},
+					},
+				},
+			},
+		},
+	}
+
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
-	if len(program.Statements) != 2 {
-		t.Fatalf("expected 2 statements, got %d", len(program.Statements))
-	}
-
-	enumStmt, ok := program.Statements[0].(*ast.EnumStmt)
-	if !ok {
-		t.Fatalf("expected enum statement, got %T", program.Statements[0])
-	}
-	if enumStmt.Name != "Status" {
-		t.Fatalf("expected enum Status, got %q", enumStmt.Name)
-	}
-	if len(enumStmt.Members) != 2 {
-		t.Fatalf("expected 2 enum members, got %d", len(enumStmt.Members))
-	}
-	if enumStmt.Members[0].Name != "Draft" || enumStmt.Members[1].Name != "Published" {
-		t.Fatalf("unexpected enum members: %#v", enumStmt.Members)
-	}
-
-	fn, ok := program.Statements[1].(*ast.FunctionStmt)
-	if !ok {
-		t.Fatalf("expected function statement, got %T", program.Statements[1])
-	}
-	if len(fn.Params) != 1 || fn.Params[0].Type == nil {
-		t.Fatalf("expected typed enum param, got %#v", fn.Params)
-	}
-	if fn.Params[0].Type.Kind != ast.TypeEnum || fn.Params[0].Type.Name != "Status" {
-		t.Fatalf("expected Status enum param, got %#v", fn.Params[0].Type)
-	}
-	if fn.ReturnTy == nil || fn.ReturnTy.Kind != ast.TypeEnum || fn.ReturnTy.Name != "Status" {
-		t.Fatalf("expected Status enum return type, got %#v", fn.ReturnTy)
-	}
-	if len(fn.Body) != 1 {
-		t.Fatalf("expected 1 body statement, got %d", len(fn.Body))
-	}
-	exprStmt, ok := fn.Body[0].(*ast.ExprStmt)
-	if !ok {
-		t.Fatalf("expected expression statement, got %T", fn.Body[0])
-	}
-	scope, ok := exprStmt.Expr.(*ast.ScopeExpr)
-	if !ok {
-		t.Fatalf("expected scope expression, got %T", exprStmt.Expr)
-	}
-	ident, ok := scope.Object.(*ast.Identifier)
-	if !ok || ident.Name != "Status" {
-		t.Fatalf("expected Status identifier, got %#v", scope.Object)
-	}
-	if scope.Property != "Draft" {
-		t.Fatalf("expected Draft member, got %q", scope.Property)
+	if diff := cmp.Diff(want, got, astCmpOpts); diff != "" {
+		t.Fatalf("program mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestParserNullableEnumTypeUsesCanonicalEnumName(t *testing.T) {
+	t.Parallel()
 	source := `enum Status
   Draft
 end
@@ -82,65 +76,63 @@ def run(status: Status?) -> Status?
   status
 end`
 
-	p := newParser(source)
-	program, errs := p.parseProgram()
+	got, errs := parseSource(t, source)
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
 
-	fn, ok := program.Statements[1].(*ast.FunctionStmt)
+	fn, ok := got.Statements[1].(*ast.FunctionStmt)
 	if !ok {
-		t.Fatalf("expected function statement, got %T", program.Statements[1])
+		t.Fatalf("expected function statement, got %T", got.Statements[1])
 	}
-	if len(fn.Params) != 1 || fn.Params[0].Type == nil {
-		t.Fatalf("expected typed enum param, got %#v", fn.Params)
+	wantParamType := &ast.TypeExpr{Name: "Status", Kind: ast.TypeEnum, Nullable: true}
+	if diff := cmp.Diff(wantParamType, fn.Params[0].Type, astCmpOpts); diff != "" {
+		t.Fatalf("param type mismatch (-want +got):\n%s", diff)
 	}
-	if fn.Params[0].Type.Kind != ast.TypeEnum || fn.Params[0].Type.Name != "Status" || !fn.Params[0].Type.Nullable {
-		t.Fatalf("expected nullable Status enum param, got %#v", fn.Params[0].Type)
-	}
-	if fn.ReturnTy == nil || fn.ReturnTy.Kind != ast.TypeEnum || fn.ReturnTy.Name != "Status" || !fn.ReturnTy.Nullable {
-		t.Fatalf("expected nullable Status enum return type, got %#v", fn.ReturnTy)
+	if diff := cmp.Diff(wantParamType, fn.ReturnTy, astCmpOpts); diff != "" {
+		t.Fatalf("return type mismatch (-want +got):\n%s", diff)
 	}
 }
 
-func TestParserEnumRejectsNestedDeclarations(t *testing.T) {
-	source := `def run()
+func TestParserEnumErrorCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		source   string
+		wantErrs []string
+	}{
+		{
+			name: "nested_in_function",
+			source: `def run()
   enum Status
     Draft
   end
-end`
-
-	p := newParser(source)
-	_, errs := p.parseProgram()
-	if len(errs) == 0 {
-		t.Fatalf("expected parse errors")
-	}
-	if got := errs[0].Error(); got == "" || !containsAll(got, "enum", "top level") {
-		t.Fatalf("unexpected parse error: %s", got)
-	}
-}
-
-func TestParserEnumRejectsDuplicateMembers(t *testing.T) {
-	source := `enum Status
+end`,
+			wantErrs: []string{"enum", "top level"},
+		},
+		{
+			name: "duplicate_member",
+			source: `enum Status
   Draft
   Draft
-end`
+end`,
+			wantErrs: []string{"duplicate enum member", "Draft"},
+		},
+	}
 
-	p := newParser(source)
-	_, errs := p.parseProgram()
-	if len(errs) == 0 {
-		t.Fatalf("expected parse errors")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, errs := parseSource(t, tc.source)
+			if len(errs) == 0 {
+				t.Fatalf("expected parse errors, got none")
+			}
+			got := errs[0].Error()
+			for _, want := range tc.wantErrs {
+				if !strings.Contains(got, want) {
+					t.Errorf("parse error %q missing substring %q", got, want)
+				}
+			}
+		})
 	}
-	if got := errs[0].Error(); got == "" || !containsAll(got, "duplicate enum member", "Draft") {
-		t.Fatalf("unexpected parse error: %s", got)
-	}
-}
-
-func containsAll(text string, parts ...string) bool {
-	for _, part := range parts {
-		if !strings.Contains(text, part) {
-			return false
-		}
-	}
-	return true
 }

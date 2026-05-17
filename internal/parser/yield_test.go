@@ -3,82 +3,76 @@ package parser
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/mgomes/vibescript/internal/ast"
 )
 
 func TestParserYieldWithoutParensDoesNotConsumeNextLineInAssignment(t *testing.T) {
+	t.Parallel()
 	source := `def run
   result = yield
   elapsed = 1
 end`
 
-	p := newParser(source)
-	program, errs := p.parseProgram()
+	got, errs := parseSource(t, source)
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
-	if len(program.Statements) != 1 {
-		t.Fatalf("expected 1 statement, got %d", len(program.Statements))
+
+	want := &ast.Program{
+		Statements: []ast.Statement{
+			&ast.FunctionStmt{
+				Name:   "run",
+				Params: []ast.Param{},
+				Body: []ast.Statement{
+					&ast.AssignStmt{
+						Target: &ast.Identifier{Name: "result"},
+						Value:  &ast.YieldExpr{},
+					},
+					&ast.AssignStmt{
+						Target: &ast.Identifier{Name: "elapsed"},
+						Value:  &ast.IntegerLiteral{Value: 1},
+					},
+				},
+			},
+		},
 	}
 
-	fn, ok := program.Statements[0].(*ast.FunctionStmt)
-	if !ok {
-		t.Fatalf("expected function statement, got %T", program.Statements[0])
-	}
-	if len(fn.Body) != 2 {
-		t.Fatalf("expected 2 body statements, got %d", len(fn.Body))
-	}
-
-	first, ok := fn.Body[0].(*ast.AssignStmt)
-	if !ok {
-		t.Fatalf("expected first statement assignment, got %T", fn.Body[0])
-	}
-	yieldExpr, ok := first.Value.(*ast.YieldExpr)
-	if !ok {
-		t.Fatalf("expected yield expression, got %T", first.Value)
-	}
-	if len(yieldExpr.Args) != 0 {
-		t.Fatalf("expected zero-arg yield, got %d args", len(yieldExpr.Args))
-	}
-
-	second, ok := fn.Body[1].(*ast.AssignStmt)
-	if !ok {
-		t.Fatalf("expected second statement assignment, got %T", fn.Body[1])
-	}
-	target, ok := second.Target.(*ast.Identifier)
-	if !ok || target.Name != "elapsed" {
-		t.Fatalf("expected second assignment to elapsed, got %#v", second.Target)
+	if diff := cmp.Diff(want, got, astCmpOpts); diff != "" {
+		t.Fatalf("program mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestParserYieldWithoutParensAcceptsInlineArgument(t *testing.T) {
+	t.Parallel()
 	source := `def run
   result = yield value
 end`
 
-	p := newParser(source)
-	program, errs := p.parseProgram()
+	got, errs := parseSource(t, source)
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
 
-	fn, ok := program.Statements[0].(*ast.FunctionStmt)
-	if !ok {
-		t.Fatalf("expected function statement, got %T", program.Statements[0])
+	want := &ast.Program{
+		Statements: []ast.Statement{
+			&ast.FunctionStmt{
+				Name:   "run",
+				Params: []ast.Param{},
+				Body: []ast.Statement{
+					&ast.AssignStmt{
+						Target: &ast.Identifier{Name: "result"},
+						Value: &ast.YieldExpr{
+							Args: []ast.Expression{&ast.Identifier{Name: "value"}},
+						},
+					},
+				},
+			},
+		},
 	}
-	assign, ok := fn.Body[0].(*ast.AssignStmt)
-	if !ok {
-		t.Fatalf("expected assignment, got %T", fn.Body[0])
-	}
-	yieldExpr, ok := assign.Value.(*ast.YieldExpr)
-	if !ok {
-		t.Fatalf("expected yield expression, got %T", assign.Value)
-	}
-	if len(yieldExpr.Args) != 1 {
-		t.Fatalf("expected one yield arg, got %d", len(yieldExpr.Args))
-	}
-	arg, ok := yieldExpr.Args[0].(*ast.Identifier)
-	if !ok || arg.Name != "value" {
-		t.Fatalf("expected yield arg value, got %#v", yieldExpr.Args[0])
+
+	if diff := cmp.Diff(want, got, astCmpOpts); diff != "" {
+		t.Fatalf("program mismatch (-want +got):\n%s", diff)
 	}
 }
