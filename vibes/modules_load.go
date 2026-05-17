@@ -91,7 +91,7 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 func (e *Engine) readModuleSource(path string) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stat module source %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)

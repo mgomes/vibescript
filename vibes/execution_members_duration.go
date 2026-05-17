@@ -92,7 +92,7 @@ func durationTimeArg(args []Value, allowEmpty bool, name string) (time.Time, err
 	case KindString:
 		t, err := time.Parse(time.RFC3339, val.String())
 		if err != nil {
-			return time.Time{}, fmt.Errorf("invalid time: %v", err)
+			return time.Time{}, fmt.Errorf("invalid time: %w", err)
 		}
 		return t.UTC(), nil
 	case KindTime:

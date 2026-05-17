@@ -48,7 +48,7 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return NewNil(), fmt.Errorf("%s invalid regex: %v", method, err)
+		return NewNil(), fmt.Errorf("%s invalid regex: %w", method, err)
 	}
 
 	if replaceAll {

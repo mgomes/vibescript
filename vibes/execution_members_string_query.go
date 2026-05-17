@@ -135,7 +135,7 @@ func stringMemberQuery(property string) (Value, error) {
 			}
 			re, err := regexp.Compile(pattern)
 			if err != nil {
-				return NewNil(), fmt.Errorf("string.match invalid regex: %v", err)
+				return NewNil(), fmt.Errorf("string.match invalid regex: %w", err)
 			}
 			indices := re.FindStringSubmatchIndex(text)
 			if indices == nil {
@@ -171,7 +171,7 @@ func stringMemberQuery(property string) (Value, error) {
 			}
 			re, err := regexp.Compile(pattern)
 			if err != nil {
-				return NewNil(), fmt.Errorf("string.scan invalid regex: %v", err)
+				return NewNil(), fmt.Errorf("string.scan invalid regex: %w", err)
 			}
 			matches := re.FindAllString(text, -1)
 			values := make([]Value, len(matches))

@@ -18,7 +18,7 @@ func TestCombineErrorsJoinsWithBlankLines(t *testing.T) {
 
 func TestCombineErrorsSingleErrorPassesThrough(t *testing.T) {
 	orig := errors.New("only")
-	if got := combineErrors([]error{orig}); got != orig {
+	if got := combineErrors([]error{orig}); got != orig { //nolint:errorlint // verifying identity, not wrapped equivalence
 		t.Fatalf("combineErrors = %v, want original error instance", got)
 	}
 }
