@@ -1,69 +1,167 @@
 package vibes
 
 import (
-	"context"
 	"fmt"
-	"time"
+
+	"github.com/mgomes/vibescript/vibes/capability/jobqueue"
 )
 
-// JobQueue exposes queue functionality to scripts via strongly-typed adapters.
-type JobQueue interface {
-	Enqueue(ctx context.Context, job JobQueueJob) (Value, error)
-}
-
-// JobQueueWithRetry extends JobQueue with a retry operation.
-type JobQueueWithRetry interface {
-	JobQueue
-	Retry(ctx context.Context, req JobQueueRetryRequest) (Value, error)
-}
-
-// JobQueueJob captures a job invocation from script code.
-type JobQueueJob struct {
-	Name    string
-	Payload map[string]Value
-	Options JobQueueEnqueueOptions
-}
-
-// JobQueueEnqueueOptions represents keyword arguments supplied to enqueue.
-type JobQueueEnqueueOptions struct {
-	Delay  *time.Duration
-	Key    *string
-	Kwargs map[string]Value
-}
-
-// JobQueueRetryRequest captures retry invocations.
-type JobQueueRetryRequest struct {
-	JobID   string
-	Options map[string]Value
-}
-
-// NewJobQueueCapability constructs a capability adapter bound to the provided name.
-func NewJobQueueCapability(name string, queue JobQueue) (CapabilityAdapter, error) {
-	if name == "" {
-		return nil, fmt.Errorf("vibes: job queue capability name must be non-empty")
-	}
-	if isNilCapabilityImplementation(queue) {
-		return nil, fmt.Errorf("vibes: job queue capability requires a non-nil implementation")
-	}
-
-	cap := &jobQueueCapability{name: name, queue: queue}
-	if retry, ok := queue.(JobQueueWithRetry); ok {
-		cap.retry = retry
-	}
-	return cap, nil
-}
-
-// MustNewJobQueueCapability constructs a capability adapter or panics on invalid arguments.
-func MustNewJobQueueCapability(name string, queue JobQueue) CapabilityAdapter {
-	cap, err := NewJobQueueCapability(name, queue)
-	if err != nil {
-		panic(err)
-	}
-	return cap
-}
-
+// jobQueueCapability adapts a *jobqueue.Capability into the
+// CapabilityAdapter and CapabilityContractProvider interfaces consumed
+// by the runtime. Bind exposes enqueue (and retry when supported) as
+// builtin methods under the capability name.
 type jobQueueCapability struct {
-	name  string
-	queue JobQueue
-	retry JobQueueWithRetry
+	inner *jobqueue.Capability
+}
+
+func (c *jobQueueCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	name := c.inner.Name
+	methods := map[string]Value{
+		"enqueue": NewBuiltin(name+".enqueue", c.callEnqueue),
+	}
+	if c.inner.HasRetry() {
+		methods["retry"] = NewBuiltin(name+".retry", c.callRetry)
+	}
+	return map[string]Value{name: NewObject(methods)}, nil
+}
+
+func (c *jobQueueCapability) callEnqueue(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	name := c.inner.Name
+	if len(args) != 2 {
+		return NewNil(), fmt.Errorf("%s.enqueue expects job name and payload", name)
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("%s.enqueue does not accept blocks", name)
+	}
+
+	jobNameVal := args[0]
+	switch jobNameVal.Kind() {
+	case KindString, KindSymbol:
+		// supported
+	default:
+		return NewNil(), fmt.Errorf("%s.enqueue expects job name as string or symbol", name)
+	}
+
+	payloadVal := args[1]
+	if payloadVal.Kind() != KindHash && payloadVal.Kind() != KindObject {
+		return NewNil(), fmt.Errorf("%s.enqueue expects payload hash", name)
+	}
+
+	options, err := jobqueue.ParseEnqueueOptions(name, kwargs)
+	if err != nil {
+		return NewNil(), err
+	}
+
+	job := jobqueue.JobQueueJob{
+		Name:    jobNameVal.String(),
+		Payload: cloneHash(payloadVal.Hash()),
+		Options: options,
+	}
+
+	result, err := c.inner.Queue.Enqueue(exec.ctx, job)
+	if err != nil {
+		return NewNil(), err
+	}
+	return cloneCapabilityMethodResult(name+".enqueue", result)
+}
+
+func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	name := c.inner.Name
+	if c.inner.Retry == nil {
+		return NewNil(), fmt.Errorf("%s.retry is not supported", name)
+	}
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("%s.retry expects job id and optional options hash", name)
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("%s.retry does not accept blocks", name)
+	}
+
+	idVal := args[0]
+	if idVal.Kind() != KindString {
+		return NewNil(), fmt.Errorf("%s.retry expects job id string", name)
+	}
+
+	options := make(map[string]Value)
+	if len(args) > 1 {
+		optsVal := args[1]
+		if optsVal.Kind() != KindHash && optsVal.Kind() != KindObject {
+			return NewNil(), fmt.Errorf("%s.retry options must be hash", name)
+		}
+		options = mergeHash(options, cloneHash(optsVal.Hash()))
+	}
+	options = mergeHash(options, cloneCapabilityKwargs(kwargs))
+
+	req := jobqueue.JobQueueRetryRequest{JobID: idVal.String(), Options: options}
+	result, err := c.inner.Retry.Retry(exec.ctx, req)
+	if err != nil {
+		return NewNil(), err
+	}
+	return cloneCapabilityMethodResult(name+".retry", result)
+}
+
+func (c *jobQueueCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	name := c.inner.Name
+	contracts := map[string]CapabilityMethodContract{
+		name + ".enqueue": {
+			ValidateArgs:   c.validateEnqueueContractArgs,
+			ValidateReturn: capabilityValidateAnyReturn(name + ".enqueue"),
+		},
+	}
+	if c.inner.HasRetry() {
+		contracts[name+".retry"] = CapabilityMethodContract{
+			ValidateArgs:   c.validateRetryContractArgs,
+			ValidateReturn: capabilityValidateAnyReturn(name + ".retry"),
+		}
+	}
+	return contracts
+}
+
+func (c *jobQueueCapability) validateEnqueueContractArgs(args []Value, kwargs map[string]Value, block Value) error {
+	method := c.inner.Name + ".enqueue"
+
+	if len(args) != 2 {
+		return fmt.Errorf("%s expects job name and payload", method)
+	}
+	if !block.IsNil() {
+		return fmt.Errorf("%s does not accept blocks", method)
+	}
+
+	jobNameVal := args[0]
+	switch jobNameVal.Kind() {
+	case KindString, KindSymbol:
+		// supported
+	default:
+		return fmt.Errorf("%s expects job name as string or symbol", method)
+	}
+
+	if err := validateCapabilityHashValue(method+" payload", args[1]); err != nil {
+		return err
+	}
+
+	return validateCapabilityKwargsDataOnly(method, kwargs)
+}
+
+func (c *jobQueueCapability) validateRetryContractArgs(args []Value, kwargs map[string]Value, block Value) error {
+	method := c.inner.Name + ".retry"
+
+	if len(args) < 1 || len(args) > 2 {
+		return fmt.Errorf("%s expects job id and optional options hash", method)
+	}
+	if !block.IsNil() {
+		return fmt.Errorf("%s does not accept blocks", method)
+	}
+
+	idVal := args[0]
+	if idVal.Kind() != KindString {
+		return fmt.Errorf("%s expects job id string", method)
+	}
+
+	if len(args) == 2 {
+		if err := validateCapabilityHashValue(method+" options", args[1]); err != nil {
+			return err
+		}
+	}
+
+	return validateCapabilityKwargsDataOnly(method, kwargs)
 }
