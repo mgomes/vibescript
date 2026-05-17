@@ -41,10 +41,10 @@ go test ./vibes \
 declare -A actual_ns
 declare -A actual_allocs
 
-# With -count 3 we record three samples per benchmark; keep the best
+# With -count 3 we record three samples per benchmark. Keep the best
 # (minimum) ns/op so a single noisy run on a shared CI runner does not
-# trip the gate. Allocations are deterministic, but track the minimum for
-# symmetry.
+# trip the gate; keep the worst (maximum) allocs/op so allocation
+# regressions are not masked by a luckier sample.
 while read -r bench ns allocs; do
   actual_ns["$bench"]="$ns"
   actual_allocs["$bench"]="$allocs"
@@ -63,13 +63,13 @@ done < <(
       if (!(bench in min_ns) || ns + 0 < min_ns[bench] + 0) {
         min_ns[bench] = ns
       }
-      if (!(bench in min_allocs) || allocs + 0 < min_allocs[bench] + 0) {
-        min_allocs[bench] = allocs
+      if (!(bench in max_allocs) || allocs + 0 > max_allocs[bench] + 0) {
+        max_allocs[bench] = allocs
       }
     }
     END {
       for (bench in min_ns) {
-        print bench, min_ns[bench], min_allocs[bench]
+        print bench, min_ns[bench], max_allocs[bench]
       }
     }
   ' "$tmp_out"
