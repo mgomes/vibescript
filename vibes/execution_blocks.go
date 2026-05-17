@@ -80,7 +80,7 @@ func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
 	if !ok || block.Kind() == KindNil {
 		return NewNil(), exec.errorAt(expr.Pos(), "no block given")
 	}
-	var args []Value
+	args := make([]Value, 0, len(expr.Args))
 	for _, arg := range expr.Args {
 		val, err := exec.evalExpression(arg, env)
 		if err != nil {
