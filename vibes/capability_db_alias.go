@@ -11,6 +11,8 @@ import (
 // per PR-3.5 in the Effective-Go sweep.
 type (
 	Database        = db.Database
+	DatabaseReader  = db.DatabaseReader
+	DatabaseWriter  = db.DatabaseWriter
 	DBFindRequest   = db.DBFindRequest
 	DBQueryRequest  = db.DBQueryRequest
 	DBUpdateRequest = db.DBUpdateRequest

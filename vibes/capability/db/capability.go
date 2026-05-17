@@ -15,13 +15,28 @@ import (
 	"github.com/mgomes/vibescript/vibes/value"
 )
 
-// Database exposes data access capability methods to scripts.
-type Database interface {
+// DatabaseReader exposes the read-only subset of the database capability.
+// Host implementations that should not allow scripts to mutate data can
+// satisfy only this interface and wrap with a writer that returns an
+// error on Update calls.
+type DatabaseReader interface {
 	Find(ctx context.Context, req DBFindRequest) (value.Value, error)
 	Query(ctx context.Context, req DBQueryRequest) (value.Value, error)
-	Update(ctx context.Context, req DBUpdateRequest) (value.Value, error)
 	Sum(ctx context.Context, req DBSumRequest) (value.Value, error)
 	Each(ctx context.Context, req DBEachRequest) ([]value.Value, error)
+}
+
+// DatabaseWriter exposes the write subset of the database capability.
+type DatabaseWriter interface {
+	Update(ctx context.Context, req DBUpdateRequest) (value.Value, error)
+}
+
+// Database is the full read/write surface scripts can call. It is
+// satisfied by any type that implements both DatabaseReader and
+// DatabaseWriter, so existing implementations keep compiling unchanged.
+type Database interface {
+	DatabaseReader
+	DatabaseWriter
 }
 
 // DBFindRequest captures db.find calls.
