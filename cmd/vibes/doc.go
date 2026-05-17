@@ -1,7 +1,7 @@
 // Command vibes is the Vibescript CLI: it runs, formats, analyzes, and serves
 // language tooling for .vibe scripts. Subcommands:
 //
-//	vibes run <script> [args...] [-function NAME] [-check] [-module-path DIR]
+//	vibes run [-function NAME] [-check] [-module-path DIR] <script> [args...]
 //	vibes fmt [-w] [-check] <path>...
 //	vibes analyze <script>
 //	vibes repl
