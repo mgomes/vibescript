@@ -6,6 +6,8 @@ import "github.com/mgomes/vibescript/vibes/capability/db"
 // can keep referring to short names that match the public vibes facade.
 type (
 	Database        = db.Database
+	DatabaseReader  = db.DatabaseReader
+	DatabaseWriter  = db.DatabaseWriter
 	DBFindRequest   = db.DBFindRequest
 	DBQueryRequest  = db.DBQueryRequest
 	DBUpdateRequest = db.DBUpdateRequest
