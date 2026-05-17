@@ -57,8 +57,8 @@ precommit-install:
 	set -euo pipefail
 
 	repo_root="$(git rev-parse --show-toplevel)"
-	git_dir="$(git rev-parse --git-dir)"
-	hook_path="$git_dir/hooks/pre-commit"
+	common_dir="$(git rev-parse --git-common-dir)"
+	hook_path="$common_dir/hooks/pre-commit"
 	source_path="$repo_root/scripts/pre-commit.sh"
 
 	mkdir -p "$(dirname "$hook_path")"
