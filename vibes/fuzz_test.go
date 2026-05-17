@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mgomes/vibescript/vibes/capability/jobqueue"
 )
 
 const (
@@ -535,13 +537,13 @@ func FuzzCapabilityInputValidation(f *testing.F) {
 			data.key(1): data.value(2),
 		})
 
-		options, err := parseJobQueueEnqueueOptions("Jobs", fuzzJobQueueKwargs(data, value))
+		options, err := jobqueue.ParseEnqueueOptions("Jobs", fuzzJobQueueKwargs(data, value))
 		if err == nil {
 			if options.Delay != nil && *options.Delay < 0 {
-				t.Fatalf("parseJobQueueEnqueueOptions returned negative delay %s", options.Delay.String())
+				t.Fatalf("jobqueue.ParseEnqueueOptions returned negative delay %s", options.Delay.String())
 			}
 			if options.Key != nil && *options.Key == "" {
-				t.Fatalf("parseJobQueueEnqueueOptions returned empty key")
+				t.Fatalf("jobqueue.ParseEnqueueOptions returned empty key")
 			}
 		}
 
