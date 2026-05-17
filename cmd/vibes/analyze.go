@@ -66,7 +66,7 @@ func analyzeCommand(args []string) error {
 }
 
 func analyzeScriptWarnings(script *vibes.Script) []lintWarning {
-	warnings := make([]lintWarning, 0)
+	var warnings []lintWarning
 	for _, fn := range script.Functions() {
 		lintStatements(fn.Name, fn.Body, &warnings)
 	}
