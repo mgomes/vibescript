@@ -69,7 +69,7 @@ func fmtCommand(args []string) error {
 
 func collectVibeFiles(targets []string) ([]string, error) {
 	seen := make(map[string]struct{})
-	files := make([]string, 0)
+	var files []string
 	addFile := func(path string) {
 		if filepath.Ext(path) != ".vibe" {
 			return
