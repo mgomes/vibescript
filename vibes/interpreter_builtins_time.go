@@ -54,7 +54,7 @@ func registerTimeBuiltins(engine *Engine) {
 		}),
 		"at": NewBuiltin("Time.at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 {
-				return NewNil(), fmt.Errorf("Time.at expects seconds since epoch") //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Time.at expects seconds since epoch")
 			}
 			var loc *time.Location
 			if in, ok := kwargs["in"]; ok {
@@ -72,7 +72,7 @@ func registerTimeBuiltins(engine *Engine) {
 		}),
 		"now": NewAutoBuiltin("Time.now", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("Time.now does not take positional arguments") //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Time.now does not take positional arguments")
 			}
 			loc := time.Local
 			if in, ok := kwargs["in"]; ok {
@@ -88,11 +88,11 @@ func registerTimeBuiltins(engine *Engine) {
 		}),
 		"parse": NewBuiltin("Time.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) < 1 || len(args) > 2 || args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout") //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Time.parse expects a time string and optional layout")
 			}
 			for key := range kwargs {
 				if key != "in" {
-					return NewNil(), fmt.Errorf("Time.parse unknown keyword %q", key) //nolint:staticcheck // class.method reference
+					return NewNil(), fmt.Errorf("Time.parse unknown keyword %q", key)
 				}
 			}
 
@@ -103,7 +103,7 @@ func registerTimeBuiltins(engine *Engine) {
 					layout = args[1].String()
 					hasLayout = true
 				} else if args[1].Kind() != KindNil {
-					return NewNil(), fmt.Errorf("Time.parse layout must be string") //nolint:staticcheck // class.method reference
+					return NewNil(), fmt.Errorf("Time.parse layout must be string")
 				}
 			}
 

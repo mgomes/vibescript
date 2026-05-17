@@ -13,10 +13,10 @@ func registerDurationBuiltins(engine *Engine) {
 				return NewDuration(Duration{seconds: secs}), nil
 			}
 			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("Duration.build accepts either seconds or named parts, not both") //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build accepts either seconds or named parts, not both")
 			}
 			if len(kwargs) == 0 {
-				return NewNil(), fmt.Errorf("Duration.build expects seconds or named parts") //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build expects seconds or named parts")
 			}
 			allowed := map[string]struct{}{
 				"weeks":   {},
@@ -27,7 +27,7 @@ func registerDurationBuiltins(engine *Engine) {
 			}
 			for key := range kwargs {
 				if _, ok := allowed[key]; !ok {
-					return NewNil(), fmt.Errorf("Duration.build unknown part %q", key) //nolint:staticcheck // class.method reference
+					return NewNil(), fmt.Errorf("Duration.build unknown part %q", key)
 				}
 			}
 
@@ -39,29 +39,29 @@ func registerDurationBuiltins(engine *Engine) {
 			}
 			weeks, err := parsePart("weeks")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %w", "weeks", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "weeks", err)
 			}
 			days, err := parsePart("days")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %w", "days", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "days", err)
 			}
 			hours, err := parsePart("hours")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %w", "hours", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "hours", err)
 			}
 			minutes, err := parsePart("minutes")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %w", "minutes", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "minutes", err)
 			}
 			seconds, err := parsePart("seconds")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %w", "seconds", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "seconds", err)
 			}
 			return NewDuration(durationFromParts(weeks, days, hours, minutes, seconds)), nil
 		}),
 		"parse": NewBuiltin("Duration.parse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 || args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("Duration.parse expects a duration string") //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.parse expects a duration string")
 			}
 			parsed, err := parseDurationString(args[0].String())
 			if err != nil {
