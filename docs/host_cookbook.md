@@ -33,10 +33,10 @@ if err != nil {
     return err
 }
 
-func evaluate(ctx context.Context, tenant string, input vibes.Value) (vibes.Value, error) {
-    return script.Call(ctx, "run", []vibes.Value{input}, vibes.CallOptions{
-        Globals: map[string]vibes.Value{
-            "tenant": vibes.NewString(tenant),
+func evaluate(ctx context.Context, tenant string, input value.Value) (value.Value, error) {
+    return script.Call(ctx, "run", []value.Value{input}, vibes.CallOptions{
+        Globals: map[string]value.Value{
+            "tenant": value.NewString(tenant),
         },
         Capabilities: []vibes.CapabilityAdapter{
             paymentsAdapter{},

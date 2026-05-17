@@ -1,10 +1,8 @@
 // Package db provides the host-side database capability adapter for
 // Vibescript. It exposes a thin Database interface plus the request
 // structs that scripts can call via the db.* methods bound on a script
-// invocation. The vibes package re-exports the types via aliases and
-// wraps the capability behind a CapabilityAdapter implementation so
-// existing embedders continue to compile while new code can depend on
-// the carved subpackage directly.
+// invocation. The top-level vibes package wraps the capability behind a
+// CapabilityAdapter implementation for installation on script calls.
 package db
 
 import (
@@ -76,8 +74,7 @@ type DBEachRequest struct {
 // ExecutionContext describes the slice of the vibes runtime the db
 // capability calls into. *vibes.Execution satisfies it structurally.
 // Defining the interface here keeps the db package free of an import
-// of vibes and so prevents the import cycle the alias bridge would
-// otherwise create.
+// of vibes and so prevents an import cycle.
 type ExecutionContext interface {
 	Context() context.Context
 	Step() error
@@ -85,8 +82,8 @@ type ExecutionContext interface {
 }
 
 // Contract pairs the boundary validators registered for a single
-// capability method. The vibes alias bridge converts this into
-// vibes.CapabilityMethodContract before handing it to the runtime.
+// capability method. The runtime adapter converts this into
+// vibes.CapabilityMethodContract when installing the capability.
 type Contract struct {
 	ValidateArgs   func(args []value.Value, kwargs map[string]value.Value, block value.Value) error
 	ValidateReturn func(result value.Value) error

@@ -579,3 +579,46 @@ Goal: close the quadratic `combineErrors` DoS and the empty/dot-only module-poli
 - [x] Full tests pass.
 - [x] Multiple full local `just fuzz` sweeps pass after the fixes.
 - [x] Codex review follow-ups for this patch are fixed, reviewed, and merged.
+
+---
+
+## v0.29.0 - Public API Refactor (completed 2026-05-17)
+
+Goal: finish the pre-1.0 package-boundary cleanup so embedders have a small,
+intentional public API and Vibescript internals can keep moving without
+becoming accidental contracts.
+
+### Public Package Boundaries
+
+- [x] Move value-system types and constructors to `vibes/value`.
+- [x] Move first-party capability adapter contracts to
+  `vibes/capability/{contextcap,db,events,jobqueue}`.
+- [x] Move public source positions to `vibes/source`.
+- [x] Remove the v0.28 deprecation alias bridge from the root `vibes` package.
+- [x] Keep the root `vibes` package focused on engine/script execution,
+  capability construction, runtime errors, and documented extension points.
+
+### Internal Boundaries
+
+- [x] Hide AST and parser implementation details under `internal/ast` and
+  `internal/parser`.
+- [x] Hide runtime execution, module loading, builtins, and capability adapters
+  under `internal/runtime`.
+- [x] Extract CLI analysis support into `internal/tools/analyze`.
+- [x] Consolidate parser and runtime files around clearer ownership boundaries.
+
+### Quality and Documentation
+
+- [x] Add public API and value-package Godoc examples.
+- [x] Document the CLI package and add a contribution guide.
+- [x] Add a `golangci-lint` baseline and opt-in pre-commit hook.
+- [x] Modernize runtime, parser, AST, capability, module, and CLI tests with
+  table-driven cases, shared helpers, snapshots, and safe parallelization.
+- [x] Stabilize benchmark smoke checks by sampling multiple runs and comparing
+  the best result.
+
+### v0.29.0 Definition of Done
+
+- [x] Breaking embedder migration notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass after the refactor.
+- [x] Release checklist passes for `v0.29.0`.

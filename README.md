@@ -64,6 +64,7 @@ import (
     "fmt"
 
     "github.com/mgomes/vibescript/vibes"
+    "github.com/mgomes/vibescript/vibes/value"
 )
 
 func main() {
@@ -84,7 +85,7 @@ func main() {
     result, err := script.Call(
         context.Background(),
         "total_with_fee",
-        []vibes.Value{vibes.NewInt(99)},
+        []value.Value{value.NewInt(99)},
         vibes.CallOptions{},
     )
     if err != nil {
@@ -239,7 +240,7 @@ if err != nil {
 script, _ := engine.Compile(source)
 result, err := script.Call(ctx, "run", nil, vibes.CallOptions{
     Capabilities: []vibes.CapabilityAdapter{mySafeAdapter{}},
-    Globals:      map[string]vibes.Value{"tenant": vibes.NewString("acme")},
+    Globals:      map[string]value.Value{"tenant": value.NewString("acme")},
 })
 ```
 
