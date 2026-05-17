@@ -1,6 +1,7 @@
 package vibes
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -358,12 +359,7 @@ func errorAsTypeMismatch(err error, target **typeMismatchError) bool {
 	if err == nil {
 		return false
 	}
-	mismatch, ok := err.(*typeMismatchError)
-	if !ok {
-		return false
-	}
-	*target = mismatch
-	return true
+	return errors.As(err, target)
 }
 
 func sameNormalizedValue(left, right Value) bool {

@@ -39,23 +39,23 @@ func registerDurationBuiltins(engine *Engine) {
 			}
 			weeks, err := parsePart("weeks")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "weeks", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "weeks", err) //nolint:staticcheck // class.method reference
 			}
 			days, err := parsePart("days")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "days", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "days", err) //nolint:staticcheck // class.method reference
 			}
 			hours, err := parsePart("hours")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "hours", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "hours", err) //nolint:staticcheck // class.method reference
 			}
 			minutes, err := parsePart("minutes")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "minutes", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "minutes", err) //nolint:staticcheck // class.method reference
 			}
 			seconds, err := parsePart("seconds")
 			if err != nil {
-				return NewNil(), fmt.Errorf("Duration.build %s: %v", "seconds", err) //nolint:staticcheck // class.method reference
+				return NewNil(), fmt.Errorf("Duration.build %s: %w", "seconds", err) //nolint:staticcheck // class.method reference
 			}
 			return NewDuration(durationFromParts(weeks, days, hours, minutes, seconds)), nil
 		}),

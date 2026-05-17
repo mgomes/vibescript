@@ -108,7 +108,8 @@ func classifyRuntimeErrorType(err error) string {
 	if errors.As(err, &assertionErr) {
 		return runtimeErrorTypeAssertion
 	}
-	if runtimeErr, ok := err.(*RuntimeError); ok {
+	var runtimeErr *RuntimeError
+	if errors.As(err, &runtimeErr) {
 		if kind, known := canonicalRuntimeErrorType(runtimeErr.Type); known {
 			return kind
 		}
@@ -185,7 +186,8 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	if isHostControlSignal(err) {
 		return err
 	}
-	if _, ok := err.(*RuntimeError); ok {
+	var runtimeErr *RuntimeError
+	if errors.As(err, &runtimeErr) {
 		return err
 	}
 	return exec.newRuntimeErrorWithType(classifyRuntimeErrorType(err), err.Error(), pos)
