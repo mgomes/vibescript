@@ -52,6 +52,21 @@ lint-fix:
 	golangci-lint fmt
 	golangci-lint run --timeout=10m --fix
 
+precommit-install:
+	#!/usr/bin/env bash
+	set -euo pipefail
+
+	repo_root="$(git rev-parse --show-toplevel)"
+	git_dir="$(git rev-parse --git-dir)"
+	hook_path="$git_dir/hooks/pre-commit"
+	source_path="$repo_root/scripts/pre-commit.sh"
+
+	mkdir -p "$(dirname "$hook_path")"
+	cp "$source_path" "$hook_path"
+	chmod +x "$hook_path"
+
+	echo "Installed pre-commit hook at $hook_path"
+
 repl:
 	go build -o vibes-cli ./cmd/vibes && ./vibes-cli repl
 
