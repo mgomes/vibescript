@@ -3,10 +3,10 @@
 package source
 
 // Position represents a source-code position. Line and Column are
-// 1-indexed; Offset is 0-indexed and may be zero if the producer does
-// not track byte offsets.
+// 1-indexed. The layout is intentionally preserved across the move
+// from vibes.Position so positional struct literals in embedder code
+// keep compiling.
 type Position struct {
 	Line   int
 	Column int
-	Offset int
 }
