@@ -336,26 +336,25 @@ end`)
 	})
 }
 
-func TestCompileEnumRejectsQuestionMarkSuffix(t *testing.T) {
-	_, err := compileEnumDef(&EnumStmt{
-		Name:    "Status?",
-		Members: []EnumMemberStmt{{Name: "Draft"}},
-	})
-	if err == nil {
-		t.Fatalf("expected error for enum named Status?, got nil")
+func TestCompileEnumRejectsInvalidNames(t *testing.T) {
+	t.Parallel()
+	names := []string{
+		"Status?",
+		"String", "Int", "Float", "Bool", "Array", "Hash",
+		"Any", "Nil", "Duration", "Time", "Money", "Number",
+		"Function", "Object",
 	}
-}
-
-func TestCompileEnumRejectsBuiltInTypeNames(t *testing.T) {
-	builtins := []string{"String", "Int", "Float", "Bool", "Array", "Hash", "Any", "Nil", "Duration", "Time", "Money", "Number", "Function", "Object"}
-	for _, name := range builtins {
-		_, err := compileEnumDef(&EnumStmt{
-			Name:    name,
-			Members: []EnumMemberStmt{{Name: "A"}},
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := compileEnumDef(&EnumStmt{
+				Name:    name,
+				Members: []EnumMemberStmt{{Name: "Draft"}},
+			})
+			if err == nil {
+				t.Errorf("expected error for enum named %s, got nil", name)
+			}
 		})
-		if err == nil {
-			t.Errorf("expected error for enum named %s, got nil", name)
-		}
 	}
 }
 
