@@ -27,6 +27,7 @@ func compileComplexExampleWithConfig(t *testing.T, rel string, cfg Config) *Scri
 }
 
 func TestComplexExamplesCompile(t *testing.T) {
+	t.Parallel()
 	engine := MustNewEngine(Config{})
 	files := []string{
 		"tests/complex/analytics.vibe",
@@ -48,6 +49,7 @@ func TestComplexExamplesCompile(t *testing.T) {
 }
 
 func TestComplexExamplesRun(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		file     string
@@ -257,6 +259,7 @@ func TestComplexExamplesRun(t *testing.T) {
 }
 
 func TestProgramFixtures(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		file     string
@@ -426,6 +429,7 @@ func TestProgramFixtures(t *testing.T) {
 }
 
 func TestEnumFixtureTypedCalls(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "enums_fixture.vibe")
 
 	statusDraft := enumTestValue(t, script, "Status", "Draft")
@@ -457,6 +461,7 @@ func TestEnumFixtureTypedCalls(t *testing.T) {
 }
 
 func TestBlockErrorCases(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "blocks/error_cases.vibe")
 
 	requireCallErrorContains(t, script, "each_without_block", nil, CallOptions{}, "requires a block")
@@ -471,11 +476,13 @@ func TestBlockErrorCases(t *testing.T) {
 }
 
 func TestBlockErrorPropagation(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "blocks/block_error_propagation.vibe")
 	requireCallErrorContains(t, script, "explode", nil, CallOptions{}, "unknown_method")
 }
 
 func TestComplexExamplesStress(t *testing.T) {
+	t.Parallel()
 	highQuota := Config{StepQuota: 5_000_000}
 	massive := compileComplexExampleWithConfig(t, "massive.vibe", highQuota)
 	val, err := massive.Call(context.Background(), "run", nil, CallOptions{})
@@ -504,6 +511,7 @@ func TestComplexExamplesStress(t *testing.T) {
 // TestAllVibeFilesCompileAndRun discovers all .vibe files in tests/ and ensures
 // they compile and execute their run() function without error.
 func TestAllVibeFilesCompileAndRun(t *testing.T) {
+	t.Parallel()
 	testsDir := filepath.Join("..", "..", "tests")
 	var files []string
 	err := filepath.Walk(testsDir, func(path string, info os.FileInfo, err error) error {
@@ -541,6 +549,7 @@ func TestAllVibeFilesCompileAndRun(t *testing.T) {
 }
 
 func TestRuntimeErrorCases(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "errors/runtime.vibe")
 
 	requireCallErrorContains(t, script, "div_by_zero", nil, CallOptions{}, "division by zero")
@@ -552,6 +561,7 @@ func TestRuntimeErrorCases(t *testing.T) {
 }
 
 func TestTypeErrorCases(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "errors/types.vibe")
 
 	requireCallErrorContains(t, script, "sub_mismatch", nil, CallOptions{}, "unsupported")
@@ -563,12 +573,14 @@ func TestTypeErrorCases(t *testing.T) {
 }
 
 func TestAttributeErrorCases(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "errors/attributes.vibe")
 
 	requireCallErrorContains(t, script, "set_readonly", nil, CallOptions{}, "read-only property")
 }
 
 func TestYieldErrorCases(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "errors/yield.vibe")
 
 	requireCallErrorContains(t, script, "yield_without_block", nil, CallOptions{}, "no block given")
@@ -581,6 +593,7 @@ func TestYieldErrorCases(t *testing.T) {
 }
 
 func TestArgumentErrorCases(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "errors/arguments.vibe")
 
 	requireCallErrorContains(t, script, "too_few_args", nil, CallOptions{}, "argument")
@@ -601,6 +614,7 @@ func TestArgumentErrorCases(t *testing.T) {
 }
 
 func TestBlockEnvironmentIsolation(t *testing.T) {
+	t.Parallel()
 	source := `
 def run
   results = []
@@ -625,6 +639,7 @@ end
 }
 
 func TestBlockEnvironmentNoLeakBetweenCalls(t *testing.T) {
+	t.Parallel()
 	source := `
 def transform(items)
   items.map do |x|

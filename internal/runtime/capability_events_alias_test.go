@@ -24,6 +24,7 @@ func (s *eventsCapabilityStub) Publish(ctx context.Context, req EventPublishRequ
 }
 
 func TestEventsCapabilityPublish(t *testing.T) {
+	t.Parallel()
 	stub := &eventsCapabilityStub{publishResult: NewBool(true)}
 	script := compileScriptDefault(t, `def run()
   events.publish("players_totals", { id: "p-1", total: "55.00 USD" }, trace: "abc")
@@ -56,6 +57,7 @@ end`)
 }
 
 func TestEventsCapabilityRejectsCallablePayload(t *testing.T) {
+	t.Parallel()
 	stub := &eventsCapabilityStub{}
 	script := compileScriptDefault(t, `def helper(value)
   value
@@ -72,6 +74,7 @@ end`)
 }
 
 func TestEventsCapabilityRejectsNonHashPayload(t *testing.T) {
+	t.Parallel()
 	stub := &eventsCapabilityStub{}
 	script := compileScriptDefault(t, `def run()
   events.publish("topic", 42)
@@ -84,6 +87,7 @@ end`)
 }
 
 func TestEventsCapabilityRejectsCallableReturn(t *testing.T) {
+	t.Parallel()
 	stub := &eventsCapabilityStub{
 		publishResult: NewObject(map[string]Value{
 			"fn": NewBuiltin("leak.fn", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -102,6 +106,7 @@ end`)
 }
 
 func TestEventsCapabilityReturnsAreClonedFromHostState(t *testing.T) {
+	t.Parallel()
 	stub := &eventsCapabilityStub{
 		publishResult: NewHash(map[string]Value{
 			"meta": NewHash(map[string]Value{
@@ -125,6 +130,7 @@ end`)
 }
 
 func TestNewEventsCapabilityRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
 	stub := &eventsCapabilityStub{}
 	_, err := NewEventsCapability("", stub)
 	requireErrorContains(t, err, "name must be non-empty")

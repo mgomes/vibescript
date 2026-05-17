@@ -21,6 +21,7 @@ func (c strictEffectsCapability) Bind(binding CapabilityBinding) (map[string]Val
 }
 
 func TestStrictEffectsRejectsCallableGlobals(t *testing.T) {
+	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
   db.save("player-1")
 end`)
@@ -43,6 +44,7 @@ end`)
 }
 
 func TestStrictEffectsAllowsDataGlobals(t *testing.T) {
+	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
   tenant
 end`)
@@ -58,6 +60,7 @@ end`)
 }
 
 func TestStrictEffectsAllowsCapabilities(t *testing.T) {
+	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
   db.save("player-1")
 end`)

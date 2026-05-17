@@ -6,6 +6,7 @@ import (
 )
 
 func TestCapabilityFoundationsMixedAdapters(t *testing.T) {
+	t.Parallel()
 	db := &dbCapabilityStub{
 		findResult: NewHash(map[string]Value{
 			"id":     NewString("player-1"),
@@ -58,6 +59,7 @@ end`)
 }
 
 func TestCapabilityFoundationsEachRespectsStepQuota(t *testing.T) {
+	t.Parallel()
 	rows := make([]Value, 120)
 	for i := range rows {
 		rows[i] = NewHash(map[string]Value{"amount": NewInt(1)})
@@ -79,6 +81,7 @@ end`)
 }
 
 func TestCapabilityFoundationsEachNoopBlockRespectsStepQuota(t *testing.T) {
+	t.Parallel()
 	rows := make([]Value, 120)
 	for i := range rows {
 		rows[i] = NewHash(map[string]Value{"amount": NewInt(1)})
@@ -97,6 +100,7 @@ end`)
 }
 
 func TestCapabilityFoundationsEachRespectsRecursionLimit(t *testing.T) {
+	t.Parallel()
 	db := &dbCapabilityStub{
 		eachRows: []Value{
 			NewHash(map[string]Value{"id": NewString("row-1")}),

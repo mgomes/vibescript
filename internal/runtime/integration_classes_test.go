@@ -6,11 +6,13 @@ import (
 )
 
 func TestClassPrivacyEnforced(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "classes/privacy.vibe")
 	requireCallErrorContains(t, script, "violate", nil, CallOptions{}, "private method secret")
 }
 
 func TestClassErrorCases(t *testing.T) {
+	t.Parallel()
 	script := compileTestProgram(t, "errors/classes.vibe")
 
 	requireCallErrorContains(t, script, "undefined_method", nil, CallOptions{}, "unknown")

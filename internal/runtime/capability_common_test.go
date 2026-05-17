@@ -5,6 +5,7 @@ import (
 )
 
 func TestValidateCapabilityTypedValueUsesCompositeTypeChecks(t *testing.T) {
+	t.Parallel()
 	unionType := &TypeExpr{
 		Kind: TypeUnion,
 		Union: []*TypeExpr{
@@ -29,6 +30,7 @@ func TestValidateCapabilityTypedValueUsesCompositeTypeChecks(t *testing.T) {
 }
 
 func TestValidateCapabilityTypedValueUsesShapeTypeChecks(t *testing.T) {
+	t.Parallel()
 	shapeType := &TypeExpr{
 		Kind: TypeShape,
 		Shape: map[string]*TypeExpr{

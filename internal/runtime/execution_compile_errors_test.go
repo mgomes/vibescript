@@ -9,6 +9,7 @@ import (
 )
 
 func TestCombineErrorsJoinsWithBlankLines(t *testing.T) {
+	t.Parallel()
 	got := combineErrors([]error{errors.New("a"), errors.New("b"), errors.New("c")})
 	want := "a\n\nb\n\nc"
 	if got.Error() != want {
@@ -17,6 +18,7 @@ func TestCombineErrorsJoinsWithBlankLines(t *testing.T) {
 }
 
 func TestCombineErrorsSingleErrorPassesThrough(t *testing.T) {
+	t.Parallel()
 	orig := errors.New("only")
 	if got := combineErrors([]error{orig}); got != orig { //nolint:errorlint // verifying identity, not wrapped equivalence
 		t.Fatalf("combineErrors = %v, want original error instance", got)
@@ -28,6 +30,8 @@ func TestCombineErrorsSingleErrorPassesThrough(t *testing.T) {
 // parse error, and the joiner concatenated them with `msg +=` in a loop.
 // At 4 KB of `\x80` bytes the old code took ~10s; the fix is sub-millisecond.
 func TestCompileInvalidUTF8IsLinear(t *testing.T) {
+	// not parallel-safe: enforces a wall-clock budget that other parallel
+	// tests could starve under load, producing false-positive regressions.
 	engine := MustNewEngine(Config{})
 	src := strings.Repeat("\x80", 4096)
 

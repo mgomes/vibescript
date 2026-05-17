@@ -6,6 +6,7 @@ import (
 )
 
 func TestContextCapabilityResolver(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   ctx.user.id
 end`)
@@ -34,6 +35,7 @@ end`)
 }
 
 func TestContextCapabilityRejectsCallableValue(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   ctx.user.id
 end`)
@@ -56,6 +58,7 @@ end`)
 }
 
 func TestContextCapabilityRejectsNonObjectValue(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   1
 end`)
@@ -71,6 +74,7 @@ end`)
 }
 
 func TestContextCapabilityRejectsCyclicValue(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run()
   ctx
 end`)
@@ -88,6 +92,7 @@ end`)
 }
 
 func TestNewContextCapabilityRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
 	resolver := func(context.Context) (Value, error) { return NewObject(map[string]Value{}), nil }
 
 	_, err := NewContextCapability("", resolver)

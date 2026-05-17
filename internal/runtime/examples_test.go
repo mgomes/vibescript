@@ -228,6 +228,7 @@ type exampleCase struct {
 }
 
 func TestExamples(t *testing.T) {
+	t.Parallel()
 	cases := []exampleCase{
 		{
 			name:     "basics/add_numbers",
@@ -2112,6 +2113,7 @@ func TestExamples(t *testing.T) {
 }
 
 func TestAllExampleFilesCompile(t *testing.T) {
+	t.Parallel()
 	examplesDir := filepath.Join("..", "..", "examples")
 	var files []string
 	err := filepath.Walk(examplesDir, func(path string, info os.FileInfo, err error) error {

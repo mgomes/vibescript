@@ -6,6 +6,7 @@ import (
 )
 
 func TestEnumsProvideNominalValuesAndTypedCoercion(t *testing.T) {
+	t.Parallel()
 	script := compileScript(t, `
 enum Status
   Draft
@@ -130,6 +131,7 @@ end`)
 }
 
 func TestEnumReturnTypeRejectsWrongEnum(t *testing.T) {
+	t.Parallel()
 	script := compileScript(t, `
 enum Status
   Draft
@@ -147,6 +149,7 @@ end`)
 }
 
 func TestNullableEnumTypesAcceptNilAndEnumValues(t *testing.T) {
+	t.Parallel()
 	script := compileScript(t, `
 enum Status
   Draft
@@ -175,6 +178,7 @@ end
 }
 
 func TestEnumMemberNamedEnumSupportsScopedAndReflectiveAccess(t *testing.T) {
+	t.Parallel()
 	script := compileScript(t, `
 enum Status
   enum
@@ -199,6 +203,7 @@ end
 }
 
 func TestLookupEnumInEnvSkipsNonEnumShadowBindings(t *testing.T) {
+	t.Parallel()
 	enumDef, err := compileEnumDef(&EnumStmt{
 		Name: "Status",
 		Members: []EnumMemberStmt{
@@ -228,6 +233,7 @@ func TestLookupEnumInEnvSkipsNonEnumShadowBindings(t *testing.T) {
 }
 
 func TestLookupEnumInEnvRejectsAmbiguousCaseInsensitiveMatches(t *testing.T) {
+	t.Parallel()
 	statusDef, err := compileEnumDef(&EnumStmt{
 		Name: "Status",
 		Members: []EnumMemberStmt{
@@ -258,6 +264,7 @@ func TestLookupEnumInEnvRejectsAmbiguousCaseInsensitiveMatches(t *testing.T) {
 }
 
 func TestEnumTypeAnnotationsResolveCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	script := compileScript(t, `
 enum Status
   Draft
@@ -288,6 +295,7 @@ end
 }
 
 func TestEnumTypeAnnotationsRejectAmbiguousCaseInsensitiveMatches(t *testing.T) {
+	t.Parallel()
 	script := compileScript(t, `
 enum Status
   Draft
@@ -306,6 +314,7 @@ end
 }
 
 func TestEnumModuleExportsAndTypedCalls(t *testing.T) {
+	t.Parallel()
 	engine := moduleTestEngine(t)
 	script := compileScriptWithEngine(t, engine, `def run()
   mod = require("enum_status")
