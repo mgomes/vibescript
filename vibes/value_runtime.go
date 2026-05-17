@@ -61,47 +61,73 @@ func NewBuiltin(name string, fn BuiltinFunc) Value { return newBuiltin(name, fn,
 // NewAutoBuiltin returns a builtin function Value that auto-invokes without parentheses.
 func NewAutoBuiltin(name string, fn BuiltinFunc) Value { return newBuiltin(name, fn, true) }
 
-// valueClass returns the *ClassDef stored in v, or nil.
-func valueClass(v Value) *ClassDef {
+// Marker methods bind the runtime payload types to the value.* payload
+// interfaces so Value.Class, Value.Builtin, and so on return a typed
+// result without forming an import cycle. The names are exported so the
+// marker satisfies the interfaces from another package.
+
+func (*Builtin) ValueBuiltinMarker()         {}
+func (*Block) ValueBlockMarker()             {}
+func (*ClassDef) ValueClassMarker()          {}
+func (*Instance) ValueInstanceMarker()       {}
+func (*ScriptFunction) ValueFunctionMarker() {}
+func (*EnumDef) ValueEnumMarker()            {}
+func (*EnumValueDef) ValueEnumValueMarker()  {}
+
+// ClassOf returns the *ClassDef stored in v, or nil if v is not a class
+// value. It is the typed companion to v.Class(), which returns the
+// value.ClassPayload interface for cycle-free reach from outside vibes.
+func ClassOf(v Value) *ClassDef {
 	cl, _ := v.Class().(*ClassDef)
 	return cl
 }
 
-// valueInstance returns the *Instance stored in v, or nil.
-func valueInstance(v Value) *Instance {
+// InstanceOf returns the *Instance stored in v, or nil.
+func InstanceOf(v Value) *Instance {
 	inst, _ := v.Instance().(*Instance)
 	return inst
 }
 
-// valueBlock returns the *Block stored in v, or nil.
-func valueBlock(v Value) *Block {
+// BlockOf returns the *Block stored in v, or nil.
+func BlockOf(v Value) *Block {
 	blk, _ := v.Block().(*Block)
 	return blk
 }
 
-// valueFunction returns the *ScriptFunction stored in v, or nil.
-func valueFunction(v Value) *ScriptFunction {
+// FunctionOf returns the *ScriptFunction stored in v, or nil.
+func FunctionOf(v Value) *ScriptFunction {
 	fn, _ := v.Function().(*ScriptFunction)
 	return fn
 }
 
-// valueBuiltin returns the *Builtin stored in v, or nil.
-func valueBuiltin(v Value) *Builtin {
+// BuiltinOf returns the *Builtin stored in v, or nil.
+func BuiltinOf(v Value) *Builtin {
 	b, _ := v.Builtin().(*Builtin)
 	return b
 }
 
-// valueEnum returns the *EnumDef stored in v, or nil.
-func valueEnum(v Value) *EnumDef {
+// EnumOf returns the *EnumDef stored in v, or nil.
+func EnumOf(v Value) *EnumDef {
 	e, _ := v.Enum().(*EnumDef)
 	return e
 }
 
-// valueEnumValue returns the *EnumValueDef stored in v, or nil.
-func valueEnumValue(v Value) *EnumValueDef {
+// EnumValueOf returns the *EnumValueDef stored in v, or nil.
+func EnumValueOf(v Value) *EnumValueDef {
 	e, _ := v.EnumValue().(*EnumValueDef)
 	return e
 }
+
+// The valueX helpers preserve the original short call sites used inside
+// the vibes package; new external callers should prefer the exported
+// XOf functions above.
+func valueClass(v Value) *ClassDef          { return ClassOf(v) }
+func valueInstance(v Value) *Instance       { return InstanceOf(v) }
+func valueBlock(v Value) *Block             { return BlockOf(v) }
+func valueFunction(v Value) *ScriptFunction { return FunctionOf(v) }
+func valueBuiltin(v Value) *Builtin         { return BuiltinOf(v) }
+func valueEnum(v Value) *EnumDef            { return EnumOf(v) }
+func valueEnumValue(v Value) *EnumValueDef  { return EnumValueOf(v) }
 
 // runtimeValueString renders runtime-only value kinds whose payloads live
 // in the vibes package. Installed at init time on value.RuntimeStringer.

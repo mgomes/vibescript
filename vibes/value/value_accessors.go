@@ -90,70 +90,77 @@ func (v Value) Range() Range {
 
 // Class returns the underlying class payload of v, or nil if v is not a
 // class. The concrete type lives in the vibes package; callers type-assert
-// against *vibes.ClassDef.
-func (v Value) Class() any {
+// against *vibes.ClassDef to access fields.
+func (v Value) Class() ClassPayload {
 	if v.kind != KindClass {
 		return nil
 	}
-	return v.data
+	cl, _ := v.data.(ClassPayload)
+	return cl
 }
 
 // Instance returns the underlying instance payload of v, or nil if v is
 // not an instance. The concrete type lives in the vibes package; callers
-// type-assert against *vibes.Instance.
-func (v Value) Instance() any {
+// type-assert against *vibes.Instance to access fields.
+func (v Value) Instance() InstancePayload {
 	if v.kind != KindInstance {
 		return nil
 	}
-	return v.data
+	inst, _ := v.data.(InstancePayload)
+	return inst
 }
 
 // Block returns the underlying block payload of v, or nil if v is not a
 // block. The concrete type lives in the vibes package; callers type-assert
-// against *vibes.Block.
-func (v Value) Block() any {
+// against *vibes.Block to access fields.
+func (v Value) Block() BlockPayload {
 	if v.kind != KindBlock {
 		return nil
 	}
-	return v.data
+	blk, _ := v.data.(BlockPayload)
+	return blk
 }
 
 // Function returns the underlying script-function payload of v, or nil if
 // v is not a function. The concrete type lives in the vibes package;
-// callers type-assert against *vibes.ScriptFunction.
-func (v Value) Function() any {
+// callers type-assert against *vibes.ScriptFunction to access fields.
+func (v Value) Function() FunctionPayload {
 	if v.kind != KindFunction {
 		return nil
 	}
-	return v.data
+	fn, _ := v.data.(FunctionPayload)
+	return fn
 }
 
 // Builtin returns the underlying builtin payload of v, or nil if v is not
 // a builtin. The concrete type lives in the vibes package; callers
-// type-assert against *vibes.Builtin.
-func (v Value) Builtin() any {
+// type-assert against *vibes.Builtin to access fields.
+func (v Value) Builtin() BuiltinPayload {
 	if v.kind != KindBuiltin {
 		return nil
 	}
-	return v.data
+	b, _ := v.data.(BuiltinPayload)
+	return b
 }
 
 // Enum returns the underlying enum definition payload of v, or nil if v
 // is not an enum. The concrete type lives in the vibes package; callers
-// type-assert against *vibes.EnumDef.
-func (v Value) Enum() any {
+// type-assert against *vibes.EnumDef to access fields.
+func (v Value) Enum() EnumPayload {
 	if v.kind != KindEnum {
 		return nil
 	}
-	return v.data
+	e, _ := v.data.(EnumPayload)
+	return e
 }
 
 // EnumValue returns the underlying enum value payload of v, or nil if v
 // is not an enum value. The concrete type lives in the vibes package;
-// callers type-assert against *vibes.EnumValueDef.
-func (v Value) EnumValue() any {
+// callers type-assert against *vibes.EnumValueDef to access fields.
+func (v Value) EnumValue() EnumValuePayload {
 	if v.kind != KindEnumValue {
 		return nil
 	}
-	return v.data
+	e, _ := v.data.(EnumValuePayload)
+	return e
 }

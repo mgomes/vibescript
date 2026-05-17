@@ -46,22 +46,47 @@ const (
 	KindInstance  = value.KindInstance
 )
 
-// Constructors re-exported from vibes/value.
-var (
-	NewNil      = value.NewNil
-	NewBool     = value.NewBool
-	NewInt      = value.NewInt
-	NewFloat    = value.NewFloat
-	NewString   = value.NewString
-	NewArray    = value.NewArray
-	NewHash     = value.NewHash
-	NewSymbol   = value.NewSymbol
-	NewObject   = value.NewObject
-	NewMoney    = value.NewMoney
-	NewDuration = value.NewDuration
-	NewTime     = value.NewTime
-	NewRange    = value.NewRange
-)
+// Constructors are exposed as thin wrapper functions rather than vars so
+// the public API stays immutable for embedders.
+
+// NewNil returns a nil Value.
+func NewNil() Value { return value.NewNil() }
+
+// NewBool returns a boolean Value.
+func NewBool(b bool) Value { return value.NewBool(b) }
+
+// NewInt returns an integer Value.
+func NewInt(i int64) Value { return value.NewInt(i) }
+
+// NewFloat returns a floating-point Value.
+func NewFloat(f float64) Value { return value.NewFloat(f) }
+
+// NewString returns a string Value.
+func NewString(s string) Value { return value.NewString(s) }
+
+// NewArray returns an array Value.
+func NewArray(a []Value) Value { return value.NewArray(a) }
+
+// NewHash returns a hash (map) Value.
+func NewHash(h map[string]Value) Value { return value.NewHash(h) }
+
+// NewSymbol returns a symbol Value.
+func NewSymbol(name string) Value { return value.NewSymbol(name) }
+
+// NewObject returns an object Value with the given attributes.
+func NewObject(attrs map[string]Value) Value { return value.NewObject(attrs) }
+
+// NewMoney returns a money Value.
+func NewMoney(m Money) Value { return value.NewMoney(m) }
+
+// NewDuration returns a duration Value.
+func NewDuration(d Duration) Value { return value.NewDuration(d) }
+
+// NewTime returns a time Value.
+func NewTime(t time.Time) Value { return value.NewTime(t) }
+
+// NewRange returns a range Value.
+func NewRange(r Range) Value { return value.NewRange(r) }
 
 // Helper functions re-exported from vibes/value. These remain reachable
 // under their original unexported names through thin wrappers below.
