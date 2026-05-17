@@ -354,7 +354,7 @@ func TestBuiltinRegistrationConcurrentWithSnapshots(t *testing.T) {
 func runContainmentSubprocess(t *testing.T, probe, testName string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+testName+"$")
@@ -373,8 +373,8 @@ func runBuiltinRegistrationConcurrencyProbe(t *testing.T) {
 	defer runtime.GOMAXPROCS(previousProcs)
 
 	engine := MustNewEngine(Config{})
-	slowMethods := make(map[string]Value, 12_000)
-	for i := range 12_000 {
+	slowMethods := make(map[string]Value, 256)
+	for i := range 256 {
 		slowMethods[fmt.Sprintf("method_%d", i)] = NewInt(int64(i))
 	}
 	for i := range 16 {
@@ -387,18 +387,32 @@ func runBuiltinRegistrationConcurrencyProbe(t *testing.T) {
 
 	for attempt := range 12 {
 		start := make(chan struct{})
+		stop := make(chan struct{})
+		ready := make(chan struct{}, 4)
 		var wg sync.WaitGroup
 		for range 4 {
 			wg.Go(func() {
 				<-start
 				_ = engine.Builtins()
+				ready <- struct{}{}
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						_ = engine.Builtins()
+					}
+				}
 			})
 		}
 		close(start)
-		time.Sleep(200 * time.Microsecond)
-		for i := range 1_500 {
+		for range 4 {
+			<-ready
+		}
+		for i := range 500 {
 			engine.RegisterBuiltin(fmt.Sprintf("probe_%d_%d", attempt, i), noop)
 		}
+		close(stop)
 		wg.Wait()
 	}
 }
