@@ -35,7 +35,7 @@ fuzz fuzztime='10s':
 		FuzzModulePolicyValidation \
 		FuzzCapabilityInputValidation
 	do
-		go test ./vibes -run=^$ -fuzz="$target" -fuzztime="$fuzztime"
+		go test ./internal/runtime -run=^$ -fuzz="$target" -fuzztime="$fuzztime"
 	done
 
 bench:

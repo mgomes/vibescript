@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Hid the runtime (interpreter, execution engine, module loader, builtins,
+  capability adapters) under `internal/runtime`; outside callers can no
+  longer import it. `vibes` keeps source-compatible type aliases for
+  `Engine`, `Config`, `Script`, `ScriptFunction`, `CallOptions`,
+  `Execution`, `Builtin`, `BuiltinFunc`, `Block`, `ClassDef`, `Instance`,
+  `EnumDef`, `EnumValueDef`, `Env`, `RuntimeError`, `StackFrame`, and the
+  capability interfaces (`CapabilityAdapter`, `CapabilityBinding`,
+  `CapabilityMethodContract`, `CapabilityContractProvider`) plus all
+  constructor and accessor entry points (`NewEngine`, `NewBuiltin`,
+  `NewClass`, `NewInstance`, `NewEnum`, `NewEnumValue`, `NewFunction`,
+  `NewBlock`, `BuiltinOf`, `ClassOf`, `InstanceOf`, `FunctionOf`,
+  `EnumOf`, `EnumValueOf`, `BlockOf`, `NewDBCapability`,
+  `NewEventsCapability`, `NewJobQueueCapability`, `NewContextCapability`,
+  etc.). Embedders should see no source-level breakage from this PR.
 - Hid the AST and parser under `internal/ast` and `internal/parser`; outside
   callers can no longer import these packages. `vibes` keeps `Deprecated:`
   type aliases for every previously exported AST node so existing embedders

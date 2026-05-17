@@ -9,7 +9,7 @@ Runs a benchmark with CPU and memory profiles and writes profile summaries.
 
 options:
   --pattern <regex>   Benchmark regex (default: ^BenchmarkExecutionArrayPipeline$)
-  --package <path>    Go package to benchmark (default: ./vibes)
+  --package <path>    Go package to benchmark (default: ./internal/runtime)
   --benchtime <dur>   Benchtime passed to `go test` (default: 1s)
   --count <n>         Benchmark count (default: 1)
   --cpu <list>        CPU list for `go test -cpu` (default: 1)
@@ -19,7 +19,7 @@ EOF
 }
 
 pattern="^BenchmarkExecutionArrayPipeline$"
-pkg="./vibes"
+pkg="./internal/runtime"
 benchtime="1s"
 count="1"
 cpu="1"
