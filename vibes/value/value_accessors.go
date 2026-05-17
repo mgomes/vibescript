@@ -89,8 +89,8 @@ func (v Value) Range() Range {
 }
 
 // Class returns the underlying class payload of v, or nil if v is not a
-// class. The concrete type lives in the vibes package; callers type-assert
-// against *vibes.ClassDef to access fields.
+// class. The concrete type is private to the runtime; callers operate
+// through the ClassPayload marker.
 func (v Value) Class() ClassPayload {
 	if v.kind != KindClass {
 		return nil
@@ -100,8 +100,8 @@ func (v Value) Class() ClassPayload {
 }
 
 // Instance returns the underlying instance payload of v, or nil if v is
-// not an instance. The concrete type lives in the vibes package; callers
-// type-assert against *vibes.Instance to access fields.
+// not an instance. The concrete type is private to the runtime; callers
+// operate through the InstancePayload marker.
 func (v Value) Instance() InstancePayload {
 	if v.kind != KindInstance {
 		return nil
@@ -111,8 +111,8 @@ func (v Value) Instance() InstancePayload {
 }
 
 // Block returns the underlying block payload of v, or nil if v is not a
-// block. The concrete type lives in the vibes package; callers type-assert
-// against *vibes.Block to access fields.
+// block. The concrete type is private to the runtime; callers operate
+// through the BlockPayload marker.
 func (v Value) Block() BlockPayload {
 	if v.kind != KindBlock {
 		return nil
@@ -122,8 +122,8 @@ func (v Value) Block() BlockPayload {
 }
 
 // Function returns the underlying script-function payload of v, or nil if
-// v is not a function. The concrete type lives in the vibes package;
-// callers type-assert against *vibes.ScriptFunction to access fields.
+// v is not a function. The concrete type is private to the runtime;
+// callers operate through the FunctionPayload marker.
 func (v Value) Function() FunctionPayload {
 	if v.kind != KindFunction {
 		return nil
@@ -133,8 +133,8 @@ func (v Value) Function() FunctionPayload {
 }
 
 // Builtin returns the underlying builtin payload of v, or nil if v is not
-// a builtin. The concrete type lives in the vibes package; callers
-// type-assert against *vibes.Builtin to access fields.
+// a builtin. The concrete type is private to the runtime; callers
+// operate through the BuiltinPayload marker.
 func (v Value) Builtin() BuiltinPayload {
 	if v.kind != KindBuiltin {
 		return nil
@@ -144,8 +144,8 @@ func (v Value) Builtin() BuiltinPayload {
 }
 
 // Enum returns the underlying enum definition payload of v, or nil if v
-// is not an enum. The concrete type lives in the vibes package; callers
-// type-assert against *vibes.EnumDef to access fields.
+// is not an enum. The concrete type is private to the runtime; callers
+// operate through the EnumPayload marker.
 func (v Value) Enum() EnumPayload {
 	if v.kind != KindEnum {
 		return nil
@@ -155,8 +155,8 @@ func (v Value) Enum() EnumPayload {
 }
 
 // EnumValue returns the underlying enum value payload of v, or nil if v
-// is not an enum value. The concrete type lives in the vibes package;
-// callers type-assert against *vibes.EnumValueDef to access fields.
+// is not an enum value. The concrete type is private to the runtime;
+// callers operate through the EnumValuePayload marker.
 func (v Value) EnumValue() EnumValuePayload {
 	if v.kind != KindEnumValue {
 		return nil

@@ -2,34 +2,35 @@ package value
 
 // Runtime-kind payload interfaces.
 //
-// Values whose payload type lives in the vibes package (block, class,
+// Values whose payload type lives in the runtime (block, class,
 // instance, enum, function, builtin) need a way to surface a typed
 // accessor on Value without forming an import cycle. Each interface
-// below is implemented by the corresponding concrete type in the vibes
-// package; the typed accessors on Value return the interface, and
-// embedders type-assert to the concrete *vibes.X to reach all fields.
+// below is implemented by the corresponding concrete type defined in
+// the internal runtime; the typed accessors on Value return the
+// interface, and the runtime keeps the concrete type private. Embedders
+// observe these payloads only through the interfaces.
 //
 // The marker methods are intentionally minimal: they exist only to bind
 // the interface to a specific concrete type, not to expose behavior.
 
-// ClassPayload is implemented by *vibes.ClassDef so that Value.Class can
-// return a typed result without importing vibes.
+// ClassPayload is the marker implemented by the runtime class type so
+// Value.Class can return a typed result without importing the runtime.
 type ClassPayload interface{ ValueClassMarker() }
 
-// InstancePayload is implemented by *vibes.Instance.
+// InstancePayload is the marker implemented by the runtime instance type.
 type InstancePayload interface{ ValueInstanceMarker() }
 
-// BlockPayload is implemented by *vibes.Block.
+// BlockPayload is the marker implemented by the runtime block type.
 type BlockPayload interface{ ValueBlockMarker() }
 
-// FunctionPayload is implemented by *vibes.ScriptFunction.
+// FunctionPayload is the marker implemented by the runtime script-function type.
 type FunctionPayload interface{ ValueFunctionMarker() }
 
-// BuiltinPayload is implemented by *vibes.Builtin.
+// BuiltinPayload is the marker implemented by the runtime builtin type.
 type BuiltinPayload interface{ ValueBuiltinMarker() }
 
-// EnumPayload is implemented by *vibes.EnumDef.
+// EnumPayload is the marker implemented by the runtime enum type.
 type EnumPayload interface{ ValueEnumMarker() }
 
-// EnumValuePayload is implemented by *vibes.EnumValueDef.
+// EnumValuePayload is the marker implemented by the runtime enum-value type.
 type EnumValuePayload interface{ ValueEnumValueMarker() }

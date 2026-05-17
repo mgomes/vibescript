@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 var (
@@ -60,7 +61,7 @@ type historyEntry struct {
 type replModel struct {
 	textInput   textinput.Model
 	engine      *vibes.Engine
-	env         map[string]vibes.Value
+	env         map[string]value.Value
 	history     []historyEntry
 	cmdHistory  []string
 	historyIdx  int
@@ -220,7 +221,7 @@ func newREPLModel() (replModel, error) {
 	return replModel{
 		textInput:  ti,
 		engine:     engine,
-		env:        make(map[string]vibes.Value),
+		env:        make(map[string]value.Value),
 		historyIdx: -1,
 		showHelp:   false,
 		showVars:   false,
@@ -350,7 +351,7 @@ func (m replModel) handleCommand(input string) (replModel, tea.Cmd) {
 			isErr:  false,
 		})
 	case ":reset", ":r":
-		m.env = make(map[string]vibes.Value)
+		m.env = make(map[string]value.Value)
 		m.history = append(m.history, historyEntry{
 			input:  input,
 			output: "Environment reset",
@@ -469,7 +470,7 @@ func (m *replModel) evaluate(input string) (string, bool) {
 	return formatValue(result), false
 }
 
-func (m *replModel) extractAssignments(script *vibes.Script, result vibes.Value) {
+func (m *replModel) extractAssignments(script *vibes.Script, result value.Value) {
 	if result.IsNil() || script == nil {
 		return
 	}
@@ -492,11 +493,11 @@ func (m *replModel) extractAssignments(script *vibes.Script, result vibes.Value)
 	m.env[ident.Name] = result
 }
 
-func formatValue(v vibes.Value) string {
+func formatValue(v value.Value) string {
 	return v.String()
 }
 
-func sortedEnvKeys(env map[string]vibes.Value) []string {
+func sortedEnvKeys(env map[string]value.Value) []string {
 	keys := make([]string, 0, len(env))
 	for key := range env {
 		keys = append(keys, key)
@@ -505,7 +506,7 @@ func sortedEnvKeys(env map[string]vibes.Value) []string {
 	return keys
 }
 
-func globalsSnapshot(env map[string]vibes.Value) string {
+func globalsSnapshot(env map[string]value.Value) string {
 	if len(env) == 0 {
 		return "No globals defined"
 	}
@@ -516,16 +517,16 @@ func globalsSnapshot(env map[string]vibes.Value) string {
 	return strings.Join(lines, "\n")
 }
 
-func isCallableValue(val vibes.Value) bool {
+func isCallableValue(val value.Value) bool {
 	switch val.Kind() {
-	case vibes.KindFunction, vibes.KindBuiltin, vibes.KindBlock, vibes.KindClass:
+	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass:
 		return true
 	default:
 		return false
 	}
 }
 
-func functionsSnapshot(env map[string]vibes.Value) string {
+func functionsSnapshot(env map[string]value.Value) string {
 	names := make([]string, 0, len(replBuiltinFunctionNames)+len(env))
 	names = append(names, replBuiltinFunctionNames...)
 	for _, name := range sortedEnvKeys(env) {
@@ -537,7 +538,7 @@ func functionsSnapshot(env map[string]vibes.Value) string {
 	return strings.Join(names, "\n")
 }
 
-func typesSnapshot(env map[string]vibes.Value) string {
+func typesSnapshot(env map[string]value.Value) string {
 	if len(env) == 0 {
 		return "No globals defined"
 	}
@@ -618,7 +619,7 @@ func altScreenView(content string) tea.View {
 	return view
 }
 
-func renderVarsPanel(env map[string]vibes.Value, width int) string {
+func renderVarsPanel(env map[string]value.Value, width int) string {
 	if len(env) == 0 {
 		return borderStyle.Render(mutedStyle.Render("No variables defined"))
 	}
