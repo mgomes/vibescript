@@ -18,6 +18,13 @@ All notable changes to this project will be documented in this file.
   subpackage. `vibes` re-exports the surface via type aliases and constructor
   wrappers so existing imports keep compiling; the aliases will be removed in
   v0.29.0 alongside direct migration of internal references.
+- Carved the database capability into a new
+  `github.com/mgomes/vibescript/vibes/capability/db` subpackage. `vibes` keeps
+  the public surface intact via `Database`, `DB*Request` type aliases and
+  `NewDBCapability` / `MustNewDBCapability` constructor wrappers; the aliases
+  will be removed in v0.29.0. Adapters that need the runtime can use the new
+  `Execution.Context()` and `Execution.Step()` accessors instead of reaching
+  into unexported fields.
 - Ongoing work toward the next pre-1.0 release.
 
 ## v0.28.2 - 2026-05-16
