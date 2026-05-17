@@ -1,5 +1,9 @@
 package value
 
+// Money is a domain-shaped scalar that also serves as a Value payload
+// (KindMoney). It lives in the value package alongside Value itself
+// because of that coupling; see doc.go for the rationale.
+
 import (
 	"errors"
 	"fmt"
