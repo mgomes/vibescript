@@ -18,7 +18,7 @@ def run(status: Status) -> Status
 end`
 
 	p := newParser(source)
-	program, errs := p.ParseProgram()
+	program, errs := p.parseProgram()
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
@@ -83,7 +83,7 @@ def run(status: Status?) -> Status?
 end`
 
 	p := newParser(source)
-	program, errs := p.ParseProgram()
+	program, errs := p.parseProgram()
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
@@ -111,7 +111,7 @@ func TestParserEnumRejectsNestedDeclarations(t *testing.T) {
 end`
 
 	p := newParser(source)
-	_, errs := p.ParseProgram()
+	_, errs := p.parseProgram()
 	if len(errs) == 0 {
 		t.Fatalf("expected parse errors")
 	}
@@ -127,7 +127,7 @@ func TestParserEnumRejectsDuplicateMembers(t *testing.T) {
 end`
 
 	p := newParser(source)
-	_, errs := p.ParseProgram()
+	_, errs := p.parseProgram()
 	if len(errs) == 0 {
 		t.Fatalf("expected parse errors")
 	}

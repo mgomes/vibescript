@@ -16,7 +16,7 @@ func TestParserTypeSyntaxCompositeForms(t *testing.T) {
 end`
 
 	p := newParser(source)
-	program, errs := p.ParseProgram()
+	program, errs := p.parseProgram()
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
@@ -75,7 +75,7 @@ func TestParserTypeShapeRejectsDuplicateFields(t *testing.T) {
 end`
 
 	p := newParser(source)
-	_, errs := p.ParseProgram()
+	_, errs := p.parseProgram()
 	if len(errs) == 0 {
 		t.Fatalf("expected parse errors")
 	}
@@ -90,7 +90,7 @@ func TestParserTypeShapeAllowsEnumFieldName(t *testing.T) {
 end`
 
 	p := newParser(source)
-	program, errs := p.ParseProgram()
+	program, errs := p.parseProgram()
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
@@ -125,7 +125,7 @@ func TestParserTypeSyntaxTypedBlockParameters(t *testing.T) {
 end`
 
 	p := newParser(source)
-	program, errs := p.ParseProgram()
+	program, errs := p.parseProgram()
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
@@ -180,7 +180,7 @@ func TestParserTypeSyntaxRejectsGenericArgsOnScalars(t *testing.T) {
 end`
 
 	p := newParser(source)
-	_, errs := p.ParseProgram()
+	_, errs := p.parseProgram()
 	if len(errs) == 0 {
 		t.Fatalf("expected parse errors")
 	}
@@ -214,7 +214,7 @@ end`,
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newParser(tt.source)
-			_, errs := p.ParseProgram()
+			_, errs := p.parseProgram()
 			if len(errs) == 0 {
 				t.Fatalf("expected parse errors")
 			}

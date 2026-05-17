@@ -1,10 +1,11 @@
-// Package parser contains the Vibescript lexer and parser. It produces
-// internal/ast trees consumed by the runtime. It is an internal
-// package and is not part of the supported public API.
 package parser
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/mgomes/vibescript/internal/ast"
+	"github.com/mgomes/vibescript/vibes/source"
 )
 
 type (
@@ -93,10 +94,10 @@ func (p *parser) nextToken() {
 // resulting AST together with any parse errors encountered. It is the
 // stable entry point used by callers within the module.
 func Parse(source string) (*ast.Program, []error) {
-	return newParser(source).ParseProgram()
+	return newParser(source).parseProgram()
 }
 
-func (p *parser) ParseProgram() (*ast.Program, []error) {
+func (p *parser) parseProgram() (*ast.Program, []error) {
 	program := &ast.Program{}
 
 	for p.curToken.Type != ast.TokenEOF {
@@ -108,6 +109,41 @@ func (p *parser) ParseProgram() (*ast.Program, []error) {
 	}
 
 	return program, p.errors
+}
+
+const (
+	lowestPrec = iota
+	precAssign
+	precOr
+	precAnd
+	precEquality
+	precComparison
+	precRange
+	precSum
+	precProduct
+	precPrefix
+	precCall
+)
+
+var precedences = map[ast.TokenType]int{
+	ast.TokenOr:       precOr,
+	ast.TokenAnd:      precAnd,
+	ast.TokenEQ:       precEquality,
+	ast.TokenNotEQ:    precEquality,
+	ast.TokenLT:       precComparison,
+	ast.TokenLTE:      precComparison,
+	ast.TokenGT:       precComparison,
+	ast.TokenGTE:      precComparison,
+	ast.TokenRange:    precRange,
+	ast.TokenPlus:     precSum,
+	ast.TokenMinus:    precSum,
+	ast.TokenSlash:    precProduct,
+	ast.TokenAsterisk: precProduct,
+	ast.TokenPercent:  precProduct,
+	ast.TokenLParen:   precCall,
+	ast.TokenDot:      precCall,
+	ast.TokenScope:    precCall,
+	ast.TokenLBracket: precCall,
 }
 
 func (p *parser) curPrecedence() int {
@@ -131,4 +167,106 @@ func (p *parser) expectPeek(tt ast.TokenType) bool {
 	}
 	p.errorExpected(p.peekToken, tokenLabel(tt))
 	return false
+}
+
+var _ error = (*parseError)(nil)
+
+type parseError struct {
+	pos    ast.Position
+	msg    string
+	source string
+}
+
+func (e *parseError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "parse error at %d:%d: %s", e.pos.Line, e.pos.Column, e.msg)
+	if frame := source.FormatCodeFrame(e.source, e.pos); frame != "" {
+		b.WriteString("\n")
+		b.WriteString(frame)
+	}
+	return b.String()
+}
+
+func (p *parser) errorExpected(tok ast.Token, expected string) {
+	p.addParseError(tok.Pos, fmt.Sprintf("expected %s, got %s", expected, tokenLabel(tok.Type)))
+}
+
+func (p *parser) errorUnexpected(tok ast.Token) {
+	p.addParseError(tok.Pos, fmt.Sprintf("unexpected token %s", tokenLabel(tok.Type)))
+}
+
+func (p *parser) addParseError(pos ast.Position, msg string) {
+	p.errors = append(p.errors, &parseError{pos: pos, msg: msg, source: p.l.input})
+}
+
+func tokenLabel(tt ast.TokenType) string {
+	switch tt {
+	case ast.TokenIllegal:
+		return "invalid token"
+	case ast.TokenEOF:
+		return "end of input"
+	case ast.TokenIdent:
+		return "identifier"
+	case ast.TokenInt:
+		return "integer"
+	case ast.TokenFloat:
+		return "float"
+	case ast.TokenString:
+		return "string"
+	case ast.TokenSymbol:
+		return "symbol"
+	case ast.TokenIvar:
+		return "instance variable"
+	case ast.TokenClassVar:
+		return "class variable"
+	case ast.TokenDef:
+		return "'def'"
+	case ast.TokenClass:
+		return "'class'"
+	case ast.TokenEnum:
+		return "'enum'"
+	case ast.TokenExport:
+		return "'export'"
+	case ast.TokenSelf:
+		return "'self'"
+	case ast.TokenPrivate:
+		return "'private'"
+	case ast.TokenProperty:
+		return "'property'"
+	case ast.TokenGetter:
+		return "'getter'"
+	case ast.TokenSetter:
+		return "'setter'"
+	case ast.TokenEnd:
+		return "'end'"
+	case ast.TokenRaise:
+		return "'raise'"
+	case ast.TokenReturn:
+		return "'return'"
+	case ast.TokenYield:
+		return "'yield'"
+	case ast.TokenDo:
+		return "'do'"
+	case ast.TokenFor:
+		return "'for'"
+	case ast.TokenIn:
+		return "'in'"
+	case ast.TokenIf:
+		return "'if'"
+	case ast.TokenElsif:
+		return "'elsif'"
+	case ast.TokenElse:
+		return "'else'"
+	case ast.TokenTrue:
+		return "'true'"
+	case ast.TokenFalse:
+		return "'false'"
+	case ast.TokenNil:
+		return "'nil'"
+	default:
+		if len(tt) == 1 || strings.HasPrefix(string(tt), "<") || strings.HasPrefix(string(tt), ">") {
+			return fmt.Sprintf("%q", string(tt))
+		}
+		return fmt.Sprintf("%q", strings.ToLower(string(tt)))
+	}
 }

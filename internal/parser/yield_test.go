@@ -13,7 +13,7 @@ func TestParserYieldWithoutParensDoesNotConsumeNextLineInAssignment(t *testing.T
 end`
 
 	p := newParser(source)
-	program, errs := p.ParseProgram()
+	program, errs := p.parseProgram()
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
@@ -57,7 +57,7 @@ func TestParserYieldWithoutParensAcceptsInlineArgument(t *testing.T) {
 end`
 
 	p := newParser(source)
-	program, errs := p.ParseProgram()
+	program, errs := p.parseProgram()
 	if len(errs) > 0 {
 		t.Fatalf("expected no parse errors, got %v", errs)
 	}
