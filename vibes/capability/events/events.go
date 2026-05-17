@@ -125,9 +125,13 @@ func nameArg(method, label string, val value.Value) (string, error) {
 	}
 }
 
-// validateHashValue ensures val is a hash whose contents are data-only.
+// validateHashValue ensures val is hash-like (hash or object) whose
+// contents are data-only. The pre-carve validateCapabilityHashValue
+// accepted both KindHash and KindObject, and Value.Hash() resolves both,
+// so callers that forward host objects as event payloads must continue
+// to work.
 func validateHashValue(label string, val value.Value) error {
-	if val.Kind() != value.KindHash {
+	if val.Kind() != value.KindHash && val.Kind() != value.KindObject {
 		return fmt.Errorf("%s expected hash, got %s", label, val.Kind())
 	}
 	return validateDataOnly(label, val)

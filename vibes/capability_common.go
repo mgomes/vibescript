@@ -3,8 +3,6 @@ package vibes
 import (
 	"errors"
 	"fmt"
-	"reflect"
-	"strings"
 )
 
 var (
@@ -17,19 +15,6 @@ var (
 		Kind: TypeHash,
 	}
 )
-
-func capabilityNameArg(method, label string, val Value) (string, error) {
-	switch val.Kind() {
-	case KindString, KindSymbol:
-		name := val.String()
-		if strings.TrimSpace(name) == "" {
-			return "", fmt.Errorf("%s expects %s as non-empty string or symbol", method, label)
-		}
-		return name, nil
-	default:
-		return "", fmt.Errorf("%s expects %s as string or symbol", method, label)
-	}
-}
 
 func cloneCapabilityKwargs(kwargs map[string]Value) map[string]Value {
 	if len(kwargs) == 0 {
@@ -76,17 +61,4 @@ func cloneCapabilityMethodResult(method string, result Value) (Value, error) {
 		return NewNil(), err
 	}
 	return deepCloneValue(result), nil
-}
-
-func isNilCapabilityImplementation(impl any) bool {
-	if impl == nil {
-		return true
-	}
-	val := reflect.ValueOf(impl)
-	switch val.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return val.IsNil()
-	default:
-		return false
-	}
 }
