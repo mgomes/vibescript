@@ -26,10 +26,12 @@ All notable changes to this project will be documented in this file.
   - `vibes.EventPublisher` and `EventPublishRequest` move to
     `github.com/mgomes/vibescript/vibes/capability/events` as
     `events.Publisher` and `events.PublishRequest`.
-  - `vibes.JobQueue`, `JobQueueWithRetry`, `JobQueueJob`,
-    `JobQueueEnqueueOptions`, and `JobQueueRetryRequest` move to
-    `github.com/mgomes/vibescript/vibes/capability/jobqueue` without the
-    `JobQueue` prefix.
+  - `vibes.JobQueue`, `vibes.JobQueueWithRetry`, `vibes.JobQueueJob`,
+    `vibes.JobQueueEnqueueOptions`, and `vibes.JobQueueRetryRequest` move to
+    `github.com/mgomes/vibescript/vibes/capability/jobqueue` as
+    `jobqueue.JobQueue`, `jobqueue.JobQueueWithRetry`,
+    `jobqueue.JobQueueJob`, `jobqueue.JobQueueEnqueueOptions`, and
+    `jobqueue.JobQueueRetryRequest`.
   - `vibes.ContextCapabilityResolver` moves to
     `github.com/mgomes/vibescript/vibes/capability/contextcap` as
     `contextcap.Resolver`.
