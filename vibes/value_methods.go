@@ -192,7 +192,7 @@ type valueEqualityPair struct {
 	rightLen int
 }
 
-func valuesEqual(v Value, other Value, seen map[valueEqualityPair]struct{}) bool {
+func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 	if v.kind != other.kind {
 		return false
 	}
@@ -306,7 +306,7 @@ func valuesEqual(v Value, other Value, seen map[valueEqualityPair]struct{}) bool
 	}
 }
 
-func enumDefsEqual(left *EnumDef, right *EnumDef) bool {
+func enumDefsEqual(left, right *EnumDef) bool {
 	if left == right {
 		return true
 	}
@@ -322,7 +322,7 @@ func enumDefsEqual(left *EnumDef, right *EnumDef) bool {
 	return left.owner == right.owner
 }
 
-func enumValueDefsEqual(left *EnumValueDef, right *EnumValueDef) bool {
+func enumValueDefsEqual(left, right *EnumValueDef) bool {
 	if left == right {
 		return true
 	}

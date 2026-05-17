@@ -24,7 +24,7 @@ func cloneBuiltinSet(src map[*Builtin]struct{}) map[*Builtin]struct{} {
 	return out
 }
 
-func (exec *Execution) autoInvokeIfNeeded(expr Expression, val Value, receiver Value) (Value, error) {
+func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) (Value, error) {
 	switch val.Kind() {
 	case KindFunction:
 		fn := val.Function()
@@ -40,7 +40,7 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val Value, receiver V
 	return val, nil
 }
 
-func (exec *Execution) invokeCallable(callee Value, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
+func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	switch callee.Kind() {
 	case KindFunction:
 		result, err := exec.callFunction(callee.Function(), receiver, args, kwargs, block, pos)

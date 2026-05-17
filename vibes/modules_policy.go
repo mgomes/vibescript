@@ -88,7 +88,7 @@ func validateModulePolicyPatterns(patterns []string, label string) error {
 	return nil
 }
 
-func modulePolicyMatch(pattern string, module string) bool {
+func modulePolicyMatch(pattern, module string) bool {
 	if pattern == "*" {
 		return module != ""
 	}

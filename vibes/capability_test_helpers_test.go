@@ -70,13 +70,13 @@ func compileScriptErrorDefault(t testing.TB, source string) error {
 	return compileScriptErrorWithConfig(t, Config{}, source)
 }
 
-func requireCompileErrorContainsWithConfig(t testing.TB, cfg Config, source string, want string) {
+func requireCompileErrorContainsWithConfig(t testing.TB, cfg Config, source, want string) {
 	t.Helper()
 	err := compileScriptErrorWithConfig(t, cfg, source)
 	requireErrorContains(t, err, want)
 }
 
-func requireCompileErrorContainsDefault(t testing.TB, source string, want string) {
+func requireCompileErrorContainsDefault(t testing.TB, source, want string) {
 	t.Helper()
 	requireCompileErrorContainsWithConfig(t, Config{}, source, want)
 }
@@ -121,7 +121,7 @@ func requireErrorContains(t testing.TB, err error, want string) {
 	}
 }
 
-func requireErrorIs(t testing.TB, err error, target error) {
+func requireErrorIs(t testing.TB, err, target error) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("expected error matching %v, got nil", target)

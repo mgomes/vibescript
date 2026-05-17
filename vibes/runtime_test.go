@@ -302,7 +302,7 @@ func compareArrays(t *testing.T, value Value, want []Value) {
 	}
 }
 
-func compareHash(t *testing.T, got map[string]Value, want map[string]Value) {
+func compareHash(t *testing.T, got, want map[string]Value) {
 	t.Helper()
 	if diff := valueMapDiff(want, got); diff != "" {
 		t.Fatalf("hash mismatch (-want +got):\n%s", diff)

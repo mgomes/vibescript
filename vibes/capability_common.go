@@ -18,7 +18,7 @@ var (
 	}
 )
 
-func capabilityNameArg(method string, label string, val Value) (string, error) {
+func capabilityNameArg(method, label string, val Value) (string, error) {
 	switch val.Kind() {
 	case KindString, KindSymbol:
 		name := val.String()

@@ -107,9 +107,9 @@ func FuzzCompileScriptDoesNotPanic(f *testing.F) {
 func FuzzGeneratedScriptSemantics(f *testing.F) {
 	for _, seed := range [][]byte{
 		[]byte(""),
-		[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9},
+		{1, 2, 3, 4, 5, 6, 7, 8, 9},
 		[]byte("collections and classes"),
-		[]byte{255, 128, 64, 32, 16, 8, 4, 2, 1},
+		{255, 128, 64, 32, 16, 8, 4, 2, 1},
 	} {
 		f.Add(seed)
 	}
@@ -166,7 +166,7 @@ end
 	f.Add("  hello \n world  ", "\\s+")
 	f.Add("{}", ".*")
 
-	f.Fuzz(func(t *testing.T, text string, pattern string) {
+	f.Fuzz(func(t *testing.T, text, pattern string) {
 		text = limitFuzzString(text, fuzzMaxTextBytes)
 		if len(pattern) > 1024 {
 			pattern = pattern[:1024]
@@ -182,8 +182,8 @@ func FuzzJSONValueRoundTripPreservesStructure(f *testing.F) {
 	for _, seed := range [][]byte{
 		[]byte(""),
 		[]byte("null bool int string array hash"),
-		[]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
-		[]byte{255, 254, 253, 252, 251, 250},
+		{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+		{255, 254, 253, 252, 251, 250},
 	} {
 		f.Add(seed)
 	}
@@ -211,7 +211,7 @@ func FuzzValueOperationsPreserveInvariants(f *testing.F) {
 		[]byte(""),
 		[]byte("scalar"),
 		[]byte("nested arrays and hashes"),
-		[]byte{0, 17, 34, 51, 68, 85, 102, 119, 136},
+		{0, 17, 34, 51, 68, 85, 102, 119, 136},
 	} {
 		f.Add(seed)
 	}
@@ -344,7 +344,7 @@ func FuzzScalarInputParsersAndConversions(f *testing.F) {
 	f.Add("2024-01-02T03:04:05Z", time.RFC3339, float64(1.25))
 	f.Add("-92233720368547758.08 USD", "", float64(math.NaN()))
 
-	f.Fuzz(func(t *testing.T, text string, layout string, floatInput float64) {
+	f.Fuzz(func(t *testing.T, text, layout string, floatInput float64) {
 		text = limitFuzzString(text, 512)
 		layout = limitFuzzString(layout, 256)
 
@@ -443,7 +443,7 @@ func FuzzModulePolicyValidation(f *testing.F) {
 	f.Add("[", "helper", "allow")
 	f.Add("./nested\\*.vibe,admin/*", "nested/tool.vibe", "")
 
-	f.Fuzz(func(t *testing.T, rawPatterns string, rawModule string, label string) {
+	f.Fuzz(func(t *testing.T, rawPatterns, rawModule, label string) {
 		rawPatterns = limitFuzzString(rawPatterns, 512)
 		rawModule = limitFuzzString(rawModule, 512)
 		label = limitFuzzString(label, 64)
@@ -505,7 +505,7 @@ func FuzzCapabilityInputValidation(f *testing.F) {
 		[]byte(""),
 		[]byte("payload"),
 		[]byte("typed arrays and hashes"),
-		[]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+		{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
 	} {
 		f.Add(seed)
 	}
@@ -654,7 +654,7 @@ end
 	return source, input, want
 }
 
-func generatedHelper(n int64, evenMultiplier int64, oddMultiplier int64, offset int64) int64 {
+func generatedHelper(n, evenMultiplier, oddMultiplier, offset int64) int64 {
 	if n%2 == 0 {
 		return n*evenMultiplier + offset
 	}
@@ -753,7 +753,7 @@ func (d *fuzzData) intn(n int) int {
 	return int(d.byte()) % n
 }
 
-func (d *fuzzData) int64(min int64, max int64) int64 {
+func (d *fuzzData) int64(min, max int64) int64 {
 	if max <= min {
 		return min
 	}
@@ -1309,7 +1309,7 @@ func validateFuzzNodePosition(context string, node Node) error {
 	return nil
 }
 
-func positionBefore(pos Position, last Position) bool {
+func positionBefore(pos, last Position) bool {
 	if pos.Line != last.Line {
 		return pos.Line < last.Line
 	}

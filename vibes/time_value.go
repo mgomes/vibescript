@@ -116,7 +116,7 @@ func timeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
 	return time.Unix(seconds, nanos).In(loc), nil
 }
 
-func parseTimeString(input string, layout string, hasLayout bool, loc *time.Location) (time.Time, error) {
+func parseTimeString(input, layout string, hasLayout bool, loc *time.Location) (time.Time, error) {
 	parseLoc := time.Local
 	if loc != nil {
 		parseLoc = loc

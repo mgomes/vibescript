@@ -1,5 +1,5 @@
 // Package vibes implements the Vibescript execution engine. The initial
-// version supports a Ruby-flavoured syntax with the following constructs:
+// version supports a Ruby-flavored syntax with the following constructs:
 //   - Function definitions via `def name(args...) ... end` with implicit return.
 //   - Literals for ints, floats, strings, bools, nil, arrays, hashes, and symbols.
 //   - Arithmetic and comparison expressions (+, -, *, /, >, <, ==, !=).

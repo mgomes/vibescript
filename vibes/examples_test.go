@@ -8,8 +8,10 @@ import (
 	"testing"
 )
 
-type builtinAdapter func([]Value, map[string]Value) (Value, error)
-type builtinBlockAdapter func(*Execution, []Value, map[string]Value, Value) (Value, error)
+type (
+	builtinAdapter      func([]Value, map[string]Value) (Value, error)
+	builtinBlockAdapter func(*Execution, []Value, map[string]Value, Value) (Value, error)
+)
 
 type callRecord struct {
 	args   []Value

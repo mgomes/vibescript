@@ -41,7 +41,7 @@ func deepCloneValue(val Value) Value {
 	}
 }
 
-func mergeHash(dest map[string]Value, src map[string]Value) map[string]Value {
+func mergeHash(dest, src map[string]Value) map[string]Value {
 	if len(src) == 0 {
 		return dest
 	}

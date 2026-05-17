@@ -15,7 +15,7 @@ func (p *parser) parseLineExpression(precedence int) Expression {
 	return p.parseExpression(precedence)
 }
 
-func (p *parser) parseExpressionWithLineLimit(precedence int, limitLine int, lineLimited bool) Expression {
+func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLimited bool) Expression {
 	prefix := p.prefixFns[p.curToken.Type]
 	if prefix == nil {
 		p.errorUnexpected(p.curToken)
