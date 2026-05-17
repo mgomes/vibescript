@@ -42,7 +42,7 @@ func TestDocsExampleSnippetsCompile(t *testing.T) {
 
 func extractVibeCodeFences(markdown string) []string {
 	lines := strings.Split(markdown, "\n")
-	snippets := make([]string, 0)
+	var snippets []string
 	var current []string
 	inVibeFence := false
 

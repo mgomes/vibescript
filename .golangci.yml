@@ -15,6 +15,7 @@ linters:
     - ineffassign
     - unused
     - misspell
+    - prealloc
 
   settings:
     errcheck:
@@ -33,6 +34,11 @@ linters:
 
     misspell:
       locale: US
+
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
 
   exclusions:
     generated: lax

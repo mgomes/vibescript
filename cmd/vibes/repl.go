@@ -220,8 +220,6 @@ func newREPLModel() (replModel, error) {
 		textInput:  ti,
 		engine:     engine,
 		env:        make(map[string]vibes.Value),
-		history:    make([]historyEntry, 0),
-		cmdHistory: make([]string, 0),
 		historyIdx: -1,
 		showHelp:   false,
 		showVars:   false,
@@ -250,7 +248,7 @@ func (m replModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case key.Matches(msg, keys.CtrlL):
-			m.history = make([]historyEntry, 0)
+			m.history = nil
 			return m, nil
 
 		case key.Matches(msg, keys.CtrlV):
@@ -329,7 +327,7 @@ func (m replModel) handleCommand(input string) (replModel, tea.Cmd) {
 	case ":help", ":h":
 		m.showHelp = !m.showHelp
 	case ":clear", ":c":
-		m.history = make([]historyEntry, 0)
+		m.history = nil
 	case ":vars", ":v":
 		m.showVars = !m.showVars
 	case ":globals", ":g":
@@ -654,7 +652,7 @@ func renderHelpPanel(width int) string {
 		{":quit", "Exit REPL"},
 	}
 
-	var lines []string
+	lines := make([]string, 0, 1+len(help))
 	lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render("Help"))
 	for _, h := range help {
 		line := fmt.Sprintf("  %s  %s",
