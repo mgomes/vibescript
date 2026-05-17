@@ -8,6 +8,7 @@ import (
 )
 
 func TestFmtCommandRequiresPath(t *testing.T) {
+	t.Parallel()
 	err := fmtCommand(nil)
 	if err == nil {
 		t.Fatalf("expected path required error")
@@ -18,7 +19,8 @@ func TestFmtCommandRequiresPath(t *testing.T) {
 }
 
 func TestFmtCommandCheckDetectsUnformattedFiles(t *testing.T) {
-	path := writeVibeFile(t, "def run()  \n  1\t \nend")
+	t.Parallel()
+	path := writeVibeScript(t, "def run()  \n  1\t \nend")
 	err := fmtCommand([]string{"-check", path})
 	if err == nil {
 		t.Fatalf("expected formatting check failure")
@@ -29,7 +31,8 @@ func TestFmtCommandCheckDetectsUnformattedFiles(t *testing.T) {
 }
 
 func TestFmtCommandWriteFormatsFileInPlace(t *testing.T) {
-	path := writeVibeFile(t, "def run()  \n  1\t \nend")
+	t.Parallel()
+	path := writeVibeScript(t, "def run()  \n  1\t \nend")
 	if err := fmtCommand([]string{"-w", path}); err != nil {
 		t.Fatalf("fmt -w failed: %v", err)
 	}
@@ -44,7 +47,7 @@ func TestFmtCommandWriteFormatsFileInPlace(t *testing.T) {
 }
 
 func TestFmtCommandPrintsFormattedOutput(t *testing.T) {
-	path := writeVibeFile(t, "def run()  \n  1\t \nend")
+	path := writeVibeScript(t, "def run()  \n  1\t \nend")
 	out, err := captureStdout(t, func() error {
 		return fmtCommand([]string{path})
 	})
@@ -57,7 +60,8 @@ func TestFmtCommandPrintsFormattedOutput(t *testing.T) {
 }
 
 func TestFmtCommandFormatsDirectories(t *testing.T) {
-	root := t.TempDir()
+	t.Parallel()
+	root := newTestCLI(t)
 	first := filepath.Join(root, "a.vibe")
 	second := filepath.Join(root, "nested", "b.vibe")
 	if err := os.MkdirAll(filepath.Dir(second), 0o755); err != nil {
@@ -76,13 +80,4 @@ func TestFmtCommandFormatsDirectories(t *testing.T) {
 	if err := fmtCommand([]string{"-check", root}); err != nil {
 		t.Fatalf("expected no formatting diffs after write, got %v", err)
 	}
-}
-
-func writeVibeFile(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "script.vibe")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write vibe file: %v", err)
-	}
-	return path
 }

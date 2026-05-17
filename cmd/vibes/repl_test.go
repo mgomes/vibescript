@@ -10,6 +10,7 @@ import (
 )
 
 func TestUpdateQuitCommandReturnsQuit(t *testing.T) {
+	t.Parallel()
 	m, err := newREPLModel()
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
@@ -39,6 +40,7 @@ func TestUpdateQuitCommandReturnsQuit(t *testing.T) {
 }
 
 func TestUpdateNonQuitCommandDoesNotReturnCmd(t *testing.T) {
+	t.Parallel()
 	m, err := newREPLModel()
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
@@ -65,101 +67,106 @@ func TestUpdateNonQuitCommandDoesNotReturnCmd(t *testing.T) {
 	}
 }
 
-func TestEvaluateAssignmentStoresVariable(t *testing.T) {
-	m, err := newREPLModel()
-	if err != nil {
-		t.Fatalf("newREPLModel failed: %v", err)
+func TestEvaluate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		setup     func(*replModel)
+		input     string
+		wantErr   bool
+		check     func(t *testing.T, m *replModel, output string)
+		wantOut   string // substring to require in output when wantErr=true
+		errInLast string // substring to require in m.lastError when wantErr=true
+	}{
+		{
+			name:  "assignment_stores_variable",
+			input: "score = 42",
+			check: func(t *testing.T, m *replModel, _ string) {
+				score, ok := m.env["score"]
+				if !ok {
+					t.Fatalf("expected score to be stored in repl env")
+				}
+				if score.Kind() != value.KindInt || score.Int() != 42 {
+					t.Fatalf("unexpected score value: %#v", score)
+				}
+			},
+		},
+		{
+			name:  "equality_does_not_overwrite_variable",
+			setup: func(m *replModel) { m.env["a"] = value.NewInt(5) },
+			input: "a == 5",
+			check: func(t *testing.T, m *replModel, _ string) {
+				a := m.env["a"]
+				if a.Kind() != value.KindInt || a.Int() != 5 {
+					t.Fatalf("variable a was clobbered by equality expression: %#v", a)
+				}
+			},
+		},
+		{
+			name:  "sets_underscore_to_last_result",
+			input: "40 + 2",
+			check: func(t *testing.T, m *replModel, _ string) {
+				last, ok := m.env["_"]
+				if !ok {
+					t.Fatalf("expected underscore variable to be set")
+				}
+				if last.Kind() != value.KindInt || last.Int() != 42 {
+					t.Fatalf("unexpected underscore value: %#v", last)
+				}
+			},
+		},
+		{
+			name:    "compile_error_returns_error",
+			input:   "def broken(",
+			wantErr: true,
+			check: func(t *testing.T, _ *replModel, output string) {
+				if output == "" {
+					t.Fatalf("expected non-empty compile error")
+				}
+			},
+		},
+		{
+			name:      "runtime_error_returns_error",
+			input:     "unknown_var",
+			wantErr:   true,
+			wantOut:   "undefined variable",
+			errInLast: "runtime error:",
+		},
 	}
-
-	output, isErr := m.evaluate("score = 42")
-	if isErr {
-		t.Fatalf("unexpected eval error: %s", output)
-	}
-
-	score, ok := m.env["score"]
-	if !ok {
-		t.Fatalf("expected score to be stored in repl env")
-	}
-	if score.Kind() != value.KindInt || score.Int() != 42 {
-		t.Fatalf("unexpected score value: %#v", score)
-	}
-}
-
-func TestEvaluateEqualityDoesNotOverwriteVariable(t *testing.T) {
-	m, err := newREPLModel()
-	if err != nil {
-		t.Fatalf("newREPLModel failed: %v", err)
-	}
-	m.env["a"] = value.NewInt(5)
-
-	output, isErr := m.evaluate("a == 5")
-	if isErr {
-		t.Fatalf("unexpected eval error: %s", output)
-	}
-
-	a := m.env["a"]
-	if a.Kind() != value.KindInt || a.Int() != 5 {
-		t.Fatalf("variable a was clobbered by equality expression: %#v", a)
-	}
-}
-
-func TestEvaluateSetsUnderscoreToLastResult(t *testing.T) {
-	m, err := newREPLModel()
-	if err != nil {
-		t.Fatalf("newREPLModel failed: %v", err)
-	}
-
-	output, isErr := m.evaluate("40 + 2")
-	if isErr {
-		t.Fatalf("unexpected eval error: %s", output)
-	}
-
-	last, ok := m.env["_"]
-	if !ok {
-		t.Fatalf("expected underscore variable to be set")
-	}
-	if last.Kind() != value.KindInt || last.Int() != 42 {
-		t.Fatalf("unexpected underscore value: %#v", last)
-	}
-}
-
-func TestEvaluateCompileErrorReturnsError(t *testing.T) {
-	m, err := newREPLModel()
-	if err != nil {
-		t.Fatalf("newREPLModel failed: %v", err)
-	}
-
-	output, isErr := m.evaluate("def broken(")
-	if !isErr {
-		t.Fatalf("expected compile error")
-	}
-	if output == "" {
-		t.Fatalf("expected non-empty compile error")
-	}
-}
-
-func TestEvaluateRuntimeErrorReturnsError(t *testing.T) {
-	m, err := newREPLModel()
-	if err != nil {
-		t.Fatalf("newREPLModel failed: %v", err)
-	}
-
-	output, isErr := m.evaluate("unknown_var")
-	if !isErr {
-		t.Fatalf("expected runtime error")
-	}
-	if !strings.Contains(output, "undefined variable") {
-		t.Fatalf("unexpected runtime error: %s", output)
-	}
-	if m.lastError == "" {
-		t.Fatalf("expected last error to be captured")
-	}
-	if !strings.Contains(m.lastError, "runtime error:") {
-		t.Fatalf("expected runtime error prefix, got %q", m.lastError)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m, err := newREPLModel()
+			if err != nil {
+				t.Fatalf("newREPLModel failed: %v", err)
+			}
+			if tc.setup != nil {
+				tc.setup(&m)
+			}
+			output, isErr := m.evaluate(tc.input)
+			if isErr != tc.wantErr {
+				t.Fatalf("evaluate(%q) isErr = %v, want %v (output=%q)", tc.input, isErr, tc.wantErr, output)
+			}
+			if tc.wantOut != "" && !strings.Contains(output, tc.wantOut) {
+				t.Fatalf("evaluate(%q) output = %q, want substring %q", tc.input, output, tc.wantOut)
+			}
+			if tc.errInLast != "" {
+				if m.lastError == "" {
+					t.Fatalf("expected last error to be captured")
+				}
+				if !strings.Contains(m.lastError, tc.errInLast) {
+					t.Fatalf("evaluate(%q) lastError = %q, want substring %q", tc.input, m.lastError, tc.errInLast)
+				}
+			}
+			if tc.check != nil {
+				tc.check(t, &m, output)
+			}
+		})
 	}
 }
 
 func TestLastErrorCommandShowsPreviousError(t *testing.T) {
+	t.Parallel()
 	m, err := newREPLModel()
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
@@ -184,6 +191,7 @@ func TestLastErrorCommandShowsPreviousError(t *testing.T) {
 }
 
 func TestLastErrorCommandWhenNoError(t *testing.T) {
+	t.Parallel()
 	m, err := newREPLModel()
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
@@ -203,6 +211,7 @@ func TestLastErrorCommandWhenNoError(t *testing.T) {
 }
 
 func TestGlobalsCommandPrintsSortedGlobals(t *testing.T) {
+	t.Parallel()
 	m, err := newREPLModel()
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
@@ -224,6 +233,7 @@ func TestGlobalsCommandPrintsSortedGlobals(t *testing.T) {
 }
 
 func TestFunctionsCommandListsBuiltinsAndEnvCallables(t *testing.T) {
+	t.Parallel()
 	m, err := newREPLModel()
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
@@ -253,6 +263,7 @@ func TestFunctionsCommandListsBuiltinsAndEnvCallables(t *testing.T) {
 }
 
 func TestTypesCommandShowsKinds(t *testing.T) {
+	t.Parallel()
 	m, err := newREPLModel()
 	if err != nil {
 		t.Fatalf("newREPLModel failed: %v", err)
@@ -276,62 +287,67 @@ func TestTypesCommandShowsKinds(t *testing.T) {
 	}
 }
 
-func TestAutocompleteSingleCompletion(t *testing.T) {
-	m, err := newREPLModel()
-	if err != nil {
-		t.Fatalf("newREPLModel failed: %v", err)
+func TestAutocomplete(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		setup          func(*replModel)
+		input          string
+		wantValue      string // expected textInput.Value after handleAutocomplete; "" means don't check
+		wantHistorySub string // substring to require in last history entry; "" means require no history entry produced by autocomplete
+	}{
+		{
+			name:      "single_completion",
+			input:     "requ",
+			wantValue: "require",
+		},
+		{
+			name:           "multiple_completions_add_history_entry",
+			input:          "m",
+			wantHistorySub: "Completions:",
+		},
+		{
+			name:      "uses_env_variables",
+			setup:     func(m *replModel) { m.env["tenant_id"] = value.NewString("acme") },
+			input:     "tenant",
+			wantValue: "tenant_id",
+		},
+		{
+			name:      "completes_commands",
+			input:     ":gl",
+			wantValue: ":globals",
+		},
 	}
-	m.textInput.SetValue("requ")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m, err := newREPLModel()
+			if err != nil {
+				t.Fatalf("newREPLModel failed: %v", err)
+			}
+			if tc.setup != nil {
+				tc.setup(&m)
+			}
+			m.textInput.SetValue(tc.input)
+			m = m.handleAutocomplete()
 
-	m = m.handleAutocomplete()
-	if got := m.textInput.Value(); got != "require" {
-		t.Fatalf("expected single completion, got %q", got)
-	}
-}
-
-func TestAutocompleteMultipleCompletionsAddsHistoryEntry(t *testing.T) {
-	m, err := newREPLModel()
-	if err != nil {
-		t.Fatalf("newREPLModel failed: %v", err)
-	}
-	m.textInput.SetValue("m")
-
-	m = m.handleAutocomplete()
-	if len(m.history) == 0 {
-		t.Fatalf("expected completion history entry")
-	}
-	last := m.history[len(m.history)-1]
-	if !strings.Contains(last.output, "Completions:") {
-		t.Fatalf("unexpected completion output: %q", last.output)
-	}
-	if !strings.Contains(last.output, "money") {
-		t.Fatalf("expected builtins in completion output: %q", last.output)
-	}
-}
-
-func TestAutocompleteUsesEnvVariables(t *testing.T) {
-	m, err := newREPLModel()
-	if err != nil {
-		t.Fatalf("newREPLModel failed: %v", err)
-	}
-	m.env["tenant_id"] = value.NewString("acme")
-	m.textInput.SetValue("tenant")
-
-	m = m.handleAutocomplete()
-	if got := m.textInput.Value(); got != "tenant_id" {
-		t.Fatalf("expected env completion, got %q", got)
-	}
-}
-
-func TestAutocompleteCompletesCommands(t *testing.T) {
-	m, err := newREPLModel()
-	if err != nil {
-		t.Fatalf("newREPLModel failed: %v", err)
-	}
-	m.textInput.SetValue(":gl")
-
-	m = m.handleAutocomplete()
-	if got := m.textInput.Value(); got != ":globals" {
-		t.Fatalf("expected command completion, got %q", got)
+			if tc.wantValue != "" {
+				if got := m.textInput.Value(); got != tc.wantValue {
+					t.Fatalf("handleAutocomplete(%q) text = %q, want %q", tc.input, got, tc.wantValue)
+				}
+			}
+			if tc.wantHistorySub != "" {
+				if len(m.history) == 0 {
+					t.Fatalf("expected completion history entry for %q", tc.input)
+				}
+				last := m.history[len(m.history)-1]
+				if !strings.Contains(last.output, tc.wantHistorySub) {
+					t.Fatalf("handleAutocomplete(%q) last history = %q, want substring %q", tc.input, last.output, tc.wantHistorySub)
+				}
+				if tc.name == "multiple_completions_add_history_entry" && !strings.Contains(last.output, "money") {
+					t.Fatalf("expected builtins in completion output: %q", last.output)
+				}
+			}
+		})
 	}
 }
