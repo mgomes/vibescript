@@ -34,13 +34,17 @@ go test ./vibes \
   -run '^$' \
   -bench "$pattern" \
   -benchmem \
-  -count 1 \
-  -benchtime 100ms \
+  -count 3 \
+  -benchtime 200ms \
   -cpu 1 | tee "$tmp_out"
 
 declare -A actual_ns
 declare -A actual_allocs
 
+# With -count 3 we record three samples per benchmark. Keep the best
+# (minimum) ns/op so a single noisy run on a shared CI runner does not
+# trip the gate; keep the worst (maximum) allocs/op so allocation
+# regressions are not masked by a luckier sample.
 while read -r bench ns allocs; do
   actual_ns["$bench"]="$ns"
   actual_allocs["$bench"]="$allocs"
@@ -55,8 +59,17 @@ done < <(
         if ($i == "ns/op") ns=$(i-1)
         if ($i == "allocs/op") allocs=$(i-1)
       }
-      if (bench != "" && ns != "" && allocs != "") {
-        print bench, ns, allocs
+      if (bench == "" || ns == "" || allocs == "") next
+      if (!(bench in min_ns) || ns + 0 < min_ns[bench] + 0) {
+        min_ns[bench] = ns
+      }
+      if (!(bench in max_allocs) || allocs + 0 > max_allocs[bench] + 0) {
+        max_allocs[bench] = allocs
+      }
+    }
+    END {
+      for (bench in min_ns) {
+        print bench, min_ns[bench], max_allocs[bench]
       }
     }
   ' "$tmp_out"
