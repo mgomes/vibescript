@@ -47,6 +47,7 @@ func TestFmtCommandWriteFormatsFileInPlace(t *testing.T) {
 }
 
 func TestFmtCommandPrintsFormattedOutput(t *testing.T) {
+	t.Parallel()
 	path := writeVibeScript(t, "def run()  \n  1\t \nend")
 	out, err := captureStdout(t, func() error {
 		return fmtCommand([]string{path})

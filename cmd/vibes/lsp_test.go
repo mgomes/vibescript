@@ -14,6 +14,7 @@ import (
 )
 
 func TestRunCLIStartsLSPAndExitsOnEOF(t *testing.T) {
+	// not parallel-safe: swaps process-wide os.Stdin
 	origStdin := os.Stdin
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -36,6 +37,7 @@ func TestRunCLIStartsLSPAndExitsOnEOF(t *testing.T) {
 }
 
 func TestDiagnosticsForSourceWithoutErrors(t *testing.T) {
+	t.Parallel()
 	engine := vibes.MustNewEngine(vibes.Config{})
 	source := "def run()\n  1\nend\n"
 	diags := diagnosticsForSource(engine, source)
@@ -45,6 +47,7 @@ func TestDiagnosticsForSourceWithoutErrors(t *testing.T) {
 }
 
 func TestDiagnosticsForSourceWithParseError(t *testing.T) {
+	t.Parallel()
 	engine := vibes.MustNewEngine(vibes.Config{})
 	source := "def run(\n  1\nend\n"
 	diags := diagnosticsForSource(engine, source)
@@ -62,6 +65,7 @@ func TestDiagnosticsForSourceWithParseError(t *testing.T) {
 }
 
 func TestCompletionItemsAreSortedAndCategorized(t *testing.T) {
+	t.Parallel()
 	items := completionItems()
 	if len(items) == 0 {
 		t.Fatalf("expected completion items")
@@ -97,6 +101,7 @@ func TestCompletionItemsAreSortedAndCategorized(t *testing.T) {
 }
 
 func TestHandleMessageDidOpenPublishesDiagnostics(t *testing.T) {
+	t.Parallel()
 	server := &lspServer{
 		engine: vibes.MustNewEngine(vibes.Config{}),
 		docs:   make(map[string]string),
@@ -137,6 +142,7 @@ func TestHandleMessageDidOpenPublishesDiagnostics(t *testing.T) {
 }
 
 func TestHandleMessageHoverClassifiesBuiltins(t *testing.T) {
+	t.Parallel()
 	server := &lspServer{
 		engine: vibes.MustNewEngine(vibes.Config{}),
 		docs: map[string]string{
@@ -184,6 +190,7 @@ func TestHandleMessageHoverClassifiesBuiltins(t *testing.T) {
 }
 
 func TestWordAtPosition(t *testing.T) {
+	t.Parallel()
 	source := "def run()\n  to_int(\"1\")\nend\n"
 	word := wordAtPosition(source, 1, 4)
 	if word != "to_int" {
@@ -192,6 +199,7 @@ func TestWordAtPosition(t *testing.T) {
 }
 
 func TestWordAtPositionUsesUTF16CharacterOffsets(t *testing.T) {
+	t.Parallel()
 	source := "😀😀x y\n"
 	word := wordAtPosition(source, 0, 4)
 	if word != "x" {
@@ -200,6 +208,7 @@ func TestWordAtPositionUsesUTF16CharacterOffsets(t *testing.T) {
 }
 
 func TestReadPayloadAllowsJSONFramingAboveSourceLimit(t *testing.T) {
+	t.Parallel()
 	source := strings.Repeat("\n", 1<<20)
 	params := map[string]any{
 		"textDocument": map[string]any{

@@ -6,6 +6,7 @@ import (
 )
 
 func TestMemoryEstimatorDeduplicatesAliasedEmptySlices(t *testing.T) {
+	t.Parallel()
 	backing := make([]Value, 0, 8)
 	aliasA := backing
 	aliasB := backing
@@ -23,6 +24,7 @@ func TestMemoryEstimatorDeduplicatesAliasedEmptySlices(t *testing.T) {
 }
 
 func TestMemoryEstimatorDoesNotDeduplicateIndependentZeroCapSlices(t *testing.T) {
+	t.Parallel()
 	firstSlice := make([]Value, 0)
 	secondSlice := make([]Value, 0)
 
@@ -36,6 +38,7 @@ func TestMemoryEstimatorDoesNotDeduplicateIndependentZeroCapSlices(t *testing.T)
 }
 
 func TestMemoryEstimatorDeduplicatesAliasedStringPayload(t *testing.T) {
+	t.Parallel()
 	payload := strings.Repeat("abcdefghij", 200)
 
 	est := newMemoryEstimator()

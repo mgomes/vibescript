@@ -8,6 +8,7 @@ import (
 )
 
 func TestNewEngineRejectsMissingModulePath(t *testing.T) {
+	t.Parallel()
 	_, err := NewEngine(Config{ModulePaths: []string{"./definitely-missing-mod-path"}})
 	if err == nil {
 		t.Fatalf("expected NewEngine to reject missing module path")
@@ -16,6 +17,7 @@ func TestNewEngineRejectsMissingModulePath(t *testing.T) {
 }
 
 func TestNewEngineRejectsFileModulePath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "module.vibe")
 	if writeErr := os.WriteFile(filePath, []byte("def run\n  1\nend"), 0o644); writeErr != nil {
@@ -30,6 +32,7 @@ func TestNewEngineRejectsFileModulePath(t *testing.T) {
 }
 
 func TestNewEngineAcceptsValidModulePaths(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	engine, err := NewEngine(Config{ModulePaths: []string{dir}})
 	if err != nil {
@@ -41,6 +44,7 @@ func TestNewEngineAcceptsValidModulePaths(t *testing.T) {
 }
 
 func TestNewEngineNormalizesModulePathsAtCreation(t *testing.T) {
+	// not parallel-safe: mutates process cwd via os.Chdir
 	previousDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get cwd: %v", err)
@@ -74,6 +78,7 @@ func TestNewEngineNormalizesModulePathsAtCreation(t *testing.T) {
 }
 
 func TestNewEngineCopiesConfigSlices(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	modulePaths := []string{root}
 	allowList := []string{"allowed"}
@@ -105,6 +110,7 @@ func TestNewEngineCopiesConfigSlices(t *testing.T) {
 }
 
 func TestBuiltinsReturnsIsolatedBuiltinValues(t *testing.T) {
+	t.Parallel()
 	engine := MustNewEngine(Config{})
 
 	builtins := engine.Builtins()
@@ -134,6 +140,7 @@ func TestBuiltinsReturnsIsolatedBuiltinValues(t *testing.T) {
 }
 
 func TestBuiltinsReturnsIsolatedObjectValues(t *testing.T) {
+	t.Parallel()
 	mutatedBuiltin := func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		return NewString("mutated"), nil
 	}
@@ -203,6 +210,7 @@ end`)
 }
 
 func TestCompileAndCallAdd(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def add(a, b)
   a + b
 end`)
@@ -217,6 +225,7 @@ end`)
 }
 
 func TestMoneyBuiltin(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def total
   money("10.00 USD") + money("5.00 USD")
 end`)
@@ -235,6 +244,7 @@ end`)
 }
 
 func TestGlobalsAccess(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def user_id
   ctx.user.id
 end`)
@@ -255,6 +265,7 @@ end`)
 }
 
 func TestAssertFailure(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def check
   assert false, "boom"
 end`)
@@ -265,6 +276,7 @@ end`)
 }
 
 func TestSymbolIndex(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def amount(row)
   row[:amount]
 end`)
@@ -280,6 +292,7 @@ end`)
 }
 
 func TestDurationLiteral(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def seconds
   (2.minutes).seconds
 end`)
@@ -294,6 +307,7 @@ end`)
 }
 
 func TestZeroArgCallWithoutParens(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def helper
   7
 end
@@ -312,6 +326,7 @@ end`)
 }
 
 func TestNestedZeroArgCalls(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def inner
   10
 end
@@ -334,6 +349,7 @@ end`)
 }
 
 func TestMixedZeroArgAndRegularCalls(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def zero_arg
   5
 end
@@ -356,6 +372,7 @@ end`)
 }
 
 func TestMethodChainingWithZeroArgMethods(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run
   values = [1, 2, 3, 4, 5]
   values.sum
@@ -371,6 +388,7 @@ end`)
 }
 
 func TestZeroArgMethodChaining(t *testing.T) {
+	t.Parallel()
 	script := compileScriptDefault(t, `def run
   values = [1, 2, 2, 3, 3, 3]
   values.uniq.sum

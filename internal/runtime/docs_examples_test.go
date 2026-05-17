@@ -8,6 +8,7 @@ import (
 )
 
 func TestDocsExampleSnippetsCompile(t *testing.T) {
+	t.Parallel()
 	docsExamplesDir := filepath.Join("..", "..", "docs", "examples")
 	entries, err := os.ReadDir(docsExamplesDir)
 	if err != nil {

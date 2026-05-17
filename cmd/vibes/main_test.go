@@ -100,6 +100,7 @@ end`,
 }
 
 func TestAnalyzeCommand(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		script      string

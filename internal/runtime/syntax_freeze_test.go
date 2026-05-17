@@ -3,6 +3,7 @@ package runtime
 import "testing"
 
 func TestCoreSyntaxFreezeSnippetsCompile(t *testing.T) {
+	t.Parallel()
 	engine := MustNewEngine(Config{})
 
 	cases := []struct {
