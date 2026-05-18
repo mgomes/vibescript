@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,6 +93,105 @@ func TestRapidValueJSONAndCloneProperties(t *testing.T) {
 				rt.Fatalf("mutating deepCloneValue(%s) changed original (-want +got):\n%s", beforeMutation.String(), diff)
 			}
 		}
+	})
+}
+
+func TestRapidStrictEffectsGlobalValidationProperties(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
+  payload
+end
+`)
+
+	rapid.Check(t, func(rt *rapid.T) {
+		data := drawRapidJSONValue(rt, 3)
+		global := data
+		callableCalled := false
+		containsCallable := rapid.Bool().Draw(rt, "contains callable")
+		if containsCallable {
+			global = wrapRapidCallableGlobal(rt, data, &callableCalled)
+		}
+
+		result, err := script.Call(context.Background(), "run", nil, CallOptions{
+			Globals: map[string]Value{"payload": global},
+		})
+		if containsCallable {
+			if err == nil {
+				rt.Fatalf("strict-effects run(payload=%s) error = nil, want callable global rejection", global.String())
+			}
+			if callableCalled {
+				rt.Fatalf("strict-effects run(payload=%s) executed callable global, want validation before execution", global.String())
+			}
+			return
+		}
+
+		if err != nil {
+			rt.Fatalf("strict-effects run(payload=%s) error = %v, want nil", data.String(), err)
+		}
+		if diff := valueDiff(data, result); diff != "" {
+			rt.Fatalf("strict-effects run(payload=%s) mismatch (-want +got):\n%s", data.String(), diff)
+		}
+	})
+}
+
+func TestRapidStrictEffectsCapabilityProperties(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
+  cap.fetch()
+end
+`)
+
+	rapid.Check(t, func(rt *rapid.T) {
+		source := drawRapidJSONValue(rt, 3)
+		calls := 0
+
+		result, err := script.Call(context.Background(), "run", nil, CallOptions{
+			Capabilities: []CapabilityAdapter{
+				rapidValueCapability{result: source, calls: &calls},
+			},
+		})
+		if err != nil {
+			rt.Fatalf("strict-effects capability run(result=%s) error = %v, want nil", source.String(), err)
+		}
+		if calls != 1 {
+			rt.Fatalf("strict-effects capability run(result=%s) calls = %d, want 1", source.String(), calls)
+		}
+		if diff := valueDiff(source, result); diff != "" {
+			rt.Fatalf("strict-effects capability run(result=%s) mismatch (-want +got):\n%s", source.String(), diff)
+		}
+	})
+}
+
+func TestRapidCapabilityResultCloneProperties(t *testing.T) {
+	t.Parallel()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		source := drawRapidJSONValue(rt, 4)
+		beforeMutation := deepCloneValue(source)
+
+		cloned, err := cloneCapabilityMethodResult("rapid.capability", source)
+		if err != nil {
+			rt.Fatalf("cloneCapabilityMethodResult(%s) error = %v, want nil", source.String(), err)
+		}
+		if diff := valueDiff(source, cloned); diff != "" {
+			rt.Fatalf("cloneCapabilityMethodResult(%s) mismatch (-want +got):\n%s", source.String(), diff)
+		}
+		if mutateRapidFirstContainer(cloned) {
+			if diff := valueDiff(beforeMutation, source); diff != "" {
+				rt.Fatalf("mutating cloneCapabilityMethodResult(%s) changed source (-want +got):\n%s", beforeMutation.String(), diff)
+			}
+		}
+	})
+}
+
+func TestRapidQuotaMonotonicityProperties(t *testing.T) {
+	t.Parallel()
+
+	rapid.Check(t, func(rt *rapid.T) {
+		checkRapidStepQuotaMonotonicity(rt)
+		checkRapidMemoryQuotaMonotonicity(rt)
 	})
 }
 
@@ -361,4 +461,136 @@ end
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		rt.Fatalf("os.WriteFile(%q, dynamic module version %d) error = %v, want nil", path, version, err)
 	}
+}
+
+type rapidValueCapability struct {
+	result Value
+	calls  *int
+}
+
+func (c rapidValueCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cap": NewObject(map[string]Value{
+			"fetch": NewBuiltin("cap.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				(*c.calls)++
+				return c.result, nil
+			}),
+		}),
+	}, nil
+}
+
+func wrapRapidCallableGlobal(rt *rapid.T, data Value, called *bool) Value {
+	callable := NewBuiltin("rapid.effect", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		*called = true
+		return NewNil(), nil
+	})
+
+	switch rapid.SampledFrom([]string{"direct", "array", "hash", "object"}).Draw(rt, "callable placement") {
+	case "direct":
+		return callable
+	case "array":
+		return NewArray([]Value{data, callable})
+	case "hash":
+		return NewHash(map[string]Value{"data": data, "effect": callable})
+	default:
+		return NewObject(map[string]Value{"data": data, "effect": callable})
+	}
+}
+
+func checkRapidStepQuotaMonotonicity(rt *rapid.T) {
+	limit := int64(rapid.IntRange(1, 40).Draw(rt, "step loop limit"))
+	lowQuota := rapid.IntRange(1, 300).Draw(rt, "low step quota")
+	highQuota := lowQuota + rapid.IntRange(0, 600).Draw(rt, "step quota delta")
+	source := `def run(limit)
+  total = 0
+  for i in 1..limit
+    total = total + i
+  end
+  total
+end
+`
+
+	lowResult, lowErr := callRapidScriptWithConfig(rt, Config{
+		StepQuota:        lowQuota,
+		MemoryQuotaBytes: 1 << 20,
+	}, source, []Value{NewInt(limit)})
+	highResult, highErr := callRapidScriptWithConfig(rt, Config{
+		StepQuota:        highQuota,
+		MemoryQuotaBytes: 1 << 20,
+	}, source, []Value{NewInt(limit)})
+
+	if lowErr != nil && !errors.Is(lowErr, errStepQuotaExceeded) {
+		rt.Fatalf("run(limit=%d) with StepQuota=%d error = %v, want nil or step quota error", limit, lowQuota, lowErr)
+	}
+	if highErr != nil && !errors.Is(highErr, errStepQuotaExceeded) {
+		rt.Fatalf("run(limit=%d) with StepQuota=%d error = %v, want nil or step quota error", limit, highQuota, highErr)
+	}
+	if lowErr == nil && highErr != nil {
+		rt.Fatalf("run(limit=%d) succeeded with StepQuota=%d but errored with higher StepQuota=%d: %v", limit, lowQuota, highQuota, highErr)
+	}
+	if lowErr == nil && !lowResult.Equal(highResult) {
+		rt.Fatalf("run(limit=%d) StepQuota=%d result = %s, StepQuota=%d result = %s, want same result", limit, lowQuota, lowResult.String(), highQuota, highResult.String())
+	}
+	if highErr == nil {
+		want := NewInt(limit * (limit + 1) / 2)
+		if !highResult.Equal(want) {
+			rt.Fatalf("run(limit=%d) with StepQuota=%d = %s, want %s", limit, highQuota, highResult.String(), want.String())
+		}
+	}
+}
+
+func checkRapidMemoryQuotaMonotonicity(rt *rapid.T) {
+	length := rapid.IntRange(0, 60).Draw(rt, "payload length")
+	element := rapidSafeString().Draw(rt, "payload element")
+	values := make([]Value, length)
+	for i := range values {
+		values[i] = NewString(element)
+	}
+	payload := NewArray(values)
+	lowQuota := rapid.IntRange(128, 20*1024).Draw(rt, "low memory quota")
+	highQuota := lowQuota + rapid.IntRange(0, 80*1024).Draw(rt, "memory quota delta")
+	source := `def run(payload)
+  payload.size
+end
+`
+
+	lowResult, lowErr := callRapidScriptWithConfig(rt, Config{
+		StepQuota:        10000,
+		MemoryQuotaBytes: lowQuota,
+	}, source, []Value{payload})
+	highResult, highErr := callRapidScriptWithConfig(rt, Config{
+		StepQuota:        10000,
+		MemoryQuotaBytes: highQuota,
+	}, source, []Value{payload})
+
+	if lowErr != nil && !errors.Is(lowErr, errMemoryQuotaExceeded) {
+		rt.Fatalf("run(payload length=%d) with MemoryQuotaBytes=%d error = %v, want nil or memory quota error", length, lowQuota, lowErr)
+	}
+	if highErr != nil && !errors.Is(highErr, errMemoryQuotaExceeded) {
+		rt.Fatalf("run(payload length=%d) with MemoryQuotaBytes=%d error = %v, want nil or memory quota error", length, highQuota, highErr)
+	}
+	if lowErr == nil && highErr != nil {
+		rt.Fatalf("run(payload length=%d) succeeded with MemoryQuotaBytes=%d but errored with higher MemoryQuotaBytes=%d: %v", length, lowQuota, highQuota, highErr)
+	}
+	if lowErr == nil && !lowResult.Equal(highResult) {
+		rt.Fatalf("run(payload length=%d) MemoryQuotaBytes=%d result = %s, MemoryQuotaBytes=%d result = %s, want same result", length, lowQuota, lowResult.String(), highQuota, highResult.String())
+	}
+	if highErr == nil {
+		want := NewInt(int64(length))
+		if !highResult.Equal(want) {
+			rt.Fatalf("run(payload length=%d) with MemoryQuotaBytes=%d = %s, want %s", length, highQuota, highResult.String(), want.String())
+		}
+	}
+}
+
+func callRapidScriptWithConfig(rt *rapid.T, cfg Config, source string, args []Value) (Value, error) {
+	engine, err := NewEngine(cfg)
+	if err != nil {
+		rt.Fatalf("NewEngine(%+v) error = %v, want nil", cfg, err)
+	}
+	script, err := engine.Compile(source)
+	if err != nil {
+		rt.Fatalf("Compile(%q) error = %v, want nil", source, err)
+	}
+	return script.Call(context.Background(), "run", args, CallOptions{})
 }
