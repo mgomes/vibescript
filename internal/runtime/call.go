@@ -10,7 +10,7 @@ import (
 
 func valueCanContainBuiltins(val Value) bool {
 	switch val.Kind() {
-	case KindBuiltin, KindArray, KindHash, KindObject, KindClass, KindInstance:
+	case KindBuiltin, KindArray, KindHash, KindObject, KindClass, KindInstance, KindFunction:
 		return true
 	default:
 		return false
@@ -65,6 +65,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if scope != nil && len(scope.contracts) > 0 {
 			preCallKnownBuiltins = cloneBuiltinSet(scope.knownBuiltins)
 			preCallScanner := newCapabilityContractScanner()
+			preCallScanner.ambientEnvs = ambientEnvSet(exec.root)
 			if valueCanContainBuiltins(receiver) {
 				preCallScanner.collectBuiltins(receiver, preCallKnownBuiltins)
 			}
@@ -112,6 +113,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if scope != nil && len(scope.contracts) > 0 {
 			postCallScanner := newCapabilityContractScanner()
 			postCallScanner.excluded = preCallKnownBuiltins
+			postCallScanner.ambientEnvs = ambientEnvSet(exec.root)
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.

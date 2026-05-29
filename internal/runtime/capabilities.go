@@ -146,7 +146,16 @@ type capabilityContractScanner struct {
 	seenMaps      map[uintptr]struct{}
 	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
-	excluded      map[*Builtin]struct{}
+	seenEnvs      map[*Env]struct{}
+	// ambientEnvs are environments whose bindings are pre-existing ambient
+	// globals (the execution root and its ancestors), NOT values a capability
+	// freshly exposed. When walking a closure's captured environment we skip
+	// these, so an unrelated global builtin whose name happens to match a
+	// capability contract method is never bound to that scope through a
+	// script-supplied closure. nil means "scan every env" (used by callers
+	// that have no root context, e.g. binding adapter globals at setup).
+	ambientEnvs map[*Env]struct{}
+	excluded    map[*Builtin]struct{}
 }
 
 func newCapabilityContractScanner() *capabilityContractScanner {
@@ -155,7 +164,26 @@ func newCapabilityContractScanner() *capabilityContractScanner {
 		seenMaps:      make(map[uintptr]struct{}),
 		seenClasses:   make(map[*ClassDef]struct{}),
 		seenInstances: make(map[*Instance]struct{}),
+		seenEnvs:      make(map[*Env]struct{}),
 	}
+}
+
+// ambientEnvSet returns the set of environments reachable from root via the
+// parent chain. Builtins bound in these envs are ambient globals, not
+// capability-exposed values, and must not be contract-bound when encountered
+// while walking a script-supplied closure's captured environment.
+func ambientEnvSet(root *Env) map[*Env]struct{} {
+	if root == nil {
+		return nil
+	}
+	set := make(map[*Env]struct{})
+	for env := root; env != nil; env = env.parent {
+		if _, seen := set[env]; seen {
+			break
+		}
+		set[env] = struct{}{}
+	}
+	return set
 }
 
 func validateCapabilityDataOnlyValue(label string, val Value) error {
@@ -368,6 +396,29 @@ func (s *capabilityContractScanner) bindContracts(
 		if instance.Class != nil {
 			s.bindContracts(NewClass(instance.Class), scope, target, scopes)
 		}
+	case KindFunction:
+		fn := valueFunction(val)
+		if fn == nil {
+			return
+		}
+		for env := fn.Env; env != nil; env = env.parent {
+			// Stop at the ambient global chain: builtins bound there are
+			// pre-existing globals, not values this capability exposed.
+			// Binding them through a script-supplied closure would let an
+			// unrelated global builtin whose name matches a contract method
+			// be attached to this scope (CWE-862 regression). The remaining
+			// ancestors are all ambient too, so stop the walk entirely.
+			if _, ambient := s.ambientEnvs[env]; ambient {
+				return
+			}
+			if _, seen := s.seenEnvs[env]; seen {
+				return
+			}
+			s.seenEnvs[env] = struct{}{}
+			for _, item := range env.values {
+				s.bindContracts(item, scope, target, scopes)
+			}
+		}
 	}
 }
 
@@ -425,6 +476,26 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 		if instance.Class != nil {
 			s.collectBuiltins(NewClass(instance.Class), out)
+		}
+	case KindFunction:
+		fn := valueFunction(val)
+		if fn == nil {
+			return
+		}
+		for env := fn.Env; env != nil; env = env.parent {
+			// Skip the ambient global chain (see bindContracts for rationale):
+			// its builtins are pre-existing globals, not capability-exposed
+			// values, and the remaining ancestors are ambient too.
+			if _, ambient := s.ambientEnvs[env]; ambient {
+				return
+			}
+			if _, seen := s.seenEnvs[env]; seen {
+				return
+			}
+			s.seenEnvs[env] = struct{}{}
+			for _, item := range env.values {
+				s.collectBuiltins(item, out)
+			}
 		}
 	}
 }
