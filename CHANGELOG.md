@@ -6,6 +6,28 @@ All notable changes to this project will be documented in this file.
 
 - Ongoing work toward the next pre-1.0 release.
 
+## v0.31.0 - 2026-05-30
+
+- **Fixed: `Money` arithmetic now rejects `int64` overflow instead of silently
+  wrapping.** `Add`, `Sub`, `MulInt`, and `DivInt` detect overflow (including
+  the `-MinInt64` and `MinInt64 / -1` edges) and return an error, matching the
+  range check `ParseMoneyLiteral` already enforces. **Breaking (embedders):
+  `value.Money.MulInt` now returns `(Money, error)` instead of `Money`; update
+  call sites to handle the error.** Plain integer arithmetic in scripts still
+  wraps — money is deliberately stricter.
+- **Fixed: deeply nested type annotations can no longer crash the host.** The
+  parser bounds type-annotation recursion at depth 64 and emits a normal parse
+  error (`type annotation nesting too deep`) instead of overflowing the
+  goroutine stack on attacker-supplied source reached through `Engine.Compile`.
+- **Fixed: capability contracts now follow builtins captured in closures and
+  blocks.** The contract scanner descends into script-function and block
+  environments — with a cycle guard and an ambient-global stop — so a contracted
+  builtin captured in a closure no longer escapes its `ValidateArgs` /
+  `ValidateReturn` enforcement, and an unrelated same-named global is never bound
+  to a capability scope through a script-supplied closure. Defense-in-depth: no
+  bundled capability returns a closure-wrapped builtin, so default embedders were
+  not exposed.
+
 ## v0.30.0 - 2026-05-30
 
 - **Fixed: `||` and `&&` now return the surviving operand, not a coerced
