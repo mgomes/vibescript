@@ -241,8 +241,11 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	}
 	switch expr.Operator {
 	case tokenAnd:
+		// Short-circuit and yield the operand value, not a coerced bool
+		// (Ruby semantics): `a && b` is `a ? b : a`. A falsy left operand is
+		// the result; otherwise the right operand is, whatever its value.
 		if !left.Truthy() {
-			return NewBool(false), nil
+			return left, nil
 		}
 		right, err := exec.evalExpression(expr.Right, env)
 		if err != nil {
@@ -251,10 +254,14 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		if err := exec.checkMemoryWith(left, right); err != nil {
 			return NewNil(), err
 		}
-		return NewBool(right.Truthy()), nil
+		return right, nil
 	case tokenOr:
+		// Short-circuit and yield the operand value, not a coerced bool
+		// (Ruby semantics): `a || b` is `a ? a : b`. This is what makes the
+		// `value = optional || default` idiom work; previously it collapsed
+		// to `true`/`false`.
 		if left.Truthy() {
-			return NewBool(true), nil
+			return left, nil
 		}
 		right, err := exec.evalExpression(expr.Right, env)
 		if err != nil {
@@ -263,7 +270,7 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		if err := exec.checkMemoryWith(left, right); err != nil {
 			return NewNil(), err
 		}
-		return NewBool(right.Truthy()), nil
+		return right, nil
 	}
 
 	right, err := exec.evalExpression(expr.Right, env)
