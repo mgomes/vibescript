@@ -10,7 +10,7 @@ import (
 
 func valueCanContainBuiltins(val Value) bool {
 	switch val.Kind() {
-	case KindBuiltin, KindArray, KindHash, KindObject, KindClass, KindInstance:
+	case KindBuiltin, KindArray, KindHash, KindObject, KindClass, KindInstance, KindFunction, KindBlock:
 		return true
 	default:
 		return false
@@ -65,8 +65,17 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if scope != nil && len(scope.contracts) > 0 {
 			preCallKnownBuiltins = cloneBuiltinSet(scope.knownBuiltins)
 			preCallScanner := newCapabilityContractScanner()
+			preCallScanner.ambientEnvs = ambientEnvSet(exec.root)
 			if valueCanContainBuiltins(receiver) {
 				preCallScanner.collectBuiltins(receiver, preCallKnownBuiltins)
+			}
+			// A script-supplied block is a closure separate from args/kwargs.
+			// Now that block environments are traversed for contract binding,
+			// snapshot any builtins it already captured so a capability that
+			// returns or stores the same block doesn't treat them as newly
+			// published and bind its contract to them.
+			if valueCanContainBuiltins(block) {
+				preCallScanner.collectBuiltins(block, preCallKnownBuiltins)
 			}
 			for _, arg := range args {
 				if !valueCanContainBuiltins(arg) {
@@ -112,6 +121,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		if scope != nil && len(scope.contracts) > 0 {
 			postCallScanner := newCapabilityContractScanner()
 			postCallScanner.excluded = preCallKnownBuiltins
+			postCallScanner.ambientEnvs = ambientEnvSet(exec.root)
 			// Capability methods can lazily publish additional builtins at runtime
 			// (e.g. through factory return values or receiver mutation). Re-scan
 			// these values so future calls still enforce declared contracts.
@@ -370,6 +380,7 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 	}
 
 	binding := CapabilityBinding{Context: exec.ctx, Engine: exec.engine}
+	ambientEnvs := ambientEnvSet(root)
 	for _, adapter := range capabilities {
 		if adapter == nil {
 			continue
@@ -401,7 +412,14 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 			if len(scope.contracts) > 0 {
 				scope.roots = append(scope.roots, rebound)
 			}
-			bindCapabilityContracts(rebound, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			// Skip the ambient global chain (root + ancestors) when walking a
+			// capability-supplied closure's captured environment, matching the
+			// pre/post-call scanners above. Otherwise a contract method whose
+			// name happens to match a pre-existing global builtin would bind to
+			// that global through a closure rooted in the ambient env.
+			scanner := newCapabilityContractScanner()
+			scanner.ambientEnvs = ambientEnvs
+			scanner.bindContracts(rebound, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 		}
 	}
 
