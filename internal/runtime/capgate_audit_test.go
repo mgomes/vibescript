@@ -19,7 +19,10 @@ package runtime
 // The tests are white-box: they build runtime values directly and call
 // the unexported scan helpers, so they live in package runtime.
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // makeContractBuiltin returns a builtin Value, its *Builtin, and a
 // capability contract scope that declares a contract for that method.
@@ -170,5 +173,66 @@ func TestCapabilityScanSkipsAmbientGlobalsInClosure(t *testing.T) {
 	scanner2.bindContracts(ownClosure, capScope, target2, scopes2)
 	if _, ok := target2[capBuiltin]; !ok {
 		t.Fatalf("fix overcorrected: a capability builtin in the closure's own frame was not bound")
+	}
+}
+
+// ambientClosureCapability returns a single global closure whose captured
+// environment chains into the ambient call root, and declares a contract for a
+// method name that collides with a pre-existing global builtin in that root.
+type ambientClosureCapability struct {
+	globalName  string
+	closure     Value
+	contractFor string
+}
+
+func (c ambientClosureCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{c.globalName: c.closure}, nil
+}
+
+func (c ambientClosureCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		c.contractFor: {
+			ValidateArgs: func(_ []Value, _ map[string]Value, _ Value) error {
+				return nil
+			},
+		},
+	}
+}
+
+// TestBindCapabilitiesForCallSkipsAmbientClosureGlobals pins the Codex P2 on
+// PR #119 for the INITIAL capability-binding path. bindCapabilitiesForCall runs
+// after the root env is seeded with stdlib/global builtins, so a capability that
+// exposes a closure whose env chains into that root must not bind its contract to
+// an unrelated same-named ambient global. The pre/post-call scanners already pass
+// ambientEnvSet(root); this verifies the initial binding scan does too.
+func TestBindCapabilitiesForCallSkipsAmbientClosureGlobals(t *testing.T) {
+	script := compileScriptDefault(t, "def run()\n  nil\nend")
+
+	root := newEnv(nil)
+	ambientVal := NewBuiltin("secret", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), nil
+	})
+	root.Define("secret", ambientVal)
+
+	// A capability-supplied closure that captures nothing of its own but whose
+	// env parent is the ambient root holding the unrelated "secret" builtin.
+	childEnv := newEnv(root)
+	closure := NewFunction(&ScriptFunction{Name: "exposed", Env: childEnv})
+
+	adapter := ambientClosureCapability{
+		globalName:  "exposed",
+		closure:     closure,
+		contractFor: "secret",
+	}
+
+	rebinder := newCallFunctionRebinder(script, root, map[string]*ClassDef{}, map[string]*EnumDef{})
+	exec := newExecutionForCall(script, context.Background(), root, CallOptions{})
+
+	if err := bindCapabilitiesForCall(exec, root, rebinder, []CapabilityAdapter{adapter}); err != nil {
+		t.Fatalf("bindCapabilitiesForCall: %v", err)
+	}
+
+	if _, bound := exec.capabilityContracts[valueBuiltin(ambientVal)]; bound {
+		t.Fatalf("over-bind regression: initial binding path attached a contract to an ambient global builtin [Codex P2 #119]")
 	}
 }

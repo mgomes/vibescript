@@ -372,6 +372,7 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 	}
 
 	binding := CapabilityBinding{Context: exec.ctx, Engine: exec.engine}
+	ambientEnvs := ambientEnvSet(root)
 	for _, adapter := range capabilities {
 		if adapter == nil {
 			continue
@@ -403,7 +404,14 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 			if len(scope.contracts) > 0 {
 				scope.roots = append(scope.roots, rebound)
 			}
-			bindCapabilityContracts(rebound, scope, exec.capabilityContracts, exec.capabilityContractScopes)
+			// Skip the ambient global chain (root + ancestors) when walking a
+			// capability-supplied closure's captured environment, matching the
+			// pre/post-call scanners above. Otherwise a contract method whose
+			// name happens to match a pre-existing global builtin would bind to
+			// that global through a closure rooted in the ambient env.
+			scanner := newCapabilityContractScanner()
+			scanner.ambientEnvs = ambientEnvs
+			scanner.bindContracts(rebound, scope, exec.capabilityContracts, exec.capabilityContractScopes)
 		}
 	}
 
