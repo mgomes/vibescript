@@ -26,6 +26,14 @@ func TestLogicalOperatorsShortCircuit(t *testing.T) {
     def adjacent_run(values, index)
       index + 1 < values.size && values[index + 1] == values[index] + 1
     end
+
+    def or_default(v)
+      v || "default"
+    end
+
+    def and_value(a, b)
+      a && b
+    end
     `)
 
 	cases := []struct {
@@ -38,6 +46,16 @@ func TestLogicalOperatorsShortCircuit(t *testing.T) {
 		{name: "true_or_explode_short_circuits", fn: "true_or_explode", want: NewBool(true)},
 		{name: "adjacent_run_single", fn: "adjacent_run", args: []Value{NewArray([]Value{NewInt(5)}), NewInt(0)}, want: NewBool(false)},
 		{name: "adjacent_run_pair", fn: "adjacent_run", args: []Value{NewArray([]Value{NewInt(5), NewInt(6)}), NewInt(0)}, want: NewBool(true)},
+
+		// || / && yield the operand value, not a coerced bool (Ruby semantics).
+		// These are the cases the boolean-collapsing implementation got wrong.
+		{name: "or_keeps_truthy_left", fn: "or_default", args: []Value{NewString("provided")}, want: NewString("provided")},
+		{name: "or_falls_back_on_nil", fn: "or_default", args: []Value{NewNil()}, want: NewString("default")},
+		{name: "or_falls_back_on_empty_string", fn: "or_default", args: []Value{NewString("")}, want: NewString("default")},
+		{name: "or_falls_back_on_zero", fn: "or_default", args: []Value{NewInt(0)}, want: NewString("default")},
+		{name: "or_keeps_nonzero_int", fn: "or_default", args: []Value{NewInt(5)}, want: NewInt(5)},
+		{name: "and_returns_right_when_left_truthy", fn: "and_value", args: []Value{NewString("a"), NewString("b")}, want: NewString("b")},
+		{name: "and_returns_left_when_left_falsy", fn: "and_value", args: []Value{NewNil(), NewString("b")}, want: NewNil()},
 	}
 	for _, tc := range cases {
 		tc := tc
