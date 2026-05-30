@@ -10,7 +10,22 @@ import (
 // resolveType is the parser-local alias for ast.ResolveType.
 func resolveType(name string) (ast.TypeKind, bool) { return ast.ResolveType(name) }
 
+// maxTypeDepth bounds the mutual recursion between parseTypeExpr, parseTypeAtom,
+// and parseTypeShape. Without it, a deeply nested type annotation (e.g.
+// array<array<...>>) overflows the goroutine stack at parse time, an
+// uncatchable fatal that crashes the host. The cap is generous for real code
+// yet far below the stack-overflow threshold; it mirrors the runtime's default
+// RecursionLimit of 64.
+const maxTypeDepth = 64
+
 func (p *parser) parseTypeExpr() *ast.TypeExpr {
+	p.typeDepth++
+	defer func() { p.typeDepth-- }()
+	if p.typeDepth > maxTypeDepth {
+		p.addParseError(p.curToken.Pos, "type annotation nesting too deep")
+		return nil
+	}
+
 	first := p.parseTypeAtom()
 	if first == nil {
 		return nil

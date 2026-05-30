@@ -28,6 +28,7 @@ type parser struct {
 	privateNext      bool
 	lineLimitedExprs int
 	statementNesting int
+	typeDepth        int
 }
 
 func newParser(input string) *parser {
