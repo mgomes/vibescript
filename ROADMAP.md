@@ -622,3 +622,25 @@ becoming accidental contracts.
 - [x] Breaking embedder migration notes are documented in `CHANGELOG.md`.
 - [x] Full tests pass after the refactor.
 - [x] Release checklist passes for `v0.29.0`.
+
+## v0.31.0 - Arithmetic, Parser, and Capability Hardening (completed 2026-05-30)
+
+Goal: close correctness and safety gaps found in follow-up review — overflow in
+the money domain type, unbounded parser recursion, and capability contracts that
+did not follow builtins captured in closures.
+
+### Hardening
+
+- [x] Reject `int64` overflow in `Money` `Add`/`Sub`/`MulInt`/`DivInt` instead of
+  silently wrapping; `MulInt` now returns `(Money, error)`.
+- [x] Bound type-annotation recursion in the parser so deeply nested annotations
+  fail with a parse error rather than overflowing the host stack.
+- [x] Scan script-function and block closure environments when binding capability
+  contracts, with a cycle guard and an ambient-global stop.
+
+### v0.31.0 Definition of Done
+
+- [x] Breaking embedder migration note (`Money.MulInt` signature) documented in
+  `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v0.31.0`.
