@@ -314,9 +314,17 @@ func multiplyValues(left, right Value) (Value, error) {
 		}
 		return NewDuration(durationFromSeconds(right.Duration().Seconds() * secs)), nil
 	case left.Kind() == KindMoney && right.Kind() == KindInt:
-		return NewMoney(left.Money().MulInt(right.Int())), nil
+		product, err := left.Money().MulInt(right.Int())
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewMoney(product), nil
 	case left.Kind() == KindInt && right.Kind() == KindMoney:
-		return NewMoney(right.Money().MulInt(left.Int())), nil
+		product, err := right.Money().MulInt(left.Int())
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewMoney(product), nil
 	default:
 		return NewNil(), fmt.Errorf("unsupported multiplication operands")
 	}
