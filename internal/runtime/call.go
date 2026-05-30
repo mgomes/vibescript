@@ -69,6 +69,14 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			if valueCanContainBuiltins(receiver) {
 				preCallScanner.collectBuiltins(receiver, preCallKnownBuiltins)
 			}
+			// A script-supplied block is a closure separate from args/kwargs.
+			// Now that block environments are traversed for contract binding,
+			// snapshot any builtins it already captured so a capability that
+			// returns or stores the same block doesn't treat them as newly
+			// published and bind its contract to them.
+			if valueCanContainBuiltins(block) {
+				preCallScanner.collectBuiltins(block, preCallKnownBuiltins)
+			}
 			for _, arg := range args {
 				if !valueCanContainBuiltins(arg) {
 					continue

@@ -300,3 +300,58 @@ func TestBindCapabilitiesForCallSkipsAmbientClosureGlobals(t *testing.T) {
 		t.Fatalf("over-bind regression: initial binding path attached a contract to an ambient global builtin [Codex P2 #119]")
 	}
 }
+
+// TestInvokeCallableSnapshotsBlockBuiltins pins the Codex P2 follow-up on
+// PR #119: now that block environments are traversed for contract binding, a
+// builtin the caller already captured in a script block must be recorded in the
+// pre-call known-builtin snapshot. Otherwise, when a contracted capability
+// returns that same block, the post-call scan treats the captured builtin as
+// newly published and binds the capability's contract to it -- even though the
+// builtin was supplied by the caller, not exposed by the capability.
+//
+// White-box: the victim builtin is reachable ONLY through the block, with no
+// prior owner scope, so the post-call block scan is its first contract-binding
+// encounter -- the one case the snapshot is load-bearing for (the owner-scope
+// guard already protects builtins owned by another scope).
+func TestInvokeCallableSnapshotsBlockBuiltins(t *testing.T) {
+	script := compileScriptDefault(t, "def run()\n  nil\nend")
+	root := newEnv(nil)
+	exec := newExecutionForCall(script, context.Background(), root, CallOptions{})
+	exec.capabilityContracts = map[*Builtin]CapabilityMethodContract{}
+	exec.capabilityContractScopes = map[*Builtin]*capabilityContractScope{}
+
+	// A builtin named "victim" captured only inside a block's environment.
+	victimVal := NewBuiltin("victim", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), nil
+	})
+	blockEnv := newEnv(root)
+	blockEnv.Define("captured", victimVal)
+	block := NewBlock(nil, nil, blockEnv)
+
+	// The contracted capability method declares a contract for "victim" and
+	// returns the caller-supplied block verbatim.
+	keepVal := NewBuiltin("keeper.keep", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, blk Value) (Value, error) {
+		return blk, nil
+	})
+	keep := valueBuiltin(keepVal)
+	scope := &capabilityContractScope{
+		contracts: map[string]CapabilityMethodContract{
+			"victim": {
+				ValidateArgs: func(_ []Value, _ map[string]Value, _ Value) error {
+					return nil
+				},
+			},
+		},
+		knownBuiltins: map[*Builtin]struct{}{},
+		roots:         []Value{keepVal},
+	}
+	exec.capabilityContractScopes[keep] = scope
+
+	if _, err := exec.invokeCallable(keepVal, NewNil(), nil, nil, block, Position{}); err != nil {
+		t.Fatalf("invokeCallable: %v", err)
+	}
+
+	if _, bound := exec.capabilityContracts[valueBuiltin(victimVal)]; bound {
+		t.Fatalf("hijack regression: a caller's block-captured builtin was contract-bound by the capability [Codex P2 #119]")
+	}
+}
