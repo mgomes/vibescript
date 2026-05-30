@@ -121,6 +121,70 @@ func TestCapabilityScanNowSeesClosureBuiltin(t *testing.T) {
 	}
 }
 
+// TestCapabilityScanNowSeesBlockBuiltin verifies the Codex P2 follow-up on
+// PR #119: blocks are closures too (NewBlock stores an Env, and capability
+// adapters can execute them via Execution.CallBlock), so a builtin captured in
+// a block's environment must be discovered and contract-bound just like one in
+// a script function's closure.
+func TestCapabilityScanNowSeesBlockBuiltin(t *testing.T) {
+	bv, builtin, scope := makeContractBuiltin("secret")
+
+	env := newEnv(nil)
+	env.Define("secret", bv)
+	block := NewBlock(nil, nil, env)
+
+	if !valueCanContainBuiltins(block) {
+		t.Fatalf("expected valueCanContainBuiltins(block)=true (fixed), got false")
+	}
+
+	scanner := newCapabilityContractScanner()
+	found := map[*Builtin]struct{}{}
+	scanner.collectBuiltins(block, found)
+	if _, ok := found[builtin]; !ok {
+		t.Fatalf("expected collectBuiltins to find the block-captured builtin (fixed)")
+	}
+
+	target := map[*Builtin]CapabilityMethodContract{}
+	scopes := map[*Builtin]*capabilityContractScope{}
+	bindCapabilityContracts(block, scope, target, scopes)
+	if _, ok := target[builtin]; !ok {
+		t.Fatalf("expected bindContracts to bind the block-captured builtin contract (fixed)")
+	}
+}
+
+// TestCapabilityScanSkipsAmbientGlobalsInBlock mirrors the closure ambient-skip
+// guard for blocks: a block whose env chains into the ambient root must not bind
+// a contract to an unrelated same-named global builtin.
+func TestCapabilityScanSkipsAmbientGlobalsInBlock(t *testing.T) {
+	_, _, scope := makeContractBuiltin("secret")
+	ambientVal := NewBuiltin("secret", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), nil
+	})
+
+	root := newEnv(nil)
+	root.Define("secret", ambientVal)
+
+	childEnv := newEnv(root)
+	block := NewBlock(nil, nil, childEnv)
+
+	scanner := newCapabilityContractScanner()
+	scanner.ambientEnvs = ambientEnvSet(root)
+	target := map[*Builtin]CapabilityMethodContract{}
+	scopes := map[*Builtin]*capabilityContractScope{}
+	scanner.bindContracts(block, scope, target, scopes)
+	if len(target) != 0 {
+		t.Fatalf("over-bind regression: block walk bound %d ambient-global contract(s), want 0 [Codex P2 #119]", len(target))
+	}
+
+	collector := newCapabilityContractScanner()
+	collector.ambientEnvs = ambientEnvSet(root)
+	found := map[*Builtin]struct{}{}
+	collector.collectBuiltins(block, found)
+	if _, ok := found[valueBuiltin(ambientVal)]; ok {
+		t.Fatalf("over-bind regression: collectBuiltins surfaced an ambient global builtin via block [Codex P2 #119]")
+	}
+}
+
 // TestCapabilityScanSkipsAmbientGlobalsInClosure pins the fix for the Codex P2
 // on PR #119. When the closure-env walk follows the lexical parent chain into
 // the ambient global environment, an UNRELATED global builtin whose name happens

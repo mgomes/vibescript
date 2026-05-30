@@ -317,6 +317,30 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 	}
 }
 
+// scanClosureEnv walks a closure's captured environment chain (the Env of a
+// script function or a block) and applies visit to every value bound in each
+// frame. It stops at the ambient global chain: builtins bound there are
+// pre-existing globals, not values this capability exposed. Binding them
+// through a script-supplied closure would let an unrelated global builtin whose
+// name matches a contract method be attached to this scope (CWE-862
+// regression). The remaining ancestors are all ambient too, so the walk stops
+// entirely. seenEnvs gives cycle-safe termination for self- or mutually
+// referencing closure environments.
+func (s *capabilityContractScanner) scanClosureEnv(env *Env, visit func(Value)) {
+	for ; env != nil; env = env.parent {
+		if _, ambient := s.ambientEnvs[env]; ambient {
+			return
+		}
+		if _, seen := s.seenEnvs[env]; seen {
+			return
+		}
+		s.seenEnvs[env] = struct{}{}
+		for _, item := range env.values {
+			visit(item)
+		}
+	}
+}
+
 func (s *capabilityContractScanner) bindContracts(
 	val Value,
 	scope *capabilityContractScope,
@@ -397,27 +421,16 @@ func (s *capabilityContractScanner) bindContracts(
 			s.bindContracts(NewClass(instance.Class), scope, target, scopes)
 		}
 	case KindFunction:
-		fn := valueFunction(val)
-		if fn == nil {
-			return
-		}
-		for env := fn.Env; env != nil; env = env.parent {
-			// Stop at the ambient global chain: builtins bound there are
-			// pre-existing globals, not values this capability exposed.
-			// Binding them through a script-supplied closure would let an
-			// unrelated global builtin whose name matches a contract method
-			// be attached to this scope (CWE-862 regression). The remaining
-			// ancestors are all ambient too, so stop the walk entirely.
-			if _, ambient := s.ambientEnvs[env]; ambient {
-				return
-			}
-			if _, seen := s.seenEnvs[env]; seen {
-				return
-			}
-			s.seenEnvs[env] = struct{}{}
-			for _, item := range env.values {
+		if fn := valueFunction(val); fn != nil {
+			s.scanClosureEnv(fn.Env, func(item Value) {
 				s.bindContracts(item, scope, target, scopes)
-			}
+			})
+		}
+	case KindBlock:
+		if blk := valueBlock(val); blk != nil {
+			s.scanClosureEnv(blk.Env, func(item Value) {
+				s.bindContracts(item, scope, target, scopes)
+			})
 		}
 	}
 }
@@ -478,24 +491,16 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 			s.collectBuiltins(NewClass(instance.Class), out)
 		}
 	case KindFunction:
-		fn := valueFunction(val)
-		if fn == nil {
-			return
-		}
-		for env := fn.Env; env != nil; env = env.parent {
-			// Skip the ambient global chain (see bindContracts for rationale):
-			// its builtins are pre-existing globals, not capability-exposed
-			// values, and the remaining ancestors are ambient too.
-			if _, ambient := s.ambientEnvs[env]; ambient {
-				return
-			}
-			if _, seen := s.seenEnvs[env]; seen {
-				return
-			}
-			s.seenEnvs[env] = struct{}{}
-			for _, item := range env.values {
+		if fn := valueFunction(val); fn != nil {
+			s.scanClosureEnv(fn.Env, func(item Value) {
 				s.collectBuiltins(item, out)
-			}
+			})
+		}
+	case KindBlock:
+		if blk := valueBlock(val); blk != nil {
+			s.scanClosureEnv(blk.Env, func(item Value) {
+				s.collectBuiltins(item, out)
+			})
 		}
 	}
 }

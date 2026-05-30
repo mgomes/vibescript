@@ -10,7 +10,7 @@ import (
 
 func valueCanContainBuiltins(val Value) bool {
 	switch val.Kind() {
-	case KindBuiltin, KindArray, KindHash, KindObject, KindClass, KindInstance, KindFunction:
+	case KindBuiltin, KindArray, KindHash, KindObject, KindClass, KindInstance, KindFunction, KindBlock:
 		return true
 	default:
 		return false
