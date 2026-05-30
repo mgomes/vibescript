@@ -4,11 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Ongoing work toward the next pre-1.0 release.
+
+## v0.30.0 - 2026-05-30
+
 - **Fixed: `||` and `&&` now return the surviving operand, not a coerced
   boolean.** `a || b` is `a ? a : b` and `a && b` is `a ? b : a` (Ruby
   semantics), so the documented `value = optional || default` idiom works.
   Previously both collapsed to `true`/`false`. Truthiness rules are unchanged.
-- Ongoing work toward the next pre-1.0 release.
 
 ## v0.29.0 - 2026-05-17
 
