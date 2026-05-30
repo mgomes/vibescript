@@ -6,7 +6,10 @@ test:
 test-race:
 	go test -race ./...
 
-fuzz fuzztime='10s':
+# Iteration-based (Nx) rather than time-based: a duration makes Go's fuzz
+# coordinator set a context deadline whose teardown races, intermittently
+# failing the nightly with "context deadline exceeded" (golang/go#48591).
+fuzz fuzztime='25000x':
 	#!/usr/bin/env bash
 	set -euo pipefail
 
