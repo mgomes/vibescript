@@ -2,6 +2,8 @@
   <img src="docs/logo-dark.svg" alt="Vibescript" height="60">
 </p>
 
+---
+
 As [vibe coding](https://en.wikipedia.org/wiki/Vibe_coding) grows in popularity, there will be many domains where we need to narrow what users can build. Instead of giving them a blank canvas, we can offer an opinionated set of well-defined primitives that combine into predictable, safe applications. Think of it less like traditional software development and more like [HyperCard](https://en.wikipedia.org/wiki/HyperCard): flexible, but within bounds.
 
 Even in these constrained environments, non-technical users still need a way to express custom logic. That’s where Vibescript comes in. It’s a Ruby-like scripting language designed to be easy to read, and easy for AI to vibe code. The interpreter is written in Go and can be embedded directly into any Go application.
