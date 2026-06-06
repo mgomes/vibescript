@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -163,6 +164,44 @@ func TestReadmeLeaderboardExample(t *testing.T) {
 	if second["name"].String() != "alex" || second["score"].Int() != 10 || second["last_seen"].String() != "2024-01-10 10:00:00" {
 		t.Fatalf("unexpected second row: %#v", second)
 	}
+
+	synctest.Test(t, func(t *testing.T) {
+		players := NewArray([]Value{
+			NewHash(map[string]Value{
+				"name":      NewString("near"),
+				"score":     NewInt(10),
+				"last_seen": NewString("1999-12-31T10:00:00Z"),
+			}),
+			NewHash(map[string]Value{
+				"name":      NewString("top"),
+				"score":     NewInt(20),
+				"last_seen": NewString("1999-12-30T10:00:00Z"),
+			}),
+			NewHash(map[string]Value{
+				"name":      NewString("old"),
+				"score":     NewInt(99),
+				"last_seen": NewString("1999-12-24T23:59:59Z"),
+			}),
+		})
+
+		result := callFunc(t, script, "leaderboard", []Value{players})
+		if result.Kind() != KindArray {
+			t.Fatalf("leaderboard(default since) = %v, want array", result.Kind())
+		}
+		arr := result.Array()
+		if len(arr) != 2 {
+			t.Fatalf("leaderboard(default since) returned %d rows, want 2", len(arr))
+		}
+
+		first := arr[0].Hash()
+		if first["name"].String() != "top" || first["score"].Int() != 20 || first["last_seen"].String() != "1999-12-30 10:00:00" {
+			t.Fatalf("leaderboard(default since) first row = %#v", first)
+		}
+		second := arr[1].Hash()
+		if second["name"].String() != "near" || second["score"].Int() != 10 || second["last_seen"].String() != "1999-12-31 10:00:00" {
+			t.Fatalf("leaderboard(default since) second row = %#v", second)
+		}
+	})
 }
 
 func TestTypedFunctions(t *testing.T) {
