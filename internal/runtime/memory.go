@@ -170,6 +170,9 @@ func (est *memoryEstimator) env(env *Env) int {
 	size := estimatedEnvBytes + estimatedMapBaseBytes + len(env.values)*estimatedMapEntryBytes
 	for name, val := range env.values {
 		size += estimatedStringHeaderBytes + len(name)
+		if _, static := env.staticValues[name]; static {
+			continue
+		}
 		size += est.value(val)
 	}
 	size += est.env(env.parent)

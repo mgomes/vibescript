@@ -225,7 +225,7 @@ func (e *Engine) defineBuiltinsForCall(root *Env) {
 	defer e.builtinsMu.RUnlock()
 
 	for name, builtin := range e.builtins {
-		root.Define(name, cloneBuiltinValueForCall(builtin))
+		root.DefineStatic(name, cloneBuiltinValueForCall(builtin))
 	}
 }
 
