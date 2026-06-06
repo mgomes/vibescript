@@ -178,7 +178,7 @@ Long-form guides live in `docs/`:
 - `docs/architecture.md` – internal runtime/parser/module architecture notes for maintainers.
 - `docs/integration.md` – integrating the interpreter in Go applications.
 - `docs/host_cookbook.md` – production integration patterns for embedding hosts.
-- `docs/adr/001-tasks-structured-concurrency.md` – structured concurrency semantics, `Tasks` API shape, and host fanout settings.
+- `docs/tasks.md` – structured concurrency with `Tasks.map`, `Tasks.run`, task handles, and host fanout settings.
 - `docs/starter_templates.md` – starter scaffolds for common embedding scenarios.
 - `docs/durations.md` – duration literals, conversions, and arithmetic.
 - `docs/time.md` – Time creation, formatting with Go layouts, accessors, and time/duration math.

@@ -26,6 +26,8 @@ dives on specific topics.
 - `syntax_compatibility.md` – core syntax freeze baseline and compatibility guarantees.
 - `control-flow.md` – conditionals, loops, and ranges.
 - `blocks.md` – using block literals for map/select/reduce style patterns.
+- `tasks.md` – structured concurrency with `Tasks.map`, `Tasks.run`, and
+  host-controlled fanout.
 - `tooling.md` – CLI commands for run/format/analyze/repl workflows.
 - `architecture.md` – internal runtime/parser/module architecture map for maintainers.
 - `integration.md` – host integration patterns showing how Go services can
