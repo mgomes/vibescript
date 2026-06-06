@@ -227,9 +227,13 @@ func (group *taskGroup) spawn(ctx context.Context, functionName string, args []V
 	case group.jobs <- job:
 		return handle, nil
 	case <-group.ctx.Done():
-		handle.complete(NewNil(), group.ctx.Err())
+		err := group.ctx.Err()
+		if groupErr := group.err(); groupErr != nil {
+			err = groupErr
+		}
+		handle.complete(NewNil(), err)
 		group.tasks.Done()
-		return nil, group.ctx.Err()
+		return nil, err
 	case <-ctx.Done():
 		handle.complete(NewNil(), ctx.Err())
 		group.tasks.Done()

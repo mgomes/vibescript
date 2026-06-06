@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -269,6 +270,61 @@ end`)
 
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "task fail_task failed")
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "boom")
+}
+
+func TestTasksMapReportsWorkerFailureWhileEnqueueIsBlocked(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		script := compileScriptDefault(t, `def fail_when_released(item)
+  probe.wait()
+  raise "boom"
+end
+
+def run()
+  Tasks.map([1, 2, 3], max: 1, with: :fail_when_released)
+end`)
+
+		probe := &taskBlockingProbe{
+			started: make(chan struct{}, 1),
+			release: make(chan struct{}),
+		}
+		done := make(chan callResult, 1)
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			val, err := script.Call(context.Background(), "run", nil, CallOptions{
+				Globals: map[string]Value{"probe": probe.value()},
+			})
+			done <- callResult{value: val, err: err}
+		})
+
+		select {
+		case <-probe.started:
+		case result := <-done:
+			if result.err != nil {
+				t.Fatalf("run returned before task entered probe: %v", result.err)
+			}
+			t.Fatalf("run returned before task entered probe: %s", result.value.String())
+		}
+
+		synctest.Wait()
+		select {
+		case result := <-done:
+			if result.err != nil {
+				t.Fatalf("run returned before release with error: %v", result.err)
+			}
+			t.Fatalf("run returned before release: %s", result.value.String())
+		default:
+		}
+
+		close(probe.release)
+		result := <-done
+		wg.Wait()
+		requireErrorContains(t, result.err, "task fail_when_released failed")
+		requireErrorContains(t, result.err, "boom")
+		if result.err != nil && strings.Contains(result.err.Error(), "context canceled") {
+			t.Fatalf("run error = %v, want task failure before cancellation", result.err)
+		}
+	})
 }
 
 func TestTaskInputsMustBeDataOnly(t *testing.T) {
