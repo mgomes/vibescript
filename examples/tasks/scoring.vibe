@@ -1,0 +1,32 @@
+# vibe: 0.2
+
+def score_user(user)
+  user[:score] * user[:weight]
+end
+
+def score_users(users)
+  Tasks.map(users, max: 2, with: :score_user)
+end
+
+def summarize_users(users)
+  scores = score_users(users)
+  {
+    scores: scores,
+    total: scores.sum
+  }
+end
+
+def prepare_user(user)
+  "prepared:" + user[:id]
+end
+
+def prepare_pair(first, second)
+  Tasks.run(max: 2) do |tasks|
+    left = tasks.spawn(:prepare_user, first)
+    right = tasks.spawn(:prepare_user, second)
+    tasks.wait
+    left_result = left.value
+    right_result = right.value
+    return [left_result, right_result]
+  end
+end
