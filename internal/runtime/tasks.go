@@ -32,6 +32,10 @@ func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[s
 	}
 
 	group := newTaskGroup(exec, max)
+	exec.pushTaskGroup(group)
+	defer exec.popTaskGroup()
+	defer group.releaseRetainedResults()
+
 	result, blockErr := exec.CallBlock(block, []Value{group.managerValue()})
 	if blockErr != nil {
 		group.cancel()
@@ -39,6 +43,9 @@ func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[s
 		return NewNil(), blockErr
 	}
 	if err := group.closeAndWait(); err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), err
 	}
 	return result, nil
@@ -72,6 +79,10 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 	}
 
 	group := newTaskGroup(exec, max)
+	exec.pushTaskGroup(group)
+	defer exec.popTaskGroup()
+	defer group.releaseRetainedResults()
+
 	handles := make([]*taskHandle, len(items))
 	for i, item := range items {
 		handle, err := group.spawn(exec.Context(), functionName, []Value{item}, nil)
@@ -95,7 +106,11 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 		}
 		results[i] = result
 	}
-	return NewArray(results), nil
+	result := NewArray(results)
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
 }
 
 type taskGroup struct {
@@ -111,6 +126,8 @@ type taskGroup struct {
 	mu       sync.Mutex
 	closed   bool
 	firstErr error
+
+	retainedResults map[*taskHandle]Value
 }
 
 type taskJob struct {
@@ -325,6 +342,35 @@ func (group *taskGroup) err() error {
 	return group.firstErr
 }
 
+func (group *taskGroup) retainResult(handle *taskHandle, result Value) {
+	group.mu.Lock()
+	if group.retainedResults == nil {
+		group.retainedResults = make(map[*taskHandle]Value)
+	}
+	group.retainedResults[handle] = result
+	group.mu.Unlock()
+}
+
+func (group *taskGroup) retainedResultMemory(est *memoryEstimator) int {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+
+	total := 0
+	for _, result := range group.retainedResults {
+		total += est.value(result)
+	}
+	return total
+}
+
+func (group *taskGroup) releaseRetainedResults() {
+	group.mu.Lock()
+	for handle := range group.retainedResults {
+		handle.value = NewNil()
+	}
+	group.retainedResults = nil
+	group.mu.Unlock()
+}
+
 func (handle *taskHandle) valueObject() Value {
 	return NewObject(map[string]Value{
 		"value": NewAutoBuiltin("task.value", handle.builtinValue),
@@ -362,6 +408,9 @@ func (handle *taskHandle) result() (Value, error) {
 }
 
 func (handle *taskHandle) complete(result Value, err error) {
+	if err == nil {
+		handle.group.retainResult(handle, result)
+	}
 	handle.value = result
 	handle.err = err
 	close(handle.done)

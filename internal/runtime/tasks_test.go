@@ -325,6 +325,40 @@ end`)
 	}
 }
 
+func TestTaskRetainedResultsCountTowardParentMemoryQuota(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{
+		StepQuota:        1_000_000,
+		MemoryQuotaBytes: 64 * 1024,
+	}, `def payload(size)
+  items = []
+  for i in 1..size
+    items = items.push("payload-" + i)
+  end
+  items
+end
+
+def run(count, size)
+  Tasks.run(max: 1) do |tasks|
+    handles = []
+    if count > 0
+      for i in 1..count
+        handles = handles.push(tasks.spawn(:payload, size))
+      end
+    end
+    handles.size
+  end
+end`)
+
+	result := callScript(t, context.Background(), script, "run", []Value{NewInt(0), NewInt(120)}, CallOptions{})
+	if result.Kind() != KindInt || result.Int() != 0 {
+		t.Fatalf("run(0, 120) = %s, want 0", result.String())
+	}
+
+	err := callScriptErr(t, context.Background(), script, "run", []Value{NewInt(8), NewInt(120)}, CallOptions{})
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestTasksMapReportsWorkerFailureWhileEnqueueIsBlocked(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {

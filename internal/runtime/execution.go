@@ -57,6 +57,7 @@ type Execution struct {
 	capabilityContractsByName map[string]CapabilityMethodContract
 	receiverStack             []Value
 	envStack                  []*Env
+	activeTaskGroups          []*taskGroup
 	loopDepth                 int
 	rescuedErrors             []error
 	strictEffects             bool
@@ -136,6 +137,17 @@ func (exec *Execution) popEnv() {
 		return
 	}
 	exec.envStack = exec.envStack[:len(exec.envStack)-1]
+}
+
+func (exec *Execution) pushTaskGroup(group *taskGroup) {
+	exec.activeTaskGroups = append(exec.activeTaskGroups, group)
+}
+
+func (exec *Execution) popTaskGroup() {
+	if len(exec.activeTaskGroups) == 0 {
+		return
+	}
+	exec.activeTaskGroups = exec.activeTaskGroups[:len(exec.activeTaskGroups)-1]
 }
 
 func (exec *Execution) pushModuleContext(ctx moduleContext) {

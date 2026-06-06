@@ -114,6 +114,9 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	for _, mod := range exec.modules {
 		total += est.value(mod)
 	}
+	for _, group := range exec.activeTaskGroups {
+		total += group.retainedResultMemory(est)
+	}
 
 	total += len(exec.callStack) * estimatedCallFrameBytes
 	total += len(exec.receiverStack) * estimatedValueBytes
