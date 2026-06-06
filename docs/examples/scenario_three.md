@@ -1,7 +1,7 @@
 # Scenario 3: Auto-Renewal Reminder
 
 ```vibe
-# vibe: 0.2
+# vibe: 0.4
 # uses: db, jobs
 
 def schedule_auto_renewal_reminders

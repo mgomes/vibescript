@@ -224,16 +224,19 @@ Vibescript runs inside a constrained interpreter to help host applications enfor
 - **Effects control:** `Config.StrictEffects` can be set to require explicit capabilities for side-effecting operations (e.g., modules or host adapters), letting embedders keep the sandbox tight.
 - **Module search paths:** `Config.ModulePaths` controls where `require` may load modules from. Only approved directories are searched; invalid paths return an error from `NewEngine`.
 - **Capability gating:** Host code injects safe adapters via `CallOptions.Capabilities`, so scripts can only touch what you expose. Globals can be seeded via `CallOptions.Globals` for per-call isolation.
+- **Task concurrency:** `Config.DefaultTaskConcurrency` controls the default `Tasks` fanout (default 4, or the host cap when lower), and `Config.MaxTaskConcurrency` caps script-provided `max:` values (default 64). Requests above the cap raise a runtime error.
 
 Example with explicit limits:
 
 ```go
 engine, err := vibes.NewEngine(vibes.Config{
-    StepQuota:        10_000,   // abort after 10k steps
-    MemoryQuotaBytes: 256 << 10, // 256 KiB heap cap inside the interpreter
-    RecursionLimit:   32,       // shallow recursion allowed
-    StrictEffects:    true,     // require capabilities for side effects
-    ModulePaths:      []string{"/opt/vibes/modules"},
+    StepQuota:              10_000,   // abort after 10k steps
+    MemoryQuotaBytes:       256 << 10, // 256 KiB heap cap inside the interpreter
+    RecursionLimit:         32,       // shallow recursion allowed
+    StrictEffects:          true,     // require capabilities for side effects
+    DefaultTaskConcurrency: 4,        // default Tasks fanout
+    MaxTaskConcurrency:     16,       // reject script max: values above this
+    ModulePaths:            []string{"/opt/vibes/modules"},
 })
 if err != nil {
     return err
@@ -245,5 +248,25 @@ result, err := script.Call(ctx, "run", nil, vibes.CallOptions{
     Globals:      map[string]value.Value{"tenant": value.NewString("acme")},
 })
 ```
+
+Scripts can use `Tasks` for bounded structured concurrency:
+
+```ruby
+def score_user(user)
+  analytics.score(user)
+end
+
+def run(users)
+  scores = Tasks.map(users, with: :score_user)
+
+  Tasks.run(max: 2) do |tasks|
+    tasks.spawn(:publish_scores, scores)
+  end
+
+  scores
+end
+```
+
+`Tasks.run` waits for spawned work at scope exit, so `tasks.wait` is only needed as an explicit barrier. `Tasks.map` preserves input order and runs only up to the configured concurrency at a time.
 
 These knobs keep embedded Vibescript code in a defensive sandbox while still allowing host-approved capabilities. Adjust quotas per use case; the defaults favor safety over throughput.

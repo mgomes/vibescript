@@ -1,7 +1,7 @@
 # Guarding Against Bad Input
 
 ```vibe
-# vibe: 0.2
+# vibe: 0.4
 
 # Ensures donations are positive and in the supported currency.
 def validate_donation(donation)

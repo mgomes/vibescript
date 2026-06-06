@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 
 def ensure_positive(amount)
   assert amount > 0, "amount must be positive"

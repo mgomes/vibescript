@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 
 def after_time(base)
   5.minutes.after(base).to_s

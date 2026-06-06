@@ -1,7 +1,7 @@
 # Scenario 1: Instant Payouts
 
 ```vibe
-# vibe: 0.2
+# vibe: 0.4
 # uses: db, payments
 
 def process_payouts

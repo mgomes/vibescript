@@ -463,6 +463,11 @@ func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctio
 }
 
 func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts CallOptions) *Execution {
+	childCallOptions := CallOptions{
+		Globals:      opts.Globals,
+		Capabilities: opts.Capabilities,
+		AllowRequire: opts.AllowRequire,
+	}
 	return &Execution{
 		engine:          script.engine,
 		script:          script,
@@ -478,6 +483,7 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		envStack:        make([]*Env, 0, 8),
 		strictEffects:   script.engine.config.StrictEffects,
 		allowRequire:    opts.AllowRequire,
+		callOptions:     childCallOptions,
 	}
 }
 

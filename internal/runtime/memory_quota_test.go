@@ -852,6 +852,33 @@ func TestMemoryQuotaCountsCapabilityScopeKnownBuiltins(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestMemoryQuotaSkipsStaticRootBindingValues(t *testing.T) {
+	t.Parallel()
+
+	namespace := NewObject(map[string]Value{
+		"run": NewBuiltin("Static.run", builtinAssert),
+	})
+	staticRoot := newEnv(nil)
+	staticRoot.DefineStatic("Static", namespace)
+	staticExec := &Execution{root: staticRoot}
+
+	dynamicRoot := newEnv(nil)
+	dynamicRoot.Define("Static", namespace)
+	dynamicExec := &Execution{root: dynamicRoot}
+
+	staticBytes := staticExec.estimateMemoryUsage()
+	dynamicBytes := dynamicExec.estimateMemoryUsage()
+	if staticBytes >= dynamicBytes {
+		t.Fatalf("static root binding estimate = %d, dynamic estimate = %d, want static lower", staticBytes, dynamicBytes)
+	}
+
+	staticRoot.Define("Static", namespace)
+	overwrittenBytes := staticExec.estimateMemoryUsage()
+	if overwrittenBytes != dynamicBytes {
+		t.Fatalf("overwritten static binding estimate = %d, want dynamic estimate %d", overwrittenBytes, dynamicBytes)
+	}
+}
+
 type highAllocPatternDB struct{}
 
 func (highAllocPatternDB) Find(ctx context.Context, req DBFindRequest) (Value, error) {

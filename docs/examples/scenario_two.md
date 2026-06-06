@@ -1,7 +1,7 @@
 # Scenario 2: High-Value Notifications
 
 ```vibe
-# vibe: 0.2
+# vibe: 0.4
 # uses: db, events
 
 def notify_high_value_donations(threshold)

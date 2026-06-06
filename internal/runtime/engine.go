@@ -12,20 +12,26 @@ import (
 	"time"
 )
 
-const defaultMaxSourceBytes = 1 << 20
+const (
+	defaultMaxSourceBytes     = 1 << 20
+	defaultTaskConcurrency    = 4
+	defaultMaxTaskConcurrency = 64
+)
 
 // Config controls interpreter execution bounds and enforcement modes.
 type Config struct {
-	StepQuota        int
-	MemoryQuotaBytes int
-	StrictEffects    bool
-	RecursionLimit   int
-	ModulePaths      []string
-	ModuleAllowList  []string
-	ModuleDenyList   []string
-	RandomReader     io.Reader
-	MaxCachedModules int
-	MaxSourceBytes   int
+	StepQuota              int
+	MemoryQuotaBytes       int
+	StrictEffects          bool
+	RecursionLimit         int
+	ModulePaths            []string
+	ModuleAllowList        []string
+	ModuleDenyList         []string
+	RandomReader           io.Reader
+	MaxCachedModules       int
+	MaxSourceBytes         int
+	DefaultTaskConcurrency int
+	MaxTaskConcurrency     int
 }
 
 // Engine executes Vibescript programs with deterministic limits.
@@ -59,6 +65,15 @@ func NewEngine(cfg Config) (*Engine, error) {
 	if cfg.MaxSourceBytes == 0 {
 		cfg.MaxSourceBytes = defaultMaxSourceBytes
 	}
+	if cfg.MaxTaskConcurrency <= 0 {
+		cfg.MaxTaskConcurrency = defaultMaxTaskConcurrency
+	}
+	if cfg.DefaultTaskConcurrency <= 0 {
+		cfg.DefaultTaskConcurrency = defaultTaskConcurrencyForMax(cfg.MaxTaskConcurrency)
+	}
+	if cfg.DefaultTaskConcurrency > cfg.MaxTaskConcurrency {
+		return nil, fmt.Errorf("vibes: default task concurrency cannot exceed max task concurrency")
+	}
 	if cfg.RandomReader == nil {
 		cfg.RandomReader = cryptorand.Reader
 	}
@@ -89,8 +104,16 @@ func NewEngine(cfg Config) (*Engine, error) {
 	registerDataBuiltins(engine)
 	registerDurationBuiltins(engine)
 	registerTimeBuiltins(engine)
+	registerTaskBuiltins(engine)
 
 	return engine, nil
+}
+
+func defaultTaskConcurrencyForMax(max int) int {
+	if max < defaultTaskConcurrency {
+		return max
+	}
+	return defaultTaskConcurrency
 }
 
 func (e *Engine) randomBytes(n int) ([]byte, error) {
@@ -209,7 +232,7 @@ func (e *Engine) defineBuiltinsForCall(root *Env) {
 	defer e.builtinsMu.RUnlock()
 
 	for name, builtin := range e.builtins {
-		root.Define(name, cloneBuiltinValueForCall(builtin))
+		root.DefineStatic(name, cloneBuiltinValueForCall(builtin))
 	}
 }
 
@@ -313,7 +336,7 @@ func (e *Engine) Execute(ctx context.Context, script string) error {
 
 // ConfigSummary provides a human-readable description of the interpreter limits.
 func (e *Engine) ConfigSummary() string {
-	return fmt.Sprintf("steps=%d memory=%dB recursion=%d strict_effects=%t", e.config.StepQuota, e.config.MemoryQuotaBytes, e.config.RecursionLimit, e.config.StrictEffects)
+	return fmt.Sprintf("steps=%d memory=%dB recursion=%d strict_effects=%t tasks=%d/%d", e.config.StepQuota, e.config.MemoryQuotaBytes, e.config.RecursionLimit, e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
 }
 
 func registerDataBuiltins(engine *Engine) {

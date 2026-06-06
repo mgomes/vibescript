@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 
 def merge_defaults(player, defaults)
   defaults.merge(player)

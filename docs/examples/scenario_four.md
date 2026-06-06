@@ -1,7 +1,7 @@
 # Scenario 4: Leaderboard Updates
 
 ```vibe
-# vibe: 0.2
+# vibe: 0.4
 # uses: db, events
 
 def refresh_leaderboard(limit)

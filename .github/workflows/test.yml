@@ -89,6 +89,20 @@ jobs:
       - name: Run race detector
         run: go test -race ./...
 
+  goroutine-leak-profile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run goroutine leak profile
+        run: GOEXPERIMENT=goroutineleakprofile go test ./internal/runtime
+
   quality-gates:
     runs-on: ubuntu-latest
     steps:

@@ -1996,6 +1996,45 @@ func TestExamples(t *testing.T) {
 			},
 		},
 		{
+			name:     "tasks/score_users",
+			file:     "tasks/scoring.vibe",
+			function: "score_users",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"score": intVal(10), "weight": intVal(2)}),
+					hashVal(map[string]Value{"score": intVal(7), "weight": intVal(3)}),
+					hashVal(map[string]Value{"score": intVal(4), "weight": intVal(5)}),
+				),
+			},
+			want: arrayVal(intVal(20), intVal(21), intVal(20)),
+		},
+		{
+			name:     "tasks/summarize_users",
+			file:     "tasks/scoring.vibe",
+			function: "summarize_users",
+			args: []Value{
+				arrayVal(
+					hashVal(map[string]Value{"score": intVal(10), "weight": intVal(2)}),
+					hashVal(map[string]Value{"score": intVal(7), "weight": intVal(3)}),
+					hashVal(map[string]Value{"score": intVal(4), "weight": intVal(5)}),
+				),
+			},
+			want: hashVal(map[string]Value{
+				"scores": arrayVal(intVal(20), intVal(21), intVal(20)),
+				"total":  intVal(61),
+			}),
+		},
+		{
+			name:     "tasks/prepare_pair",
+			file:     "tasks/scoring.vibe",
+			function: "prepare_pair",
+			args: []Value{
+				hashVal(map[string]Value{"id": strVal("u1")}),
+				hashVal(map[string]Value{"id": strVal("u2")}),
+			},
+			want: arrayVal(strVal("prepared:u1"), strVal("prepared:u2")),
+		},
+		{
 			name:     "strings/operations_run",
 			file:     "strings/operations.vibe",
 			function: "run",

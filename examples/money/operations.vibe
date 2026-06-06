@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 
 def add_pledges
   money("50.00 USD") + money("12.50 USD")

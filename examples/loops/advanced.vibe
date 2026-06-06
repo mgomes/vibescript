@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 
 def sum_of_products(x_limit, y_limit)
   total = 0

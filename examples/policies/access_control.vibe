@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 # uses: ctx
 
 def can_edit_player?(player)
