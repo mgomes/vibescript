@@ -9,11 +9,13 @@ Use explicit quotas and strict effects in production hosts:
 
 ```go
 engine, err := vibes.NewEngine(vibes.Config{
-    StepQuota:        20_000,
-    MemoryQuotaBytes: 256 << 10, // 256 KiB
-    RecursionLimit:   32,
-    StrictEffects:    true,
-    ModulePaths:      []string{"/srv/vibes/modules"},
+    StepQuota:              20_000,
+    MemoryQuotaBytes:       256 << 10, // 256 KiB
+    RecursionLimit:         32,
+    StrictEffects:          true,
+    DefaultTaskConcurrency: 4,
+    MaxTaskConcurrency:     16,
+    ModulePaths:            []string{"/srv/vibes/modules"},
 })
 if err != nil {
     return err
@@ -21,7 +23,8 @@ if err != nil {
 ```
 
 Why: this keeps runaway scripts bounded and forces side effects through approved
-capability adapters.
+capability adapters. The task settings let scripts express bounded fanout
+without exceeding host pool sizes or upstream rate limits.
 
 ## 2. Request-Scoped Execution
 

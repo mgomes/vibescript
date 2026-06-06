@@ -61,6 +61,7 @@ type Execution struct {
 	rescuedErrors             []error
 	strictEffects             bool
 	allowRequire              bool
+	callOptions               CallOptions
 }
 
 type capabilityContractScope struct {
