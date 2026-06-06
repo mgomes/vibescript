@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 	"testing"
-	"time"
+	"testing/synctest"
 )
 
 type blockingSync struct {
@@ -42,7 +42,8 @@ type callResult struct {
 }
 
 func TestScriptCallOverlappingCallsKeepFunctionEnvIsolated(t *testing.T) {
-	script := compileScriptDefault(t, `def helper
+	synctest.Test(t, func(t *testing.T) {
+		script := compileScriptDefault(t, `def helper
   tenant
 end
 
@@ -51,60 +52,60 @@ def run
   helper
 end`)
 
-	barrier := &blockingSync{
-		entered: make(chan struct{}, 1),
-		release: make(chan struct{}),
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+		barrier := &blockingSync{
+			entered: make(chan struct{}, 1),
+			release: make(chan struct{}),
+		}
+		ctx := context.Background()
 
-	firstDone := make(chan callResult, 1)
-	go func() {
-		val, callErr := script.Call(ctx, "run", nil, CallOptions{
+		firstDone := make(chan callResult, 1)
+		go func() {
+			val, callErr := script.Call(ctx, "run", nil, CallOptions{
+				Globals: map[string]Value{
+					"sync":   barrier.value(),
+					"tenant": NewString("first"),
+				},
+			})
+			firstDone <- callResult{value: val, err: callErr}
+		}()
+
+		select {
+		case <-barrier.entered:
+		case first := <-firstDone:
+			if first.err != nil {
+				t.Fatalf("first call finished before sync.wait: %v", first.err)
+			}
+			t.Fatalf("first call returned before sync.wait: %#v", first.value)
+		}
+
+		second, err := script.Call(ctx, "run", nil, CallOptions{
 			Globals: map[string]Value{
-				"sync":   barrier.value(),
-				"tenant": NewString("first"),
+				"sync":   noopSyncValue(),
+				"tenant": NewString("second"),
 			},
 		})
-		firstDone <- callResult{value: val, err: callErr}
-	}()
+		if err != nil {
+			t.Fatalf("second call failed: %v", err)
+		}
+		if second.Kind() != KindString || second.String() != "second" {
+			t.Fatalf("unexpected second call result: %#v", second)
+		}
 
-	select {
-	case <-barrier.entered:
-	case <-ctx.Done():
-		t.Fatalf("first call did not reach sync.wait: %v", ctx.Err())
-	}
+		close(barrier.release)
 
-	second, err := script.Call(ctx, "run", nil, CallOptions{
-		Globals: map[string]Value{
-			"sync":   noopSyncValue(),
-			"tenant": NewString("second"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("second call failed: %v", err)
-	}
-	if second.Kind() != KindString || second.String() != "second" {
-		t.Fatalf("unexpected second call result: %#v", second)
-	}
-
-	close(barrier.release)
-
-	select {
-	case first := <-firstDone:
+		first := <-firstDone
 		if first.err != nil {
 			t.Fatalf("first call failed: %v", first.err)
 		}
 		if first.value.Kind() != KindString || first.value.String() != "first" {
 			t.Fatalf("first call leaked globals from another invocation: %#v", first.value)
 		}
-	case <-ctx.Done():
-		t.Fatalf("first call did not complete: %v", ctx.Err())
-	}
+	})
 }
 
 func TestScriptCallOverlappingCallsKeepClassVarsIsolated(t *testing.T) {
-	script := compileScriptDefault(t, `class Counter
+	synctest.Test(t, func(t *testing.T) {
+		script := compileScriptDefault(t, `class Counter
   @@count = 0
 
   def self.bump
@@ -122,54 +123,53 @@ def run
   Counter.count
 end`)
 
-	barrier := &blockingSync{
-		entered: make(chan struct{}, 1),
-		release: make(chan struct{}),
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+		barrier := &blockingSync{
+			entered: make(chan struct{}, 1),
+			release: make(chan struct{}),
+		}
+		ctx := context.Background()
 
-	firstDone := make(chan callResult, 1)
-	go func() {
-		val, callErr := script.Call(ctx, "run", nil, CallOptions{
+		firstDone := make(chan callResult, 1)
+		go func() {
+			val, callErr := script.Call(ctx, "run", nil, CallOptions{
+				Globals: map[string]Value{
+					"sync": barrier.value(),
+				},
+			})
+			firstDone <- callResult{value: val, err: callErr}
+		}()
+
+		select {
+		case <-barrier.entered:
+		case first := <-firstDone:
+			if first.err != nil {
+				t.Fatalf("first call finished before sync.wait: %v", first.err)
+			}
+			t.Fatalf("first call returned before sync.wait: %#v", first.value)
+		}
+
+		second, err := script.Call(ctx, "run", nil, CallOptions{
 			Globals: map[string]Value{
-				"sync": barrier.value(),
+				"sync": noopSyncValue(),
 			},
 		})
-		firstDone <- callResult{value: val, err: callErr}
-	}()
+		if err != nil {
+			t.Fatalf("second call failed: %v", err)
+		}
+		if second.Kind() != KindInt || second.Int() != 1 {
+			t.Fatalf("unexpected second call counter: %#v", second)
+		}
 
-	select {
-	case <-barrier.entered:
-	case <-ctx.Done():
-		t.Fatalf("first call did not reach sync.wait: %v", ctx.Err())
-	}
+		close(barrier.release)
 
-	second, err := script.Call(ctx, "run", nil, CallOptions{
-		Globals: map[string]Value{
-			"sync": noopSyncValue(),
-		},
-	})
-	if err != nil {
-		t.Fatalf("second call failed: %v", err)
-	}
-	if second.Kind() != KindInt || second.Int() != 1 {
-		t.Fatalf("unexpected second call counter: %#v", second)
-	}
-
-	close(barrier.release)
-
-	select {
-	case first := <-firstDone:
+		first := <-firstDone
 		if first.err != nil {
 			t.Fatalf("first call failed: %v", first.err)
 		}
 		if first.value.Kind() != KindInt || first.value.Int() != 1 {
 			t.Fatalf("first call observed shared class var state: %#v", first.value)
 		}
-	case <-ctx.Done():
-		t.Fatalf("first call did not complete: %v", ctx.Err())
-	}
+	})
 }
 
 func TestScriptCallRebindsEscapedFunctionsToCurrentCallEnv(t *testing.T) {
@@ -211,7 +211,8 @@ end`)
 }
 
 func TestScriptCallRebindingDoesNotMutateSharedArgMaps(t *testing.T) {
-	script := compileScriptDefault(t, `def format_tenant(value)
+	synctest.Test(t, func(t *testing.T) {
+		script := compileScriptDefault(t, `def format_tenant(value)
   tenant + "-" + value
 end
 
@@ -224,72 +225,71 @@ def run(ctx)
   ctx.fn("value")
 end`)
 
-	exported, err := script.Call(context.Background(), "export_fn", nil, CallOptions{
-		Globals: map[string]Value{
-			"tenant": NewString("bootstrap"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("export_fn failed: %v", err)
-	}
-	if exported.Kind() != KindFunction {
-		t.Fatalf("expected function result, got %#v", exported)
-	}
-
-	sharedCtx := NewObject(map[string]Value{
-		"fn": exported,
-	})
-
-	barrier := &blockingSync{
-		entered: make(chan struct{}, 1),
-		release: make(chan struct{}),
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	firstDone := make(chan callResult, 1)
-	go func() {
-		val, callErr := script.Call(ctx, "run", []Value{sharedCtx}, CallOptions{
+		exported, err := script.Call(context.Background(), "export_fn", nil, CallOptions{
 			Globals: map[string]Value{
-				"sync":   barrier.value(),
-				"tenant": NewString("first"),
+				"tenant": NewString("bootstrap"),
 			},
 		})
-		firstDone <- callResult{value: val, err: callErr}
-	}()
+		if err != nil {
+			t.Fatalf("export_fn failed: %v", err)
+		}
+		if exported.Kind() != KindFunction {
+			t.Fatalf("expected function result, got %#v", exported)
+		}
 
-	select {
-	case <-barrier.entered:
-	case <-ctx.Done():
-		t.Fatalf("first call did not reach sync.wait: %v", ctx.Err())
-	}
+		sharedCtx := NewObject(map[string]Value{
+			"fn": exported,
+		})
 
-	second, err := script.Call(ctx, "run", []Value{sharedCtx}, CallOptions{
-		Globals: map[string]Value{
-			"sync":   noopSyncValue(),
-			"tenant": NewString("second"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("second call failed: %v", err)
-	}
-	if second.Kind() != KindString || second.String() != "second-value" {
-		t.Fatalf("unexpected second call result: %#v", second)
-	}
+		barrier := &blockingSync{
+			entered: make(chan struct{}, 1),
+			release: make(chan struct{}),
+		}
+		ctx := context.Background()
 
-	close(barrier.release)
+		firstDone := make(chan callResult, 1)
+		go func() {
+			val, callErr := script.Call(ctx, "run", []Value{sharedCtx}, CallOptions{
+				Globals: map[string]Value{
+					"sync":   barrier.value(),
+					"tenant": NewString("first"),
+				},
+			})
+			firstDone <- callResult{value: val, err: callErr}
+		}()
 
-	select {
-	case first := <-firstDone:
+		select {
+		case <-barrier.entered:
+		case first := <-firstDone:
+			if first.err != nil {
+				t.Fatalf("first call finished before sync.wait: %v", first.err)
+			}
+			t.Fatalf("first call returned before sync.wait: %#v", first.value)
+		}
+
+		second, err := script.Call(ctx, "run", []Value{sharedCtx}, CallOptions{
+			Globals: map[string]Value{
+				"sync":   noopSyncValue(),
+				"tenant": NewString("second"),
+			},
+		})
+		if err != nil {
+			t.Fatalf("second call failed: %v", err)
+		}
+		if second.Kind() != KindString || second.String() != "second-value" {
+			t.Fatalf("unexpected second call result: %#v", second)
+		}
+
+		close(barrier.release)
+
+		first := <-firstDone
 		if first.err != nil {
 			t.Fatalf("first call failed: %v", first.err)
 		}
 		if first.value.Kind() != KindString || first.value.String() != "first-value" {
 			t.Fatalf("shared arg map mutation leaked env across calls: %#v", first.value)
 		}
-	case <-ctx.Done():
-		t.Fatalf("first call did not complete: %v", ctx.Err())
-	}
+	})
 }
 
 func TestScriptCallPreservesForeignFunctionEnv(t *testing.T) {

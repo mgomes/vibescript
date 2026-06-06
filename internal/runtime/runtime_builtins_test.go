@@ -5,7 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
+	"testing/synctest"
 )
 
 func TestDurationMethods(t *testing.T) {
@@ -712,17 +712,37 @@ func TestDurationHelpers(t *testing.T) {
 
 func TestNowBuiltin(t *testing.T) {
 	t.Parallel()
-	script := compileScript(t, `
-    def current()
-      now()
-    end
-    `)
+	synctest.Test(t, func(t *testing.T) {
+		script := compileScript(t, `
+	    def current()
+	      {
+	        now: now(),
+	        time_now: Time.now(in: "UTC").to_s,
+	        from_now: 90.seconds.from_now().to_s,
+	        ago: 90.seconds.ago().to_s
+	      }
+	    end
+	    `)
 
-	result := callFunc(t, script, "current", nil)
-	if result.Kind() != KindString {
-		t.Fatalf("expected string, got %v", result.Kind())
-	}
-	if _, err := time.Parse(time.RFC3339, result.String()); err != nil {
-		t.Fatalf("now() output not RFC3339: %v", err)
-	}
+		result := callFunc(t, script, "current", nil)
+		if result.Kind() != KindHash {
+			t.Fatalf("expected hash, got %v", result.Kind())
+		}
+		got := result.Hash()
+		want := map[string]string{
+			"now":      "2000-01-01T00:00:00Z",
+			"time_now": "2000-01-01T00:00:00Z",
+			"from_now": "2000-01-01T00:01:30Z",
+			"ago":      "1999-12-31T23:58:30Z",
+		}
+		for key, wantValue := range want {
+			val, ok := got[key]
+			if !ok {
+				t.Fatalf("current() missing %s", key)
+			}
+			if val.Kind() != KindString || val.String() != wantValue {
+				t.Fatalf("current()[%s] = %v, want %s", key, val, wantValue)
+			}
+		}
+	})
 }
