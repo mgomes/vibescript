@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 
 def add_numbers(a, b)
   a + b

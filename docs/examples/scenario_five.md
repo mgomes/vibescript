@@ -1,7 +1,7 @@
 # Scenario 5: Donation Upsell
 
 ```vibe
-# vibe: 0.2
+# vibe: 0.4
 # uses: db, jobs
 
 def schedule_upsell_followups

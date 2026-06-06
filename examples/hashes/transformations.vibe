@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 
 def rename_keys(record, mapping)
   record.transform_keys do |key|

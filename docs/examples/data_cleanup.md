@@ -1,7 +1,7 @@
 # Data Cleanup
 
 ```vibe
-# vibe: 0.2
+# vibe: 0.4
 # uses: db
 
 def normalize_players

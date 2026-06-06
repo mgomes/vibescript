@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 
 def score_user(user)
   user[:score] * user[:weight]

@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 # uses: db
 
 def total_raised_for_player(player_id)

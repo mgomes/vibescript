@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 
 def reminder_delay_seconds
   (5.minutes).seconds

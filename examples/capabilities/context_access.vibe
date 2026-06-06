@@ -1,4 +1,4 @@
-# vibe: 0.2
+# vibe: 0.4
 # uses: ctx
 
 def current_user_id

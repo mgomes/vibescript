@@ -1,7 +1,7 @@
 # Automated Rewards
 
 ```vibe
-# vibe: 0.2
+# vibe: 0.4
 # uses: db, jobs
 
 def schedule_reward_checks
