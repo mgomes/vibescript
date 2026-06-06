@@ -9,8 +9,9 @@ import (
 )
 
 type taskBlockingProbe struct {
-	started chan struct{}
-	release chan struct{}
+	started   chan struct{}
+	release   chan struct{}
+	afterWait chan struct{}
 }
 
 func (probe *taskBlockingProbe) value() Value {
@@ -26,6 +27,15 @@ func (probe *taskBlockingProbe) value() Value {
 			case <-exec.Context().Done():
 				return NewNil(), exec.Context().Err()
 			}
+		}),
+		"after_wait": NewBuiltin("probe.after_wait", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if probe.afterWait != nil {
+				select {
+				case probe.afterWait <- struct{}{}:
+				default:
+				}
+			}
+			return NewNil(), nil
 		}),
 	})
 }
@@ -351,23 +361,74 @@ end`)
 
 func TestTasksWaitIsExplicitBarrier(t *testing.T) {
 	t.Parallel()
-	script := compileScriptDefault(t, `def add_one(value)
-  value + 1
+	synctest.Test(t, func(t *testing.T) {
+		script := compileScriptDefault(t, `def wait_task()
+  probe.wait()
+  1
 end
 
 def run()
   Tasks.run do |tasks|
-    first = tasks.spawn(:add_one, 1)
+    tasks.spawn(:wait_task)
     tasks.wait
-    second = tasks.spawn(:add_one, first.value)
-    second.value
+    probe.after_wait()
+    "after"
   end
 end`)
 
-	result := callScript(t, context.Background(), script, "run", nil, CallOptions{})
-	if result.Kind() != KindInt || result.Int() != 3 {
-		t.Fatalf("run returned %s, want 3", result.String())
-	}
+		probe := &taskBlockingProbe{
+			started:   make(chan struct{}, 1),
+			release:   make(chan struct{}),
+			afterWait: make(chan struct{}, 1),
+		}
+		done := make(chan callResult, 1)
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			val, err := script.Call(context.Background(), "run", nil, CallOptions{
+				Globals: map[string]Value{"probe": probe.value()},
+			})
+			done <- callResult{value: val, err: err}
+		})
+
+		select {
+		case <-probe.started:
+		case result := <-done:
+			if result.err != nil {
+				t.Fatalf("run returned before task entered probe: %v", result.err)
+			}
+			t.Fatalf("run returned before task entered probe: %s", result.value.String())
+		}
+
+		synctest.Wait()
+		select {
+		case <-probe.afterWait:
+			t.Fatalf("tasks.wait allowed block body to continue before task completed")
+		default:
+		}
+		select {
+		case result := <-done:
+			if result.err != nil {
+				t.Fatalf("run returned before release with error: %v", result.err)
+			}
+			t.Fatalf("run returned before release: %s", result.value.String())
+		default:
+		}
+
+		close(probe.release)
+		result := <-done
+		wg.Wait()
+		if result.err != nil {
+			t.Fatalf("run failed: %v", result.err)
+		}
+		select {
+		case <-probe.afterWait:
+		default:
+			t.Fatalf("run returned without executing code after tasks.wait")
+		}
+		if result.value.Kind() != KindString || result.value.String() != "after" {
+			t.Fatalf("run result = %s, want after", result.value.String())
+		}
+	})
 }
 
 func TestTasksMapRejectsUnknownKeyword(t *testing.T) {

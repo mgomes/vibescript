@@ -152,7 +152,7 @@ func taskScript(exec *Execution) *Script {
 func (group *taskGroup) managerValue() Value {
 	return NewObject(map[string]Value{
 		"spawn": NewBuiltin("tasks.spawn", group.builtinSpawn),
-		"wait":  NewBuiltin("tasks.wait", group.builtinWait),
+		"wait":  NewAutoBuiltin("tasks.wait", group.builtinWait),
 	})
 }
 
