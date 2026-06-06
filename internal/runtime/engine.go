@@ -65,11 +65,11 @@ func NewEngine(cfg Config) (*Engine, error) {
 	if cfg.MaxSourceBytes == 0 {
 		cfg.MaxSourceBytes = defaultMaxSourceBytes
 	}
-	if cfg.DefaultTaskConcurrency <= 0 {
-		cfg.DefaultTaskConcurrency = defaultTaskConcurrency
-	}
 	if cfg.MaxTaskConcurrency <= 0 {
 		cfg.MaxTaskConcurrency = defaultMaxTaskConcurrency
+	}
+	if cfg.DefaultTaskConcurrency <= 0 {
+		cfg.DefaultTaskConcurrency = defaultTaskConcurrencyForMax(cfg.MaxTaskConcurrency)
 	}
 	if cfg.DefaultTaskConcurrency > cfg.MaxTaskConcurrency {
 		return nil, fmt.Errorf("vibes: default task concurrency cannot exceed max task concurrency")
@@ -107,6 +107,13 @@ func NewEngine(cfg Config) (*Engine, error) {
 	registerTaskBuiltins(engine)
 
 	return engine, nil
+}
+
+func defaultTaskConcurrencyForMax(max int) int {
+	if max < defaultTaskConcurrency {
+		return max
+	}
+	return defaultTaskConcurrency
 }
 
 func (e *Engine) randomBytes(n int) ([]byte, error) {

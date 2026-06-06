@@ -387,6 +387,19 @@ func TestNewEngineRejectsDefaultTaskConcurrencyAboveCap(t *testing.T) {
 	requireErrorContains(t, err, "default task concurrency cannot exceed max task concurrency")
 }
 
+func TestNewEngineUsesLowerHostCapAsImplicitDefaultTaskConcurrency(t *testing.T) {
+	t.Parallel()
+	engine, err := NewEngine(Config{
+		MaxTaskConcurrency: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine(Config{MaxTaskConcurrency: 2}) failed: %v", err)
+	}
+	if got := engine.config.DefaultTaskConcurrency; got != 2 {
+		t.Fatalf("default task concurrency = %d, want 2", got)
+	}
+}
+
 func TestTasksMapRejectsInvalidFunctionKeyword(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `def run()

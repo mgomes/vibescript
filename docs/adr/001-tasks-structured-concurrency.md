@@ -8,7 +8,7 @@ Accepted - 2026-06-06
 
 We will add a built-in `Tasks` namespace for bounded structured concurrency in Vibescript. `Tasks.run` will create a scoped task manager with automatic waiting at block exit, and `Tasks.map` will provide ordered concurrent mapping over collections.
 
-Hosts will control task fanout through engine configuration. `Config.DefaultTaskConcurrency` will default to `4`, and `Config.MaxTaskConcurrency` will cap script-provided `max:` values; requests above the cap will fail instead of being silently clamped.
+Hosts will control task fanout through engine configuration. `Config.DefaultTaskConcurrency` will default to `4`, or to `Config.MaxTaskConcurrency` when the host cap is lower, and `Config.MaxTaskConcurrency` will cap script-provided `max:` values; requests above the cap will fail instead of being silently clamped.
 
 ## Context
 
@@ -40,7 +40,7 @@ Tasks.run do |tasks|
 end
 ```
 
-The default is `Config.DefaultTaskConcurrency`, which defaults to `4`.
+The default is `Config.DefaultTaskConcurrency`, which defaults to `4` unless the host cap is lower.
 
 `tasks.spawn(:function_name, *args, **kwargs)` starts an isolated function call and returns a task handle. `task.value` waits for that task if needed, returning its value or raising its error.
 
@@ -89,7 +89,7 @@ Task execution is isolated:
 
 Task concurrency is host-controlled:
 
-- `DefaultTaskConcurrency <= 0` means use the runtime default of `4`.
+- `DefaultTaskConcurrency <= 0` means use the runtime default of `4`, or `MaxTaskConcurrency` when the host cap is lower.
 - `MaxTaskConcurrency <= 0` means use the runtime default cap of `64`.
 - Script-provided `max:` must be an integer greater than or equal to `1`.
 - Script-provided `max:` greater than `Config.MaxTaskConcurrency` raises a runtime error instead of being clamped.
