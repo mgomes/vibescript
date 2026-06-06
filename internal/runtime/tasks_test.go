@@ -272,6 +272,59 @@ end`)
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "boom")
 }
 
+func TestCloneTaskGlobalsCreatesIndependentMutableSnapshots(t *testing.T) {
+	t.Parallel()
+	globals := map[string]Value{
+		"shared": NewHash(map[string]Value{
+			"values": NewArray([]Value{NewInt(1)}),
+		}),
+	}
+
+	first := cloneTaskGlobals(globals)
+	second := cloneTaskGlobals(globals)
+
+	firstValues := first["shared"].Hash()["values"].Array()
+	firstValues[0] = NewInt(99)
+	if got := second["shared"].Hash()["values"].Array()[0]; got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("second cloned global value = %s, want 1", got.String())
+	}
+	if got := globals["shared"].Hash()["values"].Array()[0]; got.Kind() != KindInt || got.Int() != 1 {
+		t.Fatalf("original global value = %s, want 1", got.String())
+	}
+}
+
+func TestTasksCloneInheritedMutableGlobalsForEachJob(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def mark_global(item)
+  if item == 1
+    shared[:one] = item
+  else
+    shared[:two] = item
+  end
+  shared.size
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :mark_global)
+end`)
+
+	shared := NewHash(map[string]Value{})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{"shared": shared},
+	})
+	if result.Kind() != KindArray {
+		t.Fatalf("run result = %s, want array", result.Kind())
+	}
+	for i, value := range result.Array() {
+		if value.Kind() != KindInt || value.Int() != 1 {
+			t.Fatalf("result[%d] = %s, want 1", i, value.String())
+		}
+	}
+	if len(shared.Hash()) != 0 {
+		t.Fatalf("host global shared hash = %s, want unchanged empty hash", shared.String())
+	}
+}
+
 func TestTasksMapReportsWorkerFailureWhileEnqueueIsBlocked(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {

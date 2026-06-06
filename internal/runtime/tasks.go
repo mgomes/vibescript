@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 )
 
@@ -255,8 +256,7 @@ func (group *taskGroup) runJob(job *taskJob) {
 		return
 	}
 
-	opts := group.opts
-	opts.Keywords = job.kwargs
+	opts := group.callOptionsForJob(job)
 	result, err := group.script.Call(group.ctx, job.functionName, job.args, opts)
 	if err != nil {
 		taskErr := fmt.Errorf("task %s failed: %w", job.functionName, err)
@@ -273,6 +273,13 @@ func (group *taskGroup) runJob(job *taskJob) {
 		return
 	}
 	job.handle.complete(result, nil)
+}
+
+func (group *taskGroup) callOptionsForJob(job *taskJob) CallOptions {
+	opts := group.opts
+	opts.Globals = cloneTaskGlobals(group.opts.Globals)
+	opts.Keywords = job.kwargs
+	return opts
 }
 
 func (group *taskGroup) wait() error {
@@ -439,6 +446,78 @@ func cloneTaskKwargs(method string, kwargs map[string]Value) (map[string]Value, 
 
 func cloneTaskResult(functionName string, result Value) (Value, error) {
 	return cloneTaskValue(fmt.Sprintf("task %s return value", functionName), result)
+}
+
+func cloneTaskGlobals(globals map[string]Value) map[string]Value {
+	if len(globals) == 0 {
+		return nil
+	}
+	cloner := newTaskGlobalCloner()
+	out := make(map[string]Value, len(globals))
+	for name, val := range globals {
+		out[name] = cloner.clone(val)
+	}
+	return out
+}
+
+type taskGlobalCloner struct {
+	seenArrays map[sliceIdentity]Value
+	seenMaps   map[uintptr]map[string]Value
+}
+
+func newTaskGlobalCloner() *taskGlobalCloner {
+	return &taskGlobalCloner{
+		seenArrays: make(map[sliceIdentity]Value),
+		seenMaps:   make(map[uintptr]map[string]Value),
+	}
+}
+
+func (cloner *taskGlobalCloner) clone(val Value) Value {
+	switch val.Kind() {
+	case KindArray:
+		items := val.Array()
+		id := sliceIdentity{
+			Ptr: reflect.ValueOf(items).Pointer(),
+			Len: len(items),
+			Cap: cap(items),
+		}
+		if clone, seen := cloner.seenArrays[id]; seen {
+			return clone
+		}
+		clonedItems := make([]Value, len(items))
+		clonedArray := NewArray(clonedItems)
+		cloner.seenArrays[id] = clonedArray
+		for i, item := range items {
+			clonedItems[i] = cloner.clone(item)
+		}
+		return clonedArray
+	case KindHash:
+		entries := val.Hash()
+		ptr := reflect.ValueOf(entries).Pointer()
+		if clone, seen := cloner.seenMaps[ptr]; seen {
+			return NewHash(clone)
+		}
+		clonedEntries := make(map[string]Value, len(entries))
+		cloner.seenMaps[ptr] = clonedEntries
+		for key, item := range entries {
+			clonedEntries[key] = cloner.clone(item)
+		}
+		return NewHash(clonedEntries)
+	case KindObject:
+		entries := val.Hash()
+		ptr := reflect.ValueOf(entries).Pointer()
+		if clone, seen := cloner.seenMaps[ptr]; seen {
+			return NewObject(clone)
+		}
+		clonedEntries := make(map[string]Value, len(entries))
+		cloner.seenMaps[ptr] = clonedEntries
+		for key, item := range entries {
+			clonedEntries[key] = cloner.clone(item)
+		}
+		return NewObject(clonedEntries)
+	default:
+		return val
+	}
 }
 
 func cloneTaskValue(label string, val Value) (Value, error) {
