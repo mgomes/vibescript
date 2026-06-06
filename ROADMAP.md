@@ -644,3 +644,46 @@ did not follow builtins captured in closures.
   `CHANGELOG.md`.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v0.31.0`.
+
+## v0.40.0 - Tasks Structured Concurrency (completed 2026-06-06)
+
+Goal: let scripts express bounded concurrent host workflows while preserving
+structured lifetimes, host-controlled fanout, task isolation, cancellation, and
+runtime quotas.
+
+### Runtime
+
+- [x] Add `Tasks.run` scoped task groups with automatic waiting at block exit.
+- [x] Add `tasks.spawn` task handles with `task.value` as the result boundary.
+- [x] Add `tasks.wait` as an optional explicit barrier, not a required cleanup
+  call.
+- [x] Add `Tasks.map` for ordered concurrent mapping over arrays.
+- [x] Clone task arguments, keyword arguments, return values, and inherited
+  mutable globals across task boundaries.
+- [x] Propagate task failures through `task.value` and task scope exit while
+  preserving the original failure when enqueue is canceled.
+- [x] Account retained task results against the parent memory quota while task
+  handles keep completed values alive.
+
+### Host Control and Tooling
+
+- [x] Add `Config.DefaultTaskConcurrency` and `Config.MaxTaskConcurrency`.
+- [x] Default task fanout to `4`, or to the lower host cap when
+  `MaxTaskConcurrency` is below `4`.
+- [x] Reject script `max:` values above the host cap instead of clamping them.
+- [x] Add deterministic `testing/synctest` coverage for task scheduling,
+  waiting, cancellation, and fanout behavior.
+- [x] Add a Go 1.26 goroutine leak profile CI gate for runtime tests.
+
+### Documentation and Examples
+
+- [x] Record the Tasks design in an ADR.
+- [x] Document Tasks in the README and host cookbook.
+- [x] Add a runnable Tasks example.
+- [x] Mark examples and scenario docs with `# vibe: 0.4`.
+
+### v0.40.0 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v0.40.0`.

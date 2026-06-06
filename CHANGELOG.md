@@ -6,6 +6,26 @@ All notable changes to this project will be documented in this file.
 
 - Ongoing work toward the next pre-1.0 release.
 
+## v0.40.0 - 2026-06-06
+
+- **Added: `Tasks` structured concurrency for bounded in-script fanout.**
+  Scripts can now use `Tasks.run` to create an automatically awaited task scope,
+  `tasks.spawn` to start named function calls, `task.value` to wait for a single
+  result, and `Tasks.map` to collect ordered concurrent results.
+- **Added host-controlled task concurrency settings.**
+  `Config.DefaultTaskConcurrency` defaults task fanout to `4` unless the host
+  cap is lower, and `Config.MaxTaskConcurrency` caps script-provided `max:`
+  overrides. Requests above the host cap raise an error instead of being
+  silently clamped.
+- **Hardened task isolation, cancellation, and quota accounting.** Task
+  arguments, keyword arguments, results, and inherited mutable globals are cloned
+  across task boundaries; task failures propagate through handles or scope exit;
+  retained task results count against the parent memory quota while the task
+  scope is alive.
+- Added a Tasks ADR, README and host-cookbook coverage, a runnable Tasks example,
+  `# vibe: 0.4` example headers, deterministic `testing/synctest` coverage for
+  concurrency behavior, and a Go 1.26 goroutine leak profile CI gate.
+
 ## v0.31.0 - 2026-05-30
 
 - **Fixed: `Money` arithmetic now rejects `int64` overflow instead of silently
