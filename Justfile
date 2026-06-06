@@ -6,6 +6,9 @@ test:
 test-race:
 	go test -race ./...
 
+leakcheck:
+	GOEXPERIMENT=goroutineleakprofile go test ./internal/runtime
+
 # Iteration-based (Nx) rather than time-based: a duration makes Go's fuzz
 # coordinator set a context deadline whose teardown races, intermittently
 # failing the nightly with "context deadline exceeded" (golang/go#48591).
