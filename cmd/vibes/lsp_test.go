@@ -714,3 +714,26 @@ func TestInitializeAdvertisesDotCompletionTrigger(t *testing.T) {
 		t.Fatalf("completion triggerCharacters = %#v, want to include \".\"", completion["triggerCharacters"])
 	}
 }
+
+func TestCompletionScopeSurvivesFlushLeftInnerEnd(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/flushleft.vibe"
+	// The inner "end" is unindented (legal but non-canonical), so a
+	// text-only scan would truncate first's scope at line 4.
+	openDoc(t, server, uri, `def first(alpha)
+  if alpha > 1
+    beta = alpha
+end
+  gamma = alpha
+  gamma
+end
+`)
+
+	labels := completionLabels(t, server, uri, 4, 2)
+	for _, want := range []string{"alpha", "gamma"} {
+		if _, ok := labels[want]; !ok {
+			t.Fatalf("local %q missing below a flush-left inner end", want)
+		}
+	}
+}

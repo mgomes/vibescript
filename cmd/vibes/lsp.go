@@ -745,7 +745,7 @@ func scriptCompletionItems(script *vibes.Script, sourceLines []string, line int)
 		// one is the last to start at or before the cursor line that
 		// the cursor has not already exited.
 		start := fn.Pos.Line - 1
-		if start <= line && line <= functionEndLine(sourceLines, start) &&
+		if start <= line && line <= functionEndLine(sourceLines, start, fn.Body) &&
 			(enclosing < 0 || fn.Pos.Line > functions[enclosing].Pos.Line) {
 			enclosing = i
 		}
@@ -766,19 +766,64 @@ func scriptCompletionItems(script *vibes.Script, sourceLines []string, line int)
 	return items
 }
 
-// functionEndLine finds the 0-based line of the unindented "end" that
-// closes a top-level function starting at startLine. The canonical
-// formatter guarantees top-level "end" carries no indentation; while a
-// buffer is mid-edit and the terminator is missing, the function is
-// treated as open-ended so locals stay available on freshly typed
-// lines.
-func functionEndLine(sourceLines []string, startLine int) int {
+// functionEndLine estimates the 0-based line of the "end" closing a
+// top-level function starting at startLine. It takes the further of
+// two signals so neither failure mode truncates the scope: the first
+// unindented "end" in the text (exact under canonical formatting, but
+// an unformatted buffer can hold a flush-left inner terminator), and
+// the last line any body statement occupies plus one (which covers
+// every inner block but trails the real terminator across blank
+// lines). A buffer with neither signal is treated as open-ended.
+func functionEndLine(sourceLines []string, startLine int, body []ast.Statement) int {
+	textualEnd := len(sourceLines)
 	for i := startLine + 1; i < len(sourceLines); i++ {
 		if strings.TrimRight(sourceLines[i], " \t") == "end" {
-			return i
+			textualEnd = i
+			break
 		}
 	}
-	return len(sourceLines)
+	if bodyEnd := lastStatementLine(body); bodyEnd > 0 && textualEnd < len(sourceLines) {
+		return max(textualEnd, bodyEnd)
+	}
+	return textualEnd
+}
+
+// lastStatementLine returns the greatest 0-based line covered by the
+// statements, descending into nested control-flow bodies, plus one for
+// the closing terminator.
+func lastStatementLine(statements []ast.Statement) int {
+	maxLine := 0
+	var walk func([]ast.Statement)
+	walk = func(stmts []ast.Statement) {
+		for _, stmt := range stmts {
+			if line := stmt.Pos().Line - 1; line > maxLine {
+				maxLine = line
+			}
+			switch st := stmt.(type) {
+			case *ast.ForStmt:
+				walk(st.Body)
+			case *ast.IfStmt:
+				walk(st.Consequent)
+				for _, elseIf := range st.ElseIf {
+					walk([]ast.Statement{elseIf})
+				}
+				walk(st.Alternate)
+			case *ast.WhileStmt:
+				walk(st.Body)
+			case *ast.UntilStmt:
+				walk(st.Body)
+			case *ast.TryStmt:
+				walk(st.Body)
+				walk(st.Rescue)
+				walk(st.Ensure)
+			}
+		}
+	}
+	walk(statements)
+	if maxLine == 0 {
+		return 0
+	}
+	return maxLine + 1
 }
 
 func addLocalItem(items *[]map[string]any, seen map[string]struct{}, name, detail string) {
