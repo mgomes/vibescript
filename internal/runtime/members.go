@@ -7,7 +7,16 @@ import (
 
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {
 	switch obj.Kind() {
-	case KindHash, KindObject:
+	case KindHash:
+		member, err := hashMember(obj, property)
+		if err == nil {
+			return member, nil
+		}
+		if val, ok := obj.Hash()[property]; ok {
+			return val, nil
+		}
+		return NewNil(), err
+	case KindObject:
 		if val, ok := obj.Hash()[property]; ok {
 			return val, nil
 		}

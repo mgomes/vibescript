@@ -13,6 +13,15 @@ player = {
 Keys default to symbols (`name:`) but you can access values using either symbol
 or string notation: `player[:name]` or `player["name"]`.
 
+Dot access keeps hash method names reserved. If a stored key is named like a
+hash method, use index access for the entry:
+
+```vibe
+sizes = { size: "XL" }
+sizes.size   # 1
+sizes[:size] # "XL"
+```
+
 ## Query helpers
 
 - `size` / `length`

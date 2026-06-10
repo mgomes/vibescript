@@ -92,6 +92,60 @@ func TestMemberAccessAllowsKeywordNamedHashKeys(t *testing.T) {
 	}
 }
 
+func TestHashMethodNamesWinOverKeys(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def hash_collisions()
+      record = { size: "XL", keys: "raw keys", fetch: "raw fetch" }
+      {
+        size_method: record.size,
+        size_key: record[:size],
+        keys_method: record.keys,
+        keys_key: record[:keys],
+        fetch_method: record.fetch(:fetch),
+        fetch_key: record[:fetch]
+      }
+    end
+
+    def object_collisions(record)
+      {
+        size: record.size,
+        keys: record.keys
+      }
+    end
+    `)
+
+	collisions := callFunc(t, script, "hash_collisions", nil).Hash()
+	if !collisions["size_method"].Equal(NewInt(3)) {
+		t.Fatalf("size_method = %v, want 3", collisions["size_method"])
+	}
+	if !collisions["size_key"].Equal(NewString("XL")) {
+		t.Fatalf("size_key = %v, want XL", collisions["size_key"])
+	}
+	compareArrays(t, collisions["keys_method"], []Value{NewSymbol("fetch"), NewSymbol("keys"), NewSymbol("size")})
+	if !collisions["keys_key"].Equal(NewString("raw keys")) {
+		t.Fatalf("keys_key = %v, want raw keys", collisions["keys_key"])
+	}
+	if !collisions["fetch_method"].Equal(NewString("raw fetch")) {
+		t.Fatalf("fetch_method = %v, want raw fetch", collisions["fetch_method"])
+	}
+	if !collisions["fetch_key"].Equal(NewString("raw fetch")) {
+		t.Fatalf("fetch_key = %v, want raw fetch", collisions["fetch_key"])
+	}
+
+	object := NewObject(map[string]Value{
+		"size": NewString("object size"),
+		"keys": NewString("object keys"),
+	})
+	objectCollisions := callFunc(t, script, "object_collisions", []Value{object}).Hash()
+	if !objectCollisions["size"].Equal(NewString("object size")) {
+		t.Fatalf("object size = %v, want object size", objectCollisions["size"])
+	}
+	if !objectCollisions["keys"].Equal(NewString("object keys")) {
+		t.Fatalf("object keys = %v, want object keys", objectCollisions["keys"])
+	}
+}
+
 func TestHashExpandedHelpers(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
