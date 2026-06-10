@@ -435,7 +435,17 @@ func TestHandleMessageFormattingUnknownDocument(t *testing.T) {
 		Method:  "textDocument/formatting",
 		Params:  payload,
 	})
-	if len(messages) != 1 || messages[0].Result != nil {
-		t.Fatalf("expected nil result for unknown doc, got %#v", messages)
+	if len(messages) != 1 {
+		t.Fatalf("expected one response, got %d", len(messages))
+	}
+	payload, err = json.Marshal(messages[0])
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if !strings.Contains(string(payload), `"result":null`) {
+		t.Fatalf("response %s must carry an explicit null result", payload)
+	}
+	if strings.Contains(string(payload), `"error"`) {
+		t.Fatalf("response %s must not carry an error", payload)
 	}
 }

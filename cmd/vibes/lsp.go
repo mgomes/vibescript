@@ -18,6 +18,13 @@ import (
 
 const maxLSPPayloadBytes = 8 << 20
 
+// jsonNull is the explicit JSON null used for intentionally empty
+// results. lspOutboundMessage.Result is omitempty so notifications can
+// share the struct, which means a plain nil would drop the result field
+// entirely and produce a response with neither result nor error —
+// invalid JSON-RPC that strict clients reject.
+var jsonNull = json.RawMessage("null")
+
 var lspKeywords = []string{
 	"and",
 	"break",
@@ -180,7 +187,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 		if incoming.ID == nil {
 			return nil
 		}
-		return []lspOutboundMessage{{JSONRPC: "2.0", ID: incoming.ID, Result: nil}}
+		return []lspOutboundMessage{{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull}}
 	case "exit":
 		return nil
 	case "textDocument/didOpen":
@@ -222,7 +229,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 		source, ok := s.docs[params.TextDocument.URI]
 		if !ok {
 			return []lspOutboundMessage{
-				{JSONRPC: "2.0", ID: incoming.ID, Result: nil},
+				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
 			}
 		}
 		return []lspOutboundMessage{
@@ -264,7 +271,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 		word := wordAtPosition(source, params.Position.Line, params.Position.Character)
 		if word == "" {
 			return []lspOutboundMessage{
-				{JSONRPC: "2.0", ID: incoming.ID, Result: nil},
+				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
 			}
 		}
 		kind := classifyWord(word)
