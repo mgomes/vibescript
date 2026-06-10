@@ -30,14 +30,20 @@ func ParseIssues(err error) []ParseIssue {
 	return issues
 }
 
+// collectParseIssues walks the full error tree itself rather than using
+// errors.As: As stops at the first match, while a combined compile error
+// carries one positioned error per parse failure and every node must be
+// collected in order.
 func collectParseIssues(err error, issues *[]ParseIssue) {
 	if err == nil {
 		return
 	}
+	//nolint:errorlint // deliberate per-node check; wrapped errors are reached by the recursion below
 	if pe, ok := err.(positionedParseError); ok {
 		*issues = append(*issues, ParseIssue{Pos: pe.Pos(), End: pe.End(), Message: pe.Message()})
 		return
 	}
+	//nolint:errorlint // deliberate per-node unwrap traversal, not a terminal type test
 	switch unwrapped := err.(type) {
 	case interface{ Unwrap() []error }:
 		for _, inner := range unwrapped.Unwrap() {

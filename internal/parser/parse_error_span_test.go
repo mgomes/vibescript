@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -21,8 +22,8 @@ func TestParseErrorsExposeStructuredPositions(t *testing.T) {
 		t.Fatal("expected parse errors for invalid function name")
 	}
 
-	first, ok := errs[0].(positionedError)
-	if !ok {
+	var first positionedError
+	if !errors.As(errs[0], &first) {
 		t.Fatalf("errs[0] = %T, want positioned parse error", errs[0])
 	}
 	if got, want := first.Pos(), (ast.Position{Line: 1, Column: 5}); got != want {
@@ -53,8 +54,8 @@ func TestParseErrorEndIsZeroAtEndOfInput(t *testing.T) {
 
 	var sawUnknownSpan bool
 	for _, err := range errs {
-		pe, ok := err.(positionedError)
-		if !ok {
+		var pe positionedError
+		if !errors.As(err, &pe) {
 			t.Fatalf("error %T does not expose positions", err)
 		}
 		if pe.End() == (ast.Position{}) {
@@ -171,8 +172,8 @@ func TestParseErrorSpanCoversFullStringToken(t *testing.T) {
 	if len(errs) == 0 {
 		t.Fatal("expected parse errors for string function name")
 	}
-	first, ok := errs[0].(positionedError)
-	if !ok {
+	var first positionedError
+	if !errors.As(errs[0], &first) {
 		t.Fatalf("errs[0] = %T, want positioned parse error", errs[0])
 	}
 	if got, want := first.Pos(), (ast.Position{Line: 1, Column: 5}); got != want {
