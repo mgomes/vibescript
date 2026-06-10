@@ -141,6 +141,12 @@ func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error 
 // compiles the snippet as a function body and invokes it.
 const evalSnippetFunction = "__eval__"
 
+var evalSnippetSourceMap = snippetSourceMap{
+	syntheticFunction: evalSnippetFunction,
+	displayFunction:   "<snippet>",
+	lineOffset:        1,
+}
+
 func evalSnippet(ctx context.Context, snippet string, modulePaths []string, checkOnly bool, out io.Writer) error {
 	if strings.TrimSpace(snippet) == "" {
 		return errors.New("vibes run: -e requires a non-empty snippet")
@@ -160,14 +166,14 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 	wrapped := fmt.Sprintf("def %s()\n%s\nend", evalSnippetFunction, snippet)
 	script, err := engine.Compile(wrapped)
 	if err != nil {
-		return fmt.Errorf("compile failed: %w", err)
+		return fmt.Errorf("compile failed: %w", remapSnippetCompileError(err, snippet, evalSnippetSourceMap))
 	}
 	if checkOnly {
 		return nil
 	}
 	result, err := script.Call(ctx, evalSnippetFunction, nil, vibes.CallOptions{})
 	if err != nil {
-		return fmt.Errorf("execution failed: %w", err)
+		return fmt.Errorf("execution failed: %w", remapSnippetRuntimeError(err, snippet, evalSnippetSourceMap))
 	}
 	if !result.IsNil() {
 		fmt.Fprintln(out, result.String())

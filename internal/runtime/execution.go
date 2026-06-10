@@ -87,8 +87,10 @@ type moduleContext struct {
 }
 
 type callFrame struct {
-	Function string
-	Pos      Position
+	Function       string
+	Pos            Position
+	callSiteScript *Script
+	functionScript *Script
 }
 
 func (exec *Execution) pushReceiver(v Value) {
@@ -121,11 +123,16 @@ func (exec *Execution) isCurrentReceiver(v Value) bool {
 	}
 }
 
-func (exec *Execution) pushFrame(function string, pos Position) error {
+func (exec *Execution) pushFrame(function string, pos Position, callSiteScript, functionScript *Script) error {
 	if exec.recursionCap > 0 && len(exec.callStack) >= exec.recursionCap {
 		return exec.newRuntimeErrorWithType(runtimeErrorTypeLimit, fmt.Sprintf("recursion depth exceeded (limit %d)", exec.recursionCap), pos)
 	}
-	exec.callStack = append(exec.callStack, callFrame{Function: function, Pos: pos})
+	exec.callStack = append(exec.callStack, callFrame{
+		Function:       function,
+		Pos:            pos,
+		callSiteScript: callSiteScript,
+		functionScript: functionScript,
+	})
 	return nil
 }
 
@@ -175,6 +182,13 @@ func (exec *Execution) currentModuleContext() *moduleContext {
 	}
 	ctx := exec.moduleStack[len(exec.moduleStack)-1]
 	return &ctx
+}
+
+func (exec *Execution) currentSourceScript() *Script {
+	if ctx := exec.currentModuleContext(); ctx != nil && ctx.script != nil {
+		return ctx.script
+	}
+	return exec.script
 }
 
 func (exec *Execution) pushRescuedError(err error) {
