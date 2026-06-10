@@ -33,6 +33,8 @@ func runCLI(args []string) error {
 		return fmtCommand(args[2:])
 	case "analyze":
 		return analyzeCommand(args[2:])
+	case "test":
+		return testCommand(args[2:])
 	case "lsp":
 		return runLSP()
 	case "repl":
@@ -203,6 +205,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  run <script>    Execute a script file")
 	fmt.Fprintln(os.Stderr, "  fmt <path>      Canonical formatting for .vibe files")
 	fmt.Fprintln(os.Stderr, "  analyze <script> Analyze a script for lint issues")
+	fmt.Fprintln(os.Stderr, "  test [path...]  Run *_test.vibe files (-run <regexp> to filter)")
 	fmt.Fprintln(os.Stderr, "  lsp             Start language server (stdio)")
 	fmt.Fprintln(os.Stderr, "  repl            Start interactive REPL")
 	fmt.Fprintln(os.Stderr, "  help            Show this help message")
