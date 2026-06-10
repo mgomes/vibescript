@@ -354,7 +354,12 @@ func TestBuiltinRegistrationConcurrentWithSnapshots(t *testing.T) {
 func runContainmentSubprocess(t *testing.T, probe, testName string) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Generous because the re-executed binary may carry whole-module
+	// coverage instrumentation (atomic counters under goroutine
+	// contention), which slows the concurrency probes well past their
+	// uninstrumented runtime on shared CI runners. The deadline only
+	// guards against genuine hangs.
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+testName+"$")
