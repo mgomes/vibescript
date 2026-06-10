@@ -40,8 +40,8 @@ dives on specific topics.
   behavior (exports, aliasing, policy hooks).
 - `examples/module_require.md` – practical example showing how to share
   helpers with `require` and module search paths.
-- `stdlib_core_utilities.md` – examples for JSON, regex, random IDs, numeric
-  conversion, and common time parsing helpers.
+- `stdlib_core_utilities.md` – complete method reference for strings, arrays,
+  hashes, numerics, money, durations, times, and builtin functions.
 - `compatibility.md` – supported Go versions and CI coverage expectations.
 - `versioning.md` – semantic versioning policy and compatibility contract.
 - `deprecation_policy.md` – lifecycle policy for public Go embedding APIs.

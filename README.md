@@ -175,6 +175,7 @@ Long-form guides live in `docs/`:
 - `docs/arrays.md` – array helpers including map/select/reduce, first/last, push/pop, sum, and set-like operations.
 - `docs/strings.md` – string helpers like strip/upcase/downcase/split and related utilities.
 - `docs/hashes.md` – symbol-keyed hashes, merge, and iteration helpers.
+- `docs/stdlib_core_utilities.md` – complete method reference for strings, arrays, hashes, numerics, money, durations, times, and builtin functions.
 - `docs/errors.md` – parse/runtime error formatting and debugging patterns.
 - `docs/control-flow.md` – conditionals, loops, and ranges.
 - `docs/blocks.md` – working with block literals for enumerable-style operations.
