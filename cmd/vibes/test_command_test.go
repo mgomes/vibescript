@@ -156,6 +156,30 @@ end
 	}
 }
 
+func TestTestCommandResolvesSiblingHelperWithoutModulePathFlag(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeTestVibeFile(t, dir, "helper.vibe", `def triple(n)
+  n * 3
+end
+`)
+	writeTestVibeFile(t, dir, "sibling_test.vibe", `def test_triple()
+  helper = require("helper")
+  assert helper.triple(3) == 9
+end
+`)
+
+	out, err := captureStdout(t, func() error {
+		return testCommand([]string{dir})
+	})
+	if err != nil {
+		t.Fatalf("testCommand(%q) err = %v, want nil\noutput: %s", dir, err, out)
+	}
+	if !strings.Contains(out, "1 passed, 0 failed") {
+		t.Fatalf("sibling helper output = %q, want one passing test", out)
+	}
+}
+
 func TestTestCommandCompileFailureIsReported(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
