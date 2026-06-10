@@ -735,19 +735,26 @@ func scriptCompletionItems(script *vibes.Script, sourceLines []string, line int)
 	var items []map[string]any
 	functions := script.Functions()
 	enclosing := -1
+	enclosingStart := -1
 	for i, fn := range functions {
 		items = append(items, map[string]any{
 			"label":  fn.Name,
 			"kind":   3, // Function
 			"detail": "function",
 		})
-		// Top-level functions are ordered by position; the enclosing
-		// one is the last to start at or before the cursor line that
-		// the cursor has not already exited.
-		start := fn.Pos.Line - 1
-		if start <= line && line <= functionEndLine(sourceLines, start, fn.Body) &&
-			(enclosing < 0 || fn.Pos.Line > functions[enclosing].Pos.Line) {
+		// The cached AST may predate unparsable edits that shifted
+		// lines, so anchor each function to its "def name" line in the
+		// current buffer (duplicate names cannot compile) and fall
+		// back to the cached position when the anchor is gone.
+		start := findDefLine(sourceLines, fn.Name)
+		if start < 0 {
+			start = fn.Pos.Line - 1
+		}
+		bodyExtent := lastStatementLine(fn.Body) - (fn.Pos.Line - 1)
+		if start <= line && line <= functionEndLine(sourceLines, start, bodyExtent) &&
+			(enclosing < 0 || start > enclosingStart) {
 			enclosing = i
+			enclosingStart = start
 		}
 	}
 	if enclosing >= 0 {
@@ -774,7 +781,7 @@ func scriptCompletionItems(script *vibes.Script, sourceLines []string, line int)
 // the last line any body statement occupies plus one (which covers
 // every inner block but trails the real terminator across blank
 // lines). A buffer with neither signal is treated as open-ended.
-func functionEndLine(sourceLines []string, startLine int, body []ast.Statement) int {
+func functionEndLine(sourceLines []string, startLine, bodyExtent int) int {
 	textualEnd := len(sourceLines)
 	for i := startLine + 1; i < len(sourceLines); i++ {
 		if strings.TrimRight(sourceLines[i], " \t") == "end" {
@@ -782,10 +789,27 @@ func functionEndLine(sourceLines []string, startLine int, body []ast.Statement) 
 			break
 		}
 	}
-	if bodyEnd := lastStatementLine(body); bodyEnd > 0 && textualEnd < len(sourceLines) {
-		return max(textualEnd, bodyEnd)
+	if bodyExtent > 0 && textualEnd < len(sourceLines) {
+		return max(textualEnd, startLine+bodyExtent)
 	}
 	return textualEnd
+}
+
+// findDefLine locates the 0-based line declaring the named top-level
+// function in the current buffer, or -1 when absent.
+func findDefLine(sourceLines []string, name string) int {
+	prefix := "def " + name
+	for i, lineText := range sourceLines {
+		trimmed := strings.TrimSpace(lineText)
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		rest := trimmed[len(prefix):]
+		if rest == "" || strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, " ") {
+			return i
+		}
+	}
+	return -1
 }
 
 // lastStatementLine returns the greatest 0-based line covered by the

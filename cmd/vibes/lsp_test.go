@@ -737,3 +737,38 @@ end
 		}
 	}
 }
+
+func TestCompletionScopesSurviveLineShiftsWhileUnparsable(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/shifted.vibe"
+	openDoc(t, server, uri, `def first(alpha)
+  beta = alpha
+  beta
+end
+`)
+
+	// Three comment lines above shift the function down, and the broken
+	// def at the bottom keeps the buffer unparsable, so positions must
+	// re-anchor against the current text.
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "# one\n# two\n# three\ndef first(alpha)\n  beta = alpha\n  beta\nend\n\ndef broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	inside := completionLabels(t, server, uri, 4, 2)
+	for _, want := range []string{"alpha", "beta"} {
+		if _, ok := inside[want]; !ok {
+			t.Fatalf("local %q missing after lines shifted under an unparsable edit", want)
+		}
+	}
+
+	above := completionLabels(t, server, uri, 0, 0)
+	if _, leaked := above["beta"]; leaked {
+		t.Fatal("locals leaked above the shifted function")
+	}
+}
