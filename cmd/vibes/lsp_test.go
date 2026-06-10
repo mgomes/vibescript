@@ -1277,3 +1277,29 @@ func TestDocumentSymbolParentRangesEncloseChildren(t *testing.T) {
 		}
 	}
 }
+
+func TestNavigationDropsSymbolsMissingFromLiveBuffer(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/replaced.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	// Replace the whole buffer with an unparsable fragment: the cached
+	// AST survives, but none of its declarations exist in the live text.
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "def broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	lines := splitLSPLines(server.docs[uri])
+	if location := definitionLocation(server.programs[uri], uri, lines, "helper"); location != nil {
+		t.Fatalf("definition resolved into unrelated text: %#v", location)
+	}
+	if symbols := documentSymbols(server.programs[uri], lines); len(symbols) != 0 {
+		t.Fatalf("outline = %d symbols for a buffer containing none of them", len(symbols))
+	}
+}

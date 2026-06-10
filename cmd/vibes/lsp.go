@@ -1301,29 +1301,29 @@ func exactDefinitionLocation(program *ast.Program, uri string, sourceLines []str
 		switch st := stmt.(type) {
 		case *ast.FunctionStmt:
 			if st.Name == word {
-				return locationAt(uri, sourceLines, st.Position, st.Name)
+				return anchoredLocation(uri, sourceLines, st.Position, st.Name)
 			}
 		case *ast.ClassStmt:
 			if st.Name == word {
-				return locationAt(uri, sourceLines, st.Position, st.Name)
+				return anchoredLocation(uri, sourceLines, st.Position, st.Name)
 			}
 			for _, method := range st.Methods {
 				if method.Name == word {
-					return locationAt(uri, sourceLines, method.Position, method.Name)
+					return anchoredLocation(uri, sourceLines, method.Position, method.Name)
 				}
 			}
 			for _, method := range st.ClassMethods {
 				if method.Name == word {
-					return locationAt(uri, sourceLines, method.Position, method.Name)
+					return anchoredLocation(uri, sourceLines, method.Position, method.Name)
 				}
 			}
 		case *ast.EnumStmt:
 			if st.Name == word {
-				return locationAt(uri, sourceLines, st.Position, st.Name)
+				return anchoredLocation(uri, sourceLines, st.Position, st.Name)
 			}
 			for _, member := range st.Members {
 				if member.Name == word {
-					return locationAt(uri, sourceLines, member.Position, member.Name)
+					return anchoredLocation(uri, sourceLines, member.Position, member.Name)
 				}
 			}
 		}
@@ -1331,20 +1331,72 @@ func exactDefinitionLocation(program *ast.Program, uri string, sourceLines []str
 	return nil
 }
 
-// locationAt builds a Location whose range covers the declared name.
-// Parser positions point at the declaration keyword (def/class/enum),
-// so the name's own column is recovered from the source line, falling
-// back to the keyword position when the line has changed beyond
-// recognition. Characters are UTF-16 code units.
-func locationAt(uri string, sourceLines []string, pos ast.Position, name string) map[string]any {
-	line := max(0, pos.Line-1)
+// anchoredLocation builds a Location for a declaration after
+// re-anchoring it in the current buffer; a declaration the buffer no
+// longer contains yields nil rather than a stale jump target.
+func anchoredLocation(uri string, sourceLines []string, pos ast.Position, name string) map[string]any {
+	line := anchorDeclLine(sourceLines, pos, name)
+	if line < 0 {
+		return nil
+	}
+	return locationAt(uri, sourceLines, line, name)
+}
+
+// anchorDeclLine finds the 0-based line currently declaring name,
+// preferring the parser-recorded line when it still matches and
+// searching the whole buffer otherwise. -1 means the declaration no
+// longer exists in the live text.
+func anchorDeclLine(sourceLines []string, pos ast.Position, name string) int {
+	recorded := pos.Line - 1
+	if declLineMatches(sourceLines, recorded, name) {
+		return recorded
+	}
+	for i := range sourceLines {
+		if declLineMatches(sourceLines, i, name) {
+			return i
+		}
+	}
+	return -1
+}
+
+// declLineMatches reports whether the line declares name: a def, class,
+// or enum keyword (allowing export/private modifiers and self. method
+// receivers), or a bare enum-member identifier.
+func declLineMatches(sourceLines []string, line int, name string) bool {
+	if line < 0 || line >= len(sourceLines) {
+		return false
+	}
+	text := strings.TrimSpace(sourceLines[line])
+	for _, modifier := range []string{"export ", "private "} {
+		text = strings.TrimPrefix(text, modifier)
+	}
+	for _, keyword := range []string{"def ", "class ", "enum "} {
+		rest, ok := strings.CutPrefix(text, keyword)
+		if !ok {
+			continue
+		}
+		rest = strings.TrimPrefix(rest, "self.")
+		if !strings.HasPrefix(rest, name) {
+			return false
+		}
+		tail := []rune(rest[len(name):])
+		return len(tail) == 0 || !isWordRune(tail[0])
+	}
+	return text == name
+}
+
+// locationAt builds a Location whose range covers the declared name on
+// the given 0-based line. Parser positions point at the declaration
+// keyword, so the name's own column is recovered from the line text.
+// Characters are UTF-16 code units.
+func locationAt(uri string, sourceLines []string, line int, name string) map[string]any {
 	lineText := ""
 	if line < len(sourceLines) {
 		lineText = sourceLines[line]
 	}
 	bare := strings.TrimSuffix(name, "=")
-	startRune := max(0, pos.Column-1)
-	if col := findWordColumn(lineText, bare, startRune); col >= 0 {
+	startRune := 0
+	if col := findWordColumn(lineText, bare, 0); col >= 0 {
 		startRune = col
 	}
 	startChar := utf16Character(lineText, startRune)
@@ -1391,25 +1443,34 @@ func documentSymbols(program *ast.Program, sourceLines []string) []map[string]an
 		return []map[string]any{}
 	}
 	symbols := make([]map[string]any, 0, len(program.Statements))
+	appendSymbol := func(dst []map[string]any, name string, kind int, pos ast.Position, anchorName string, children []map[string]any) []map[string]any {
+		line := anchorDeclLine(sourceLines, pos, anchorName)
+		if line < 0 {
+			// The declaration is gone from the live buffer; a stale
+			// outline entry would point into unrelated text.
+			return dst
+		}
+		return append(dst, symbolFor(name, kind, line, sourceLines, children))
+	}
 	for _, stmt := range program.Statements {
 		switch st := stmt.(type) {
 		case *ast.FunctionStmt:
-			symbols = append(symbols, symbolFor(st.Name, 12, st.Position, sourceLines, nil))
+			symbols = appendSymbol(symbols, st.Name, 12, st.Position, st.Name, nil)
 		case *ast.ClassStmt:
 			children := make([]map[string]any, 0, len(st.Methods)+len(st.ClassMethods))
 			for _, method := range st.Methods {
-				children = append(children, symbolFor(method.Name, 6, method.Position, sourceLines, nil))
+				children = appendSymbol(children, method.Name, 6, method.Position, method.Name, nil)
 			}
 			for _, method := range st.ClassMethods {
-				children = append(children, symbolFor("self."+method.Name, 6, method.Position, sourceLines, nil))
+				children = appendSymbol(children, "self."+method.Name, 6, method.Position, method.Name, nil)
 			}
-			symbols = append(symbols, symbolFor(st.Name, 5, st.Position, sourceLines, children))
+			symbols = appendSymbol(symbols, st.Name, 5, st.Position, st.Name, children)
 		case *ast.EnumStmt:
 			children := make([]map[string]any, 0, len(st.Members))
 			for _, member := range st.Members {
-				children = append(children, symbolFor(member.Name, 22, member.Position, sourceLines, nil))
+				children = appendSymbol(children, member.Name, 22, member.Position, member.Name, nil)
 			}
-			symbols = append(symbols, symbolFor(st.Name, 10, st.Position, sourceLines, children))
+			symbols = appendSymbol(symbols, st.Name, 10, st.Position, st.Name, children)
 		}
 	}
 	return symbols
@@ -1419,8 +1480,7 @@ func documentSymbols(program *ast.Program, sourceLines []string) []map[string]an
 // declaration line, while the full range extends to the last child so
 // LSP clients can nest breadcrumbs and match the cursor to the
 // enclosing symbol.
-func symbolFor(name string, kind int, pos ast.Position, sourceLines []string, children []map[string]any) map[string]any {
-	line := max(0, pos.Line-1)
+func symbolFor(name string, kind int, line int, sourceLines []string, children []map[string]any) map[string]any {
 	lineText := ""
 	if line < len(sourceLines) {
 		lineText = sourceLines[line]
