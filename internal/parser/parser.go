@@ -76,6 +76,8 @@ func newParser(input string) *parser {
 	p.infixFns[ast.TokenDot] = p.parseMemberExpression
 	p.infixFns[ast.TokenScope] = p.parseScopeExpression
 	p.infixFns[ast.TokenLBracket] = p.parseIndexExpression
+	p.infixFns[ast.TokenDo] = p.parseTrailingBlockExpression
+	p.infixFns[ast.TokenLBrace] = p.parseTrailingBlockExpression
 
 	p.nextToken()
 	p.nextToken()
@@ -148,6 +150,8 @@ var precedences = map[ast.TokenType]int{
 	ast.TokenDot:      precCall,
 	ast.TokenScope:    precCall,
 	ast.TokenLBracket: precCall,
+	ast.TokenDo:       precCall,
+	ast.TokenLBrace:   precCall,
 }
 
 func (p *parser) curPrecedence() int {

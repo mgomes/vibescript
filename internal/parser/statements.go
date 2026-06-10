@@ -581,17 +581,9 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 		return nil
 	}
 
-	if p.peekToken.Type == ast.TokenDo {
+	if p.canAttachPeekBlock() {
 		p.nextToken()
-		block := p.parseBlockLiteral()
-		var call *ast.CallExpr
-		if existing, ok := expr.(*ast.CallExpr); ok {
-			call = existing
-		} else {
-			call = &ast.CallExpr{Callee: expr, Position: expr.Pos()}
-		}
-		call.Block = block
-		expr = call
+		expr = p.callWithBlock(expr, p.parseBlockLiteral())
 	}
 
 	if p.peekToken.Type == ast.TokenAssign && isAssignable(expr) {
@@ -610,17 +602,9 @@ func (p *parser) parseExpressionWithBlock() ast.Expression {
 	if expr == nil {
 		return nil
 	}
-	if p.peekToken.Type == ast.TokenDo {
+	if p.canAttachPeekBlock() {
 		p.nextToken()
-		block := p.parseBlockLiteral()
-		var call *ast.CallExpr
-		if existing, ok := expr.(*ast.CallExpr); ok {
-			call = existing
-		} else {
-			call = &ast.CallExpr{Callee: expr, Position: expr.Pos()}
-		}
-		call.Block = block
-		return call
+		return p.callWithBlock(expr, p.parseBlockLiteral())
 	}
 	return expr
 }
