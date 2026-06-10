@@ -940,3 +940,54 @@ end
 	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 8192}, source)
 	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
+
+func TestBuiltinRebindingStaysCallLocal(t *testing.T) {
+	t.Parallel()
+	// Function builtins live in the engine-shared frozen proto env;
+	// assigning over one must rebind in the call root, never mutate the
+	// shared scope, and never leak into later calls.
+	source := `
+def shadow()
+  uuid = "not callable"
+  uuid
+end
+
+def probe()
+  uuid()
+end
+`
+	script := compileScriptDefault(t, source)
+
+	result := callScript(t, context.Background(), script, "shadow", nil, CallOptions{})
+	if !result.Equal(NewString("not callable")) {
+		t.Fatalf("shadow() = %#v, want rebound value within its own call", result)
+	}
+
+	probed := callScript(t, context.Background(), script, "probe", nil, CallOptions{})
+	if probed.Kind() != KindString || probed.Equal(NewString("not callable")) {
+		t.Fatalf("probe() after shadow() = %#v, want the uuid builtin restored for the new call", probed)
+	}
+}
+
+func TestNestedBuiltinAssignmentBindsAtRoot(t *testing.T) {
+	t.Parallel()
+	// Assignment walks to the outermost mutable scope when the name is
+	// only bound in the frozen proto, matching the pre-proto behavior
+	// where builtins lived in the call root itself.
+	source := `
+def rebind()
+  uuid = "shadowed"
+  nil
+end
+
+def run()
+  rebind()
+  uuid
+end
+`
+	script := compileScriptDefault(t, source)
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if !result.Equal(NewString("shadowed")) {
+		t.Fatalf("uuid after rebind() = %#v, want root-level rebinding visible after the call", result)
+	}
+}

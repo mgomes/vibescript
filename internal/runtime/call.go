@@ -468,23 +468,24 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 		Capabilities: opts.Capabilities,
 		AllowRequire: opts.AllowRequire,
 	}
-	return &Execution{
-		engine:          script.engine,
-		script:          script,
-		ctx:             ctx,
-		quota:           script.engine.config.StepQuota,
-		memoryQuota:     script.engine.config.MemoryQuotaBytes,
-		recursionCap:    script.engine.config.RecursionLimit,
-		callStack:       make([]callFrame, 0, 8),
-		root:            root,
-		moduleLoadStack: make([]string, 0, 8),
-		moduleStack:     make([]moduleContext, 0, 8),
-		receiverStack:   make([]Value, 0, 8),
-		envStack:        make([]*Env, 0, 8),
-		strictEffects:   script.engine.config.StrictEffects,
-		allowRequire:    opts.AllowRequire,
-		callOptions:     childCallOptions,
+	exec := &Execution{
+		engine:        script.engine,
+		script:        script,
+		ctx:           ctx,
+		quota:         script.engine.config.StepQuota,
+		memoryQuota:   script.engine.config.MemoryQuotaBytes,
+		recursionCap:  script.engine.config.RecursionLimit,
+		root:          root,
+		strictEffects: script.engine.config.StrictEffects,
+		allowRequire:  opts.AllowRequire,
+		callOptions:   childCallOptions,
 	}
+	// The module stacks stay nil: most calls never require a module,
+	// and append allocates them on first use.
+	exec.callStack = exec.callStackArr[:0]
+	exec.receiverStack = exec.receiverStackArr[:0]
+	exec.envStack = exec.envStackArr[:0]
+	return exec
 }
 
 func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, error) {
