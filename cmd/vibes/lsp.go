@@ -951,7 +951,7 @@ var builtinSignatures = map[string]string{
 	"assert":      "assert(condition, message = nil) -> nil",
 	"money":       `money("12.34 USD") -> money`,
 	"money_cents": "money_cents(cents, currency) -> money",
-	"now":         "now -> time",
+	"now":         "now -> string",
 	"random_id":   "random_id(length = 16) -> string",
 	"require":     `require(module, as: nil) -> object`,
 	"to_float":    "to_float(value) -> float",
@@ -1016,16 +1016,35 @@ func enclosingCall(source string, line, character int) (string, int, bool) {
 	}
 	runes := []rune(lines[line])
 	cursor := min(utf16OffsetToRuneIndex(lines[line], character), len(runes))
+	masked := maskStringLiterals(runes[:cursor])
 
-	depth := 0
+	parens, squares, braces := 0, 0, 0
 	activeParam := 0
 	for i := cursor - 1; i >= 0; i-- {
-		switch runes[i] {
+		switch masked[i] {
 		case ')':
-			depth++
+			parens++
+		case ']':
+			squares++
+		case '}':
+			braces++
+		case '[':
+			if squares > 0 {
+				squares--
+				continue
+			}
+			// The cursor sits inside an unclosed array literal, which
+			// is a single argument: commas seen so far belong to it.
+			activeParam = 0
+		case '{':
+			if braces > 0 {
+				braces--
+				continue
+			}
+			activeParam = 0
 		case '(':
-			if depth > 0 {
-				depth--
+			if parens > 0 {
+				parens--
 				continue
 			}
 			end := i
@@ -1038,12 +1057,43 @@ func enclosingCall(source string, line, character int) (string, int, bool) {
 			}
 			return string(runes[start:end]), activeParam, true
 		case ',':
-			if depth == 0 {
+			if parens == 0 && squares == 0 && braces == 0 {
 				activeParam++
 			}
 		}
 	}
 	return "", 0, false
+}
+
+// maskStringLiterals replaces double-quoted string literals — quotes,
+// contents, and escapes — with spaces, so structural scans do not trip
+// on commas, parentheses, or brackets inside them. An unterminated
+// literal masks through to the end.
+func maskStringLiterals(runes []rune) []rune {
+	masked := make([]rune, len(runes))
+	inString := false
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if inString {
+			masked[i] = ' '
+			if r == '\\' && i+1 < len(runes) {
+				i++
+				masked[i] = ' '
+				continue
+			}
+			if r == '"' {
+				inString = false
+			}
+			continue
+		}
+		if r == '"' {
+			inString = true
+			masked[i] = ' '
+			continue
+		}
+		masked[i] = r
+	}
+	return masked
 }
 
 // paramLabel renders one parameter: its name, type annotation when

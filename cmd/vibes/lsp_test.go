@@ -825,6 +825,11 @@ func TestEnclosingCall(t *testing.T) {
 		{name: "closed_call", source: "charge(1)", line: 0, chr: 9, ok: false},
 		{name: "no_call", source: "x = 1", line: 0, chr: 5, ok: false},
 		{name: "grouping_paren", source: "(1 + 2, ", line: 0, chr: 8, ok: false},
+		{name: "array_arg_commas_ignored", source: "charge([1, 2], ", line: 0, chr: 15, callee: "charge", param: 1, ok: true},
+		{name: "hash_arg_commas_ignored", source: "charge({a: 1, b: 2}, ", line: 0, chr: 21, callee: "charge", param: 1, ok: true},
+		{name: "string_comma_ignored", source: `charge("1,00", `, line: 0, chr: 15, callee: "charge", param: 1, ok: true},
+		{name: "string_paren_ignored", source: `charge("a)b", `, line: 0, chr: 14, callee: "charge", param: 1, ok: true},
+		{name: "cursor_inside_array_literal", source: "charge([1, ", line: 0, chr: 11, callee: "charge", param: 0, ok: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
