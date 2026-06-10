@@ -1,87 +1,580 @@
-# Core Stdlib Utilities
+# Stdlib Method Reference
 
-This page covers the core utility helpers added in v0.18.
+This page is the canonical reference for every built-in method and global
+function the interpreter ships. Each entry is derived from the runtime member
+dispatch tables, so the listing is complete: a method appears here if and only
+if the interpreter implements it.
 
-## JSON
+The narrative guides ([strings.md](strings.md), [arrays.md](arrays.md),
+[hashes.md](hashes.md), [durations.md](durations.md), [time.md](time.md),
+[builtins.md](builtins.md), [tasks.md](tasks.md)) explain idioms and patterns
+in depth; this page favors compact signatures and one-line descriptions.
+
+## How to Read Signatures
+
+- `method(arg, optional = default, keyword: default) -> return_type` describes
+  positional arguments, defaults, and keyword arguments.
+- `{ |item| }` marks a method that takes a block, written
+  `do |item| ... end` in Vibescript.
+- `a | b` in a return type means the method returns either type.
+- All Vibescript values are immutable. Every transform returns a new value and
+  leaves the receiver untouched, including Ruby-style bang methods.
+- Bang variants (`strip!`, `gsub!`, ...) return the transformed value, or
+  `nil` when nothing changed.
 
 ```vibe
-def parse_payload(raw)
-  JSON.parse(raw)
-end
-
-def emit_payload(record)
-  JSON.stringify(record)
-end
+"hello".strip!    # nil (nothing to strip)
+"  hello ".strip! # "hello"
 ```
 
-## Regex
+## Strings
+
+See [strings.md](strings.md) for worked examples. Indexes and lengths count
+Unicode characters, not bytes, unless noted.
+
+### Inspection
+
+- `size -> int` – number of characters.
+- `length -> int` – alias for `size`.
+- `bytesize -> int` – number of UTF-8 bytes.
+- `empty? -> bool` – true when the string has no characters.
+- `ord -> int` – codepoint of the first character; errors on an empty string.
+- `chr -> string | nil` – first character, or `nil` for an empty string.
+
+### Search and Matching
+
+- `start_with?(prefix) -> bool` – true when the string begins with `prefix`.
+- `end_with?(suffix) -> bool` – true when the string ends with `suffix`.
+- `include?(substring) -> bool` – true when `substring` occurs anywhere.
+- `index(substring, offset = 0) -> int | nil` – first character index at or
+  after `offset`; `nil` when not found.
+- `rindex(substring, offset = size) -> int | nil` – last character index at or
+  before `offset`; `nil` when not found.
+- `match(pattern) -> array | nil` – regex match returning
+  `[full, capture1, ...]` (unmatched groups are `nil`); `nil` when no match.
+- `scan(pattern) -> array` – all non-overlapping full regex matches.
+
+`match` and `scan` treat `pattern` as a regex and enforce the
+[regex guard limits](#guard-limits).
 
 ```vibe
-def normalize_ids(text)
-  Regex.replace_all(text, "ID-[0-9]+", "X")
-end
-
-def first_id(text)
-  Regex.match("ID-[0-9]+", text)
-end
+"2024-03-05".match("([0-9]+)-([0-9]+)") # ["2024-03", "2024", "03"]
 ```
+
+### Slicing and Concatenation
+
+- `slice(index) -> string | nil` – single character at `index`; `nil` when out
+  of bounds.
+- `slice(index, length) -> string | nil` – substring of up to `length`
+  characters starting at `index`.
+- `concat(*strings) -> string` – receiver with all arguments appended.
+- `replace(replacement) -> string` – returns `replacement` (compatibility
+  shim for Ruby's mutating `replace`).
+- `clear -> string` – returns `""`.
+
+### Case and Ordering Transforms
+
+- `upcase -> string` – uppercase all characters (Unicode case mapping,
+  locale-insensitive).
+- `downcase -> string` – lowercase all characters.
+- `capitalize -> string` – uppercase the first character, lowercase the rest.
+- `swapcase -> string` – flip the case of each letter.
+- `reverse -> string` – characters in reverse order.
+
+### Whitespace and Affix Trimming
+
+- `strip -> string` – trim leading and trailing whitespace.
+- `lstrip -> string` – trim leading whitespace.
+- `rstrip -> string` – trim trailing whitespace.
+- `squish -> string` – trim both ends and collapse internal whitespace runs to
+  a single space.
+- `chomp(separator = nil) -> string` – remove one trailing `"\r\n"`, `"\n"`,
+  or `"\r"`; with a `separator` remove that suffix once; with `""` remove all
+  trailing newlines.
+- `delete_prefix(prefix) -> string` – remove `prefix` when present.
+- `delete_suffix(suffix) -> string` – remove `suffix` when present.
+
+### Replacement, Splitting, and Templating
+
+- `sub(pattern, replacement, regex: false) -> string` – replace the first
+  occurrence of `pattern`.
+- `gsub(pattern, replacement, regex: false) -> string` – replace every
+  occurrence of `pattern`.
+- `split(separator = nil) -> array` – split on whitespace (dropping empty
+  fields) without arguments, or on `separator` when given.
+- `template(context, strict: false) -> string` – interpolate `{{key.path}}`
+  placeholders from a hash; `strict: true` errors on missing placeholders.
+
+With `regex: true`, `sub`/`gsub` compile `pattern` as a regex, support `$1`
+style group expansion in `replacement`, and enforce the
+[regex guard limits](#guard-limits).
+
+### Bang Variants
+
+Each of the following returns the transformed string, or `nil` when the
+transform changed nothing: `strip!`, `lstrip!`, `rstrip!`, `squish!`,
+`chomp!`, `delete_prefix!`, `delete_suffix!`, `upcase!`, `downcase!`,
+`capitalize!`, `swapcase!`, `reverse!`, `sub!`, `gsub!`.
+
+## Arrays
+
+See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
+(concatenation) and `-` (value subtraction) operators.
+
+### Inspection
+
+- `size -> int` – element count.
+- `length -> int` – alias for `size`.
+- `empty? -> bool` – true when the array has no elements.
+
+### Iteration
+
+- `each { |item| } -> array` – yield each element; returns the receiver.
+- `map { |item| } -> array` – new array of block results.
+- `select { |item| } -> array` – elements for which the block is truthy.
+- `find { |item| } -> value | nil` – first element matching the block.
+- `find_index { |item| } -> int | nil` – index of the first match.
+- `reduce(initial = nil) { |acc, item| } -> value` – fold left; without
+  `initial` the first element seeds the accumulator (errors on an empty
+  array).
+
+### Membership and Counting
+
+- `include?(value) -> bool` – membership test using value equality.
+- `index(value, offset = 0) -> int | nil` – first index of `value` at or
+  after `offset`.
+- `rindex(value, offset = last_index) -> int | nil` – last index of `value`
+  at or before `offset`.
+- `fetch(index, default = nil) -> value` – element at `index`, or
+  `default`/`nil` when out of bounds.
+- `count -> int` – element count.
+- `count(value) -> int` – occurrences of `value`.
+- `count { |item| } -> int` – elements for which the block is truthy.
+- `any? { |item| } -> bool` – true when any element (or block result) is
+  truthy.
+- `all? { |item| } -> bool` – true when every element (or block result) is
+  truthy.
+- `none? { |item| } -> bool` – true when no element (or block result) is
+  truthy.
+
+### Building and Slicing
+
+- `push(*values) -> array` – new array with `values` appended.
+- `pop(n = nil) -> hash` – returns `{ array:, popped: }`; bare `pop` pops one
+  element (`popped` is the value or `nil`), `pop(n)` pops up to `n` elements
+  (`popped` is an array).
+- `first -> value | nil` / `first(n) -> array` – leading element(s).
+- `last -> value | nil` / `last(n) -> array` – trailing element(s).
+- `uniq -> array` – distinct values, keeping first occurrences.
+- `compact -> array` – elements with `nil` entries removed.
+- `flatten(depth = nil) -> array` – collapse nested arrays; flattens fully
+  without a depth.
+- `chunk(size) -> array` – consecutive slices of `size` elements (last chunk
+  may be shorter).
+- `window(size) -> array` – overlapping windows of `size` elements; empty when
+  `size` exceeds the array length.
+- `join(separator = "") -> string` – stringified elements joined by
+  `separator`.
+- `reverse -> array` – elements in reverse order.
+
+Because arrays are immutable, `pop` hands back both halves of the result:
+
+```vibe
+items = [1, 2, 3]
+items.pop    # {array: [1, 2], popped: 3}
+items.pop(2) # {array: [1], popped: [2, 3]}
+```
+
+### Aggregation, Ordering, and Grouping
+
+- `sum -> int | float` – total of numeric elements (`0` for an empty array).
+- `sort -> array` – stable sort using natural ordering.
+- `sort { |a, b| } -> array` – stable sort using a comparator block returning
+  a negative, zero, or positive number.
+- `sort_by { |item| } -> array` – stable sort by the block's key for each
+  element.
+- `partition { |item| } -> array` – `[matching, non_matching]` pair of arrays.
+- `group_by { |item| } -> hash` – group elements by block result (must be a
+  symbol or string).
+- `group_by_stable { |item| } -> array` – `[key, items]` pairs preserving
+  first-seen group order.
+- `tally -> hash` / `tally { |item| } -> hash` – occurrence counts keyed by
+  element (or block result); keys must be symbols or strings.
+
+String and symbol ordering uses deterministic codepoint comparison (no locale
+collation).
+
+```vibe
+[5, 1, 4].sort do |a, b|
+  b - a
+end
+# [5, 4, 1]
+```
+
+## Hashes
+
+See [hashes.md](hashes.md) for worked examples. Hash keys are symbols (string
+keys are normalized to the same lookup space). `keys`, `values`, and all
+block-based iteration visit entries in sorted key order for determinism.
+
+Property access (`record.name`) resolves stored keys first and only falls back
+to the methods below, so an entry can shadow a method of the same name:
+
+```vibe
+sizes = { size: "XL" }
+sizes.size            # "XL" (the entry wins)
+{ color: "red" }.size # 1
+```
+
+Use index access (`hash[:size]`) when a key may collide with a method name.
+
+### Inspection
+
+- `size -> int` – entry count.
+- `length -> int` – alias for `size`.
+- `empty? -> bool` – true when the hash has no entries.
+- `key?(key) -> bool` – true when `key` is present.
+- `has_key?(key) -> bool` – alias for `key?`.
+- `include?(key) -> bool` – alias for `key?`.
+
+### Access
+
+- `fetch(key, default = nil) -> value` – value for `key`, or `default`/`nil`
+  when missing.
+- `dig(*keys) -> value | nil` – nested lookup following `keys`; `nil` when any
+  step is missing.
+- `keys -> array` – symbol keys in sorted order.
+- `values -> array` – values in sorted key order.
+
+### Iteration
+
+- `each { |key, value| } -> hash` – yield each pair; returns the receiver.
+- `each_key { |key| } -> hash` – yield each key.
+- `each_value { |value| } -> hash` – yield each value.
+
+### Transform and Filter
+
+- `merge(other) -> hash` – combined entries; `other` wins on key conflicts.
+- `slice(*keys) -> hash` – only the listed keys (missing keys are skipped).
+- `except(*keys) -> hash` – all entries except the listed keys.
+- `select { |key, value| } -> hash` – entries for which the block is truthy.
+- `reject { |key, value| } -> hash` – entries for which the block is falsy.
+- `compact -> hash` – entries with `nil` values removed.
+- `transform_keys { |key| } -> hash` – rename keys via the block (must return
+  a symbol or string).
+- `deep_transform_keys { |key| } -> hash` – `transform_keys` applied
+  recursively through nested hashes and arrays; rejects cyclic structures.
+- `remap_keys(mapping) -> hash` – rename keys using a `{ old: :new }` hash;
+  unmapped keys pass through.
+- `transform_values { |value| } -> hash` – replace each value with the block
+  result.
+
+## Integers
+
+### Duration Constructors
+
+Each returns a `duration` spanning that many units. Singular forms are
+aliases, so `1.second` reads naturally.
+
+- `seconds` / `second` -> duration
+- `minutes` / `minute` -> duration
+- `hours` / `hour` -> duration
+- `days` / `day` -> duration
+- `weeks` / `week` -> duration
+
+### Numeric Helpers
+
+- `abs -> int` – absolute value; errors on the minimum 64-bit integer.
+- `clamp(min, max) -> int` – receiver bounded to `[min, max]`; both bounds
+  must be integers with `min <= max`.
+- `even? -> bool` – true for even integers.
+- `odd? -> bool` – true for odd integers.
+- `times { |i| } -> int` – run the block with `0..n-1`; returns the receiver.
+
+## Floats
+
+- `abs -> float` – absolute value.
+- `clamp(min, max) -> float` – receiver bounded to `[min, max]`; bounds may be
+  int or float with `min <= max`.
+- `round -> int` – round half away from zero; errors when the result overflows
+  a 64-bit integer.
+- `floor -> int` – round toward negative infinity.
+- `ceil -> int` – round toward positive infinity.
+
+`round`, `floor`, and `ceil` take no precision argument and always return an
+`int`.
+
+## Money
+
+Money values are created with the `money` and `money_cents` builtins and
+support arithmetic and comparison operators.
+
+- `currency -> string` – ISO currency code, e.g. `"USD"`.
+- `cents -> int` – total amount in minor units.
+- `amount -> string` – formatted amount with currency, e.g. `"100.50 USD"`.
+- `format -> string` – same as `amount`.
+
+```vibe
+m = money("100.50 USD")
+m.cents    # 10050
+m.currency # "USD"
+m.amount   # "100.50 USD"
+```
+
+## Durations
+
+See [durations.md](durations.md) for arithmetic and worked examples.
+
+### Whole-Unit Conversions
+
+Each returns an `int` truncated toward zero. Singular forms are aliases.
+
+- `seconds` / `second` -> int – total seconds.
+- `minutes` / `minute` -> int – total whole minutes.
+- `hours` / `hour` -> int – total whole hours.
+- `days` / `day` -> int – total whole days.
+- `weeks` / `week` -> int – total whole weeks.
+
+### Fractional Conversions
+
+Each returns a `float`. Months use 30-day and years 365-day approximations.
+
+- `in_seconds -> float`
+- `in_minutes -> float`
+- `in_hours -> float`
+- `in_days -> float`
+- `in_weeks -> float`
+- `in_months -> float` – approximate (30-day months).
+- `in_years -> float` – approximate (365-day years).
+
+```vibe
+90.seconds.minutes    # 1 (truncated)
+90.seconds.in_minutes # 1.5
+```
+
+### Formatting and Conversion
+
+- `iso8601 -> string` – ISO 8601 duration, e.g. `"PT1H30M"`.
+- `parts -> hash` – `{ days:, hours:, minutes:, seconds: }` breakdown.
+- `to_i -> int` – total seconds.
+- `to_s -> string` – seconds string, e.g. `"5400s"`.
+- `format -> string` – same as `to_s`.
+- `eql?(other) -> bool` – true when both durations span the same seconds.
+
+```vibe
+shift = 90.minutes
+shift.parts   # {days: 0, hours: 1, minutes: 30, seconds: 0}
+shift.iso8601 # "PT1H30M"
+```
+
+### Anchoring to Times
+
+Each accepts an optional `Time` (or RFC3339 string) and defaults to the
+current time; the result is a UTC `Time`.
+
+- `after(start = Time.now) -> time` – `start` plus the duration.
+- `since(start = Time.now) -> time` – alias for `after`.
+- `from_now(start = Time.now) -> time` – alias for `after`.
+- `ago(start = Time.now) -> time` – `start` minus the duration.
+- `before(start = Time.now) -> time` – alias for `ago`.
+- `until(start = Time.now) -> time` – alias for `ago`.
+
+```vibe
+5.minutes.ago(Time.utc(2024, 1, 1)).iso8601 # "2023-12-31T23:55:00Z"
+```
+
+## Times
+
+See [time.md](time.md) for construction, zone handling, and layout-based
+formatting. Times also support `time + duration`, `time - duration`, and
+`time - time -> duration` arithmetic.
+
+### Components
+
+- `year -> int` – calendar year.
+- `month` / `mon` -> int – month of year (1-12).
+- `day` / `mday` -> int – day of month.
+- `hour -> int` – hour of day (0-23).
+- `min -> int` – minute of hour.
+- `sec -> int` – second of minute.
+- `usec` / `tv_usec` -> int – microsecond component.
+- `nsec` / `tv_nsec` -> int – nanosecond component.
+- `subsec -> float` – fractional second as a float.
+- `wday -> int` – day of week (0 = Sunday).
+- `yday -> int` – day of year (1-366).
+
+### Zone and Offset
+
+- `zone -> string` – zone abbreviation, e.g. `"UTC"`.
+- `utc_offset` / `gmt_offset` / `gmtoff` -> int – offset from UTC in seconds.
+
+### Predicates
+
+- `utc?` / `gmt?` -> bool – true for UTC times.
+- `dst?` / `isdst` -> bool – true when daylight saving time is in effect.
+- `sunday?`, `monday?`, `tuesday?`, `wednesday?`, `thursday?`, `friday?`,
+  `saturday?` -> bool – day-of-week checks.
+
+### Conversions
+
+- `to_i` / `tv_sec` -> int – seconds since the Unix epoch.
+- `to_f -> float` – epoch seconds with fractional part.
+- `to_r -> float` – same as `to_f` (rationals are not supported).
+- `to_s -> string` – RFC3339Nano representation.
+- `iso8601` / `rfc3339` -> string – RFC3339 representation.
+- `hash -> int` – nanoseconds since the Unix epoch (identity value).
+
+### Zone Conversion
+
+- `utc` / `gmtime` -> time – the same instant in UTC.
+- `getutc` / `getgm` -> time – aliases for `utc`.
+- `localtime -> time` – the same instant in the host's local zone.
+- `getlocal -> time` – alias for `localtime`.
+
+### Formatting
+
+- `format(layout) -> string` – format with a Go layout string (reference time
+  `Mon Jan 2 15:04:05 MST 2006`).
+- `strftime` – not supported; raises an error directing you to `format`.
+
+### Comparison and Rounding
+
+- `<=>(other) -> int` – `-1`, `0`, or `1` ordering against another time.
+- `eql?(other) -> bool` – true when both times are the same instant.
+- `round -> time` – round to the nearest second (no precision argument).
+- `floor -> time` – truncate to the whole second.
+- `ceil -> time` – round up to the next whole second.
+
+## Enum Values
+
+Enum members obtained via `EnumName::member` expose three properties (see
+[enums.md](enums.md)):
+
+- `name -> string` – member name, e.g. `"active"`.
+- `symbol -> symbol` – member symbol, e.g. `:active`.
+- `enum -> enum` – the defining enum.
+
+## Ranges
+
+Ranges (`1..5`) have no methods; they are consumed by `for ... in` loops and
+case expressions. See [control-flow.md](control-flow.md).
+
+## Builtin Functions
+
+Global functions and namespaces available in every script. See
+[builtins.md](builtins.md) for narrative examples.
+
+### Global Functions
+
+- `assert(condition, message = nil, message: nil) -> nil` – raise an assertion
+  failure when `condition` is falsy; the message comes from the second
+  positional argument or the `message:` keyword.
+- `money(literal) -> money` – parse a `"amount CURRENCY"` string, e.g.
+  `money("25.00 USD")`.
+- `money_cents(cents, currency) -> money` – build money from integer minor
+  units, e.g. `money_cents(2550, "USD")`.
+- `now -> string` – current UTC instant as an RFC3339 string (use `Time.now`
+  for a `time` value).
+- `uuid -> string` – RFC 9562 version 7 UUID.
+- `random_id(length = 16) -> string` – unbiased alphanumeric token; `length`
+  must be between 1 and 1024.
+- `to_int(value) -> int` – convert an int, integral float, or base-10 numeric
+  string; errors otherwise.
+- `to_float(value) -> float` – convert an int, float, or finite numeric
+  string; errors otherwise.
+- `require(module_name, as: nil) -> object` – load a module and return its
+  exports; `as:` binds the module object to a name. See
+  [builtins.md](builtins.md#module-loading).
+
+`now` and `uuid` auto-invoke, so they can be called without parentheses.
+
+### JSON
+
+- `JSON.parse(string) -> value` – parse JSON into hashes, arrays, strings,
+  ints, floats, bools, and nils; rejects trailing data.
+- `JSON.stringify(value) -> string` – serialize hashes/objects, arrays, and
+  scalars; symbols and enum values become strings; rejects cyclic structures.
+
+Both directions enforce a 1 MiB payload limit.
+
+### Regex
+
+Note the argument order: `match` takes the pattern first, while the replace
+helpers take the text first.
+
+- `Regex.match(pattern, text) -> string | nil` – first match, or `nil`.
+- `Regex.replace(text, pattern, replacement) -> string` – replace the first
+  match; `replacement` supports `$1` style group expansion.
+- `Regex.replace_all(text, pattern, replacement) -> string` – replace every
+  match.
+
+```vibe
+Regex.match("ID-[0-9]+", "ID-12 ID-34")       # "ID-12"
+Regex.replace("ID-12", "ID-([0-9]+)", "X-$1") # "X-12"
+```
+
+Patterns use Go's RE2 syntax and enforce the
+[regex guard limits](#guard-limits).
+
+### Duration
+
+- `Duration.build(seconds) -> duration` – build from total seconds.
+- `Duration.build(weeks: 0, days: 0, hours: 0, minutes: 0, seconds: 0) ->
+  duration` – build from named parts (positional seconds and named parts are
+  mutually exclusive).
+- `Duration.parse(string) -> duration` – parse Go duration strings (`"1h30m"`,
+  whole seconds only) or ISO 8601 durations (`"PT90S"`, `"P2W"`).
+
+```vibe
+Duration.parse("1h30m").seconds # 5400
+Duration.parse("P2W").days      # 14
+```
+
+### Time
+
+Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
+`"LOCAL"`, or numeric offsets like `"+05:30"`.
+
+- `Time.new(year, month, day, hour = 0, min = 0, sec = 0, zone = nil,
+  in: nil) -> time` – build from calendar parts (local zone by default).
+- `Time.local(...)` / `Time.mktime(...)` -> time – like `Time.new`, always in
+  the local zone.
+- `Time.utc(...)` / `Time.gm(...)` -> time – like `Time.new`, always in UTC.
+- `Time.at(epoch_seconds, in: nil) -> time` – build from Unix epoch seconds
+  (int or float).
+- `Time.now(in: nil) -> time` – current time (local zone by default).
+- `Time.parse(string, layout = nil, in: nil) -> time` – parse a time string;
+  without a layout it tries RFC3339/RFC3339Nano, RFC1123/RFC1123Z,
+  `YYYY-MM-DD[THH:MM:SS]`, `YYYY-MM-DD HH:MM:SS`, `YYYY/MM/DD[ HH:MM:SS]`,
+  and `MM/DD/YYYY[ HH:MM:SS]`.
+
+### Tasks
+
+Structured concurrency entry points; see [tasks.md](tasks.md) for the task
+manager API, retention rules, and concurrency settings.
+
+- `Tasks.run(max: nil) { |tasks| } -> value` – run a block with a task
+  manager for spawning concurrent work; returns the block's value.
+- `Tasks.map(items, with: function_name, max: nil) -> array` – apply a named
+  function to each element concurrently, preserving order.
 
 ## Guard Limits
 
-JSON and Regex helpers enforce fixed input-guard limits so hostile data
-cannot exhaust host memory or CPU. The limits are not configurable and
-apply to both the `JSON`/`Regex` builtins and the regex-enabled string
+JSON, regex, and ID helpers enforce fixed input-guard limits so hostile
+data cannot exhaust host memory or CPU. The limits are not configurable
+and apply to the `JSON`/`Regex` builtins and the regex-enabled string
 members (`match`, `scan`, `sub`, `gsub`, and their `!` variants):
 
-| Guard | Limit | Applies to |
-| --- | --- | --- |
-| JSON payload | 1 MiB | `JSON.parse` input and `JSON.stringify` output |
-| Regex text | 1 MiB | Subject text, replacement strings, and produced output |
-| Regex pattern | 16 KiB | Pattern strings before compilation |
+| Guard | Limit |
+| --- | --- |
+| `JSON.parse` input / `JSON.stringify` output | 1 MiB |
+| Regex pattern size (`Regex.*`, `match`, `scan`, `sub`/`gsub` with `regex: true`) | 16 KiB |
+| Regex text, replacement, and output size | 1 MiB |
+| `random_id` length | 1024 characters |
 
 Exceeding a limit raises a runtime error naming the offending guard.
 The canonical values live in the documented const block in
 `internal/runtime/limits.go`; the README's "Runtime Sandbox & Limits"
 section summarizes them alongside the configurable engine quotas.
-
-## Random IDs
-
-```vibe
-def new_event_id
-  uuid
-end
-
-def short_token
-  random_id(8)
-end
-```
-
-## Numeric Conversion
-
-```vibe
-def parse_score(raw_score)
-  to_int(raw_score)
-end
-
-def parse_ratio(raw_ratio)
-  to_float(raw_ratio)
-end
-```
-
-## Common Time Parsing
-
-`Time.parse` accepts common formats without manually passing a layout:
-
-- RFC3339 / RFC3339Nano
-- RFC1123 / RFC1123Z
-- `YYYY-MM-DD` and `YYYY-MM-DD HH:MM:SS`
-- `YYYY/MM/DD` and `YYYY/MM/DD HH:MM:SS`
-- `MM/DD/YYYY` and `MM/DD/YYYY HH:MM:SS`
-
-```vibe
-def parse_seen_at(raw)
-  Time.parse(raw, in: "UTC")
-end
-```
 
 For a runnable end-to-end sample, see `examples/stdlib/core_utilities.vibe`.
