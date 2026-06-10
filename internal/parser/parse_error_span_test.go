@@ -69,39 +69,116 @@ func TestParseErrorEndIsZeroAtEndOfInput(t *testing.T) {
 	}
 }
 
-func TestTokenEndSpansSingleLineLiterals(t *testing.T) {
+// TestLexerStampsSourceAccurateTokenEnds pins that token spans come from
+// the source text, not the normalized literal: strings lose their quotes
+// and escapes, symbols and ivars drop their sigils, and numeric literals
+// drop underscores, so literal length must not drive the span.
+func TestLexerStampsSourceAccurateTokenEnds(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		tok  ast.Token
-		want ast.Position
+		name    string
+		source  string
+		tokType ast.TokenType
+		wantPos ast.Position
+		wantEnd ast.Position
 	}{
 		{
-			name: "identifier",
-			tok:  ast.Token{Literal: "total", Pos: ast.Position{Line: 4, Column: 7}},
-			want: ast.Position{Line: 4, Column: 12},
+			name:    "identifier",
+			source:  "total",
+			tokType: ast.TokenIdent,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 6},
 		},
 		{
-			name: "empty_literal",
-			tok:  ast.Token{Literal: "", Pos: ast.Position{Line: 2, Column: 1}},
-			want: ast.Position{},
+			name:    "string_span_includes_quotes",
+			source:  `"abc"`,
+			tokType: ast.TokenString,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 6},
 		},
 		{
-			name: "multiline_literal",
-			tok:  ast.Token{Literal: "a\nb", Pos: ast.Position{Line: 2, Column: 1}},
-			want: ast.Position{},
+			name:    "string_span_includes_escapes",
+			source:  `"a\"b"`,
+			tokType: ast.TokenString,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 7},
 		},
 		{
-			name: "multibyte_runes_counted_once",
-			tok:  ast.Token{Literal: "héllo", Pos: ast.Position{Line: 1, Column: 3}},
-			want: ast.Position{Line: 1, Column: 8},
+			name:    "integer_span_includes_underscores",
+			source:  "1_000",
+			tokType: ast.TokenInt,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 6},
+		},
+		{
+			name:    "symbol_span_includes_sigil",
+			source:  ":name",
+			tokType: ast.TokenSymbol,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 6},
+		},
+		{
+			name:    "ivar_span_includes_sigil",
+			source:  "@count",
+			tokType: ast.TokenIvar,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 7},
+		},
+		{
+			name:    "multibyte_runes_counted_once",
+			source:  `"héllo"`,
+			tokType: ast.TokenString,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 8},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tokenEnd(tc.tok); got != tc.want {
-				t.Fatalf("tokenEnd(%q) = %v, want %v", tc.tok.Literal, got, tc.want)
+			tok := newLexer(tc.source).NextToken()
+			if tok.Type != tc.tokType {
+				t.Fatalf("token type = %v, want %v", tok.Type, tc.tokType)
+			}
+			if tok.Pos != tc.wantPos {
+				t.Fatalf("Pos = %v, want %v", tok.Pos, tc.wantPos)
+			}
+			if tok.End != tc.wantEnd {
+				t.Fatalf("End = %v, want %v", tok.End, tc.wantEnd)
 			}
 		})
+	}
+}
+
+func TestLexerTokenEndAtEOFIsZero(t *testing.T) {
+	t.Parallel()
+	lex := newLexer("x")
+	if tok := lex.NextToken(); tok.Type != ast.TokenIdent {
+		t.Fatalf("first token = %v, want identifier", tok.Type)
+	}
+	eof := lex.NextToken()
+	if eof.Type != ast.TokenEOF {
+		t.Fatalf("second token = %v, want EOF", eof.Type)
+	}
+	if eof.End != (ast.Position{}) {
+		t.Fatalf("EOF End = %v, want zero", eof.End)
+	}
+}
+
+// TestParseErrorSpanCoversFullStringToken is the review example: the
+// offending string token in `def "abc"()` must span its quotes.
+func TestParseErrorSpanCoversFullStringToken(t *testing.T) {
+	t.Parallel()
+	_, errs := Parse("def \"abc\"()\n  1\nend\n")
+	if len(errs) == 0 {
+		t.Fatal("expected parse errors for string function name")
+	}
+	first, ok := errs[0].(positionedError)
+	if !ok {
+		t.Fatalf("errs[0] = %T, want positioned parse error", errs[0])
+	}
+	if got, want := first.Pos(), (ast.Position{Line: 1, Column: 5}); got != want {
+		t.Fatalf("Pos() = %v, want %v", got, want)
+	}
+	if got, want := first.End(), (ast.Position{Line: 1, Column: 10}); got != want {
+		t.Fatalf("End() = %v, want %v (span must include both quotes)", got, want)
 	}
 }

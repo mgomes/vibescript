@@ -3,7 +3,6 @@ package parser
 import (
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes/source"
@@ -217,17 +216,10 @@ func (p *parser) addParseErrorSpan(pos, end ast.Position, msg string) {
 	p.errors = append(p.errors, &parseError{pos: pos, end: end, msg: msg, source: p.l.input})
 }
 
-// tokenEnd computes the exclusive end position of a token from its
-// literal text. Tokens without literals (EOF) or with multi-line
-// literals yield a zero Position, signaling an unknown span.
+// tokenEnd returns the lexer-stamped exclusive end of the token. EOF
+// carries no span, yielding the zero Position.
 func tokenEnd(tok ast.Token) ast.Position {
-	if tok.Literal == "" || strings.ContainsRune(tok.Literal, '\n') {
-		return ast.Position{}
-	}
-	return ast.Position{
-		Line:   tok.Pos.Line,
-		Column: tok.Pos.Column + utf8.RuneCountInString(tok.Literal),
-	}
+	return tok.End
 }
 
 func tokenLabel(tt ast.TokenType) string {

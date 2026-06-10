@@ -23,6 +23,12 @@ type lexer struct {
 	line   int
 	column int
 
+	// prevLine/prevColumn hold the position of the rune consumed
+	// before ch, i.e. the final rune of the token that scanning just
+	// moved past. NextToken derives exclusive token ends from them.
+	prevLine   int
+	prevColumn int
+
 	ch rune
 }
 
@@ -33,6 +39,7 @@ func newLexer(input string) *lexer {
 }
 
 func (l *lexer) readRune() {
+	l.prevLine, l.prevColumn = l.line, l.column
 	if l.offset >= len(l.input) {
 		l.width = 0
 		l.ch = 0
@@ -79,6 +86,14 @@ func (l *lexer) peekRuneN(n int) rune {
 }
 
 func (l *lexer) NextToken() ast.Token {
+	tok := l.scanToken()
+	if tok.Type != ast.TokenEOF {
+		tok.End = ast.Position{Line: l.prevLine, Column: l.prevColumn + 1}
+	}
+	return tok
+}
+
+func (l *lexer) scanToken() ast.Token {
 	l.skipWhitespaceAndComments()
 
 	tok := ast.Token{Pos: ast.Position{Line: l.line, Column: l.column}}
