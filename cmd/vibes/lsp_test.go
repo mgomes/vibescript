@@ -494,3 +494,344 @@ func TestSplitLSPLines(t *testing.T) {
 		})
 	}
 }
+
+func openDoc(t *testing.T, server *lspServer, uri, text string) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri, "text": text},
+	})
+	if err != nil {
+		t.Fatalf("marshal didOpen: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didOpen", Params: payload})
+}
+
+func completionLabels(t *testing.T, server *lspServer, uri string, line, character int) map[string]map[string]any {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": line, "character": character},
+	})
+	if err != nil {
+		t.Fatalf("marshal completion params: %v", err)
+	}
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("21"),
+		Method:  "textDocument/completion",
+		Params:  payload,
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected one completion response, got %d", len(messages))
+	}
+	result := messages[0].Result.(map[string]any)
+	items := result["items"].([]map[string]any)
+	labels := make(map[string]map[string]any, len(items))
+	for _, item := range items {
+		labels[item["label"].(string)] = item
+	}
+	return labels
+}
+
+func newCompletionTestServer() *lspServer {
+	return &lspServer{
+		engine:   vibes.MustNewEngine(vibes.Config{}),
+		docs:     make(map[string]string),
+		compiled: make(map[string]*vibes.Script),
+	}
+}
+
+func TestCompletionAfterDotOffersMemberMethods(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/members.vibe"
+	openDoc(t, server, uri, "def run()\n  \"abc\".\nend\n")
+
+	labels := completionLabels(t, server, uri, 1, 8)
+	upcase, ok := labels["upcase"]
+	if !ok {
+		t.Fatalf("member completion missing upcase: %d items", len(labels))
+	}
+	if upcase["kind"] != 2 {
+		t.Fatalf("upcase kind = %#v, want method kind 2", upcase["kind"])
+	}
+	if !strings.Contains(upcase["detail"].(string), "string") {
+		t.Fatalf("upcase detail = %#v, want receiver types", upcase["detail"])
+	}
+	if _, hasKeyword := labels["def"]; hasKeyword {
+		t.Fatal("member completion must not offer keywords")
+	}
+	if _, hasArray := labels["flatten"]; !hasArray {
+		t.Fatal("member completion should be the type-unaware union (missing array method flatten)")
+	}
+}
+
+func TestCompletionAfterDotWithPartialWord(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/partial.vibe"
+	openDoc(t, server, uri, "def run()\n  \"abc\".upc\nend\n")
+
+	labels := completionLabels(t, server, uri, 1, 11)
+	if _, ok := labels["upcase"]; !ok {
+		t.Fatal("partial member word should still complete members")
+	}
+}
+
+func TestCompletionOffersFunctionsParamsAndLocals(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/scope.vibe"
+	openDoc(t, server, uri, `def helper(amount)
+  doubled = amount * 2
+  doubled
+end
+
+def run()
+  total = helper(2)
+  total
+end
+`)
+
+	labels := completionLabels(t, server, uri, 1, 2)
+	for label, wantDetail := range map[string]string{
+		"helper":  "function",
+		"run":     "function",
+		"amount":  "parameter",
+		"doubled": "local",
+		"if":      "keyword",
+		"assert":  "builtin",
+	} {
+		item, ok := labels[label]
+		if !ok {
+			t.Fatalf("completion missing %q", label)
+		}
+		if item["detail"] != wantDetail {
+			t.Fatalf("%q detail = %#v, want %q", label, item["detail"], wantDetail)
+		}
+	}
+	if _, leaked := labels["total"]; leaked {
+		t.Fatal("locals from another function must not leak into scope")
+	}
+
+	inRun := completionLabels(t, server, uri, 6, 2)
+	if _, ok := inRun["total"]; !ok {
+		t.Fatal("locals of the enclosing function should be offered")
+	}
+}
+
+func TestCompletionSurvivesUnparsableEdits(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/midedit.vibe"
+	openDoc(t, server, uri, "def helper()\n  1\nend\n")
+
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "def helper()\n  1\nend\n\ndef broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	labels := completionLabels(t, server, uri, 4, 0)
+	if _, ok := labels["helper"]; !ok {
+		t.Fatal("functions from the last good compile should survive mid-edit breakage")
+	}
+}
+
+func TestIsMemberContext(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		source    string
+		line, chr int
+		want      bool
+	}{
+		{name: "right_after_dot", source: "x.", line: 0, chr: 2, want: true},
+		{name: "partial_member", source: "x.up", line: 0, chr: 4, want: true},
+		{name: "no_dot", source: "xup", line: 0, chr: 3, want: false},
+		{name: "dot_then_space", source: "x. y", line: 0, chr: 4, want: false},
+		{name: "out_of_range_line", source: "x.", line: 5, chr: 1, want: false},
+		{name: "float_literal", source: "1.5", line: 0, chr: 3, want: false},
+		{name: "cursor_inside_float", source: "1.5", line: 0, chr: 2, want: false},
+		{name: "numeric_member_open", source: "1.", line: 0, chr: 2, want: true},
+		{name: "numeric_member_word", source: "1.days", line: 0, chr: 6, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isMemberContext(tc.source, tc.line, tc.chr); got != tc.want {
+				t.Fatalf("isMemberContext(%q, %d, %d) = %v, want %v", tc.source, tc.line, tc.chr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCompletionDoesNotLeakLocalsBetweenFunctions(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/gaps.vibe"
+	openDoc(t, server, uri, `def first(alpha)
+  beta = alpha
+  beta
+end
+
+def second()
+  1
+end
+`)
+
+	// Line 4 is the blank line between the two functions.
+	between := completionLabels(t, server, uri, 4, 0)
+	for _, leaked := range []string{"alpha", "beta"} {
+		if _, ok := between[leaked]; ok {
+			t.Fatalf("local %q leaked into the gap between functions", leaked)
+		}
+	}
+	if _, ok := between["first"]; !ok {
+		t.Fatal("function names should still be offered between functions")
+	}
+
+	// Inside first's body the locals are available.
+	inside := completionLabels(t, server, uri, 1, 2)
+	for _, want := range []string{"alpha", "beta"} {
+		if _, ok := inside[want]; !ok {
+			t.Fatalf("local %q missing inside its function", want)
+		}
+	}
+}
+
+func TestInitializeAdvertisesDotCompletionTrigger(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("51"),
+		Method:  "initialize",
+	})
+	caps := messages[0].Result.(map[string]any)["capabilities"].(map[string]any)
+	completion := caps["completionProvider"].(map[string]any)
+	triggers, ok := completion["triggerCharacters"].([]string)
+	if !ok || !slices.Contains(triggers, ".") {
+		t.Fatalf("completion triggerCharacters = %#v, want to include \".\"", completion["triggerCharacters"])
+	}
+}
+
+func TestCompletionScopeSurvivesFlushLeftInnerEnd(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/flushleft.vibe"
+	// The inner "end" is unindented (legal but non-canonical), so a
+	// text-only scan would truncate first's scope at line 4.
+	openDoc(t, server, uri, `def first(alpha)
+  if alpha > 1
+    beta = alpha
+end
+  gamma = alpha
+  gamma
+end
+`)
+
+	labels := completionLabels(t, server, uri, 4, 2)
+	for _, want := range []string{"alpha", "gamma"} {
+		if _, ok := labels[want]; !ok {
+			t.Fatalf("local %q missing below a flush-left inner end", want)
+		}
+	}
+}
+
+func TestCompletionScopesSurviveLineShiftsWhileUnparsable(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/shifted.vibe"
+	openDoc(t, server, uri, `def first(alpha)
+  beta = alpha
+  beta
+end
+`)
+
+	// Three comment lines above shift the function down, and the broken
+	// def at the bottom keeps the buffer unparsable, so positions must
+	// re-anchor against the current text.
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "# one\n# two\n# three\ndef first(alpha)\n  beta = alpha\n  beta\nend\n\ndef broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	inside := completionLabels(t, server, uri, 4, 2)
+	for _, want := range []string{"alpha", "beta"} {
+		if _, ok := inside[want]; !ok {
+			t.Fatalf("local %q missing after lines shifted under an unparsable edit", want)
+		}
+	}
+
+	above := completionLabels(t, server, uri, 0, 0)
+	if _, leaked := above["beta"]; leaked {
+		t.Fatal("locals leaked above the shifted function")
+	}
+}
+
+func TestCompletionAnchorIgnoresSameNamedClassMethod(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/shadowed-def.vibe"
+	openDoc(t, server, uri, `class Wallet
+  def total(cents)
+    cents
+  end
+end
+
+def total(amount)
+  rounded = amount
+  rounded
+end
+`)
+
+	inside := completionLabels(t, server, uri, 7, 2)
+	for _, want := range []string{"amount", "rounded"} {
+		if _, ok := inside[want]; !ok {
+			t.Fatalf("local %q missing: top-level def anchored to the class method", want)
+		}
+	}
+	if _, leaked := inside["cents"]; leaked {
+		t.Fatal("class method parameter leaked into the top-level function scope")
+	}
+}
+
+func TestCompletionAnchorsDecoratedTopLevelDefs(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/decorated.vibe"
+	openDoc(t, server, uri, `private def secret(token)
+  hashed = token
+  hashed
+end
+`)
+
+	// Shift the function down with comments while keeping the buffer
+	// unparsable, so the anchor must match the decorated declaration.
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "# one\n# two\nprivate def secret(token)\n  hashed = token\n  hashed\nend\n\ndef broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	inside := completionLabels(t, server, uri, 3, 2)
+	for _, want := range []string{"token", "hashed"} {
+		if _, ok := inside[want]; !ok {
+			t.Fatalf("local %q missing: decorated def did not re-anchor", want)
+		}
+	}
+	above := completionLabels(t, server, uri, 0, 0)
+	if _, leaked := above["hashed"]; leaked {
+		t.Fatal("locals leaked above the shifted decorated function")
+	}
+}

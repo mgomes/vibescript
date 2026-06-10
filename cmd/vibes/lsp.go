@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes"
 )
 
@@ -122,14 +123,19 @@ type lspServer struct {
 	writer *bufio.Writer
 	engine *vibes.Engine
 	docs   map[string]string
+	// compiled holds the most recent successfully compiled script per
+	// document, so completion can offer user-defined symbols while the
+	// buffer is mid-edit and temporarily unparsable.
+	compiled map[string]*vibes.Script
 }
 
 func runLSP() error {
 	server := &lspServer{
-		reader: bufio.NewReader(os.Stdin),
-		writer: bufio.NewWriter(os.Stdout),
-		engine: vibes.MustNewEngine(vibes.Config{}),
-		docs:   make(map[string]string),
+		reader:   bufio.NewReader(os.Stdin),
+		writer:   bufio.NewWriter(os.Stdout),
+		engine:   vibes.MustNewEngine(vibes.Config{}),
+		docs:     make(map[string]string),
+		compiled: make(map[string]*vibes.Script),
 	}
 	return server.serve()
 }
@@ -175,7 +181,8 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 						"hoverProvider":              true,
 						"documentFormattingProvider": true,
 						"completionProvider": map[string]any{
-							"resolveProvider": false,
+							"resolveProvider":   false,
+							"triggerCharacters": []string{"."},
 						},
 					},
 				},
@@ -243,13 +250,25 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 		if incoming.ID == nil {
 			return nil
 		}
+		var params lspTextDocumentPositionParams
+		if err := json.Unmarshal(incoming.Params, &params); err != nil {
+			return []lspOutboundMessage{
+				{
+					JSONRPC: "2.0",
+					ID:      incoming.ID,
+					Error:   &lspResponseError{Code: -32602, Message: "invalid completion params"},
+				},
+			}
+		}
+		source := s.docs[params.TextDocument.URI]
+		items := s.completionItemsAt(params.TextDocument.URI, source, params.Position.Line, params.Position.Character)
 		return []lspOutboundMessage{
 			{
 				JSONRPC: "2.0",
 				ID:      incoming.ID,
 				Result: map[string]any{
 					"isIncomplete": false,
-					"items":        completionItems(),
+					"items":        items,
 				},
 			},
 		}
@@ -305,27 +324,38 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 }
 
 func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
+	script, diagnostics := compileForDiagnostics(s.engine, source)
+	if script != nil && s.compiled != nil {
+		s.compiled[uri] = script
+	}
 	return lspOutboundMessage{
 		JSONRPC: "2.0",
 		Method:  "textDocument/publishDiagnostics",
 		Params: map[string]any{
 			"uri":         uri,
-			"diagnostics": diagnosticsForSource(s.engine, source),
+			"diagnostics": diagnostics,
 		},
 	}
 }
 
 func diagnosticsForSource(engine *vibes.Engine, source string) []map[string]any {
-	_, err := engine.Compile(source)
+	_, diagnostics := compileForDiagnostics(engine, source)
+	return diagnostics
+}
+
+// compileForDiagnostics compiles once, returning the script (nil when
+// compilation failed) alongside the diagnostics payload.
+func compileForDiagnostics(engine *vibes.Engine, source string) (*vibes.Script, []map[string]any) {
+	script, err := engine.Compile(source)
 	if err == nil {
-		return []map[string]any{}
+		return script, []map[string]any{}
 	}
 
 	issues := vibes.ParseIssues(err)
 	if len(issues) == 0 {
 		// Non-parse compile failures (size limits, duplicate top-level
 		// names) carry no position; surface them at the document start.
-		return []map[string]any{
+		return nil, []map[string]any{
 			newDiagnostic(diagnosticRange{}, err.Error()),
 		}
 	}
@@ -335,7 +365,7 @@ func diagnosticsForSource(engine *vibes.Engine, source string) []map[string]any 
 	for _, issue := range issues {
 		out = append(out, newDiagnostic(rangeForIssue(issue, lines), issue.Message))
 	}
-	return out
+	return nil, out
 }
 
 // diagnosticRange is an LSP range in 0-indexed line/character offsets.
@@ -618,4 +648,271 @@ func splitLSPLines(text string) []string {
 		}
 	}
 	return append(lines, text[start:])
+}
+
+// completionItemsAt returns context-aware completion items: member
+// methods when the cursor follows a "." receiver, otherwise keywords,
+// builtins, user-defined functions, and the enclosing function's
+// parameters and locals from the most recent successfully compiled
+// version of the document.
+func (s *lspServer) completionItemsAt(uri, source string, line, character int) []map[string]any {
+	if isMemberContext(source, line, character) {
+		return memberCompletionItems()
+	}
+	items := completionItems()
+	items = append(items, scriptCompletionItems(s.compiled[uri], splitLSPLines(source), line)...)
+	return items
+}
+
+// isMemberContext reports whether the cursor sits immediately after a
+// "." member access (allowing a partially typed member name). A dot
+// inside a numeric literal ("1.5") does not count, but an empty or
+// alphabetic suffix after a numeric receiver does — "1." and "1.days"
+// are member accesses.
+func isMemberContext(source string, line, character int) bool {
+	lines := splitLSPLines(source)
+	if line < 0 || line >= len(lines) {
+		return false
+	}
+	runes := []rune(lines[line])
+	end := min(utf16OffsetToRuneIndex(lines[line], character), len(runes))
+	start := end
+	for start > 0 && isWordRune(runes[start-1]) {
+		start--
+	}
+	if start == 0 || runes[start-1] != '.' {
+		return false
+	}
+	if start >= 2 && unicode.IsDigit(runes[start-2]) {
+		if start < end {
+			partialIsDigits := true
+			for _, r := range runes[start:end] {
+				if !unicode.IsDigit(r) {
+					partialIsDigits = false
+					break
+				}
+			}
+			if partialIsDigits {
+				return false
+			}
+		} else if start < len(runes) && unicode.IsDigit(runes[start]) {
+			// The cursor sits between the dot and the fraction digits
+			// of a numeric literal (e.g. 1.|5).
+			return false
+		}
+	}
+	return true
+}
+
+// memberCompletionItems returns the type-unaware union of every builtin
+// member method, labeled with the receiver types that provide it.
+func memberCompletionItems() []map[string]any {
+	byName := make(map[string][]string)
+	for receiver, names := range vibes.MemberCompletionNames() {
+		for _, name := range names {
+			byName[name] = append(byName[name], receiver)
+		}
+	}
+	labels := make([]string, 0, len(byName))
+	for name := range byName {
+		labels = append(labels, name)
+	}
+	sort.Strings(labels)
+
+	items := make([]map[string]any, 0, len(labels))
+	for _, label := range labels {
+		receivers := byName[label]
+		sort.Strings(receivers)
+		items = append(items, map[string]any{
+			"label":  label,
+			"kind":   2, // Method
+			"detail": strings.Join(receivers, ", "),
+		})
+	}
+	return items
+}
+
+// scriptCompletionItems offers the script's function names plus the
+// parameters and locals of the function enclosing the cursor line.
+func scriptCompletionItems(script *vibes.Script, sourceLines []string, line int) []map[string]any {
+	if script == nil {
+		return nil
+	}
+	var items []map[string]any
+	functions := script.Functions()
+	enclosing := -1
+	enclosingStart := -1
+	for i, fn := range functions {
+		items = append(items, map[string]any{
+			"label":  fn.Name,
+			"kind":   3, // Function
+			"detail": "function",
+		})
+		// The cached AST may predate unparsable edits that shifted
+		// lines, so anchor each function to its "def name" line in the
+		// current buffer (duplicate names cannot compile) and fall
+		// back to the cached position when the anchor is gone.
+		start := findDefLine(sourceLines, fn.Name)
+		if start < 0 {
+			start = fn.Pos.Line - 1
+		}
+		bodyExtent := lastStatementLine(fn.Body) - (fn.Pos.Line - 1)
+		if start <= line && line <= functionEndLine(sourceLines, start, bodyExtent) &&
+			(enclosing < 0 || start > enclosingStart) {
+			enclosing = i
+			enclosingStart = start
+		}
+	}
+	if enclosing >= 0 {
+		fn := functions[enclosing]
+		seen := make(map[string]struct{})
+		for _, param := range fn.Params {
+			addLocalItem(&items, seen, param.Name, "parameter")
+		}
+		for _, name := range localNames(fn.Body) {
+			addLocalItem(&items, seen, name, "local")
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i]["label"].(string) < items[j]["label"].(string)
+	})
+	return items
+}
+
+// functionEndLine estimates the 0-based line of the "end" closing a
+// top-level function starting at startLine. It takes the further of
+// two signals so neither failure mode truncates the scope: the first
+// unindented "end" in the text (exact under canonical formatting, but
+// an unformatted buffer can hold a flush-left inner terminator), and
+// the last line any body statement occupies plus one (which covers
+// every inner block but trails the real terminator across blank
+// lines). A buffer with neither signal is treated as open-ended.
+func functionEndLine(sourceLines []string, startLine, bodyExtent int) int {
+	textualEnd := len(sourceLines)
+	for i := startLine + 1; i < len(sourceLines); i++ {
+		if strings.TrimRight(sourceLines[i], " \t") == "end" {
+			textualEnd = i
+			break
+		}
+	}
+	if bodyExtent > 0 && textualEnd < len(sourceLines) {
+		return max(textualEnd, startLine+bodyExtent)
+	}
+	return textualEnd
+}
+
+// findDefLine locates the 0-based line declaring the named top-level
+// function in the current buffer, or -1 when absent. Only unindented
+// declarations qualify — indented defs are class methods, which may
+// share a top-level function's name — but the export and private
+// modifiers that can decorate a top-level def are accepted. A missed
+// anchor falls back to the cached position rather than mis-anchoring.
+func findDefLine(sourceLines []string, name string) int {
+	target := "def " + name
+	for i, lineText := range sourceLines {
+		decl := lineText
+		for _, modifier := range []string{"export ", "private "} {
+			if rest, ok := strings.CutPrefix(decl, modifier); ok {
+				decl = rest
+				break
+			}
+		}
+		if !strings.HasPrefix(decl, target) {
+			continue
+		}
+		rest := strings.TrimRight(decl[len(target):], " \t")
+		if rest == "" || strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, " ") {
+			return i
+		}
+	}
+	return -1
+}
+
+// lastStatementLine returns the greatest 0-based line covered by the
+// statements, descending into nested control-flow bodies, plus one for
+// the closing terminator.
+func lastStatementLine(statements []ast.Statement) int {
+	maxLine := 0
+	var walk func([]ast.Statement)
+	walk = func(stmts []ast.Statement) {
+		for _, stmt := range stmts {
+			if line := stmt.Pos().Line - 1; line > maxLine {
+				maxLine = line
+			}
+			switch st := stmt.(type) {
+			case *ast.ForStmt:
+				walk(st.Body)
+			case *ast.IfStmt:
+				walk(st.Consequent)
+				for _, elseIf := range st.ElseIf {
+					walk([]ast.Statement{elseIf})
+				}
+				walk(st.Alternate)
+			case *ast.WhileStmt:
+				walk(st.Body)
+			case *ast.UntilStmt:
+				walk(st.Body)
+			case *ast.TryStmt:
+				walk(st.Body)
+				walk(st.Rescue)
+				walk(st.Ensure)
+			}
+		}
+	}
+	walk(statements)
+	if maxLine == 0 {
+		return 0
+	}
+	return maxLine + 1
+}
+
+func addLocalItem(items *[]map[string]any, seen map[string]struct{}, name, detail string) {
+	if name == "" {
+		return
+	}
+	if _, dup := seen[name]; dup {
+		return
+	}
+	seen[name] = struct{}{}
+	*items = append(*items, map[string]any{
+		"label":  name,
+		"kind":   6, // Variable
+		"detail": detail,
+	})
+}
+
+// localNames collects the identifiers a statement list assigns,
+// including loop variables and nested control-flow bodies.
+func localNames(statements []ast.Statement) []string {
+	var names []string
+	var walkStmts func([]ast.Statement)
+	walkStmts = func(stmts []ast.Statement) {
+		for _, stmt := range stmts {
+			switch st := stmt.(type) {
+			case *ast.AssignStmt:
+				if ident, ok := st.Target.(*ast.Identifier); ok {
+					names = append(names, ident.Name)
+				}
+			case *ast.ForStmt:
+				names = append(names, st.Iterator)
+				walkStmts(st.Body)
+			case *ast.IfStmt:
+				walkStmts(st.Consequent)
+				for _, elseIf := range st.ElseIf {
+					walkStmts([]ast.Statement{elseIf})
+				}
+				walkStmts(st.Alternate)
+			case *ast.WhileStmt:
+				walkStmts(st.Body)
+			case *ast.UntilStmt:
+				walkStmts(st.Body)
+			case *ast.TryStmt:
+				walkStmts(st.Body)
+				walkStmts(st.Rescue)
+				walkStmts(st.Ensure)
+			}
+		}
+	}
+	walkStmts(statements)
+	return names
 }

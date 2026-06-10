@@ -14,7 +14,7 @@ vibes lsp
 | --- | --- |
 | `textDocument/publishDiagnostics` | Parse errors reported on open and on every change. |
 | `textDocument/hover` | Classifies the word under the cursor as a keyword, builtin, or symbol. |
-| `textDocument/completion` | Keyword and builtin suggestions. |
+| `textDocument/completion` | Context-aware: member methods after `.`, otherwise keywords, builtins, user-defined functions, and the enclosing function's parameters and locals. |
 | `textDocument/formatting` | Full-document canonical formatting (the same formatter as `vibes fmt`). |
 
 ### Diagnostics
@@ -31,8 +31,14 @@ translated correctly for documents containing multi-byte characters.
 
 ### Completion
 
-Completion currently offers a static list of language keywords and builtin
-functions. It is not yet context-aware (see limitations below).
+Completion is context-sensitive. After a `.` receiver it offers the union
+of every builtin member method (type-unaware), labeled with the receiver
+types that provide each method; a dot inside a numeric literal does not
+trigger it. Elsewhere it offers keywords, builtins, the script's
+user-defined functions, and the parameters and locals of the function
+enclosing the cursor. Symbols come from the most recent successfully
+compiled version of the document, so they keep working while the buffer
+is mid-edit and temporarily unparsable.
 
 ## Protocol details
 
@@ -74,8 +80,9 @@ from [tree-sitter-vibescript](https://github.com/mgomes/tree-sitter-vibescript).
 
 Intentionally absent for now (tracked for future work):
 
-- **Context-aware completion** — the completion list is static; locals,
-  user-defined functions, and `.`-member methods are not offered.
+- **Type-aware member completion** — completion after `.` offers the
+  union of all builtin member methods rather than narrowing by the
+  receiver's type.
 - **Go-to-definition and document symbols** — no symbol index exists yet, so
   navigation requests are not supported.
 - **Signature help** — no parameter hints on `(` or `,`.
