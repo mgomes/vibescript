@@ -98,7 +98,7 @@ func (exec *Execution) intMember(obj Value, property string, pos Position) (Valu
 			return receiver, nil
 		}), nil
 	default:
-		return NewNil(), exec.errorAt(pos, "unknown int member %s%s", property, didYouMean(property, intMemberNames))
+		return NewNil(), exec.errorAt(pos, "unknown int method %s%s", property, didYouMean(property, intMemberNames))
 	}
 }
 
@@ -170,7 +170,7 @@ func (exec *Execution) floatMember(obj Value, property string, pos Position) (Va
 			return NewInt(asInt), nil
 		}), nil
 	default:
-		return NewNil(), exec.errorAt(pos, "unknown float member %s%s", property, didYouMean(property, floatMemberNames))
+		return NewNil(), exec.errorAt(pos, "unknown float method %s%s", property, didYouMean(property, floatMemberNames))
 	}
 }
 

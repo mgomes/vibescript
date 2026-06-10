@@ -117,6 +117,14 @@ The lint contract lives in `.golangci.yml`. Enabled linters: `errcheck`,
 `govet`, `staticcheck`, `ineffassign`, `unused`, `misspell`. Format with
 `gofmt` + `gofumpt` (extra rules on).
 
+## Error messages
+
+Diagnostic text is matched by hosts, so it follows fixed phrasing
+conventions. Before adding or changing a parser or runtime error,
+read [`docs/error_conventions.md`](docs/error_conventions.md) and use
+the message family that matches your case; reviewers will ask for the
+canonical template otherwise.
+
 ## Adding a capability adapter
 
 Capabilities are the supported extension point for exposing host

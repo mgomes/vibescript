@@ -343,12 +343,12 @@ end`,
 		{
 			name:   "string.match with keyword argument",
 			script: `def run() "hello".match("h", foo: true) end`,
-			errMsg: "does not take keyword arguments",
+			errMsg: "does not accept keyword arguments",
 		},
 		{
 			name:   "string.scan with keyword argument",
 			script: `def run() "hello".scan("h", foo: true) end`,
-			errMsg: "does not take keyword arguments",
+			errMsg: "does not accept keyword arguments",
 		},
 		{
 			name:   "string.ord on empty string",

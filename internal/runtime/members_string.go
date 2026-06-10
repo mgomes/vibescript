@@ -430,7 +430,7 @@ func stringMemberQuery(property string) (Value, error) {
 	case "match":
 		return NewAutoBuiltin("string.match", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
-				return NewNil(), fmt.Errorf("string.match does not take keyword arguments")
+				return NewNil(), fmt.Errorf("string.match does not accept keyword arguments")
 			}
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("string.match expects exactly one pattern")
@@ -466,7 +466,7 @@ func stringMemberQuery(property string) (Value, error) {
 	case "scan":
 		return NewAutoBuiltin("string.scan", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
-				return NewNil(), fmt.Errorf("string.scan does not take keyword arguments")
+				return NewNil(), fmt.Errorf("string.scan does not accept keyword arguments")
 			}
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("string.scan expects exactly one pattern")

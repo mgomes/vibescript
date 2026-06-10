@@ -2,6 +2,10 @@
 
 Vibescript surfaces both parse-time and runtime failures with line and column information.
 
+Message phrasing follows fixed conventions; contributors changing or
+adding diagnostics and hosts matching errors programmatically should
+read [`error_conventions.md`](error_conventions.md).
+
 ## Parse Errors
 
 Compilation failures include a parser message and a source code frame:

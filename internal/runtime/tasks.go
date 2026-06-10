@@ -19,7 +19,7 @@ func registerTaskBuiltins(engine *Engine) {
 
 func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 0 {
-		return NewNil(), fmt.Errorf("Tasks.run does not accept positional arguments")
+		return NewNil(), fmt.Errorf("Tasks.run does not take positional arguments")
 	}
 	if err := ensureBlock(block, "Tasks.run"); err != nil {
 		return NewNil(), err
@@ -53,7 +53,7 @@ func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[s
 
 func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if !block.IsNil() {
-		return NewNil(), fmt.Errorf("Tasks.map does not accept a block")
+		return NewNil(), fmt.Errorf("Tasks.map does not accept blocks")
 	}
 	if len(args) != 1 {
 		return NewNil(), fmt.Errorf("Tasks.map expects one array argument")
@@ -176,7 +176,7 @@ func (group *taskGroup) managerValue() Value {
 
 func (group *taskGroup) builtinSpawn(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if !block.IsNil() {
-		return NewNil(), fmt.Errorf("tasks.spawn does not accept a block")
+		return NewNil(), fmt.Errorf("tasks.spawn does not accept blocks")
 	}
 	if len(args) == 0 {
 		return NewNil(), fmt.Errorf("tasks.spawn requires a function name")
@@ -194,13 +194,13 @@ func (group *taskGroup) builtinSpawn(exec *Execution, receiver Value, args []Val
 
 func (group *taskGroup) builtinWait(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 0 {
-		return NewNil(), fmt.Errorf("tasks.wait does not accept positional arguments")
+		return NewNil(), fmt.Errorf("tasks.wait does not take positional arguments")
 	}
 	if len(kwargs) != 0 {
 		return NewNil(), fmt.Errorf("tasks.wait does not accept keyword arguments")
 	}
 	if !block.IsNil() {
-		return NewNil(), fmt.Errorf("tasks.wait does not accept a block")
+		return NewNil(), fmt.Errorf("tasks.wait does not accept blocks")
 	}
 	if group.isClosed() {
 		return NewNil(), fmt.Errorf("task manager cannot be used after task scope exits")
@@ -379,13 +379,13 @@ func (handle *taskHandle) valueObject() Value {
 
 func (handle *taskHandle) builtinValue(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 0 {
-		return NewNil(), fmt.Errorf("task.value does not accept positional arguments")
+		return NewNil(), fmt.Errorf("task.value does not take positional arguments")
 	}
 	if len(kwargs) != 0 {
 		return NewNil(), fmt.Errorf("task.value does not accept keyword arguments")
 	}
 	if !block.IsNil() {
-		return NewNil(), fmt.Errorf("task.value does not accept a block")
+		return NewNil(), fmt.Errorf("task.value does not accept blocks")
 	}
 	if handle.group.isClosed() {
 		return NewNil(), fmt.Errorf("task handle cannot be used after task scope exits")
