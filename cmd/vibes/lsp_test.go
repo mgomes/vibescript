@@ -1254,3 +1254,26 @@ func TestDefinitionRangeCoversTheName(t *testing.T) {
 		t.Fatalf("range = %#v..%#v, want the name span 4..10", start, end)
 	}
 }
+
+func TestDocumentSymbolParentRangesEncloseChildren(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/enclose.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	symbols := documentSymbols(server.programs[uri], splitLSPLines(server.docs[uri]))
+	for _, symbol := range symbols {
+		children, ok := symbol["children"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		parentEnd := symbol["range"].(map[string]any)["end"].(map[string]any)["line"].(int)
+		for _, child := range children {
+			childEnd := child["range"].(map[string]any)["end"].(map[string]any)["line"].(int)
+			if childEnd > parentEnd {
+				t.Fatalf("%s child %s ends at line %d outside parent end %d",
+					symbol["name"], child["name"], childEnd, parentEnd)
+			}
+		}
+	}
+}

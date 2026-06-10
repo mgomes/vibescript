@@ -1415,23 +1415,38 @@ func documentSymbols(program *ast.Program, sourceLines []string) []map[string]an
 	return symbols
 }
 
-// symbolFor builds one DocumentSymbol whose range spans the definition
-// line; children must already be ordered.
+// symbolFor builds one DocumentSymbol. The selection range covers the
+// declaration line, while the full range extends to the last child so
+// LSP clients can nest breadcrumbs and match the cursor to the
+// enclosing symbol.
 func symbolFor(name string, kind int, pos ast.Position, sourceLines []string, children []map[string]any) map[string]any {
 	line := max(0, pos.Line-1)
 	lineText := ""
 	if line < len(sourceLines) {
 		lineText = sourceLines[line]
 	}
-	rng := map[string]any{
+	selection := map[string]any{
 		"start": map[string]any{"line": line, "character": 0},
 		"end":   map[string]any{"line": line, "character": utf16Character(lineText, len([]rune(lineText)))},
 	}
+
+	endLine := line
+	endChar := selection["end"].(map[string]any)["character"].(int)
+	for _, child := range children {
+		childEnd := child["range"].(map[string]any)["end"].(map[string]any)
+		if childLine := childEnd["line"].(int); childLine > endLine {
+			endLine = childLine
+			endChar = childEnd["character"].(int)
+		}
+	}
 	symbol := map[string]any{
-		"name":           name,
-		"kind":           kind,
-		"range":          rng,
-		"selectionRange": rng,
+		"name": name,
+		"kind": kind,
+		"range": map[string]any{
+			"start": map[string]any{"line": line, "character": 0},
+			"end":   map[string]any{"line": endLine, "character": endChar},
+		},
+		"selectionRange": selection,
 	}
 	if children != nil {
 		symbol["children"] = children
