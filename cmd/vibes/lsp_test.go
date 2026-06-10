@@ -664,3 +664,37 @@ func TestIsMemberContext(t *testing.T) {
 		})
 	}
 }
+
+func TestCompletionDoesNotLeakLocalsBetweenFunctions(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/gaps.vibe"
+	openDoc(t, server, uri, `def first(alpha)
+  beta = alpha
+  beta
+end
+
+def second()
+  1
+end
+`)
+
+	// Line 4 is the blank line between the two functions.
+	between := completionLabels(t, server, uri, 4, 0)
+	for _, leaked := range []string{"alpha", "beta"} {
+		if _, ok := between[leaked]; ok {
+			t.Fatalf("local %q leaked into the gap between functions", leaked)
+		}
+	}
+	if _, ok := between["first"]; !ok {
+		t.Fatal("function names should still be offered between functions")
+	}
+
+	// Inside first's body the locals are available.
+	inside := completionLabels(t, server, uri, 1, 2)
+	for _, want := range []string{"alpha", "beta"} {
+		if _, ok := inside[want]; !ok {
+			t.Fatalf("local %q missing inside its function", want)
+		}
+	}
+}

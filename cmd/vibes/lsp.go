@@ -659,7 +659,7 @@ func (s *lspServer) completionItemsAt(uri, source string, line, character int) [
 		return memberCompletionItems()
 	}
 	items := completionItems()
-	items = append(items, scriptCompletionItems(s.compiled[uri], line)...)
+	items = append(items, scriptCompletionItems(s.compiled[uri], splitLSPLines(source), line)...)
 	return items
 }
 
@@ -727,7 +727,7 @@ func memberCompletionItems() []map[string]any {
 
 // scriptCompletionItems offers the script's function names plus the
 // parameters and locals of the function enclosing the cursor line.
-func scriptCompletionItems(script *vibes.Script, line int) []map[string]any {
+func scriptCompletionItems(script *vibes.Script, sourceLines []string, line int) []map[string]any {
 	if script == nil {
 		return nil
 	}
@@ -741,8 +741,11 @@ func scriptCompletionItems(script *vibes.Script, line int) []map[string]any {
 			"detail": "function",
 		})
 		// Top-level functions are ordered by position; the enclosing
-		// one is the last to start at or before the cursor line.
-		if fn.Pos.Line-1 <= line && (enclosing < 0 || fn.Pos.Line > functions[enclosing].Pos.Line) {
+		// one is the last to start at or before the cursor line that
+		// the cursor has not already exited.
+		start := fn.Pos.Line - 1
+		if start <= line && line <= functionEndLine(sourceLines, start) &&
+			(enclosing < 0 || fn.Pos.Line > functions[enclosing].Pos.Line) {
 			enclosing = i
 		}
 	}
@@ -760,6 +763,21 @@ func scriptCompletionItems(script *vibes.Script, line int) []map[string]any {
 		return items[i]["label"].(string) < items[j]["label"].(string)
 	})
 	return items
+}
+
+// functionEndLine finds the 0-based line of the unindented "end" that
+// closes a top-level function starting at startLine. The canonical
+// formatter guarantees top-level "end" carries no indentation; while a
+// buffer is mid-edit and the terminator is missing, the function is
+// treated as open-ended so locals stay available on freshly typed
+// lines.
+func functionEndLine(sourceLines []string, startLine int) int {
+	for i := startLine + 1; i < len(sourceLines); i++ {
+		if strings.TrimRight(sourceLines[i], " \t") == "end" {
+			return i
+		}
+	}
+	return len(sourceLines)
 }
 
 func addLocalItem(items *[]map[string]any, seen map[string]struct{}, name, detail string) {
