@@ -578,7 +578,7 @@ func formattingEdits(source string) []map[string]any {
 	if formatted == source {
 		return []map[string]any{}
 	}
-	lines := strings.Split(source, "\n")
+	lines := splitLSPLines(source)
 	lastLine := len(lines) - 1
 	return []map[string]any{
 		{
@@ -595,4 +595,27 @@ func formattingEdits(source string) []map[string]any {
 			"newText": formatted,
 		},
 	}
+}
+
+// splitLSPLines splits a document the way LSP clients count lines:
+// "\r\n", bare "\n", and bare "\r" all terminate a line. Splitting on
+// "\n" alone would understate the line count for CR-only documents and
+// produce a replacement range clients reject or clamp.
+func splitLSPLines(text string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '\n':
+			lines = append(lines, text[start:i])
+			start = i + 1
+		case '\r':
+			lines = append(lines, text[start:i])
+			if i+1 < len(text) && text[i+1] == '\n' {
+				i++
+			}
+			start = i + 1
+		}
+	}
+	return append(lines, text[start:])
 }

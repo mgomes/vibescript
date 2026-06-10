@@ -449,3 +449,48 @@ func TestHandleMessageFormattingUnknownDocument(t *testing.T) {
 		t.Fatalf("response %s must not carry an error", payload)
 	}
 }
+
+func TestFormattingEditsHandleBareCarriageReturns(t *testing.T) {
+	t.Parallel()
+	// "a\rb\r" is three client-visible lines (the last empty); the edit
+	// range must end at line 2 character 0, not line 0 character 4.
+	edits := formattingEdits("a\rb\r")
+	if len(edits) != 1 {
+		t.Fatalf("expected one edit, got %#v", edits)
+	}
+	if edits[0]["newText"] != "a\nb\n" {
+		t.Fatalf("newText = %q, want normalized line endings", edits[0]["newText"])
+	}
+	end := edits[0]["range"].(map[string]any)["end"].(map[string]any)
+	if end["line"] != 2 || end["character"] != 0 {
+		t.Fatalf("end = %#v, want line 2 character 0", end)
+	}
+}
+
+func TestSplitLSPLines(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{name: "lf", text: "a\nb", want: []string{"a", "b"}},
+		{name: "crlf", text: "a\r\nb", want: []string{"a", "b"}},
+		{name: "bare_cr", text: "a\rb\r", want: []string{"a", "b", ""}},
+		{name: "mixed", text: "a\r\nb\rc\n", want: []string{"a", "b", "c", ""}},
+		{name: "empty", text: "", want: []string{""}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitLSPLines(tc.text)
+			if len(got) != len(tc.want) {
+				t.Fatalf("splitLSPLines(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("splitLSPLines(%q)[%d] = %q, want %q", tc.text, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
