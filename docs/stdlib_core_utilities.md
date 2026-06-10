@@ -26,6 +26,24 @@ def first_id(text)
 end
 ```
 
+## Guard Limits
+
+JSON and Regex helpers enforce fixed input-guard limits so hostile data
+cannot exhaust host memory or CPU. The limits are not configurable and
+apply to both the `JSON`/`Regex` builtins and the regex-enabled string
+members (`match`, `scan`, `sub`, `gsub`, and their `!` variants):
+
+| Guard | Limit | Applies to |
+| --- | --- | --- |
+| JSON payload | 1 MiB | `JSON.parse` input and `JSON.stringify` output |
+| Regex text | 1 MiB | Subject text, replacement strings, and produced output |
+| Regex pattern | 16 KiB | Pattern strings before compilation |
+
+Exceeding a limit raises a runtime error naming the offending guard.
+The canonical values live in the documented const block in
+`internal/runtime/limits.go`; the README's "Runtime Sandbox & Limits"
+section summarizes them alongside the configurable engine quotas.
+
 ## Random IDs
 
 ```vibe

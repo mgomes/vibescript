@@ -19,9 +19,6 @@ const (
 	randomIDAlphabet       = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	randomIDUnbiasedCutoff = byte((256 / len(randomIDAlphabet)) * len(randomIDAlphabet))
 	maxRandomIDStallReads  = 8
-	maxJSONPayloadBytes    = 1 << 20
-	maxRegexInputBytes     = 1 << 20
-	maxRegexPatternSize    = 16 << 10
 )
 
 func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
