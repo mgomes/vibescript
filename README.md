@@ -141,6 +141,10 @@ Vibescript now has a tree-sitter plugin and an official Zed extension for syntax
 - https://github.com/mgomes/tree-sitter-vibescript
 - https://zed.dev/extensions/vibescript
 
+A language server ships with the CLI (`vibes lsp`) and provides diagnostics,
+hover, and completion in any LSP-capable editor. Setup instructions and the
+current feature/limitation list live in [docs/lsp.md](docs/lsp.md).
+
 ## Examples
 
 Representative `.vibe` programs are grouped under `examples/`:
@@ -208,7 +212,7 @@ This repository uses [Just](https://github.com/casey/just) for common tasks:
 - `vibes analyze <script.vibe>` runs script-level lint checks (e.g., unreachable statements).
 - `./scripts/check_ci_green.sh` verifies latest `master` CI run is green.
 - `./scripts/release_rehearsal.sh <version>` runs repeatable pre-tag release checks.
-- `vibes lsp` starts the language server protocol prototype (hover/completion/diagnostics over stdio).
+- `vibes lsp` starts the language server (hover/completion/diagnostics over stdio); see [docs/lsp.md](docs/lsp.md).
 - Add new recipes in the `Justfile` as workflows grow.
 
 CI also publishes benchmark artifacts via `.github/workflows/benchmarks.yml` on
