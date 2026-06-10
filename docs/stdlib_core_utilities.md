@@ -524,9 +524,10 @@ Patterns use Go's RE2 syntax and enforce the
 ### Duration
 
 - `Duration.build(seconds) -> duration` – build from total seconds.
-- `Duration.build(weeks: 0, days: 0, hours: 0, minutes: 0, seconds: 0) ->
-  duration` – build from named parts (positional seconds and named parts are
-  mutually exclusive).
+- `Duration.build(weeks:, days:, hours:, minutes:, seconds:) -> duration` –
+  build from named parts; at least one part is required (a bare
+  `Duration.build()` errors), and positional seconds and named parts are
+  mutually exclusive.
 - `Duration.parse(string) -> duration` – parse Go duration strings (`"1h30m"`,
   whole seconds only) or ISO 8601 durations (`"PT90S"`, `"P2W"`).
 
