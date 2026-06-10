@@ -565,6 +565,16 @@ manager API, retention rules, and concurrency settings.
 - `Tasks.map(items, with: function_name, max: nil) -> array` – apply a named
   function to each element concurrently, preserving order.
 
+The manager passed to the `Tasks.run` block exposes two methods, and
+`spawn` returns a task handle with one; all of them raise once the task
+scope has exited:
+
+- `tasks.spawn(function_name, args..., keyword: ...) -> task` – start the
+  named function concurrently with the given arguments; returns a handle.
+- `tasks.wait -> nil` – block until every spawned task has finished.
+- `task.value -> value` – wait for this task and return its result,
+  raising the task's error if it failed.
+
 ## Guard Limits
 
 JSON, regex, and ID helpers enforce fixed input-guard limits so hostile
