@@ -1480,7 +1480,7 @@ func documentSymbols(program *ast.Program, sourceLines []string) []map[string]an
 // declaration line, while the full range extends to the last child so
 // LSP clients can nest breadcrumbs and match the cursor to the
 // enclosing symbol.
-func symbolFor(name string, kind int, line int, sourceLines []string, children []map[string]any) map[string]any {
+func symbolFor(name string, kind, line int, sourceLines []string, children []map[string]any) map[string]any {
 	lineText := ""
 	if line < len(sourceLines) {
 		lineText = sourceLines[line]
