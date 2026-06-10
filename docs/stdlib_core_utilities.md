@@ -220,16 +220,18 @@ See [hashes.md](hashes.md) for worked examples. Hash keys are symbols (string
 keys are normalized to the same lookup space). `keys`, `values`, and all
 block-based iteration visit entries in sorted key order for determinism.
 
-Property access (`record.name`) resolves stored keys first and only falls back
-to the methods below, so an entry can shadow a method of the same name:
+Property access (`record.name`) resolves the hash methods below before stored
+keys, so method names stay stable even when data contains the same key:
 
 ```vibe
 sizes = { size: "XL" }
-sizes.size            # "XL" (the entry wins)
+sizes.size            # 1
+sizes[:size]          # "XL"
 { color: "red" }.size # 1
 ```
 
-Use index access (`hash[:size]`) when a key may collide with a method name.
+Use index access (`hash[:size]`) to read entries whose names collide with hash
+methods.
 
 ### Inspection
 
