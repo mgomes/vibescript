@@ -110,6 +110,28 @@ func TestDiagnosticsForSourceFallBackToPointRangeAtEOF(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsForSourceUseUTF16CharacterOffsets(t *testing.T) {
+	t.Parallel()
+	engine := vibes.MustNewEngine(vibes.Config{})
+	// Each emoji is one rune but two UTF-16 code units. The offending
+	// token "2" sits at rune column 16 (1-indexed) on line 2; two
+	// non-BMP runes precede it, so the UTF-16 offset is 17.
+	diags := diagnosticsForSource(engine, "def run()\n  x = [\"\U0001F600\U0001F600\", 1 2]\nend\n")
+	if len(diags) == 0 {
+		t.Fatal("expected diagnostics for malformed array literal")
+	}
+
+	rng := diags[0]["range"].(map[string]any)
+	start := rng["start"].(map[string]any)
+	end := rng["end"].(map[string]any)
+	if start["line"] != 1 || start["character"] != 17 {
+		t.Fatalf("start = %#v, want line 1 character 17 (UTF-16 units)", start)
+	}
+	if end["line"] != 1 || end["character"] != 18 {
+		t.Fatalf("end = %#v, want line 1 character 18 spanning the token", end)
+	}
+}
+
 func TestDiagnosticsForSourceWithoutPositionsReportDocumentStart(t *testing.T) {
 	t.Parallel()
 	engine := vibes.MustNewEngine(vibes.Config{})

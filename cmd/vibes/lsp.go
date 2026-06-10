@@ -289,9 +289,10 @@ func diagnosticsForSource(engine *vibes.Engine, source string) []map[string]any 
 		}
 	}
 
+	lines := strings.Split(source, "\n")
 	out := make([]map[string]any, 0, len(issues))
 	for _, issue := range issues {
-		out = append(out, newDiagnostic(rangeForIssue(issue), issue.Message))
+		out = append(out, newDiagnostic(rangeForIssue(issue, lines), issue.Message))
 	}
 	return out
 }
@@ -302,20 +303,52 @@ type diagnosticRange struct {
 	endLine, endChar     int
 }
 
-// rangeForIssue converts a 1-indexed parse issue to an LSP range. Issues
-// without a known token span degrade to a single-character range.
-func rangeForIssue(issue vibes.ParseIssue) diagnosticRange {
+// rangeForIssue converts a 1-indexed, rune-based parse issue to an LSP
+// range in UTF-16 code units (the protocol's default position encoding).
+// Issues without a known token span degrade to a single-rune range.
+func rangeForIssue(issue vibes.ParseIssue, lines []string) diagnosticRange {
+	startLine := max(0, issue.Pos.Line-1)
+	startRune := max(0, issue.Pos.Column-1)
 	r := diagnosticRange{
-		startLine: max(0, issue.Pos.Line-1),
-		startChar: max(0, issue.Pos.Column-1),
+		startLine: startLine,
+		startChar: utf16Character(lineAt(lines, startLine), startRune),
 	}
-	r.endLine = r.startLine
-	r.endChar = r.startChar + 1
+	endLine, endRune := startLine, startRune+1
 	if issue.End.Line >= issue.Pos.Line && (issue.End.Line > issue.Pos.Line || issue.End.Column > issue.Pos.Column) {
-		r.endLine = issue.End.Line - 1
-		r.endChar = max(0, issue.End.Column-1)
+		endLine = issue.End.Line - 1
+		endRune = max(0, issue.End.Column-1)
 	}
+	r.endLine = endLine
+	r.endChar = utf16Character(lineAt(lines, endLine), endRune)
 	return r
+}
+
+func lineAt(lines []string, idx int) string {
+	if idx < 0 || idx >= len(lines) {
+		return ""
+	}
+	return lines[idx]
+}
+
+// utf16Character converts a 0-indexed rune column within lineText to a
+// UTF-16 code-unit offset. Columns beyond the line clamp to its full
+// UTF-16 length plus the rune overshoot, so spans at end of line stay
+// forward-progressing.
+func utf16Character(lineText string, runeColumn int) int {
+	units := 0
+	runes := 0
+	for _, r := range lineText {
+		if runes >= runeColumn {
+			return units
+		}
+		if r > 0xFFFF {
+			units += 2
+		} else {
+			units++
+		}
+		runes++
+	}
+	return units + (runeColumn - runes)
 }
 
 func newDiagnostic(rng diagnosticRange, message string) map[string]any {
