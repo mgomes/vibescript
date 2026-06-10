@@ -29,7 +29,7 @@ func valueToInt(val Value) (int, error) {
 	case KindFloat:
 		return int(val.Float()), nil
 	default:
-		return 0, fmt.Errorf("expected integer index")
+		return 0, fmt.Errorf("index must be integer")
 	}
 }
 
@@ -125,7 +125,7 @@ func arraySortCompareValues(left, right Value) (int, error) {
 		}
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		if left.Money().Currency() != right.Money().Currency() {
-			return 0, fmt.Errorf("money values with different currencies")
+			return 0, fmt.Errorf("money currency mismatch for comparison")
 		}
 		switch {
 		case left.Money().Cents() < right.Money().Cents():

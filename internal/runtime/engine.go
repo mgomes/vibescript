@@ -508,7 +508,7 @@ func registerTimeBuiltins(engine *Engine) {
 			}
 			for key := range kwargs {
 				if key != "in" {
-					return NewNil(), fmt.Errorf("Time.parse unknown keyword %q", key)
+					return NewNil(), fmt.Errorf("Time.parse unknown keyword argument %s", key)
 				}
 			}
 

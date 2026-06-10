@@ -318,7 +318,7 @@ end`,
 		{
 			name:   "int member typo",
 			script: `def run() 5.tims end`,
-			errMsg: `unknown int member tims (did you mean "times"?)`,
+			errMsg: `unknown int method tims (did you mean "times"?)`,
 		},
 		{
 			name:   "duration method typo",
