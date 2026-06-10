@@ -335,7 +335,11 @@ func (e *Engine) moduleCandidatesUnderRoot(root string) []string {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
 			return nil
 		}
-		relative, relErr := filepath.Rel(cleanRoot, fullPath)
+		// Mirror the loader's realpath containment so symlinks that
+		// escape the module root are never suggested (the loader would
+		// reject them, and suggesting them leaks paths outside the
+		// allowed module set).
+		relative, relErr := moduleRelativePath(cleanRoot, fullPath)
 		if relErr != nil || e.enforceModulePolicy(relative) != nil {
 			return nil
 		}
@@ -361,7 +365,7 @@ func (e *Engine) relativeModuleSuggestion(request moduleRequest, caller moduleCo
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
 			continue
 		}
-		relative, relErr := moduleRelativePathLexical(caller.root, filepath.Join(dir, entry.Name()))
+		relative, relErr := moduleRelativePath(caller.root, filepath.Join(dir, entry.Name()))
 		if relErr != nil || e.enforceModulePolicy(relative) != nil {
 			continue
 		}

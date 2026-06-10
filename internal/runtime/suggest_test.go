@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -517,4 +519,35 @@ func TestRelativeModuleSuggestionsKeepRawSubdirectoryPrefix(t *testing.T) {
 	script := compileScriptWithEngine(t, engine, "def run()\n  mod = require(\"lib/entry\")\n  mod.boot()\nend")
 	requireCallErrorContains(t, script, "run", nil, CallOptions{},
 		`require: module "./sub/helprs" not found (did you mean "./sub/helpers"?)`)
+}
+
+func TestModuleSuggestionsExcludeSymlinksEscapingRoot(t *testing.T) {
+	t.Parallel()
+	moduleSource := "def double(x)\n  x * 2\nend\n"
+	outside := t.TempDir()
+	outsideModule := filepath.Join(outside, "escape.vibe")
+	if err := os.WriteFile(outsideModule, []byte(moduleSource), 0o644); err != nil {
+		t.Fatalf("write outside module: %v", err)
+	}
+
+	root := tempModuleTree(t, moduleFile{path: "entry.vibe", content: "def boot()\n  require(\"./escap\")\nend\n"})
+	if err := os.Symlink(outsideModule, filepath.Join(root, "escape.vibe")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	engine := mustNewEngineWithModuleRoot(t, root)
+
+	searchScript := compileScriptWithEngine(t, engine, "def run()\n  require(\"escap\")\nend")
+	searchErr := callScriptErr(t, context.Background(), searchScript, "run", nil, CallOptions{})
+	requireErrorContains(t, searchErr, `module "escap" not found`)
+	if strings.Contains(searchErr.Error(), "did you mean") {
+		t.Fatalf("search-path suggestion discloses root-escaping symlink: %v", searchErr)
+	}
+
+	relativeScript := compileScriptWithEngine(t, engine, "def run()\n  mod = require(\"entry\")\n  mod.boot()\nend")
+	relativeErr := callScriptErr(t, context.Background(), relativeScript, "run", nil, CallOptions{})
+	requireErrorContains(t, relativeErr, `module "./escap" not found`)
+	if strings.Contains(relativeErr.Error(), "did you mean") {
+		t.Fatalf("relative suggestion discloses root-escaping symlink: %v", relativeErr)
+	}
 }
