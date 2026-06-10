@@ -797,16 +797,24 @@ func functionEndLine(sourceLines []string, startLine, bodyExtent int) int {
 
 // findDefLine locates the 0-based line declaring the named top-level
 // function in the current buffer, or -1 when absent. Only unindented
-// def lines qualify: indented defs are class methods, which may share
-// a top-level function's name, and a missed anchor falls back to the
-// cached position rather than mis-anchoring.
+// declarations qualify — indented defs are class methods, which may
+// share a top-level function's name — but the export and private
+// modifiers that can decorate a top-level def are accepted. A missed
+// anchor falls back to the cached position rather than mis-anchoring.
 func findDefLine(sourceLines []string, name string) int {
-	prefix := "def " + name
+	target := "def " + name
 	for i, lineText := range sourceLines {
-		if !strings.HasPrefix(lineText, prefix) {
+		decl := lineText
+		for _, modifier := range []string{"export ", "private "} {
+			if rest, ok := strings.CutPrefix(decl, modifier); ok {
+				decl = rest
+				break
+			}
+		}
+		if !strings.HasPrefix(decl, target) {
 			continue
 		}
-		rest := strings.TrimRight(lineText[len(prefix):], " \t")
+		rest := strings.TrimRight(decl[len(target):], " \t")
 		if rest == "" || strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, " ") {
 			return i
 		}

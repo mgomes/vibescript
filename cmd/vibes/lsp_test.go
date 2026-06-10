@@ -799,3 +799,36 @@ end
 		t.Fatal("class method parameter leaked into the top-level function scope")
 	}
 }
+
+func TestCompletionAnchorsDecoratedTopLevelDefs(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/decorated.vibe"
+	openDoc(t, server, uri, `private def secret(token)
+  hashed = token
+  hashed
+end
+`)
+
+	// Shift the function down with comments while keeping the buffer
+	// unparsable, so the anchor must match the decorated declaration.
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "# one\n# two\nprivate def secret(token)\n  hashed = token\n  hashed\nend\n\ndef broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	inside := completionLabels(t, server, uri, 3, 2)
+	for _, want := range []string{"token", "hashed"} {
+		if _, ok := inside[want]; !ok {
+			t.Fatalf("local %q missing: decorated def did not re-anchor", want)
+		}
+	}
+	above := completionLabels(t, server, uri, 0, 0)
+	if _, leaked := above["hashed"]; leaked {
+		t.Fatal("locals leaked above the shifted decorated function")
+	}
+}
