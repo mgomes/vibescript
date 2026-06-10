@@ -181,7 +181,8 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 						"hoverProvider":              true,
 						"documentFormattingProvider": true,
 						"completionProvider": map[string]any{
-							"resolveProvider": false,
+							"resolveProvider":   false,
+							"triggerCharacters": []string{"."},
 						},
 					},
 				},

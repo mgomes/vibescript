@@ -698,3 +698,19 @@ end
 		}
 	}
 }
+
+func TestInitializeAdvertisesDotCompletionTrigger(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("51"),
+		Method:  "initialize",
+	})
+	caps := messages[0].Result.(map[string]any)["capabilities"].(map[string]any)
+	completion := caps["completionProvider"].(map[string]any)
+	triggers, ok := completion["triggerCharacters"].([]string)
+	if !ok || !slices.Contains(triggers, ".") {
+		t.Fatalf("completion triggerCharacters = %#v, want to include \".\"", completion["triggerCharacters"])
+	}
+}
