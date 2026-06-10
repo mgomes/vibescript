@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/mgomes/vibescript/internal/ast"
+	"github.com/mgomes/vibescript/internal/parser"
 	"github.com/mgomes/vibescript/vibes"
 )
 
@@ -127,6 +128,10 @@ type lspServer struct {
 	// document, so completion can offer user-defined symbols while the
 	// buffer is mid-edit and temporarily unparsable.
 	compiled map[string]*vibes.Script
+	// programs holds the most recent parse that produced any top-level
+	// statements per document. Unlike compiled it tolerates partial
+	// parses, so navigation keeps working while the buffer is mid-edit.
+	programs map[string]*ast.Program
 }
 
 func runLSP() error {
@@ -136,6 +141,7 @@ func runLSP() error {
 		engine:   vibes.MustNewEngine(vibes.Config{}),
 		docs:     make(map[string]string),
 		compiled: make(map[string]*vibes.Script),
+		programs: make(map[string]*ast.Program),
 	}
 	return server.serve()
 }
@@ -180,6 +186,8 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 						"textDocumentSync":           1,
 						"hoverProvider":              true,
 						"documentFormattingProvider": true,
+						"definitionProvider":         true,
+						"documentSymbolProvider":     true,
 						"signatureHelpProvider": map[string]any{
 							"triggerCharacters": []string{"(", ","},
 						},
@@ -247,6 +255,53 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				JSONRPC: "2.0",
 				ID:      incoming.ID,
 				Result:  formattingEdits(source),
+			},
+		}
+	case "textDocument/definition":
+		if incoming.ID == nil {
+			return nil
+		}
+		var params lspTextDocumentPositionParams
+		if err := json.Unmarshal(incoming.Params, &params); err != nil {
+			return []lspOutboundMessage{
+				{
+					JSONRPC: "2.0",
+					ID:      incoming.ID,
+					Error:   &lspResponseError{Code: -32602, Message: "invalid definition params"},
+				},
+			}
+		}
+		uri := params.TextDocument.URI
+		word := wordAtPosition(s.docs[uri], params.Position.Line, params.Position.Character)
+		location := definitionLocation(s.programs[uri], uri, splitLSPLines(s.docs[uri]), word)
+		if location == nil {
+			return []lspOutboundMessage{
+				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
+			}
+		}
+		return []lspOutboundMessage{
+			{JSONRPC: "2.0", ID: incoming.ID, Result: location},
+		}
+	case "textDocument/documentSymbol":
+		if incoming.ID == nil {
+			return nil
+		}
+		var params lspDocumentFormattingParams
+		if err := json.Unmarshal(incoming.Params, &params); err != nil {
+			return []lspOutboundMessage{
+				{
+					JSONRPC: "2.0",
+					ID:      incoming.ID,
+					Error:   &lspResponseError{Code: -32602, Message: "invalid documentSymbol params"},
+				},
+			}
+		}
+		uri := params.TextDocument.URI
+		return []lspOutboundMessage{
+			{
+				JSONRPC: "2.0",
+				ID:      incoming.ID,
+				Result:  documentSymbols(s.programs[uri], splitLSPLines(s.docs[uri])),
 			},
 		}
 	case "textDocument/signatureHelp":
@@ -354,6 +409,14 @@ func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
 	script, diagnostics := compileForDiagnostics(s.engine, source)
 	if script != nil && s.compiled != nil {
 		s.compiled[uri] = script
+	}
+	if program, parseErrs := parser.Parse(source); program != nil && s.programs != nil {
+		// A clean parse is authoritative even when empty (the symbols
+		// are genuinely gone); a broken mid-edit parse only replaces
+		// the cache when it still yielded statements.
+		if len(parseErrs) == 0 || len(program.Statements) > 0 {
+			s.programs[uri] = program
+		}
 	}
 	return lspOutboundMessage{
 		JSONRPC: "2.0",
@@ -1214,4 +1277,239 @@ func paramLabelsFromSignature(label string) []string {
 		labels = append(labels, strings.TrimSpace(part))
 	}
 	return labels
+}
+
+// definitionLocation resolves word to the position of its top-level
+// definition (function, class, enum, or enum member) in the document.
+// Setter methods are declared as "name=" while the cursor word at an
+// assignment call site is bare "name", so the setter form is matched
+// when no exact definition exists.
+func definitionLocation(program *ast.Program, uri string, sourceLines []string, word string) map[string]any {
+	if program == nil || word == "" {
+		return nil
+	}
+	for _, candidate := range []string{word, word + "="} {
+		if location := exactDefinitionLocation(program, uri, sourceLines, candidate); location != nil {
+			return location
+		}
+	}
+	return nil
+}
+
+func exactDefinitionLocation(program *ast.Program, uri string, sourceLines []string, word string) map[string]any {
+	for _, stmt := range program.Statements {
+		switch st := stmt.(type) {
+		case *ast.FunctionStmt:
+			if st.Name == word {
+				return anchoredLocation(uri, sourceLines, st.Position, st.Name)
+			}
+		case *ast.ClassStmt:
+			if st.Name == word {
+				return anchoredLocation(uri, sourceLines, st.Position, st.Name)
+			}
+			for _, method := range st.Methods {
+				if method.Name == word {
+					return anchoredLocation(uri, sourceLines, method.Position, method.Name)
+				}
+			}
+			for _, method := range st.ClassMethods {
+				if method.Name == word {
+					return anchoredLocation(uri, sourceLines, method.Position, method.Name)
+				}
+			}
+		case *ast.EnumStmt:
+			if st.Name == word {
+				return anchoredLocation(uri, sourceLines, st.Position, st.Name)
+			}
+			for _, member := range st.Members {
+				if member.Name == word {
+					return anchoredLocation(uri, sourceLines, member.Position, member.Name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// anchoredLocation builds a Location for a declaration after
+// re-anchoring it in the current buffer; a declaration the buffer no
+// longer contains yields nil rather than a stale jump target.
+func anchoredLocation(uri string, sourceLines []string, pos ast.Position, name string) map[string]any {
+	line := anchorDeclLine(sourceLines, pos, name)
+	if line < 0 {
+		return nil
+	}
+	return locationAt(uri, sourceLines, line, name)
+}
+
+// anchorDeclLine finds the 0-based line currently declaring name,
+// preferring the parser-recorded line when it still matches and
+// searching the whole buffer otherwise. -1 means the declaration no
+// longer exists in the live text.
+func anchorDeclLine(sourceLines []string, pos ast.Position, name string) int {
+	recorded := pos.Line - 1
+	if declLineMatches(sourceLines, recorded, name) {
+		return recorded
+	}
+	for i := range sourceLines {
+		if declLineMatches(sourceLines, i, name) {
+			return i
+		}
+	}
+	return -1
+}
+
+// declLineMatches reports whether the line declares name: a def, class,
+// or enum keyword (allowing export/private modifiers and self. method
+// receivers), or a bare enum-member identifier.
+func declLineMatches(sourceLines []string, line int, name string) bool {
+	if line < 0 || line >= len(sourceLines) {
+		return false
+	}
+	text := strings.TrimSpace(sourceLines[line])
+	for _, modifier := range []string{"export ", "private "} {
+		text = strings.TrimPrefix(text, modifier)
+	}
+	for _, keyword := range []string{"def ", "class ", "enum "} {
+		rest, ok := strings.CutPrefix(text, keyword)
+		if !ok {
+			continue
+		}
+		rest = strings.TrimPrefix(rest, "self.")
+		if !strings.HasPrefix(rest, name) {
+			return false
+		}
+		tail := []rune(rest[len(name):])
+		return len(tail) == 0 || !isWordRune(tail[0])
+	}
+	return text == name
+}
+
+// locationAt builds a Location whose range covers the declared name on
+// the given 0-based line. Parser positions point at the declaration
+// keyword, so the name's own column is recovered from the line text.
+// Characters are UTF-16 code units.
+func locationAt(uri string, sourceLines []string, line int, name string) map[string]any {
+	lineText := ""
+	if line < len(sourceLines) {
+		lineText = sourceLines[line]
+	}
+	bare := strings.TrimSuffix(name, "=")
+	startRune := 0
+	if col := findWordColumn(lineText, bare, 0); col >= 0 {
+		startRune = col
+	}
+	startChar := utf16Character(lineText, startRune)
+	endChar := utf16Character(lineText, startRune+len([]rune(bare)))
+	if endChar <= startChar {
+		endChar = startChar + 1
+	}
+	return map[string]any{
+		"uri": uri,
+		"range": map[string]any{
+			"start": map[string]any{"line": line, "character": startChar},
+			"end":   map[string]any{"line": line, "character": endChar},
+		},
+	}
+}
+
+// findWordColumn returns the rune column of the first whole-word
+// occurrence of name at or after fromRune, or -1 when absent.
+func findWordColumn(lineText, name string, fromRune int) int {
+	if name == "" {
+		return -1
+	}
+	runes := []rune(lineText)
+	nameRunes := []rune(name)
+	for i := max(0, fromRune); i+len(nameRunes) <= len(runes); i++ {
+		if string(runes[i:i+len(nameRunes)]) != name {
+			continue
+		}
+		if i > 0 && isWordRune(runes[i-1]) {
+			continue
+		}
+		if next := i + len(nameRunes); next < len(runes) && isWordRune(runes[next]) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+// documentSymbols renders the document outline: top-level functions,
+// classes with their methods, and enums with their members.
+func documentSymbols(program *ast.Program, sourceLines []string) []map[string]any {
+	if program == nil {
+		return []map[string]any{}
+	}
+	symbols := make([]map[string]any, 0, len(program.Statements))
+	appendSymbol := func(dst []map[string]any, name string, kind int, pos ast.Position, anchorName string, children []map[string]any) []map[string]any {
+		line := anchorDeclLine(sourceLines, pos, anchorName)
+		if line < 0 {
+			// The declaration is gone from the live buffer; a stale
+			// outline entry would point into unrelated text.
+			return dst
+		}
+		return append(dst, symbolFor(name, kind, line, sourceLines, children))
+	}
+	for _, stmt := range program.Statements {
+		switch st := stmt.(type) {
+		case *ast.FunctionStmt:
+			symbols = appendSymbol(symbols, st.Name, 12, st.Position, st.Name, nil)
+		case *ast.ClassStmt:
+			children := make([]map[string]any, 0, len(st.Methods)+len(st.ClassMethods))
+			for _, method := range st.Methods {
+				children = appendSymbol(children, method.Name, 6, method.Position, method.Name, nil)
+			}
+			for _, method := range st.ClassMethods {
+				children = appendSymbol(children, "self."+method.Name, 6, method.Position, method.Name, nil)
+			}
+			symbols = appendSymbol(symbols, st.Name, 5, st.Position, st.Name, children)
+		case *ast.EnumStmt:
+			children := make([]map[string]any, 0, len(st.Members))
+			for _, member := range st.Members {
+				children = appendSymbol(children, member.Name, 22, member.Position, member.Name, nil)
+			}
+			symbols = appendSymbol(symbols, st.Name, 10, st.Position, st.Name, children)
+		}
+	}
+	return symbols
+}
+
+// symbolFor builds one DocumentSymbol. The selection range covers the
+// declaration line, while the full range extends to the last child so
+// LSP clients can nest breadcrumbs and match the cursor to the
+// enclosing symbol.
+func symbolFor(name string, kind, line int, sourceLines []string, children []map[string]any) map[string]any {
+	lineText := ""
+	if line < len(sourceLines) {
+		lineText = sourceLines[line]
+	}
+	selection := map[string]any{
+		"start": map[string]any{"line": line, "character": 0},
+		"end":   map[string]any{"line": line, "character": utf16Character(lineText, len([]rune(lineText)))},
+	}
+
+	endLine := line
+	endChar := selection["end"].(map[string]any)["character"].(int)
+	for _, child := range children {
+		childEnd := child["range"].(map[string]any)["end"].(map[string]any)
+		if childLine := childEnd["line"].(int); childLine > endLine {
+			endLine = childLine
+			endChar = childEnd["character"].(int)
+		}
+	}
+	symbol := map[string]any{
+		"name": name,
+		"kind": kind,
+		"range": map[string]any{
+			"start": map[string]any{"line": line, "character": 0},
+			"end":   map[string]any{"line": endLine, "character": endChar},
+		},
+		"selectionRange": selection,
+	}
+	if children != nil {
+		symbol["children"] = children
+	}
+	return symbol
 }
