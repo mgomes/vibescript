@@ -36,7 +36,7 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 	}
 
 	for p.peekToken.Type != ast.TokenEOF && precedence < p.peekPrecedence() {
-		if lineLimited && p.peekToken.Pos.Line > limitLine && !lineLimitedContinuationToken(p.peekToken.Type) {
+		if lineLimited && p.peekToken.Pos.Line > limitLine && !p.lineLimitedContinuationToken(p.peekToken) {
 			return left
 		}
 		infix := p.infixFns[p.peekToken.Type]
@@ -56,10 +56,12 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 	return left
 }
 
-func lineLimitedContinuationToken(tt ast.TokenType) bool {
-	switch tt {
+func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
+	switch tok.Type {
 	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPercent, ast.TokenRange, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenAnd, ast.TokenOr:
 		return true
+	case ast.TokenMinus:
+		return p.peekPeek.Pos.Line == tok.Pos.Line && p.peekPeek.Pos.Column > tok.End.Column
 	default:
 		return false
 	}
@@ -404,6 +406,7 @@ func (p *parser) blockParamUnionContinues() bool {
 	savedLexer := *p.l
 	savedCur := p.curToken
 	savedPeek := p.peekToken
+	savedPeekPeek := p.peekPeek
 	savedErrors := len(p.errors)
 
 	p.nextToken()
@@ -414,6 +417,7 @@ func (p *parser) blockParamUnionContinues() bool {
 	p.l = &savedLexer
 	p.curToken = savedCur
 	p.peekToken = savedPeek
+	p.peekPeek = savedPeekPeek
 	p.errors = p.errors[:savedErrors]
 	return ok
 }
@@ -494,7 +498,7 @@ func isLabelNameToken(tt ast.TokenType) bool {
 func (p *parser) parseCaseExpression() ast.Expression {
 	pos := p.curToken.Pos
 	p.nextToken()
-	target := p.parseExpression(lowestPrec)
+	target := p.parseLineExpression(lowestPrec)
 	if target == nil {
 		return nil
 	}
@@ -504,7 +508,7 @@ func (p *parser) parseCaseExpression() ast.Expression {
 	for p.curToken.Type == ast.TokenWhen {
 		p.nextToken()
 		values := []ast.Expression{}
-		first := p.parseExpression(lowestPrec)
+		first := p.parseLineExpression(lowestPrec)
 		if first == nil {
 			return nil
 		}
@@ -512,7 +516,7 @@ func (p *parser) parseCaseExpression() ast.Expression {
 		for p.peekToken.Type == ast.TokenComma {
 			p.nextToken()
 			p.nextToken()
-			value := p.parseExpression(lowestPrec)
+			value := p.parseLineExpression(lowestPrec)
 			if value == nil {
 				return nil
 			}
