@@ -2,6 +2,10 @@
 # Format:
 # <benchmark_name> <max_ns_per_op> <max_allocs_per_op>
 #
+# Enforced by scripts/bench_smoke_check.sh, which CI runs on every pull
+# request and push to master (the "Benchmark smoke gates" step in
+# .github/workflows/benchmarks.yml). A breach fails the workflow.
+#
 # Keep thresholds intentionally loose enough to avoid platform flake,
 # but tight enough to catch obvious regressions.
 

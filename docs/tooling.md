@@ -128,6 +128,15 @@ both `ns/op` and `allocs/op`.
 The smoke output includes per-benchmark deltas (`actual - threshold`) so CI
 summaries show headroom or regression at a glance.
 
+CI enforces these gates: the `Benchmark smoke gates` step in
+`.github/workflows/benchmarks.yml` runs the smoke check on every pull request
+and push to `master`, and a threshold breach fails the workflow (the
+remaining benchmark and artifact steps are skipped in that case). When the
+gate passes, the run uploads the raw results and the baseline trend
+comparison as workflow artifacts. Artifacts expire with the repository's
+retention window, so they are a recent-run comparison aid, not durable
+history — long-lived reference points belong in `benchmarks/baselines/`.
+
 ## Scheduled Full Runs
 
 The benchmark workflow runs weekly on Mondays at 06:00 UTC (`cron: 0 6 * * 1`)
