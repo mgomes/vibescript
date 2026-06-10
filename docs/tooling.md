@@ -70,6 +70,27 @@ vibes analyze ./examples/strings/operations.vibe
 Current checks include unreachable statements after terminating operations such
 as `return` and `raise`.
 
+## `vibes test`
+
+Discovers `*_test.vibe` files and runs their test functions.
+
+```bash
+vibes test ./tests
+vibes test -run 'pricing' ./tests
+vibes test ./tests/billing_test.vibe
+```
+
+A test is a function whose name starts with `test_` and takes no required
+parameters; it fails when it raises or an `assert` inside it fails. Failures
+are reported with the assertion message and source position. Flags:
+
+- `-run <regexp>`: run only test functions whose name matches.
+- `-module-path <dir>`: add module search paths for `require` (each test
+  file's own directory is always included).
+
+The exit code is non-zero when any test fails, so the command slots directly
+into CI.
+
 ## `vibes lsp`
 
 Starts an LSP prototype over stdio, with hover, completion, and diagnostics.

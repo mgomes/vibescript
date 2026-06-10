@@ -210,6 +210,7 @@ This repository uses [Just](https://github.com/casey/just) for common tasks:
 - `just install` installs the `vibes` binary to `$GOBIN` (or `$GOPATH/bin` when `GOBIN` is unset); pass a custom directory with `just install /usr/local/bin`.
 - `vibes fmt <path>` applies canonical formatting to `.vibe` files (`-check` for CI, `-w` to write).
 - `vibes analyze <script.vibe>` runs script-level lint checks (e.g., unreachable statements).
+- `vibes test [path...]` discovers and runs `*_test.vibe` files (assert-based, `-run` to filter).
 - `./scripts/check_ci_green.sh` verifies latest `master` CI run is green.
 - `./scripts/release_rehearsal.sh <version>` runs repeatable pre-tag release checks.
 - `vibes lsp` starts the language server (hover/completion/diagnostics over stdio); see [docs/lsp.md](docs/lsp.md).
