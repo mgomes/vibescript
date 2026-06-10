@@ -926,7 +926,7 @@ func TestDefinitionResolvesEnumMembers(t *testing.T) {
 	uri := "file:///tmp/nav-enum.vibe"
 	openDoc(t, server, uri, navigationFixture)
 
-	location := definitionLocation(server.programs[uri], uri, "Published")
+	location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "Published")
 	if location == nil {
 		t.Fatal("expected location for enum member")
 	}
@@ -1032,7 +1032,7 @@ func TestDocumentSymbolsSurviveMidEditParses(t *testing.T) {
 	}
 	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
 
-	if location := definitionLocation(server.programs[uri], uri, "helper"); location == nil {
+	if location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "helper"); location == nil {
 		t.Fatal("navigation should survive a mid-edit broken parse")
 	}
 }
@@ -1205,7 +1205,7 @@ func TestNavigationCacheClearsWhenSymbolsRemoved(t *testing.T) {
 	}
 	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
 
-	if location := definitionLocation(server.programs[uri], uri, "helper"); location != nil {
+	if location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "helper"); location != nil {
 		t.Fatal("definition still resolves after a clean parse removed every symbol")
 	}
 	if symbols := documentSymbols(server.programs[uri], splitLSPLines(server.docs[uri])); len(symbols) != 0 {
@@ -1229,12 +1229,28 @@ def run()
 end
 `)
 
-	location := definitionLocation(server.programs[uri], uri, "value")
+	location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "value")
 	if location == nil {
 		t.Fatal("expected setter definition for bare assignment word")
 	}
 	start := location["range"].(map[string]any)["start"].(map[string]any)
 	if start["line"] != 1 {
 		t.Fatalf("setter definition line = %#v, want 1", start["line"])
+	}
+}
+
+func TestDefinitionRangeCoversTheName(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/namerange.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "helper")
+	rng := location["range"].(map[string]any)
+	start := rng["start"].(map[string]any)
+	end := rng["end"].(map[string]any)
+	// Line 0 is `def helper(n)`: the name spans characters 4-10.
+	if start["character"] != 4 || end["character"] != 10 {
+		t.Fatalf("range = %#v..%#v, want the name span 4..10", start, end)
 	}
 }

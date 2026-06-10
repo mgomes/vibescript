@@ -273,7 +273,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 		}
 		uri := params.TextDocument.URI
 		word := wordAtPosition(s.docs[uri], params.Position.Line, params.Position.Character)
-		location := definitionLocation(s.programs[uri], uri, word)
+		location := definitionLocation(s.programs[uri], uri, splitLSPLines(s.docs[uri]), word)
 		if location == nil {
 			return []lspOutboundMessage{
 				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
@@ -1284,46 +1284,46 @@ func paramLabelsFromSignature(label string) []string {
 // Setter methods are declared as "name=" while the cursor word at an
 // assignment call site is bare "name", so the setter form is matched
 // when no exact definition exists.
-func definitionLocation(program *ast.Program, uri, word string) map[string]any {
+func definitionLocation(program *ast.Program, uri string, sourceLines []string, word string) map[string]any {
 	if program == nil || word == "" {
 		return nil
 	}
 	for _, candidate := range []string{word, word + "="} {
-		if location := exactDefinitionLocation(program, uri, candidate); location != nil {
+		if location := exactDefinitionLocation(program, uri, sourceLines, candidate); location != nil {
 			return location
 		}
 	}
 	return nil
 }
 
-func exactDefinitionLocation(program *ast.Program, uri, word string) map[string]any {
+func exactDefinitionLocation(program *ast.Program, uri string, sourceLines []string, word string) map[string]any {
 	for _, stmt := range program.Statements {
 		switch st := stmt.(type) {
 		case *ast.FunctionStmt:
 			if st.Name == word {
-				return locationAt(uri, st.Position, len(st.Name))
+				return locationAt(uri, sourceLines, st.Position, st.Name)
 			}
 		case *ast.ClassStmt:
 			if st.Name == word {
-				return locationAt(uri, st.Position, len(st.Name))
+				return locationAt(uri, sourceLines, st.Position, st.Name)
 			}
 			for _, method := range st.Methods {
 				if method.Name == word {
-					return locationAt(uri, method.Position, len(method.Name))
+					return locationAt(uri, sourceLines, method.Position, method.Name)
 				}
 			}
 			for _, method := range st.ClassMethods {
 				if method.Name == word {
-					return locationAt(uri, method.Position, len(method.Name))
+					return locationAt(uri, sourceLines, method.Position, method.Name)
 				}
 			}
 		case *ast.EnumStmt:
 			if st.Name == word {
-				return locationAt(uri, st.Position, len(st.Name))
+				return locationAt(uri, sourceLines, st.Position, st.Name)
 			}
 			for _, member := range st.Members {
 				if member.Name == word {
-					return locationAt(uri, member.Position, len(member.Name))
+					return locationAt(uri, sourceLines, member.Position, member.Name)
 				}
 			}
 		}
@@ -1331,16 +1331,57 @@ func exactDefinitionLocation(program *ast.Program, uri, word string) map[string]
 	return nil
 }
 
-func locationAt(uri string, pos ast.Position, nameLen int) map[string]any {
+// locationAt builds a Location whose range covers the declared name.
+// Parser positions point at the declaration keyword (def/class/enum),
+// so the name's own column is recovered from the source line, falling
+// back to the keyword position when the line has changed beyond
+// recognition. Characters are UTF-16 code units.
+func locationAt(uri string, sourceLines []string, pos ast.Position, name string) map[string]any {
 	line := max(0, pos.Line-1)
-	char := max(0, pos.Column-1)
+	lineText := ""
+	if line < len(sourceLines) {
+		lineText = sourceLines[line]
+	}
+	bare := strings.TrimSuffix(name, "=")
+	startRune := max(0, pos.Column-1)
+	if col := findWordColumn(lineText, bare, startRune); col >= 0 {
+		startRune = col
+	}
+	startChar := utf16Character(lineText, startRune)
+	endChar := utf16Character(lineText, startRune+len([]rune(bare)))
+	if endChar <= startChar {
+		endChar = startChar + 1
+	}
 	return map[string]any{
 		"uri": uri,
 		"range": map[string]any{
-			"start": map[string]any{"line": line, "character": char},
-			"end":   map[string]any{"line": line, "character": char + nameLen},
+			"start": map[string]any{"line": line, "character": startChar},
+			"end":   map[string]any{"line": line, "character": endChar},
 		},
 	}
+}
+
+// findWordColumn returns the rune column of the first whole-word
+// occurrence of name at or after fromRune, or -1 when absent.
+func findWordColumn(lineText, name string, fromRune int) int {
+	if name == "" {
+		return -1
+	}
+	runes := []rune(lineText)
+	nameRunes := []rune(name)
+	for i := max(0, fromRune); i+len(nameRunes) <= len(runes); i++ {
+		if string(runes[i:i+len(nameRunes)]) != name {
+			continue
+		}
+		if i > 0 && isWordRune(runes[i-1]) {
+			continue
+		}
+		if next := i + len(nameRunes); next < len(runes) && isWordRune(runes[next]) {
+			continue
+		}
+		return i
+	}
+	return -1
 }
 
 // documentSymbols renders the document outline: top-level functions,
