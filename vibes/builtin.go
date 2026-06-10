@@ -19,3 +19,10 @@ func NewAutoBuiltin(name string, fn BuiltinFunc) value.Value { return runtime.Ne
 
 // Builtins maps builtin function names to their Value implementations.
 type Builtins = map[string]value.Value
+
+// MemberCompletionNames returns the builtin member-method names per
+// receiver type (string, array, hash, int, float, money, duration,
+// time), for editor tooling such as LSP completion.
+func MemberCompletionNames() map[string][]string {
+	return runtime.MemberCompletionNames()
+}

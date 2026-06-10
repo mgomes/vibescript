@@ -494,3 +494,173 @@ func TestSplitLSPLines(t *testing.T) {
 		})
 	}
 }
+
+func openDoc(t *testing.T, server *lspServer, uri, text string) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri, "text": text},
+	})
+	if err != nil {
+		t.Fatalf("marshal didOpen: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didOpen", Params: payload})
+}
+
+func completionLabels(t *testing.T, server *lspServer, uri string, line, character int) map[string]map[string]any {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": line, "character": character},
+	})
+	if err != nil {
+		t.Fatalf("marshal completion params: %v", err)
+	}
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("21"),
+		Method:  "textDocument/completion",
+		Params:  payload,
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected one completion response, got %d", len(messages))
+	}
+	result := messages[0].Result.(map[string]any)
+	items := result["items"].([]map[string]any)
+	labels := make(map[string]map[string]any, len(items))
+	for _, item := range items {
+		labels[item["label"].(string)] = item
+	}
+	return labels
+}
+
+func newCompletionTestServer() *lspServer {
+	return &lspServer{
+		engine:   vibes.MustNewEngine(vibes.Config{}),
+		docs:     make(map[string]string),
+		compiled: make(map[string]*vibes.Script),
+	}
+}
+
+func TestCompletionAfterDotOffersMemberMethods(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/members.vibe"
+	openDoc(t, server, uri, "def run()\n  \"abc\".\nend\n")
+
+	labels := completionLabels(t, server, uri, 1, 8)
+	upcase, ok := labels["upcase"]
+	if !ok {
+		t.Fatalf("member completion missing upcase: %d items", len(labels))
+	}
+	if upcase["kind"] != 2 {
+		t.Fatalf("upcase kind = %#v, want method kind 2", upcase["kind"])
+	}
+	if !strings.Contains(upcase["detail"].(string), "string") {
+		t.Fatalf("upcase detail = %#v, want receiver types", upcase["detail"])
+	}
+	if _, hasKeyword := labels["def"]; hasKeyword {
+		t.Fatal("member completion must not offer keywords")
+	}
+	if _, hasArray := labels["flatten"]; !hasArray {
+		t.Fatal("member completion should be the type-unaware union (missing array method flatten)")
+	}
+}
+
+func TestCompletionAfterDotWithPartialWord(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/partial.vibe"
+	openDoc(t, server, uri, "def run()\n  \"abc\".upc\nend\n")
+
+	labels := completionLabels(t, server, uri, 1, 11)
+	if _, ok := labels["upcase"]; !ok {
+		t.Fatal("partial member word should still complete members")
+	}
+}
+
+func TestCompletionOffersFunctionsParamsAndLocals(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/scope.vibe"
+	openDoc(t, server, uri, `def helper(amount)
+  doubled = amount * 2
+  doubled
+end
+
+def run()
+  total = helper(2)
+  total
+end
+`)
+
+	labels := completionLabels(t, server, uri, 1, 2)
+	for label, wantDetail := range map[string]string{
+		"helper":  "function",
+		"run":     "function",
+		"amount":  "parameter",
+		"doubled": "local",
+		"if":      "keyword",
+		"assert":  "builtin",
+	} {
+		item, ok := labels[label]
+		if !ok {
+			t.Fatalf("completion missing %q", label)
+		}
+		if item["detail"] != wantDetail {
+			t.Fatalf("%q detail = %#v, want %q", label, item["detail"], wantDetail)
+		}
+	}
+	if _, leaked := labels["total"]; leaked {
+		t.Fatal("locals from another function must not leak into scope")
+	}
+
+	inRun := completionLabels(t, server, uri, 6, 2)
+	if _, ok := inRun["total"]; !ok {
+		t.Fatal("locals of the enclosing function should be offered")
+	}
+}
+
+func TestCompletionSurvivesUnparsableEdits(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/midedit.vibe"
+	openDoc(t, server, uri, "def helper()\n  1\nend\n")
+
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "def helper()\n  1\nend\n\ndef broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	labels := completionLabels(t, server, uri, 4, 0)
+	if _, ok := labels["helper"]; !ok {
+		t.Fatal("functions from the last good compile should survive mid-edit breakage")
+	}
+}
+
+func TestIsMemberContext(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		source    string
+		line, chr int
+		want      bool
+	}{
+		{name: "right_after_dot", source: "x.", line: 0, chr: 2, want: true},
+		{name: "partial_member", source: "x.up", line: 0, chr: 4, want: true},
+		{name: "no_dot", source: "xup", line: 0, chr: 3, want: false},
+		{name: "dot_then_space", source: "x. y", line: 0, chr: 4, want: false},
+		{name: "out_of_range_line", source: "x.", line: 5, chr: 1, want: false},
+		{name: "float_literal", source: "1.5", line: 0, chr: 3, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isMemberContext(tc.source, tc.line, tc.chr); got != tc.want {
+				t.Fatalf("isMemberContext(%q, %d, %d) = %v, want %v", tc.source, tc.line, tc.chr, got, tc.want)
+			}
+		})
+	}
+}

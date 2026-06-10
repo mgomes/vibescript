@@ -142,3 +142,19 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 	}
 	return candidates
 }
+
+// MemberCompletionNames returns the builtin member-method names per
+// receiver type, for editor tooling such as LSP completion. The slices
+// are copies; callers may sort or mutate them freely.
+func MemberCompletionNames() map[string][]string {
+	return map[string][]string{
+		"string":   slices.Clone(stringMemberNames),
+		"array":    slices.Clone(arrayMemberNames),
+		"hash":     slices.Clone(hashMemberNames),
+		"int":      slices.Clone(intMemberNames),
+		"float":    slices.Clone(floatMemberNames),
+		"money":    slices.Clone(moneyMemberNames),
+		"duration": slices.Clone(durationMemberNames),
+		"time":     slices.Clone(timeMemberNames),
+	}
+}
