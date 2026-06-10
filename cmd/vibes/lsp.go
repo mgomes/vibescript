@@ -1051,6 +1051,11 @@ func enclosingCall(source string, line, character int) (string, int, bool) {
 				continue
 			}
 			end := i
+			// The parser accepts whitespace between a callee and its
+			// argument list, so skip it before extracting the word.
+			for end > 0 && (runes[end-1] == ' ' || runes[end-1] == '\t') {
+				end--
+			}
 			start := end
 			for start > 0 && isWordRune(runes[start-1]) {
 				start--
