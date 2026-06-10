@@ -655,6 +655,9 @@ func TestIsMemberContext(t *testing.T) {
 		{name: "dot_then_space", source: "x. y", line: 0, chr: 4, want: false},
 		{name: "out_of_range_line", source: "x.", line: 5, chr: 1, want: false},
 		{name: "float_literal", source: "1.5", line: 0, chr: 3, want: false},
+		{name: "cursor_inside_float", source: "1.5", line: 0, chr: 2, want: false},
+		{name: "numeric_member_open", source: "1.", line: 0, chr: 2, want: true},
+		{name: "numeric_member_word", source: "1.days", line: 0, chr: 6, want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

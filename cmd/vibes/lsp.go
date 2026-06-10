@@ -683,15 +683,21 @@ func isMemberContext(source string, line, character int) bool {
 	if start == 0 || runes[start-1] != '.' {
 		return false
 	}
-	if start >= 2 && unicode.IsDigit(runes[start-2]) && start < end {
-		partialIsDigits := true
-		for _, r := range runes[start:end] {
-			if !unicode.IsDigit(r) {
-				partialIsDigits = false
-				break
+	if start >= 2 && unicode.IsDigit(runes[start-2]) {
+		if start < end {
+			partialIsDigits := true
+			for _, r := range runes[start:end] {
+				if !unicode.IsDigit(r) {
+					partialIsDigits = false
+					break
+				}
 			}
-		}
-		if partialIsDigits {
+			if partialIsDigits {
+				return false
+			}
+		} else if start < len(runes) && unicode.IsDigit(runes[start]) {
+			// The cursor sits between the dot and the fraction digits
+			// of a numeric literal (e.g. 1.|5).
 			return false
 		}
 	}
