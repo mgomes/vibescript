@@ -14,12 +14,12 @@ func (c *Capability) CallFind(exec ExecutionContext, args []value.Value, kwargs 
 	if err := c.validateFindContractArgs(args, kwargs, block); err != nil {
 		return value.NewNil(), err
 	}
-	collection, err := capabilitycontract.NameArg(c.name+".find", "collection", args[0])
-	if err != nil {
-		return value.NewNil(), err
-	}
+	return c.callFindValidated(exec, args, kwargs, block)
+}
+
+func (c *Capability) callFindValidated(exec ExecutionContext, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
 	req := DBFindRequest{
-		Collection: collection,
+		Collection: args[0].String(),
 		ID:         capabilitycontract.DeepCloneValue(args[1]),
 		Options:    capabilitycontract.CloneKwargs(kwargs),
 	}
@@ -35,12 +35,12 @@ func (c *Capability) CallQuery(exec ExecutionContext, args []value.Value, kwargs
 	if err := c.validateQueryContractArgs(args, kwargs, block); err != nil {
 		return value.NewNil(), err
 	}
-	collection, err := capabilitycontract.NameArg(c.name+".query", "collection", args[0])
-	if err != nil {
-		return value.NewNil(), err
-	}
+	return c.callQueryValidated(exec, args, kwargs, block)
+}
+
+func (c *Capability) callQueryValidated(exec ExecutionContext, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
 	req := DBQueryRequest{
-		Collection: collection,
+		Collection: args[0].String(),
 		Options:    capabilitycontract.CloneKwargs(kwargs),
 	}
 	result, err := c.db.Query(exec.Context(), req)
@@ -55,12 +55,12 @@ func (c *Capability) CallUpdate(exec ExecutionContext, args []value.Value, kwarg
 	if err := c.validateUpdateContractArgs(args, kwargs, block); err != nil {
 		return value.NewNil(), err
 	}
-	collection, err := capabilitycontract.NameArg(c.name+".update", "collection", args[0])
-	if err != nil {
-		return value.NewNil(), err
-	}
+	return c.callUpdateValidated(exec, args, kwargs, block)
+}
+
+func (c *Capability) callUpdateValidated(exec ExecutionContext, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
 	req := DBUpdateRequest{
-		Collection: collection,
+		Collection: args[0].String(),
 		ID:         capabilitycontract.DeepCloneValue(args[1]),
 		Attributes: capabilitycontract.CloneHash(args[2].Hash()),
 		Options:    capabilitycontract.CloneKwargs(kwargs),
@@ -77,17 +77,13 @@ func (c *Capability) CallSum(exec ExecutionContext, args []value.Value, kwargs m
 	if err := c.validateSumContractArgs(args, kwargs, block); err != nil {
 		return value.NewNil(), err
 	}
-	collection, err := capabilitycontract.NameArg(c.name+".sum", "collection", args[0])
-	if err != nil {
-		return value.NewNil(), err
-	}
-	field, err := capabilitycontract.NameArg(c.name+".sum", "field", args[1])
-	if err != nil {
-		return value.NewNil(), err
-	}
+	return c.callSumValidated(exec, args, kwargs, block)
+}
+
+func (c *Capability) callSumValidated(exec ExecutionContext, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
 	req := DBSumRequest{
-		Collection: collection,
-		Field:      field,
+		Collection: args[0].String(),
+		Field:      args[1].String(),
 		Options:    capabilitycontract.CloneKwargs(kwargs),
 	}
 	result, err := c.db.Sum(exec.Context(), req)
@@ -105,12 +101,12 @@ func (c *Capability) CallEach(exec ExecutionContext, args []value.Value, kwargs 
 	if err := c.validateEachContractArgs(args, kwargs, block); err != nil {
 		return value.NewNil(), err
 	}
-	collection, err := capabilitycontract.NameArg(c.name+".each", "collection", args[0])
-	if err != nil {
-		return value.NewNil(), err
-	}
+	return c.callEachValidated(exec, args, kwargs, block)
+}
+
+func (c *Capability) callEachValidated(exec ExecutionContext, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error) {
 	req := DBEachRequest{
-		Collection: collection,
+		Collection: args[0].String(),
 		Options:    capabilitycontract.CloneKwargs(kwargs),
 	}
 	rows, err := c.db.Each(exec.Context(), req)

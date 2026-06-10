@@ -121,6 +121,10 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 
 	total += len(exec.callStack) * estimatedCallFrameBytes
 	total += len(exec.receiverStack) * estimatedValueBytes
+	total += len(exec.validatedCapabilityArgs) * estimatedStringHeaderBytes
+	for _, method := range exec.validatedCapabilityArgs {
+		total += len(method)
+	}
 	if exec.moduleLoading != nil {
 		total += estimatedMapBaseBytes + len(exec.moduleLoading)*estimatedMapEntryBytes
 		for name := range exec.moduleLoading {

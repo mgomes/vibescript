@@ -87,6 +87,8 @@ type ExecutionContext interface {
 type Contract struct {
 	ValidateArgs   func(args []value.Value, kwargs map[string]value.Value, block value.Value) error
 	ValidateReturn func(result value.Value) error
+	// CallValidated runs the method after ValidateArgs has already succeeded.
+	CallValidated func(exec ExecutionContext, args []value.Value, kwargs map[string]value.Value, block value.Value) (value.Value, error)
 }
 
 // NewCapability constructs a database capability adapter bound to the
