@@ -61,10 +61,20 @@ func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPercent, ast.TokenRange, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenAnd, ast.TokenOr:
 		return true
 	case ast.TokenMinus:
-		return p.peekPeek.Pos.Line == tok.Pos.Line && p.peekPeek.Pos.Column > tok.End.Column
+		return p.minusContinuesLine(tok)
 	default:
 		return false
 	}
+}
+
+func (p *parser) minusContinuesLine(tok ast.Token) bool {
+	if p.peekPeek.Type == ast.TokenEOF {
+		return false
+	}
+	if p.peekPeek.Pos.Line > tok.Pos.Line {
+		return true
+	}
+	return p.peekPeek.Pos.Line == tok.Pos.Line && p.peekPeek.Pos.Column > tok.End.Column
 }
 
 func (p *parser) parseIdentifier() ast.Expression {

@@ -204,6 +204,34 @@ end`
 	}
 }
 
+func TestParserMinusOperatorLineContinuesAcrossNewline(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  x = 10
+    -
+    3
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "x"},
+			Value: &ast.BinaryExpr{
+				Left:     &ast.IntegerLiteral{Value: 10},
+				Operator: ast.TokenMinus,
+				Right:    &ast.IntegerLiteral{Value: 3},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserLineInitialMinusStartsBlockStatement(t *testing.T) {
 	t.Parallel()
 	source := `def run(flag)
