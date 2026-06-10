@@ -1189,3 +1189,26 @@ func TestSignatureHelpForParenlessAssert(t *testing.T) {
 		t.Fatalf("activeParameter = %#v, want 1 after the comma", result["activeParameter"])
 	}
 }
+
+func TestNavigationCacheClearsWhenSymbolsRemoved(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/cleared.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "# nothing here\n"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	if location := definitionLocation(server.programs[uri], uri, "helper"); location != nil {
+		t.Fatal("definition still resolves after a clean parse removed every symbol")
+	}
+	if symbols := documentSymbols(server.programs[uri], splitLSPLines(server.docs[uri])); len(symbols) != 0 {
+		t.Fatalf("outline = %d symbols, want none after a clean empty parse", len(symbols))
+	}
+}

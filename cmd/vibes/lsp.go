@@ -410,8 +410,13 @@ func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
 	if script != nil && s.compiled != nil {
 		s.compiled[uri] = script
 	}
-	if program, _ := parser.Parse(source); program != nil && len(program.Statements) > 0 && s.programs != nil {
-		s.programs[uri] = program
+	if program, parseErrs := parser.Parse(source); program != nil && s.programs != nil {
+		// A clean parse is authoritative even when empty (the symbols
+		// are genuinely gone); a broken mid-edit parse only replaces
+		// the cache when it still yielded statements.
+		if len(parseErrs) == 0 || len(program.Statements) > 0 {
+			s.programs[uri] = program
+		}
 	}
 	return lspOutboundMessage{
 		JSONRPC: "2.0",
