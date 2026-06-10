@@ -257,7 +257,7 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 	relative, err = moduleRelativePath(caller.root, candidate)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return moduleEntry{}, fmt.Errorf("require: module %q not found", request.raw)
+			return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, e.relativeModuleSuggestion(request, caller, candidate))
 		}
 		return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
 	}
@@ -265,7 +265,7 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 	data, readErr := e.readModuleSource(candidate)
 	if readErr != nil {
 		if errors.Is(readErr, fs.ErrNotExist) {
-			return moduleEntry{}, fmt.Errorf("require: module %q not found", request.raw)
+			return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, e.relativeModuleSuggestion(request, caller, candidate))
 		}
 		return moduleEntry{}, fmt.Errorf("require: reading %s: %w", candidate, readErr)
 	}
@@ -300,7 +300,115 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		return e.compileAndCacheModule(key, root, request.normalized, candidate, data)
 	}
 
-	return moduleEntry{}, fmt.Errorf("require: module %q not found", request.raw)
+	return moduleEntry{}, fmt.Errorf("require: module %q not found%s", request.raw, e.searchPathModuleSuggestion(request))
+}
+
+// moduleSuggestWalkLimit caps how many directory entries are examined per
+// search root while collecting "did you mean" candidates on the error path.
+const moduleSuggestWalkLimit = 2048
+
+// searchPathModuleSuggestion renders a did-you-mean suffix for a module that
+// was not found on the engine's search paths. Candidates are the .vibe files
+// under each search root that module policy would allow, written the way a
+// script would require them.
+func (e *Engine) searchPathModuleSuggestion(request moduleRequest) string {
+	target := moduleDisplayFromRelative(request.normalized)
+	candidates := make([]string, 0, 16)
+	for _, root := range e.modPaths {
+		candidates = append(candidates, e.moduleCandidatesUnderRoot(root)...)
+	}
+	return didYouMean(target, candidates)
+}
+
+func (e *Engine) moduleCandidatesUnderRoot(root string) []string {
+	cleanRoot := filepath.Clean(root)
+	names := make([]string, 0, 16)
+	visited := 0
+	_ = filepath.WalkDir(cleanRoot, func(fullPath string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		visited++
+		if visited > moduleSuggestWalkLimit {
+			return fs.SkipAll
+		}
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
+			return nil
+		}
+		// Mirror the loader's realpath containment so symlinks that
+		// escape the module root are never suggested (the loader would
+		// reject them, and suggesting them leaks paths outside the
+		// allowed module set).
+		relative, relErr := moduleRelativePath(cleanRoot, fullPath)
+		if relErr != nil || e.enforceModulePolicy(relative) != nil {
+			return nil
+		}
+		names = append(names, moduleDisplayFromRelative(relative))
+		return nil
+	})
+	return names
+}
+
+// relativeModuleSuggestion renders a did-you-mean suffix for a relative
+// require that did not resolve. Candidates are the policy-allowed .vibe
+// files in the directory the request pointed at, written with the same
+// directory prefix the script used so suggestions can be copied verbatim.
+func (e *Engine) relativeModuleSuggestion(request moduleRequest, caller moduleContext, missing string) string {
+	dir := filepath.Dir(missing)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	rawPrefix := rawRelativePrefix(request.raw)
+	candidates := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
+			continue
+		}
+		relative, relErr := moduleRelativePath(caller.root, filepath.Join(dir, entry.Name()))
+		if relErr != nil || e.enforceModulePolicy(relative) != nil {
+			continue
+		}
+		candidates = append(candidates, rawPrefix+"/"+moduleRequireName(entry.Name()))
+	}
+	target := rawPrefix + "/" + moduleRequireName(filepath.Base(request.normalized))
+	return didYouMean(target, candidates)
+}
+
+// moduleDisplayFromRelative renders a root-relative module path the way a
+// script would write it in require: slash separated, without the .vibe
+// extension when require would re-add it.
+func moduleDisplayFromRelative(relative string) string {
+	slashed := filepath.ToSlash(relative)
+	dir, base := path.Split(slashed)
+	return dir + moduleRequireName(base)
+}
+
+// moduleRequireName converts a .vibe filename into the name a script
+// passes to require. The extension is only trimmed when the remainder
+// has no extension of its own: require appends ".vibe" solely to
+// extensionless names, so trimming "helper.vibe.vibe" to "helper.vibe"
+// (or "data.json.vibe" to "data.json") would resolve a different file.
+func moduleRequireName(filename string) string {
+	trimmed := strings.TrimSuffix(filename, ".vibe")
+	if path.Ext(trimmed) != "" {
+		return filename
+	}
+	return trimmed
+}
+
+// rawRelativePrefix returns everything before the final path element of
+// a relative require exactly as the script wrote it. path.Dir would
+// clean away the explicit "./" (turning "./sub/helprs" into "sub"),
+// which flips the suggestion from caller-relative to search-path
+// resolution.
+func rawRelativePrefix(raw string) string {
+	slashed := filepath.ToSlash(strings.TrimSpace(raw))
+	idx := strings.LastIndex(slashed, "/")
+	if idx < 0 {
+		return "."
+	}
+	return slashed[:idx]
 }
 
 func (e *Engine) readModuleSource(path string) ([]byte, error) {

@@ -31,7 +31,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 				}
 				return member, nil
 			}
-			return NewNil(), exec.errorAt(e.Pos(), "undefined variable %s", e.Name)
+			return NewNil(), exec.errorAt(e.Pos(), "undefined variable %s%s", e.Name, didYouMean(e.Name, env.visibleNames()))
 		}
 		if autoCall {
 			return exec.autoInvokeIfNeeded(e, val, NewNil())

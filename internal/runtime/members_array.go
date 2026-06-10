@@ -8,6 +8,16 @@ import (
 	"strings"
 )
 
+// arrayMemberNames mirrors the names dispatched by arrayMember and feeds
+// "did you mean" suggestions on the error path. Keep it in sync with the
+// switch below; TestMemberSuggestionCandidatesResolve enforces that every
+// listed name resolves.
+var arrayMemberNames = []string{
+	"size", "length", "empty?", "each", "map", "select", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse",
+	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
+}
+
 func arrayMember(array Value, property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "each", "map", "select", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?":
@@ -17,7 +27,7 @@ func arrayMember(array Value, property string) (Value, error) {
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
 	default:
-		return NewNil(), fmt.Errorf("unknown array method %s", property)
+		return NewNil(), fmt.Errorf("unknown array method %s%s", property, didYouMean(property, arrayMemberNames))
 	}
 }
 

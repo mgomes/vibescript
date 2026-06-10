@@ -68,6 +68,24 @@ func (e *Env) Assign(name string, val Value) bool {
 	return true
 }
 
+// visibleNames returns every name bound in this scope or any enclosing
+// scope, reporting shadowed names once. It is intended for error-path
+// suggestions and is never called on successful lookups.
+func (e *Env) visibleNames() []string {
+	seen := make(map[string]struct{})
+	names := make([]string, 0, len(e.values))
+	for scope := e; scope != nil; scope = scope.parent {
+		for name := range scope.values {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // CloneShallow returns a copy of the environment with the same parent and a shallow copy of its bindings.
 func (e *Env) CloneShallow() *Env {
 	clone := newEnv(e.parent)

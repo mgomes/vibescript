@@ -5,6 +5,20 @@ import (
 	"math"
 )
 
+// The *MemberNames lists below mirror the names dispatched by the member
+// functions next to them and feed "did you mean" suggestions on the error
+// path. Keep each list in sync with its switch;
+// TestMemberSuggestionCandidatesResolve enforces that every listed name
+// resolves.
+var (
+	intMemberNames = []string{
+		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
+		"abs", "clamp", "even?", "odd?", "times",
+	}
+	floatMemberNames = []string{"abs", "clamp", "round", "floor", "ceil"}
+	moneyMemberNames = []string{"currency", "cents", "amount", "format"}
+)
+
 func (exec *Execution) intMember(obj Value, property string, pos Position) (Value, error) {
 	switch property {
 	case "seconds", "second", "minutes", "minute", "hours", "hour", "days", "day":
@@ -84,7 +98,7 @@ func (exec *Execution) intMember(obj Value, property string, pos Position) (Valu
 			return receiver, nil
 		}), nil
 	default:
-		return NewNil(), exec.errorAt(pos, "unknown int member %s", property)
+		return NewNil(), exec.errorAt(pos, "unknown int member %s%s", property, didYouMean(property, intMemberNames))
 	}
 }
 
@@ -156,7 +170,7 @@ func (exec *Execution) floatMember(obj Value, property string, pos Position) (Va
 			return NewInt(asInt), nil
 		}), nil
 	default:
-		return NewNil(), exec.errorAt(pos, "unknown float member %s", property)
+		return NewNil(), exec.errorAt(pos, "unknown float member %s%s", property, didYouMean(property, floatMemberNames))
 	}
 }
 
@@ -173,6 +187,6 @@ func moneyMember(m Money, property string) (Value, error) {
 			return NewString(m.String()), nil
 		}), nil
 	default:
-		return NewNil(), fmt.Errorf("unknown money member %s", property)
+		return NewNil(), fmt.Errorf("unknown money member %s%s", property, didYouMean(property, moneyMemberNames))
 	}
 }

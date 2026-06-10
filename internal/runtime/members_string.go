@@ -7,6 +7,16 @@ import (
 	"unicode"
 )
 
+// stringMemberNames mirrors the names dispatched by stringMember and feeds
+// "did you mean" suggestions on the error path. Keep it in sync with the
+// switch below; TestMemberSuggestionCandidatesResolve enforces that every
+// listed name resolves.
+var stringMemberNames = []string{
+	"size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "match", "scan", "index", "rindex", "slice",
+	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
+	"sub", "sub!", "gsub", "gsub!", "split", "template",
+}
+
 func stringMember(str Value, property string) (Value, error) {
 	switch property {
 	case "size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "match", "scan", "index", "rindex", "slice":
@@ -16,7 +26,7 @@ func stringMember(str Value, property string) (Value, error) {
 	case "sub", "sub!", "gsub", "gsub!", "split", "template":
 		return stringMemberTextOps(property)
 	default:
-		return NewNil(), fmt.Errorf("unknown string method %s", property)
+		return NewNil(), fmt.Errorf("unknown string method %s%s", property, didYouMean(property, stringMemberNames))
 	}
 }
 
