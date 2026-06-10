@@ -307,6 +307,53 @@ func TestCaseWhenExpressions(t *testing.T) {
         "one"
       end
     end
+
+    def range_label(value)
+      case value
+      when 1..5
+        "low"
+      when 10..6
+        "high"
+      else
+        "other"
+      end
+    end
+
+    def float_range_label(value)
+      case value
+      when 1..5
+        "inside"
+      else
+        "outside"
+      end
+    end
+
+    def range_target(value)
+      case value
+      when 1..5
+        "same range"
+      else
+        "other"
+      end
+    end
+
+    def large_integer_range(value)
+      case value
+      when 9007199254740992..9007199254740992
+        "exact"
+      else
+        "miss"
+      end
+    end
+
+    def large_float_range(value)
+      case value
+      when 9007199254740993..9007199254740993
+        "exact"
+      else
+        "miss"
+      end
+    end
     `)
 
 	cases := []struct {
@@ -324,6 +371,14 @@ func TestCaseWhenExpressions(t *testing.T) {
 		{name: "assign_case_match", fn: "assign_case", arg: NewInt(1), want: NewInt(10)},
 		{name: "assign_case_default", fn: "assign_case", arg: NewInt(2), want: NewInt(20)},
 		{name: "unmatched_returns_nil", fn: "unmatched", arg: NewInt(7), want: NewNil()},
+		{name: "range_matches_integer", fn: "range_label", arg: NewInt(3), want: NewString("low")},
+		{name: "descending_range_matches_integer", fn: "range_label", arg: NewInt(8), want: NewString("high")},
+		{name: "range_miss_uses_else", fn: "range_label", arg: NewInt(11), want: NewString("other")},
+		{name: "range_matches_float", fn: "float_range_label", arg: NewFloat(3.5), want: NewString("inside")},
+		{name: "range_target_keeps_equality", fn: "range_target", arg: NewRange(Range{Start: 1, End: 5}), want: NewString("same range")},
+		{name: "large_integer_range_matches_exact", fn: "large_integer_range", arg: NewInt(9007199254740992), want: NewString("exact")},
+		{name: "large_integer_range_does_not_round", fn: "large_integer_range", arg: NewInt(9007199254740993), want: NewString("miss")},
+		{name: "large_float_range_does_not_round_bounds", fn: "large_float_range", arg: NewFloat(9007199254740992), want: NewString("miss")},
 	}
 	for _, tc := range cases {
 		tc := tc
