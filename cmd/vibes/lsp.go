@@ -1281,10 +1281,22 @@ func paramLabelsFromSignature(label string) []string {
 
 // definitionLocation resolves word to the position of its top-level
 // definition (function, class, enum, or enum member) in the document.
+// Setter methods are declared as "name=" while the cursor word at an
+// assignment call site is bare "name", so the setter form is matched
+// when no exact definition exists.
 func definitionLocation(program *ast.Program, uri, word string) map[string]any {
 	if program == nil || word == "" {
 		return nil
 	}
+	for _, candidate := range []string{word, word + "="} {
+		if location := exactDefinitionLocation(program, uri, candidate); location != nil {
+			return location
+		}
+	}
+	return nil
+}
+
+func exactDefinitionLocation(program *ast.Program, uri, word string) map[string]any {
 	for _, stmt := range program.Statements {
 		switch st := stmt.(type) {
 		case *ast.FunctionStmt:

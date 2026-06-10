@@ -1212,3 +1212,29 @@ func TestNavigationCacheClearsWhenSymbolsRemoved(t *testing.T) {
 		t.Fatalf("outline = %d symbols, want none after a clean empty parse", len(symbols))
 	}
 }
+
+func TestDefinitionResolvesSetterMethods(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/setter.vibe"
+	openDoc(t, server, uri, `class Counter
+  def value=(n)
+    @value = n
+  end
+end
+
+def run()
+  c = Counter.new
+  c.value = 3
+end
+`)
+
+	location := definitionLocation(server.programs[uri], uri, "value")
+	if location == nil {
+		t.Fatal("expected setter definition for bare assignment word")
+	}
+	start := location["range"].(map[string]any)["start"].(map[string]any)
+	if start["line"] != 1 {
+		t.Fatalf("setter definition line = %#v, want 1", start["line"])
+	}
+}
