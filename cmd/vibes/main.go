@@ -5,7 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 
@@ -48,29 +50,70 @@ func runCommand(args []string) error {
 	fs.SetOutput(new(flagErrorSink))
 	function := fs.String("function", "run", "function to invoke after compilation")
 	checkOnly := fs.Bool("check", false, "only compile the script without executing")
+	snippet := fs.String("e", "", "evaluate an inline snippet instead of a script file")
+	watch := fs.Bool("watch", false, "re-run whenever the script or its modules change")
 	var modulePaths pathList
 	fs.Var(&modulePaths, "module-path", "add a module search directory (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	if flagWasSet(fs, "e") {
+		switch {
+		case *watch:
+			return errors.New("vibes run: -e cannot be combined with -watch")
+		case flagWasSet(fs, "function"):
+			return errors.New("vibes run: -e cannot be combined with -function")
+		case len(fs.Args()) > 0:
+			return errors.New("vibes run: -e does not accept positional arguments")
+		}
+		return evalSnippet(context.Background(), *snippet, modulePaths, *checkOnly, os.Stdout)
+	}
+
 	remaining := fs.Args()
 	if len(remaining) == 0 {
 		return errors.New("vibes run: script path required")
 	}
-	scriptPath := remaining[0]
-	absScriptPath, err := filepath.Abs(scriptPath)
+	absScriptPath, err := filepath.Abs(remaining[0])
 	if err != nil {
 		return fmt.Errorf("resolve script path: %w", err)
 	}
-	input, err := os.ReadFile(absScriptPath)
-	if err != nil {
-		return fmt.Errorf("read script: %w", err)
-	}
-	moduleDirs, err := computeModulePaths(absScriptPath, modulePaths)
+	moduleDirs, err := computeModulePaths(filepath.Dir(absScriptPath), modulePaths)
 	if err != nil {
 		return fmt.Errorf("compute module paths: %w", err)
 	}
-	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs})
+	inv := runInvocation{
+		scriptPath: absScriptPath,
+		function:   *function,
+		checkOnly:  *checkOnly,
+		moduleDirs: moduleDirs,
+		callArgs:   stringArgs(remaining[1:]),
+	}
+
+	if *watch {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		return watchScript(ctx, inv, defaultWatchInterval, os.Stdout, os.Stderr)
+	}
+	return executeScript(context.Background(), inv, os.Stdout)
+}
+
+// runInvocation captures everything needed to execute a script file once,
+// so single runs and watch-mode re-runs share one code path.
+type runInvocation struct {
+	scriptPath string
+	function   string
+	checkOnly  bool
+	moduleDirs []string
+	callArgs   []value.Value
+}
+
+func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error {
+	input, err := os.ReadFile(inv.scriptPath)
+	if err != nil {
+		return fmt.Errorf("read script: %w", err)
+	}
+	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: inv.moduleDirs})
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
 	}
@@ -78,21 +121,74 @@ func runCommand(args []string) error {
 	if err != nil {
 		return fmt.Errorf("compile failed: %w", err)
 	}
-	if *checkOnly {
+	if inv.checkOnly {
 		return nil
 	}
-	argsValues := make([]value.Value, len(remaining)-1)
-	for i, raw := range remaining[1:] {
-		argsValues[i] = value.NewString(raw)
-	}
-	result, err := script.Call(context.Background(), *function, argsValues, vibes.CallOptions{})
+	result, err := script.Call(ctx, inv.function, inv.callArgs, vibes.CallOptions{})
 	if err != nil {
 		return fmt.Errorf("execution failed: %w", err)
 	}
 	if !result.IsNil() {
-		fmt.Println(result.String())
+		fmt.Fprintln(out, result.String())
 	}
 	return nil
+}
+
+// evalSnippetFunction is the synthetic function that wraps -e snippets.
+// The engine rejects top-level statements, so like the REPL the CLI
+// compiles the snippet as a function body and invokes it.
+const evalSnippetFunction = "__eval__"
+
+func evalSnippet(ctx context.Context, snippet string, modulePaths []string, checkOnly bool, out io.Writer) error {
+	if strings.TrimSpace(snippet) == "" {
+		return errors.New("vibes run: -e requires a non-empty snippet")
+	}
+	workDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve working directory: %w", err)
+	}
+	moduleDirs, err := computeModulePaths(workDir, modulePaths)
+	if err != nil {
+		return fmt.Errorf("compute module paths: %w", err)
+	}
+	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs})
+	if err != nil {
+		return fmt.Errorf("create engine: %w", err)
+	}
+	wrapped := fmt.Sprintf("def %s()\n%s\nend", evalSnippetFunction, snippet)
+	script, err := engine.Compile(wrapped)
+	if err != nil {
+		return fmt.Errorf("compile failed: %w", err)
+	}
+	if checkOnly {
+		return nil
+	}
+	result, err := script.Call(ctx, evalSnippetFunction, nil, vibes.CallOptions{})
+	if err != nil {
+		return fmt.Errorf("execution failed: %w", err)
+	}
+	if !result.IsNil() {
+		fmt.Fprintln(out, result.String())
+	}
+	return nil
+}
+
+func stringArgs(raw []string) []value.Value {
+	out := make([]value.Value, len(raw))
+	for i, arg := range raw {
+		out[i] = value.NewString(arg)
+	}
+	return out
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 func usageError() error {
@@ -116,6 +212,10 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "    function to invoke after compilation (default \"run\")")
 	fmt.Fprintln(os.Stderr, "  -check")
 	fmt.Fprintln(os.Stderr, "    only compile the script without executing")
+	fmt.Fprintln(os.Stderr, "  -e <snippet>")
+	fmt.Fprintln(os.Stderr, "    evaluate an inline snippet instead of a script file")
+	fmt.Fprintln(os.Stderr, "  -watch")
+	fmt.Fprintln(os.Stderr, "    re-run whenever the script or its modules change")
 	fmt.Fprintln(os.Stderr, "  -module-path <dir>")
 	fmt.Fprintln(os.Stderr, "    add a directory to module search paths (repeatable)")
 }
@@ -137,8 +237,7 @@ func (l *pathList) Set(value string) error {
 	return nil
 }
 
-func computeModulePaths(scriptPath string, extras []string) ([]string, error) {
-	scriptDir := filepath.Dir(scriptPath)
+func computeModulePaths(baseDir string, extras []string) ([]string, error) {
 	seen := make(map[string]struct{})
 	var dirs []string
 	addPath := func(label, p string) error {
@@ -160,7 +259,7 @@ func computeModulePaths(scriptPath string, extras []string) ([]string, error) {
 		dirs = append(dirs, abs)
 		return nil
 	}
-	if err := addPath("script directory", scriptDir); err != nil {
+	if err := addPath("script directory", baseDir); err != nil {
 		return nil, err
 	}
 	for _, extra := range extras {

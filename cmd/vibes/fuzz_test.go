@@ -95,22 +95,22 @@ func FuzzCLIArgumentAndPathInputs(f *testing.F) {
 			{filepath.Join(root, rawExtra)},
 		}
 		selectedExtras := extras[positiveMod(selector, len(extras))]
-		dirs, err := computeModulePaths(scriptPath, selectedExtras)
+		dirs, err := computeModulePaths(root, selectedExtras)
 		if err == nil {
 			seen := make(map[string]struct{}, len(dirs))
 			for _, dir := range dirs {
 				if !filepath.IsAbs(dir) {
-					t.Fatalf("computeModulePaths(%q, %v) returned non-absolute path %q", scriptPath, selectedExtras, dir)
+					t.Fatalf("computeModulePaths(%q, %v) returned non-absolute path %q", root, selectedExtras, dir)
 				}
 				info, statErr := os.Stat(dir)
 				if statErr != nil {
-					t.Fatalf("computeModulePaths(%q, %v) returned inaccessible path %q: %v", scriptPath, selectedExtras, dir, statErr)
+					t.Fatalf("computeModulePaths(%q, %v) returned inaccessible path %q: %v", root, selectedExtras, dir, statErr)
 				}
 				if !info.IsDir() {
-					t.Fatalf("computeModulePaths(%q, %v) returned non-directory %q", scriptPath, selectedExtras, dir)
+					t.Fatalf("computeModulePaths(%q, %v) returned non-directory %q", root, selectedExtras, dir)
 				}
 				if _, ok := seen[dir]; ok {
-					t.Fatalf("computeModulePaths(%q, %v) returned duplicate path %q", scriptPath, selectedExtras, dir)
+					t.Fatalf("computeModulePaths(%q, %v) returned duplicate path %q", root, selectedExtras, dir)
 				}
 				seen[dir] = struct{}{}
 			}

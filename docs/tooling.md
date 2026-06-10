@@ -16,6 +16,32 @@ Useful flags:
 - `-function <name>`: invoke a specific function (default `run`).
 - `-check`: compile only, without executing.
 - `-module-path <dir>`: add module search paths for `require`.
+- `-e '<snippet>'`: evaluate an inline snippet without a script file.
+- `-watch`: re-run the script whenever it or its modules change.
+
+### Inline evaluation (`-e`)
+
+```bash
+vibes run -e '1 + 2'
+```
+
+The snippet is compiled as the body of an implicit zero-argument function
+(the same mechanism the REPL uses), so it can contain multiple statements
+but not top-level `def`s. Module paths default to the current working
+directory plus any `-module-path` entries, and the result is printed when
+it is not nil. `-e` cannot be combined with `-function`, `-watch`, or
+positional arguments.
+
+### Watch mode (`-watch`)
+
+```bash
+vibes run -watch ./examples/strings/operations.vibe
+```
+
+Runs the script immediately, then re-runs it whenever the script file or
+any `.vibe` file in its module directories changes. Compile and runtime
+errors are printed without ending the watch, so you can fix the file and
+save again. Press `ctrl-c` to stop.
 
 ## `vibes fmt <path>`
 
