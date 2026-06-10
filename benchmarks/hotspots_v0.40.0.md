@@ -42,9 +42,11 @@ From `mem.top.txt` (alloc_space):
   top allocators.
 - `(*Env).DefineStatic` (~10.0%) and `(*Env).Define` (~5.6%) round out the
   call-setup churn.
-- Capability-contract cloning (`DeepCloneValue` + `CloneMethodResult`)
-  totals ~5.4% on the capability benchmark — modest at these payload
-  sizes; issue #129 tracks measuring large payloads before optimizing.
+- Capability-contract cloning is ~2.8% cumulative
+  (`CloneMethodResult`, which already includes the `DeepCloneValue`
+  walk it performs) on the capability benchmark — modest at these
+  payload sizes; issue #129 tracks measuring large payloads before
+  optimizing.
 
 ## Changes since v0.20.0
 
