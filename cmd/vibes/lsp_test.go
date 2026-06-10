@@ -772,3 +772,30 @@ end
 		t.Fatal("locals leaked above the shifted function")
 	}
 }
+
+func TestCompletionAnchorIgnoresSameNamedClassMethod(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/shadowed-def.vibe"
+	openDoc(t, server, uri, `class Wallet
+  def total(cents)
+    cents
+  end
+end
+
+def total(amount)
+  rounded = amount
+  rounded
+end
+`)
+
+	inside := completionLabels(t, server, uri, 7, 2)
+	for _, want := range []string{"amount", "rounded"} {
+		if _, ok := inside[want]; !ok {
+			t.Fatalf("local %q missing: top-level def anchored to the class method", want)
+		}
+	}
+	if _, leaked := inside["cents"]; leaked {
+		t.Fatal("class method parameter leaked into the top-level function scope")
+	}
+}
