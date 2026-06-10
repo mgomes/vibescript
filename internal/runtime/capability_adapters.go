@@ -61,24 +61,11 @@ func (c *jobQueueCapability) Bind(binding CapabilityBinding) (map[string]Value, 
 
 func (c *jobQueueCapability) callEnqueue(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	name := c.inner.Name
-	if len(args) != 2 {
-		return NewNil(), fmt.Errorf("%s.enqueue expects job name and payload", name)
-	}
-	if !block.IsNil() {
-		return NewNil(), fmt.Errorf("%s.enqueue does not accept blocks", name)
-	}
-
-	jobNameVal := args[0]
-	switch jobNameVal.Kind() {
-	case KindString, KindSymbol:
-		// supported
-	default:
-		return NewNil(), fmt.Errorf("%s.enqueue expects job name as string or symbol", name)
-	}
-
-	payloadVal := args[1]
-	if payloadVal.Kind() != KindHash && payloadVal.Kind() != KindObject {
-		return NewNil(), fmt.Errorf("%s.enqueue expects payload hash", name)
+	method := name + ".enqueue"
+	if !exec.capabilityArgsValidated(method) {
+		if err := c.validateEnqueueContractArgs(args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
 	}
 
 	options, err := jobqueue.ParseEnqueueOptions(name, kwargs)
@@ -87,8 +74,8 @@ func (c *jobQueueCapability) callEnqueue(exec *Execution, receiver Value, args [
 	}
 
 	job := jobqueue.JobQueueJob{
-		Name:    jobNameVal.String(),
-		Payload: cloneHash(payloadVal.Hash()),
+		Name:    args[0].String(),
+		Payload: cloneHash(args[1].Hash()),
 		Options: options,
 	}
 
@@ -104,16 +91,11 @@ func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []V
 	if c.inner.Retry == nil {
 		return NewNil(), fmt.Errorf("%s.retry is not supported", name)
 	}
-	if len(args) < 1 || len(args) > 2 {
-		return NewNil(), fmt.Errorf("%s.retry expects job id and optional options hash", name)
-	}
-	if !block.IsNil() {
-		return NewNil(), fmt.Errorf("%s.retry does not accept blocks", name)
-	}
-
-	idVal := args[0]
-	if idVal.Kind() != KindString {
-		return NewNil(), fmt.Errorf("%s.retry expects job id string", name)
+	method := name + ".retry"
+	if !exec.capabilityArgsValidated(method) {
+		if err := c.validateRetryContractArgs(args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
 	}
 
 	options := make(map[string]Value)
@@ -126,7 +108,7 @@ func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []V
 	}
 	options = mergeHash(options, cloneCapabilityKwargs(kwargs))
 
-	req := jobqueue.JobQueueRetryRequest{JobID: idVal.String(), Options: options}
+	req := jobqueue.JobQueueRetryRequest{JobID: args[0].String(), Options: options}
 	result, err := c.inner.Retry.Retry(exec.Context(), req)
 	if err != nil {
 		return NewNil(), err
@@ -276,12 +258,13 @@ type dbCapabilityAdapter struct {
 
 func (a *dbCapabilityAdapter) Bind(_ CapabilityBinding) (map[string]Value, error) {
 	name := a.cap.Name()
+	contracts := a.cap.Contracts()
 	methods := map[string]Value{
-		"find":   NewBuiltin(name+".find", a.wrapCall(a.cap.CallFind)),
-		"query":  NewBuiltin(name+".query", a.wrapCall(a.cap.CallQuery)),
-		"update": NewBuiltin(name+".update", a.wrapCall(a.cap.CallUpdate)),
-		"sum":    NewBuiltin(name+".sum", a.wrapCall(a.cap.CallSum)),
-		"each":   NewBuiltin(name+".each", a.wrapCall(a.cap.CallEach)),
+		"find":   NewBuiltin(name+".find", a.wrapCall(name+".find", a.cap.CallFind, contracts[name+".find"].CallValidated)),
+		"query":  NewBuiltin(name+".query", a.wrapCall(name+".query", a.cap.CallQuery, contracts[name+".query"].CallValidated)),
+		"update": NewBuiltin(name+".update", a.wrapCall(name+".update", a.cap.CallUpdate, contracts[name+".update"].CallValidated)),
+		"sum":    NewBuiltin(name+".sum", a.wrapCall(name+".sum", a.cap.CallSum, contracts[name+".sum"].CallValidated)),
+		"each":   NewBuiltin(name+".each", a.wrapCall(name+".each", a.cap.CallEach, contracts[name+".each"].CallValidated)),
 	}
 	return map[string]Value{name: NewObject(methods)}, nil
 }
@@ -298,8 +281,11 @@ func (a *dbCapabilityAdapter) CapabilityContracts() map[string]CapabilityMethodC
 	return out
 }
 
-func (a *dbCapabilityAdapter) wrapCall(fn func(db.ExecutionContext, []Value, map[string]Value, Value) (Value, error)) BuiltinFunc {
+func (a *dbCapabilityAdapter) wrapCall(method string, fn, validatedFn func(db.ExecutionContext, []Value, map[string]Value, Value) (Value, error)) BuiltinFunc {
 	return func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if validatedFn != nil && exec.capabilityArgsValidated(method) {
+			return validatedFn(exec, args, kwargs, block)
+		}
 		return fn(exec, args, kwargs, block)
 	}
 }
@@ -355,7 +341,13 @@ func (c *eventsCapability) Bind(binding CapabilityBinding) (map[string]Value, er
 }
 
 func (c *eventsCapability) callPublish(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	result, err := c.inner.Publish(exec.Context(), args, kwargs, !block.IsNil())
+	var result Value
+	var err error
+	if exec.capabilityArgsValidated(c.inner.PublishMethodName()) {
+		result, err = c.inner.PublishValidated(exec.Context(), args, kwargs, !block.IsNil())
+	} else {
+		result, err = c.inner.Publish(exec.Context(), args, kwargs, !block.IsNil())
+	}
 	if err != nil {
 		return NewNil(), err
 	}

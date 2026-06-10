@@ -97,13 +97,22 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			}
 		}
 		contract, hasContract := exec.capabilityContracts[builtin]
+		argsValidated := false
 		if hasContract && contract.ValidateArgs != nil {
 			if err := contract.ValidateArgs(args, kwargs, block); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
 			}
+			argsValidated = true
 		}
 
+		var popValidatedArgs func()
+		if argsValidated {
+			popValidatedArgs = exec.pushValidatedCapabilityArgs(builtin.Name)
+		}
 		result, err := builtin.Fn(exec, receiver, args, kwargs, block)
+		if popValidatedArgs != nil {
+			popValidatedArgs()
+		}
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
 				return NewNil(), exec.errorAt(pos, "break cannot cross call boundary")
@@ -488,6 +497,7 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 	exec.callStack = exec.callStackArr[:0]
 	exec.receiverStack = exec.receiverStackArr[:0]
 	exec.envStack = exec.envStackArr[:0]
+	exec.validatedCapabilityArgs = exec.validatedCapabilityArgsArr[:0]
 	return exec
 }
 

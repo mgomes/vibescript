@@ -58,9 +58,8 @@ func MustNewCapability(name string, publisher Publisher) *Capability {
 func (c *Capability) PublishMethodName() string { return c.Name + ".publish" }
 
 // ValidatePublishArgs enforces the events.publish contract on script-supplied
-// arguments. The vibes-side adapter calls this both at bind-time (as the
-// CapabilityMethodContract.ValidateArgs hook) and at call-time before invoking
-// the host publisher.
+// arguments. The vibes-side adapter wires this into the runtime contract and
+// Publish calls it when embedders invoke the capability directly.
 func (c *Capability) ValidatePublishArgs(args []value.Value, kwargs map[string]value.Value, blockProvided bool) error {
 	method := c.PublishMethodName()
 	if len(args) != 2 {
@@ -91,12 +90,15 @@ func (c *Capability) Publish(ctx context.Context, args []value.Value, kwargs map
 	if err := c.ValidatePublishArgs(args, kwargs, blockProvided); err != nil {
 		return value.NewNil(), err
 	}
-	topic, err := nameArg(c.PublishMethodName(), "topic", args[0])
-	if err != nil {
-		return value.NewNil(), err
-	}
+	return c.PublishValidated(ctx, args, kwargs, blockProvided)
+}
+
+// PublishValidated runs events.publish after the runtime has already enforced
+// ValidatePublishArgs. Direct embedders should call Publish so invalid script
+// arguments are still rejected before the host publisher runs.
+func (c *Capability) PublishValidated(ctx context.Context, args []value.Value, kwargs map[string]value.Value, blockProvided bool) (value.Value, error) {
 	req := PublishRequest{
-		Topic:   topic,
+		Topic:   args[0].String(),
 		Payload: cloneHash(args[1].Hash()),
 		Options: cloneKwargs(kwargs),
 	}

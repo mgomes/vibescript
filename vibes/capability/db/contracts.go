@@ -16,22 +16,27 @@ func (c *Capability) Contracts() map[string]Contract {
 		c.name + ".find": {
 			ValidateArgs:   c.validateFindContractArgs,
 			ValidateReturn: capabilitycontract.ValidateAnyReturn(c.name + ".find"),
+			CallValidated:  c.callFindValidated,
 		},
 		c.name + ".query": {
 			ValidateArgs:   c.validateQueryContractArgs,
 			ValidateReturn: capabilitycontract.ValidateAnyReturn(c.name + ".query"),
+			CallValidated:  c.callQueryValidated,
 		},
 		c.name + ".update": {
 			ValidateArgs:   c.validateUpdateContractArgs,
 			ValidateReturn: capabilitycontract.ValidateAnyReturn(c.name + ".update"),
+			CallValidated:  c.callUpdateValidated,
 		},
 		c.name + ".sum": {
 			ValidateArgs:   c.validateSumContractArgs,
 			ValidateReturn: capabilitycontract.ValidateAnyReturn(c.name + ".sum"),
+			CallValidated:  c.callSumValidated,
 		},
 		c.name + ".each": {
 			ValidateArgs:   c.validateEachContractArgs,
 			ValidateReturn: capabilitycontract.ValidateAnyReturn(c.name + ".each"),
+			CallValidated:  c.callEachValidated,
 		},
 	}
 }

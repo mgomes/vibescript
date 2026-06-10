@@ -59,18 +59,20 @@ type Execution struct {
 	receiverStack             []Value
 	envStack                  []*Env
 	activeTaskGroups          []*taskGroup
+	validatedCapabilityArgs   []string
 
 	// Inline backing storage for the always-used per-call stacks, so a
 	// fresh Execution costs one allocation instead of one per stack.
 	// Appends beyond these capacities spill to the heap as usual.
-	callStackArr     [8]callFrame
-	receiverStackArr [8]Value
-	envStackArr      [8]*Env
-	loopDepth        int
-	rescuedErrors    []error
-	strictEffects    bool
-	allowRequire     bool
-	callOptions      CallOptions
+	callStackArr               [8]callFrame
+	receiverStackArr           [8]Value
+	envStackArr                [8]*Env
+	validatedCapabilityArgsArr [4]string
+	loopDepth                  int
+	rescuedErrors              []error
+	strictEffects              bool
+	allowRequire               bool
+	callOptions                CallOptions
 }
 
 type capabilityContractScope struct {
@@ -141,6 +143,22 @@ func (exec *Execution) popFrame() {
 		return
 	}
 	exec.callStack = exec.callStack[:len(exec.callStack)-1]
+}
+
+func (exec *Execution) pushValidatedCapabilityArgs(method string) func() {
+	exec.validatedCapabilityArgs = append(exec.validatedCapabilityArgs, method)
+	return func() {
+		exec.validatedCapabilityArgs = exec.validatedCapabilityArgs[:len(exec.validatedCapabilityArgs)-1]
+	}
+}
+
+func (exec *Execution) capabilityArgsValidated(method string) bool {
+	for i := len(exec.validatedCapabilityArgs) - 1; i >= 0; i-- {
+		if exec.validatedCapabilityArgs[i] == method {
+			return true
+		}
+	}
+	return false
 }
 
 func (exec *Execution) pushEnv(env *Env) {
