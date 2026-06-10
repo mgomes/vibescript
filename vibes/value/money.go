@@ -169,6 +169,9 @@ func ParseMoneyLiteral(input string) (Money, error) {
 	} else if trimmed, ok := strings.CutPrefix(amount, "+"); ok {
 		amount = trimmed
 	}
+	if amount == "" {
+		return Money{}, fmt.Errorf("invalid money amount %q", input)
+	}
 
 	whole := amount
 	fraction := "0"

@@ -46,6 +46,10 @@ func (k ValueKind) String() string {
 		return "enum"
 	case KindEnumValue:
 		return "enum"
+	case KindClass:
+		return "class"
+	case KindInstance:
+		return "instance"
 	default:
 		return fmt.Sprintf("kind(%d)", int(k))
 	}
