@@ -551,3 +551,14 @@ func TestModuleSuggestionsExcludeSymlinksEscapingRoot(t *testing.T) {
 		t.Fatalf("relative suggestion discloses root-escaping symlink: %v", relativeErr)
 	}
 }
+
+func TestUndefinedVariableSuggestsStaticBindings(t *testing.T) {
+	t.Parallel()
+	// Builtins and per-call function clones live in the env's statics
+	// map; suggestions must see them or typo'd builtin names go silent.
+	script := compileScriptDefault(t, `def run()
+  asert true
+end`)
+	err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{})
+	requireErrorContains(t, err, `undefined variable asert (did you mean "assert"?)`)
+}

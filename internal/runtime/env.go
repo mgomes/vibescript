@@ -99,13 +99,19 @@ func (e *Env) Assign(name string, val Value) bool {
 func (e *Env) visibleNames() []string {
 	seen := make(map[string]struct{})
 	names := make([]string, 0, len(e.values))
+	add := func(name string) {
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
 	for scope := e; scope != nil; scope = scope.parent {
 		for name := range scope.values {
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			seen[name] = struct{}{}
-			names = append(names, name)
+			add(name)
+		}
+		for name := range scope.statics {
+			add(name)
 		}
 	}
 	return names
