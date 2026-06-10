@@ -17,6 +17,8 @@ vibes lsp
 | `textDocument/completion` | Context-aware: member methods after `.`, otherwise keywords, builtins, user-defined functions, and the enclosing function's parameters and locals. |
 | `textDocument/formatting` | Full-document canonical formatting (the same formatter as `vibes fmt`). |
 | `textDocument/signatureHelp` | Parameter hints on `(` and `,` for user-defined functions and global builtins. |
+| `textDocument/definition` | Jump to top-level functions, classes, class methods, enums, and enum members in the current document. |
+| `textDocument/documentSymbol` | Hierarchical outline: functions, classes with methods, enums with members. |
 
 ### Diagnostics
 
@@ -84,8 +86,8 @@ Intentionally absent for now (tracked for future work):
 - **Type-aware member completion** — completion after `.` offers the
   union of all builtin member methods rather than narrowing by the
   receiver's type.
-- **Go-to-definition and document symbols** — no symbol index exists yet, so
-  navigation requests are not supported.
+- **Cross-file navigation** — definition and symbols are single-file;
+  `require`d modules are not indexed yet.
 - **Single-line signature help** — parameter hints resolve the call by
   scanning the cursor's line, so calls spanning multiple lines lose
   hints on continuation lines.

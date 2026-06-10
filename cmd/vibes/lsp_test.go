@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes"
 )
 
@@ -538,6 +539,7 @@ func newCompletionTestServer() *lspServer {
 		engine:   vibes.MustNewEngine(vibes.Config{}),
 		docs:     make(map[string]string),
 		compiled: make(map[string]*vibes.Script),
+		programs: make(map[string]*ast.Program),
 	}
 }
 
@@ -858,6 +860,180 @@ func TestBuiltinSignaturesMatchRegisteredBuiltins(t *testing.T) {
 		if _, ok := builtins[name]; !ok {
 			t.Errorf("builtinSignatures entry %q does not correspond to a registered builtin", name)
 		}
+	}
+}
+
+const navigationFixture = `def helper(n)
+  n * 2
+end
+
+class Wallet
+  def balance()
+    1
+  end
+
+  def self.empty()
+    Wallet.new
+  end
+end
+
+enum Status
+  Draft
+  Published
+end
+
+def run()
+  helper(1)
+end
+`
+
+func TestDefinitionResolvesTopLevelSymbols(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/nav.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	// "helper" inside run() on line 20.
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": 20, "character": 4},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("41"),
+		Method:  "textDocument/definition",
+		Params:  payload,
+	})
+	location, ok := messages[0].Result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected location, got %#v", messages[0].Result)
+	}
+	if location["uri"] != uri {
+		t.Fatalf("uri = %#v, want same document", location["uri"])
+	}
+	start := location["range"].(map[string]any)["start"].(map[string]any)
+	if start["line"] != 0 {
+		t.Fatalf("definition line = %#v, want 0", start["line"])
+	}
+}
+
+func TestDefinitionResolvesEnumMembers(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/nav-enum.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	location := definitionLocation(server.programs[uri], uri, "Published")
+	if location == nil {
+		t.Fatal("expected location for enum member")
+	}
+	start := location["range"].(map[string]any)["start"].(map[string]any)
+	if start["line"] != 16 {
+		t.Fatalf("Published line = %#v, want 16", start["line"])
+	}
+}
+
+func TestDefinitionUnknownSymbolReturnsNull(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/nav-null.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": 1, "character": 3},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("42"),
+		Method:  "textDocument/definition",
+		Params:  payload,
+	})
+	wire, err := json.Marshal(messages[0])
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if !strings.Contains(string(wire), `"result":null`) {
+		t.Fatalf("response %s, want explicit null", wire)
+	}
+}
+
+func TestDocumentSymbolsOutline(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/outline.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("43"),
+		Method:  "textDocument/documentSymbol",
+		Params:  payload,
+	})
+	symbols, ok := messages[0].Result.([]map[string]any)
+	if !ok {
+		t.Fatalf("expected symbol list, got %#v", messages[0].Result)
+	}
+	byName := map[string]map[string]any{}
+	for _, symbol := range symbols {
+		byName[symbol["name"].(string)] = symbol
+	}
+	if len(symbols) != 4 {
+		t.Fatalf("expected 4 top-level symbols, got %d", len(symbols))
+	}
+	if byName["helper"]["kind"] != 12 || byName["run"]["kind"] != 12 {
+		t.Fatal("functions should have kind 12")
+	}
+	wallet := byName["Wallet"]
+	if wallet["kind"] != 5 {
+		t.Fatalf("Wallet kind = %#v, want class kind 5", wallet["kind"])
+	}
+	walletChildren := wallet["children"].([]map[string]any)
+	childNames := make([]string, 0, len(walletChildren))
+	for _, child := range walletChildren {
+		childNames = append(childNames, child["name"].(string))
+	}
+	if !slices.Contains(childNames, "balance") || !slices.Contains(childNames, "self.empty") {
+		t.Fatalf("Wallet children = %v, want balance and self.empty", childNames)
+	}
+	status := byName["Status"]
+	if status["kind"] != 10 {
+		t.Fatalf("Status kind = %#v, want enum kind 10", status["kind"])
+	}
+	if members := status["children"].([]map[string]any); len(members) != 2 {
+		t.Fatalf("Status members = %d, want 2", len(members))
+	}
+}
+
+func TestDocumentSymbolsSurviveMidEditParses(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/outline-midedit.vibe"
+	openDoc(t, server, uri, navigationFixture)
+
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": navigationFixture + "\ndef broken("}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+
+	if location := definitionLocation(server.programs[uri], uri, "helper"); location == nil {
+		t.Fatal("navigation should survive a mid-edit broken parse")
 	}
 }
 

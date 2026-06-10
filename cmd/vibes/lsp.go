@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/mgomes/vibescript/internal/ast"
+	"github.com/mgomes/vibescript/internal/parser"
 	"github.com/mgomes/vibescript/vibes"
 )
 
@@ -127,6 +128,10 @@ type lspServer struct {
 	// document, so completion can offer user-defined symbols while the
 	// buffer is mid-edit and temporarily unparsable.
 	compiled map[string]*vibes.Script
+	// programs holds the most recent parse that produced any top-level
+	// statements per document. Unlike compiled it tolerates partial
+	// parses, so navigation keeps working while the buffer is mid-edit.
+	programs map[string]*ast.Program
 }
 
 func runLSP() error {
@@ -136,6 +141,7 @@ func runLSP() error {
 		engine:   vibes.MustNewEngine(vibes.Config{}),
 		docs:     make(map[string]string),
 		compiled: make(map[string]*vibes.Script),
+		programs: make(map[string]*ast.Program),
 	}
 	return server.serve()
 }
@@ -180,6 +186,8 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 						"textDocumentSync":           1,
 						"hoverProvider":              true,
 						"documentFormattingProvider": true,
+						"definitionProvider":         true,
+						"documentSymbolProvider":     true,
 						"signatureHelpProvider": map[string]any{
 							"triggerCharacters": []string{"(", ","},
 						},
@@ -247,6 +255,53 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				JSONRPC: "2.0",
 				ID:      incoming.ID,
 				Result:  formattingEdits(source),
+			},
+		}
+	case "textDocument/definition":
+		if incoming.ID == nil {
+			return nil
+		}
+		var params lspTextDocumentPositionParams
+		if err := json.Unmarshal(incoming.Params, &params); err != nil {
+			return []lspOutboundMessage{
+				{
+					JSONRPC: "2.0",
+					ID:      incoming.ID,
+					Error:   &lspResponseError{Code: -32602, Message: "invalid definition params"},
+				},
+			}
+		}
+		uri := params.TextDocument.URI
+		word := wordAtPosition(s.docs[uri], params.Position.Line, params.Position.Character)
+		location := definitionLocation(s.programs[uri], uri, word)
+		if location == nil {
+			return []lspOutboundMessage{
+				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
+			}
+		}
+		return []lspOutboundMessage{
+			{JSONRPC: "2.0", ID: incoming.ID, Result: location},
+		}
+	case "textDocument/documentSymbol":
+		if incoming.ID == nil {
+			return nil
+		}
+		var params lspDocumentFormattingParams
+		if err := json.Unmarshal(incoming.Params, &params); err != nil {
+			return []lspOutboundMessage{
+				{
+					JSONRPC: "2.0",
+					ID:      incoming.ID,
+					Error:   &lspResponseError{Code: -32602, Message: "invalid documentSymbol params"},
+				},
+			}
+		}
+		uri := params.TextDocument.URI
+		return []lspOutboundMessage{
+			{
+				JSONRPC: "2.0",
+				ID:      incoming.ID,
+				Result:  documentSymbols(s.programs[uri], splitLSPLines(s.docs[uri])),
 			},
 		}
 	case "textDocument/signatureHelp":
@@ -354,6 +409,9 @@ func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
 	script, diagnostics := compileForDiagnostics(s.engine, source)
 	if script != nil && s.compiled != nil {
 		s.compiled[uri] = script
+	}
+	if program, _ := parser.Parse(source); program != nil && len(program.Statements) > 0 && s.programs != nil {
+		s.programs[uri] = program
 	}
 	return lspOutboundMessage{
 		JSONRPC: "2.0",
@@ -1214,4 +1272,111 @@ func paramLabelsFromSignature(label string) []string {
 		labels = append(labels, strings.TrimSpace(part))
 	}
 	return labels
+}
+
+// definitionLocation resolves word to the position of its top-level
+// definition (function, class, enum, or enum member) in the document.
+func definitionLocation(program *ast.Program, uri, word string) map[string]any {
+	if program == nil || word == "" {
+		return nil
+	}
+	for _, stmt := range program.Statements {
+		switch st := stmt.(type) {
+		case *ast.FunctionStmt:
+			if st.Name == word {
+				return locationAt(uri, st.Position, len(st.Name))
+			}
+		case *ast.ClassStmt:
+			if st.Name == word {
+				return locationAt(uri, st.Position, len(st.Name))
+			}
+			for _, method := range st.Methods {
+				if method.Name == word {
+					return locationAt(uri, method.Position, len(method.Name))
+				}
+			}
+			for _, method := range st.ClassMethods {
+				if method.Name == word {
+					return locationAt(uri, method.Position, len(method.Name))
+				}
+			}
+		case *ast.EnumStmt:
+			if st.Name == word {
+				return locationAt(uri, st.Position, len(st.Name))
+			}
+			for _, member := range st.Members {
+				if member.Name == word {
+					return locationAt(uri, member.Position, len(member.Name))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func locationAt(uri string, pos ast.Position, nameLen int) map[string]any {
+	line := max(0, pos.Line-1)
+	char := max(0, pos.Column-1)
+	return map[string]any{
+		"uri": uri,
+		"range": map[string]any{
+			"start": map[string]any{"line": line, "character": char},
+			"end":   map[string]any{"line": line, "character": char + nameLen},
+		},
+	}
+}
+
+// documentSymbols renders the document outline: top-level functions,
+// classes with their methods, and enums with their members.
+func documentSymbols(program *ast.Program, sourceLines []string) []map[string]any {
+	if program == nil {
+		return []map[string]any{}
+	}
+	symbols := make([]map[string]any, 0, len(program.Statements))
+	for _, stmt := range program.Statements {
+		switch st := stmt.(type) {
+		case *ast.FunctionStmt:
+			symbols = append(symbols, symbolFor(st.Name, 12, st.Position, sourceLines, nil))
+		case *ast.ClassStmt:
+			children := make([]map[string]any, 0, len(st.Methods)+len(st.ClassMethods))
+			for _, method := range st.Methods {
+				children = append(children, symbolFor(method.Name, 6, method.Position, sourceLines, nil))
+			}
+			for _, method := range st.ClassMethods {
+				children = append(children, symbolFor("self."+method.Name, 6, method.Position, sourceLines, nil))
+			}
+			symbols = append(symbols, symbolFor(st.Name, 5, st.Position, sourceLines, children))
+		case *ast.EnumStmt:
+			children := make([]map[string]any, 0, len(st.Members))
+			for _, member := range st.Members {
+				children = append(children, symbolFor(member.Name, 22, member.Position, sourceLines, nil))
+			}
+			symbols = append(symbols, symbolFor(st.Name, 10, st.Position, sourceLines, children))
+		}
+	}
+	return symbols
+}
+
+// symbolFor builds one DocumentSymbol whose range spans the definition
+// line; children must already be ordered.
+func symbolFor(name string, kind int, pos ast.Position, sourceLines []string, children []map[string]any) map[string]any {
+	line := max(0, pos.Line-1)
+	lineText := ""
+	if line < len(sourceLines) {
+		lineText = sourceLines[line]
+	}
+	rng := map[string]any{
+		"start": map[string]any{"line": line, "character": 0},
+		"end":   map[string]any{"line": line, "character": utf16Character(lineText, len([]rune(lineText)))},
+	}
+	symbol := map[string]any{
+		"name":           name,
+		"kind":           kind,
+		"range":          rng,
+		"selectionRange": rng,
+	}
+	if children != nil {
+		symbol["children"] = children
+	}
+	return symbol
 }
