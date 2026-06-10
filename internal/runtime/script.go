@@ -16,8 +16,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), fmt.Errorf("function %s not found", name)
 	}
 
-	rootCapacity := s.engine.builtinCount() + len(s.functions) + len(s.classes) + len(s.enums) + len(opts.Globals) + len(opts.Capabilities)*2
+	rootCapacity := len(s.classes) + len(opts.Globals) + len(opts.Capabilities)*2
 	root := newEnvWithCapacity(nil, rootCapacity)
+	root.growStatics(s.engine.builtinCount() + len(s.functions) + len(s.enums))
 	s.engine.defineBuiltinsForCall(root)
 
 	callFunctions := cloneFunctionsForCall(s.functions, root)
@@ -26,7 +27,10 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), fmt.Errorf("function %s not found", name)
 	}
 	for n, fnDecl := range callFunctions {
-		root.Define(n, NewFunction(fnDecl))
+		// Static: function clones are immutable per call, so they are
+		// accounted once instead of on every quota check. Reassigning
+		// the name from script code demotes the binding to dynamic.
+		root.DefineStatic(n, NewFunction(fnDecl))
 	}
 
 	callClasses := cloneClassesForCall(s.classes, root)
@@ -35,7 +39,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 	callEnums := cloneEnumsForCall(s.enums)
 	for n, enumDef := range callEnums {
-		root.Define(n, NewEnum(enumDef))
+		root.DefineStatic(n, NewEnum(enumDef))
 	}
 	rebinder := newCallFunctionRebinder(s, root, callClasses, callEnums)
 

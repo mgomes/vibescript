@@ -338,6 +338,9 @@ func (s *capabilityContractScanner) scanClosureEnv(env *Env, visit func(Value)) 
 		for _, item := range env.values {
 			visit(item)
 		}
+		for _, item := range env.statics {
+			visit(item)
+		}
 	}
 }
 

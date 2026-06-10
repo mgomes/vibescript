@@ -327,6 +327,11 @@ func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool, error) {
 		} else if ok {
 			return enumDef, true, nil
 		}
+		if enumDef, ok, err := lookupEnumValue(scope.statics, name); err != nil {
+			return nil, false, err
+		} else if ok {
+			return enumDef, true, nil
+		}
 	}
 	return nil, false, nil
 }
