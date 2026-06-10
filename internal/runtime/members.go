@@ -68,7 +68,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position) (Va
 	}
 	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1)
 	candidates = append(candidates, "new")
-	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassMethods))
+	candidates = appendAccessibleMethodNames(candidates, cl.ClassMethods, exec.isCurrentReceiver(obj))
 	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassVars))
 	return NewNil(), exec.errorAt(pos, "unknown class member %s%s", property, didYouMean(property, candidates))
 }
@@ -91,7 +91,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position) 
 	}
 	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1)
 	candidates = append(candidates, "class")
-	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Class.Methods))
+	candidates = appendAccessibleMethodNames(candidates, inst.Class.Methods, exec.isCurrentReceiver(obj))
 	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Ivars))
 	return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
 }
@@ -127,4 +127,18 @@ func (exec *Execution) enumValueMember(obj Value, property string, pos Position)
 	default:
 		return NewNil(), exec.errorAt(pos, "unknown enum member property %s%s", property, didYouMean(property, []string{"name", "symbol", "enum"}))
 	}
+}
+
+// appendAccessibleMethodNames collects method names for did-you-mean
+// candidates, omitting private methods unless the caller is the receiver
+// itself — suggestions must not point at members the call site cannot
+// invoke (or disclose their existence).
+func appendAccessibleMethodNames(candidates []string, methods map[string]*ScriptFunction, callerIsReceiver bool) []string {
+	for name, fn := range methods {
+		if fn.Private && !callerIsReceiver {
+			continue
+		}
+		candidates = append(candidates, name)
+	}
+	return candidates
 }

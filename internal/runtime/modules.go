@@ -355,7 +355,7 @@ func (e *Engine) relativeModuleSuggestion(request moduleRequest, caller moduleCo
 	if err != nil {
 		return ""
 	}
-	rawPrefix := path.Dir(filepath.ToSlash(strings.TrimSpace(request.raw)))
+	rawPrefix := rawRelativePrefix(request.raw)
 	candidates := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
@@ -365,17 +365,46 @@ func (e *Engine) relativeModuleSuggestion(request moduleRequest, caller moduleCo
 		if relErr != nil || e.enforceModulePolicy(relative) != nil {
 			continue
 		}
-		candidates = append(candidates, rawPrefix+"/"+strings.TrimSuffix(entry.Name(), ".vibe"))
+		candidates = append(candidates, rawPrefix+"/"+moduleRequireName(entry.Name()))
 	}
-	target := rawPrefix + "/" + strings.TrimSuffix(filepath.Base(request.normalized), ".vibe")
+	target := rawPrefix + "/" + moduleRequireName(filepath.Base(request.normalized))
 	return didYouMean(target, candidates)
 }
 
 // moduleDisplayFromRelative renders a root-relative module path the way a
 // script would write it in require: slash separated, without the .vibe
-// extension.
+// extension when require would re-add it.
 func moduleDisplayFromRelative(relative string) string {
-	return strings.TrimSuffix(filepath.ToSlash(relative), ".vibe")
+	slashed := filepath.ToSlash(relative)
+	dir, base := path.Split(slashed)
+	return dir + moduleRequireName(base)
+}
+
+// moduleRequireName converts a .vibe filename into the name a script
+// passes to require. The extension is only trimmed when the remainder
+// has no extension of its own: require appends ".vibe" solely to
+// extensionless names, so trimming "helper.vibe.vibe" to "helper.vibe"
+// (or "data.json.vibe" to "data.json") would resolve a different file.
+func moduleRequireName(filename string) string {
+	trimmed := strings.TrimSuffix(filename, ".vibe")
+	if path.Ext(trimmed) != "" {
+		return filename
+	}
+	return trimmed
+}
+
+// rawRelativePrefix returns everything before the final path element of
+// a relative require exactly as the script wrote it. path.Dir would
+// clean away the explicit "./" (turning "./sub/helprs" into "sub"),
+// which flips the suggestion from caller-relative to search-path
+// resolution.
+func rawRelativePrefix(raw string) string {
+	slashed := filepath.ToSlash(strings.TrimSpace(raw))
+	idx := strings.LastIndex(slashed, "/")
+	if idx < 0 {
+		return "."
+	}
+	return slashed[:idx]
 }
 
 func (e *Engine) readModuleSource(path string) ([]byte, error) {

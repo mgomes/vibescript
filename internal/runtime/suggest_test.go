@@ -459,3 +459,62 @@ func TestRequireSuggestsCloseModuleNames(t *testing.T) {
 		}
 	})
 }
+
+func TestPrivateMethodsAreNotSuggestedToOutsideCallers(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `class Vault
+  def open_lid()
+    1
+  end
+
+  private def secret()
+    2
+  end
+
+  def probe()
+    self.secrez
+  end
+end
+
+def from_outside()
+  Vault.new.secrez
+end
+
+def from_inside()
+  Vault.new.probe
+end`)
+
+	outsideErr := callScriptErr(t, context.Background(), script, "from_outside", nil, CallOptions{})
+	requireErrorContains(t, outsideErr, "unknown member secrez")
+	if strings.Contains(outsideErr.Error(), "secret") {
+		t.Fatalf("outside caller suggestion discloses private method: %v", outsideErr)
+	}
+
+	insideErr := callScriptErr(t, context.Background(), script, "from_inside", nil, CallOptions{})
+	requireErrorContains(t, insideErr, `did you mean "secret"?`)
+}
+
+func TestModuleSuggestionsPreserveLiteralExtensions(t *testing.T) {
+	t.Parallel()
+	moduleSource := "def double(x)\n  x * 2\nend\n"
+	root := tempModuleTree(t,
+		moduleFile{path: "helper.vibe.vibe", content: moduleSource},
+	)
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script := compileScriptWithEngine(t, engine, "def run()\n  require(\"helper.vibe.vib\")\nend")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{},
+		`require: module "helper.vibe.vib" not found (did you mean "helper.vibe.vibe"?)`)
+}
+
+func TestRelativeModuleSuggestionsKeepRawSubdirectoryPrefix(t *testing.T) {
+	t.Parallel()
+	moduleSource := "def double(x)\n  x * 2\nend\n"
+	root := tempModuleTree(t,
+		moduleFile{path: "lib/entry.vibe", content: "def boot()\n  require(\"./sub/helprs\")\nend\n"},
+		moduleFile{path: "lib/sub/helpers.vibe", content: moduleSource},
+	)
+	engine := mustNewEngineWithModuleRoot(t, root)
+	script := compileScriptWithEngine(t, engine, "def run()\n  mod = require(\"lib/entry\")\n  mod.boot()\nend")
+	requireCallErrorContains(t, script, "run", nil, CallOptions{},
+		`require: module "./sub/helprs" not found (did you mean "./sub/helpers"?)`)
+}
