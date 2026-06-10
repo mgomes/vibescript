@@ -139,10 +139,10 @@ func requireCallErrorContains(t testing.TB, script *Script, fn string, args []Va
 	requireErrorContains(t, err, want)
 }
 
-func requireCallErrorIs(t testing.TB, script *Script, fn string, args []Value, opts CallOptions, target error) {
+func requireCallRuntimeErrorType(t testing.TB, script *Script, fn string, args []Value, opts CallOptions, want string) {
 	t.Helper()
 	err := callScriptErr(t, context.Background(), script, fn, args, opts)
-	requireErrorIs(t, err, target)
+	requireRuntimeErrorType(t, err, want)
 }
 
 func requireErrorContains(t testing.TB, err error, want string) {
@@ -163,6 +163,25 @@ func requireErrorIs(t testing.TB, err, target error) {
 	if !errors.Is(err, target) {
 		t.Fatalf("expected error matching %v, got %v", target, err)
 	}
+}
+
+func requireRuntimeErrorType(t testing.TB, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected RuntimeError type %s, got nil", want)
+	}
+	var runtimeErr *RuntimeError
+	if !errors.As(err, &runtimeErr) {
+		t.Fatalf("expected RuntimeError type %s, got %T", want, err)
+	}
+	if runtimeErr.Type != want {
+		t.Fatalf("RuntimeError.Type = %s, want %s", runtimeErr.Type, want)
+	}
+}
+
+func isRuntimeErrorType(err error, want string) bool {
+	var runtimeErr *RuntimeError
+	return errors.As(err, &runtimeErr) && runtimeErr.Type == want
 }
 
 func callOptionsWithCapabilities(capabilities ...CapabilityAdapter) CallOptions {

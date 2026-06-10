@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -519,10 +518,10 @@ end
 		MemoryQuotaBytes: 1 << 20,
 	}, source, []Value{NewInt(limit)})
 
-	if lowErr != nil && !errors.Is(lowErr, errStepQuotaExceeded) {
+	if lowErr != nil && !isRuntimeErrorType(lowErr, runtimeErrorTypeLimit) {
 		rt.Fatalf("run(limit=%d) with StepQuota=%d error = %v, want nil or step quota error", limit, lowQuota, lowErr)
 	}
-	if highErr != nil && !errors.Is(highErr, errStepQuotaExceeded) {
+	if highErr != nil && !isRuntimeErrorType(highErr, runtimeErrorTypeLimit) {
 		rt.Fatalf("run(limit=%d) with StepQuota=%d error = %v, want nil or step quota error", limit, highQuota, highErr)
 	}
 	if lowErr == nil && highErr != nil {
@@ -563,10 +562,10 @@ end
 		MemoryQuotaBytes: highQuota,
 	}, source, []Value{payload})
 
-	if lowErr != nil && !errors.Is(lowErr, errMemoryQuotaExceeded) {
+	if lowErr != nil && !isRuntimeErrorType(lowErr, runtimeErrorTypeLimit) {
 		rt.Fatalf("run(payload length=%d) with MemoryQuotaBytes=%d error = %v, want nil or memory quota error", length, lowQuota, lowErr)
 	}
-	if highErr != nil && !errors.Is(highErr, errMemoryQuotaExceeded) {
+	if highErr != nil && !isRuntimeErrorType(highErr, runtimeErrorTypeLimit) {
 		rt.Fatalf("run(payload length=%d) with MemoryQuotaBytes=%d error = %v, want nil or memory quota error", length, highQuota, highErr)
 	}
 	if lowErr == nil && highErr != nil {

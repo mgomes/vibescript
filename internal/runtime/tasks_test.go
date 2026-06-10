@@ -356,7 +356,7 @@ end`)
 	}
 
 	err := callScriptErr(t, context.Background(), script, "run", []Value{NewInt(8), NewInt(120)}, CallOptions{})
-	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
 }
 
 func TestTasksMapReportsWorkerFailureWhileEnqueueIsBlocked(t *testing.T) {

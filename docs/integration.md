@@ -233,6 +233,10 @@ if err != nil {
 }
 ```
 
+Branch on `rtErr.Type` for stable programmatic handling. `LimitError`
+identifies step quota, memory quota, and recursion-limit terminations without
+scraping message text.
+
 Example error output:
 
 ```

@@ -100,7 +100,7 @@ func TestWhileLoops(t *testing.T) {
       end
     end
     `)
-	requireCallErrorIs(t, spinScript, "spin", nil, CallOptions{}, errStepQuotaExceeded)
+	requireCallRuntimeErrorType(t, spinScript, "spin", nil, CallOptions{}, runtimeErrorTypeLimit)
 }
 
 func TestUntilLoops(t *testing.T) {
@@ -149,7 +149,7 @@ func TestUntilLoops(t *testing.T) {
       end
     end
 	`)
-	requireCallErrorIs(t, spinScript, "spin_until", nil, CallOptions{}, errStepQuotaExceeded)
+	requireCallRuntimeErrorType(t, spinScript, "spin_until", nil, CallOptions{}, runtimeErrorTypeLimit)
 }
 
 func TestLineTerminatedHeadersAndStatements(t *testing.T) {
@@ -495,6 +495,18 @@ func TestBeginRescueTypedMatching(t *testing.T) {
       end
     end
 
+    def typed_limit()
+      begin
+        recurse()
+      rescue(LimitError)
+        "limit"
+      end
+    end
+
+    def recurse()
+      recurse()
+    end
+
     def rescue_mismatch()
       begin
         1 / 0
@@ -516,6 +528,9 @@ func TestBeginRescueTypedMatching(t *testing.T) {
 	}
 	if got := callFunc(t, script, "typed_union", nil); !got.Equal(NewString("union")) {
 		t.Fatalf("typed_union mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "typed_limit", nil); !got.Equal(NewString("limit")) {
+		t.Fatalf("typed_limit mismatch: %v", got)
 	}
 
 	err := callScriptErr(t, context.Background(), script, "rescue_mismatch", nil, CallOptions{})
@@ -580,7 +595,7 @@ func TestBeginRescueDoesNotCatchLoopControlSignals(t *testing.T) {
 	compareArrays(t, nextOut, []Value{NewInt(1), NewInt(3)})
 }
 
-func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
+func TestBeginRescueDoesNotRecoverStepQuota(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StepQuota: 60}, `
     def run()
@@ -593,7 +608,67 @@ func TestBeginRescueDoesNotCatchHostControlSignals(t *testing.T) {
     end
     `)
 
-	requireCallErrorIs(t, script, "run", nil, CallOptions{}, errStepQuotaExceeded)
+	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+func TestBeginRescueDoesNotRecoverRecursionLimit(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{RecursionLimit: 4, StepQuota: 10_000}, `
+    def run()
+      begin
+        recurse()
+      rescue
+        "rescued"
+      end
+    end
+
+    def recurse()
+      recurse()
+    end
+    `)
+
+	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+func TestStepQuotaLimitErrorPreservesFunctionFrames(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 5}, `
+    def outer()
+      inner()
+    end
+
+    def inner()
+      a = 1
+      b = 2
+      c = 3
+    end
+    `)
+
+	err := callScriptErr(t, context.Background(), script, "outer", nil, CallOptions{})
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+
+	var rtErr *RuntimeError
+	if !errors.As(err, &rtErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if len(rtErr.Frames) < 2 {
+		t.Fatalf("expected at least 2 frames, got %d", len(rtErr.Frames))
+	}
+	if rtErr.Frames[0].Function != "inner" {
+		t.Fatalf("expected inner frame first, got %s", rtErr.Frames[0].Function)
+	}
+	if rtErr.Frames[0].Pos.Line <= 6 {
+		t.Fatalf("expected failing statement position inside inner body, got %+v", rtErr.Frames[0].Pos)
+	}
+	foundOuter := false
+	for _, frame := range rtErr.Frames {
+		if frame.Function == "outer" {
+			foundOuter = true
+		}
+	}
+	if !foundOuter {
+		t.Fatalf("expected outer call frame, got %+v", rtErr.Frames)
+	}
 }
 
 func TestBeginRescueTypedUnknownTypeFailsCompile(t *testing.T) {

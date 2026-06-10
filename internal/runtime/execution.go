@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 )
 
 // ScriptFunction represents a user-defined function within a Vibescript module.
@@ -122,7 +123,7 @@ func (exec *Execution) isCurrentReceiver(v Value) bool {
 
 func (exec *Execution) pushFrame(function string, pos Position) error {
 	if exec.recursionCap > 0 && len(exec.callStack) >= exec.recursionCap {
-		return exec.errorAt(pos, "recursion depth exceeded (limit %d)", exec.recursionCap)
+		return exec.newRuntimeErrorWithType(runtimeErrorTypeLimit, fmt.Sprintf("recursion depth exceeded (limit %d)", exec.recursionCap), pos)
 	}
 	exec.callStack = append(exec.callStack, callFrame{Function: function, Pos: pos})
 	return nil

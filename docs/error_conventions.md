@@ -152,32 +152,25 @@ Hosts should never scrape message text. The supported channels today:
   limits, duplicate top-level names).
 - **Runtime errors:** `errors.As(err, &re)` with
   `*vibes.RuntimeError` exposes `Type`, `Message`, `CodeFrame`, and
-  `Frames`. `Type` is the stable taxonomy: it currently has exactly
-  two values, `RuntimeError` (everything) and `AssertionError`
-  (failed `assert`), canonicalized by
-  `ast.CanonicalRuntimeErrorType`. The same names are what scripts
-  match in `rescue(...)` clauses, so the script-facing and host-facing
-  taxonomies are one system. Extend it by adding a constant in
-  `internal/ast/errortypes.go` and a classification rule in
+  `Frames`. `Type` is the stable taxonomy: `RuntimeError`
+  (everything), `AssertionError` (failed `assert`), and `LimitError`
+  (step quota, memory quota, and recursion-limit terminations),
+  canonicalized by `ast.CanonicalRuntimeErrorType`. The same names are
+  what scripts match in `rescue(...)` clauses, so the script-facing and
+  host-facing taxonomies are one system. Extend it by adding a constant
+  in `internal/ast/errortypes.go` and a classification rule in
   `classifyRuntimeErrorType` — do not invent a parallel code registry.
 
-### Recommendation: error codes before 1.0
+### Error codes before 1.0
 
 A per-message string-code registry is **not** recommended. It would
 freeze exactly the thing this document tries to keep flexible, and the
 existing `Type` field already provides the right extension point.
 
-There is one honest gap worth closing before 1.0: hosts cannot detect
-**guard-limit terminations** (step quota, memory quota, recursion
-depth) without matching text. The sentinel errors are unexported,
-`RuntimeError.Unwrap` intentionally returns nil, and `Type` reports
-plain `RuntimeError` for them. A host that wants to bill or retry
-quota-killed scripts differently from buggy scripts has no supported
-signal. If that need materializes, the right shape is a third
-canonical type (for example `LimitError`) classified in
-`classifyRuntimeErrorType`, which scripts would automatically be able
-to `rescue(LimitError)` — not message matching, and not a new code
-system. Until a host asks, two types are enough.
+Guard-limit terminations use the canonical `LimitError` type. Hosts
+that need to bill, retry, or log quota-killed scripts differently from
+buggy scripts should branch on `RuntimeError.Type`, not message text
+and not `errors.Is`; `RuntimeError.Unwrap` intentionally returns nil.
 
 Parse-error codes are likewise not needed now: hosts display parse
 errors rather than branch on them, and `ParseIssue` can grow an
