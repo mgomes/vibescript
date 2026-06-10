@@ -75,6 +75,44 @@ jobs:
         shell: pwsh
         run: golangci-lint run --timeout=10m
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests with coverage
+        run: go test ./... -coverprofile=coverage.out -coverpkg=./... -covermode=atomic
+
+      - name: Enforce coverage gate
+        run: ./scripts/check_coverage.sh coverage.out 75.0
+
+      - name: Publish coverage summary
+        if: always()
+        run: |
+          if [[ -f coverage.out ]]; then
+            {
+              echo "## Test Coverage"
+              echo ""
+              echo '```text'
+              go tool cover -func=coverage.out | tail -n 1
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-profile-${{ github.run_number }}
+          path: coverage.out
+          if-no-files-found: warn
+
   race-detector:
     runs-on: ubuntu-latest
     steps:
