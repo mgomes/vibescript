@@ -62,7 +62,7 @@ func TestValueKindString(t *testing.T) {
 		{value.KindRange, "range"},
 		{value.KindBlock, "block"},
 		{value.KindEnum, "enum"},
-		{value.KindEnumValue, "enum"},
+		{value.KindEnumValue, "enum value"},
 		{value.ValueKind(99), "kind(99)"},
 	}
 

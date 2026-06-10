@@ -45,7 +45,7 @@ func (k ValueKind) String() string {
 	case KindEnum:
 		return "enum"
 	case KindEnumValue:
-		return "enum"
+		return "enum value"
 	case KindClass:
 		return "class"
 	case KindInstance:
