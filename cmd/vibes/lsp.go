@@ -1055,6 +1055,12 @@ func enclosingCall(source string, line, character int) (string, int, bool) {
 			if start == end {
 				return "", 0, false
 			}
+			if start > 0 && runes[start-1] == '.' {
+				// Member call: no signature data exists for member
+				// methods, and a same-named top-level function would
+				// be the wrong hint.
+				return "", 0, false
+			}
 			return string(runes[start:end]), activeParam, true
 		case ',':
 			if parens == 0 && squares == 0 && braces == 0 {

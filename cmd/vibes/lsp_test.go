@@ -830,6 +830,7 @@ func TestEnclosingCall(t *testing.T) {
 		{name: "string_comma_ignored", source: `charge("1,00", `, line: 0, chr: 15, callee: "charge", param: 1, ok: true},
 		{name: "string_paren_ignored", source: `charge("a)b", `, line: 0, chr: 14, callee: "charge", param: 1, ok: true},
 		{name: "cursor_inside_array_literal", source: "charge([1, ", line: 0, chr: 11, callee: "charge", param: 0, ok: true},
+		{name: "member_call_suppressed", source: "price.format(", line: 0, chr: 13, ok: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
