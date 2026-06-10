@@ -180,6 +180,9 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 						"textDocumentSync":           1,
 						"hoverProvider":              true,
 						"documentFormattingProvider": true,
+						"signatureHelpProvider": map[string]any{
+							"triggerCharacters": []string{"(", ","},
+						},
 						"completionProvider": map[string]any{
 							"resolveProvider":   false,
 							"triggerCharacters": []string{"."},
@@ -245,6 +248,30 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				ID:      incoming.ID,
 				Result:  formattingEdits(source),
 			},
+		}
+	case "textDocument/signatureHelp":
+		if incoming.ID == nil {
+			return nil
+		}
+		var params lspTextDocumentPositionParams
+		if err := json.Unmarshal(incoming.Params, &params); err != nil {
+			return []lspOutboundMessage{
+				{
+					JSONRPC: "2.0",
+					ID:      incoming.ID,
+					Error:   &lspResponseError{Code: -32602, Message: "invalid signatureHelp params"},
+				},
+			}
+		}
+		source := s.docs[params.TextDocument.URI]
+		help := s.signatureHelpAt(params.TextDocument.URI, source, params.Position.Line, params.Position.Character)
+		if help == nil {
+			return []lspOutboundMessage{
+				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
+			}
+		}
+		return []lspOutboundMessage{
+			{JSONRPC: "2.0", ID: incoming.ID, Result: help},
 		}
 	case "textDocument/completion":
 		if incoming.ID == nil {
@@ -915,4 +942,276 @@ func localNames(statements []ast.Statement) []string {
 	}
 	walkStmts(statements)
 	return names
+}
+
+// builtinSignatures maps global function builtins to their documented
+// signatures. Entries are validated against the engine's registered
+// builtins by tests so the table cannot go stale against renames.
+var builtinSignatures = map[string]string{
+	"assert":      "assert(condition, message = nil) -> nil",
+	"money":       `money("12.34 USD") -> money`,
+	"money_cents": "money_cents(cents, currency) -> money",
+	"now":         "now -> string",
+	"random_id":   "random_id(length = 16) -> string",
+	"require":     `require(module, as: nil) -> object`,
+	"to_float":    "to_float(value) -> float",
+	"to_int":      "to_int(value) -> int",
+	"uuid":        "uuid -> string",
+}
+
+// signatureHelpAt resolves the innermost call around the cursor and
+// returns LSP SignatureHelp for it, or nil when no signature is known.
+func (s *lspServer) signatureHelpAt(uri, source string, line, character int) map[string]any {
+	callee, activeParam, ok := enclosingCall(source, line, character)
+	if !ok {
+		callee, activeParam, ok = parenlessCall(source, line, character)
+		if !ok {
+			return nil
+		}
+	}
+
+	if script := s.compiled[uri]; script != nil {
+		if fn, found := script.Function(callee); found {
+			paramLabels := make([]string, 0, len(fn.Params))
+			for _, param := range fn.Params {
+				paramLabels = append(paramLabels, paramLabel(param))
+			}
+			label := fn.Name + "(" + strings.Join(paramLabels, ", ") + ")"
+			if fn.ReturnTy != nil {
+				label += " -> " + ast.FormatTypeExpr(fn.ReturnTy)
+			}
+			return signatureHelpResponse(label, paramLabels, activeParam)
+		}
+	}
+	if label, found := builtinSignatures[callee]; found {
+		return signatureHelpResponse(label, paramLabelsFromSignature(label), activeParam)
+	}
+	return nil
+}
+
+func signatureHelpResponse(label string, paramLabels []string, activeParam int) map[string]any {
+	parameters := make([]map[string]any, 0, len(paramLabels))
+	for _, param := range paramLabels {
+		parameters = append(parameters, map[string]any{"label": param})
+	}
+	if activeParam >= len(parameters) && len(parameters) > 0 {
+		activeParam = len(parameters) - 1
+	}
+	return map[string]any{
+		"signatures": []map[string]any{
+			{
+				"label":      label,
+				"parameters": parameters,
+			},
+		},
+		"activeSignature": 0,
+		"activeParameter": activeParam,
+	}
+}
+
+// enclosingCall scans the cursor's line backwards for the innermost
+// unclosed call and reports the callee name and the zero-based argument
+// index at the cursor. Multi-line calls degrade to no result.
+func enclosingCall(source string, line, character int) (string, int, bool) {
+	lines := splitLSPLines(source)
+	if line < 0 || line >= len(lines) {
+		return "", 0, false
+	}
+	runes := []rune(lines[line])
+	cursor := min(utf16OffsetToRuneIndex(lines[line], character), len(runes))
+	masked := maskNonCode(runes[:cursor])
+
+	parens, squares, braces := 0, 0, 0
+	activeParam := 0
+	for i := cursor - 1; i >= 0; i-- {
+		switch masked[i] {
+		case ')':
+			parens++
+		case ']':
+			squares++
+		case '}':
+			braces++
+		case '[':
+			if squares > 0 {
+				squares--
+				continue
+			}
+			// The cursor sits inside an unclosed array literal, which
+			// is a single argument: commas seen so far belong to it.
+			activeParam = 0
+		case '{':
+			if braces > 0 {
+				braces--
+				continue
+			}
+			activeParam = 0
+		case '(':
+			if parens > 0 {
+				parens--
+				continue
+			}
+			end := i
+			// The parser accepts whitespace between a callee and its
+			// argument list, so skip it before extracting the word.
+			for end > 0 && (runes[end-1] == ' ' || runes[end-1] == '\t') {
+				end--
+			}
+			start := end
+			for start > 0 && isWordRune(runes[start-1]) {
+				start--
+			}
+			if start == end {
+				return "", 0, false
+			}
+			if start > 0 && runes[start-1] == '.' {
+				// Member call: no signature data exists for member
+				// methods, and a same-named top-level function would
+				// be the wrong hint.
+				return "", 0, false
+			}
+			return string(runes[start:end]), activeParam, true
+		case ',':
+			if parens == 0 && squares == 0 && braces == 0 {
+				activeParam++
+			}
+		}
+	}
+	return "", 0, false
+}
+
+// parenlessStatementBuiltins are the builtins the parser accepts in the
+// no-paren statement form ("assert cond, msg"); only these produce
+// signature help without an opening parenthesis.
+var parenlessStatementBuiltins = map[string]struct{}{
+	"assert": {},
+}
+
+// parenlessCall resolves the no-paren statement call form: the line's
+// first word, when it is a paren-less-capable builtin followed by
+// arguments, with the active argument counted by top-level commas.
+func parenlessCall(source string, line, character int) (string, int, bool) {
+	lines := splitLSPLines(source)
+	if line < 0 || line >= len(lines) {
+		return "", 0, false
+	}
+	runes := []rune(lines[line])
+	cursor := min(utf16OffsetToRuneIndex(lines[line], character), len(runes))
+	masked := maskNonCode(runes[:cursor])
+
+	start := 0
+	for start < cursor && (masked[start] == ' ' || masked[start] == '\t') {
+		start++
+	}
+	end := start
+	for end < cursor && isWordRune(masked[end]) {
+		end++
+	}
+	if end == start || end >= cursor {
+		return "", 0, false
+	}
+	callee := string(masked[start:end])
+	if _, ok := parenlessStatementBuiltins[callee]; !ok {
+		return "", 0, false
+	}
+	if masked[end] != ' ' && masked[end] != '\t' {
+		return "", 0, false
+	}
+
+	parens, squares, braces := 0, 0, 0
+	activeParam := 0
+	for i := end; i < cursor; i++ {
+		switch masked[i] {
+		case '(':
+			parens++
+		case ')':
+			parens--
+		case '[':
+			squares++
+		case ']':
+			squares--
+		case '{':
+			braces++
+		case '}':
+			braces--
+		case ',':
+			if parens == 0 && squares == 0 && braces == 0 {
+				activeParam++
+			}
+		}
+	}
+	return callee, activeParam, true
+}
+
+// maskNonCode blanks string literals and the trailing comment so
+// structural scans only see code. Strings are masked first because a
+// "#" inside one is not a comment.
+func maskNonCode(runes []rune) []rune {
+	masked := maskStringLiterals(runes)
+	for i, r := range masked {
+		if r == '#' {
+			for j := i; j < len(masked); j++ {
+				masked[j] = ' '
+			}
+			break
+		}
+	}
+	return masked
+}
+
+// maskStringLiterals replaces double-quoted string literals — quotes,
+// contents, and escapes — with spaces, so structural scans do not trip
+// on commas, parentheses, or brackets inside them. An unterminated
+// literal masks through to the end.
+func maskStringLiterals(runes []rune) []rune {
+	masked := make([]rune, len(runes))
+	inString := false
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if inString {
+			masked[i] = ' '
+			if r == '\\' && i+1 < len(runes) {
+				i++
+				masked[i] = ' '
+				continue
+			}
+			if r == '"' {
+				inString = false
+			}
+			continue
+		}
+		if r == '"' {
+			inString = true
+			masked[i] = ' '
+			continue
+		}
+		masked[i] = r
+	}
+	return masked
+}
+
+// paramLabel renders one parameter: its name, type annotation when
+// present, and a default marker when the parameter is optional.
+func paramLabel(param ast.Param) string {
+	label := param.Name
+	if param.Type != nil {
+		label += ": " + ast.FormatTypeExpr(param.Type)
+	}
+	if param.DefaultVal != nil {
+		label += " = …"
+	}
+	return label
+}
+
+func paramLabelsFromSignature(label string) []string {
+	open := strings.Index(label, "(")
+	close := strings.LastIndex(label, ")")
+	if open < 0 || close <= open+1 {
+		return nil
+	}
+	parts := strings.Split(label[open+1:close], ",")
+	labels := make([]string, 0, len(parts))
+	for _, part := range parts {
+		labels = append(labels, strings.TrimSpace(part))
+	}
+	return labels
 }
