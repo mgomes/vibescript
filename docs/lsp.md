@@ -80,9 +80,9 @@ Intentionally absent for now (tracked for future work):
 - **Formatting** — `textDocument/formatting` is not wired up; run
   [`vibes fmt`](tooling.md) directly instead.
 - **Signature help** — no parameter hints on `(` or `,`.
-- **Diagnostic ranges** — parse-error positions are currently extracted from
-  error text, so diagnostics are single-character ranges rather than spanning
-  the offending token.
+- **Diagnostic ranges at end of input** — diagnostics span the offending
+  token when the parser knows it; errors reported at end of input (for
+  example an unterminated block) degrade to single-character ranges.
 - **Incremental sync** — the server requests full-document sync; very large
   files are re-parsed on every keystroke.
 - **Multi-file awareness** — each document is analyzed in isolation;

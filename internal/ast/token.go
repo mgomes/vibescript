@@ -101,6 +101,10 @@ type Token struct {
 	Type    TokenType
 	Literal string
 	Pos     source.Position
+	// End is the exclusive position just past the token's final rune,
+	// stamped by the lexer from the source text. It is the zero
+	// Position only for EOF.
+	End source.Position
 }
 
 // LookupIdent returns the TokenType for an identifier literal, falling

@@ -20,6 +20,13 @@ Common parser diagnostics:
 - `missing value for keyword argument ...`
 - `trailing comma in block parameter list`
 
+Hosts that need positions programmatically (editors, linters, CI
+annotators) should not scrape the error text: `vibes.ParseIssues(err)`
+returns the structured failures behind a `Compile` error — start
+position, optional offending-token end position, and the bare message —
+in source order. It returns nil for errors that carry no positions, such
+as duplicate top-level name failures.
+
 ## Runtime Errors
 
 Runtime failures include:

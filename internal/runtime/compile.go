@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -207,9 +206,24 @@ func combineErrors(errs []error) error {
 	if len(errs) == 1 {
 		return errs[0]
 	}
-	msgs := make([]string, len(errs))
-	for i, err := range errs {
+	return &combinedError{errs: errs}
+}
+
+// combinedError aggregates multiple errors while keeping the individual
+// errors reachable through Unwrap, so structured data (such as parse
+// positions) survives aggregation instead of being flattened to text.
+type combinedError struct {
+	errs []error
+}
+
+func (e *combinedError) Error() string {
+	msgs := make([]string, len(e.errs))
+	for i, err := range e.errs {
 		msgs[i] = err.Error()
 	}
-	return errors.New(strings.Join(msgs, "\n\n"))
+	return strings.Join(msgs, "\n\n")
+}
+
+func (e *combinedError) Unwrap() []error {
+	return e.errs
 }

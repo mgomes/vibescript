@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -16,8 +15,6 @@ import (
 
 	"github.com/mgomes/vibescript/vibes"
 )
-
-var parseErrorPattern = regexp.MustCompile(`parse error at ([0-9]+):([0-9]+): ([^\n]+)`)
 
 const maxLSPPayloadBytes = 8 << 20
 
@@ -283,39 +280,91 @@ func diagnosticsForSource(engine *vibes.Engine, source string) []map[string]any 
 		return []map[string]any{}
 	}
 
-	matches := parseErrorPattern.FindAllStringSubmatch(err.Error(), -1)
-	if len(matches) == 0 {
+	issues := vibes.ParseIssues(err)
+	if len(issues) == 0 {
+		// Non-parse compile failures (size limits, duplicate top-level
+		// names) carry no position; surface them at the document start.
 		return []map[string]any{
-			newDiagnostic(0, 0, err.Error()),
+			newDiagnostic(diagnosticRange{}, err.Error()),
 		}
 	}
 
-	out := make([]map[string]any, 0, len(matches))
-	for _, match := range matches {
-		message := match[3]
-		line, lineErr := strconv.Atoi(match[1])
-		column, columnErr := strconv.Atoi(match[2])
-		if lineErr != nil || columnErr != nil {
-			out = append(out, newDiagnostic(0, 0, message))
-			continue
-		}
-		lineIdx := max(0, line-1)
-		colIdx := max(0, column-1)
-		out = append(out, newDiagnostic(lineIdx, colIdx, message))
+	lines := strings.Split(source, "\n")
+	out := make([]map[string]any, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, newDiagnostic(rangeForIssue(issue, lines), issue.Message))
 	}
 	return out
 }
 
-func newDiagnostic(line, character int, message string) map[string]any {
+// diagnosticRange is an LSP range in 0-indexed line/character offsets.
+type diagnosticRange struct {
+	startLine, startChar int
+	endLine, endChar     int
+}
+
+// rangeForIssue converts a 1-indexed, rune-based parse issue to an LSP
+// range in UTF-16 code units (the protocol's default position encoding).
+// Issues without a known token span degrade to a single-rune range.
+func rangeForIssue(issue vibes.ParseIssue, lines []string) diagnosticRange {
+	startLine := max(0, issue.Pos.Line-1)
+	startRune := max(0, issue.Pos.Column-1)
+	r := diagnosticRange{
+		startLine: startLine,
+		startChar: utf16Character(lineAt(lines, startLine), startRune),
+	}
+	endLine, endRune := startLine, startRune+1
+	if issue.End.Line >= issue.Pos.Line && (issue.End.Line > issue.Pos.Line || issue.End.Column > issue.Pos.Column) {
+		endLine = issue.End.Line - 1
+		endRune = max(0, issue.End.Column-1)
+	}
+	r.endLine = endLine
+	r.endChar = utf16Character(lineAt(lines, endLine), endRune)
+	return r
+}
+
+func lineAt(lines []string, idx int) string {
+	if idx < 0 || idx >= len(lines) {
+		return ""
+	}
+	return lines[idx]
+}
+
+// utf16Character converts a 0-indexed rune column within lineText to a
+// UTF-16 code-unit offset. Columns beyond the line clamp to its full
+// UTF-16 length plus the rune overshoot, so spans at end of line stay
+// forward-progressing.
+func utf16Character(lineText string, runeColumn int) int {
+	units := 0
+	runes := 0
+	for _, r := range lineText {
+		if runes >= runeColumn {
+			return units
+		}
+		if r > 0xFFFF {
+			units += 2
+		} else {
+			units++
+		}
+		runes++
+	}
+	return units + (runeColumn - runes)
+}
+
+func newDiagnostic(rng diagnosticRange, message string) map[string]any {
+	if rng.endLine < rng.startLine || (rng.endLine == rng.startLine && rng.endChar <= rng.startChar) {
+		rng.endLine = rng.startLine
+		rng.endChar = rng.startChar + 1
+	}
 	return map[string]any{
 		"range": map[string]any{
 			"start": map[string]any{
-				"line":      line,
-				"character": character,
+				"line":      rng.startLine,
+				"character": rng.startChar,
 			},
 			"end": map[string]any{
-				"line":      line,
-				"character": character + 1,
+				"line":      rng.endLine,
+				"character": rng.endChar,
 			},
 		},
 		"severity": 1,
