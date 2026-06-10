@@ -295,6 +295,12 @@ func (p *parser) parseHashPair() ast.HashPair {
 func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 	pos := p.curToken.Pos
 	params := []ast.Param{}
+	stopToken := ast.TokenEnd
+	stopName := "end"
+	if p.curToken.Type == ast.TokenLBrace {
+		stopToken = ast.TokenRBrace
+		stopName = "}"
+	}
 
 	p.nextToken()
 	if p.curToken.Type == ast.TokenPipe {
@@ -306,9 +312,9 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 		p.nextToken()
 	}
 
-	body := p.parseBlock(ast.TokenEnd)
-	if p.curToken.Type != ast.TokenEnd {
-		p.errorExpected(p.curToken, "end")
+	body := p.parseBlock(stopToken)
+	if p.curToken.Type != stopToken {
+		p.errorExpected(p.curToken, stopName)
 	}
 
 	return &ast.BlockLiteral{Params: params, Body: body, Position: pos}
@@ -452,11 +458,36 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	expr.Args = args
 	expr.KwArgs = kwargs
-	if p.peekToken.Type == ast.TokenDo {
+	if p.canAttachPeekBlock() {
 		p.nextToken()
 		expr.Block = p.parseBlockLiteral()
 	}
 	return expr
+}
+
+func (p *parser) parseTrailingBlockExpression(callee ast.Expression) ast.Expression {
+	return p.callWithBlock(callee, p.parseBlockLiteral())
+}
+
+func (p *parser) callWithBlock(callee ast.Expression, block *ast.BlockLiteral) ast.Expression {
+	if callee == nil {
+		return nil
+	}
+	var call *ast.CallExpr
+	if existing, ok := callee.(*ast.CallExpr); ok {
+		call = existing
+	} else {
+		call = &ast.CallExpr{Callee: callee, Position: callee.Pos()}
+	}
+	call.Block = block
+	return call
+}
+
+func (p *parser) canAttachPeekBlock() bool {
+	if p.peekToken.Type == ast.TokenDo {
+		return true
+	}
+	return p.peekToken.Type == ast.TokenLBrace && p.peekToken.Pos.Line == p.curToken.Pos.Line
 }
 
 func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg) {
