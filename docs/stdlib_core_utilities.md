@@ -17,8 +17,10 @@ in depth; this page favors compact signatures and one-line descriptions.
 - `{ |item| }` marks a method that takes a block, written
   `do |item| ... end` in Vibescript.
 - `a | b` in a return type means the method returns either type.
-- All Vibescript values are immutable. Every transform returns a new value and
-  leaves the receiver untouched, including Ruby-style bang methods.
+- No method mutates its receiver. Every transform returns a new value,
+  including Ruby-style bang methods. (Index and member assignment —
+  `arr[0] = x`, `hash[:k] = v` — do mutate in place and are visible
+  through aliases; only the method surface is copy-on-transform.)
 - Bang variants (`strip!`, `gsub!`, ...) return the transformed value, or
   `nil` when nothing changed.
 
@@ -177,7 +179,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   `separator`.
 - `reverse -> array` – elements in reverse order.
 
-Because arrays are immutable, `pop` hands back both halves of the result:
+Because array methods never mutate the receiver, `pop` hands back both
+halves of the result:
 
 ```vibe
 items = [1, 2, 3]
