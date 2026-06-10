@@ -229,43 +229,50 @@ func (e *Engine) builtinSnapshot() map[string]Value {
 	return out
 }
 
-// callRootParent returns the engine's frozen builtin proto env, building
-// it on first use and after builtin registration changes.
-func (e *Engine) callRootParent() *Env {
+// attachBuiltins chains root to the engine's frozen builtin proto env
+// and defines the per-call cloned builtins, all under one lock
+// acquisition so a concurrent RegisterBuiltin cannot produce a root
+// whose proto and clones reflect different builtin snapshots.
+func (e *Engine) attachBuiltins(root *Env, extraStatics int) {
 	e.builtinsMu.RLock()
-	proto := e.builtinProto
-	e.builtinsMu.RUnlock()
-	if proto != nil {
-		return proto
+	if e.builtinProto != nil {
+		defer e.builtinsMu.RUnlock()
+		e.bindBuiltinsLocked(root, extraStatics)
+		return
 	}
+	e.builtinsMu.RUnlock()
 
 	e.builtinsMu.Lock()
 	defer e.builtinsMu.Unlock()
-	if e.builtinProto != nil {
-		return e.builtinProto
-	}
-	proto = newEnv(nil)
-	proto.growStatics(len(e.builtins))
-	cloned := 0
-	for name, builtin := range e.builtins {
-		if builtinNeedsCallClone(builtin) {
-			cloned++
-			continue
+	if e.builtinProto == nil {
+		proto := newEnv(nil)
+		proto.growStatics(len(e.builtins))
+		cloned := 0
+		for name, builtin := range e.builtins {
+			if builtinNeedsCallClone(builtin) {
+				cloned++
+				continue
+			}
+			proto.DefineStatic(name, builtin)
 		}
-		proto.DefineStatic(name, builtin)
+		proto.frozen = true
+		e.builtinProto = proto
+		e.clonedBuiltins = cloned
 	}
-	proto.frozen = true
-	e.builtinProto = proto
-	e.clonedBuiltins = cloned
-	return proto
+	e.bindBuiltinsLocked(root, extraStatics)
 }
 
-// clonedBuiltinCount reports how many builtins defineBuiltinsForCall will
-// define per call, for pre-sizing the root statics map.
-func (e *Engine) clonedBuiltinCount() int {
-	e.builtinsMu.RLock()
-	defer e.builtinsMu.RUnlock()
-	return e.clonedBuiltins
+// bindBuiltinsLocked wires root to the current proto and defines the
+// mutable builtins. Callers must hold builtinsMu.
+func (e *Engine) bindBuiltinsLocked(root *Env, extraStatics int) {
+	root.parent = e.builtinProto
+	root.growStatics(e.clonedBuiltins + extraStatics)
+	for name, builtin := range e.builtins {
+		if !builtinNeedsCallClone(builtin) {
+			continue
+		}
+		root.DefineStatic(name, cloneBuiltinValueForCall(builtin))
+	}
 }
 
 // builtinNeedsCallClone reports whether a builtin value is mutable from
@@ -277,18 +284,6 @@ func builtinNeedsCallClone(val Value) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func (e *Engine) defineBuiltinsForCall(root *Env) {
-	e.builtinsMu.RLock()
-	defer e.builtinsMu.RUnlock()
-
-	for name, builtin := range e.builtins {
-		if !builtinNeedsCallClone(builtin) {
-			continue
-		}
-		root.DefineStatic(name, cloneBuiltinValueForCall(builtin))
 	}
 }
 
