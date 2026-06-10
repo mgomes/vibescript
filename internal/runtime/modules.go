@@ -313,7 +313,7 @@ const moduleSuggestWalkLimit = 2048
 // script would require them.
 func (e *Engine) searchPathModuleSuggestion(request moduleRequest) string {
 	target := moduleDisplayFromRelative(request.normalized)
-	var candidates []string
+	candidates := make([]string, 0, 16)
 	for _, root := range e.modPaths {
 		candidates = append(candidates, e.moduleCandidatesUnderRoot(root)...)
 	}
@@ -322,7 +322,7 @@ func (e *Engine) searchPathModuleSuggestion(request moduleRequest) string {
 
 func (e *Engine) moduleCandidatesUnderRoot(root string) []string {
 	cleanRoot := filepath.Clean(root)
-	var names []string
+	names := make([]string, 0, 16)
 	visited := 0
 	_ = filepath.WalkDir(cleanRoot, func(fullPath string, entry fs.DirEntry, err error) error {
 		if err != nil {

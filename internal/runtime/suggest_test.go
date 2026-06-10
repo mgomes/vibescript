@@ -24,7 +24,7 @@ func TestLevenshteinWithin(t *testing.T) {
 		{name: "single substitution", a: "lenxth", b: "length", limit: 2, want: 1, withinOK: true},
 		{name: "single insertion", a: "lenth", b: "length", limit: 2, want: 1, withinOK: true},
 		{name: "single deletion", a: "lengthh", b: "length", limit: 2, want: 1, withinOK: true},
-		{name: "adjacent transposition costs two", a: "lenght", b: "length", limit: 2, want: 2, withinOK: true},
+		{name: "adjacent transposition costs two", a: "elngth", b: "length", limit: 2, want: 2, withinOK: true},
 		{name: "abandons past limit", a: "abcdef", b: "uvwxyz", limit: 2, withinOK: false},
 		{name: "length gap past limit", a: "ab", b: "abcdef", limit: 2, withinOK: false},
 		{name: "length gap at limit", a: "abcd", b: "abcdef", limit: 2, want: 2, withinOK: true},
@@ -63,7 +63,7 @@ func TestSuggestNames(t *testing.T) {
 		},
 		{
 			name:       "transposition within cap",
-			missing:    "lenght",
+			missing:    "elngth",
 			candidates: []string{"length", "size"},
 			want:       []string{"length"},
 		},
@@ -75,7 +75,7 @@ func TestSuggestNames(t *testing.T) {
 		},
 		{
 			name:       "short names require a single edit",
-			missing:    "nmae",
+			missing:    "naem",
 			candidates: []string{"name"},
 			want:       nil,
 		},
@@ -150,7 +150,7 @@ func TestDidYouMean(t *testing.T) {
 		},
 		{
 			name:       "single match",
-			missing:    "lenght",
+			missing:    "lengtt",
 			candidates: []string{"length", "size"},
 			want:       ` (did you mean "length"?)`,
 		},
@@ -283,9 +283,9 @@ func TestLookupFailuresIncludeSuggestions(t *testing.T) {
 			name: "undefined variable suggests local",
 			script: `def run()
   length = 5
-  lenght
+  lengtt
 end`,
-			errMsg: `undefined variable lenght (did you mean "length"?)`,
+			errMsg: `undefined variable lengtt (did you mean "length"?)`,
 		},
 		{
 			name:   "undefined variable suggests function",
@@ -304,8 +304,8 @@ end`,
 		},
 		{
 			name:   "array method typo",
-			script: `def run() [1, 2].lenght end`,
-			errMsg: `unknown array method lenght (did you mean "length"?)`,
+			script: `def run() [1, 2].lengtt end`,
+			errMsg: `unknown array method lengtt (did you mean "length"?)`,
 		},
 		{
 			name: "hash method typo suggests data key",
