@@ -537,9 +537,11 @@ Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
 
 - `Time.new(year, month, day, hour = 0, min = 0, sec = 0, zone = nil,
   in: nil) -> time` – build from calendar parts (local zone by default).
-- `Time.local(...)` / `Time.mktime(...)` -> time – like `Time.new`, always in
-  the local zone.
-- `Time.utc(...)` / `Time.gm(...)` -> time – like `Time.new`, always in UTC.
+- `Time.local(...)` / `Time.mktime(...)` -> time – like `Time.new` with the
+  local zone as the default; an explicit zone argument still overrides it.
+- `Time.utc(...)` / `Time.gm(...)` -> time – like `Time.new` with UTC as the
+  default; an explicit zone argument still overrides it
+  (`Time.utc(2024, 1, 1, 0, 0, 0, "+05:30")` is `+05:30`, not UTC).
 - `Time.at(epoch_seconds, in: nil) -> time` – build from Unix epoch seconds
   (int or float).
 - `Time.now(in: nil) -> time` – current time (local zone by default).
