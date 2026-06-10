@@ -1,5 +1,10 @@
 package runtime
 
+import (
+	"maps"
+	"slices"
+)
+
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {
 	switch obj.Kind() {
 	case KindHash, KindObject:
@@ -61,7 +66,11 @@ func (exec *Execution) classMember(obj Value, property string, pos Position) (Va
 	if val, ok := cl.ClassVars[property]; ok {
 		return val, nil
 	}
-	return NewNil(), exec.errorAt(pos, "unknown class member %s", property)
+	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1)
+	candidates = append(candidates, "new")
+	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassMethods))
+	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassVars))
+	return NewNil(), exec.errorAt(pos, "unknown class member %s%s", property, didYouMean(property, candidates))
 }
 
 func (exec *Execution) instanceMember(obj Value, property string, pos Position) (Value, error) {
@@ -80,7 +89,11 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position) 
 	if val, ok := inst.Ivars[property]; ok {
 		return val, nil
 	}
-	return NewNil(), exec.errorAt(pos, "unknown member %s", property)
+	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1)
+	candidates = append(candidates, "class")
+	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Class.Methods))
+	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Ivars))
+	return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
 }
 
 func (exec *Execution) getScopedMember(obj Value, property string, pos Position) (Value, error) {
@@ -93,7 +106,8 @@ func (exec *Execution) getScopedMember(obj Value, property string, pos Position)
 	}
 	member, ok := enumDef.Members[property]
 	if !ok {
-		return NewNil(), exec.errorAt(pos, "unknown enum member %s::%s", enumDef.Name, property)
+		candidates := slices.Collect(maps.Keys(enumDef.Members))
+		return NewNil(), exec.errorAt(pos, "unknown enum member %s::%s%s", enumDef.Name, property, didYouMean(property, candidates))
 	}
 	return NewEnumValue(member), nil
 }
@@ -111,6 +125,6 @@ func (exec *Execution) enumValueMember(obj Value, property string, pos Position)
 	case "enum":
 		return NewEnum(member.Enum), nil
 	default:
-		return NewNil(), exec.errorAt(pos, "unknown enum member property %s", property)
+		return NewNil(), exec.errorAt(pos, "unknown enum member property %s%s", property, didYouMean(property, []string{"name", "symbol", "enum"}))
 	}
 }

@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 )
 
@@ -13,7 +15,8 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	_, ok := s.functions[name]
 	if !ok {
-		return NewNil(), fmt.Errorf("function %s not found", name)
+		candidates := slices.Collect(maps.Keys(s.functions))
+		return NewNil(), fmt.Errorf("function %s not found%s", name, didYouMean(name, candidates))
 	}
 
 	rootCapacity := s.engine.builtinCount() + len(s.functions) + len(s.classes) + len(s.enums) + len(opts.Globals) + len(opts.Capabilities)*2

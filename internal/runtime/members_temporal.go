@@ -5,6 +5,29 @@ import (
 	"time"
 )
 
+// The *MemberNames lists below mirror the names dispatched by the member
+// functions next to them and feed "did you mean" suggestions on the error
+// path. Keep each list in sync with its switch;
+// TestMemberSuggestionCandidatesResolve enforces that every listed name
+// resolves. "strftime" is deliberately absent from timeMemberNames because
+// it dispatches to an unsupported-method error.
+var (
+	durationMemberNames = []string{
+		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
+		"in_seconds", "in_minutes", "in_hours", "in_days", "in_weeks", "in_months", "in_years",
+		"iso8601", "parts", "to_i", "to_s", "format", "eql?",
+		"after", "since", "from_now", "ago", "before", "until",
+	}
+	timeMemberNames = []string{
+		"year", "month", "mon", "mday", "day", "hour", "min", "sec", "usec", "tv_usec", "nsec", "tv_nsec", "subsec",
+		"wday", "yday", "hash", "utc_offset", "gmt_offset", "gmtoff", "to_f", "to_i", "tv_sec", "to_r", "zone",
+		"utc?", "gmt?", "dst?", "isdst",
+		"sunday?", "monday?", "tuesday?", "wednesday?", "thursday?", "friday?", "saturday?",
+		"<=>", "eql?", "to_s", "iso8601", "rfc3339", "format",
+		"getutc", "getgm", "getlocal", "utc", "gmtime", "localtime", "round", "ceil", "floor",
+	}
+)
+
 func durationMember(d Duration, property string, pos Position) (Value, error) {
 	switch property {
 	case "seconds", "second":
@@ -73,7 +96,7 @@ func durationMember(d Duration, property string, pos Position) (Value, error) {
 			return NewTime(result), nil
 		}), nil
 	default:
-		return NewNil(), fmt.Errorf("unknown duration method %s", property)
+		return NewNil(), fmt.Errorf("unknown duration method %s%s", property, didYouMean(property, durationMemberNames))
 	}
 }
 
@@ -227,6 +250,6 @@ func timeMember(t time.Time, property string) (Value, error) {
 			return NewTime(t.Truncate(time.Second)), nil
 		}), nil
 	default:
-		return NewNil(), fmt.Errorf("unknown time method %s", property)
+		return NewNil(), fmt.Errorf("unknown time method %s%s", property, didYouMean(property, timeMemberNames))
 	}
 }

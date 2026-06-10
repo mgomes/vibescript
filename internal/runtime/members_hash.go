@@ -4,8 +4,18 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"sort"
 )
+
+// hashMemberNames mirrors the names dispatched by hashMember and feeds
+// "did you mean" suggestions on the error path. Keep it in sync with the
+// switch below; TestMemberSuggestionCandidatesResolve enforces that every
+// listed name resolves.
+var hashMemberNames = []string{
+	"size", "length", "empty?", "key?", "has_key?", "include?", "keys", "values", "fetch", "dig", "each", "each_key", "each_value",
+	"merge", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+}
 
 func hashMember(obj Value, property string) (Value, error) {
 	switch property {
@@ -14,7 +24,8 @@ func hashMember(obj Value, property string) (Value, error) {
 	case "merge", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	default:
-		return NewNil(), fmt.Errorf("unknown hash method %s", property)
+		candidates := slices.AppendSeq(slices.Clone(hashMemberNames), maps.Keys(obj.Hash()))
+		return NewNil(), fmt.Errorf("unknown hash method %s%s", property, didYouMean(property, candidates))
 	}
 }
 
