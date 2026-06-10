@@ -4,8 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/mgomes/vibescript/internal/ast"
+)
+
+const (
+	minInt64Float          = -9223372036854775808.0
+	maxInt64FloatExclusive = 9223372036854775808.0
 )
 
 func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) {
@@ -578,7 +584,7 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 			if err := exec.checkMemoryWith(candidate); err != nil {
 				return NewNil(), err
 			}
-			if target.Equal(candidate) {
+			if caseCandidateMatches(target, candidate) {
 				matched = true
 				break
 			}
@@ -608,6 +614,40 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 	}
 
 	return NewNil(), nil
+}
+
+func caseCandidateMatches(target, candidate Value) bool {
+	if candidate.Kind() != KindRange {
+		return target.Equal(candidate)
+	}
+
+	switch target.Kind() {
+	case KindInt:
+		rng := candidate.Range()
+		start, end := rng.Start, rng.End
+		if start > end {
+			start, end = end, start
+		}
+		value := target.Int()
+		return value >= start && value <= end
+	case KindFloat:
+		return rangeContainsFloat(candidate.Range(), target.Float())
+	default:
+		return target.Equal(candidate)
+	}
+}
+
+func rangeContainsFloat(rng Range, value float64) bool {
+	if math.IsNaN(value) || value < minInt64Float || value >= maxInt64FloatExclusive {
+		return false
+	}
+
+	start, end := rng.Start, rng.End
+	if start > end {
+		start, end = end, start
+	}
+
+	return int64(math.Floor(value)) >= start && int64(math.Ceil(value)) <= end
 }
 
 func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, error) {

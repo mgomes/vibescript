@@ -32,11 +32,15 @@ def label(score)
     "perfect"
   when 90, 95
     "great"
+  when 80..99
+    "passing"
   else
     "ok"
   end
 end
 ```
+
+`when` range candidates test numeric membership. Non-range candidates still use value equality.
 
 ## `while` and `until`
 
