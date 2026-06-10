@@ -345,3 +345,152 @@ func findCompletionItem(t *testing.T, items []map[string]any, label string) map[
 	t.Fatalf("missing completion item %q", label)
 	return nil
 }
+
+func TestHandleMessageFormattingReturnsFullDocumentEdit(t *testing.T) {
+	t.Parallel()
+	server := &lspServer{
+		engine: vibes.MustNewEngine(vibes.Config{}),
+		docs: map[string]string{
+			"file:///tmp/fmt.vibe": "def run()  \n  1\t\nend",
+		},
+	}
+	params := map[string]any{
+		"textDocument": map[string]any{"uri": "file:///tmp/fmt.vibe"},
+	}
+	payload, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("7"),
+		Method:  "textDocument/formatting",
+		Params:  payload,
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected one response, got %d", len(messages))
+	}
+	edits, ok := messages[0].Result.([]map[string]any)
+	if !ok || len(edits) != 1 {
+		t.Fatalf("expected one text edit, got %#v", messages[0].Result)
+	}
+	if edits[0]["newText"] != "def run()\n  1\nend\n" {
+		t.Fatalf("newText = %q, want canonical formatting", edits[0]["newText"])
+	}
+	rng := edits[0]["range"].(map[string]any)
+	start := rng["start"].(map[string]any)
+	end := rng["end"].(map[string]any)
+	if start["line"] != 0 || start["character"] != 0 {
+		t.Fatalf("start = %#v, want document start", start)
+	}
+	if end["line"] != 2 || end["character"] != 3 {
+		t.Fatalf("end = %#v, want end of last line (2:3)", end)
+	}
+}
+
+func TestHandleMessageFormattingAlreadyFormatted(t *testing.T) {
+	t.Parallel()
+	server := &lspServer{
+		engine: vibes.MustNewEngine(vibes.Config{}),
+		docs: map[string]string{
+			"file:///tmp/clean.vibe": "def run()\n  1\nend\n",
+		},
+	}
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": "file:///tmp/clean.vibe"},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("8"),
+		Method:  "textDocument/formatting",
+		Params:  payload,
+	})
+	edits, ok := messages[0].Result.([]map[string]any)
+	if !ok || len(edits) != 0 {
+		t.Fatalf("expected zero edits for formatted doc, got %#v", messages[0].Result)
+	}
+}
+
+func TestHandleMessageFormattingUnknownDocument(t *testing.T) {
+	t.Parallel()
+	server := &lspServer{
+		engine: vibes.MustNewEngine(vibes.Config{}),
+		docs:   map[string]string{},
+	}
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": "file:///tmp/missing.vibe"},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("9"),
+		Method:  "textDocument/formatting",
+		Params:  payload,
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected one response, got %d", len(messages))
+	}
+	payload, err = json.Marshal(messages[0])
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if !strings.Contains(string(payload), `"result":null`) {
+		t.Fatalf("response %s must carry an explicit null result", payload)
+	}
+	if strings.Contains(string(payload), `"error"`) {
+		t.Fatalf("response %s must not carry an error", payload)
+	}
+}
+
+func TestFormattingEditsHandleBareCarriageReturns(t *testing.T) {
+	t.Parallel()
+	// "a\rb\r" is three client-visible lines (the last empty); the edit
+	// range must end at line 2 character 0, not line 0 character 4.
+	edits := formattingEdits("a\rb\r")
+	if len(edits) != 1 {
+		t.Fatalf("expected one edit, got %#v", edits)
+	}
+	if edits[0]["newText"] != "a\nb\n" {
+		t.Fatalf("newText = %q, want normalized line endings", edits[0]["newText"])
+	}
+	end := edits[0]["range"].(map[string]any)["end"].(map[string]any)
+	if end["line"] != 2 || end["character"] != 0 {
+		t.Fatalf("end = %#v, want line 2 character 0", end)
+	}
+}
+
+func TestSplitLSPLines(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{name: "lf", text: "a\nb", want: []string{"a", "b"}},
+		{name: "crlf", text: "a\r\nb", want: []string{"a", "b"}},
+		{name: "bare_cr", text: "a\rb\r", want: []string{"a", "b", ""}},
+		{name: "mixed", text: "a\r\nb\rc\n", want: []string{"a", "b", "c", ""}},
+		{name: "empty", text: "", want: []string{""}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitLSPLines(tc.text)
+			if len(got) != len(tc.want) {
+				t.Fatalf("splitLSPLines(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("splitLSPLines(%q)[%d] = %q, want %q", tc.text, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

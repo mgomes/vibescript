@@ -15,6 +15,7 @@ vibes lsp
 | `textDocument/publishDiagnostics` | Parse errors reported on open and on every change. |
 | `textDocument/hover` | Classifies the word under the cursor as a keyword, builtin, or symbol. |
 | `textDocument/completion` | Keyword and builtin suggestions. |
+| `textDocument/formatting` | Full-document canonical formatting (the same formatter as `vibes fmt`). |
 
 ### Diagnostics
 
@@ -77,8 +78,6 @@ Intentionally absent for now (tracked for future work):
   user-defined functions, and `.`-member methods are not offered.
 - **Go-to-definition and document symbols** — no symbol index exists yet, so
   navigation requests are not supported.
-- **Formatting** — `textDocument/formatting` is not wired up; run
-  [`vibes fmt`](tooling.md) directly instead.
 - **Signature help** — no parameter hints on `(` or `,`.
 - **Diagnostic ranges at end of input** — diagnostics span the offending
   token when the parser knows it; errors reported at end of input (for
