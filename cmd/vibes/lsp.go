@@ -1016,7 +1016,7 @@ func enclosingCall(source string, line, character int) (string, int, bool) {
 	}
 	runes := []rune(lines[line])
 	cursor := min(utf16OffsetToRuneIndex(lines[line], character), len(runes))
-	masked := maskStringLiterals(runes[:cursor])
+	masked := maskNonCode(runes[:cursor])
 
 	parens, squares, braces := 0, 0, 0
 	activeParam := 0
@@ -1069,6 +1069,22 @@ func enclosingCall(source string, line, character int) (string, int, bool) {
 		}
 	}
 	return "", 0, false
+}
+
+// maskNonCode blanks string literals and the trailing comment so
+// structural scans only see code. Strings are masked first because a
+// "#" inside one is not a comment.
+func maskNonCode(runes []rune) []rune {
+	masked := maskStringLiterals(runes)
+	for i, r := range masked {
+		if r == '#' {
+			for j := i; j < len(masked); j++ {
+				masked[j] = ' '
+			}
+			break
+		}
+	}
+	return masked
 }
 
 // maskStringLiterals replaces double-quoted string literals — quotes,
