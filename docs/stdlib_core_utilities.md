@@ -456,8 +456,10 @@ Enum members obtained via `EnumName::member` expose three properties (see
 
 ## Ranges
 
-Ranges (`1..5`) have no methods; they are consumed by `for ... in` loops and
-case expressions. See [control-flow.md](control-flow.md).
+Ranges (`1..5`) have no methods; they are consumed by `for ... in` loops.
+`case`/`when` compares candidates by equality only, so a range in a `when`
+arm matches only another equal range, not membership. See
+[control-flow.md](control-flow.md).
 
 ## Builtin Functions
 
