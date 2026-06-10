@@ -576,7 +576,7 @@ func (p *parser) parsePropertyDecl(kind ast.TokenType) ast.PropertyDecl {
 }
 
 func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
-	expr := p.parseExpression(lowestPrec)
+	expr := p.parseLineExpression(lowestPrec)
 	if expr == nil {
 		return nil
 	}
@@ -606,7 +606,7 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 }
 
 func (p *parser) parseExpressionWithBlock() ast.Expression {
-	expr := p.parseExpression(lowestPrec)
+	expr := p.parseLineExpression(lowestPrec)
 	if expr == nil {
 		return nil
 	}
@@ -629,17 +629,17 @@ func (p *parser) parseAssertStatement() ast.Statement {
 	pos := p.curToken.Pos
 	callee := &ast.Identifier{Name: p.curToken.Literal, Position: pos}
 	args := []ast.Expression{}
-	p.nextToken()
-	if p.curToken.Type == ast.TokenEOF || p.curToken.Type == ast.TokenEnd {
+	if p.peekToken.Type == ast.TokenEOF || p.peekToken.Type == ast.TokenEnd || p.peekToken.Type == ast.TokenElse || p.peekToken.Type == ast.TokenElsif || p.peekToken.Type == ast.TokenEnsure || p.peekToken.Type == ast.TokenRescue || p.peekToken.Pos.Line != pos.Line {
 		return &ast.ExprStmt{Expr: callee, Position: pos}
 	}
-	first := p.parseExpression(lowestPrec)
+	p.nextToken()
+	first := p.parseLineExpression(lowestPrec)
 	if first != nil {
 		args = append(args, first)
 		for p.peekToken.Type == ast.TokenComma {
 			p.nextToken()
 			p.nextToken()
-			args = append(args, p.parseExpression(lowestPrec))
+			args = append(args, p.parseLineExpression(lowestPrec))
 		}
 	}
 	call := &ast.CallExpr{Callee: callee, Args: args, Position: pos}

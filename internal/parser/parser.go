@@ -18,6 +18,7 @@ type parser struct {
 
 	curToken  ast.Token
 	peekToken ast.Token
+	peekPeek  ast.Token
 
 	errors []error
 
@@ -78,6 +79,7 @@ func newParser(input string) *parser {
 
 	p.nextToken()
 	p.nextToken()
+	p.nextToken()
 
 	return p
 }
@@ -88,7 +90,8 @@ func (p *parser) registerPrefix(tt ast.TokenType, fn prefixParseFn) {
 
 func (p *parser) nextToken() {
 	p.curToken = p.peekToken
-	p.peekToken = p.l.NextToken()
+	p.peekToken = p.peekPeek
+	p.peekPeek = p.l.NextToken()
 }
 
 // Parse lexes and parses the given source text and returns the
