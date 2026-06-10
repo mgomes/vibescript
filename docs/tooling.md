@@ -39,7 +39,8 @@ vibes run -watch ./examples/strings/operations.vibe
 ```
 
 Runs the script immediately, then re-runs it whenever the script file or
-any `.vibe` file in its module directories changes. Compile and runtime
+any `.vibe` file under its module directories changes (nested module
+paths like `require "billing/fees"` are watched too). Compile and runtime
 errors are printed without ending the watch, so you can fix the file and
 save again. Press `ctrl-c` to stop.
 

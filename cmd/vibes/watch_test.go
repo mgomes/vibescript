@@ -100,7 +100,10 @@ func TestWatchScriptRerunsOnModuleFileChange(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "main.vibe")
-	modulePath := filepath.Join(dir, "helper.vibe")
+	if err := os.Mkdir(filepath.Join(dir, "billing"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	modulePath := filepath.Join(dir, "billing", "helper.vibe")
 	writeScriptFile(t, scriptPath, "def run()\n  \"module watch up\"\nend\n")
 	writeScriptFile(t, modulePath, "def helper()\n  1\nend\n")
 
@@ -135,14 +138,20 @@ func TestWatchScriptRerunsOnModuleFileChange(t *testing.T) {
 	}
 }
 
-func TestSnapshotWatchTargetsOnlyStampsVibeFiles(t *testing.T) {
+func TestSnapshotWatchTargetsStampsVibeFilesRecursively(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "main.vibe")
 	writeScriptFile(t, scriptPath, "def run()\n  nil\nend\n")
 	writeScriptFile(t, filepath.Join(dir, "helper.vibe"), "def helper()\n  1\nend\n")
 	writeScriptFile(t, filepath.Join(dir, "notes.txt"), "ignored")
-	if err := os.Mkdir(filepath.Join(dir, "nested.vibe"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "billing", "deep"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeScriptFile(t, filepath.Join(dir, "billing", "fees.vibe"), "def fees()\n  2\nend\n")
+	writeScriptFile(t, filepath.Join(dir, "billing", "deep", "rates.vibe"), "def rates()\n  3\nend\n")
+	writeScriptFile(t, filepath.Join(dir, "billing", "readme.md"), "ignored")
+	if err := os.Mkdir(filepath.Join(dir, "dir-named.vibe"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
@@ -150,8 +159,10 @@ func TestSnapshotWatchTargetsOnlyStampsVibeFiles(t *testing.T) {
 	snapshot := snapshotWatchTargets(inv)
 
 	want := map[string]bool{
-		scriptPath:                        true,
-		filepath.Join(dir, "helper.vibe"): true,
+		scriptPath:                                          true,
+		filepath.Join(dir, "helper.vibe"):                   true,
+		filepath.Join(dir, "billing", "fees.vibe"):          true,
+		filepath.Join(dir, "billing", "deep", "rates.vibe"): true,
 	}
 	if len(snapshot) != len(want) {
 		t.Fatalf("snapshot has %d entries (%v), want %d", len(snapshot), snapshot, len(want))

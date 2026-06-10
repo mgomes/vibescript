@@ -56,10 +56,11 @@ func runWatched(ctx context.Context, inv runInvocation, out, status io.Writer) {
 	}
 }
 
-// snapshotWatchTargets stamps the script file plus every .vibe file in
-// the module directories. Files that fail to stat (mid-save renames,
-// deletions) get a zero stamp, so their later reappearance registers as
-// a change and triggers a re-run.
+// snapshotWatchTargets stamps the script file plus every .vibe file under
+// the module directories. The walk is recursive because require requests
+// resolve nested paths (require "sub/helper") below each module root.
+// Files that fail to stat (mid-save renames, deletions) get a zero stamp,
+// so their later reappearance registers as a change and triggers a re-run.
 func snapshotWatchTargets(inv runInvocation) watchSnapshot {
 	snapshot := watchSnapshot{}
 	stamp := func(path string) {
@@ -73,16 +74,13 @@ func snapshotWatchTargets(inv runInvocation) watchSnapshot {
 
 	stamp(inv.scriptPath)
 	for _, dir := range inv.moduleDirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
-				continue
+		_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
+				return nil
 			}
-			stamp(filepath.Join(dir, entry.Name()))
-		}
+			stamp(path)
+			return nil
+		})
 	}
 	return snapshot
 }
