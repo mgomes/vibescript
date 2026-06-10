@@ -16,6 +16,7 @@ vibes lsp
 | `textDocument/hover` | Classifies the word under the cursor as a keyword, builtin, or symbol. |
 | `textDocument/completion` | Context-aware: member methods after `.`, otherwise keywords, builtins, user-defined functions, and the enclosing function's parameters and locals. |
 | `textDocument/formatting` | Full-document canonical formatting (the same formatter as `vibes fmt`). |
+| `textDocument/signatureHelp` | Parameter hints on `(` and `,` for user-defined functions and global builtins. |
 
 ### Diagnostics
 
@@ -85,7 +86,9 @@ Intentionally absent for now (tracked for future work):
   receiver's type.
 - **Go-to-definition and document symbols** — no symbol index exists yet, so
   navigation requests are not supported.
-- **Signature help** — no parameter hints on `(` or `,`.
+- **Single-line signature help** — parameter hints resolve the call by
+  scanning the cursor's line, so calls spanning multiple lines lose
+  hints on continuation lines.
 - **Diagnostic ranges at end of input** — diagnostics span the offending
   token when the parser knows it; errors reported at end of input (for
   example an unterminated block) degrade to single-character ranges.

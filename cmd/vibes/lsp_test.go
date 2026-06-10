@@ -702,6 +702,156 @@ end
 	}
 }
 
+func signatureHelpResult(t *testing.T, server *lspServer, uri string, line, character int) any {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": line, "character": character},
+	})
+	if err != nil {
+		t.Fatalf("marshal signatureHelp params: %v", err)
+	}
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("31"),
+		Method:  "textDocument/signatureHelp",
+		Params:  payload,
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected one signatureHelp response, got %d", len(messages))
+	}
+	return messages[0].Result
+}
+
+func TestSignatureHelpForUserFunction(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/sig.vibe"
+	openDoc(t, server, uri, `def charge(amount: int, currency = "USD", note: string? = nil) -> money
+  money_cents(amount, currency)
+end
+
+def run()
+  charge(100, "USD")
+end
+`)
+
+	result, ok := signatureHelpResult(t, server, uri, 5, 14).(map[string]any)
+	if !ok {
+		t.Fatal("expected signature help for user function")
+	}
+	signatures := result["signatures"].([]map[string]any)
+	if len(signatures) != 1 {
+		t.Fatalf("expected one signature, got %d", len(signatures))
+	}
+	label := signatures[0]["label"].(string)
+	if !strings.Contains(label, "charge(amount: int, currency = …, note: string? = …)") {
+		t.Fatalf("label = %q, want params with types and default markers", label)
+	}
+	if !strings.HasSuffix(label, "-> money") {
+		t.Fatalf("label = %q, want return type suffix", label)
+	}
+	if result["activeParameter"] != 1 {
+		t.Fatalf("activeParameter = %#v, want 1 after the first comma", result["activeParameter"])
+	}
+	params := signatures[0]["parameters"].([]map[string]any)
+	if len(params) != 3 {
+		t.Fatalf("expected 3 parameter labels, got %d", len(params))
+	}
+}
+
+func TestSignatureHelpForBuiltin(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/sigb.vibe"
+	openDoc(t, server, uri, "def run()\n  money_cents(\nend\n")
+
+	result, ok := signatureHelpResult(t, server, uri, 1, 14).(map[string]any)
+	if !ok {
+		t.Fatal("expected signature help for builtin")
+	}
+	signatures := result["signatures"].([]map[string]any)
+	label := signatures[0]["label"].(string)
+	if !strings.Contains(label, "money_cents(cents, currency)") {
+		t.Fatalf("label = %q, want curated builtin signature", label)
+	}
+	if result["activeParameter"] != 0 {
+		t.Fatalf("activeParameter = %#v, want 0", result["activeParameter"])
+	}
+}
+
+func TestSignatureHelpOutsideCallReturnsNull(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/signo.vibe"
+	openDoc(t, server, uri, "def run()\n  x = 1\nend\n")
+
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": 1, "character": 7},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("32"),
+		Method:  "textDocument/signatureHelp",
+		Params:  payload,
+	})
+	wire, err := json.Marshal(messages[0])
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if !strings.Contains(string(wire), `"result":null`) {
+		t.Fatalf("response %s, want explicit null result", wire)
+	}
+}
+
+func TestEnclosingCall(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		source    string
+		line, chr int
+		callee    string
+		param     int
+		ok        bool
+	}{
+		{name: "just_opened", source: "charge(", line: 0, chr: 7, callee: "charge", param: 0, ok: true},
+		{name: "after_comma", source: "charge(1, ", line: 0, chr: 10, callee: "charge", param: 1, ok: true},
+		{name: "nested_call", source: "outer(inner(1, 2), ", line: 0, chr: 12, callee: "inner", param: 0, ok: true},
+		{name: "after_nested_close", source: "outer(inner(1, 2), ", line: 0, chr: 19, callee: "outer", param: 1, ok: true},
+		{name: "closed_call", source: "charge(1)", line: 0, chr: 9, ok: false},
+		{name: "no_call", source: "x = 1", line: 0, chr: 5, ok: false},
+		{name: "grouping_paren", source: "(1 + 2, ", line: 0, chr: 8, ok: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			callee, param, ok := enclosingCall(tc.source, tc.line, tc.chr)
+			if ok != tc.ok {
+				t.Fatalf("enclosingCall(%q) ok = %v, want %v", tc.source, ok, tc.ok)
+			}
+			if !tc.ok {
+				return
+			}
+			if callee != tc.callee || param != tc.param {
+				t.Fatalf("enclosingCall(%q) = (%q, %d), want (%q, %d)", tc.source, callee, param, tc.callee, tc.param)
+			}
+		})
+	}
+}
+
+func TestBuiltinSignaturesMatchRegisteredBuiltins(t *testing.T) {
+	t.Parallel()
+	builtins := vibes.MustNewEngine(vibes.Config{}).Builtins()
+	for name := range builtinSignatures {
+		if _, ok := builtins[name]; !ok {
+			t.Errorf("builtinSignatures entry %q does not correspond to a registered builtin", name)
+		}
+	}
+}
+
 func TestInitializeAdvertisesDotCompletionTrigger(t *testing.T) {
 	t.Parallel()
 	server := newCompletionTestServer()

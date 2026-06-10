@@ -180,6 +180,9 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 						"textDocumentSync":           1,
 						"hoverProvider":              true,
 						"documentFormattingProvider": true,
+						"signatureHelpProvider": map[string]any{
+							"triggerCharacters": []string{"(", ","},
+						},
 						"completionProvider": map[string]any{
 							"resolveProvider":   false,
 							"triggerCharacters": []string{"."},
@@ -245,6 +248,30 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				ID:      incoming.ID,
 				Result:  formattingEdits(source),
 			},
+		}
+	case "textDocument/signatureHelp":
+		if incoming.ID == nil {
+			return nil
+		}
+		var params lspTextDocumentPositionParams
+		if err := json.Unmarshal(incoming.Params, &params); err != nil {
+			return []lspOutboundMessage{
+				{
+					JSONRPC: "2.0",
+					ID:      incoming.ID,
+					Error:   &lspResponseError{Code: -32602, Message: "invalid signatureHelp params"},
+				},
+			}
+		}
+		source := s.docs[params.TextDocument.URI]
+		help := s.signatureHelpAt(params.TextDocument.URI, source, params.Position.Line, params.Position.Character)
+		if help == nil {
+			return []lspOutboundMessage{
+				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
+			}
+		}
+		return []lspOutboundMessage{
+			{JSONRPC: "2.0", ID: incoming.ID, Result: help},
 		}
 	case "textDocument/completion":
 		if incoming.ID == nil {
@@ -915,4 +942,133 @@ func localNames(statements []ast.Statement) []string {
 	}
 	walkStmts(statements)
 	return names
+}
+
+// builtinSignatures maps global function builtins to their documented
+// signatures. Entries are validated against the engine's registered
+// builtins by tests so the table cannot go stale against renames.
+var builtinSignatures = map[string]string{
+	"assert":      "assert(condition, message = nil) -> nil",
+	"money":       `money("12.34 USD") -> money`,
+	"money_cents": "money_cents(cents, currency) -> money",
+	"now":         "now -> time",
+	"random_id":   "random_id(length = 16) -> string",
+	"require":     `require(module, as: nil) -> object`,
+	"to_float":    "to_float(value) -> float",
+	"to_int":      "to_int(value) -> int",
+	"uuid":        "uuid -> string",
+}
+
+// signatureHelpAt resolves the innermost call around the cursor and
+// returns LSP SignatureHelp for it, or nil when no signature is known.
+func (s *lspServer) signatureHelpAt(uri, source string, line, character int) map[string]any {
+	callee, activeParam, ok := enclosingCall(source, line, character)
+	if !ok {
+		return nil
+	}
+
+	if script := s.compiled[uri]; script != nil {
+		if fn, found := script.Function(callee); found {
+			paramLabels := make([]string, 0, len(fn.Params))
+			for _, param := range fn.Params {
+				paramLabels = append(paramLabels, paramLabel(param))
+			}
+			label := fn.Name + "(" + strings.Join(paramLabels, ", ") + ")"
+			if fn.ReturnTy != nil {
+				label += " -> " + ast.FormatTypeExpr(fn.ReturnTy)
+			}
+			return signatureHelpResponse(label, paramLabels, activeParam)
+		}
+	}
+	if label, found := builtinSignatures[callee]; found {
+		return signatureHelpResponse(label, paramLabelsFromSignature(label), activeParam)
+	}
+	return nil
+}
+
+func signatureHelpResponse(label string, paramLabels []string, activeParam int) map[string]any {
+	parameters := make([]map[string]any, 0, len(paramLabels))
+	for _, param := range paramLabels {
+		parameters = append(parameters, map[string]any{"label": param})
+	}
+	if activeParam >= len(parameters) && len(parameters) > 0 {
+		activeParam = len(parameters) - 1
+	}
+	return map[string]any{
+		"signatures": []map[string]any{
+			{
+				"label":      label,
+				"parameters": parameters,
+			},
+		},
+		"activeSignature": 0,
+		"activeParameter": activeParam,
+	}
+}
+
+// enclosingCall scans the cursor's line backwards for the innermost
+// unclosed call and reports the callee name and the zero-based argument
+// index at the cursor. Multi-line calls degrade to no result.
+func enclosingCall(source string, line, character int) (string, int, bool) {
+	lines := splitLSPLines(source)
+	if line < 0 || line >= len(lines) {
+		return "", 0, false
+	}
+	runes := []rune(lines[line])
+	cursor := min(utf16OffsetToRuneIndex(lines[line], character), len(runes))
+
+	depth := 0
+	activeParam := 0
+	for i := cursor - 1; i >= 0; i-- {
+		switch runes[i] {
+		case ')':
+			depth++
+		case '(':
+			if depth > 0 {
+				depth--
+				continue
+			}
+			end := i
+			start := end
+			for start > 0 && isWordRune(runes[start-1]) {
+				start--
+			}
+			if start == end {
+				return "", 0, false
+			}
+			return string(runes[start:end]), activeParam, true
+		case ',':
+			if depth == 0 {
+				activeParam++
+			}
+		}
+	}
+	return "", 0, false
+}
+
+// paramLabel renders one parameter: its name, type annotation when
+// present, and a default marker when the parameter is optional.
+func paramLabel(param ast.Param) string {
+	label := param.Name
+	if param.Type != nil {
+		label += ": " + ast.FormatTypeExpr(param.Type)
+	}
+	if param.DefaultVal != nil {
+		label += " = …"
+	}
+	return label
+}
+
+func paramLabelsFromSignature(label string) []string {
+	open := strings.Index(label, "(")
+	close := strings.LastIndex(label, ")")
+	if open < 0 || close <= open+1 {
+		return nil
+	}
+	parts := strings.Split(label[open+1:close], ",")
+	labels := make([]string, 0, len(parts))
+	for _, part := range parts {
+		labels = append(labels, strings.TrimSpace(part))
+	}
+	return labels
 }
