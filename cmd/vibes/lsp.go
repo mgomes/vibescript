@@ -94,6 +94,12 @@ type lspDidChangeParams struct {
 	} `json:"contentChanges"`
 }
 
+type lspDocumentFormattingParams struct {
+	TextDocument struct {
+		URI string `json:"uri"`
+	} `json:"textDocument"`
+}
+
 type lspTextDocumentPositionParams struct {
 	TextDocument struct {
 		URI string `json:"uri"`
@@ -158,8 +164,9 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				ID:      incoming.ID,
 				Result: map[string]any{
 					"capabilities": map[string]any{
-						"textDocumentSync": 1,
-						"hoverProvider":    true,
+						"textDocumentSync":           1,
+						"hoverProvider":              true,
+						"documentFormattingProvider": true,
 						"completionProvider": map[string]any{
 							"resolveProvider": false,
 						},
@@ -197,6 +204,33 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 		s.docs[params.TextDocument.URI] = latest
 		return []lspOutboundMessage{
 			s.publishDiagnostics(params.TextDocument.URI, latest),
+		}
+	case "textDocument/formatting":
+		if incoming.ID == nil {
+			return nil
+		}
+		var params lspDocumentFormattingParams
+		if err := json.Unmarshal(incoming.Params, &params); err != nil {
+			return []lspOutboundMessage{
+				{
+					JSONRPC: "2.0",
+					ID:      incoming.ID,
+					Error:   &lspResponseError{Code: -32602, Message: "invalid formatting params"},
+				},
+			}
+		}
+		source, ok := s.docs[params.TextDocument.URI]
+		if !ok {
+			return []lspOutboundMessage{
+				{JSONRPC: "2.0", ID: incoming.ID, Result: nil},
+			}
+		}
+		return []lspOutboundMessage{
+			{
+				JSONRPC: "2.0",
+				ID:      incoming.ID,
+				Result:  formattingEdits(source),
+			},
 		}
 	case "textDocument/completion":
 		if incoming.ID == nil {
@@ -527,4 +561,31 @@ func (s *lspServer) writePayload(msg lspOutboundMessage) error {
 		return fmt.Errorf("write payload: %w", err)
 	}
 	return s.writer.Flush()
+}
+
+// formattingEdits returns the TextEdit list for a formatting request:
+// one full-document edit when the canonical formatter changes the
+// source, or no edits when it is already formatted.
+func formattingEdits(source string) []map[string]any {
+	formatted := formatVibeSource(source)
+	if formatted == source {
+		return []map[string]any{}
+	}
+	lines := strings.Split(source, "\n")
+	lastLine := len(lines) - 1
+	return []map[string]any{
+		{
+			"range": map[string]any{
+				"start": map[string]any{
+					"line":      0,
+					"character": 0,
+				},
+				"end": map[string]any{
+					"line":      lastLine,
+					"character": utf16Character(lines[lastLine], len([]rune(lines[lastLine]))),
+				},
+			},
+			"newText": formatted,
+		},
+	}
 }

@@ -345,3 +345,97 @@ func findCompletionItem(t *testing.T, items []map[string]any, label string) map[
 	t.Fatalf("missing completion item %q", label)
 	return nil
 }
+
+func TestHandleMessageFormattingReturnsFullDocumentEdit(t *testing.T) {
+	t.Parallel()
+	server := &lspServer{
+		engine: vibes.MustNewEngine(vibes.Config{}),
+		docs: map[string]string{
+			"file:///tmp/fmt.vibe": "def run()  \n  1\t\nend",
+		},
+	}
+	params := map[string]any{
+		"textDocument": map[string]any{"uri": "file:///tmp/fmt.vibe"},
+	}
+	payload, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("7"),
+		Method:  "textDocument/formatting",
+		Params:  payload,
+	})
+	if len(messages) != 1 {
+		t.Fatalf("expected one response, got %d", len(messages))
+	}
+	edits, ok := messages[0].Result.([]map[string]any)
+	if !ok || len(edits) != 1 {
+		t.Fatalf("expected one text edit, got %#v", messages[0].Result)
+	}
+	if edits[0]["newText"] != "def run()\n  1\nend\n" {
+		t.Fatalf("newText = %q, want canonical formatting", edits[0]["newText"])
+	}
+	rng := edits[0]["range"].(map[string]any)
+	start := rng["start"].(map[string]any)
+	end := rng["end"].(map[string]any)
+	if start["line"] != 0 || start["character"] != 0 {
+		t.Fatalf("start = %#v, want document start", start)
+	}
+	if end["line"] != 2 || end["character"] != 3 {
+		t.Fatalf("end = %#v, want end of last line (2:3)", end)
+	}
+}
+
+func TestHandleMessageFormattingAlreadyFormatted(t *testing.T) {
+	t.Parallel()
+	server := &lspServer{
+		engine: vibes.MustNewEngine(vibes.Config{}),
+		docs: map[string]string{
+			"file:///tmp/clean.vibe": "def run()\n  1\nend\n",
+		},
+	}
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": "file:///tmp/clean.vibe"},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("8"),
+		Method:  "textDocument/formatting",
+		Params:  payload,
+	})
+	edits, ok := messages[0].Result.([]map[string]any)
+	if !ok || len(edits) != 0 {
+		t.Fatalf("expected zero edits for formatted doc, got %#v", messages[0].Result)
+	}
+}
+
+func TestHandleMessageFormattingUnknownDocument(t *testing.T) {
+	t.Parallel()
+	server := &lspServer{
+		engine: vibes.MustNewEngine(vibes.Config{}),
+		docs:   map[string]string{},
+	}
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": "file:///tmp/missing.vibe"},
+	})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+
+	messages := server.handleMessage(lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("9"),
+		Method:  "textDocument/formatting",
+		Params:  payload,
+	})
+	if len(messages) != 1 || messages[0].Result != nil {
+		t.Fatalf("expected nil result for unknown doc, got %#v", messages)
+	}
+}
