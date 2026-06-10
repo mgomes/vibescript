@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -939,4 +941,109 @@ end
 `
 	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 8192}, source)
 	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
+}
+
+func TestBuiltinRebindingStaysCallLocal(t *testing.T) {
+	t.Parallel()
+	// Function builtins live in the engine-shared frozen proto env;
+	// assigning over one must rebind in the call root, never mutate the
+	// shared scope, and never leak into later calls.
+	source := `
+def shadow()
+  uuid = "not callable"
+  uuid
+end
+
+def probe()
+  uuid()
+end
+`
+	script := compileScriptDefault(t, source)
+
+	result := callScript(t, context.Background(), script, "shadow", nil, CallOptions{})
+	if !result.Equal(NewString("not callable")) {
+		t.Fatalf("shadow() = %#v, want rebound value within its own call", result)
+	}
+
+	probed := callScript(t, context.Background(), script, "probe", nil, CallOptions{})
+	if probed.Kind() != KindString || probed.Equal(NewString("not callable")) {
+		t.Fatalf("probe() after shadow() = %#v, want the uuid builtin restored for the new call", probed)
+	}
+}
+
+func TestNestedBuiltinAssignmentBindsAtRoot(t *testing.T) {
+	t.Parallel()
+	// Assignment walks to the outermost mutable scope when the name is
+	// only bound in the frozen proto, matching the pre-proto behavior
+	// where builtins lived in the call root itself.
+	source := `
+def rebind()
+  uuid = "shadowed"
+  nil
+end
+
+def run()
+  rebind()
+  uuid
+end
+`
+	script := compileScriptDefault(t, source)
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if !result.Equal(NewString("shadowed")) {
+		t.Fatalf("uuid after rebind() = %#v, want root-level rebinding visible after the call", result)
+	}
+}
+
+func TestRegisterBuiltinVisibleToSubsequentCalls(t *testing.T) {
+	t.Parallel()
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile("def run()\n  late_builtin()\nend")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err == nil {
+		t.Fatal("expected undefined builtin before registration")
+	}
+
+	engine.RegisterBuiltin("late_builtin", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewInt(42), nil
+	})
+
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if !result.Equal(NewInt(42)) {
+		t.Fatalf("run() after registration = %#v, want 42 (proto must rebuild)", result)
+	}
+}
+
+func TestConcurrentCallsAndBuiltinRegistration(t *testing.T) {
+	t.Parallel()
+	engine := MustNewEngine(Config{})
+	script, err := engine.Compile("def run()\n  to_int(\"7\") + 1\nend")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for worker := range 4 {
+		wg.Go(func() {
+			for i := range 50 {
+				result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+				if err != nil {
+					t.Errorf("worker %d call %d: %v", worker, i, err)
+					return
+				}
+				if !result.Equal(NewInt(8)) {
+					t.Errorf("worker %d call %d = %#v, want 8", worker, i, result)
+					return
+				}
+			}
+		})
+	}
+	for i := range 25 {
+		engine.RegisterBuiltin(fmt.Sprintf("registered_%d", i), func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return NewNil(), nil
+		})
+	}
+	wg.Wait()
 }

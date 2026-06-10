@@ -20,6 +20,7 @@ const (
 )
 
 type memoryEstimator struct {
+	seenFrozen    *Env
 	seenEnvs      map[*Env]struct{}
 	seenMaps      map[uintptr]struct{}
 	seenSlices    map[uintptr]struct{}
@@ -165,12 +166,23 @@ func (est *memoryEstimator) env(env *Env) int {
 	if env == nil {
 		return 0
 	}
+	if env.frozen {
+		// The engine's frozen builtin proto terminates every env chain,
+		// so it is revisited on each walk; a single-slot cache replaces
+		// the map insert the seen-set would pay per estimate. Frozen
+		// envs hold only statically accounted bindings and no parent.
+		if est.seenFrozen == env {
+			return 0
+		}
+		est.seenFrozen = env
+		return estimatedEnvBytes + estimatedMapBaseBytes + int(env.staticBytes)
+	}
 	if _, seen := est.seenEnvs[env]; seen {
 		return 0
 	}
 	est.seenEnvs[env] = struct{}{}
 
-	size := estimatedEnvBytes + estimatedMapBaseBytes + env.staticBytes + len(env.values)*estimatedMapEntryBytes
+	size := estimatedEnvBytes + estimatedMapBaseBytes + int(env.staticBytes) + len(env.values)*estimatedMapEntryBytes
 	for name, val := range env.values {
 		size += estimatedStringHeaderBytes + len(name)
 		size += est.value(val)

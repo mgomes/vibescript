@@ -14,7 +14,13 @@ type Env struct {
 	parent      *Env
 	values      map[string]Value
 	statics     map[string]Value
-	staticBytes int
+	staticBytes int32
+
+	// frozen marks engine-shared scopes (the builtin proto). Their
+	// bindings are readable through the chain but never written:
+	// assignments to names found here rebind in the nearest call-local
+	// scope instead, exactly as if the binding lived in the call root.
+	frozen bool
 }
 
 func newEnv(parent *Env) *Env {
@@ -65,31 +71,43 @@ func (e *Env) DefineStatic(name string, val Value) {
 		e.statics = make(map[string]Value)
 	}
 	if _, exists := e.statics[name]; !exists {
-		e.staticBytes += staticEntryBytes(name)
+		e.staticBytes += int32(staticEntryBytes(name))
 	}
 	e.statics[name] = val
 }
 
-// Assign updates an existing variable in the nearest enclosing scope, or defines it in the current scope.
+// Assign updates an existing variable in the nearest enclosing scope.
+// Names not bound anywhere are defined in the outermost mutable scope,
+// and names found in a frozen scope rebind in the nearest mutable scope
+// below it, so engine-shared bindings are never written.
 func (e *Env) Assign(name string, val Value) bool {
-	if _, ok := e.values[name]; ok {
-		e.values[name] = val
-		return true
-	}
-	if _, ok := e.statics[name]; ok {
-		// The binding is no longer immutable-by-binding; demote it so
-		// estimation starts walking its (now mutable) value.
-		e.dropStatic(name)
-		e.values[name] = val
-		return true
-	}
-	if e.parent != nil {
-		if e.parent.Assign(name, val) {
+	last := e
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.frozen {
+			_, inValues := scope.values[name]
+			_, inStatics := scope.statics[name]
+			if inValues || inStatics {
+				last.values[name] = val
+				last.dropStatic(name)
+				return true
+			}
+			continue
+		}
+		if _, ok := scope.values[name]; ok {
+			scope.values[name] = val
 			return true
 		}
+		if _, ok := scope.statics[name]; ok {
+			// The binding is no longer immutable-by-binding; demote it
+			// so estimation starts walking its (now mutable) value.
+			scope.dropStatic(name)
+			scope.values[name] = val
+			return true
+		}
+		last = scope
 	}
-	e.values[name] = val
-	e.dropStatic(name)
+	last.values[name] = val
+	last.dropStatic(name)
 	return true
 }
 
@@ -137,7 +155,7 @@ func (e *Env) dropStatic(name string) {
 		return
 	}
 	delete(e.statics, name)
-	e.staticBytes -= staticEntryBytes(name)
+	e.staticBytes -= int32(staticEntryBytes(name))
 }
 
 // staticEntryBytes is the estimation cost of one static binding: its map

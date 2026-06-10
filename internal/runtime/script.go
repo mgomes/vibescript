@@ -21,8 +21,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	rootCapacity := len(s.classes) + len(opts.Globals) + len(opts.Capabilities)*2
 	root := newEnvWithCapacity(nil, rootCapacity)
-	root.growStatics(s.engine.builtinCount() + len(s.functions) + len(s.enums))
-	s.engine.defineBuiltinsForCall(root)
+	s.engine.attachBuiltins(root, len(s.functions)+len(s.enums))
 
 	callFunctions := cloneFunctionsForCall(s.functions, root)
 	fn, ok := callFunctions[name]

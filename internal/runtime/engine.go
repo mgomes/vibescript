@@ -43,6 +43,13 @@ type Engine struct {
 	modPaths   []string
 	modMu      sync.RWMutex
 	randomMu   sync.Mutex
+
+	// builtinProto is the frozen env shared as every call root's parent.
+	// It holds the builtins whose values need no per-call cloning
+	// (everything except array/hash/object builtins), so call setup
+	// skips re-defining them. Rebuilt lazily after RegisterBuiltin.
+	builtinProto   *Env
+	clonedBuiltins int
 }
 
 // NewEngine constructs an Engine with sane defaults and registers built-ins.
@@ -170,6 +177,7 @@ func (e *Engine) RegisterBuiltin(name string, fn BuiltinFunc) {
 	defer e.builtinsMu.Unlock()
 
 	e.builtins[name] = NewBuiltin(name, fn)
+	e.builtinProto = nil
 }
 
 // RegisterZeroArgBuiltin registers a builtin that can be invoked without arguments or parentheses.
@@ -178,6 +186,7 @@ func (e *Engine) RegisterZeroArgBuiltin(name string, fn BuiltinFunc) {
 	defer e.builtinsMu.Unlock()
 
 	e.builtins[name] = NewAutoBuiltin(name, fn)
+	e.builtinProto = nil
 }
 
 func registerCoreBuiltins(engine *Engine) {
@@ -220,19 +229,61 @@ func (e *Engine) builtinSnapshot() map[string]Value {
 	return out
 }
 
-func (e *Engine) builtinCount() int {
+// attachBuiltins chains root to the engine's frozen builtin proto env
+// and defines the per-call cloned builtins, all under one lock
+// acquisition so a concurrent RegisterBuiltin cannot produce a root
+// whose proto and clones reflect different builtin snapshots.
+func (e *Engine) attachBuiltins(root *Env, extraStatics int) {
 	e.builtinsMu.RLock()
-	defer e.builtinsMu.RUnlock()
+	if e.builtinProto != nil {
+		defer e.builtinsMu.RUnlock()
+		e.bindBuiltinsLocked(root, extraStatics)
+		return
+	}
+	e.builtinsMu.RUnlock()
 
-	return len(e.builtins)
+	e.builtinsMu.Lock()
+	defer e.builtinsMu.Unlock()
+	if e.builtinProto == nil {
+		proto := newEnv(nil)
+		proto.growStatics(len(e.builtins))
+		cloned := 0
+		for name, builtin := range e.builtins {
+			if builtinNeedsCallClone(builtin) {
+				cloned++
+				continue
+			}
+			proto.DefineStatic(name, builtin)
+		}
+		proto.frozen = true
+		e.builtinProto = proto
+		e.clonedBuiltins = cloned
+	}
+	e.bindBuiltinsLocked(root, extraStatics)
 }
 
-func (e *Engine) defineBuiltinsForCall(root *Env) {
-	e.builtinsMu.RLock()
-	defer e.builtinsMu.RUnlock()
-
+// bindBuiltinsLocked wires root to the current proto and defines the
+// mutable builtins. Callers must hold builtinsMu.
+func (e *Engine) bindBuiltinsLocked(root *Env, extraStatics int) {
+	root.parent = e.builtinProto
+	root.growStatics(e.clonedBuiltins + extraStatics)
 	for name, builtin := range e.builtins {
+		if !builtinNeedsCallClone(builtin) {
+			continue
+		}
 		root.DefineStatic(name, cloneBuiltinValueForCall(builtin))
+	}
+}
+
+// builtinNeedsCallClone reports whether a builtin value is mutable from
+// scripts (arrays, hashes, object namespaces like JSON or Time) and must
+// therefore be deep-cloned into each call root for isolation.
+func builtinNeedsCallClone(val Value) bool {
+	switch val.Kind() {
+	case KindArray, KindHash, KindObject:
+		return true
+	default:
+		return false
 	}
 }
 

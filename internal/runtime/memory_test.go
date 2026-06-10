@@ -78,7 +78,7 @@ func TestEnvAssignDemotesStaticBindings(t *testing.T) {
 	payload := strings.Repeat("b", 16384)
 	env := newEnv(nil)
 	env.DefineStatic("name", NewInt(1))
-	if env.staticBytes != staticEntryBytes("name") {
+	if env.staticBytes != int32(staticEntryBytes("name")) {
 		t.Fatalf("staticBytes = %d, want %d", env.staticBytes, staticEntryBytes("name"))
 	}
 
