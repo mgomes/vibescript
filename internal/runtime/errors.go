@@ -37,6 +37,7 @@ func (e *assertionFailureError) Error() string {
 const (
 	runtimeErrorTypeBase      = ast.RuntimeErrorTypeBase
 	runtimeErrorTypeAssertion = ast.RuntimeErrorTypeAssertion
+	runtimeErrorTypeLimit     = ast.RuntimeErrorTypeLimit
 	runtimeErrorFrameHead     = 8
 	runtimeErrorFrameTail     = 8
 )
@@ -95,6 +96,9 @@ func (re *RuntimeError) Unwrap() error {
 func classifyRuntimeErrorType(err error) string {
 	if err == nil {
 		return runtimeErrorTypeBase
+	}
+	if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
+		return runtimeErrorTypeLimit
 	}
 	var assertionErr *assertionFailureError
 	if errors.As(err, &assertionErr) {

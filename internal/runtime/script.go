@@ -56,7 +56,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	}
 
 	if err := exec.checkMemory(); err != nil {
-		return NewNil(), err
+		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
 	if err := initializeClassBodiesForCall(exec, root, callClasses); err != nil {
@@ -65,7 +65,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	callEnv, err := prepareCallEnvForFunction(exec, root, rebinder, fn, args, opts.Keywords)
 	if err != nil {
-		return NewNil(), err
+		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
 	val, err := executeFunctionForCall(exec, fn, callEnv)

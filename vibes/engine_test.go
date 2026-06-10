@@ -286,6 +286,29 @@ func TestScriptCallRuntimeErrorSurface(t *testing.T) {
 	}
 }
 
+func TestScriptCallLimitErrorType(t *testing.T) {
+	t.Parallel()
+
+	engine := vibes.MustNewEngine(vibes.Config{StepQuota: 8})
+	script, err := engine.Compile("def spin()\n  while true\n  end\nend")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = script.Call(context.Background(), "spin", nil, vibes.CallOptions{})
+	if err == nil {
+		t.Fatal("Call(spin): expected limit error, got nil")
+	}
+
+	var runtimeErr *vibes.RuntimeError
+	if !errors.As(err, &runtimeErr) {
+		t.Fatalf("Call(spin) error type = %T, want *vibes.RuntimeError", err)
+	}
+	if runtimeErr.Type != "LimitError" {
+		t.Errorf("RuntimeError.Type = %q, want %q", runtimeErr.Type, "LimitError")
+	}
+}
+
 func TestEngineExecute(t *testing.T) {
 	t.Parallel()
 

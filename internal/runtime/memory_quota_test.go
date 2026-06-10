@@ -44,7 +44,7 @@ end
 
 func requireRunMemoryQuotaError(t *testing.T, script *Script, args []Value, opts CallOptions) {
 	t.Helper()
-	requireCallErrorIs(t, script, "run", args, opts, errMemoryQuotaExceeded)
+	requireCallRuntimeErrorType(t, script, "run", args, opts, runtimeErrorTypeLimit)
 }
 
 // buildLargeStringArrayLiteral builds an ArrayLiteral AST node of `count`

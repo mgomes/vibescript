@@ -812,9 +812,11 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 	defer exec.popEnv()
 
 	result := NewNil()
+	var lastPos Position
 	for _, stmt := range stmts {
+		lastPos = stmt.Pos()
 		if err := exec.step(); err != nil {
-			return NewNil(), false, err
+			return NewNil(), false, exec.wrapError(err, stmt.Pos())
 		}
 		val, returned, err := exec.evalStatement(stmt, env)
 		if err != nil {
@@ -822,11 +824,11 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		}
 		if _, isAssign := stmt.(*AssignStmt); isAssign {
 			if err := exec.checkMemory(); err != nil {
-				return NewNil(), false, err
+				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}
 		} else {
 			if err := exec.checkMemoryWith(val); err != nil {
-				return NewNil(), false, err
+				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}
 		}
 		if returned {
@@ -835,7 +837,7 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		result = val
 	}
 	if err := exec.checkMemory(); err != nil {
-		return NewNil(), false, err
+		return NewNil(), false, exec.wrapError(err, lastPos)
 	}
 	return result, false, nil
 }
@@ -971,18 +973,13 @@ func isLoopControlSignal(err error) bool {
 
 func isHostControlSignal(err error) bool {
 	return errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, errStepQuotaExceeded) ||
-		errors.Is(err, errMemoryQuotaExceeded)
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 func runtimeErrorMatchesRescueType(err error, rescueTy *TypeExpr) bool {
-	var runtimeErr *RuntimeError
-	if !errors.As(err, &runtimeErr) {
-		return false
-	}
 	if rescueTy == nil {
-		return true
+		var runtimeErr *RuntimeError
+		return errors.As(err, &runtimeErr) && classifyRuntimeErrorType(runtimeErr) != runtimeErrorTypeLimit
 	}
 	errKind := classifyRuntimeErrorType(err)
 	return rescueTypeMatchesErrorKind(rescueTy, errKind)

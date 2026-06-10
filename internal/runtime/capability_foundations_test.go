@@ -77,7 +77,7 @@ end`)
 	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
 		MustNewDBCapability("db", db),
 	))
-	requireErrorIs(t, err, errStepQuotaExceeded)
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
 }
 
 func TestCapabilityFoundationsEachNoopBlockRespectsStepQuota(t *testing.T) {
@@ -96,7 +96,7 @@ end`)
 	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
 		MustNewDBCapability("db", db),
 	))
-	requireErrorIs(t, err, errStepQuotaExceeded)
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
 }
 
 func TestCapabilityFoundationsEachRespectsRecursionLimit(t *testing.T) {

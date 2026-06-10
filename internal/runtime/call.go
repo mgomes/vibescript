@@ -186,6 +186,9 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	if err != nil && !isLoopControlSignal(err) {
+		err = exec.wrapError(err, pos)
+	}
 	exec.popReceiver()
 	exec.popModuleContext()
 	exec.popFrame()
@@ -654,6 +657,9 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 		return NewNil(), err
 	}
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	if err != nil {
+		err = exec.wrapError(err, fn.Pos)
+	}
 	exec.popFrame()
 	if err != nil {
 		return NewNil(), err
@@ -670,7 +676,7 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 		val = normalized
 	}
 	if err := exec.checkMemoryWith(val); err != nil {
-		return NewNil(), err
+		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 	if returned {
 		return val, nil

@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
@@ -121,10 +120,7 @@ end`
 			script := compileScriptWithConfig(t, tc.cfg, tc.source)
 			if tc.wantErr != "" {
 				err := callScriptErr(t, context.Background(), script, tc.fn, tc.args, CallOptions{})
-				var re *RuntimeError
-				if !errors.As(err, &re) {
-					t.Fatalf("expected RuntimeError, got %T", err)
-				}
+				requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
 				requireErrorContains(t, err, tc.wantErr)
 				return
 			}
