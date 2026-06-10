@@ -993,3 +993,22 @@ end
 		t.Fatal("locals leaked above the shifted decorated function")
 	}
 }
+
+func TestSignatureHelpForParenlessAssert(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/parenless.vibe"
+	openDoc(t, server, uri, "def run()\n  assert 1 == 1, \"ok\"\nend\n")
+
+	result, ok := signatureHelpResult(t, server, uri, 1, 17).(map[string]any)
+	if !ok {
+		t.Fatal("expected signature help for paren-less assert")
+	}
+	label := result["signatures"].([]map[string]any)[0]["label"].(string)
+	if !strings.Contains(label, "assert(condition, message = nil)") {
+		t.Fatalf("label = %q, want assert signature", label)
+	}
+	if result["activeParameter"] != 1 {
+		t.Fatalf("activeParameter = %#v, want 1 after the comma", result["activeParameter"])
+	}
+}

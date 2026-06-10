@@ -964,7 +964,10 @@ var builtinSignatures = map[string]string{
 func (s *lspServer) signatureHelpAt(uri, source string, line, character int) map[string]any {
 	callee, activeParam, ok := enclosingCall(source, line, character)
 	if !ok {
-		return nil
+		callee, activeParam, ok = parenlessCall(source, line, character)
+		if !ok {
+			return nil
+		}
 	}
 
 	if script := s.compiled[uri]; script != nil {
@@ -1069,6 +1072,69 @@ func enclosingCall(source string, line, character int) (string, int, bool) {
 		}
 	}
 	return "", 0, false
+}
+
+// parenlessStatementBuiltins are the builtins the parser accepts in the
+// no-paren statement form ("assert cond, msg"); only these produce
+// signature help without an opening parenthesis.
+var parenlessStatementBuiltins = map[string]struct{}{
+	"assert": {},
+}
+
+// parenlessCall resolves the no-paren statement call form: the line's
+// first word, when it is a paren-less-capable builtin followed by
+// arguments, with the active argument counted by top-level commas.
+func parenlessCall(source string, line, character int) (string, int, bool) {
+	lines := splitLSPLines(source)
+	if line < 0 || line >= len(lines) {
+		return "", 0, false
+	}
+	runes := []rune(lines[line])
+	cursor := min(utf16OffsetToRuneIndex(lines[line], character), len(runes))
+	masked := maskNonCode(runes[:cursor])
+
+	start := 0
+	for start < cursor && (masked[start] == ' ' || masked[start] == '\t') {
+		start++
+	}
+	end := start
+	for end < cursor && isWordRune(masked[end]) {
+		end++
+	}
+	if end == start || end >= cursor {
+		return "", 0, false
+	}
+	callee := string(masked[start:end])
+	if _, ok := parenlessStatementBuiltins[callee]; !ok {
+		return "", 0, false
+	}
+	if masked[end] != ' ' && masked[end] != '\t' {
+		return "", 0, false
+	}
+
+	parens, squares, braces := 0, 0, 0
+	activeParam := 0
+	for i := end; i < cursor; i++ {
+		switch masked[i] {
+		case '(':
+			parens++
+		case ')':
+			parens--
+		case '[':
+			squares++
+		case ']':
+			squares--
+		case '{':
+			braces++
+		case '}':
+			braces--
+		case ',':
+			if parens == 0 && squares == 0 && braces == 0 {
+				activeParam++
+			}
+		}
+	}
+	return callee, activeParam, true
 }
 
 // maskNonCode blanks string literals and the trailing comment so
