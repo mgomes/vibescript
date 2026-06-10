@@ -99,6 +99,78 @@ end`,
 	}
 }
 
+func TestRunCommandInlineEval(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		args    []string
+		wantOut string
+		wantErr string
+	}{
+		{
+			name:    "prints_expression_result",
+			args:    []string{"-e", "1 + 2"},
+			wantOut: "3",
+		},
+		{
+			name:    "multi_statement_snippet",
+			args:    []string{"-e", "x = 2\ny = 3\nx * y"},
+			wantOut: "6",
+		},
+		{
+			name: "check_only_compiles_without_executing",
+			args: []string{"-check", "-e", "1 + 2"},
+		},
+		{
+			name:    "compile_error_surfaces",
+			args:    []string{"-e", "def oops("},
+			wantErr: "compile failed",
+		},
+		{
+			name:    "empty_snippet_rejected",
+			args:    []string{"-e", "   "},
+			wantErr: "requires a non-empty snippet",
+		},
+		{
+			name:    "watch_combination_rejected",
+			args:    []string{"-watch", "-e", "1"},
+			wantErr: "-e cannot be combined with -watch",
+		},
+		{
+			name:    "function_combination_rejected",
+			args:    []string{"-function", "main", "-e", "1"},
+			wantErr: "-e cannot be combined with -function",
+		},
+		{
+			name:    "positional_args_rejected",
+			args:    []string{"-e", "1", "extra"},
+			wantErr: "-e does not accept positional arguments",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := captureStdout(t, func() error {
+				return runCommand(tc.args)
+			})
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("runCommand(%v) err = nil, want %q", tc.args, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("runCommand(%v) err = %v, want substring %q", tc.args, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("runCommand(%v) err = %v, want nil", tc.args, err)
+			}
+			if got := strings.TrimSpace(out); got != tc.wantOut {
+				t.Fatalf("runCommand(%v) stdout = %q, want %q", tc.args, got, tc.wantOut)
+			}
+		})
+	}
+}
+
 func TestAnalyzeCommand(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -211,10 +283,9 @@ end`,
 func TestComputeModulePathsIncludesScriptDirAndDedupesExtras(t *testing.T) {
 	t.Parallel()
 	scriptDir := newTestCLI(t)
-	scriptPath := filepath.Join(scriptDir, "main.vibe")
 	extraDir := newTestCLI(t)
 
-	dirs, err := computeModulePaths(scriptPath, []string{scriptDir, extraDir, extraDir})
+	dirs, err := computeModulePaths(scriptDir, []string{scriptDir, extraDir, extraDir})
 	if err != nil {
 		t.Fatalf("computeModulePaths failed: %v", err)
 	}
@@ -241,13 +312,12 @@ func TestComputeModulePathsIncludesScriptDirAndDedupesExtras(t *testing.T) {
 func TestComputeModulePathsRejectsNonDirectoryExtra(t *testing.T) {
 	t.Parallel()
 	scriptDir := newTestCLI(t)
-	scriptPath := filepath.Join(scriptDir, "main.vibe")
 	file := filepath.Join(newTestCLI(t), "not-a-dir")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write temp file: %v", err)
 	}
 
-	_, err := computeModulePaths(scriptPath, []string{file})
+	_, err := computeModulePaths(scriptDir, []string{file})
 	if err == nil {
 		t.Fatalf("expected non-directory module path error")
 	}

@@ -100,7 +100,6 @@ func TestRapidComputeModulePathsMatchesDirectoryModel(t *testing.T) {
 			}
 		}
 
-		scriptPath := filepath.Join(scriptDir, "main.vibe")
 		choices := []string{scriptDir, extraA, extraB}
 		indexes := rapid.SliceOfN(rapid.IntRange(0, len(choices)-1), 0, 12).Draw(rt, "module path indexes")
 		extras := make([]string, len(indexes))
@@ -118,17 +117,17 @@ func TestRapidComputeModulePathsMatchesDirectoryModel(t *testing.T) {
 			rt.Fatalf("pathList.String() after Set(%v) = %q, want %q", extras, got, want)
 		}
 
-		got, err := computeModulePaths(scriptPath, modulePaths)
+		got, err := computeModulePaths(scriptDir, modulePaths)
 		if err != nil {
-			rt.Fatalf("computeModulePaths(%q, %v) error = %v, want nil", scriptPath, extras, err)
+			rt.Fatalf("computeModulePaths(%q, %v) error = %v, want nil", scriptDir, extras, err)
 		}
 		want := modelModulePaths(rt, scriptDir, extras)
 		if len(got) != len(want) {
-			rt.Fatalf("computeModulePaths(%q, %v) length = %d (%v), want %d (%v)", scriptPath, extras, len(got), got, len(want), want)
+			rt.Fatalf("computeModulePaths(%q, %v) length = %d (%v), want %d (%v)", scriptDir, extras, len(got), got, len(want), want)
 		}
 		for i := range got {
 			if got[i] != want[i] {
-				rt.Fatalf("computeModulePaths(%q, %v)[%d] = %q, want %q; got all %v want all %v", scriptPath, extras, i, got[i], want[i], got, want)
+				rt.Fatalf("computeModulePaths(%q, %v)[%d] = %q, want %q; got all %v want all %v", scriptDir, extras, i, got[i], want[i], got, want)
 			}
 		}
 	})
