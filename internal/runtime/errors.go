@@ -16,6 +16,9 @@ var _ error = (*RuntimeError)(nil)
 type StackFrame struct {
 	Function string
 	Pos      Position
+	// Source is the module path for module-backed frames. It is empty for
+	// root scripts compiled directly by an embedder.
+	Source string
 }
 
 // RuntimeError represents a Vibescript runtime error with a call stack and source context.
@@ -157,22 +160,33 @@ func (exec *Execution) newRuntimeErrorWithType(kind, message string, pos Positio
 	if len(exec.callStack) > 0 {
 		// First frame: where the error occurred (within the current function)
 		current := exec.callStack[len(exec.callStack)-1]
-		frames = append(frames, StackFrame{Function: current.Function, Pos: pos})
+		frames = append(frames, StackFrame{Function: current.Function, Pos: pos, Source: stackFrameSource(current.functionScript)})
 
 		// Remaining frames: the call stack (where each function was called from)
 		for i := len(exec.callStack) - 1; i >= 0; i-- {
 			cf := exec.callStack[i]
-			frames = append(frames, StackFrame(cf))
+			frames = append(frames, StackFrame{Function: cf.Function, Pos: cf.Pos, Source: stackFrameSource(cf.callSiteScript)})
 		}
 	} else {
 		// No call stack means error at script top level
-		frames = append(frames, StackFrame{Function: "<script>", Pos: pos})
+		frames = append(frames, StackFrame{Function: "<script>", Pos: pos, Source: stackFrameSource(exec.currentSourceScript())})
 	}
 	codeFrame := ""
-	if exec.script != nil {
-		codeFrame = source.FormatCodeFrame(exec.script.source, pos)
+	sourceScript := exec.script
+	if len(exec.callStack) > 0 && exec.callStack[len(exec.callStack)-1].functionScript != nil {
+		sourceScript = exec.callStack[len(exec.callStack)-1].functionScript
+	}
+	if sourceScript != nil {
+		codeFrame = source.FormatCodeFrame(sourceScript.source, pos)
 	}
 	return &RuntimeError{Type: kind, Message: message, CodeFrame: codeFrame, Frames: frames}
+}
+
+func stackFrameSource(script *Script) string {
+	if script == nil {
+		return ""
+	}
+	return script.modulePath
 }
 
 func (exec *Execution) wrapError(err error, pos Position) error {

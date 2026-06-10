@@ -171,6 +171,73 @@ func TestRunCommandInlineEval(t *testing.T) {
 	}
 }
 
+func TestRunCommandInlineEvalCompileErrorUsesSnippetSource(t *testing.T) {
+	t.Parallel()
+	_, err := captureStdout(t, func() error {
+		return runCommand([]string{"-e", "x = 1\ny = ("})
+	})
+	if err == nil {
+		t.Fatal("runCommand(-e invalid snippet) err = nil, want compile error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"compile failed", "parse error at 2:", "y = (", "unexpected end of snippet"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("runCommand(-e invalid snippet) err = %q, want substring %q", msg, want)
+		}
+	}
+	for _, notWant := range []string{"__eval__", "line 4"} {
+		if strings.Contains(msg, notWant) {
+			t.Fatalf("runCommand(-e invalid snippet) err = %q, must not contain %q", msg, notWant)
+		}
+	}
+}
+
+func TestRunCommandInlineEvalRuntimeErrorUsesSnippetFrame(t *testing.T) {
+	t.Parallel()
+	_, err := captureStdout(t, func() error {
+		return runCommand([]string{"-e", "x = 1\n1 / 0"})
+	})
+	if err == nil {
+		t.Fatal("runCommand(-e runtime error) err = nil, want runtime error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"execution failed", "division by zero", "line 2", "at <snippet> (2:"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("runCommand(-e runtime error) err = %q, want substring %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "__eval__") {
+		t.Fatalf("runCommand(-e runtime error) err = %q, must not mention __eval__", msg)
+	}
+}
+
+func TestRunCommandInlineEvalPreservesModuleRuntimeFrame(t *testing.T) {
+	t.Parallel()
+	dir := newTestCLI(t)
+	helperPath := filepath.Join(dir, "helper.vibe")
+	if err := os.WriteFile(helperPath, []byte("def boom()\n  1 / 0\nend\n"), 0o644); err != nil {
+		t.Fatalf("write helper module: %v", err)
+	}
+
+	_, err := captureStdout(t, func() error {
+		return runCommand([]string{"-module-path", dir, "-e", "helper = require(\"helper\")\nhelper.boom()"})
+	})
+	if err == nil {
+		t.Fatal("runCommand(-e module runtime error) err = nil, want runtime error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"execution failed", "division by zero", "1 / 0", "at boom (2:"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("runCommand(-e module runtime error) err = %q, want substring %q", msg, want)
+		}
+	}
+	for _, notWant := range []string{"__eval__", "helper = require"} {
+		if strings.Contains(msg, notWant) {
+			t.Fatalf("runCommand(-e module runtime error) err = %q, must not contain %q", msg, notWant)
+		}
+	}
+}
+
 func TestAnalyzeCommand(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

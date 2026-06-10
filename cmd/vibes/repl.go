@@ -443,10 +443,16 @@ func (m replModel) handleAutocomplete() replModel {
 
 func (m *replModel) evaluate(input string) (string, bool) {
 	wrapped := fmt.Sprintf("def __repl__()\n  %s\nend", input)
+	sourceMap := snippetSourceMap{
+		syntheticFunction:     "__repl__",
+		displayFunction:       "<repl>",
+		lineOffset:            1,
+		firstLineColumnOffset: 2,
+	}
 
 	script, err := m.engine.Compile(wrapped)
 	if err != nil {
-		m.lastError = "compile error: " + err.Error()
+		m.lastError = "compile error: " + remapSnippetCompileError(err, input, sourceMap).Error()
 		return m.lastError, true
 	}
 
@@ -456,7 +462,7 @@ func (m *replModel) evaluate(input string) (string, bool) {
 
 	result, err := script.Call(context.Background(), "__repl__", nil, opts)
 	if err != nil {
-		m.lastError = "runtime error: " + err.Error()
+		m.lastError = "runtime error: " + remapSnippetRuntimeError(err, input, sourceMap).Error()
 		return m.lastError, true
 	}
 

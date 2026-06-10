@@ -170,7 +170,7 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 		return NewNil(), err
 	}
 	exec.popEnv()
-	if err := exec.pushFrame(fn.Name, pos); err != nil {
+	if err := exec.pushFrame(fn.Name, pos, exec.currentSourceScript(), fn.owner); err != nil {
 		return NewNil(), err
 	}
 
@@ -653,7 +653,7 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 }
 
 func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (Value, error) {
-	if err := exec.pushFrame(fn.Name, fn.Pos); err != nil {
+	if err := exec.pushFrame(fn.Name, fn.Pos, fn.owner, fn.owner); err != nil {
 		return NewNil(), err
 	}
 	val, returned, err := exec.evalStatements(fn.Body, callEnv)

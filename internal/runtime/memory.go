@@ -15,7 +15,7 @@ const (
 	estimatedEnvBytes          = 16
 	estimatedInstanceBytes     = 16
 	estimatedBlockBytes        = 24
-	estimatedCallFrameBytes    = 32
+	estimatedCallFrameBytes    = 48
 	estimatedModuleContextSize = 24
 )
 

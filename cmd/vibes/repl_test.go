@@ -165,6 +165,58 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+func TestEvaluateErrorsUseREPLSource(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		input    string
+		want     []string
+		notWant  []string
+		wantType string
+	}{
+		{
+			name:     "compile_error",
+			input:    "y = (",
+			wantType: "compile error:",
+			want:     []string{"parse error at 1:", "y = (", "unexpected end of snippet"},
+			notWant:  []string{"__repl__", "line 3"},
+		},
+		{
+			name:     "runtime_error",
+			input:    "1 / 0",
+			wantType: "runtime error:",
+			want:     []string{"division by zero", "line 1", "at <repl> (1:"},
+			notWant:  []string{"__repl__"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m, err := newREPLModel()
+			if err != nil {
+				t.Fatalf("newREPLModel failed: %v", err)
+			}
+			output, isErr := m.evaluate(tc.input)
+			if !isErr {
+				t.Fatalf("evaluate(%q) isErr = false, want true", tc.input)
+			}
+			if !strings.Contains(output, tc.wantType) {
+				t.Fatalf("evaluate(%q) output = %q, want substring %q", tc.input, output, tc.wantType)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(output, want) {
+					t.Fatalf("evaluate(%q) output = %q, want substring %q", tc.input, output, want)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(output, notWant) {
+					t.Fatalf("evaluate(%q) output = %q, must not contain %q", tc.input, output, notWant)
+				}
+			}
+		})
+	}
+}
+
 func TestLastErrorCommandShowsPreviousError(t *testing.T) {
 	t.Parallel()
 	m, err := newREPLModel()
