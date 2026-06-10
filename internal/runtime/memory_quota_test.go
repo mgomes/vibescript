@@ -854,6 +854,52 @@ func TestMemoryQuotaCountsCapabilityScopeKnownBuiltins(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestMemoryQuotaCountsValidatedCapabilityArgs(t *testing.T) {
+	t.Parallel()
+
+	withValidated := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+	}
+	for i := range 400 {
+		withValidated.pushValidatedCapabilityArgs(fmt.Sprintf("cap.validated.%03d", i))
+	}
+	withoutValidated := &Execution{
+		quota:         10000,
+		memoryQuota:   0,
+		moduleLoading: make(map[string]bool),
+	}
+
+	withValidatedBytes := withValidated.estimateMemoryUsage()
+	withoutValidatedBytes := withoutValidated.estimateMemoryUsage()
+	if withValidatedBytes <= withoutValidatedBytes {
+		t.Fatalf("expected validated capability args to increase memory estimate (%d <= %d)", withValidatedBytes, withoutValidatedBytes)
+	}
+
+	quota := withoutValidatedBytes + (withValidatedBytes-withoutValidatedBytes)/2
+	if quota <= withoutValidatedBytes {
+		quota = withoutValidatedBytes + 1
+	}
+	if quota >= withValidatedBytes {
+		quota = withValidatedBytes - 1
+	}
+
+	enforced := &Execution{
+		quota:         10000,
+		memoryQuota:   quota,
+		moduleLoading: make(map[string]bool),
+	}
+	for i := range 400 {
+		enforced.pushValidatedCapabilityArgs(fmt.Sprintf("cap.validated.%03d", i))
+	}
+	err := enforced.checkMemory()
+	if err == nil {
+		t.Fatalf("expected memory quota error when validated capability arg stack grows")
+	}
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestMemoryQuotaSkipsStaticRootBindingValues(t *testing.T) {
 	t.Parallel()
 
