@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes/source"
@@ -174,6 +175,7 @@ var _ error = (*parseError)(nil)
 
 type parseError struct {
 	pos    ast.Position
+	end    ast.Position
 	msg    string
 	source string
 }
@@ -188,16 +190,44 @@ func (e *parseError) Error() string {
 	return b.String()
 }
 
+// Pos returns the 1-indexed source position where the error starts.
+func (e *parseError) Pos() ast.Position { return e.pos }
+
+// End returns the exclusive 1-indexed end of the offending token, or a
+// zero Position when the span is unknown.
+func (e *parseError) End() ast.Position { return e.end }
+
+// Message returns the error text without the position prefix or the
+// rendered code frame.
+func (e *parseError) Message() string { return e.msg }
+
 func (p *parser) errorExpected(tok ast.Token, expected string) {
-	p.addParseError(tok.Pos, fmt.Sprintf("expected %s, got %s", expected, tokenLabel(tok.Type)))
+	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), fmt.Sprintf("expected %s, got %s", expected, tokenLabel(tok.Type)))
 }
 
 func (p *parser) errorUnexpected(tok ast.Token) {
-	p.addParseError(tok.Pos, fmt.Sprintf("unexpected token %s", tokenLabel(tok.Type)))
+	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), fmt.Sprintf("unexpected token %s", tokenLabel(tok.Type)))
 }
 
 func (p *parser) addParseError(pos ast.Position, msg string) {
-	p.errors = append(p.errors, &parseError{pos: pos, msg: msg, source: p.l.input})
+	p.addParseErrorSpan(pos, ast.Position{}, msg)
+}
+
+func (p *parser) addParseErrorSpan(pos, end ast.Position, msg string) {
+	p.errors = append(p.errors, &parseError{pos: pos, end: end, msg: msg, source: p.l.input})
+}
+
+// tokenEnd computes the exclusive end position of a token from its
+// literal text. Tokens without literals (EOF) or with multi-line
+// literals yield a zero Position, signaling an unknown span.
+func tokenEnd(tok ast.Token) ast.Position {
+	if tok.Literal == "" || strings.ContainsRune(tok.Literal, '\n') {
+		return ast.Position{}
+	}
+	return ast.Position{
+		Line:   tok.Pos.Line,
+		Column: tok.Pos.Column + utf8.RuneCountInString(tok.Literal),
+	}
 }
 
 func tokenLabel(tt ast.TokenType) string {

@@ -64,6 +64,69 @@ func TestDiagnosticsForSourceWithParseError(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsForSourceSpanOffendingToken(t *testing.T) {
+	t.Parallel()
+	engine := vibes.MustNewEngine(vibes.Config{})
+	// "123" is the offending token: line 1, columns 5-7 (0-indexed 4-7).
+	diags := diagnosticsForSource(engine, "def 123()\n  1\nend\n")
+	if len(diags) == 0 {
+		t.Fatal("expected diagnostics for invalid function name")
+	}
+
+	rng, ok := diags[0]["range"].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostic range missing: %#v", diags[0])
+	}
+	start := rng["start"].(map[string]any)
+	end := rng["end"].(map[string]any)
+	if start["line"] != 0 || start["character"] != 4 {
+		t.Fatalf("start = %#v, want line 0 character 4", start)
+	}
+	if end["line"] != 0 || end["character"] != 7 {
+		t.Fatalf("end = %#v, want line 0 character 7 (token span, not zero-width point)", end)
+	}
+	if diags[0]["message"] != "expected function name, got integer" {
+		t.Fatalf("message = %#v, want bare parser message", diags[0]["message"])
+	}
+}
+
+func TestDiagnosticsForSourceFallBackToPointRangeAtEOF(t *testing.T) {
+	t.Parallel()
+	engine := vibes.MustNewEngine(vibes.Config{})
+	diags := diagnosticsForSource(engine, "def run()\n  x = [1,\nend\n")
+	if len(diags) < 2 {
+		t.Fatalf("expected multiple diagnostics, got %d", len(diags))
+	}
+
+	for _, diag := range diags {
+		rng := diag["range"].(map[string]any)
+		start := rng["start"].(map[string]any)
+		end := rng["end"].(map[string]any)
+		startLine, startChar := start["line"].(int), start["character"].(int)
+		endLine, endChar := end["line"].(int), end["character"].(int)
+		if endLine < startLine || (endLine == startLine && endChar <= startChar) {
+			t.Fatalf("diagnostic range is not forward-progressing: %#v", rng)
+		}
+	}
+}
+
+func TestDiagnosticsForSourceWithoutPositionsReportDocumentStart(t *testing.T) {
+	t.Parallel()
+	engine := vibes.MustNewEngine(vibes.Config{})
+	diags := diagnosticsForSource(engine, "def run()\n  1\nend\n\ndef run()\n  2\nend\n")
+	if len(diags) != 1 {
+		t.Fatalf("expected single positionless diagnostic, got %d", len(diags))
+	}
+	rng := diags[0]["range"].(map[string]any)
+	start := rng["start"].(map[string]any)
+	if start["line"] != 0 || start["character"] != 0 {
+		t.Fatalf("positionless diagnostic start = %#v, want document start", start)
+	}
+	if diags[0]["message"] != "duplicate function run" {
+		t.Fatalf("message = %#v, want compile error text", diags[0]["message"])
+	}
+}
+
 func TestCompletionItemsAreSortedAndCategorized(t *testing.T) {
 	t.Parallel()
 	items := completionItems()
