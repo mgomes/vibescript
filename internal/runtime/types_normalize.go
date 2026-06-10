@@ -322,7 +322,7 @@ func lookupEnumDef(owner *Script, name string) (*EnumDef, bool, error) {
 
 func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool, error) {
 	for scope := env; scope != nil; scope = scope.parent {
-		if enumDef, ok, err := lookupEnumValue(scope.values, name); err != nil {
+		if enumDef, ok, err := lookupEnumInScope(scope, name); err != nil {
 			return nil, false, err
 		} else if ok {
 			return enumDef, true, nil
@@ -331,24 +331,42 @@ func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool, error) {
 	return nil, false, nil
 }
 
-func lookupEnumValue(values map[string]Value, name string) (*EnumDef, bool, error) {
-	if val, ok := values[name]; ok && val.Kind() == KindEnum {
+// lookupEnumInScope considers a scope's dynamic and static bindings as
+// one namespace: an exact name wins outright (a name lives in only one
+// of the two maps), while case-insensitive matches accumulate across
+// both maps so a collision between, say, a script-defined static enum
+// and a host-supplied dynamic one still reports ambiguity.
+func lookupEnumInScope(scope *Env, name string) (*EnumDef, bool, error) {
+	if val, ok := scope.values[name]; ok && val.Kind() == KindEnum {
 		return valueEnum(val), true, nil
 	}
+	if val, ok := scope.statics[name]; ok && val.Kind() == KindEnum {
+		return valueEnum(val), true, nil
+	}
+
 	var match *EnumDef
 	matches := make([]string, 0, 2)
-	for key, val := range values {
-		if key == name || !strings.EqualFold(key, name) || val.Kind() != KindEnum {
-			continue
+	scan := func(values map[string]Value) error {
+		for key, val := range values {
+			if key == name || !strings.EqualFold(key, name) || val.Kind() != KindEnum {
+				continue
+			}
+			matches = append(matches, key)
+			if match == nil {
+				match = valueEnum(val)
+				continue
+			}
+			if match != valueEnum(val) {
+				return ambiguousEnumTypeError(name, matches)
+			}
 		}
-		matches = append(matches, key)
-		if match == nil {
-			match = valueEnum(val)
-			continue
-		}
-		if match != valueEnum(val) {
-			return nil, false, ambiguousEnumTypeError(name, matches)
-		}
+		return nil
+	}
+	if err := scan(scope.values); err != nil {
+		return nil, false, err
+	}
+	if err := scan(scope.statics); err != nil {
+		return nil, false, err
 	}
 	if match != nil {
 		return match, true, nil

@@ -917,3 +917,26 @@ func highAllocPatternContext(context.Context) (Value, error) {
 		"player_id": NewString("player-1"),
 	}), nil
 }
+
+func TestMemoryQuotaCountsValuesAssignedOverFunctionNames(t *testing.T) {
+	t.Parallel()
+	// Function bindings are statically accounted at call setup; assigning
+	// over the name demotes the binding so the new value counts against
+	// the quota like any other global.
+	source := `
+def helper()
+  1
+end
+
+def run()
+  blob = "0123456789"
+  for i in 1..10
+    blob = blob + blob
+  end
+  helper = blob
+  helper.size
+end
+`
+	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 8192}, source)
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
+}

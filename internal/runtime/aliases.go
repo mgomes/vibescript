@@ -554,6 +554,9 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 	for name, val := range env.values {
 		clone.values[name] = cloneValueForHostWithState(val, state)
 	}
+	for name, val := range env.statics {
+		clone.DefineStatic(name, cloneValueForHostWithState(val, state))
+	}
 	return clone
 }
 

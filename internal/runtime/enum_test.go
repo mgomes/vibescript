@@ -379,3 +379,59 @@ func enumTestValue(t *testing.T, script *Script, enumName, member string) Value 
 	}
 	return NewEnumValue(memberDef)
 }
+
+func TestEnumAmbiguityDetectedAcrossStaticAndDynamicBindings(t *testing.T) {
+	t.Parallel()
+	statusDef, err := compileEnumDef(&EnumStmt{
+		Name: "Status",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+	statusUpperDef, err := compileEnumDef(&EnumStmt{
+		Name: "STATUS",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+
+	env := newEnv(nil)
+	env.DefineStatic("Status", NewEnum(statusDef))
+	env.Define("STATUS", NewEnum(statusUpperDef))
+
+	_, _, err = lookupEnumInEnv(env, "status")
+	if err == nil || err.Error() != "ambiguous enum type status matches STATUS, Status" {
+		t.Fatalf("expected ambiguity across static and dynamic bindings, got %v", err)
+	}
+}
+
+func TestEnumScriptAnnotationAmbiguousWithHostGlobalEnum(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+enum Status
+  Draft
+end
+
+def echo(status: status?) -> status?
+  status
+end
+`)
+	hostEnum, err := compileEnumDef(&EnumStmt{
+		Name: "STATUS",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+
+	opts := CallOptions{Globals: map[string]Value{"STATUS": NewEnum(hostEnum)}}
+	requireCallErrorContains(t, script, "echo", []Value{NewSymbol("draft")}, opts, "ambiguous enum type status matches STATUS, Status")
+}
