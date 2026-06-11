@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"unicode"
 )
@@ -194,7 +193,7 @@ func stringSub(method, text, pattern, replacement string, regex bool) (string, e
 	if err := validateRegexReplacement(method, replacement); err != nil {
 		return "", err
 	}
-	re, err := regexp.Compile(pattern)
+	re, err := compileCachedRegex(pattern)
 	if err != nil {
 		return "", fmt.Errorf("%s invalid regex: %w", method, err)
 	}
@@ -220,7 +219,7 @@ func stringGSub(method, text, pattern, replacement string, regex bool) (string, 
 	if err := validateRegexReplacement(method, replacement); err != nil {
 		return "", err
 	}
-	re, err := regexp.Compile(pattern)
+	re, err := compileCachedRegex(pattern)
 	if err != nil {
 		return "", fmt.Errorf("%s invalid regex: %w", method, err)
 	}
@@ -443,7 +442,7 @@ func stringMemberQuery(property string) (Value, error) {
 			if err := validateRegexTextPattern("string.match", text, pattern); err != nil {
 				return NewNil(), err
 			}
-			re, err := regexp.Compile(pattern)
+			re, err := compileCachedRegex(pattern)
 			if err != nil {
 				return NewNil(), fmt.Errorf("string.match invalid regex: %w", err)
 			}
@@ -479,7 +478,7 @@ func stringMemberQuery(property string) (Value, error) {
 			if err := validateRegexTextPattern("string.scan", text, pattern); err != nil {
 				return NewNil(), err
 			}
-			re, err := regexp.Compile(pattern)
+			re, err := compileCachedRegex(pattern)
 			if err != nil {
 				return NewNil(), fmt.Errorf("string.scan invalid regex: %w", err)
 			}

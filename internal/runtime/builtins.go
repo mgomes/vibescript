@@ -368,7 +368,7 @@ func builtinRegexMatch(exec *Execution, receiver Value, args []Value, kwargs map
 		return NewNil(), fmt.Errorf("Regex.match text exceeds limit %d bytes", maxRegexInputBytes)
 	}
 
-	re, err := regexp.Compile(pattern)
+	re, err := compileCachedRegex(pattern)
 	if err != nil {
 		return NewNil(), fmt.Errorf("Regex.match invalid regex: %w", err)
 	}
@@ -492,7 +492,7 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 		return NewNil(), fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 
-	re, err := regexp.Compile(pattern)
+	re, err := compileCachedRegex(pattern)
 	if err != nil {
 		return NewNil(), fmt.Errorf("%s invalid regex: %w", method, err)
 	}
