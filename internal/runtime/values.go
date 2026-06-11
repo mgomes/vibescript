@@ -4,11 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"reflect"
 	"time"
 )
 
-const maxFlattenDepth = 1024
+const (
+	maxFlattenDepth      = 1024
+	nanosecondsPerSecond = int64(time.Second)
+)
 
 func valueToHashKey(val Value) (string, error) {
 	switch val.Kind() {
@@ -209,30 +213,128 @@ func floatToInt64Checked(v float64, method string) (int64, error) {
 	return int64(v), nil
 }
 
+func int64RangeError(method string) error {
+	return fmt.Errorf("%s result out of int64 range", method)
+}
+
+func addInt64Checked(left, right int64) (int64, bool) {
+	sum := left + right
+	if (left > 0 && right > 0 && sum < 0) || (left < 0 && right < 0 && sum >= 0) {
+		return 0, false
+	}
+	return sum, true
+}
+
+func subInt64Checked(left, right int64) (int64, bool) {
+	diff := left - right
+	if (left^right)&(left^diff) < 0 {
+		return 0, false
+	}
+	return diff, true
+}
+
+func mulInt64Checked(left, right int64) (int64, bool) {
+	if left == 0 || right == 0 {
+		return 0, true
+	}
+	negative := (left < 0) != (right < 0)
+	lMag := uint64(left)
+	if left < 0 {
+		lMag = -lMag
+	}
+	rMag := uint64(right)
+	if right < 0 {
+		rMag = -rMag
+	}
+	hi, lo := bits.Mul64(lMag, rMag)
+	if hi != 0 {
+		return 0, false
+	}
+	if negative {
+		minMagnitude := uint64(math.MaxInt64) + 1
+		if lo > minMagnitude {
+			return 0, false
+		}
+		if lo == minMagnitude {
+			return math.MinInt64, true
+		}
+		return -int64(lo), true
+	}
+	if lo > uint64(math.MaxInt64) {
+		return 0, false
+	}
+	return int64(lo), true
+}
+
+func floorDivIntChecked(left, right int64) (int64, bool) {
+	if left == math.MinInt64 && right == -1 {
+		return 0, false
+	}
+	return floorDivInt(left, right), true
+}
+
+func divInt64Checked(left, right int64) (int64, bool) {
+	if left == math.MinInt64 && right == -1 {
+		return 0, false
+	}
+	return left / right, true
+}
+
+func durationSecondsToTimeDuration(seconds int64, method string) (time.Duration, error) {
+	if seconds > math.MaxInt64/nanosecondsPerSecond || seconds < math.MinInt64/nanosecondsPerSecond {
+		return 0, int64RangeError(method)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
+
 func addValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
-		return NewInt(left.Int() + right.Int()), nil
+		sum, ok := addInt64Checked(left.Int(), right.Int())
+		if !ok {
+			return NewNil(), int64RangeError("integer addition")
+		}
+		return NewInt(sum), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() + right.Float()), nil
 	case left.Kind() == KindTime && right.Kind() == KindDuration:
-		return NewTime(left.Time().Add(time.Duration(right.Duration().Seconds()) * time.Second)), nil
+		delta, err := durationSecondsToTimeDuration(right.Duration().Seconds(), "time addition")
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewTime(left.Time().Add(delta)), nil
 	case right.Kind() == KindTime && left.Kind() == KindDuration:
-		return NewTime(right.Time().Add(time.Duration(left.Duration().Seconds()) * time.Second)), nil
+		delta, err := durationSecondsToTimeDuration(left.Duration().Seconds(), "time addition")
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewTime(right.Time().Add(delta)), nil
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
-		return NewDuration(durationFromSeconds(left.Duration().Seconds() + right.Duration().Seconds())), nil
+		sum, ok := addInt64Checked(left.Duration().Seconds(), right.Duration().Seconds())
+		if !ok {
+			return NewNil(), int64RangeError("duration addition")
+		}
+		return NewDuration(durationFromSeconds(sum)), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		secs, err := valueToInt64(right)
 		if err != nil {
 			return NewNil(), fmt.Errorf("unsupported addition operands")
 		}
-		return NewDuration(durationFromSeconds(left.Duration().Seconds() + secs)), nil
+		sum, ok := addInt64Checked(left.Duration().Seconds(), secs)
+		if !ok {
+			return NewNil(), int64RangeError("duration addition")
+		}
+		return NewDuration(durationFromSeconds(sum)), nil
 	case right.Kind() == KindDuration && (left.Kind() == KindInt || left.Kind() == KindFloat):
 		secs, err := valueToInt64(left)
 		if err != nil {
 			return NewNil(), fmt.Errorf("unsupported addition operands")
 		}
-		return NewDuration(durationFromSeconds(right.Duration().Seconds() + secs)), nil
+		sum, ok := addInt64Checked(right.Duration().Seconds(), secs)
+		if !ok {
+			return NewNil(), int64RangeError("duration addition")
+		}
+		return NewDuration(durationFromSeconds(sum)), nil
 	case left.Kind() == KindArray && right.Kind() == KindArray:
 		lArr := left.Array()
 		rArr := right.Array()
@@ -256,22 +358,38 @@ func addValues(left, right Value) (Value, error) {
 func subtractValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
-		return NewInt(left.Int() - right.Int()), nil
+		diff, ok := subInt64Checked(left.Int(), right.Int())
+		if !ok {
+			return NewNil(), int64RangeError("integer subtraction")
+		}
+		return NewInt(diff), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() - right.Float()), nil
 	case left.Kind() == KindTime && right.Kind() == KindDuration:
-		return NewTime(left.Time().Add(-time.Duration(right.Duration().Seconds()) * time.Second)), nil
+		delta, err := durationSecondsToTimeDuration(right.Duration().Seconds(), "time subtraction")
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewTime(left.Time().Add(-delta)), nil
 	case left.Kind() == KindTime && right.Kind() == KindTime:
 		diff := left.Time().Sub(right.Time())
 		return NewDuration(durationFromSeconds(int64(diff / time.Second))), nil
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
-		return NewDuration(durationFromSeconds(left.Duration().Seconds() - right.Duration().Seconds())), nil
+		diff, ok := subInt64Checked(left.Duration().Seconds(), right.Duration().Seconds())
+		if !ok {
+			return NewNil(), int64RangeError("duration subtraction")
+		}
+		return NewDuration(durationFromSeconds(diff)), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		secs, err := valueToInt64(right)
 		if err != nil {
 			return NewNil(), fmt.Errorf("unsupported subtraction operands")
 		}
-		return NewDuration(durationFromSeconds(left.Duration().Seconds() - secs)), nil
+		diff, ok := subInt64Checked(left.Duration().Seconds(), secs)
+		if !ok {
+			return NewNil(), int64RangeError("duration subtraction")
+		}
+		return NewDuration(durationFromSeconds(diff)), nil
 	case left.Kind() == KindArray && right.Kind() == KindArray:
 		lArr := left.Array()
 		rArr := right.Array()
@@ -290,7 +408,11 @@ func subtractValues(left, right Value) (Value, error) {
 func multiplyValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
-		return NewInt(left.Int() * right.Int()), nil
+		product, ok := mulInt64Checked(left.Int(), right.Int())
+		if !ok {
+			return NewNil(), int64RangeError("integer multiplication")
+		}
+		return NewInt(product), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		return NewFloat(left.Float() * right.Float()), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
@@ -298,13 +420,21 @@ func multiplyValues(left, right Value) (Value, error) {
 		if err != nil {
 			return NewNil(), fmt.Errorf("unsupported multiplication operands")
 		}
-		return NewDuration(durationFromSeconds(left.Duration().Seconds() * secs)), nil
+		product, ok := mulInt64Checked(left.Duration().Seconds(), secs)
+		if !ok {
+			return NewNil(), int64RangeError("duration multiplication")
+		}
+		return NewDuration(durationFromSeconds(product)), nil
 	case right.Kind() == KindDuration && (left.Kind() == KindInt || left.Kind() == KindFloat):
 		secs, err := valueToInt64(left)
 		if err != nil {
 			return NewNil(), fmt.Errorf("unsupported multiplication operands")
 		}
-		return NewDuration(durationFromSeconds(right.Duration().Seconds() * secs)), nil
+		product, ok := mulInt64Checked(right.Duration().Seconds(), secs)
+		if !ok {
+			return NewNil(), int64RangeError("duration multiplication")
+		}
+		return NewDuration(durationFromSeconds(product)), nil
 	case left.Kind() == KindMoney && right.Kind() == KindInt:
 		product, err := left.Money().MulInt(right.Int())
 		if err != nil {
@@ -328,7 +458,11 @@ func divideValues(left, right Value) (Value, error) {
 		if right.Int() == 0 {
 			return NewNil(), errors.New("division by zero")
 		}
-		return NewInt(floorDivInt(left.Int(), right.Int())), nil
+		quotient, ok := floorDivIntChecked(left.Int(), right.Int())
+		if !ok {
+			return NewNil(), int64RangeError("integer division")
+		}
+		return NewInt(quotient), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		if right.Float() == 0 {
 			return NewNil(), errors.New("division by zero")
@@ -347,7 +481,11 @@ func divideValues(left, right Value) (Value, error) {
 		if secs == 0 {
 			return NewNil(), errors.New("division by zero")
 		}
-		return NewDuration(durationFromSeconds(left.Duration().Seconds() / secs)), nil
+		quotient, ok := divInt64Checked(left.Duration().Seconds(), secs)
+		if !ok {
+			return NewNil(), int64RangeError("duration division")
+		}
+		return NewDuration(durationFromSeconds(quotient)), nil
 	case left.Kind() == KindMoney && right.Kind() == KindInt:
 		res, err := left.Money().DivInt(right.Int())
 		if err != nil {
@@ -395,11 +533,10 @@ func floorModInt(left, right int64) int64 {
 func compareValues(expr *BinaryExpr, left, right Value, cmp func(int) bool) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
-		diff := left.Int() - right.Int()
 		switch {
-		case diff < 0:
+		case left.Int() < right.Int():
 			return NewBool(cmp(-1)), nil
-		case diff > 0:
+		case left.Int() > right.Int():
 			return NewBool(cmp(1)), nil
 		default:
 			return NewBool(cmp(0)), nil
@@ -427,11 +564,10 @@ func compareValues(expr *BinaryExpr, left, right Value, cmp func(int) bool) (Val
 		if left.Money().Currency() != right.Money().Currency() {
 			return NewNil(), fmt.Errorf("money currency mismatch for comparison")
 		}
-		diff := left.Money().Cents() - right.Money().Cents()
 		switch {
-		case diff < 0:
+		case left.Money().Cents() < right.Money().Cents():
 			return NewBool(cmp(-1)), nil
-		case diff > 0:
+		case left.Money().Cents() > right.Money().Cents():
 			return NewBool(cmp(1)), nil
 		default:
 			return NewBool(cmp(0)), nil

@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"math"
 	"testing"
+	"time"
 )
 
 func TestLogicalOperatorsShortCircuit(t *testing.T) {
@@ -140,6 +142,54 @@ func TestIntegerDivisionAndModulo(t *testing.T) {
 	})
 }
 
+func TestIntegerArithmeticOverflowErrors(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def add(left, right)
+      left + right
+    end
+
+    def subtract(left, right)
+      left - right
+    end
+
+    def multiply(left, right)
+      left * right
+    end
+
+    def divide(left, right)
+      left / right
+    end
+
+    def less_than(left, right)
+      left < right
+    end
+    `)
+
+	cases := []struct {
+		name string
+		fn   string
+		args []Value
+	}{
+		{name: "addition_overflow", fn: "add", args: []Value{NewInt(math.MaxInt64), NewInt(1)}},
+		{name: "subtraction_underflow", fn: "subtract", args: []Value{NewInt(math.MinInt64), NewInt(1)}},
+		{name: "multiplication_overflow", fn: "multiply", args: []Value{NewInt(math.MaxInt64/2 + 1), NewInt(2)}},
+		{name: "division_overflow", fn: "divide", args: []Value{NewInt(math.MinInt64), NewInt(-1)}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, tc.fn, tc.args, CallOptions{}, "out of int64 range")
+		})
+	}
+
+	ordered := callFunc(t, script, "less_than", []Value{NewInt(math.MinInt64), NewInt(math.MaxInt64)})
+	if !ordered.Equal(NewBool(true)) {
+		t.Fatalf("MinInt64 < MaxInt64 = %v, want true", ordered)
+	}
+}
+
 func TestNumericConversionBuiltins(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -209,6 +259,68 @@ func TestNumericConversionBuiltins(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			requireCallErrorContains(t, script, tc.fn, nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+func TestDurationAndTimeArithmeticOverflowErrors(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def add(left, right)
+      left + right
+    end
+
+    def subtract(left, right)
+      left - right
+    end
+
+    def multiply(left, right)
+      left * right
+    end
+
+    def multiply_left(left, right)
+      left * right
+    end
+
+    def divide(left, right)
+      left / right
+    end
+
+    def time_add(left, right)
+      left + right
+    end
+
+    def time_subtract(left, right)
+      left - right
+    end
+    `)
+
+	oneSecond := NewDuration(durationFromSeconds(1))
+	hugeProduct := NewDuration(durationFromSeconds(math.MaxInt64/2 + 1))
+	tooLargeForTime := NewDuration(durationFromSeconds(math.MaxInt64/nanosecondsPerSecond + 1))
+	epoch := NewTime(time.Unix(0, 0).UTC())
+
+	cases := []struct {
+		name string
+		fn   string
+		args []Value
+	}{
+		{name: "duration_add_overflow", fn: "add", args: []Value{NewDuration(durationFromSeconds(math.MaxInt64)), oneSecond}},
+		{name: "duration_add_int_overflow", fn: "add", args: []Value{NewDuration(durationFromSeconds(math.MaxInt64)), NewInt(1)}},
+		{name: "duration_right_add_int_overflow", fn: "add", args: []Value{NewInt(1), NewDuration(durationFromSeconds(math.MaxInt64))}},
+		{name: "duration_subtract_underflow", fn: "subtract", args: []Value{NewDuration(durationFromSeconds(math.MinInt64)), oneSecond}},
+		{name: "duration_subtract_int_underflow", fn: "subtract", args: []Value{NewDuration(durationFromSeconds(math.MinInt64)), NewInt(1)}},
+		{name: "duration_multiply_overflow", fn: "multiply", args: []Value{hugeProduct, NewInt(2)}},
+		{name: "duration_left_multiply_overflow", fn: "multiply_left", args: []Value{NewInt(2), hugeProduct}},
+		{name: "duration_division_overflow", fn: "divide", args: []Value{NewDuration(durationFromSeconds(math.MinInt64)), NewInt(-1)}},
+		{name: "time_add_duration_overflow", fn: "time_add", args: []Value{epoch, tooLargeForTime}},
+		{name: "time_subtract_duration_overflow", fn: "time_subtract", args: []Value{epoch, tooLargeForTime}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, tc.fn, tc.args, CallOptions{}, "out of int64 range")
 		})
 	}
 }
