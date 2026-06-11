@@ -3,7 +3,6 @@ package runtime
 import (
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"strings"
 )
@@ -659,14 +658,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.uniq does not take arguments")
 			}
 			arr := receiver.Array()
-			unique := make([]Value, 0, len(arr))
-			for _, item := range arr {
-				found := slices.ContainsFunc(unique, item.Equal)
-				if !found {
-					unique = append(unique, item)
-				}
-			}
-			return NewArray(unique), nil
+			return NewArray(uniqueValues(arr)), nil
 		}), nil
 	case "first":
 		return NewAutoBuiltin("array.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
