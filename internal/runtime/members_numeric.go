@@ -19,12 +19,30 @@ var (
 	moneyMemberNames = []string{"currency", "cents", "amount", "format"}
 )
 
+var (
+	intBuiltinMemberNames   = []string{"abs", "clamp", "even?", "odd?", "times"}
+	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
+	floatBuiltinMembers     = newMemberTable(floatMemberNames)
+	moneyBuiltinMemberNames = []string{"format"}
+	moneyBuiltinMembers     = newMemberTable(moneyBuiltinMemberNames)
+)
+
 func (exec *Execution) intMember(obj Value, property string, pos Position) (Value, error) {
 	switch property {
 	case "seconds", "second", "minutes", "minute", "hours", "hour", "days", "day":
 		return NewDuration(secondsDuration(obj.Int(), property)), nil
 	case "weeks", "week":
 		return NewDuration(secondsDuration(obj.Int(), property)), nil
+	default:
+		if member, ok := intBuiltinMembers.lookup(property, intMemberBuiltin); ok {
+			return member, nil
+		}
+		return NewNil(), exec.errorAt(pos, "unknown int method %s%s", property, didYouMean(property, intMemberNames))
+	}
+}
+
+func intMemberBuiltin(property string) (Value, error) {
+	switch property {
 	case "abs":
 		return NewAutoBuiltin("int.abs", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -98,11 +116,18 @@ func (exec *Execution) intMember(obj Value, property string, pos Position) (Valu
 			return receiver, nil
 		}), nil
 	default:
-		return NewNil(), exec.errorAt(pos, "unknown int method %s%s", property, didYouMean(property, intMemberNames))
+		return NewNil(), fmt.Errorf("unknown int method %s", property)
 	}
 }
 
 func (exec *Execution) floatMember(obj Value, property string, pos Position) (Value, error) {
+	if member, ok := floatBuiltinMembers.lookup(property, floatMemberBuiltin); ok {
+		return member, nil
+	}
+	return NewNil(), exec.errorAt(pos, "unknown float method %s%s", property, didYouMean(property, floatMemberNames))
+}
+
+func floatMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "abs":
 		return NewAutoBuiltin("float.abs", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -170,7 +195,7 @@ func (exec *Execution) floatMember(obj Value, property string, pos Position) (Va
 			return NewInt(asInt), nil
 		}), nil
 	default:
-		return NewNil(), exec.errorAt(pos, "unknown float method %s%s", property, didYouMean(property, floatMemberNames))
+		return NewNil(), fmt.Errorf("unknown float method %s", property)
 	}
 }
 
@@ -182,11 +207,21 @@ func moneyMember(m Money, property string) (Value, error) {
 		return NewInt(m.Cents()), nil
 	case "amount":
 		return NewString(m.String()), nil
+	default:
+		if member, ok := moneyBuiltinMembers.lookup(property, moneyMemberBuiltin); ok {
+			return member, nil
+		}
+		return NewNil(), fmt.Errorf("unknown money member %s%s", property, didYouMean(property, moneyMemberNames))
+	}
+}
+
+func moneyMemberBuiltin(property string) (Value, error) {
+	switch property {
 	case "format":
 		return NewAutoBuiltin("money.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return NewString(m.String()), nil
+			return NewString(receiver.Money().String()), nil
 		}), nil
 	default:
-		return NewNil(), fmt.Errorf("unknown money member %s%s", property, didYouMean(property, moneyMemberNames))
+		return NewNil(), fmt.Errorf("unknown money member %s", property)
 	}
 }

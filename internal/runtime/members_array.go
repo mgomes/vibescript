@@ -17,7 +17,16 @@ var arrayMemberNames = []string{
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 }
 
+var arrayBuiltinMembers = newMemberTable(arrayMemberNames)
+
 func arrayMember(array Value, property string) (Value, error) {
+	if member, ok := arrayBuiltinMembers.lookup(property, arrayMemberBuiltin); ok {
+		return member, nil
+	}
+	return NewNil(), fmt.Errorf("unknown array method %s%s", property, didYouMean(property, arrayMemberNames))
+}
+
+func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "each", "map", "select", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?":
 		return arrayMemberQuery(property)
@@ -26,7 +35,7 @@ func arrayMember(array Value, property string) (Value, error) {
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
 	default:
-		return NewNil(), fmt.Errorf("unknown array method %s%s", property, didYouMean(property, arrayMemberNames))
+		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
 }
 
