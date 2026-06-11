@@ -687,3 +687,47 @@ runtime quotas.
 - [x] Release notes are documented in `CHANGELOG.md`.
 - [x] Full tests pass.
 - [x] Release checklist passes for `v0.40.0`.
+
+## v0.50.0 - Tooling, Diagnostics, and Runtime Hardening (completed 2026-06-11)
+
+Goal: ship the post-Tasks usability, diagnostics, performance, and bug-fix work
+as a coherent pre-1.0 release.
+
+### CLI and LSP
+
+- [x] Add inline evaluation and recursive watch mode to `vibes run`.
+- [x] Add the native `vibes test` command.
+- [x] Wire `vibes fmt` into LSP document formatting.
+- [x] Add context-aware completion, signature help, go-to-definition, and
+  document symbols.
+- [x] Re-anchor completion, signature, and navigation state against the live
+  buffer.
+
+### Diagnostics and Runtime Correctness
+
+- [x] Expose structured parse-error positions to hosts and the LSP.
+- [x] Add did-you-mean suggestions for lookup failures.
+- [x] Remap inline snippet diagnostics to user source positions.
+- [x] Preserve newline statement boundaries, line-ending minus continuations, and
+  trailing brace blocks.
+- [x] Fix enum value kind names, hash method dispatch collisions, case range
+  membership, and scalar-key array set operations.
+- [x] Classify sandbox limit terminations distinctly.
+- [x] Reject integer, duration, and time arithmetic overflow.
+
+### Performance, Quality, and Documentation
+
+- [x] Cut per-call environment and builtin churn.
+- [x] Reduce memory-estimation cost with O(1) static environment accounting.
+- [x] Cache compiled regex patterns and stateless builtin member dispatch.
+- [x] Throttle step context polling without losing first-step cancellation.
+- [x] Add coverage gating and expand capability-contract, public facade, and
+  value package tests.
+- [x] Expand stdlib, LSP, benchmark, and error-message documentation.
+- [x] Centralize input-guard limits and pin module containment edge cases.
+
+### v0.50.0 Definition of Done
+
+- [x] Release notes are documented in `CHANGELOG.md`.
+- [x] Full tests pass.
+- [x] Release checklist passes for `v0.50.0`.

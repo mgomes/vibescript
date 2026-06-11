@@ -6,6 +6,38 @@ All notable changes to this project will be documented in this file.
 
 - Ongoing work toward the next pre-1.0 release.
 
+## v0.50.0 - 2026-06-11
+
+- **Added: stronger CLI workflows.** `vibes run` now supports inline `-e`
+  evaluation and recursive `-watch` mode, and the new `vibes test` command runs
+  `.vibe` test files with module-aware fixture coverage.
+- **Added: broader LSP support.** The language server now exposes document
+  formatting through `vibes fmt`, context-aware completion, signature help,
+  go-to-definition, and document symbols, with live-buffer re-anchoring for
+  completion and navigation targets.
+- **Improved host-facing diagnostics.** Structured parse-error positions are
+  available through the public API and LSP, inline snippets remap diagnostics to
+  user source positions, lookup failures include did-you-mean suggestions, and
+  runtime error wording now follows the documented error-message conventions.
+- **Fixed parser and runtime edge cases.** Newline statement boundaries no longer
+  accidentally chain line-start expressions, line-ending minus continuations are
+  preserved, trailing brace blocks parse correctly, `case` ranges match by
+  membership, enum value kinds render distinctly, and hash method names win over
+  colliding hash keys in member dispatch.
+- **Hardened runtime accounting and arithmetic.** Sandbox limit terminations are
+  classified distinctly, capability argument validation runs once while still
+  counting validated arguments against memory quota, and integer, duration, and
+  time arithmetic now reject `int64` overflow instead of silently wrapping.
+- **Improved runtime performance.** Per-call environment and builtin churn,
+  memory-estimation work, regex compilation, step context polling, builtin member
+  dispatch allocation, and scalar-key array set operations were all tightened
+  with regression coverage and benchmark-focused checks.
+- **Expanded quality gates and documentation.** CI now enforces coverage, the
+  stdlib and LSP documentation were expanded, benchmark artifacts and hotspot
+  profiles were refreshed, input-guard limits were centralized, module
+  containment edge cases were pinned, and public facade/value package tests were
+  added.
+
 ## v0.40.0 - 2026-06-06
 
 - **Added: `Tasks` structured concurrency for bounded in-script fanout.**
