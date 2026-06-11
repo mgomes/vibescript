@@ -16,7 +16,16 @@ var stringMemberNames = []string{
 	"sub", "sub!", "gsub", "gsub!", "split", "template",
 }
 
+var stringBuiltinMembers = newMemberTable(stringMemberNames)
+
 func stringMember(str Value, property string) (Value, error) {
+	if member, ok := stringBuiltinMembers.lookup(property, stringMemberBuiltin); ok {
+		return member, nil
+	}
+	return NewNil(), fmt.Errorf("unknown string method %s%s", property, didYouMean(property, stringMemberNames))
+}
+
+func stringMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "match", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
@@ -25,7 +34,7 @@ func stringMember(str Value, property string) (Value, error) {
 	case "sub", "sub!", "gsub", "gsub!", "split", "template":
 		return stringMemberTextOps(property)
 	default:
-		return NewNil(), fmt.Errorf("unknown string method %s%s", property, didYouMean(property, stringMemberNames))
+		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
 }
 

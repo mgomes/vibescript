@@ -17,15 +17,24 @@ var hashMemberNames = []string{
 	"merge", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 }
 
+var hashBuiltinMembers = newMemberTable(hashMemberNames)
+
 func hashMember(obj Value, property string) (Value, error) {
+	if member, ok := hashBuiltinMembers.lookup(property, hashMemberBuiltin); ok {
+		return member, nil
+	}
+	candidates := slices.AppendSeq(slices.Clone(hashMemberNames), maps.Keys(obj.Hash()))
+	return NewNil(), fmt.Errorf("unknown hash method %s%s", property, didYouMean(property, candidates))
+}
+
+func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "key?", "has_key?", "include?", "keys", "values", "fetch", "dig", "each", "each_key", "each_value":
 		return hashMemberQuery(property)
 	case "merge", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	default:
-		candidates := slices.AppendSeq(slices.Clone(hashMemberNames), maps.Keys(obj.Hash()))
-		return NewNil(), fmt.Errorf("unknown hash method %s%s", property, didYouMean(property, candidates))
+		return NewNil(), fmt.Errorf("unknown hash method %s", property)
 	}
 }
 

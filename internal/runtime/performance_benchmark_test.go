@@ -142,6 +142,26 @@ end`)
 	}
 }
 
+func BenchmarkBuiltinMemberDispatchLoop(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values, limit)
+  total = 0
+  for i in 1..limit
+    total = total + values.length
+  end
+  total
+end`)
+
+	values := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+	args := []Value{values, NewInt(1_000)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
 func BenchmarkCallTypedCompositeValidation(b *testing.B) {
 	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(rows: array<{ id: string, values: array<int> }>) -> int
   total = 0
