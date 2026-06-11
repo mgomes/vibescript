@@ -126,18 +126,19 @@ func (exec *Execution) step() error {
 	if exec.quota > 0 && exec.steps > exec.quota {
 		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
 	}
-	if (exec.steps & stepSlowPathMask) == 0 {
+	onSlowPath := (exec.steps & stepSlowPathMask) == 0
+	if onSlowPath {
 		if exec.memoryQuota > 0 {
 			if err := exec.checkMemory(); err != nil {
 				return err
 			}
 		}
-		if exec.ctx != nil {
-			select {
-			case <-exec.ctx.Done():
-				return exec.ctx.Err()
-			default:
-			}
+	}
+	if exec.ctx != nil && (exec.steps == 1 || onSlowPath) {
+		select {
+		case <-exec.ctx.Done():
+			return exec.ctx.Err()
+		default:
 		}
 	}
 	return nil
