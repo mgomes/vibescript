@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"slices"
 	"time"
 )
 
@@ -276,14 +275,7 @@ func subtractValues(left, right Value) (Value, error) {
 	case left.Kind() == KindArray && right.Kind() == KindArray:
 		lArr := left.Array()
 		rArr := right.Array()
-		out := make([]Value, 0, len(lArr))
-		for _, item := range lArr {
-			found := slices.ContainsFunc(rArr, item.Equal)
-			if !found {
-				out = append(out, item)
-			}
-		}
-		return NewArray(out), nil
+		return NewArray(subtractArrayValues(lArr, rArr)), nil
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		diff, err := left.Money().Sub(right.Money())
 		if err != nil {

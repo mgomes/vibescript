@@ -358,6 +358,66 @@ func TestArrayConcatAndSubtract(t *testing.T) {
 	compareArrays(t, subtracted, []Value{NewInt(1)})
 }
 
+func TestArrayUniqUsesScalarKeysAndCompositeFallback(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def uniq_values(values)
+      values.uniq()
+    end
+    `)
+
+	values := NewArray([]Value{
+		NewInt(1),
+		NewString("1"),
+		NewSymbol("1"),
+		NewInt(1),
+		NewString("1"),
+		NewArray([]Value{NewInt(2)}),
+		NewArray([]Value{NewInt(2)}),
+		NewHash(map[string]Value{"nested": NewArray([]Value{NewInt(3)})}),
+		NewHash(map[string]Value{"nested": NewArray([]Value{NewInt(3)})}),
+	})
+
+	unique := callFunc(t, script, "uniq_values", []Value{values})
+	compareArrays(t, unique, []Value{
+		NewInt(1),
+		NewString("1"),
+		NewSymbol("1"),
+		NewArray([]Value{NewInt(2)}),
+		NewHash(map[string]Value{"nested": NewArray([]Value{NewInt(3)})}),
+	})
+}
+
+func TestArraySubtractUsesScalarKeysAndCompositeFallback(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def subtract(first, second)
+      first - second
+    end
+    `)
+
+	first := NewArray([]Value{
+		NewInt(1),
+		NewString("1"),
+		NewSymbol("1"),
+		NewArray([]Value{NewInt(2)}),
+		NewHash(map[string]Value{"nested": NewArray([]Value{NewInt(3)})}),
+		NewArray([]Value{NewInt(4)}),
+	})
+	second := NewArray([]Value{
+		NewString("1"),
+		NewArray([]Value{NewInt(2)}),
+		NewHash(map[string]Value{"nested": NewArray([]Value{NewInt(3)})}),
+	})
+
+	subtracted := callFunc(t, script, "subtract", []Value{first, second})
+	compareArrays(t, subtracted, []Value{
+		NewInt(1),
+		NewSymbol("1"),
+		NewArray([]Value{NewInt(4)}),
+	})
+}
+
 func TestArraySumRejectsNonNumeric(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `
