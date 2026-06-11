@@ -123,6 +123,25 @@ end`)
 	}
 }
 
+func BenchmarkExecutionStepLoop(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(limit)
+  i = 0
+  while i < limit
+    i = i + 1
+  end
+  i
+end`)
+
+	args := []Value{NewInt(5_000)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
 func BenchmarkCallTypedCompositeValidation(b *testing.B) {
 	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(rows: array<{ id: string, values: array<int> }>) -> int
   total = 0
