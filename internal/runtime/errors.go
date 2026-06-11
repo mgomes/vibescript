@@ -43,6 +43,7 @@ const (
 	runtimeErrorTypeLimit     = ast.RuntimeErrorTypeLimit
 	runtimeErrorFrameHead     = 8
 	runtimeErrorFrameTail     = 8
+	stepSlowPathMask          = 15
 )
 
 var (
@@ -125,12 +126,15 @@ func (exec *Execution) step() error {
 	if exec.quota > 0 && exec.steps > exec.quota {
 		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
 	}
-	if exec.memoryQuota > 0 && (exec.steps&15) == 0 {
-		if err := exec.checkMemory(); err != nil {
-			return err
+	onSlowPath := (exec.steps & stepSlowPathMask) == 0
+	if onSlowPath {
+		if exec.memoryQuota > 0 {
+			if err := exec.checkMemory(); err != nil {
+				return err
+			}
 		}
 	}
-	if exec.ctx != nil {
+	if exec.ctx != nil && (exec.steps == 1 || onSlowPath) {
 		select {
 		case <-exec.ctx.Done():
 			return exec.ctx.Err()

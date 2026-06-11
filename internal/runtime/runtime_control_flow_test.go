@@ -611,6 +611,62 @@ func TestBeginRescueDoesNotRecoverStepQuota(t *testing.T) {
 	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+func TestExecutionStepChecksCanceledContextOnFirstStep(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{
+		ctx:   ctx,
+		quota: 10_000,
+	}
+
+	err := exec.step()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execution.step() at first step = %v, want context.Canceled", err)
+	}
+}
+
+func TestScriptCallChecksCanceledContextBeforeShortFunction(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `def run()
+  1
+end`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := script.Call(ctx, "run", nil, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call(canceled context) error = %v, want context.Canceled", err)
+	}
+}
+
+func TestExecutionStepPollsCanceledContextOnSlowPath(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exec := &Execution{
+		ctx:   ctx,
+		quota: 10_000,
+	}
+
+	if err := exec.step(); err != nil {
+		t.Fatalf("Execution.step() at first step = %v, want nil before cancellation", err)
+	}
+	cancel()
+	for step := 2; step < stepSlowPathMask+1; step++ {
+		if err := exec.step(); err != nil {
+			t.Fatalf("Execution.step() at step %d = %v, want nil before slow path", step, err)
+		}
+	}
+
+	err := exec.step()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execution.step() at step %d = %v, want context.Canceled", stepSlowPathMask+1, err)
+	}
+}
+
 func TestBeginRescueDoesNotRecoverRecursionLimit(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{RecursionLimit: 4, StepQuota: 10_000}, `
