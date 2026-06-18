@@ -95,14 +95,7 @@ func TestMarkdownVibeSnippetsAreCovered(t *testing.T) {
 			seenPolicies[key] = true
 		}
 
-		source := snippet.Source
-		if hasPolicy && policy.Mode == markdownSnippetWrapped {
-			source = wrapMarkdownSnippet(source)
-		}
-		err := compileAndAnalyzeMarkdownSnippet(engine, source)
-		if err != nil && !hasPolicy && shouldWrapReferenceSnippet(snippet.Path) {
-			err = compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownSnippet(source))
-		}
+		err := checkMarkdownSnippet(engine, snippet, policy, hasPolicy)
 		if hasPolicy && policy.Mode == markdownSnippetKnownFailure {
 			if err == nil {
 				failures = append(failures, fmt.Sprintf("%s:%d known-failing snippet now passes; remove policy %s (%s)", snippet.Path, snippet.Line, snippet.Hash, policy.Reason))
@@ -132,6 +125,40 @@ func TestMarkdownVibeSnippetsAreCovered(t *testing.T) {
 	if !sawDocsExamples {
 		t.Fatal("expected at least one fenced vibe snippet in docs/examples")
 	}
+}
+
+func TestMarkdownReferenceWrapperDoesNotHideAnalyzerWarnings(t *testing.T) {
+	t.Parallel()
+
+	engine := runtime.MustNewEngine(runtime.Config{})
+	snippet := markdownSnippet{
+		Path: "docs/reference.md",
+		Line: 1,
+		Source: `def run()
+  return 1
+  2
+end
+`,
+	}
+	err := checkMarkdownSnippet(engine, snippet, markdownSnippetPolicy{}, false)
+	if err == nil {
+		t.Fatal("checkMarkdownSnippet() error = nil, want analyzer warning")
+	}
+	if got := err.Error(); !strings.Contains(got, "analyze: unreachable statement") {
+		t.Fatalf("checkMarkdownSnippet() error = %q, want analyzer warning", got)
+	}
+}
+
+func checkMarkdownSnippet(engine *runtime.Engine, snippet markdownSnippet, policy markdownSnippetPolicy, hasPolicy bool) error {
+	source := snippet.Source
+	if hasPolicy && policy.Mode == markdownSnippetWrapped {
+		source = wrapMarkdownSnippet(source)
+	}
+	err, compileFailed := compileAndAnalyzeMarkdownSnippet(engine, source)
+	if compileFailed && !hasPolicy && shouldWrapReferenceSnippet(snippet.Path) {
+		err, _ = compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownSnippet(source))
+	}
+	return err
 }
 
 func markdownSnippetPolicyMap(t *testing.T) map[string]markdownSnippetPolicy {
@@ -237,16 +264,16 @@ func markdownSnippetHash(source string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func compileAndAnalyzeMarkdownSnippet(engine *runtime.Engine, source string) error {
+func compileAndAnalyzeMarkdownSnippet(engine *runtime.Engine, source string) (error, bool) {
 	script, err := engine.Compile(source)
 	if err != nil {
-		return fmt.Errorf("compile: %w", err)
+		return fmt.Errorf("compile: %w", err), true
 	}
 	if warnings := Script(script); len(warnings) > 0 {
 		first := warnings[0]
-		return fmt.Errorf("analyze: %s at %d:%d in %s", first.Message, first.Pos.Line, first.Pos.Column, first.Function)
+		return fmt.Errorf("analyze: %s at %d:%d in %s", first.Message, first.Pos.Line, first.Pos.Column, first.Function), false
 	}
-	return nil
+	return nil, false
 }
 
 func shouldWrapReferenceSnippet(path string) bool {
