@@ -3,7 +3,7 @@ enum Status
   Published
 end
 
-def default_status() -> Status
+def default_status -> Status
   Status::Draft
 end
 
