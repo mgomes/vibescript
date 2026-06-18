@@ -35,8 +35,25 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 		return nil
 	}
 
-	for p.peekToken.Type != ast.TokenEOF && precedence < p.peekPrecedence() {
+	for p.peekToken.Type != ast.TokenEOF {
 		if lineLimited && p.peekToken.Pos.Line > limitLine && !p.lineLimitedContinuationToken(p.peekToken) {
+			return left
+		}
+
+		if p.canParseParenlessCall(left, precedence, lineLimited) {
+			p.nextToken()
+			arg := p.parseLineExpression(lowestPrec)
+			if arg == nil {
+				return nil
+			}
+			left = &ast.CallExpr{Callee: left, Args: []ast.Expression{arg}, KwArgs: []ast.KeywordArg{}, Position: left.Pos()}
+			if lineLimited {
+				limitLine = p.curToken.Pos.Line
+			}
+			continue
+		}
+
+		if precedence >= p.peekPrecedence() {
 			return left
 		}
 		infix := infixParserKind(p.peekToken.Type)
@@ -54,6 +71,33 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 	}
 
 	return left
+}
+
+func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, lineLimited bool) bool {
+	if !lineLimited || precedence != lowestPrec {
+		return false
+	}
+	if !isParenlessCallCallee(left) || !isParenlessArgumentStart(p.peekToken.Type) {
+		return false
+	}
+	return p.peekToken.Pos.Line == p.curToken.Pos.Line
+}
+
+func isParenlessCallCallee(expr ast.Expression) bool {
+	switch expr.(type) {
+	case *ast.Identifier, *ast.MemberExpr:
+		return true
+	default:
+		return false
+	}
+}
+
+func isParenlessArgumentStart(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace, ast.TokenMinus:
+		return false
+	}
+	return prefixParserKind(tt) != prefixParserNone
 }
 
 type prefixParseKind uint8

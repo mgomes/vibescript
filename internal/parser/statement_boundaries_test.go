@@ -85,6 +85,95 @@ end`
 	}
 }
 
+func TestParserParenlessSingleArgumentCalls(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  id 1
+  [1].push 2
+  x = id 3
+  return id 4
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "id"},
+				Args:   []ast.Expression{&ast.IntegerLiteral{Value: 1}},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		&ast.ExprStmt{
+			Expr: &ast.CallExpr{
+				Callee: &ast.MemberExpr{
+					Object: &ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.IntegerLiteral{Value: 1},
+					}},
+					Property: "push",
+				},
+				Args:   []ast.Expression{&ast.IntegerLiteral{Value: 2}},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "x"},
+			Value: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "id"},
+				Args:   []ast.Expression{&ast.IntegerLiteral{Value: 3}},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		&ast.ReturnStmt{
+			Value: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "id"},
+				Args:   []ast.Expression{&ast.IntegerLiteral{Value: 4}},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserParenlessCallDoesNotStealExistingCallOrIndexSyntax(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  value = id(1)
+  item = items[0]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "value"},
+			Value: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "id"},
+				Args:   []ast.Expression{&ast.IntegerLiteral{Value: 1}},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "item"},
+			Value: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "items"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserBareAssertKeepsNextLineStatementsSeparate(t *testing.T) {
 	t.Parallel()
 	source := `def run
