@@ -337,36 +337,32 @@ func lookupEnumInEnv(env *Env, name string) (*EnumDef, bool, error) {
 // both maps so a collision between, say, a script-defined static enum
 // and a host-supplied dynamic one still reports ambiguity.
 func lookupEnumInScope(scope *Env, name string) (*EnumDef, bool, error) {
-	if val, ok := scope.values[name]; ok && val.Kind() == KindEnum {
-		return valueEnum(val), true, nil
-	}
-	if val, ok := scope.statics[name]; ok && val.Kind() == KindEnum {
+	if val, ok := scope.getOwn(name); ok && val.Kind() == KindEnum {
 		return valueEnum(val), true, nil
 	}
 
 	var match *EnumDef
 	matches := make([]string, 0, 2)
-	scan := func(values map[string]Value) error {
-		for key, val := range values {
-			if key == name || !strings.EqualFold(key, name) || val.Kind() != KindEnum {
-				continue
-			}
-			matches = append(matches, key)
-			if match == nil {
-				match = valueEnum(val)
-				continue
-			}
-			if match != valueEnum(val) {
-				return ambiguousEnumTypeError(name, matches)
-			}
+	var scanErr error
+	scan := func(key string, val Value) {
+		if scanErr != nil || key == name || !strings.EqualFold(key, name) || val.Kind() != KindEnum {
+			return
 		}
-		return nil
+		matches = append(matches, key)
+		if match == nil {
+			match = valueEnum(val)
+			return
+		}
+		if match != valueEnum(val) {
+			scanErr = ambiguousEnumTypeError(name, matches)
+		}
 	}
-	if err := scan(scope.values); err != nil {
-		return nil, false, err
+	scope.rangeDynamicBindings(scan)
+	for key, val := range scope.statics {
+		scan(key, val)
 	}
-	if err := scan(scope.statics); err != nil {
-		return nil, false, err
+	if scanErr != nil {
+		return nil, false, scanErr
 	}
 	if match != nil {
 		return match, true, nil
