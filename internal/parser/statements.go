@@ -52,6 +52,12 @@ func (p *parser) parseStatement() ast.Statement {
 	return p.parseStatementModifier(stmt)
 }
 
+func (p *parser) skipStatementSeparators() {
+	for p.curToken.Type == ast.TokenSemicolon {
+		p.nextToken()
+	}
+}
+
 func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 	if stmt == nil || !isStatementModifier(p.peekToken.Type) || p.peekToken.Pos.Line != p.curToken.Pos.Line {
 		return stmt
@@ -101,7 +107,7 @@ func canUseStatementModifier(stmt ast.Statement) bool {
 
 func (p *parser) parseReturnStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if p.peekToken.Type == ast.TokenEOF || p.peekToken.Type == ast.TokenEnd || p.peekToken.Type == ast.TokenElse || p.peekToken.Type == ast.TokenElsif || p.peekToken.Type == ast.TokenEnsure || p.peekToken.Type == ast.TokenRescue || p.peekToken.Pos.Line != pos.Line {
+	if p.peekEndsStatement(pos) {
 		return &ast.ReturnStmt{Position: pos}
 	}
 	p.nextToken()
@@ -114,7 +120,7 @@ func (p *parser) parseReturnStatement() ast.Statement {
 
 func (p *parser) parseRaiseStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if p.peekToken.Type == ast.TokenEOF || p.peekToken.Type == ast.TokenEnd || p.peekToken.Type == ast.TokenElse || p.peekToken.Type == ast.TokenElsif || p.peekToken.Type == ast.TokenEnsure || p.peekToken.Type == ast.TokenRescue || p.peekToken.Pos.Line != pos.Line {
+	if p.peekEndsStatement(pos) {
 		return &ast.RaiseStmt{Position: pos}
 	}
 	p.nextToken()
@@ -137,6 +143,7 @@ func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
 	}()
 
 	for {
+		p.skipStatementSeparators()
 		if _, ok := stopSet[p.curToken.Type]; ok || p.curToken.Type == ast.TokenEOF {
 			return stmts
 		}
@@ -471,6 +478,10 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		p.statementNesting--
 	}()
 	for p.curToken.Type != ast.TokenEnd && p.curToken.Type != ast.TokenEOF {
+		p.skipStatementSeparators()
+		if p.curToken.Type == ast.TokenEnd || p.curToken.Type == ast.TokenEOF {
+			break
+		}
 		stmt := p.parseStatement()
 		if stmt != nil {
 			body = append(body, stmt)
@@ -514,6 +525,10 @@ func (p *parser) parseClassStatement() ast.Statement {
 	}()
 
 	for p.curToken.Type != ast.TokenEnd && p.curToken.Type != ast.TokenEOF {
+		p.skipStatementSeparators()
+		if p.curToken.Type == ast.TokenEnd || p.curToken.Type == ast.TokenEOF {
+			break
+		}
 		switch p.curToken.Type {
 		case ast.TokenDef:
 			fnStmt := p.parseFunctionStatement()
@@ -575,6 +590,10 @@ func (p *parser) parseEnumStatement() ast.Statement {
 	memberNames := make(map[string]struct{})
 
 	for p.curToken.Type != ast.TokenEnd && p.curToken.Type != ast.TokenEOF {
+		p.skipStatementSeparators()
+		if p.curToken.Type == ast.TokenEnd || p.curToken.Type == ast.TokenEOF {
+			break
+		}
 		if p.curToken.Type != ast.TokenIdent && p.curToken.Type != ast.TokenEnum {
 			p.errorExpected(p.curToken, "enum member name")
 			return nil
@@ -863,7 +882,7 @@ func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
 
 func (p *parser) recoverAssignmentRemainder() {
 	startLine := p.peekToken.Pos.Line
-	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line == startLine {
+	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Type != ast.TokenSemicolon && p.peekToken.Pos.Line == startLine {
 		p.nextToken()
 	}
 }
@@ -1004,7 +1023,7 @@ func (p *parser) parseAssertStatement() ast.Statement {
 	pos := p.curToken.Pos
 	callee := &ast.Identifier{Name: p.curToken.Literal, Position: pos}
 	args := []ast.Expression{}
-	if p.peekToken.Type == ast.TokenEOF || p.peekToken.Type == ast.TokenEnd || p.peekToken.Type == ast.TokenElse || p.peekToken.Type == ast.TokenElsif || p.peekToken.Type == ast.TokenEnsure || p.peekToken.Type == ast.TokenRescue || p.peekToken.Pos.Line != pos.Line {
+	if p.peekEndsStatement(pos) {
 		return &ast.ExprStmt{Expr: callee, Position: pos}
 	}
 	p.nextToken()
@@ -1019,6 +1038,15 @@ func (p *parser) parseAssertStatement() ast.Statement {
 	}
 	call := &ast.CallExpr{Callee: callee, Args: args, Position: pos}
 	return &ast.ExprStmt{Expr: call, Position: pos}
+}
+
+func (p *parser) peekEndsStatement(pos ast.Position) bool {
+	switch p.peekToken.Type {
+	case ast.TokenEOF, ast.TokenSemicolon, ast.TokenEnd, ast.TokenElse, ast.TokenElsif, ast.TokenEnsure, ast.TokenRescue:
+		return true
+	default:
+		return p.peekToken.Pos.Line != pos.Line
+	}
 }
 
 func isAssignable(expr ast.Expression) bool {

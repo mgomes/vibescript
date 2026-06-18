@@ -357,6 +357,96 @@ end`
 	}
 }
 
+func TestParserSemicolonStatementSeparators(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  x = 1; y = 2; x + y
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "x"},
+			Value:  &ast.IntegerLiteral{Value: 1},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "y"},
+			Value:  &ast.IntegerLiteral{Value: 2},
+		},
+		&ast.ExprStmt{
+			Expr: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "x"},
+				Operator: ast.TokenPlus,
+				Right:    &ast.Identifier{Name: "y"},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserSemicolonControlFlowSeparators(t *testing.T) {
+	t.Parallel()
+	source := `def run(flag, values)
+  if flag; 1; else; 2; end
+  while flag; break; end
+  for value in values; value; end
+  case flag; when true; 3; else; 4; end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.IfStmt{
+			Condition: &ast.Identifier{Name: "flag"},
+			Consequent: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 1}},
+			},
+			Alternate: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 2}},
+			},
+		},
+		&ast.WhileStmt{
+			Condition: &ast.Identifier{Name: "flag"},
+			Body: []ast.Statement{
+				&ast.BreakStmt{},
+			},
+		},
+		&ast.ForStmt{
+			Iterator: "value",
+			Iterable: &ast.Identifier{
+				Name: "values",
+			},
+			Body: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.Identifier{Name: "value"}},
+			},
+		},
+		&ast.ExprStmt{
+			Expr: &ast.CaseExpr{
+				Target: &ast.Identifier{Name: "flag"},
+				Clauses: []ast.CaseWhenClause{
+					{
+						Values: []ast.Expression{&ast.BoolLiteral{Value: true}},
+						Result: &ast.IntegerLiteral{Value: 3},
+					},
+				},
+				ElseExpr: &ast.IntegerLiteral{Value: 4},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func parsedFunctionBody(t testing.TB, program *ast.Program) []ast.Statement {
 	t.Helper()
 	if len(program.Statements) != 1 {

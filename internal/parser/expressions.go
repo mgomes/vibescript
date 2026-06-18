@@ -44,6 +44,10 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 	}
 
 	for p.peekToken.Type != ast.TokenEOF {
+		if lineLimited && p.peekToken.Type == ast.TokenSemicolon {
+			return left
+		}
+
 		if lineLimited && p.peekToken.Pos.Line > limitLine && !p.lineLimitedContinuationToken(p.peekToken) {
 			return left
 		}
@@ -1049,6 +1053,7 @@ func isWordBooleanKeywordToken(tok ast.Token) bool {
 func (p *parser) parseCaseExpression() ast.Expression {
 	pos := p.curToken.Pos
 	p.nextToken()
+	p.skipStatementSeparators()
 	var target ast.Expression
 	if p.curToken.Type != ast.TokenWhen {
 		target = p.parseLineExpression(lowestPrec)
@@ -1056,6 +1061,7 @@ func (p *parser) parseCaseExpression() ast.Expression {
 			return nil
 		}
 		p.nextToken()
+		p.skipStatementSeparators()
 	}
 
 	clauses := []ast.CaseWhenClause{}
@@ -1078,12 +1084,14 @@ func (p *parser) parseCaseExpression() ast.Expression {
 		}
 
 		p.nextToken()
+		p.skipStatementSeparators()
 		result := p.parseExpressionWithBlock()
 		if result == nil {
 			return nil
 		}
 		clauses = append(clauses, ast.CaseWhenClause{Values: values, Result: result})
 		p.nextToken()
+		p.skipStatementSeparators()
 	}
 
 	if len(clauses) == 0 {
@@ -1094,11 +1102,13 @@ func (p *parser) parseCaseExpression() ast.Expression {
 	var elseExpr ast.Expression
 	if p.curToken.Type == ast.TokenElse {
 		p.nextToken()
+		p.skipStatementSeparators()
 		elseExpr = p.parseExpressionWithBlock()
 		if elseExpr == nil {
 			return nil
 		}
 		p.nextToken()
+		p.skipStatementSeparators()
 	}
 
 	if p.curToken.Type != ast.TokenEnd {

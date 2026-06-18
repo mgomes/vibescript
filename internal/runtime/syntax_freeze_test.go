@@ -174,6 +174,12 @@ end`,
 end`,
 		},
 		{
+			name: "semicolon_statement_separators",
+			source: `def run(flag)
+  if flag; 1; else; 2; end
+end`,
+		},
+		{
 			name: "ternary_conditionals",
 			source: `def run(flag)
   flag ? "enabled" : "disabled"

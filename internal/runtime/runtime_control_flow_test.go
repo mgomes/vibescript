@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+func TestSemicolonStatementSeparators(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run; x = 1; y = 2; x + y; end`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("run() = %s, want 3", got)
+	}
+}
+
 func TestIntTimes(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

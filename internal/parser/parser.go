@@ -52,6 +52,10 @@ func (p *parser) parseProgram() (*ast.Program, []error) {
 	program := &ast.Program{}
 
 	for p.curToken.Type != ast.TokenEOF {
+		p.skipStatementSeparators()
+		if p.curToken.Type == ast.TokenEOF {
+			break
+		}
 		stmt := p.parseStatement()
 		if stmt != nil {
 			program.Statements = append(program.Statements, stmt)
@@ -200,6 +204,8 @@ func tokenLabel(tt ast.TokenType) string {
 		return "percent word array"
 	case ast.TokenSymbols:
 		return "percent symbol array"
+	case ast.TokenSemicolon:
+		return "\";\""
 	case ast.TokenIvar:
 		return "instance variable"
 	case ast.TokenClassVar:

@@ -221,6 +221,9 @@ func (l *lexer) scanToken() ast.Token {
 	case ',':
 		tok = l.makeToken(ast.TokenComma, ",")
 		l.readRune()
+	case ';':
+		tok = l.makeToken(ast.TokenSemicolon, ";")
+		l.readRune()
 	case ':':
 		if l.peekRune() == ':' {
 			first := l.ch

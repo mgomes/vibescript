@@ -10,7 +10,7 @@ Use this with focused guides in `docs/` for deeper examples.
 - Top-level declarations are functions, classes, and enums. Executable top-level
   statements form the default script body when a file is run without
   `-function`, and form a module initializer when a file is loaded with
-  `require`.
+  `require`. Statements are separated by newlines or semicolons.
 - Expressions can be used as statements.
 
 ## Values and Literals
