@@ -452,6 +452,53 @@ func multiplyValues(left, right Value) (Value, error) {
 	}
 }
 
+func powerValues(left, right Value) (Value, error) {
+	switch {
+	case left.Kind() == KindInt && right.Kind() == KindInt && right.Int() >= 0:
+		result, ok := powInt64Checked(left.Int(), right.Int())
+		if !ok {
+			return NewNil(), int64RangeError("integer exponentiation")
+		}
+		return NewInt(result), nil
+	case isNumericValue(left) && isNumericValue(right):
+		result := math.Pow(left.Float(), right.Float())
+		if math.IsInf(result, 0) || math.IsNaN(result) {
+			return NewNil(), errors.New("float exponentiation result is not finite")
+		}
+		return NewFloat(result), nil
+	default:
+		return NewNil(), fmt.Errorf("unsupported exponentiation operands")
+	}
+}
+
+func powInt64Checked(base, exponent int64) (int64, bool) {
+	result := int64(1)
+	factor := base
+	for exponent > 0 {
+		if exponent%2 == 1 {
+			var ok bool
+			result, ok = mulInt64Checked(result, factor)
+			if !ok {
+				return 0, false
+			}
+		}
+		exponent /= 2
+		if exponent == 0 {
+			break
+		}
+		var ok bool
+		factor, ok = mulInt64Checked(factor, factor)
+		if !ok {
+			return 0, false
+		}
+	}
+	return result, true
+}
+
+func isNumericValue(val Value) bool {
+	return val.Kind() == KindInt || val.Kind() == KindFloat
+}
+
 func divideValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:

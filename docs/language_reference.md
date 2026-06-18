@@ -147,13 +147,17 @@ end
 
 Core operator families:
 
-- Arithmetic: `+`, `-`, `*`, `/`, `%`
+- Arithmetic: `+`, `-`, `*`, `/`, `%`, `**`
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`
 
-Operator precedence follows conventional arithmetic/boolean ordering:
-`and` has the same precedence as `&&`, and `or` has the same precedence as
-`||`.
+Operator precedence follows conventional arithmetic/boolean ordering.
+Exponentiation with `**` is right-associative and binds more tightly than
+unary `-`, so `-2 ** 2` is parsed as `-(2 ** 2)`. Integer powers stay `int`
+when the exponent is non-negative and the result fits in 64 bits; mixed
+numeric powers and negative integer exponents return `float`. Integer
+overflow and non-finite float powers raise runtime errors. `and` has the same
+precedence as `&&`, and `or` has the same precedence as `||`.
 
 ## Control Flow
 

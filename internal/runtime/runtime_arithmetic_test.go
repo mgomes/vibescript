@@ -142,6 +142,48 @@ func TestIntegerDivisionAndModulo(t *testing.T) {
 	})
 }
 
+func TestExponentOperator(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def arithmetic
+      {
+        int_power: 2 ** 10,
+        right_assoc: 2 ** 3 ** 2,
+        unary_precedence: -2 ** 2,
+        negative_exponent: 2 ** -1,
+        float_power: 9.0 ** 0.5,
+        mixed_power: 4 ** 0.5,
+        zero_power: 0 ** 0
+      }
+    end
+    `)
+
+	got := callFunc(t, script, "arithmetic", nil).Hash()
+	want := map[string]Value{
+		"int_power":        NewInt(1024),
+		"right_assoc":      NewInt(512),
+		"unary_precedence": NewInt(-4),
+		"zero_power":       NewInt(1),
+	}
+	for key, wantValue := range want {
+		if !got[key].Equal(wantValue) {
+			t.Fatalf("arithmetic()[%q] = %v, want %v", key, got[key], wantValue)
+		}
+	}
+
+	floatCases := map[string]float64{
+		"negative_exponent": 0.5,
+		"float_power":       3,
+		"mixed_power":       2,
+	}
+	for key, wantFloat := range floatCases {
+		gotValue := got[key]
+		if gotValue.Kind() != KindFloat || gotValue.Float() != wantFloat {
+			t.Fatalf("arithmetic()[%q] = %v, want float %v", key, gotValue, wantFloat)
+		}
+	}
+}
+
 func TestIntegerArithmeticOverflowErrors(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -161,6 +203,10 @@ func TestIntegerArithmeticOverflowErrors(t *testing.T) {
       left / right
     end
 
+    def exponent(left, right)
+      left ** right
+    end
+
     def less_than(left, right)
       left < right
     end
@@ -175,6 +221,7 @@ func TestIntegerArithmeticOverflowErrors(t *testing.T) {
 		{name: "subtraction_underflow", fn: "subtract", args: []Value{NewInt(math.MinInt64), NewInt(1)}},
 		{name: "multiplication_overflow", fn: "multiply", args: []Value{NewInt(math.MaxInt64/2 + 1), NewInt(2)}},
 		{name: "division_overflow", fn: "divide", args: []Value{NewInt(math.MinInt64), NewInt(-1)}},
+		{name: "exponentiation_overflow", fn: "exponent", args: []Value{NewInt(math.MaxInt64), NewInt(2)}},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -187,6 +234,32 @@ func TestIntegerArithmeticOverflowErrors(t *testing.T) {
 	ordered := callFunc(t, script, "less_than", []Value{NewInt(math.MinInt64), NewInt(math.MaxInt64)})
 	if !ordered.Equal(NewBool(true)) {
 		t.Fatalf("MinInt64 < MaxInt64 = %v, want true", ordered)
+	}
+}
+
+func TestExponentOperatorErrors(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def exponent(left, right)
+      left ** right
+    end
+    `)
+
+	cases := []struct {
+		name string
+		args []Value
+		want string
+	}{
+		{name: "unsupported_operands", args: []Value{NewString("2"), NewInt(3)}, want: "unsupported exponentiation operands"},
+		{name: "zero_negative_exponent", args: []Value{NewInt(0), NewInt(-1)}, want: "float exponentiation result is not finite"},
+		{name: "float_overflow", args: []Value{NewFloat(10), NewFloat(1000)}, want: "float exponentiation result is not finite"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, "exponent", tc.args, CallOptions{}, tc.want)
+		})
 	}
 }
 

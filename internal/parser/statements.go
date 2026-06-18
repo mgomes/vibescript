@@ -730,6 +730,9 @@ func (p *parser) parseParam() (ast.Param, ast.Position, bool) {
 			p.nextToken()
 		}
 		p.nextToken()
+	case ast.TokenPower:
+		kind = ast.ParamKeywordRest
+		p.nextToken()
 	case ast.TokenAmpersand:
 		kind = ast.ParamBlock
 		p.nextToken()

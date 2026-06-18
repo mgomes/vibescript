@@ -296,6 +296,8 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		result, err = subtractValues(left, right)
 	case tokenAsterisk:
 		result, err = multiplyValues(left, right)
+	case tokenPower:
+		result, err = powerValues(left, right)
 	case tokenSlash:
 		result, err = divideValues(left, right)
 	case tokenPercent:

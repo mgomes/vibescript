@@ -39,6 +39,7 @@ const (
 	TokenMinus     TokenType = "-"
 	TokenBang      TokenType = "!"
 	TokenAsterisk  TokenType = "*"
+	TokenPower     TokenType = "**"
 	TokenSlash     TokenType = "/"
 	TokenPercent   TokenType = "%"
 	TokenLT        TokenType = "<"
