@@ -125,6 +125,39 @@ end`
 	}
 }
 
+func TestParserTypeShapeAllowsWordBooleanFieldNames(t *testing.T) {
+	t.Parallel()
+	source := `def run(payload: { and: bool, or: bool, nested: { and: bool } })
+  payload
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", got.Statements[0])
+	}
+	wantType := &ast.TypeExpr{
+		Kind: ast.TypeShape,
+		Shape: map[string]*ast.TypeExpr{
+			"and": {Name: "bool", Kind: ast.TypeBool},
+			"or":  {Name: "bool", Kind: ast.TypeBool},
+			"nested": {
+				Kind: ast.TypeShape,
+				Shape: map[string]*ast.TypeExpr{
+					"and": {Name: "bool", Kind: ast.TypeBool},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantType, fn.Params[0].Type, astCmpOpts); diff != "" {
+		t.Fatalf("payload type mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserTypeSyntaxTypedBlockParameters(t *testing.T) {
 	t.Parallel()
 	source := `def run(values)
@@ -210,6 +243,13 @@ end`,
   values
 end`,
 			wantErr: "hash type expects exactly 2 type arguments",
+		},
+		{
+			name: "symbolic_boolean_shape_field",
+			source: `def run(payload: { &&: bool })
+  payload
+end`,
+			wantErr: "shape field name",
 		},
 	}
 

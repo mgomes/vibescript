@@ -368,7 +368,7 @@ func (p *parser) parseMemberExpression(object ast.Expression) ast.Expression {
 		return nil
 	}
 	p.nextToken()
-	if !isMemberNameToken(p.curToken.Type) {
+	if !isMemberNameToken(p.curToken) {
 		p.errorExpected(p.curToken, "member name")
 		return nil
 	}
@@ -400,11 +400,11 @@ func (p *parser) parseIndexExpression(object ast.Expression) ast.Expression {
 	return &ast.IndexExpr{Object: object, Index: index, Position: pos}
 }
 
-func isMemberNameToken(tt ast.TokenType) bool {
-	if isLabelNameToken(tt) {
+func isMemberNameToken(tok ast.Token) bool {
+	if isLabelNameToken(tok) {
 		return true
 	}
-	switch tt {
+	switch tok.Type {
 	case ast.TokenExport, ast.TokenBegin, ast.TokenRescue, ast.TokenEnsure, ast.TokenRaise, ast.TokenSpaceship:
 		return true
 	default:
@@ -474,7 +474,7 @@ func (p *parser) parseHashPair() ast.HashPair {
 
 	var key ast.Expression
 	switch {
-	case isLabelNameToken(p.curToken.Type):
+	case isLabelNameToken(p.curToken):
 		key = &ast.SymbolLiteral{Name: p.curToken.Literal, Position: p.curToken.Pos}
 	case p.curToken.Type == ast.TokenString:
 		key = &ast.StringLiteral{Value: p.curToken.Literal, Position: p.curToken.Pos}
@@ -740,7 +740,7 @@ func (p *parser) canAttachPeekBlock() bool {
 }
 
 func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg) {
-	if isLabelNameToken(p.curToken.Type) && p.peekToken.Type == ast.TokenColon {
+	if isLabelNameToken(p.curToken) && p.peekToken.Type == ast.TokenColon {
 		name := p.curToken.Literal
 		pos := p.curToken.Pos
 		p.nextToken()
@@ -763,14 +763,27 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 	}
 }
 
-func isLabelNameToken(tt ast.TokenType) bool {
-	switch tt {
+func isLabelNameToken(tok ast.Token) bool {
+	switch tok.Type {
 	case ast.TokenIdent,
 		ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenSelf, ast.TokenPrivate, ast.TokenProperty, ast.TokenGetter, ast.TokenSetter,
 		ast.TokenEnd, ast.TokenReturn, ast.TokenYield, ast.TokenDo, ast.TokenFor, ast.TokenWhile, ast.TokenUntil,
 		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
 		return true
+	case ast.TokenAnd, ast.TokenOr:
+		return isWordBooleanKeywordToken(tok)
+	default:
+		return false
+	}
+}
+
+func isWordBooleanKeywordToken(tok ast.Token) bool {
+	switch tok.Type {
+	case ast.TokenAnd:
+		return tok.Literal == "and"
+	case ast.TokenOr:
+		return tok.Literal == "or"
 	default:
 		return false
 	}

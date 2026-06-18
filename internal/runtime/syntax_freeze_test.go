@@ -137,6 +137,12 @@ end`,
 end`,
 		},
 		{
+			name: "word_boolean_operators",
+			source: `def run
+  true or false and false
+end`,
+		},
+		{
 			name: "targetless_case_predicates",
 			source: `def run(value)
   case
