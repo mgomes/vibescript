@@ -42,7 +42,10 @@ end
 
 The default is `Config.DefaultTaskConcurrency`, which defaults to `4` unless the host cap is lower.
 
-`tasks.spawn(:function_name, *args, **kwargs)` starts an isolated function call and returns a task handle. `task.value` waits for that task if needed, returning its value or raising its error.
+`tasks.spawn(:function_name, arg1, arg2, key: value)` starts an isolated function
+call and returns a task handle. `task.value` waits for that task if needed,
+returning its value or raising its error. Call splats (`*args`) and keyword
+splats (`**kwargs`) are not supported; pass task arguments explicitly.
 
 `Tasks.run` always waits for all spawned tasks before returning, even when the script never calls `tasks.wait`. `tasks.wait` remains available as an explicit barrier for tasks spawned so far:
 

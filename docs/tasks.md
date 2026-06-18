@@ -60,9 +60,11 @@ def prepare_pair(first, second)
 end
 ```
 
-`tasks.spawn(:function_name, *args, **kwargs)` starts a named function call and
-returns a task handle. `task.value` waits for that task if it is still running,
-then returns its result or raises its error.
+`tasks.spawn(:function_name, arg1, arg2, key: value)` starts a named function
+call and returns a task handle. `task.value` waits for that task if it is still
+running, then returns its result or raises its error. Call splats (`*args`) and
+keyword splats (`**kwargs`) are not supported; pass the task arguments
+explicitly.
 
 `Tasks.run` returns the block value. It does not collect spawned task values
 automatically; use `task.value` for individual handles or `Tasks.map` for

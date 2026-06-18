@@ -865,6 +865,15 @@ func (p *parser) canAttachPeekBlock() bool {
 }
 
 func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg) {
+	switch p.curToken.Type {
+	case ast.TokenAsterisk:
+		p.recoverUnsupportedCallExpansion("call splat is not supported; pass positional arguments explicitly")
+		return
+	case ast.TokenPower:
+		p.recoverUnsupportedCallExpansion("keyword splat is not supported; pass keyword arguments explicitly")
+		return
+	}
+
 	if p.curToken.Type == ast.TokenAmpersand {
 		p.recoverUnsupportedAmpersandCallArgument()
 		return
@@ -893,12 +902,21 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 	}
 }
 
+func (p *parser) recoverUnsupportedCallExpansion(message string) {
+	p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), message)
+	p.recoverUnsupportedCallArgument()
+}
+
 func (p *parser) recoverUnsupportedAmpersandCallArgument() {
 	p.addParseErrorSpan(
 		p.curToken.Pos,
 		tokenEnd(p.curToken),
 		"ampersand block forwarding and symbol-to-proc shorthand are not supported; use an explicit do/end or brace block",
 	)
+	p.recoverUnsupportedCallArgument()
+}
+
+func (p *parser) recoverUnsupportedCallArgument() {
 	startLine := p.curToken.Pos.Line
 	for p.peekToken.Type != ast.TokenEOF &&
 		p.peekToken.Pos.Line == startLine &&
