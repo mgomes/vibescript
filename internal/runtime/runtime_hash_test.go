@@ -77,6 +77,54 @@ func TestHashMergeAndKeys(t *testing.T) {
 	compareArrays(t, keys, wantKeys)
 }
 
+func TestQuotedHashLiteralKeys(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def payload()
+      {"name": "Ada", "first-name": "Lovelace", active: true}
+    end
+
+    def lookups()
+      row = {"name": "Ada", "first-name": "Lovelace"}
+      {
+        symbol_name: row[:name],
+        string_name: row["name"],
+        hyphenated: row["first-name"]
+      }
+    end
+
+    def collision()
+      {name: "symbol", "name": "string"}
+    end
+    `)
+
+	payload := callFunc(t, script, "payload", nil)
+	if payload.Kind() != KindHash {
+		t.Fatalf("payload() = %s, want hash", payload.Kind())
+	}
+	compareHash(t, payload.Hash(), map[string]Value{
+		"name":       NewString("Ada"),
+		"first-name": NewString("Lovelace"),
+		"active":     NewBool(true),
+	})
+
+	lookups := callFunc(t, script, "lookups", nil)
+	if lookups.Kind() != KindHash {
+		t.Fatalf("lookups() = %s, want hash", lookups.Kind())
+	}
+	compareHash(t, lookups.Hash(), map[string]Value{
+		"symbol_name": NewString("Ada"),
+		"string_name": NewString("Ada"),
+		"hyphenated":  NewString("Lovelace"),
+	})
+
+	collision := callFunc(t, script, "collision", nil)
+	if collision.Kind() != KindHash {
+		t.Fatalf("collision() = %s, want hash", collision.Kind())
+	}
+	compareHash(t, collision.Hash(), map[string]Value{"name": NewString("string")})
+}
+
 func TestMemberAccessAllowsKeywordNamedHashKeys(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

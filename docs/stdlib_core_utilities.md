@@ -216,9 +216,10 @@ end
 
 ## Hashes
 
-See [hashes.md](hashes.md) for worked examples. Hash keys are symbols (string
-keys are normalized to the same lookup space). `keys`, `values`, and all
-block-based iteration visit entries in sorted key order for determinism.
+See [hashes.md](hashes.md) for worked examples. Hash keys use one string lookup
+space; shorthand symbol labels and quoted string keys normalize to the same
+entries. `keys`, `values`, and all block-based iteration visit entries in
+sorted key order for determinism.
 
 Property access (`record.name`) resolves the hash methods below before stored
 keys, so method names stay stable even when data contains the same key:
