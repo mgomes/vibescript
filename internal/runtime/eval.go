@@ -88,6 +88,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalUnaryExpr(e, env)
 	case *BinaryExpr:
 		return exec.evalBinaryExpr(e, env)
+	case *ConditionalExpr:
+		return exec.evalConditionalExpr(e, env)
 	case *RangeExpr:
 		return exec.evalRangeExpr(e, env)
 	case *CaseExpr:
@@ -326,6 +328,29 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 
 	if err != nil {
 		return NewNil(), exec.wrapError(err, expr.Pos())
+	}
+	return result, nil
+}
+
+func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Value, error) {
+	condition, err := exec.evalExpression(expr.Condition, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(condition); err != nil {
+		return NewNil(), err
+	}
+
+	branch := expr.Alternate
+	if condition.Truthy() {
+		branch = expr.Consequent
+	}
+	result, err := exec.evalExpressionWithAuto(branch, env, true)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), err
 	}
 	return result, nil
 }

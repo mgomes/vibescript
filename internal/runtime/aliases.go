@@ -67,6 +67,7 @@ type (
 	ClassVarExpr       = ast.ClassVarExpr
 	UnaryExpr          = ast.UnaryExpr
 	BinaryExpr         = ast.BinaryExpr
+	ConditionalExpr    = ast.ConditionalExpr
 	RangeExpr          = ast.RangeExpr
 	CaseWhenClause     = ast.CaseWhenClause
 	CaseExpr           = ast.CaseExpr
@@ -132,6 +133,7 @@ const (
 	tokenAnd       = ast.TokenAnd
 	tokenOr        = ast.TokenOr
 	tokenAmpersand = ast.TokenAmpersand
+	tokenQuestion  = ast.TokenQuestion
 	tokenComma     = ast.TokenComma
 	tokenColon     = ast.TokenColon
 	tokenScope     = ast.TokenScope

@@ -52,6 +52,7 @@ const (
 	TokenAnd       TokenType = "&&"
 	TokenOr        TokenType = "||"
 	TokenAmpersand TokenType = "&"
+	TokenQuestion  TokenType = "?"
 
 	TokenComma    TokenType = ","
 	TokenColon    TokenType = ":"
