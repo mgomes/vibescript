@@ -459,6 +459,33 @@ end`)
 	}
 }
 
+func TestTasksInheritedEnumGlobalsSupportTypeAnnotations(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def label(status: Status)
+  status.name
+end
+
+def run()
+  Tasks.map([:draft], max: 1, with: :label)
+end`)
+	statusDef, err := compileEnumDef(&EnumStmt{
+		Name: "Status",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"Status": NewEnum(statusDef),
+		},
+	})
+	compareArrays(t, result, []Value{NewString("Draft")})
+}
+
 func TestTaskRetainedResultsCountTowardParentMemoryQuota(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{
