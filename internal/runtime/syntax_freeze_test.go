@@ -207,6 +207,18 @@ end`,
 end`,
 		},
 		{
+			name: "parenless_yield_args",
+			source: `def caller
+  yield 1, 2
+end
+
+def run
+  caller do |a, b|
+    a + b
+  end
+end`,
+		},
+		{
 			name: "targetless_case_predicates",
 			source: `def run(value)
   case

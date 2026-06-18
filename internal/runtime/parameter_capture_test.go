@@ -112,3 +112,22 @@ func TestFunctionBlockCaptureParameter(t *testing.T) {
 		t.Fatalf("run_yield() = %#v, want 5", got)
 	}
 }
+
+func TestParenlessYieldMultipleArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def yield_pair
+      yield 4, 6
+    end
+
+    def run
+      yield_pair do |left, right|
+        left + right
+      end
+    end
+    `)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewInt(10)) {
+		t.Fatalf("run() = %#v, want 10", got)
+	}
+}
