@@ -601,6 +601,70 @@ end`)
 	}
 }
 
+func TestRequireSearchPathCachedSymlinkSurvivesRetargetUntilClear(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-specific on Windows")
+	}
+
+	root := t.TempDir()
+	moduleRoot := filepath.Join(root, "mods")
+	insideDir := filepath.Join(moduleRoot, "inside")
+	outsideDir := filepath.Join(root, "outside")
+	for _, dir := range []string{insideDir, outsideDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", dir, err)
+		}
+	}
+	insideModule := filepath.Join(insideDir, "picked.vibe")
+	outsideModule := filepath.Join(outsideDir, "picked.vibe")
+	if err := os.WriteFile(insideModule, []byte("def value() 1 end\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", insideModule, err)
+	}
+	if err := os.WriteFile(outsideModule, []byte("def value() 2 end\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", outsideModule, err)
+	}
+
+	link := filepath.Join(moduleRoot, "picked.vibe")
+	if err := os.Symlink(insideModule, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	engine := mustNewEngineWithModuleRoot(t, moduleRoot)
+	script := compileScriptWithEngine(t, engine, `def run()
+  mod = require("picked")
+  mod.value()
+end`)
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("first call error = %v", err)
+	}
+	if !result.Equal(NewInt(1)) {
+		t.Fatalf("first call = %#v, want 1", result)
+	}
+
+	if err := os.Remove(link); err != nil {
+		t.Fatalf("os.Remove(%q) error = %v", link, err)
+	}
+	if err := os.Symlink(outsideModule, link); err != nil {
+		t.Fatalf("retarget module symlink error = %v", err)
+	}
+
+	result, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("cached call after symlink retarget error = %v", err)
+	}
+	if !result.Equal(NewInt(1)) {
+		t.Fatalf("cached call after symlink retarget = %#v, want 1", result)
+	}
+
+	if cleared := engine.ClearModuleCache(); cleared != 1 {
+		t.Fatalf("ClearModuleCache() = %d, want 1", cleared)
+	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
+}
+
 func TestRequireRejectsNonRegularModuleFile(t *testing.T) {
 	t.Parallel()
 	moduleRoot := t.TempDir()
@@ -806,6 +870,78 @@ end`)
 	if result.Kind() != KindInt || result.Int() != 7 {
 		t.Fatalf("expected second call result 7, got %#v", result)
 	}
+}
+
+func TestRequireRelativeCachedSymlinkSurvivesRetargetUntilClear(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-specific on Windows")
+	}
+
+	root := t.TempDir()
+	moduleRoot := filepath.Join(root, "mods")
+	insideDir := filepath.Join(moduleRoot, "inside")
+	outsideDir := filepath.Join(root, "outside")
+	for _, dir := range []string{insideDir, outsideDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", dir, err)
+		}
+	}
+	insideModule := filepath.Join(insideDir, "dep.vibe")
+	outsideModule := filepath.Join(outsideDir, "dep.vibe")
+	if err := os.WriteFile(insideModule, []byte("def value() 7 end\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", insideModule, err)
+	}
+	if err := os.WriteFile(outsideModule, []byte("def value() 9 end\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", outsideModule, err)
+	}
+	entryPath := filepath.Join(moduleRoot, "entry.vibe")
+	if err := os.WriteFile(entryPath, []byte(`def run()
+  dep = require("./dep")
+  dep.value()
+end
+`), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", entryPath, err)
+	}
+
+	link := filepath.Join(moduleRoot, "dep.vibe")
+	if err := os.Symlink(insideModule, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	engine := mustNewEngineWithModuleRoot(t, moduleRoot)
+	script := compileScriptWithEngine(t, engine, `def run()
+  entry = require("entry")
+  entry.run()
+end`)
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("first call error = %v", err)
+	}
+	if !result.Equal(NewInt(7)) {
+		t.Fatalf("first call = %#v, want 7", result)
+	}
+
+	if err := os.Remove(link); err != nil {
+		t.Fatalf("os.Remove(%q) error = %v", link, err)
+	}
+	if err := os.Symlink(outsideModule, link); err != nil {
+		t.Fatalf("retarget module symlink error = %v", err)
+	}
+
+	result, err = script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("cached call after symlink retarget error = %v", err)
+	}
+	if !result.Equal(NewInt(7)) {
+		t.Fatalf("cached call after symlink retarget = %#v, want 7", result)
+	}
+
+	if cleared := engine.ClearModuleCache(); cleared != 2 {
+		t.Fatalf("ClearModuleCache() = %d, want 2", cleared)
+	}
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "escapes module root")
 }
 
 func TestExportKeywordValidation(t *testing.T) {
