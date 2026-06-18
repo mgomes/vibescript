@@ -186,6 +186,40 @@ func TestCompletionItemsAreSortedAndCategorized(t *testing.T) {
 	}
 }
 
+func TestLSPKeywordCompletionsMatchParserKeywords(t *testing.T) {
+	t.Parallel()
+	items := completionItems()
+	got := make([]string, 0, len(ast.Keywords()))
+	for _, item := range items {
+		if item["detail"] != "keyword" {
+			continue
+		}
+		label, ok := item["label"].(string)
+		if !ok {
+			t.Fatalf("unexpected keyword completion label: %#v", item["label"])
+		}
+		got = append(got, label)
+	}
+
+	want := ast.Keywords()
+	if !slices.Equal(got, want) {
+		t.Fatalf("keyword completions = %#v, want parser keywords %#v", got, want)
+	}
+	for _, unsupported := range []string{"and", "or", "unless"} {
+		if classifyWord(unsupported) == "keyword" {
+			t.Fatalf("classifyWord(%q) = keyword, want unsupported syntax excluded from keyword completions", unsupported)
+		}
+	}
+
+	require := findCompletionItem(t, items, "require")
+	if require["detail"] != "builtin" {
+		t.Fatalf("require detail = %#v, want builtin", require["detail"])
+	}
+	if require["kind"] != 3 {
+		t.Fatalf("require kind = %#v, want function kind 3", require["kind"])
+	}
+}
+
 func TestHandleMessageDidOpenPublishesDiagnostics(t *testing.T) {
 	t.Parallel()
 	server := &lspServer{

@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"sort"
 	"unicode"
 
 	"github.com/mgomes/vibescript/vibes/source"
@@ -107,72 +108,55 @@ type Token struct {
 	End source.Position
 }
 
+var keywordTokenTypes = map[string]TokenType{
+	"def":      TokenDef,
+	"class":    TokenClass,
+	"enum":     TokenEnum,
+	"export":   TokenExport,
+	"self":     TokenSelf,
+	"private":  TokenPrivate,
+	"property": TokenProperty,
+	"getter":   TokenGetter,
+	"setter":   TokenSetter,
+	"begin":    TokenBegin,
+	"rescue":   TokenRescue,
+	"ensure":   TokenEnsure,
+	"raise":    TokenRaise,
+	"end":      TokenEnd,
+	"return":   TokenReturn,
+	"yield":    TokenYield,
+	"do":       TokenDo,
+	"for":      TokenFor,
+	"while":    TokenWhile,
+	"until":    TokenUntil,
+	"break":    TokenBreak,
+	"next":     TokenNext,
+	"in":       TokenIn,
+	"if":       TokenIf,
+	"case":     TokenCase,
+	"when":     TokenWhen,
+	"elsif":    TokenElsif,
+	"else":     TokenElse,
+	"true":     TokenTrue,
+	"false":    TokenFalse,
+	"nil":      TokenNil,
+}
+
+// Keywords returns the parser's reserved keyword literals in sorted order.
+func Keywords() []string {
+	keywords := make([]string, 0, len(keywordTokenTypes))
+	for keyword := range keywordTokenTypes {
+		keywords = append(keywords, keyword)
+	}
+	sort.Strings(keywords)
+	return keywords
+}
+
 // LookupIdent returns the TokenType for an identifier literal, falling
 // back to TokenIdent when the input is not a reserved keyword.
 func LookupIdent(ident string) TokenType {
-	switch ident {
-	case "def":
-		return TokenDef
-	case "class":
-		return TokenClass
-	case "enum":
-		return TokenEnum
-	case "export":
-		return TokenExport
-	case "self":
-		return TokenSelf
-	case "private":
-		return TokenPrivate
-	case "property":
-		return TokenProperty
-	case "getter":
-		return TokenGetter
-	case "setter":
-		return TokenSetter
-	case "begin":
-		return TokenBegin
-	case "rescue":
-		return TokenRescue
-	case "ensure":
-		return TokenEnsure
-	case "raise":
-		return TokenRaise
-	case "end":
-		return TokenEnd
-	case "return":
-		return TokenReturn
-	case "yield":
-		return TokenYield
-	case "do":
-		return TokenDo
-	case "for":
-		return TokenFor
-	case "while":
-		return TokenWhile
-	case "until":
-		return TokenUntil
-	case "break":
-		return TokenBreak
-	case "next":
-		return TokenNext
-	case "in":
-		return TokenIn
-	case "if":
-		return TokenIf
-	case "case":
-		return TokenCase
-	case "when":
-		return TokenWhen
-	case "elsif":
-		return TokenElsif
-	case "else":
-		return TokenElse
-	case "true":
-		return TokenTrue
-	case "false":
-		return TokenFalse
-	case "nil":
-		return TokenNil
+	if tokenType, ok := keywordTokenTypes[ident]; ok {
+		return tokenType
 	}
 	return TokenIdent
 }
