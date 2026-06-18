@@ -128,3 +128,39 @@ func formatShapeType(ty *TypeExpr) string {
 	}
 	return "{ " + strings.Join(parts, ", ") + " }"
 }
+
+// FormatParamTarget returns the parameter's binding target in source form.
+func FormatParamTarget(param Param) string {
+	label := param.Name
+	if param.Target != nil {
+		label = FormatDestructureTarget(param.Target)
+	}
+	switch param.Kind {
+	case ParamRest:
+		label = "*" + label
+	case ParamKeywordRest:
+		label = "**" + label
+	case ParamBlock:
+		label = "&" + label
+	}
+	return label
+}
+
+// FormatDestructureTarget returns a destructuring binding target in source form.
+func FormatDestructureTarget(target Expression) string {
+	switch t := target.(type) {
+	case *Identifier:
+		return t.Name
+	case *DestructureTarget:
+		parts := make([]string, len(t.Elements))
+		for i, element := range t.Elements {
+			parts[i] = FormatDestructureTarget(element.Target)
+			if element.Rest {
+				parts[i] = "*" + parts[i]
+			}
+		}
+		return "(" + strings.Join(parts, ", ") + ")"
+	default:
+		return ""
+	}
+}

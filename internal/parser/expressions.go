@@ -365,20 +365,54 @@ func (p *parser) parseBlockParameters() ([]ast.Param, bool) {
 }
 
 func (p *parser) parseBlockParameter() (ast.Param, bool) {
-	if p.curToken.Type != ast.TokenIdent {
+	switch p.curToken.Type {
+	case ast.TokenIdent:
+		param := ast.Param{Name: p.curToken.Literal}
+		if p.peekToken.Type == ast.TokenColon {
+			p.nextToken()
+			p.nextToken()
+			param.Type = p.parseBlockParamType()
+			if param.Type == nil {
+				return ast.Param{}, false
+			}
+		}
+		return param, true
+	case ast.TokenLParen:
+		return p.parseDestructuredBlockParameter(ast.TokenRParen, ")")
+	case ast.TokenLBracket:
+		return p.parseDestructuredBlockParameter(ast.TokenRBracket, "]")
+	default:
 		p.errorExpected(p.curToken, "block parameter")
 		return ast.Param{}, false
 	}
-	param := ast.Param{Name: p.curToken.Literal}
-	if p.peekToken.Type == ast.TokenColon {
-		p.nextToken()
-		p.nextToken()
-		param.Type = p.parseBlockParamType()
-		if param.Type == nil {
-			return ast.Param{}, false
-		}
+}
+
+func (p *parser) parseDestructuredBlockParameter(stop ast.TokenType, stopName string) (ast.Param, bool) {
+	target := p.parseNestedDestructureTarget(stop, stopName)
+	if target == nil {
+		return ast.Param{}, false
 	}
-	return param, true
+	if !isBlockParameterTarget(target) {
+		p.addParseError(target.Pos(), "invalid block parameter destructuring target")
+		return ast.Param{}, false
+	}
+	return ast.Param{Target: target}, true
+}
+
+func isBlockParameterTarget(target ast.Expression) bool {
+	switch t := target.(type) {
+	case *ast.Identifier:
+		return true
+	case *ast.DestructureTarget:
+		for _, element := range t.Elements {
+			if !isBlockParameterTarget(element.Target) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *parser) parseBlockParamType() *ast.TypeExpr {

@@ -55,6 +55,7 @@ type Param struct {
 	Type       *TypeExpr
 	DefaultVal Expression
 	IsIvar     bool
+	Target     Expression
 }
 
 // TypeKind identifies the category of a type expression.

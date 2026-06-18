@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/mgomes/vibescript/internal/ast"
 )
 
 type valueSnapshot struct {
@@ -122,7 +123,7 @@ func snapshotValue(val Value) valueSnapshot {
 		if block != nil {
 			params := make([]string, len(block.Params))
 			for i, param := range block.Params {
-				params[i] = param.Name
+				params[i] = ast.FormatParamTarget(param)
 			}
 			snapshot.Data = blockSnapshot{
 				Identity: fmt.Sprintf("%p", block),

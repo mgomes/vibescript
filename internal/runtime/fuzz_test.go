@@ -1272,8 +1272,13 @@ func validateFuzzBlockLiteral(context string, block *BlockLiteral) error {
 		return err
 	}
 	for i, param := range block.Params {
-		if param.Name == "" {
+		if param.Name == "" && param.Target == nil {
 			return fmt.Errorf("%s.params[%d] name is empty", context, i)
+		}
+		if param.Target != nil {
+			if err := validateFuzzExpression(fmt.Sprintf("%s.params[%d].target", context, i), param.Target); err != nil {
+				return err
+			}
 		}
 		if err := validateFuzzTypeExpr(fmt.Sprintf("%s.params[%d].type", context, i), param.Type); err != nil {
 			return err
