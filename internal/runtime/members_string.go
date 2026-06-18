@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // stringMemberNames mirrors the names dispatched by stringMember and feeds
@@ -48,10 +49,83 @@ func chompDefault(text string) string {
 	return text
 }
 
+func stringIsASCII(text string) bool {
+	for i := range len(text) {
+		if text[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+func stringRuneLen(text string) int {
+	if stringIsASCII(text) {
+		return len(text)
+	}
+	return utf8.RuneCountInString(text)
+}
+
+func stringByteIndexForRuneOffset(text string, offset int) (int, bool) {
+	if offset < 0 {
+		return 0, false
+	}
+	if stringIsASCII(text) {
+		if offset > len(text) {
+			return 0, false
+		}
+		return offset, true
+	}
+	runeIndex := 0
+	for byteIndex := range text {
+		if runeIndex == offset {
+			return byteIndex, true
+		}
+		runeIndex++
+	}
+	if runeIndex == offset {
+		return len(text), true
+	}
+	return 0, false
+}
+
 func stringRuneIndex(text, needle string, offset int) int {
+	if offset < 0 {
+		return -1
+	}
+	if stringIsASCII(text) && stringIsASCII(needle) {
+		if offset > len(text) {
+			return -1
+		}
+		if needle == "" {
+			return offset
+		}
+		index := strings.Index(text[offset:], needle)
+		if index < 0 {
+			return -1
+		}
+		return offset + index
+	}
+	if !utf8.ValidString(text) || !utf8.ValidString(needle) {
+		return stringRuneIndexFallback(text, needle, offset)
+	}
+	startByte, ok := stringByteIndexForRuneOffset(text, offset)
+	if !ok {
+		return -1
+	}
+	if needle == "" {
+		return offset
+	}
+	index := strings.Index(text[startByte:], needle)
+	if index < 0 {
+		return -1
+	}
+	return offset + utf8.RuneCountInString(text[startByte:startByte+index])
+}
+
+func stringRuneIndexFallback(text, needle string, offset int) int {
 	hayRunes := []rune(text)
 	needleRunes := []rune(needle)
-	if offset < 0 || offset > len(hayRunes) {
+	if offset > len(hayRunes) {
 		return -1
 	}
 	if len(needleRunes) == 0 {
@@ -62,14 +136,7 @@ func stringRuneIndex(text, needle string, offset int) int {
 		return -1
 	}
 	for i := offset; i <= limit; i++ {
-		match := true
-		for j := range len(needleRunes) {
-			if hayRunes[i+j] != needleRunes[j] {
-				match = false
-				break
-			}
-		}
-		if match {
+		if runesHavePrefix(hayRunes[i:], needleRunes) {
 			return i
 		}
 	}
@@ -77,11 +144,52 @@ func stringRuneIndex(text, needle string, offset int) int {
 }
 
 func stringRuneRIndex(text, needle string, offset int) int {
-	hayRunes := []rune(text)
-	needleRunes := []rune(needle)
 	if offset < 0 {
 		return -1
 	}
+	if stringIsASCII(text) && stringIsASCII(needle) {
+		if offset > len(text) {
+			offset = len(text)
+		}
+		if needle == "" {
+			return offset
+		}
+		maxStart := len(text) - len(needle)
+		if maxStart < 0 {
+			return -1
+		}
+		start := min(offset, maxStart)
+		return strings.LastIndex(text[:start+len(needle)], needle)
+	}
+	if !utf8.ValidString(text) || !utf8.ValidString(needle) {
+		return stringRuneRIndexFallback(text, needle, offset)
+	}
+	textLen := stringRuneLen(text)
+	if offset > textLen {
+		offset = textLen
+	}
+	if needle == "" {
+		return offset
+	}
+	needleLen := stringRuneLen(needle)
+	if needleLen > textLen {
+		return -1
+	}
+	start := min(offset, textLen-needleLen)
+	endByte, ok := stringByteIndexForRuneOffset(text, start+needleLen)
+	if !ok {
+		return -1
+	}
+	index := strings.LastIndex(text[:endByte], needle)
+	if index < 0 {
+		return -1
+	}
+	return utf8.RuneCountInString(text[:index])
+}
+
+func stringRuneRIndexFallback(text, needle string, offset int) int {
+	hayRunes := []rune(text)
+	needleRunes := []rune(needle)
 	if offset > len(hayRunes) {
 		offset = len(hayRunes)
 	}
@@ -91,40 +199,51 @@ func stringRuneRIndex(text, needle string, offset int) int {
 	if len(needleRunes) > len(hayRunes) {
 		return -1
 	}
-	start := offset
-	maxStart := len(hayRunes) - len(needleRunes)
-	if start > maxStart {
-		start = maxStart
-	}
+	start := min(offset, len(hayRunes)-len(needleRunes))
 	for i := start; i >= 0; i-- {
-		match := true
-		for j := range len(needleRunes) {
-			if hayRunes[i+j] != needleRunes[j] {
-				match = false
-				break
-			}
-		}
-		if match {
+		if runesHavePrefix(hayRunes[i:], needleRunes) {
 			return i
 		}
 	}
 	return -1
 }
 
+func runesHavePrefix(text, prefix []rune) bool {
+	if len(prefix) > len(text) {
+		return false
+	}
+	for i, r := range prefix {
+		if text[i] != r {
+			return false
+		}
+	}
+	return true
+}
+
 func stringRuneSlice(text string, start, length int) (string, bool) {
-	runes := []rune(text)
-	if start < 0 || start >= len(runes) {
+	if start < 0 || length < 0 {
 		return "", false
 	}
-	if length < 0 {
+	startByte, ok := stringByteIndexForRuneOffset(text, start)
+	if !ok || startByte == len(text) {
 		return "", false
 	}
-	remaining := len(runes) - start
-	if length >= remaining {
-		return string(runes[start:]), true
+	endByte := startByte
+	for range length {
+		if endByte == len(text) {
+			return normalizeInvalidUTF8(text[startByte:]), true
+		}
+		_, size := utf8.DecodeRuneInString(text[endByte:])
+		endByte += size
 	}
-	end := start + length
-	return string(runes[start:end]), true
+	return normalizeInvalidUTF8(text[startByte:endByte]), true
+}
+
+func normalizeInvalidUTF8(text string) string {
+	if utf8.ValidString(text) {
+		return text
+	}
+	return string([]rune(text))
 }
 
 func stringCapitalize(text string) string {
@@ -437,14 +556,14 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.size does not take arguments")
 			}
-			return NewInt(int64(len([]rune(receiver.String())))), nil
+			return NewInt(int64(stringRuneLen(receiver.String()))), nil
 		}), nil
 	case "length":
 		return NewAutoBuiltin("string.length", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.length does not take arguments")
 			}
-			return NewInt(int64(len([]rune(receiver.String())))), nil
+			return NewInt(int64(stringRuneLen(receiver.String()))), nil
 		}), nil
 	case "bytesize":
 		return NewAutoBuiltin("string.bytesize", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -458,22 +577,22 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.ord does not take arguments")
 			}
-			runes := []rune(receiver.String())
-			if len(runes) == 0 {
+			r, size := utf8.DecodeRuneInString(receiver.String())
+			if size == 0 {
 				return NewNil(), fmt.Errorf("string.ord requires non-empty string")
 			}
-			return NewInt(int64(runes[0])), nil
+			return NewInt(int64(r)), nil
 		}), nil
 	case "chr":
 		return NewAutoBuiltin("string.chr", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.chr does not take arguments")
 			}
-			runes := []rune(receiver.String())
-			if len(runes) == 0 {
+			r, size := utf8.DecodeRuneInString(receiver.String())
+			if size == 0 {
 				return NewNil(), nil
 			}
-			return NewString(string(runes[0])), nil
+			return NewString(string(r)), nil
 		}), nil
 	case "empty?":
 		return NewAutoBuiltin("string.empty?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -634,7 +753,7 @@ func stringMemberQuery(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.rindex substring must be string")
 			}
-			offset := len([]rune(receiver.String()))
+			offset := stringRuneLen(receiver.String())
 			if len(args) == 2 {
 				i, err := valueToInt(args[1])
 				if err != nil || i < 0 {
@@ -657,12 +776,12 @@ func stringMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), fmt.Errorf("string.slice index must be integer")
 			}
-			runes := []rune(receiver.String())
 			if len(args) == 1 {
-				if start < 0 || start >= len(runes) {
+				substr, ok := stringRuneSlice(receiver.String(), start, 1)
+				if !ok {
 					return NewNil(), nil
 				}
-				return NewString(string(runes[start])), nil
+				return NewString(substr), nil
 			}
 			length, err := valueToInt(args[1])
 			if err != nil {

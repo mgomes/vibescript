@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"testing"
+	"unicode/utf8"
 )
 
 func TestStringHelpers(t *testing.T) {
@@ -141,11 +142,18 @@ func TestStringSearchAndSlice(t *testing.T) {
         index_hit: text.index("llo"),
         index_offset_hit: text.index("llo", 6),
         index_miss: text.index("zzz"),
+        index_empty: text.index("", 1),
+        index_empty_end: text.index("", 11),
+        index_empty_oob: text.index("", 12),
         rindex_hit: text.rindex("llo"),
         rindex_offset_hit: text.rindex("llo", 4),
         rindex_miss: text.rindex("zzz"),
+        rindex_empty: text.rindex(""),
+        rindex_empty_offset: text.rindex("", 4),
+        rindex_empty_oob: text.rindex("", 99),
         slice_char: text.slice(1),
         slice_range: text.slice(1, 4),
+        slice_zero_len: text.slice(1, 0),
         slice_oob: text.slice(99),
         slice_negative_len: text.slice(1, -1),
         slice_huge_len: text.slice(1, 9223372036854775807)
@@ -173,6 +181,12 @@ func TestStringSearchAndSlice(t *testing.T) {
 	if got["index_miss"].Kind() != KindNil {
 		t.Fatalf("index_miss expected nil, got %v", got["index_miss"])
 	}
+	if got["index_empty"].Int() != 1 || got["index_empty_end"].Int() != 11 {
+		t.Fatalf("index_empty mismatch: %v end=%v", got["index_empty"], got["index_empty_end"])
+	}
+	if got["index_empty_oob"].Kind() != KindNil {
+		t.Fatalf("index_empty_oob expected nil, got %v", got["index_empty_oob"])
+	}
 	if got["rindex_hit"].Int() != 8 {
 		t.Fatalf("rindex_hit mismatch: %v", got["rindex_hit"])
 	}
@@ -182,11 +196,17 @@ func TestStringSearchAndSlice(t *testing.T) {
 	if got["rindex_miss"].Kind() != KindNil {
 		t.Fatalf("rindex_miss expected nil, got %v", got["rindex_miss"])
 	}
+	if got["rindex_empty"].Int() != 11 || got["rindex_empty_offset"].Int() != 4 || got["rindex_empty_oob"].Int() != 11 {
+		t.Fatalf("rindex_empty mismatch: default=%v offset=%v oob=%v", got["rindex_empty"], got["rindex_empty_offset"], got["rindex_empty_oob"])
+	}
 	if got["slice_char"].String() != "é" {
 		t.Fatalf("slice_char mismatch: %q", got["slice_char"].String())
 	}
 	if got["slice_range"].String() != "éllo" {
 		t.Fatalf("slice_range mismatch: %q", got["slice_range"].String())
+	}
+	if got["slice_zero_len"].String() != "" {
+		t.Fatalf("slice_zero_len mismatch: %q", got["slice_zero_len"].String())
 	}
 	if got["slice_oob"].Kind() != KindNil {
 		t.Fatalf("slice_oob expected nil, got %v", got["slice_oob"])
@@ -196,6 +216,23 @@ func TestStringSearchAndSlice(t *testing.T) {
 	}
 	if got["slice_huge_len"].String() != "éllo hello" {
 		t.Fatalf("slice_huge_len mismatch: %q", got["slice_huge_len"].String())
+	}
+}
+
+func TestStringSliceNormalizesInvalidUTF8(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def first_char(text)
+      text.slice(0, 1)
+    end
+    `)
+
+	result := callFunc(t, script, "first_char", []Value{NewString("\xff")})
+	if got := result.String(); got != "\uFFFD" {
+		t.Fatalf("first_char invalid UTF-8 = %q, want replacement rune", got)
+	}
+	if !utf8.ValidString(result.String()) {
+		t.Fatalf("first_char invalid UTF-8 returned non-UTF-8 string %q", result.String())
 	}
 }
 
