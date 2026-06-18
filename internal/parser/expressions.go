@@ -771,6 +771,15 @@ func isLabelNameToken(tok ast.Token) bool {
 		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
 		return true
+	case ast.TokenAnd, ast.TokenOr:
+		return isWordBooleanKeywordToken(tok)
+	default:
+		return false
+	}
+}
+
+func isWordBooleanKeywordToken(tok ast.Token) bool {
+	switch tok.Type {
 	case ast.TokenAnd:
 		return tok.Literal == "and"
 	case ast.TokenOr:

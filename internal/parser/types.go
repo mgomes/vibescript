@@ -182,8 +182,12 @@ func (p *parser) parseTypeShapeFieldName() (string, bool) {
 	switch p.curToken.Type {
 	case ast.TokenIdent, ast.TokenString, ast.TokenSymbol, ast.TokenEnum:
 		return p.curToken.Literal, true
+	case ast.TokenAnd, ast.TokenOr:
+		if isWordBooleanKeywordToken(p.curToken) {
+			return p.curToken.Literal, true
+		}
 	default:
-		p.errorExpected(p.curToken, "shape field name")
-		return "", false
 	}
+	p.errorExpected(p.curToken, "shape field name")
+	return "", false
 }
