@@ -465,6 +465,35 @@ end`)
 	}
 }
 
+func TestNestedTasksInheritReassignedGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared()
+  shared[:seed]
+end
+
+def reassign_then_spawn(item)
+  shared = {seed: item}
+  Tasks.run(max: 1) do |tasks|
+    tasks.spawn(:read_shared).value
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :reassign_then_spawn)
+end`)
+
+	shared := NewHash(map[string]Value{"seed": NewInt(0)})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"shared": shared,
+		},
+	})
+	compareArrays(t, result, []Value{NewInt(1), NewInt(2)})
+	if got := shared.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host global shared[:seed] = %s, want 0", got.String())
+	}
+}
+
 func TestNestedTasksInheritMaterializedNestedGlobalAliases(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `def read_child(item)

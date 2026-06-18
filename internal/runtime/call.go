@@ -783,6 +783,7 @@ func bindLazyTaskGlobalsForCall(exec *Execution, root *Env, globals *taskLazyGlo
 			return err
 		}
 	}
+	globals.root = root
 	globals.rebinder = rebinder
 	for name, val := range globals.values {
 		if val.Kind() == KindEnum {

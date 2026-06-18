@@ -529,6 +529,7 @@ type taskLazyGlobals struct {
 	strictValidated bool
 	cloner          *taskGlobalCloner
 	rebinder        *callFunctionRebinder
+	root            *Env
 	clones          map[string]Value
 }
 
@@ -562,8 +563,8 @@ func (globals *taskLazyGlobals) snapshotForNestedTasks() *taskLazyGlobals {
 	if globals == nil {
 		return nil
 	}
-	strictValidated := globals.strictValidated && len(globals.clones) == 0
-	return newTaskLazyGlobals(globals.valuesForFork(), strictValidated)
+	values, detached := globals.valuesForFork()
+	return newTaskLazyGlobals(values, globals.strictValidated && !detached)
 }
 
 func (globals *taskLazyGlobals) materialize(name string) Value {
@@ -605,16 +606,52 @@ func (globals *taskLazyGlobals) valuesForValidation() map[string]Value {
 	return out
 }
 
-func (globals *taskLazyGlobals) valuesForFork() map[string]Value {
-	if len(globals.clones) == 0 {
-		return globals.values
+func (globals *taskLazyGlobals) valuesForFork() (map[string]Value, bool) {
+	if len(globals.clones) == 0 && !globals.hasCurrentBindings() {
+		return globals.values, false
 	}
 	cloner := newTaskGlobalCloner()
 	out := make(map[string]Value, len(globals.values))
 	for name := range globals.values {
-		out[name] = cloner.clone(globals.materialize(name))
+		out[name] = cloner.clone(globals.currentValueForFork(name))
 	}
-	return out
+	return out, true
+}
+
+func (globals *taskLazyGlobals) hasCurrentBindings() bool {
+	if globals.root == nil {
+		return false
+	}
+	for name := range globals.values {
+		if val, ok := globals.rootValue(name); ok {
+			if _, lazy := lazyValue(val); !lazy {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (globals *taskLazyGlobals) currentValueForFork(name string) Value {
+	if val, ok := globals.rootValue(name); ok {
+		if _, lazy := lazyValue(val); !lazy {
+			return val
+		}
+	}
+	return globals.materialize(name)
+}
+
+func (globals *taskLazyGlobals) rootValue(name string) (Value, bool) {
+	if globals.root == nil {
+		return Value{}, false
+	}
+	if val, ok := globals.root.values[name]; ok {
+		return val, true
+	}
+	if val, ok := globals.root.statics[name]; ok {
+		return val, true
+	}
+	return Value{}, false
 }
 
 type taskLazyGlobalBinding struct {
