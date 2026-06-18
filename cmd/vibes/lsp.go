@@ -897,6 +897,13 @@ type lspCompletionScope struct {
 	startLine int
 	endLine   int
 	items     []map[string]any
+	blocks    []lspCompletionBlock
+}
+
+type lspCompletionBlock struct {
+	startLine int
+	endLine   int
+	items     []map[string]any
 }
 
 func newLSPCompletionIndex(script *vibes.Script, sourceLines []string) *lspCompletionIndex {
@@ -937,6 +944,7 @@ func newLSPCompletionIndex(script *vibes.Script, sourceLines []string) *lspCompl
 		for _, name := range localNames(fn.Body) {
 			addLocalItem(&scope.items, seen, name, "local")
 		}
+		scope.blocks = rescueCompletionBlocks(fn.Body, fn.Pos.Line-1, start)
 		sortCompletionItems(scope.items)
 		index.scopes = append(index.scopes, scope)
 	}
@@ -988,6 +996,11 @@ func (idx *lspCompletionIndex) itemsAt(line int) []map[string]any {
 	items = append(items, idx.functions...)
 	if enclosing >= 0 {
 		items = append(items, idx.scopes[enclosing].items...)
+		for _, block := range idx.scopes[enclosing].blocks {
+			if block.startLine <= line && line <= block.endLine {
+				items = append(items, block.items...)
+			}
+		}
 	}
 	return items
 }
@@ -1057,6 +1070,51 @@ func lastStatementLine(statements []ast.Statement) int {
 		return 0
 	}
 	return maxLine + 1
+}
+
+func rescueCompletionBlocks(statements []ast.Statement, compiledFunctionStart, currentFunctionStart int) []lspCompletionBlock {
+	var blocks []lspCompletionBlock
+	var walk func([]ast.Statement)
+	walk = func(stmts []ast.Statement) {
+		for _, stmt := range stmts {
+			switch st := stmt.(type) {
+			case *ast.ForStmt:
+				walk(st.Body)
+			case *ast.IfStmt:
+				walk(st.Consequent)
+				for _, elseIf := range st.ElseIf {
+					walk([]ast.Statement{elseIf})
+				}
+				walk(st.Alternate)
+			case *ast.WhileStmt:
+				walk(st.Body)
+			case *ast.UntilStmt:
+				walk(st.Body)
+			case *ast.TryStmt:
+				if st.RescueBinding != "" && st.RescuePosition.Line > 0 {
+					startLine := currentFunctionStart + (st.RescuePosition.Line - 1 - compiledFunctionStart)
+					endLine := startLine
+					if rescueEnd := lastStatementLine(st.Rescue); rescueEnd > 0 {
+						endLine = currentFunctionStart + (rescueEnd - compiledFunctionStart)
+					}
+					items := []map[string]any{}
+					seen := map[string]struct{}{}
+					addLocalItem(&items, seen, st.RescueBinding, "local")
+					blocks = append(blocks, lspCompletionBlock{
+						startLine: startLine,
+						endLine:   endLine,
+						items:     items,
+					})
+				}
+				walk(st.Body)
+				walk(st.Else)
+				walk(st.Rescue)
+				walk(st.Ensure)
+			}
+		}
+	}
+	walk(statements)
+	return blocks
 }
 
 func addLocalItem(items *[]map[string]any, seen map[string]struct{}, name, detail string) {

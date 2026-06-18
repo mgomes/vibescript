@@ -113,13 +113,14 @@ func (s *NextStmt) Pos() Position { return s.Position }
 
 // TryStmt represents a begin/rescue/ensure error-handling block.
 type TryStmt struct {
-	Body          []Statement
-	RescueTy      *TypeExpr
-	RescueBinding string
-	Rescue        []Statement
-	Else          []Statement
-	Ensure        []Statement
-	Position      Position
+	Body           []Statement
+	RescueTy       *TypeExpr
+	RescueBinding  string
+	RescuePosition Position
+	Rescue         []Statement
+	Else           []Statement
+	Ensure         []Statement
+	Position       Position
 }
 
 func (s *TryStmt) stmtNode()     {}

@@ -251,11 +251,12 @@ func (p *parser) parseBeginStatement() ast.Statement {
 
 	var rescueTy *ast.TypeExpr
 	var rescueBinding string
+	var rescuePos ast.Position
 	var rescueBody []ast.Statement
 	rescuePresent := false
 	if p.curToken.Type == ast.TokenRescue {
 		rescuePresent = true
-		rescuePos := p.curToken.Pos
+		rescuePos = p.curToken.Pos
 		var ok bool
 		rescueTy, rescueBinding, ok = p.parseRescueClause(rescuePos)
 		if !ok {
@@ -291,7 +292,7 @@ func (p *parser) parseBeginStatement() ast.Statement {
 		return nil
 	}
 
-	return &ast.TryStmt{Body: body, RescueTy: rescueTy, RescueBinding: rescueBinding, Rescue: rescueBody, Else: elseBody, Ensure: ensureBody, Position: pos}
+	return &ast.TryStmt{Body: body, RescueTy: rescueTy, RescueBinding: rescueBinding, RescuePosition: rescuePos, Rescue: rescueBody, Else: elseBody, Ensure: ensureBody, Position: pos}
 }
 
 func (p *parser) parseRescueClause(rescuePos ast.Position) (*ast.TypeExpr, string, bool) {
