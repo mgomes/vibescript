@@ -79,3 +79,58 @@ func TestEnvInlineBindingsSupportAssignmentAndStaticTransitions(t *testing.T) {
 		t.Fatalf("Get(name) after Define = (%#v, %t), want dynamic value", val, ok)
 	}
 }
+
+func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
+	t.Parallel()
+
+	oldParent := newEnv(nil)
+	oldParent.Define("old_parent", NewInt(1))
+	parent := newEnv(nil)
+	parent.Define("parent", NewInt(2))
+
+	env := newEnv(oldParent)
+	env.inline[0] = envBinding{name: "inline", value: NewInt(3)}
+	env.inlineLen = 1
+	env.values = map[string]Value{"mapped": NewInt(4)}
+	env.statics = map[string]Value{"static": NewInt(5)}
+	env.staticBytes = 99
+	env.arrayAppendBuffers = map[string][]Value{"items": {NewInt(6)}}
+	env.assignBoundary = true
+	env.frozen = true
+
+	env.resetForBlockCall(parent)
+
+	if env.parent != parent {
+		t.Fatalf("parent after reset = %p, want %p", env.parent, parent)
+	}
+	if env.inlineLen != 0 {
+		t.Fatalf("inlineLen after reset = %d, want 0", env.inlineLen)
+	}
+	if _, ok := env.Get("inline"); ok {
+		t.Fatalf("inline binding survived reset")
+	}
+	if len(env.values) != 0 {
+		t.Fatalf("values after reset = %v, want empty", env.values)
+	}
+	if env.statics != nil {
+		t.Fatalf("statics after reset = %v, want nil", env.statics)
+	}
+	if env.staticBytes != 0 {
+		t.Fatalf("staticBytes after reset = %d, want 0", env.staticBytes)
+	}
+	if env.arrayAppendBuffers != nil {
+		t.Fatalf("arrayAppendBuffers after reset = %v, want nil", env.arrayAppendBuffers)
+	}
+	if env.assignBoundary {
+		t.Fatalf("assignBoundary after reset = true, want false")
+	}
+	if env.frozen {
+		t.Fatalf("frozen after reset = true, want false")
+	}
+	if _, ok := env.Get("old_parent"); ok {
+		t.Fatalf("old parent binding survived reset")
+	}
+	if val, ok := env.Get("parent"); !ok || !val.Equal(NewInt(2)) {
+		t.Fatalf("new parent binding after reset = (%#v, %t), want 2", val, ok)
+	}
+}

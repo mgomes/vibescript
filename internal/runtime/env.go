@@ -63,6 +63,20 @@ func newAssignmentBoundaryEnv(parent *Env) *Env {
 	return env
 }
 
+func (e *Env) resetForBlockCall(parent *Env) {
+	e.parent = parent
+	for i := range int(e.inlineLen) {
+		e.inline[i] = envBinding{}
+	}
+	e.inlineLen = 0
+	clear(e.values)
+	e.statics = nil
+	e.staticBytes = 0
+	e.arrayAppendBuffers = nil
+	e.assignBoundary = false
+	e.frozen = false
+}
+
 // Get looks up a variable by name, traversing parent scopes if needed.
 func (e *Env) Get(name string) (Value, bool) {
 	if idx, ok := e.inlineIndex(name); ok {

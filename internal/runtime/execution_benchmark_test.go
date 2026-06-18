@@ -138,6 +138,23 @@ end`)
 	}
 }
 
+func BenchmarkExecutionHashTransformValuesLoop(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values)
+  values.transform_values do |value|
+    value + 1
+  end
+end`)
+
+	args := []Value{benchmarkNumericHash(600)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
 func benchmarkHashRows(n int) Value {
 	rows := make([]Value, n)
 	statuses := []Value{NewString("open"), NewString("closed")}
@@ -150,6 +167,14 @@ func benchmarkHashRows(n int) Value {
 		})
 	}
 	return NewArray(rows)
+}
+
+func benchmarkNumericHash(n int) Value {
+	entries := make(map[string]Value, n)
+	for i := range n {
+		entries[fmt.Sprintf("k%03d", i)] = NewInt(int64(i))
+	}
+	return NewHash(entries)
 }
 
 func BenchmarkExecutionArrayPushAccumulation(b *testing.B) {
