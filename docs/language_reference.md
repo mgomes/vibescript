@@ -143,6 +143,9 @@ numbers.map do |n|
 end
 ```
 
+Ruby-style ampersand block forwarding and symbol-to-proc shorthand are not
+supported; use an explicit `do ... end` or brace block.
+
 ## Operators
 
 Core operator families:
