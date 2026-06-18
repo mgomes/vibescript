@@ -1,18 +1,26 @@
 package value
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // NewNil returns a nil Value.
 func NewNil() Value { return Value{kind: KindNil} }
 
 // NewBool returns a boolean Value.
-func NewBool(b bool) Value { return Value{kind: KindBool, data: b} }
+func NewBool(b bool) Value {
+	if b {
+		return Value{kind: KindBool, scalar: 1}
+	}
+	return Value{kind: KindBool}
+}
 
 // NewInt returns an integer Value.
-func NewInt(i int64) Value { return Value{kind: KindInt, data: i} }
+func NewInt(i int64) Value { return Value{kind: KindInt, scalar: uint64(i)} }
 
 // NewFloat returns a floating-point Value.
-func NewFloat(f float64) Value { return Value{kind: KindFloat, data: f} }
+func NewFloat(f float64) Value { return Value{kind: KindFloat, scalar: math.Float64bits(f)} }
 
 // NewString returns a string Value.
 func NewString(s string) Value { return Value{kind: KindString, data: s} }
@@ -29,7 +37,9 @@ func NewHash(h map[string]Value) Value {
 func NewMoney(m Money) Value { return Value{kind: KindMoney, data: m} }
 
 // NewDuration returns a duration Value.
-func NewDuration(d Duration) Value { return Value{kind: KindDuration, data: d} }
+func NewDuration(d Duration) Value {
+	return Value{kind: KindDuration, scalar: uint64(d.Seconds())}
+}
 
 // NewTime returns a time Value.
 func NewTime(t time.Time) Value { return Value{kind: KindTime, data: t} }

@@ -10,6 +10,7 @@
 # but tight enough to catch obvious regressions.
 
 BenchmarkExecutionArithmeticLoop 5000000 1000
+BenchmarkExecutionStepLoop 16000000 100 10000
 BenchmarkExecutionArrayPipeline 40000000 20000
 BenchmarkExecutionArrayPushAccumulation 3000000 10000 800000
 BenchmarkExecutionArrayConcatAccumulation 3500000 12000 900000

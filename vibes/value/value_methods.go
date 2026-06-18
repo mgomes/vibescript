@@ -3,6 +3,7 @@ package value
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -81,15 +82,15 @@ func (v Value) String() string {
 		}
 		return "false"
 	case KindInt:
-		return fmt.Sprintf("%d", v.data.(int64))
+		return strconv.FormatInt(v.Int(), 10)
 	case KindFloat:
-		return fmt.Sprintf("%g", v.data.(float64))
+		return strconv.FormatFloat(v.Float(), 'g', -1, 64)
 	case KindSymbol:
 		return v.data.(string)
 	case KindMoney:
 		return v.data.(Money).String()
 	case KindDuration:
-		return v.data.(Duration).String()
+		return v.Duration().String()
 	case KindTime:
 		return v.data.(time.Time).Format(time.RFC3339Nano)
 	case KindArray:
@@ -173,9 +174,9 @@ func (v Value) Truthy() bool {
 	case KindBool:
 		return v.Bool()
 	case KindInt:
-		return v.data.(int64) != 0
+		return v.Int() != 0
 	case KindFloat:
-		return v.data.(float64) != 0
+		return v.Float() != 0
 	case KindString:
 		return v.data.(string) != ""
 	case KindArray:
@@ -212,15 +213,15 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 	case KindBool:
 		return v.Bool() == other.Bool()
 	case KindInt:
-		return v.data.(int64) == other.data.(int64)
+		return v.Int() == other.Int()
 	case KindFloat:
-		return v.data.(float64) == other.data.(float64)
+		return v.Float() == other.Float()
 	case KindString, KindSymbol:
 		return v.data.(string) == other.data.(string)
 	case KindMoney:
 		return v.data.(Money) == other.data.(Money)
 	case KindDuration:
-		return v.data.(Duration) == other.data.(Duration)
+		return v.Duration() == other.Duration()
 	case KindTime:
 		return v.data.(time.Time).Equal(other.data.(time.Time))
 	case KindRange:

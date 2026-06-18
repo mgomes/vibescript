@@ -126,6 +126,37 @@ func TestNewValueDataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestScalarValueData(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		val  value.Value
+		want any
+	}{
+		{"bool", value.NewBool(true), true},
+		{"int", value.NewInt(-7), int64(-7)},
+		{"float", value.NewFloat(2.5), 2.5},
+		{"duration", value.NewDuration(value.DurationFromSeconds(90)), value.DurationFromSeconds(90)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.val.Data(); got != tc.want {
+				t.Fatalf("Data() = %v (%T), want %v (%T)", got, got, tc.want, tc.want)
+			}
+			rebuilt := value.NewValue(tc.val.Kind(), tc.want)
+			if got := rebuilt.Data(); got != tc.want {
+				t.Fatalf("NewValue(%s, payload).Data() = %v (%T), want %v (%T)", tc.val.Kind(), got, got, tc.want, tc.want)
+			}
+			if !rebuilt.Equal(tc.val) {
+				t.Fatalf("NewValue(%s, payload) = %s, want value equal to %s", tc.val.Kind(), rebuilt, tc.val)
+			}
+		})
+	}
+}
+
 func TestValueScalarAccessors(t *testing.T) {
 	t.Parallel()
 
