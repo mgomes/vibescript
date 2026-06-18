@@ -226,7 +226,7 @@ func FuzzLSPPayloadAndMessageHandling(f *testing.F) {
 			}
 		}
 
-		word := wordAtPosition(source, positiveMod(selector, 16)-4, positiveMod(len(uri)+selector, 128)-8)
+		word := wordAtPosition(splitLSPLines(source), positiveMod(selector, 16)-4, positiveMod(len(uri)+selector, 128)-8)
 		if strings.ContainsAny(word, " \t\r\n") {
 			t.Fatalf("wordAtPosition(%q) = %q, want a single word", source, word)
 		}

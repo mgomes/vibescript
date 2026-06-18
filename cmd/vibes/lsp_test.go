@@ -312,7 +312,7 @@ func TestHandleMessageHoverClassifiesBuiltins(t *testing.T) {
 func TestWordAtPosition(t *testing.T) {
 	t.Parallel()
 	source := "def run()\n  to_int(\"1\")\nend\n"
-	word := wordAtPosition(source, 1, 4)
+	word := wordAtPosition(splitLSPLines(source), 1, 4)
 	if word != "to_int" {
 		t.Fatalf("expected to_int, got %q", word)
 	}
@@ -321,7 +321,7 @@ func TestWordAtPosition(t *testing.T) {
 func TestWordAtPositionUsesUTF16CharacterOffsets(t *testing.T) {
 	t.Parallel()
 	source := "😀😀x y\n"
-	word := wordAtPosition(source, 0, 4)
+	word := wordAtPosition(splitLSPLines(source), 0, 4)
 	if word != "x" {
 		t.Fatalf("expected x, got %q", word)
 	}
@@ -572,6 +572,7 @@ func newCompletionTestServer() *lspServer {
 	return &lspServer{
 		engine:   vibes.MustNewEngine(vibes.Config{}),
 		docs:     make(map[string]string),
+		lines:    make(map[string][]string),
 		compiled: make(map[string]*vibes.Script),
 		programs: make(map[string]*ast.Program),
 	}
@@ -697,7 +698,7 @@ func TestIsMemberContext(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isMemberContext(tc.source, tc.line, tc.chr); got != tc.want {
+			if got := isMemberContext(splitLSPLines(tc.source), tc.line, tc.chr); got != tc.want {
 				t.Fatalf("isMemberContext(%q, %d, %d) = %v, want %v", tc.source, tc.line, tc.chr, got, tc.want)
 			}
 		})
@@ -876,7 +877,7 @@ func TestEnclosingCall(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			callee, param, ok := enclosingCall(tc.source, tc.line, tc.chr)
+			callee, param, ok := enclosingCall(splitLSPLines(tc.source), tc.line, tc.chr)
 			if ok != tc.ok {
 				t.Fatalf("enclosingCall(%q) ok = %v, want %v", tc.source, ok, tc.ok)
 			}
@@ -907,7 +908,7 @@ func TestParenlessCall(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			callee, param, ok := parenlessCall(tc.source, tc.line, tc.chr)
+			callee, param, ok := parenlessCall(splitLSPLines(tc.source), tc.line, tc.chr)
 			if ok != tc.ok {
 				t.Fatalf("parenlessCall(%q) ok = %v, want %v", tc.source, ok, tc.ok)
 			}
@@ -994,7 +995,7 @@ func TestDefinitionResolvesEnumMembers(t *testing.T) {
 	uri := "file:///tmp/nav-enum.vibe"
 	openDoc(t, server, uri, navigationFixture)
 
-	location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "Published")
+	location := definitionLocation(server.programs[uri], uri, server.documentLines(uri), "Published")
 	if location == nil {
 		t.Fatal("expected location for enum member")
 	}
@@ -1100,7 +1101,7 @@ func TestDocumentSymbolsSurviveMidEditParses(t *testing.T) {
 	}
 	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
 
-	if location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "helper"); location == nil {
+	if location := definitionLocation(server.programs[uri], uri, server.documentLines(uri), "helper"); location == nil {
 		t.Fatal("navigation should survive a mid-edit broken parse")
 	}
 }
@@ -1273,10 +1274,10 @@ func TestNavigationCacheClearsWhenSymbolsRemoved(t *testing.T) {
 	}
 	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
 
-	if location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "helper"); location != nil {
+	if location := definitionLocation(server.programs[uri], uri, server.documentLines(uri), "helper"); location != nil {
 		t.Fatal("definition still resolves after a clean parse removed every symbol")
 	}
-	if symbols := documentSymbols(server.programs[uri], splitLSPLines(server.docs[uri])); len(symbols) != 0 {
+	if symbols := documentSymbols(server.programs[uri], server.documentLines(uri)); len(symbols) != 0 {
 		t.Fatalf("outline = %d symbols, want none after a clean empty parse", len(symbols))
 	}
 }
@@ -1297,7 +1298,7 @@ def run()
 end
 `)
 
-	location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "value")
+	location := definitionLocation(server.programs[uri], uri, server.documentLines(uri), "value")
 	if location == nil {
 		t.Fatal("expected setter definition for bare assignment word")
 	}
@@ -1313,7 +1314,7 @@ func TestDefinitionRangeCoversTheName(t *testing.T) {
 	uri := "file:///tmp/namerange.vibe"
 	openDoc(t, server, uri, navigationFixture)
 
-	location := definitionLocation(server.programs[uri], uri, splitLSPLines(server.docs[uri]), "helper")
+	location := definitionLocation(server.programs[uri], uri, server.documentLines(uri), "helper")
 	rng := location["range"].(map[string]any)
 	start := rng["start"].(map[string]any)
 	end := rng["end"].(map[string]any)
@@ -1329,7 +1330,7 @@ func TestDocumentSymbolParentRangesEncloseChildren(t *testing.T) {
 	uri := "file:///tmp/enclose.vibe"
 	openDoc(t, server, uri, navigationFixture)
 
-	symbols := documentSymbols(server.programs[uri], splitLSPLines(server.docs[uri]))
+	symbols := documentSymbols(server.programs[uri], server.documentLines(uri))
 	for _, symbol := range symbols {
 		children, ok := symbol["children"].([]map[string]any)
 		if !ok {
@@ -1363,11 +1364,138 @@ func TestNavigationDropsSymbolsMissingFromLiveBuffer(t *testing.T) {
 	}
 	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
 
-	lines := splitLSPLines(server.docs[uri])
+	lines := server.documentLines(uri)
 	if location := definitionLocation(server.programs[uri], uri, lines, "helper"); location != nil {
 		t.Fatalf("definition resolved into unrelated text: %#v", location)
 	}
 	if symbols := documentSymbols(server.programs[uri], lines); len(symbols) != 0 {
 		t.Fatalf("outline = %d symbols for a buffer containing none of them", len(symbols))
 	}
+}
+
+func TestDocumentLinesCacheRefreshesOnChange(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/cache.vibe"
+	openDoc(t, server, uri, "def old\n  1\nend\n")
+	if got := server.documentLines(uri)[0]; got != "def old" {
+		t.Fatalf("documentLines(%q)[0] after open = %q, want %q", uri, got, "def old")
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"textDocument":   map[string]any{"uri": uri},
+		"contentChanges": []map[string]any{{"text": "def fresh\n  2\nend\n"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal didChange: %v", err)
+	}
+	server.handleMessage(lspInboundMessage{JSONRPC: "2.0", Method: "textDocument/didChange", Params: payload})
+	if got := server.documentLines(uri)[0]; got != "def fresh" {
+		t.Fatalf("documentLines(%q)[0] after change = %q, want %q", uri, got, "def fresh")
+	}
+}
+
+func BenchmarkLSPDefinitionLargeDocument(b *testing.B) {
+	server, uri, callLine := benchmarkLSPNavigationServer(b)
+	message := benchmarkPositionRequest(b, "textDocument/definition", uri, callLine, 4)
+
+	b.ReportAllocs()
+	for range b.N {
+		messages := server.handleMessage(message)
+		if len(messages) != 1 {
+			b.Fatalf("definition responses = %d, want 1", len(messages))
+		}
+		if _, ok := messages[0].Result.(map[string]any); !ok {
+			b.Fatalf("definition result = %#v, want location", messages[0].Result)
+		}
+	}
+}
+
+func BenchmarkLSPHoverLargeDocument(b *testing.B) {
+	server, uri, callLine := benchmarkLSPNavigationServer(b)
+	message := benchmarkPositionRequest(b, "textDocument/hover", uri, callLine, 4)
+
+	b.ReportAllocs()
+	for range b.N {
+		messages := server.handleMessage(message)
+		if len(messages) != 1 {
+			b.Fatalf("hover responses = %d, want 1", len(messages))
+		}
+		if _, ok := messages[0].Result.(map[string]any); !ok {
+			b.Fatalf("hover result = %#v, want contents", messages[0].Result)
+		}
+	}
+}
+
+func BenchmarkLSPDocumentSymbolLargeDocument(b *testing.B) {
+	server, uri, _ := benchmarkLSPNavigationServer(b)
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+	})
+	if err != nil {
+		b.Fatalf("marshal documentSymbol params: %v", err)
+	}
+	message := lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("103"),
+		Method:  "textDocument/documentSymbol",
+		Params:  payload,
+	}
+
+	b.ReportAllocs()
+	for range b.N {
+		messages := server.handleMessage(message)
+		if len(messages) != 1 {
+			b.Fatalf("documentSymbol responses = %d, want 1", len(messages))
+		}
+		symbols, ok := messages[0].Result.([]map[string]any)
+		if !ok || len(symbols) != 2_001 {
+			b.Fatalf("documentSymbol result = %#v, want 2001 symbols", messages[0].Result)
+		}
+	}
+}
+
+func benchmarkPositionRequest(b *testing.B, method, uri string, line, character int) lspInboundMessage {
+	b.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"position":     map[string]any{"line": line, "character": character},
+	})
+	if err != nil {
+		b.Fatalf("marshal %s params: %v", method, err)
+	}
+	return lspInboundMessage{
+		JSONRPC: "2.0",
+		ID:      rawID("101"),
+		Method:  method,
+		Params:  payload,
+	}
+}
+
+func benchmarkLSPNavigationServer(b *testing.B) (*lspServer, string, int) {
+	b.Helper()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/large.vibe"
+	source, callLine := largeLSPNavigationSource(2_000)
+	server.setDocument(uri, source)
+	diagnostics := server.publishDiagnostics(uri, source).Params.(map[string]any)["diagnostics"].([]map[string]any)
+	if len(diagnostics) != 0 {
+		b.Fatalf("large navigation source diagnostics = %#v, want none", diagnostics)
+	}
+	return server, uri, callLine
+}
+
+func largeLSPNavigationSource(functionCount int) (string, int) {
+	var b strings.Builder
+	b.Grow(functionCount * 48)
+	b.WriteString("def target(value)\n  value\nend\n\n")
+	for i := range functionCount {
+		b.WriteString("def caller_")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString("\n  target(")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(")\nend\n\n")
+	}
+	callLine := 5 + 4*(functionCount-1)
+	return b.String(), callLine
 }
