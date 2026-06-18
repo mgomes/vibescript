@@ -18,17 +18,17 @@ func TestCompileMalformedCallTargetDoesNotPanic(t *testing.T) {
 	_ = compileScriptErrorDefault(t, `be(in (000000000`)
 }
 
-func TestParseErrorIncludesCodeFrameAndKeywordMessage(t *testing.T) {
+func TestParseErrorIncludesCodeFrameAndMissingValueMessage(t *testing.T) {
 	t.Parallel()
-	err := compileScriptErrorDefault(t, "def broken()\n  call(foo: )\nend\n")
+	err := compileScriptErrorDefault(t, "def broken()\n  {foo: }\nend\n")
 	msg := err.Error()
-	if !strings.Contains(msg, "missing value for keyword argument foo") {
-		t.Fatalf("expected keyword argument parse error, got: %s", msg)
+	if !strings.Contains(msg, "missing value for hash key foo") {
+		t.Fatalf("expected missing hash value parse error, got: %s", msg)
 	}
 	if !strings.Contains(msg, "--> line 2, column") {
 		t.Fatalf("expected codeframe line marker, got: %s", msg)
 	}
-	if !strings.Contains(msg, "call(foo: )") {
+	if !strings.Contains(msg, "{foo: }") {
 		t.Fatalf("expected source line in codeframe, got: %s", msg)
 	}
 }

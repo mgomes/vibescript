@@ -67,6 +67,18 @@ pick_second(n: 1, m: 2)
 pick_second(1, m: 2)
 ```
 
+Use a trailing colon in a parameter list for required keyword-only parameters,
+and in a call for local-variable keyword shorthand:
+
+```vibe
+def greet(name:)
+  "hello " + name
+end
+
+name = "Ada"
+greet(name:)
+```
+
 Unknown keyword args and missing required args raise errors.
 
 ## Returns

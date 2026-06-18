@@ -43,6 +43,7 @@ type ParamKind int
 
 const (
 	ParamNormal ParamKind = iota
+	ParamKeyword
 	ParamRest
 	ParamKeywordRest
 	ParamBlock

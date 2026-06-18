@@ -136,6 +136,8 @@ func FormatParamTarget(param Param) string {
 		label = FormatDestructureTarget(param.Target)
 	}
 	switch param.Kind {
+	case ParamKeyword:
+		label += ":"
 	case ParamRest:
 		label = "*" + label
 	case ParamKeywordRest:

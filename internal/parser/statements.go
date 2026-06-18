@@ -522,6 +522,7 @@ func (p *parser) parsePrivateStatement() ast.Statement {
 func (p *parser) parseParams() []ast.Param {
 	params := []ast.Param{}
 	seenRest := false
+	seenKeyword := false
 	seenKeywordRest := false
 	seenBlock := false
 	for {
@@ -531,8 +532,8 @@ func (p *parser) parseParams() []ast.Param {
 		}
 		switch param.Kind {
 		case ast.ParamNormal:
-			if seenRest || seenKeywordRest || seenBlock {
-				p.addParseError(paramPos, "ordinary parameters must precede rest, keyword rest, and block capture parameters")
+			if seenRest || seenKeyword || seenKeywordRest || seenBlock {
+				p.addParseError(paramPos, "ordinary parameters must precede rest, keyword, keyword rest, and block capture parameters")
 				return params
 			}
 		case ast.ParamRest:
@@ -540,11 +541,17 @@ func (p *parser) parseParams() []ast.Param {
 				p.addParseError(paramPos, "duplicate rest parameter")
 				return params
 			}
-			if seenKeywordRest || seenBlock {
-				p.addParseError(paramPos, "rest parameter must precede keyword rest and block capture parameters")
+			if seenKeyword || seenKeywordRest || seenBlock {
+				p.addParseError(paramPos, "rest parameter must precede keyword, keyword rest, and block capture parameters")
 				return params
 			}
 			seenRest = true
+		case ast.ParamKeyword:
+			if seenKeywordRest || seenBlock {
+				p.addParseError(paramPos, "keyword parameters must precede keyword rest and block capture parameters")
+				return params
+			}
+			seenKeyword = true
 		case ast.ParamKeywordRest:
 			if seenKeywordRest {
 				p.addParseError(paramPos, "duplicate keyword rest parameter")
@@ -604,6 +611,10 @@ func (p *parser) parseParam() (ast.Param, ast.Position, bool) {
 	}
 	if p.peekToken.Type == ast.TokenColon {
 		p.nextToken()
+		if kind == ast.ParamNormal && !param.IsIvar && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRParen) {
+			param.Kind = ast.ParamKeyword
+			return param, pos, true
+		}
 		p.nextToken()
 		param.Type = p.parseTypeExpr()
 		if param.Type == nil {
