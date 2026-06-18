@@ -36,15 +36,24 @@ type stringIdentity struct {
 }
 
 func newMemoryEstimator() *memoryEstimator {
-	return &memoryEstimator{
-		seenEnvs:      make(map[*Env]struct{}),
-		seenMaps:      make(map[uintptr]struct{}),
-		seenSlices:    make(map[uintptr]struct{}),
-		seenStrings:   make(map[stringIdentity]struct{}),
-		seenClasses:   make(map[*ClassDef]struct{}),
-		seenInstances: make(map[*Instance]struct{}),
-		seenBlocks:    make(map[*Block]struct{}),
-	}
+	return &memoryEstimator{}
+}
+
+func (est *memoryEstimator) reset() {
+	est.seenFrozen = nil
+	clear(est.seenEnvs)
+	clear(est.seenMaps)
+	clear(est.seenSlices)
+	clear(est.seenStrings)
+	clear(est.seenClasses)
+	clear(est.seenInstances)
+	clear(est.seenBlocks)
+}
+
+func (exec *Execution) memoryEstimatorForCheck() *memoryEstimator {
+	est := &exec.memoryEst
+	est.reset()
+	return est
 }
 
 func (exec *Execution) checkMemory() error {
@@ -76,17 +85,20 @@ func (exec *Execution) checkMemoryWithCallRoots(receiver Value, args []Value, kw
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
-	est := newMemoryEstimator()
+	est := exec.memoryEstimatorForCheck()
+
 	total := exec.estimateMemoryUsageBase(est)
 	for _, extra := range extras {
 		total += est.value(extra)
 	}
 
+	est.reset()
 	return total
 }
 
 func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
-	est := newMemoryEstimator()
+	est := exec.memoryEstimatorForCheck()
+
 	total := exec.estimateMemoryUsageBase(est)
 
 	if receiver.Kind() != KindNil {
@@ -102,6 +114,7 @@ func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Va
 		total += est.value(block)
 	}
 
+	est.reset()
 	return total
 }
 
@@ -189,6 +202,9 @@ func (est *memoryEstimator) env(env *Env) int {
 	if _, seen := est.seenEnvs[env]; seen {
 		return 0
 	}
+	if est.seenEnvs == nil {
+		est.seenEnvs = make(map[*Env]struct{})
+	}
 	est.seenEnvs[env] = struct{}{}
 
 	size := estimatedEnvBytes + estimatedMapBaseBytes + int(env.staticBytes) + len(env.values)*estimatedMapEntryBytes
@@ -231,6 +247,9 @@ func (est *memoryEstimator) value(val Value) int {
 		if _, seen := est.seenClasses[cl]; seen {
 			return size
 		}
+		if est.seenClasses == nil {
+			est.seenClasses = make(map[*ClassDef]struct{})
+		}
 		est.seenClasses[cl] = struct{}{}
 		size += est.hash(cl.ClassVars)
 	case KindInstance:
@@ -240,6 +259,9 @@ func (est *memoryEstimator) value(val Value) int {
 		}
 		if _, seen := est.seenInstances[inst]; seen {
 			return size
+		}
+		if est.seenInstances == nil {
+			est.seenInstances = make(map[*Instance]struct{})
 		}
 		est.seenInstances[inst] = struct{}{}
 		size += estimatedInstanceBytes
@@ -251,6 +273,9 @@ func (est *memoryEstimator) value(val Value) int {
 		}
 		if _, seen := est.seenBlocks[blk]; seen {
 			return size
+		}
+		if est.seenBlocks == nil {
+			est.seenBlocks = make(map[*Block]struct{})
 		}
 		est.seenBlocks[blk] = struct{}{}
 		size += estimatedBlockBytes + estimatedSliceBaseBytes + len(blk.Params)*estimatedStringHeaderBytes
@@ -301,6 +326,9 @@ func (est *memoryEstimator) stringPayloadSize(str string) int {
 	if _, seen := est.seenStrings[key]; seen {
 		return 0
 	}
+	if est.seenStrings == nil {
+		est.seenStrings = make(map[stringIdentity]struct{})
+	}
 	est.seenStrings[key] = struct{}{}
 	return len(str)
 }
@@ -315,6 +343,9 @@ func (est *memoryEstimator) slice(values []Value) int {
 	if id != 0 {
 		if _, seen := est.seenSlices[id]; seen {
 			return 0
+		}
+		if est.seenSlices == nil {
+			est.seenSlices = make(map[uintptr]struct{})
 		}
 		est.seenSlices[id] = struct{}{}
 	}
@@ -334,6 +365,9 @@ func (est *memoryEstimator) hash(values map[string]Value) int {
 	if id != 0 {
 		if _, seen := est.seenMaps[id]; seen {
 			return 0
+		}
+		if est.seenMaps == nil {
+			est.seenMaps = make(map[uintptr]struct{})
 		}
 		est.seenMaps[id] = struct{}{}
 	}

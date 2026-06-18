@@ -87,6 +87,71 @@ end`)
 	}
 }
 
+func BenchmarkExecutionGroupByHashRowsLowCardinality(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values)
+  values.group_by do |value|
+    value[:status]
+  end
+end`)
+
+	args := []Value{benchmarkHashRows(600)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkExecutionGroupByStableHashRowsLowCardinality(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values)
+  values.group_by_stable do |value|
+    value[:status]
+  end
+end`)
+
+	args := []Value{benchmarkHashRows(600)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkExecutionPartitionHashRowsLowCardinality(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values)
+  values.partition do |value|
+    value[:active]
+  end
+end`)
+
+	args := []Value{benchmarkHashRows(600)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func benchmarkHashRows(n int) Value {
+	rows := make([]Value, n)
+	statuses := []Value{NewString("open"), NewString("closed")}
+	for i := range rows {
+		rows[i] = NewHash(map[string]Value{
+			"id":     NewInt(int64(i)),
+			"status": statuses[i%len(statuses)],
+			"active": NewBool(i%2 == 0),
+			"amount": NewInt(int64(i * 10)),
+		})
+	}
+	return NewArray(rows)
+}
+
 func BenchmarkExecutionArrayPushAccumulation(b *testing.B) {
 	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(n)
   out = []
