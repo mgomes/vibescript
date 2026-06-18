@@ -1140,6 +1140,30 @@ end`)
 	}
 }
 
+func TestRequireAliasConflictSkipsModuleTopLevelBody(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "conflict.vibe"), []byte(`raise("module initializer ran")
+
+def value
+  1
+end
+`), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{dir}})
+	script := compileScriptWithEngine(t, engine, `def run()
+  helpers = "taken"
+  require("conflict", as: "helpers")
+end`)
+
+	err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{})
+	requireErrorContains(t, err, `require: alias "helpers" already defined`)
+	if strings.Contains(err.Error(), "module initializer ran") {
+		t.Fatalf("module initializer ran before alias validation: %v", err)
+	}
+}
+
 func TestRequireModuleAllowList(t *testing.T) {
 	t.Parallel()
 	engine := MustNewEngine(Config{

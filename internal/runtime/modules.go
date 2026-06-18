@@ -890,6 +890,10 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 			exports[name] = fnVal
 		}
 	}
+	exportsVal := NewObject(exports)
+	if err := validateRequireAliasBinding(exec.root, alias, exportsVal); err != nil {
+		return NewNil(), err
+	}
 	if err := initializeClassBodiesForCall(exec, moduleEnv, moduleClasses); err != nil {
 		return NewNil(), err
 	}
@@ -897,10 +901,6 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		return NewNil(), err
 	}
 
-	exportsVal := NewObject(exports)
-	if err := validateRequireAliasBinding(exec.root, alias, exportsVal); err != nil {
-		return NewNil(), err
-	}
 	bindModuleExportsWithoutOverwrite(exec.root, exports)
 	exec.modules[entry.key] = exportsVal
 	if alias != "" {
