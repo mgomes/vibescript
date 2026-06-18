@@ -294,6 +294,41 @@ func TestTimeParseAndAliases(t *testing.T) {
 	requireErrorContains(t, err, "could not parse time")
 }
 
+func TestTimeSpaceshipComparison(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def compare_times()
+      earlier = Time.utc(2024, 1, 2)
+      same = Time.utc(2024, 1, 2)
+      later = Time.utc(2024, 1, 3)
+      [
+        earlier <=> later,
+        later <=> earlier,
+        earlier <=> same,
+        earlier.<=>(later),
+        earlier.eql?(same),
+        earlier < later,
+        earlier <= same,
+        later > earlier,
+        same >= earlier
+      ]
+    end
+    `)
+
+	result := callFunc(t, script, "compare_times", nil)
+	compareArrays(t, result, []Value{
+		NewInt(-1),
+		NewInt(1),
+		NewInt(0),
+		NewInt(-1),
+		NewBool(true),
+		NewBool(true),
+		NewBool(true),
+		NewBool(true),
+		NewBool(true),
+	})
+}
+
 func TestTimeParseCommonLayouts(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

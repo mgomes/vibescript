@@ -130,6 +130,12 @@ end`,
   helpers.normalize(value)
 end`,
 		},
+		{
+			name: "spaceship_time_comparison",
+			source: `def run
+  Time.utc(2024, 1, 1) <=> Time.utc(2024, 1, 2)
+end`,
+		},
 	}
 
 	for _, tc := range cases {

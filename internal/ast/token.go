@@ -45,6 +45,7 @@ const (
 	TokenGT        TokenType = ">"
 	TokenLTE       TokenType = "<="
 	TokenGTE       TokenType = ">="
+	TokenSpaceship TokenType = "<=>"
 	TokenEQ        TokenType = "=="
 	TokenNotEQ     TokenType = "!="
 	TokenAnd       TokenType = "&&"

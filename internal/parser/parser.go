@@ -72,6 +72,7 @@ func newParser(input string) *parser {
 	p.infixFns[ast.TokenLTE] = p.parseInfixExpression
 	p.infixFns[ast.TokenGT] = p.parseInfixExpression
 	p.infixFns[ast.TokenGTE] = p.parseInfixExpression
+	p.infixFns[ast.TokenSpaceship] = p.parseInfixExpression
 	p.infixFns[ast.TokenAnd] = p.parseInfixExpression
 	p.infixFns[ast.TokenOr] = p.parseInfixExpression
 	p.infixFns[ast.TokenLParen] = p.parseCallExpression
@@ -134,26 +135,27 @@ const (
 )
 
 var precedences = map[ast.TokenType]int{
-	ast.TokenOr:       precOr,
-	ast.TokenAnd:      precAnd,
-	ast.TokenEQ:       precEquality,
-	ast.TokenNotEQ:    precEquality,
-	ast.TokenLT:       precComparison,
-	ast.TokenLTE:      precComparison,
-	ast.TokenGT:       precComparison,
-	ast.TokenGTE:      precComparison,
-	ast.TokenRange:    precRange,
-	ast.TokenPlus:     precSum,
-	ast.TokenMinus:    precSum,
-	ast.TokenSlash:    precProduct,
-	ast.TokenAsterisk: precProduct,
-	ast.TokenPercent:  precProduct,
-	ast.TokenLParen:   precCall,
-	ast.TokenDot:      precCall,
-	ast.TokenScope:    precCall,
-	ast.TokenLBracket: precCall,
-	ast.TokenDo:       precCall,
-	ast.TokenLBrace:   precCall,
+	ast.TokenOr:        precOr,
+	ast.TokenAnd:       precAnd,
+	ast.TokenEQ:        precEquality,
+	ast.TokenNotEQ:     precEquality,
+	ast.TokenLT:        precComparison,
+	ast.TokenLTE:       precComparison,
+	ast.TokenGT:        precComparison,
+	ast.TokenGTE:       precComparison,
+	ast.TokenSpaceship: precComparison,
+	ast.TokenRange:     precRange,
+	ast.TokenPlus:      precSum,
+	ast.TokenMinus:     precSum,
+	ast.TokenSlash:     precProduct,
+	ast.TokenAsterisk:  precProduct,
+	ast.TokenPercent:   precProduct,
+	ast.TokenLParen:    precCall,
+	ast.TokenDot:       precCall,
+	ast.TokenScope:     precCall,
+	ast.TokenLBracket:  precCall,
+	ast.TokenDo:        precCall,
+	ast.TokenLBrace:    precCall,
 }
 
 func (p *parser) curPrecedence() int {
