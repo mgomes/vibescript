@@ -725,7 +725,7 @@ func TestTaskLazyGlobalCloneCacheCountsTowardMemoryQuota(t *testing.T) {
 	root := newEnv(nil)
 	lazyGlobals := newTaskLazyGlobals(map[string]Value{
 		"shared": NewArray(values),
-	}, false)
+	}, false, false)
 	root.defineLazy("shared", taskLazyGlobalBinding{globals: lazyGlobals, name: "shared"})
 	lazyGlobals.root = root
 	exec := &Execution{
@@ -750,6 +750,42 @@ func TestTaskLazyGlobalCloneCacheCountsTowardMemoryQuota(t *testing.T) {
 	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
 }
 
+func TestTaskRunSnapshotGlobalsCountTowardMemoryQuota(t *testing.T) {
+	t.Parallel()
+	values := make([]Value, 256)
+	for i := range values {
+		values[i] = NewString("payload")
+	}
+	root := newEnv(nil)
+	root.Define("shared", NewArray(values))
+	exec := &Execution{
+		ctx:  context.Background(),
+		root: root,
+		callOptions: CallOptions{
+			Globals: map[string]Value{"shared": NewNil()},
+		},
+	}
+
+	withoutSnapshot := exec.estimateMemoryUsage()
+	group := newTaskGroup(exec, 1, true)
+	defer func() {
+		group.cancel()
+		if err := group.closeAndWait(); err != nil {
+			t.Errorf("close task group: %v", err)
+		}
+	}()
+	exec.pushTaskGroup(group)
+	defer exec.popTaskGroup()
+
+	withSnapshot := exec.estimateMemoryUsage()
+	if withSnapshot <= withoutSnapshot {
+		t.Fatalf("memory with task snapshot = %d, want greater than %d", withSnapshot, withoutSnapshot)
+	}
+
+	exec.memoryQuota = withSnapshot - 1
+	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
+}
+
 func TestStrictEffectsRejectLazyTaskCallableGlobals(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
@@ -764,7 +800,7 @@ end`)
 				return NewString("saved"), nil
 			}),
 		}),
-	}, false)
+	}, false, false)
 	_, err := script.callWithLazyTaskGlobals(context.Background(), "run", nil, CallOptions{}, lazyGlobals)
 	requireErrorContains(t, err, "strict effects: global db must be data-only")
 	if called {

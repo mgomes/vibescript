@@ -119,6 +119,7 @@ type taskGroup struct {
 	cancel               context.CancelFunc
 	opts                 CallOptions
 	globals              map[string]Value
+	detachedGlobals      bool
 	inheritedLazyGlobals *taskLazyGlobals
 	jobs                 chan *taskJob
 
@@ -151,12 +152,14 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 	ctx, cancel := context.WithCancel(exec.Context())
 	inheritedLazyGlobals := taskLazyGlobalsFromContext(exec.Context())
 	globals := exec.callOptions.Globals
+	detachedGlobals := false
 	if inheritedLazyGlobals != nil {
 		inheritedLazyGlobals = inheritedLazyGlobals.snapshotForNestedTasks()
 	} else {
 		globals = taskGlobalsFromRoot(exec.root, exec.callOptions.Globals)
 		if detachRootGlobals {
 			globals = cloneTaskGlobals(globals)
+			detachedGlobals = true
 		}
 	}
 	group := &taskGroup{
@@ -165,6 +168,7 @@ func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 		cancel:               cancel,
 		opts:                 exec.callOptions,
 		globals:              globals,
+		detachedGlobals:      detachedGlobals,
 		inheritedLazyGlobals: inheritedLazyGlobals,
 		jobs:                 make(chan *taskJob, max),
 	}
@@ -345,7 +349,7 @@ func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
 	if group.inheritedLazyGlobals != nil {
 		return group.inheritedLazyGlobals.fork()
 	}
-	return newTaskLazyGlobals(group.globals, false)
+	return newTaskLazyGlobals(group.globals, false, group.detachedGlobals)
 }
 
 func (group *taskGroup) wait() error {
@@ -407,6 +411,17 @@ func (group *taskGroup) retainedResultMemory(est *memoryEstimator) int {
 	total := 0
 	for _, result := range group.retainedResults {
 		total += est.value(result)
+	}
+	return total
+}
+
+func (group *taskGroup) retainedSnapshotMemory(est *memoryEstimator) int {
+	total := 0
+	if group.detachedGlobals && len(group.globals) > 0 {
+		total += est.hash(group.globals)
+	}
+	if group.inheritedLazyGlobals != nil {
+		total += group.inheritedLazyGlobals.retainedSourceMemory(est)
 	}
 	return total
 }
@@ -560,6 +575,7 @@ func cloneTaskGlobals(globals map[string]Value) map[string]Value {
 
 type taskLazyGlobals struct {
 	values          map[string]Value
+	detachedValues  bool
 	strictValidated bool
 	cloner          *taskGlobalCloner
 	rebinder        *callFunctionRebinder
@@ -567,12 +583,13 @@ type taskLazyGlobals struct {
 	clones          map[string]Value
 }
 
-func newTaskLazyGlobals(values map[string]Value, strictValidated bool) *taskLazyGlobals {
+func newTaskLazyGlobals(values map[string]Value, strictValidated, detachedValues bool) *taskLazyGlobals {
 	if len(values) == 0 {
 		return nil
 	}
 	return &taskLazyGlobals{
 		values:          values,
+		detachedValues:  detachedValues,
 		strictValidated: strictValidated,
 		cloner:          newTaskGlobalCloner(),
 		clones:          make(map[string]Value),
@@ -590,7 +607,7 @@ func (globals *taskLazyGlobals) fork() *taskLazyGlobals {
 	if globals == nil {
 		return nil
 	}
-	return newTaskLazyGlobals(globals.values, globals.strictValidated)
+	return newTaskLazyGlobals(globals.values, globals.strictValidated, globals.detachedValues)
 }
 
 func (globals *taskLazyGlobals) snapshotForNestedTasks() *taskLazyGlobals {
@@ -598,7 +615,7 @@ func (globals *taskLazyGlobals) snapshotForNestedTasks() *taskLazyGlobals {
 		return nil
 	}
 	values, detached := globals.valuesForFork()
-	return newTaskLazyGlobals(values, globals.strictValidated && !detached)
+	return newTaskLazyGlobals(values, globals.strictValidated && !detached, globals.detachedValues || detached)
 }
 
 func (globals *taskLazyGlobals) materialize(name string) Value {
@@ -646,12 +663,14 @@ func (globals *taskLazyGlobals) retainedCloneMemory(est *memoryEstimator) int {
 	if globals == nil || len(globals.clones) == 0 {
 		return 0
 	}
-	total := estimatedMapBaseBytes + len(globals.clones)*estimatedMapEntryBytes
-	for name, val := range globals.clones {
-		total += estimatedStringHeaderBytes + len(name)
-		total += est.value(val)
+	return est.hash(globals.clones)
+}
+
+func (globals *taskLazyGlobals) retainedSourceMemory(est *memoryEstimator) int {
+	if globals == nil || !globals.detachedValues || len(globals.values) == 0 {
+		return 0
 	}
-	return total
+	return est.hash(globals.values)
 }
 
 func (globals *taskLazyGlobals) valuesForFork() (map[string]Value, bool) {
