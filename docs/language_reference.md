@@ -164,6 +164,7 @@ Core operator families:
 - Arithmetic: `+`, `-`, `*`, `/`, `%`, `**`
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`
+- Conditional: `condition ? when_true : when_false`
 
 Operator precedence follows conventional arithmetic/boolean ordering.
 Exponentiation with `**` is right-associative and binds more tightly than
@@ -171,7 +172,9 @@ unary `-`, so `-2 ** 2` is parsed as `-(2 ** 2)`. Integer powers stay `int`
 when the exponent is non-negative and the result fits in 64 bits; mixed
 numeric powers and negative integer exponents return `float`. Integer
 overflow and non-finite float powers raise runtime errors. `and` has the same
-precedence as `&&`, and `or` has the same precedence as `||`.
+precedence as `&&`, and `or` has the same precedence as `||`. Ternary
+conditionals have lower precedence than `or`, associate to the right, and
+evaluate only the selected branch.
 
 ## Control Flow
 
@@ -221,6 +224,12 @@ Short expression and assignment statements can also use modifier loops and
 i = i + 1 while i < 3
 i = i + 1 until i >= 3
 status = "open" unless suspended
+```
+
+Ternary conditionals are expressions:
+
+```vibe
+status = active ? "open" : "closed"
 ```
 
 ## Error Handling

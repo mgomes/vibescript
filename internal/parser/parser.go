@@ -65,6 +65,7 @@ func (p *parser) parseProgram() (*ast.Program, []error) {
 const (
 	lowestPrec = iota
 	precAssign
+	precConditional
 	precOr
 	precAnd
 	precEquality
@@ -78,6 +79,7 @@ const (
 )
 
 var precedences = map[ast.TokenType]int{
+	ast.TokenQuestion:  precConditional,
 	ast.TokenOr:        precOr,
 	ast.TokenAnd:       precAnd,
 	ast.TokenEQ:        precEquality,

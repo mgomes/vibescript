@@ -168,6 +168,12 @@ end`,
 end`,
 		},
 		{
+			name: "ternary_conditionals",
+			source: `def run(flag)
+  flag ? "enabled" : "disabled"
+end`,
+		},
+		{
 			name: "targetless_case_predicates",
 			source: `def run(value)
   case

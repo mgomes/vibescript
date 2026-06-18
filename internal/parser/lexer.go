@@ -281,6 +281,9 @@ func (l *lexer) scanToken() ast.Token {
 			tok = l.makeToken(ast.TokenAmpersand, "&")
 			l.readRune()
 		}
+	case '?':
+		tok = l.makeToken(ast.TokenQuestion, "?")
+		l.readRune()
 	case '|':
 		if l.peekRune() == '|' {
 			first := l.ch

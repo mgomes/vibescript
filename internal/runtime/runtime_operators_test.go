@@ -43,3 +43,43 @@ end`)
 		t.Fatalf("run() mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestTernaryConditionalExpressions(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def label(active)
+  active ? "active" : "inactive"
+end
+
+def run
+  {
+    true_branch: true ? "yes" : missing_true,
+    false_branch: false ? missing_false : "no",
+    nil_condition: nil ? missing_nil : "nil",
+    value_condition: "present" ? 1 : 2,
+    precedence: false or true ? "selected" : missing_precedence,
+    nested: false ? missing_nested : true ? "nested" : "miss",
+    true_label: label(true),
+    false_label: label(false),
+    multiline: true ?
+      "multi"
+    : missing_multiline
+  }
+end`)
+
+	got := callFunc(t, script, "run", nil).Hash()
+	want := map[string]Value{
+		"false_branch":    NewString("no"),
+		"false_label":     NewString("inactive"),
+		"multiline":       NewString("multi"),
+		"nested":          NewString("nested"),
+		"nil_condition":   NewString("nil"),
+		"precedence":      NewString("selected"),
+		"true_branch":     NewString("yes"),
+		"true_label":      NewString("active"),
+		"value_condition": NewInt(1),
+	}
+	if diff := valueMapDiff(want, got); diff != "" {
+		t.Fatalf("run() mismatch (-want +got):\n%s", diff)
+	}
+}

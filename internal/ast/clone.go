@@ -276,6 +276,12 @@ func cloneExpression(expr Expression) Expression {
 		clone.Left = cloneExpression(e.Left)
 		clone.Right = cloneExpression(e.Right)
 		return &clone
+	case *ConditionalExpr:
+		clone := *e
+		clone.Condition = cloneExpression(e.Condition)
+		clone.Consequent = cloneExpression(e.Consequent)
+		clone.Alternate = cloneExpression(e.Alternate)
+		return &clone
 	case *RangeExpr:
 		clone := *e
 		clone.Start = cloneExpression(e.Start)

@@ -4,6 +4,7 @@ Vibescript supports these control-flow forms:
 
 - `if` / `elsif` / `else`
 - `case` / `when` expressions
+- ternary expressions with `condition ? when_true : when_false`
 - `for` loops over arrays and ranges
 - `while` and `until` loops
 - loop control with `break` and `next`
@@ -54,6 +55,18 @@ def label(score)
   else
     "ok"
   end
+end
+```
+
+## Ternary expressions
+
+Use `condition ? when_true : when_false` for short conditional values. The
+condition uses normal truthiness, the expression evaluates only the selected
+branch, and nested ternaries associate to the right.
+
+```vibe
+def label(active)
+  active ? "active" : "inactive"
 end
 ```
 

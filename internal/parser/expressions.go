@@ -330,6 +330,7 @@ type infixParseKind uint8
 const (
 	infixParserNone infixParseKind = iota
 	infixParserInfixExpression
+	infixParserConditionalExpression
 	infixParserRangeExpression
 	infixParserCallExpression
 	infixParserMemberExpression
@@ -344,6 +345,8 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 		ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
 		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
 		return infixParserInfixExpression
+	case ast.TokenQuestion:
+		return infixParserConditionalExpression
 	case ast.TokenRange:
 		return infixParserRangeExpression
 	case ast.TokenLParen:
@@ -365,6 +368,8 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 	switch kind {
 	case infixParserInfixExpression:
 		return p.parseInfixExpression(left)
+	case infixParserConditionalExpression:
+		return p.parseConditionalExpression(left)
 	case infixParserRangeExpression:
 		return p.parseRangeExpression(left)
 	case infixParserCallExpression:
@@ -513,6 +518,29 @@ func (p *parser) parseInfixExpression(left ast.Expression) ast.Expression {
 		return nil
 	}
 	return &ast.BinaryExpr{Left: left, Operator: operator, Right: right, Position: pos}
+}
+
+func (p *parser) parseConditionalExpression(condition ast.Expression) ast.Expression {
+	pos := p.curToken.Pos
+	p.nextToken()
+	consequent := p.parseExpression(lowestPrec)
+	if consequent == nil {
+		return nil
+	}
+	if !p.expectPeek(ast.TokenColon) {
+		return nil
+	}
+	p.nextToken()
+	alternate := p.parseExpression(precConditional - 1)
+	if alternate == nil {
+		return nil
+	}
+	return &ast.ConditionalExpr{
+		Condition:  condition,
+		Consequent: consequent,
+		Alternate:  alternate,
+		Position:   pos,
+	}
 }
 
 func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
