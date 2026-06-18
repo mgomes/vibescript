@@ -235,6 +235,9 @@ func cloneFunctionsForCall(functions map[string]*ScriptFunction, env *Env) map[s
 }
 
 func cloneClassesForCall(classes map[string]*ClassDef, env *Env) map[string]*ClassDef {
+	if len(classes) == 0 {
+		return nil
+	}
 	cloned := make(map[string]*ClassDef, len(classes))
 	for name, classDef := range classes {
 		classClone := &ClassDef{
@@ -257,6 +260,9 @@ func cloneClassesForCall(classes map[string]*ClassDef, env *Env) map[string]*Cla
 }
 
 func cloneEnumsForCall(enums map[string]*EnumDef) map[string]*EnumDef {
+	if len(enums) == 0 {
+		return nil
+	}
 	cloned := make(map[string]*EnumDef, len(enums))
 	for name, enumDef := range enums {
 		cloned[name] = cloneEnumDef(enumDef, enumDef.owner)

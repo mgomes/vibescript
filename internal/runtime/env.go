@@ -79,28 +79,36 @@ func (e *Env) resetForBlockCall(parent *Env) {
 
 // Get looks up a variable by name, traversing parent scopes if needed.
 func (e *Env) Get(name string) (Value, bool) {
-	if idx, ok := e.inlineIndex(name); ok {
-		val := e.inline[idx].value
-		if lazy, ok := lazyValue(val); ok {
-			val = lazy.materialize()
-			e.inline[idx].value = val
-			e.dropArrayAppendBuffer(name)
+	var lastMutable *Env
+	for scope := e; scope != nil; scope = scope.parent {
+		if !scope.frozen {
+			lastMutable = scope
 		}
-		return val, true
-	}
-	if val, ok := e.values[name]; ok {
-		if lazy, ok := lazyValue(val); ok {
-			val = lazy.materialize()
-			e.values[name] = val
-			e.dropArrayAppendBuffer(name)
+		if idx, ok := scope.inlineIndex(name); ok {
+			val := scope.inline[idx].value
+			if lazy, ok := lazyValue(val); ok {
+				val = lazy.materialize()
+				scope.inline[idx].value = val
+				scope.dropArrayAppendBuffer(name)
+			}
+			return val, true
 		}
-		return val, true
-	}
-	if val, ok := e.statics[name]; ok {
-		return val, true
-	}
-	if e.parent != nil {
-		return e.parent.Get(name)
+		if val, ok := scope.values[name]; ok {
+			if lazy, ok := lazyValue(val); ok {
+				val = lazy.materialize()
+				scope.values[name] = val
+				scope.dropArrayAppendBuffer(name)
+			}
+			return val, true
+		}
+		if val, ok := scope.statics[name]; ok {
+			if scope.frozen && lastMutable != nil && builtinNeedsCallClone(val) {
+				cloned := cloneBuiltinValueForCall(val)
+				lastMutable.DefineStatic(name, cloned)
+				return cloned, true
+			}
+			return val, true
+		}
 	}
 	return Value{}, false
 }
