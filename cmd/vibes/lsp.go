@@ -471,7 +471,7 @@ func diagnosticsForSource(engine *vibes.Engine, source string) []map[string]any 
 // compileForDiagnostics parses once, compiles the parsed program when possible,
 // and returns the AST so diagnostics and navigation caches stay in sync.
 func compileForDiagnostics(engine *vibes.Engine, source string) (*vibes.Script, *ast.Program, []error, []map[string]any) {
-	script, program, parseErrs, err := vibesruntime.CompileWithProgram(engine, source)
+	script, program, parseErrs, err := vibesruntime.CompileSnippetWithProgram(engine, source, scriptEntrypointFunction)
 	if err == nil {
 		return script, program, nil, []map[string]any{}
 	}
@@ -909,6 +909,9 @@ func newLSPCompletionIndex(script *vibes.Script, sourceLines []string) *lspCompl
 	index.functions = make([]map[string]any, 0, len(functions))
 	index.scopes = make([]lspCompletionScope, 0, len(functions))
 	for _, fn := range functions {
+		if fn.Name == scriptEntrypointFunction {
+			continue
+		}
 		index.functions = append(index.functions, map[string]any{
 			"label":  fn.Name,
 			"kind":   3, // Function

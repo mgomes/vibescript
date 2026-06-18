@@ -337,6 +337,16 @@ end`,
 			expectNoErr: true,
 		},
 		{
+			name: "top_level_script_body",
+			script: `def double(x)
+  x * 2
+end
+
+double(3)`,
+			wantOut:     []string{"No issues found"},
+			expectNoErr: true,
+		},
+		{
 			name: "unreachable_statements",
 			script: `def run()
   return 1
