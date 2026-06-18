@@ -502,7 +502,8 @@ Global functions and namespaces available in every script. See
 - `JSON.stringify(value) -> string` – serialize hashes/objects, arrays, and
   scalars; symbols and enum values become strings; rejects cyclic structures.
 
-Both directions enforce a 1 MiB payload limit.
+Both directions enforce a 1 MiB payload limit and reject more than 10,000
+nested arrays/objects.
 
 ### Regex
 
@@ -591,6 +592,7 @@ members (`match`, `scan`, `sub`, `gsub`, and their `!` variants):
 | Guard | Limit |
 | --- | --- |
 | `JSON.parse` input / `JSON.stringify` output | 1 MiB |
+| `JSON.parse` / `JSON.stringify` nesting depth | 10,000 arrays/objects |
 | Regex pattern size (`Regex.*`, `match`, `scan`, `sub`/`gsub` with `regex: true`) | 16 KiB |
 | Regex text, replacement, and output size | 1 MiB |
 | `random_id` length | 1024 characters |

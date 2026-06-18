@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -14,11 +15,13 @@ import (
 type jsonStringifyState struct {
 	seenArrays map[uintptr]struct{}
 	seenHashes map[uintptr]struct{}
+	depth      int
 }
 
 type jsonValueParser struct {
-	raw string
-	pos int
+	raw   string
+	pos   int
+	depth int
 }
 
 type jsonInvalidNumberError string
@@ -26,6 +29,8 @@ type jsonInvalidNumberError string
 func (e jsonInvalidNumberError) Error() string {
 	return fmt.Sprintf("JSON.parse invalid number %q", string(e))
 }
+
+var errJSONMaxDepth = errors.New("exceeded max depth")
 
 func (p *jsonValueParser) parse() (Value, error) {
 	p.skipWhitespace()
@@ -76,6 +81,11 @@ func (p *jsonValueParser) parseValue() (Value, error) {
 }
 
 func (p *jsonValueParser) parseArray() (Value, error) {
+	if err := p.enterContainer(); err != nil {
+		return NewNil(), err
+	}
+	defer p.leaveContainer()
+
 	p.pos++
 	p.skipWhitespace()
 	if p.consumeByte(']') {
@@ -109,6 +119,11 @@ func (p *jsonValueParser) parseArray() (Value, error) {
 }
 
 func (p *jsonValueParser) parseObject() (Value, error) {
+	if err := p.enterContainer(); err != nil {
+		return NewNil(), err
+	}
+	defer p.leaveContainer()
+
 	p.pos++
 	p.skipWhitespace()
 	if p.consumeByte('}') {
@@ -392,6 +407,18 @@ func (p *jsonValueParser) consumeByte(b byte) bool {
 	return false
 }
 
+func (p *jsonValueParser) enterContainer() error {
+	if p.depth >= maxJSONNestingDepth {
+		return errJSONMaxDepth
+	}
+	p.depth++
+	return nil
+}
+
+func (p *jsonValueParser) leaveContainer() {
+	p.depth--
+}
+
 func isJSONDigit(c byte) bool {
 	return c >= '0' && c <= '9'
 }
@@ -429,7 +456,7 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		if math.IsInf(f, 0) || math.IsNaN(f) {
 			return nil, fmt.Errorf("JSON.stringify failed: json: unsupported value: %s", strconv.FormatFloat(f, 'g', -1, 64))
 		}
-		return strconv.AppendFloat(buf, f, 'g', -1, 64), nil
+		return appendJSONFloat(buf, f), nil
 	case KindString, KindSymbol:
 		return appendJSONString(buf, val.String()), nil
 	case KindEnumValue:
@@ -439,6 +466,11 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		return nil, fmt.Errorf("JSON.stringify unsupported enum value")
 	case KindArray:
 		arr := val.Array()
+		if err := state.enterContainer(); err != nil {
+			return nil, err
+		}
+		defer state.leaveContainer()
+
 		id := reflect.ValueOf(arr).Pointer()
 		if id != 0 {
 			if _, seen := state.seenArrays[id]; seen {
@@ -455,6 +487,9 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 			}
 			updated, err := appendJSONValue(buf, item, state)
 			if err != nil {
+				if errors.Is(err, errJSONMaxDepth) {
+					return nil, err
+				}
 				return nil, fmt.Errorf("JSON.stringify array index %d: %w", i, err)
 			}
 			buf = updated
@@ -462,6 +497,11 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 		return append(buf, ']'), nil
 	case KindHash, KindObject:
 		hash := val.Hash()
+		if err := state.enterContainer(); err != nil {
+			return nil, err
+		}
+		defer state.leaveContainer()
+
 		id := reflect.ValueOf(hash).Pointer()
 		if id != 0 {
 			if _, seen := state.seenHashes[id]; seen {
@@ -486,6 +526,9 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 			buf = append(buf, ':')
 			updated, err := appendJSONValue(buf, hash[key], state)
 			if err != nil {
+				if errors.Is(err, errJSONMaxDepth) {
+					return nil, err
+				}
 				return nil, fmt.Errorf("JSON.stringify key %q: %w", key, err)
 			}
 			buf = updated
@@ -494,6 +537,36 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 	default:
 		return nil, fmt.Errorf("JSON.stringify unsupported value type %s", val.Kind())
 	}
+}
+
+func appendJSONFloat(buf []byte, f float64) []byte {
+	format := byte('f')
+	abs := math.Abs(f)
+	if abs != 0 && (abs < 1e-6 || abs >= 1e21) {
+		format = 'e'
+	}
+
+	buf = strconv.AppendFloat(buf, f, format, -1, 64)
+	if format == 'e' {
+		n := len(buf)
+		if n >= 4 && buf[n-4] == 'e' && buf[n-3] == '-' && buf[n-2] == '0' {
+			buf[n-2] = buf[n-1]
+			buf = buf[:n-1]
+		}
+	}
+	return buf
+}
+
+func (state *jsonStringifyState) enterContainer() error {
+	if state.depth >= maxJSONNestingDepth {
+		return fmt.Errorf("JSON.stringify %w", errJSONMaxDepth)
+	}
+	state.depth++
+	return nil
+}
+
+func (state *jsonStringifyState) leaveContainer() {
+	state.depth--
 }
 
 func appendJSONString(buf []byte, s string) []byte {
