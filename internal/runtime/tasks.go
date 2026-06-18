@@ -149,13 +149,17 @@ type taskHandle struct {
 
 func newTaskGroup(exec *Execution, max int) *taskGroup {
 	ctx, cancel := context.WithCancel(exec.Context())
+	inheritedLazyGlobals := taskLazyGlobalsFromContext(exec.Context())
+	if inheritedLazyGlobals != nil {
+		inheritedLazyGlobals = inheritedLazyGlobals.snapshotForNestedTasks()
+	}
 	group := &taskGroup{
 		script:               taskScript(exec),
 		ctx:                  ctx,
 		cancel:               cancel,
 		opts:                 exec.callOptions,
 		strictValidated:      exec.strictEffects,
-		inheritedLazyGlobals: taskLazyGlobalsFromContext(exec.Context()),
+		inheritedLazyGlobals: inheritedLazyGlobals,
 		jobs:                 make(chan *taskJob, max),
 	}
 	for range max {
@@ -521,12 +525,11 @@ func cloneTaskGlobals(globals map[string]Value) map[string]Value {
 }
 
 type taskLazyGlobals struct {
-	values              map[string]Value
-	strictValidated     bool
-	cloner              *taskGlobalCloner
-	rebinder            *callFunctionRebinder
-	clones              map[string]Value
-	materializedSources map[taskGlobalSourceIdentity]struct{}
+	values          map[string]Value
+	strictValidated bool
+	cloner          *taskGlobalCloner
+	rebinder        *callFunctionRebinder
+	clones          map[string]Value
 }
 
 func newTaskLazyGlobals(values map[string]Value, strictValidated bool) *taskLazyGlobals {
@@ -552,6 +555,13 @@ func (globals *taskLazyGlobals) fork() *taskLazyGlobals {
 	if globals == nil {
 		return nil
 	}
+	return newTaskLazyGlobals(globals.values, globals.strictValidated)
+}
+
+func (globals *taskLazyGlobals) snapshotForNestedTasks() *taskLazyGlobals {
+	if globals == nil {
+		return nil
+	}
 	return newTaskLazyGlobals(globals.valuesForFork(), globals.strictValidated)
 }
 
@@ -565,7 +575,6 @@ func (globals *taskLazyGlobals) materialize(name string) Value {
 		cloned = globals.rebinder.rebindValue(cloned)
 	}
 	globals.clones[name] = cloned
-	globals.markMaterializedSource(source)
 	return cloned
 }
 
@@ -600,70 +609,10 @@ func (globals *taskLazyGlobals) valuesForFork() map[string]Value {
 		return globals.values
 	}
 	out := make(map[string]Value, len(globals.values))
-	for name, val := range globals.values {
-		if clone, ok := globals.clones[name]; ok {
-			out[name] = clone
-			continue
-		}
-		if globals.sourceMaterialized(val) {
-			out[name] = globals.materialize(name)
-			continue
-		}
-		out[name] = val
+	for name := range globals.values {
+		out[name] = globals.materialize(name)
 	}
 	return out
-}
-
-func (globals *taskLazyGlobals) markMaterializedSource(val Value) {
-	id, ok := taskGlobalSourceIdentityForValue(val)
-	if !ok {
-		return
-	}
-	if globals.materializedSources == nil {
-		globals.materializedSources = make(map[taskGlobalSourceIdentity]struct{})
-	}
-	globals.materializedSources[id] = struct{}{}
-}
-
-func (globals *taskLazyGlobals) sourceMaterialized(val Value) bool {
-	if len(globals.materializedSources) == 0 {
-		return false
-	}
-	id, ok := taskGlobalSourceIdentityForValue(val)
-	if !ok {
-		return false
-	}
-	_, ok = globals.materializedSources[id]
-	return ok
-}
-
-type taskGlobalSourceIdentity struct {
-	kind  int
-	array sliceIdentity
-	ptr   uintptr
-}
-
-func taskGlobalSourceIdentityForValue(val Value) (taskGlobalSourceIdentity, bool) {
-	switch val.Kind() {
-	case KindArray:
-		items := val.Array()
-		return taskGlobalSourceIdentity{
-			kind: int(KindArray),
-			array: sliceIdentity{
-				Ptr: reflect.ValueOf(items).Pointer(),
-				Len: len(items),
-				Cap: cap(items),
-			},
-		}, true
-	case KindHash, KindObject:
-		entries := val.Hash()
-		return taskGlobalSourceIdentity{
-			kind: int(val.Kind()),
-			ptr:  reflect.ValueOf(entries).Pointer(),
-		}, true
-	default:
-		return taskGlobalSourceIdentity{}, false
-	}
 }
 
 type taskLazyGlobalBinding struct {

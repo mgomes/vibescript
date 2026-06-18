@@ -405,6 +405,38 @@ end`)
 	}
 }
 
+func TestNestedTasksInheritMaterializedNestedGlobalAliases(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_child(item)
+  child[:seed] + item
+end
+
+def write_nested_then_spawn(item)
+  parent[:child][:seed] = item
+  Tasks.map([10, 20], max: 2, with: :read_child)
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :write_nested_then_spawn)
+end`)
+
+	child := NewHash(map[string]Value{"seed": NewInt(0)})
+	parent := NewHash(map[string]Value{"child": child})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"parent": parent,
+			"child":  child,
+		},
+	})
+	compareArrays(t, result, []Value{
+		NewArray([]Value{NewInt(11), NewInt(21)}),
+		NewArray([]Value{NewInt(12), NewInt(22)}),
+	})
+	if got := child.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host child[:seed] = %s, want 0", got.String())
+	}
+}
+
 func TestStrictEffectsRejectLazyTaskCallableGlobals(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
