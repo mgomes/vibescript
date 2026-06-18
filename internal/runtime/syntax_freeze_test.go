@@ -246,7 +246,9 @@ end
 
 def run
   name = "Ada"
-  [configure name:, retries: 3, accept a: 1]
+  configured = configure name:, retries: 3
+  accepted = accept a: 1
+  [configured, accepted]
 end`,
 		},
 		{

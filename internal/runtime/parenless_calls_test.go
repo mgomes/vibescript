@@ -119,3 +119,47 @@ func TestParenlessArgumentListCalls(t *testing.T) {
 	requireCallErrorContains(t, script, "strict_parenthesized_options", nil, CallOptions{}, "missing argument opts")
 	requireCallErrorContains(t, script, "strict_keyword_signature", nil, CallOptions{}, "missing argument opts")
 }
+
+func TestParenlessBareOptionsRejectLaterPositionals(t *testing.T) {
+	t.Parallel()
+
+	requireCompileErrorContainsDefault(t, `
+    def collect(opts, value)
+      [opts, value]
+    end
+
+    def run
+      collect first: 1, "tail"
+    end
+    `, "positional arguments cannot follow bare keyword arguments in parenless calls")
+}
+
+func TestParenlessBareOptionsForConstructors(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class Person
+      def initialize(opts)
+        @name = opts[:name]
+      end
+
+      def name
+        @name
+      end
+    end
+
+    def call_constructor
+      person = Person.new name: "Ada"
+      person.name
+    end
+
+    def strict_parenthesized_constructor
+      Person.new(name: "Ada")
+    end
+    `)
+
+	if got := callFunc(t, script, "call_constructor", nil); !got.Equal(NewString("Ada")) {
+		t.Fatalf("call_constructor() = %v, want Ada", got)
+	}
+	requireCallErrorContains(t, script, "strict_parenthesized_constructor", nil, CallOptions{}, "missing argument opts")
+}

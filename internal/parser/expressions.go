@@ -1152,6 +1152,9 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 		isParenlessArgumentStart(p.peekPeek.Type) {
 		p.nextToken()
 		p.nextToken()
+		if bareKeywordArgs && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
+			p.addParseError(p.curToken.Pos, "positional arguments cannot follow bare keyword arguments in parenless calls")
+		}
 		p.parseParenlessCallArgument(&args, &kwargs, &bareKeywordArgs)
 	}
 
