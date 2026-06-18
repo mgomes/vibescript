@@ -83,7 +83,8 @@ Use `begin` with `rescue` and/or `ensure` for script-level recovery:
 def safe_div(a, b)
   begin
     a / b
-  rescue(RuntimeError)
+  rescue RuntimeError => err
+    audit(err.message)
     "fallback"
   ensure
     audit("safe_div attempted")
@@ -105,8 +106,9 @@ end
 Semantics:
 
 - `rescue` runs only when the `begin` body raises an error.
-- `rescue` supports optional typed matching via `rescue(<Type>)`.
-- `rescue` supports `AssertionError`, `LimitError`, `RuntimeError`, and unions such as `rescue(AssertionError | RuntimeError)`.
+- `rescue` supports optional typed matching via `rescue <Type>` and the older `rescue(<Type>)` form.
+- `rescue` supports `AssertionError`, `LimitError`, `RuntimeError`, and unions such as `rescue AssertionError | RuntimeError`.
+- `rescue => err` and `rescue RuntimeError => err` bind an object for the handler body with `type`, `message`, and `code_frame` fields.
 - `else` runs only when the `begin` body finishes without a rescued error.
 - `ensure` always runs (success, rescue path, or failure path).
 - Without `rescue`, original runtime errors still propagate after `ensure` executes.

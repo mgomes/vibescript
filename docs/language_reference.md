@@ -200,11 +200,13 @@ Structured handling supports `rescue`/`ensure`:
 
 ```vibe
 def run
-  risky
-rescue
-  "fallback"
-ensure
-  cleanup
+  begin
+    risky
+  rescue RuntimeError => err
+    err.message
+  ensure
+    cleanup
+  end
 end
 ```
 

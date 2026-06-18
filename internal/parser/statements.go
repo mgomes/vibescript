@@ -250,24 +250,16 @@ func (p *parser) parseBeginStatement() ast.Statement {
 	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
 
 	var rescueTy *ast.TypeExpr
+	var rescueBinding string
 	var rescueBody []ast.Statement
 	rescuePresent := false
 	if p.curToken.Type == ast.TokenRescue {
 		rescuePresent = true
 		rescuePos := p.curToken.Pos
-		if p.peekToken.Type == ast.TokenLParen && p.peekToken.Pos.Line == rescuePos.Line {
-			p.nextToken()
-			p.nextToken()
-			rescueTy = p.parseTypeExpr()
-			if rescueTy == nil {
-				return nil
-			}
-			if !p.validateRescueTypeExpr(rescueTy, rescuePos) {
-				return nil
-			}
-			if !p.expectPeek(ast.TokenRParen) {
-				return nil
-			}
+		var ok bool
+		rescueTy, rescueBinding, ok = p.parseRescueClause(rescuePos)
+		if !ok {
+			return nil
 		}
 		p.nextToken()
 		rescueBody = p.parseBlock(ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
@@ -299,7 +291,62 @@ func (p *parser) parseBeginStatement() ast.Statement {
 		return nil
 	}
 
-	return &ast.TryStmt{Body: body, RescueTy: rescueTy, Rescue: rescueBody, Else: elseBody, Ensure: ensureBody, Position: pos}
+	return &ast.TryStmt{Body: body, RescueTy: rescueTy, RescueBinding: rescueBinding, Rescue: rescueBody, Else: elseBody, Ensure: ensureBody, Position: pos}
+}
+
+func (p *parser) parseRescueClause(rescuePos ast.Position) (*ast.TypeExpr, string, bool) {
+	if p.peekToken.Pos.Line != rescuePos.Line {
+		return nil, "", true
+	}
+
+	var rescueTy *ast.TypeExpr
+	switch p.peekToken.Type {
+	case ast.TokenLParen:
+		p.nextToken()
+		p.nextToken()
+		rescueTy = p.parseTypeExpr()
+		if rescueTy == nil {
+			return nil, "", false
+		}
+		if !p.validateRescueTypeExpr(rescueTy, rescuePos) {
+			return nil, "", false
+		}
+		if !p.expectPeek(ast.TokenRParen) {
+			return nil, "", false
+		}
+	case ast.TokenIdent:
+		p.nextToken()
+		rescueTy = p.parseTypeExpr()
+		if rescueTy == nil {
+			return nil, "", false
+		}
+		if !p.validateRescueTypeExpr(rescueTy, rescuePos) {
+			return nil, "", false
+		}
+	case ast.TokenArrow:
+	default:
+		return nil, "", true
+	}
+
+	binding := ""
+	if p.peekToken.Type == ast.TokenArrow && p.peekToken.Pos.Line == rescuePos.Line {
+		var ok bool
+		binding, ok = p.parseRescueBinding()
+		if !ok {
+			return nil, "", false
+		}
+	}
+	return rescueTy, binding, true
+}
+
+func (p *parser) parseRescueBinding() (string, bool) {
+	p.nextToken()
+	if p.peekToken.Type != ast.TokenIdent {
+		p.addParseError(p.peekToken.Pos, "rescue binding must be an identifier")
+		return "", false
+	}
+	p.nextToken()
+	return p.curToken.Literal, true
 }
 
 func (p *parser) validateRescueTypeExpr(ty *ast.TypeExpr, pos ast.Position) bool {

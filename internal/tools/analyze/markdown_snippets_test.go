@@ -52,13 +52,6 @@ var markdownSnippetPolicies = []markdownSnippetPolicy{
 		Mode:   markdownSnippetKnownFailure,
 		Reason: "#214 tracks trailing commas in hash literals",
 	},
-	{
-		Path:   "docs/language_reference.md",
-		Line:   178,
-		Hash:   "d274d3dbfc8a",
-		Mode:   markdownSnippetKnownFailure,
-		Reason: "#208 tracks function-level rescue and ensure syntax",
-	},
 }
 
 func TestMarkdownVibeSnippetsAreCovered(t *testing.T) {

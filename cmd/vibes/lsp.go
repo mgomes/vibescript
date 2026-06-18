@@ -1046,6 +1046,7 @@ func lastStatementLine(statements []ast.Statement) int {
 				walk(st.Body)
 			case *ast.TryStmt:
 				walk(st.Body)
+				walk(st.Else)
 				walk(st.Rescue)
 				walk(st.Ensure)
 			}
@@ -1097,7 +1098,11 @@ func localNames(statements []ast.Statement) []string {
 			case *ast.UntilStmt:
 				walkStmts(st.Body)
 			case *ast.TryStmt:
+				if st.RescueBinding != "" {
+					names = append(names, st.RescueBinding)
+				}
 				walkStmts(st.Body)
+				walkStmts(st.Else)
 				walkStmts(st.Rescue)
 				walkStmts(st.Ensure)
 			}
