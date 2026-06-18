@@ -263,6 +263,107 @@ end`)
 	}
 }
 
+func benchmarkStringHelperLoop(b *testing.B, source string, args []Value) {
+	b.Helper()
+	script := compileScriptWithEngine(b, benchmarkEngine(), source)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func benchmarkASCIIStringText() string {
+	return strings.Repeat("a", 4095) + "z"
+}
+
+func benchmarkUnicodeStringText() string {
+	return strings.Repeat("héllo ", 680) + "終"
+}
+
+func BenchmarkStringLengthLoopASCII(b *testing.B) {
+	benchmarkStringHelperLoop(b, `def run(text, n)
+  total = 0
+  for i in 1..n
+    total = total + text.length
+  end
+  total
+end`, []Value{NewString(benchmarkASCIIStringText()), NewInt(200)})
+}
+
+func BenchmarkStringLengthLoopUnicode(b *testing.B) {
+	benchmarkStringHelperLoop(b, `def run(text, n)
+  total = 0
+  for i in 1..n
+    total = total + text.length
+  end
+  total
+end`, []Value{NewString(benchmarkUnicodeStringText()), NewInt(200)})
+}
+
+func BenchmarkStringIndexLoopASCII(b *testing.B) {
+	benchmarkStringHelperLoop(b, `def run(text, needle, n)
+  total = 0
+  for i in 1..n
+    total = total + text.index(needle)
+  end
+  total
+end`, []Value{NewString(benchmarkASCIIStringText()), NewString("z"), NewInt(200)})
+}
+
+func BenchmarkStringIndexLoopUnicode(b *testing.B) {
+	benchmarkStringHelperLoop(b, `def run(text, needle, n)
+  total = 0
+  for i in 1..n
+    total = total + text.index(needle)
+  end
+  total
+end`, []Value{NewString(benchmarkUnicodeStringText()), NewString("終"), NewInt(200)})
+}
+
+func BenchmarkStringRIndexLoopASCII(b *testing.B) {
+	benchmarkStringHelperLoop(b, `def run(text, needle, n)
+  total = 0
+  for i in 1..n
+    total = total + text.rindex(needle)
+  end
+  total
+end`, []Value{NewString(benchmarkASCIIStringText()), NewString("a"), NewInt(200)})
+}
+
+func BenchmarkStringRIndexLoopUnicode(b *testing.B) {
+	benchmarkStringHelperLoop(b, `def run(text, needle, n)
+  total = 0
+  for i in 1..n
+    total = total + text.rindex(needle)
+  end
+  total
+end`, []Value{NewString(benchmarkUnicodeStringText()), NewString("é"), NewInt(200)})
+}
+
+func BenchmarkStringSliceLoopASCII(b *testing.B) {
+	benchmarkStringHelperLoop(b, `def run(text, start, n)
+  total = 0
+  for i in 1..n
+    total = total + text.slice(start, 4).bytesize
+  end
+  total
+end`, []Value{NewString(benchmarkASCIIStringText()), NewInt(4092), NewInt(200)})
+}
+
+func BenchmarkStringSliceLoopUnicode(b *testing.B) {
+	benchmarkStringHelperLoop(b, `def run(text, start, n)
+  total = 0
+  for i in 1..n
+    total = total + text.slice(start, 4).bytesize
+  end
+  total
+end`, []Value{NewString(benchmarkUnicodeStringText()), NewInt(4077), NewInt(200)})
+}
+
 func BenchmarkExecutionStringTemplateManyPlaceholders(b *testing.B) {
 	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(text, context, n)
   out = ""
