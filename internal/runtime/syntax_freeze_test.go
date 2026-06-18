@@ -219,6 +219,16 @@ def run
 end`,
 		},
 		{
+			name: "zero_paren_def_params",
+			source: `def add left, right
+  left + right
+end
+
+def run
+  add(2, 3)
+end`,
+		},
+		{
 			name: "targetless_case_predicates",
 			source: `def run(value)
   case

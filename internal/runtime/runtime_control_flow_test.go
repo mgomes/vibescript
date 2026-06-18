@@ -1324,3 +1324,27 @@ func TestFunctionDefinitionWithoutParens(t *testing.T) {
 		t.Fatalf("unexpected result: %v", result)
 	}
 }
+
+func TestFunctionDefinitionWithoutParensBindsParameters(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def inc value
+      value + 1
+    end
+
+    def add left, right
+      left + right
+    end
+
+    def scale value: int, factor = 2 -> int
+      value * factor
+    end
+
+    def run
+      [inc(4), add(2, 3), scale(5), scale(5, 3)]
+    end
+    `)
+
+	result := callFunc(t, script, "run", nil)
+	compareArrays(t, result, []Value{NewInt(5), NewInt(5), NewInt(10), NewInt(15)})
+}

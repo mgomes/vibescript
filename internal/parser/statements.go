@@ -461,7 +461,7 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 
 	params := []ast.Param{}
 	var returnTy *ast.TypeExpr
-	// Optional parens on the same line
+	// Optional parens on the same line.
 	if p.curToken.Type == ast.TokenLParen && p.curToken.Pos.Line == pos.Line {
 		if p.peekToken.Type == ast.TokenRParen {
 			p.nextToken() // consume ')'
@@ -474,6 +474,9 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 			}
 			p.nextToken()
 		}
+	} else if p.curToken.Pos.Line == pos.Line && isFunctionParamStart(p.curToken.Type) {
+		params = p.parseParamsWithOptions(paramParseOptions{lineLimitedDefaults: true})
+		p.nextToken()
 	}
 	if p.curToken.Type == ast.TokenArrow {
 		p.nextToken()
@@ -685,14 +688,22 @@ func (p *parser) parsePrivateStatement() ast.Statement {
 	return fn
 }
 
+type paramParseOptions struct {
+	lineLimitedDefaults bool
+}
+
 func (p *parser) parseParams() []ast.Param {
+	return p.parseParamsWithOptions(paramParseOptions{})
+}
+
+func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 	params := []ast.Param{}
 	seenRest := false
 	seenKeyword := false
 	seenKeywordRest := false
 	seenBlock := false
 	for {
-		param, paramPos, ok := p.parseParam()
+		param, paramPos, ok := p.parseParam(options)
 		if !ok {
 			return params
 		}
@@ -750,7 +761,7 @@ func (p *parser) parseParams() []ast.Param {
 	return params
 }
 
-func (p *parser) parseParam() (ast.Param, ast.Position, bool) {
+func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position, bool) {
 	kind := ast.ParamNormal
 	switch p.curToken.Type {
 	case ast.TokenAsterisk:
@@ -780,7 +791,7 @@ func (p *parser) parseParam() (ast.Param, ast.Position, bool) {
 	}
 	if p.peekToken.Type == ast.TokenColon {
 		p.nextToken()
-		if kind == ast.ParamNormal && !param.IsIvar && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRParen) {
+		if kind == ast.ParamNormal && !param.IsIvar && p.peekEndsRequiredKeywordParam(options) {
 			param.Kind = ast.ParamKeyword
 			return param, pos, true
 		}
@@ -797,9 +808,33 @@ func (p *parser) parseParam() (ast.Param, ast.Position, bool) {
 		}
 		p.nextToken()
 		p.nextToken()
-		param.DefaultVal = p.parseExpression(lowestPrec)
+		if options.lineLimitedDefaults {
+			param.DefaultVal = p.parseLineExpressionUntil(lowestPrec, ast.TokenComma)
+		} else {
+			param.DefaultVal = p.parseExpression(lowestPrec)
+		}
 	}
 	return param, pos, true
+}
+
+func isFunctionParamStart(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TokenIdent, ast.TokenIvar, ast.TokenAsterisk, ast.TokenPower, ast.TokenAmpersand:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *parser) peekEndsRequiredKeywordParam(options paramParseOptions) bool {
+	switch p.peekToken.Type {
+	case ast.TokenComma, ast.TokenRParen:
+		return true
+	case ast.TokenArrow, ast.TokenSemicolon, ast.TokenEOF:
+		return options.lineLimitedDefaults
+	default:
+		return options.lineLimitedDefaults && p.peekToken.Pos.Line != p.curToken.Pos.Line
+	}
 }
 
 func parameterNameExpectation(kind ast.ParamKind) string {
