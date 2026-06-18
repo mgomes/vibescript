@@ -13,6 +13,11 @@ const (
 	// host memory before interpreter quotas can account for it.
 	maxJSONPayloadBytes = 1 << 20
 
+	// maxJSONNestingDepth caps JSON.parse and JSON.stringify container
+	// nesting. It matches the standard library JSON scanner's default
+	// guard and prevents recursive descent from exhausting the Go stack.
+	maxJSONNestingDepth = 10000
+
 	// maxRegexInputBytes caps the subject text, replacement strings,
 	// and produced output of every regex entry point (Regex.match,
 	// Regex.replace, Regex.replace_all, and the string match/scan/

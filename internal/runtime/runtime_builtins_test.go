@@ -453,6 +453,39 @@ func TestJSONStringifyEscaping(t *testing.T) {
 	}
 }
 
+func TestJSONStringifyFloatFormattingMatchesJSON(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def stringify_value(value)
+      JSON.stringify(value)
+    end
+    `)
+
+	tests := []struct {
+		name  string
+		value Value
+		want  string
+	}{
+		{name: "million_fixed", value: NewFloat(1e6), want: `1000000`},
+		{name: "micro_fixed", value: NewFloat(1e-6), want: `0.000001`},
+		{name: "smaller_than_micro_exponent", value: NewFloat(1e-7), want: `1e-7`},
+		{name: "large_fixed", value: NewFloat(1e20), want: `100000000000000000000`},
+		{name: "larger_exponent", value: NewFloat(1e21), want: `1e+21`},
+		{name: "negative_smaller_than_micro_exponent", value: NewFloat(-1e-7), want: `-1e-7`},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, "stringify_value", []Value{tc.value})
+			if got.Kind() != KindString || got.String() != tc.want {
+				t.Fatalf("JSON.stringify(%s) = %q, want %q", tc.value.String(), got.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestJSONParseEscapesAndNumbers(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -480,6 +513,25 @@ func TestJSONParseEscapesAndNumbers(t *testing.T) {
 	}
 	if got, want := obj["float"], NewFloat(100); !got.Equal(want) {
 		t.Fatalf("float = %s, want %s", got, want)
+	}
+}
+
+func TestJSONRejectsExcessiveNesting(t *testing.T) {
+	t.Parallel()
+
+	tooDeepJSON := strings.Repeat("[", maxJSONNestingDepth+1) + "0" + strings.Repeat("]", maxJSONNestingDepth+1)
+	_, err := builtinJSONParse(nil, NewNil(), []Value{NewString(tooDeepJSON)}, nil, NewNil())
+	if err == nil || !strings.Contains(err.Error(), "exceeded max depth") {
+		t.Fatalf("JSON.parse(deep array) error = %v, want exceeded max depth", err)
+	}
+
+	value := NewInt(0)
+	for range maxJSONNestingDepth + 1 {
+		value = NewArray([]Value{value})
+	}
+	_, err = builtinJSONStringify(nil, NewNil(), []Value{value}, nil, NewNil())
+	if err == nil || !strings.Contains(err.Error(), "exceeded max depth") {
+		t.Fatalf("JSON.stringify(deep array) error = %v, want exceeded max depth", err)
 	}
 }
 

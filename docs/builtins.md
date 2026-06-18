@@ -102,7 +102,8 @@ payload = JSON.parse("{\"id\":\"p-1\",\"score\":10}")
 payload[:score] # 10
 ```
 
-`JSON.parse` enforces a 1 MiB input limit.
+`JSON.parse` enforces a 1 MiB input limit and rejects more than 10,000 nested
+arrays/objects.
 
 ### `JSON.stringify(value)`
 
@@ -113,7 +114,8 @@ a JSON string:
 raw = JSON.stringify({ id: "p-1", score: 10, tags: ["a", "b"] })
 ```
 
-`JSON.stringify` enforces a 1 MiB output limit.
+`JSON.stringify` enforces a 1 MiB output limit and rejects more than 10,000
+nested arrays/objects.
 
 ## Regex
 
