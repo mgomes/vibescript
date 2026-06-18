@@ -7,7 +7,10 @@ Use this with focused guides in `docs/` for deeper examples.
 
 - Files are UTF-8 text, typically with `.vibe` extension.
 - `#` starts a comment that runs to end-of-line.
-- Top-level declarations are functions, classes, and enums.
+- Top-level declarations are functions, classes, and enums. Executable top-level
+  statements form the default script body when a file is run without
+  `-function`, and form a module initializer when a file is loaded with
+  `require`.
 - Expressions can be used as statements.
 
 ## Values and Literals

@@ -62,6 +62,43 @@ end`,
 			wantOut: "hello",
 		},
 		{
+			name: "default_function_without_top_level_body",
+			script: `def run
+  "ok"
+end`,
+			args:    func(p string) []string { return []string{p} },
+			wantOut: "ok",
+		},
+		{
+			name: "executes_top_level_script_body",
+			script: `def double(x)
+  x * 2
+end
+
+double(3)`,
+			args:    func(p string) []string { return []string{p} },
+			wantOut: "6",
+		},
+		{
+			name: "check_only_allows_top_level_script_body",
+			script: `def double(x)
+  x * 2
+end
+
+double(3)`,
+			args: func(p string) []string { return []string{"-check", p} },
+		},
+		{
+			name: "explicit_function_ignores_top_level_script_body",
+			script: `def greet(name)
+  name
+end
+
+greet("top")`,
+			args:    func(p string) []string { return []string{"-function", "greet", p, "hello"} },
+			wantOut: "hello",
+		},
+		{
 			name:    "requires_script_path",
 			args:    func(string) []string { return nil },
 			wantErr: "script path required",
@@ -296,6 +333,16 @@ func TestAnalyzeCommand(t *testing.T) {
   value = 1
   value
 end`,
+			wantOut:     []string{"No issues found"},
+			expectNoErr: true,
+		},
+		{
+			name: "top_level_script_body",
+			script: `def double(x)
+  x * 2
+end
+
+double(3)`,
 			wantOut:     []string{"No issues found"},
 			expectNoErr: true,
 		},

@@ -33,7 +33,7 @@ func analyzeCommand(args []string) error {
 	}
 
 	engine := vibes.MustNewEngine(vibes.Config{})
-	script, err := engine.Compile(string(input))
+	script, err := engine.CompileSnippet(string(input), scriptEntrypointFunction)
 	if err != nil {
 		return fmt.Errorf("analysis compile failed: %w", err)
 	}

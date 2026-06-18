@@ -27,7 +27,10 @@ type moduleRequest struct {
 	explicitRelative bool
 }
 
-const moduleKeySeparator = "::"
+const (
+	moduleKeySeparator       = "::"
+	moduleEntrypointFunction = "<module>"
+)
 
 func (e *Engine) getCachedModule(key string) (moduleEntry, bool) {
 	e.modMu.RLock()
@@ -130,7 +133,7 @@ func (e *Engine) compileAndCacheModule(key, root, relative, fullPath string, con
 		return moduleEntry{}, err
 	}
 
-	script, err := e.Compile(string(content))
+	script, err := e.CompileSnippet(string(content), moduleEntrypointFunction)
 	if err != nil {
 		return moduleEntry{}, fmt.Errorf("require: compiling %s failed: %w", fullPath, err)
 	}
@@ -165,6 +168,43 @@ func cloneFunctionForEnv(fn *ScriptFunction, env *Env) *ScriptFunction {
 	clone := *fn
 	clone.Env = env
 	return &clone
+}
+
+func moduleContextForEntry(entry moduleEntry) moduleContext {
+	return moduleContext{
+		key:    entry.key,
+		path:   entry.path,
+		root:   entry.script.moduleRoot,
+		script: entry.script,
+	}
+}
+
+func initializeModuleForCall(exec *Execution, entry moduleEntry, moduleEnv *Env, moduleClasses map[string]*ClassDef) error {
+	exec.pushModuleContext(moduleContextForEntry(entry))
+	defer exec.popModuleContext()
+
+	if err := initializeClassBodiesForCall(exec, moduleEnv, moduleClasses); err != nil {
+		return err
+	}
+	return executeModuleEntrypoint(exec, entry, moduleEnv)
+}
+
+func executeModuleEntrypoint(exec *Execution, entry moduleEntry, moduleEnv *Env) error {
+	fn := entry.script.functions[moduleEntrypointFunction]
+	if fn == nil || len(fn.Body) == 0 {
+		return nil
+	}
+
+	if err := exec.pushFrame(moduleDisplayName(entry.key), fn.Pos, entry.script, entry.script); err != nil {
+		return err
+	}
+	defer exec.popFrame()
+
+	_, _, err := exec.evalStatements(fn.Body, moduleEnv)
+	if err != nil {
+		err = exec.wrapError(err, fn.Pos)
+	}
+	return err
 }
 
 func moduleCycleFromLoadStack(stack []string, next string) ([]string, bool) {
@@ -840,7 +880,7 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		}
 	}()
 
-	moduleEnv := newEnv(exec.root)
+	moduleEnv := newAssignmentBoundaryEnv(exec.root)
 	exports := make(map[string]Value, len(entry.script.functions)+len(entry.script.enums))
 	moduleEnums := cloneEnumsForCall(entry.script.enums)
 	for name, enumDef := range moduleEnums {
@@ -848,7 +888,14 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		moduleEnv.Define(name, enumVal)
 		exports[name] = enumVal
 	}
+	moduleClasses := cloneClassesForCall(entry.script.classes, moduleEnv)
+	for name, classDef := range moduleClasses {
+		moduleEnv.Define(name, NewClass(classDef))
+	}
 	for name, fn := range entry.script.functions {
+		if name == moduleEntrypointFunction {
+			continue
+		}
 		clone := cloneFunctionForEnv(fn, moduleEnv)
 		fnVal := NewFunction(clone)
 		moduleEnv.Define(name, fnVal)
@@ -856,11 +903,14 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 			exports[name] = fnVal
 		}
 	}
-
 	exportsVal := NewObject(exports)
 	if err := validateRequireAliasBinding(exec.root, alias, exportsVal); err != nil {
 		return NewNil(), err
 	}
+	if err := initializeModuleForCall(exec, entry, moduleEnv, moduleClasses); err != nil {
+		return NewNil(), err
+	}
+
 	bindModuleExportsWithoutOverwrite(exec.root, exports)
 	exec.modules[entry.key] = exportsVal
 	if alias != "" {

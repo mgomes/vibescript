@@ -60,11 +60,12 @@ func runCommand(args []string) error {
 		return err
 	}
 
+	functionSet := flagWasSet(fs, "function")
 	if flagWasSet(fs, "e") {
 		switch {
 		case *watch:
 			return errors.New("vibes run: -e cannot be combined with -watch")
-		case flagWasSet(fs, "function"):
+		case functionSet:
 			return errors.New("vibes run: -e cannot be combined with -function")
 		case len(fs.Args()) > 0:
 			return errors.New("vibes run: -e does not accept positional arguments")
@@ -85,11 +86,12 @@ func runCommand(args []string) error {
 		return fmt.Errorf("compute module paths: %w", err)
 	}
 	inv := runInvocation{
-		scriptPath: absScriptPath,
-		function:   *function,
-		checkOnly:  *checkOnly,
-		moduleDirs: moduleDirs,
-		callArgs:   stringArgs(remaining[1:]),
+		scriptPath:  absScriptPath,
+		function:    *function,
+		functionSet: functionSet,
+		checkOnly:   *checkOnly,
+		moduleDirs:  moduleDirs,
+		callArgs:    stringArgs(remaining[1:]),
 	}
 
 	if *watch {
@@ -103,11 +105,12 @@ func runCommand(args []string) error {
 // runInvocation captures everything needed to execute a script file once,
 // so single runs and watch-mode re-runs share one code path.
 type runInvocation struct {
-	scriptPath string
-	function   string
-	checkOnly  bool
-	moduleDirs []string
-	callArgs   []value.Value
+	scriptPath  string
+	function    string
+	functionSet bool
+	checkOnly   bool
+	moduleDirs  []string
+	callArgs    []value.Value
 }
 
 func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error {
@@ -119,14 +122,18 @@ func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error 
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
 	}
-	script, err := engine.Compile(string(input))
+	script, err := engine.CompileSnippet(string(input), scriptEntrypointFunction)
 	if err != nil {
 		return fmt.Errorf("compile failed: %w", err)
 	}
 	if inv.checkOnly {
 		return nil
 	}
-	result, err := script.Call(ctx, inv.function, inv.callArgs, vibes.CallOptions{})
+	function := inv.function
+	if !inv.functionSet && scriptEntrypointHasBody(script) {
+		function = scriptEntrypointFunction
+	}
+	result, err := script.Call(ctx, function, inv.callArgs, vibes.CallOptions{})
 	if err != nil {
 		return fmt.Errorf("execution failed: %w", err)
 	}
@@ -134,6 +141,13 @@ func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error 
 		fmt.Fprintln(out, result.String())
 	}
 	return nil
+}
+
+const scriptEntrypointFunction = "<script>"
+
+func scriptEntrypointHasBody(script *vibes.Script) bool {
+	fn, ok := script.Function(scriptEntrypointFunction)
+	return ok && len(fn.Body) > 0
 }
 
 // evalSnippetFunction is the synthetic function that executes -e snippets.

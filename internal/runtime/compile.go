@@ -32,16 +32,25 @@ func CompileWithProgram(e *Engine, source string) (*Script, *ast.Program, []erro
 // synthetic entrypoint function so callers can invoke the snippet through the
 // same Script.Call contract as ordinary scripts.
 func (e *Engine) CompileSnippet(source, entrypoint string) (*Script, error) {
+	script, _, _, err := CompileSnippetWithProgram(e, source, entrypoint)
+	return script, err
+}
+
+// CompileSnippetWithProgram compiles source as an inline snippet and returns
+// the parsed program from the same parser pass. The returned program reflects
+// the user's source; only the compiled script receives the synthetic entrypoint.
+func CompileSnippetWithProgram(e *Engine, source, entrypoint string) (*Script, *ast.Program, []error, error) {
 	if strings.TrimSpace(entrypoint) == "" {
-		return nil, fmt.Errorf("snippet entrypoint cannot be empty")
+		return nil, nil, nil, fmt.Errorf("snippet entrypoint cannot be empty")
 	}
 
-	program, _, err := parseSource(e, source)
+	program, parseErrors, err := parseSource(e, source)
 	if err != nil {
-		return nil, err
+		return nil, program, parseErrors, err
 	}
 
-	return compileParsed(e, source, snippetEntrypointProgram(program, entrypoint))
+	script, err := compileParsed(e, source, snippetEntrypointProgram(program, entrypoint))
+	return script, program, nil, err
 }
 
 func parseSource(e *Engine, source string) (*ast.Program, []error, error) {

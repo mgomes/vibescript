@@ -47,6 +47,16 @@ func TestDiagnosticsForSourceWithoutErrors(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsForSourceWithTopLevelScriptBody(t *testing.T) {
+	t.Parallel()
+	engine := vibes.MustNewEngine(vibes.Config{})
+	source := "def double(x)\n  x * 2\nend\n\ndouble(3)\n"
+	diags := diagnosticsForSource(engine, source)
+	if len(diags) != 0 {
+		t.Fatalf("expected no diagnostics, got %#v", diags)
+	}
+}
+
 func TestDiagnosticsForSourceWithParseError(t *testing.T) {
 	t.Parallel()
 	engine := vibes.MustNewEngine(vibes.Config{})
