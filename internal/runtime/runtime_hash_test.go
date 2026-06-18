@@ -401,13 +401,41 @@ func TestHashHelpersSupportObjectReceiver(t *testing.T) {
 	}
 }
 
-func TestHashLiteralSyntaxRestriction(t *testing.T) {
+func TestHashRocketLiteralKeys(t *testing.T) {
 	t.Parallel()
-	_ = compileScriptErrorDefault(t, `
-    def broken()
-      { "name" => "alex" }
+	script := compileScript(t, `
+    def literal_keys()
+      { :name => "Ada", "first-name" => "Lovelace" }
+    end
+
+    def dynamic_keys(symbol_key, string_key)
+      { symbol_key => "symbol", string_key => "string" }
+    end
+
+    def unsupported_key()
+      { ["name"] => "Ada" }
     end
     `)
+
+	literalKeys := callFunc(t, script, "literal_keys", nil)
+	if literalKeys.Kind() != KindHash {
+		t.Fatalf("literal_keys() = %s, want hash", literalKeys.Kind())
+	}
+	compareHash(t, literalKeys.Hash(), map[string]Value{
+		"name":       NewString("Ada"),
+		"first-name": NewString("Lovelace"),
+	})
+
+	dynamicKeys := callFunc(t, script, "dynamic_keys", []Value{NewSymbol("status"), NewString("label")})
+	if dynamicKeys.Kind() != KindHash {
+		t.Fatalf("dynamic_keys() = %s, want hash", dynamicKeys.Kind())
+	}
+	compareHash(t, dynamicKeys.Hash(), map[string]Value{
+		"status": NewString("symbol"),
+		"label":  NewString("string"),
+	})
+
+	requireCallErrorContains(t, script, "unsupported_key", nil, CallOptions{}, "unsupported hash key type array")
 }
 
 func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {

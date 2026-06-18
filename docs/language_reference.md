@@ -26,6 +26,10 @@ Vibescript supports these literal/value categories:
 - ranges (`1..5`, `1...5`)
 - duration literals (`5.minutes`, `2.days`)
 
+Hash literals support label keys (`name:`), quoted string keys (`"name":`), and
+hash rockets (`:name => value`, `"name" => value`, or an expression that
+evaluates to a symbol or string).
+
 Ranges with `..` include the final endpoint. Ranges with `...` exclude it.
 
 See `docs/arrays.md`, `docs/hashes.md`, `docs/strings.md`, `docs/durations.md`,

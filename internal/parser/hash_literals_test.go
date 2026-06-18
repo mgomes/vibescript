@@ -45,6 +45,43 @@ end`
 	}
 }
 
+func TestParserHashRocketKeys(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  {:name => "Ada", "first-name" => "Lovelace", key => 1}
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.HashLiteral{
+				Pairs: []ast.HashPair{
+					{
+						Key:   &ast.SymbolLiteral{Name: "name"},
+						Value: &ast.StringLiteral{Value: "Ada"},
+					},
+					{
+						Key:   &ast.StringLiteral{Value: "first-name"},
+						Value: &ast.StringLiteral{Value: "Lovelace"},
+					},
+					{
+						Key:   &ast.Identifier{Name: "key"},
+						Value: &ast.IntegerLiteral{Value: 1},
+					},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserWordBooleanHashKeys(t *testing.T) {
 	t.Parallel()
 
