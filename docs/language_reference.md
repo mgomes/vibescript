@@ -176,6 +176,13 @@ Supported control-flow constructs include:
 - `next`
 - `return`
 
+Short expression and assignment statements can also use modifier loops:
+
+```vibe
+i = i + 1 while i < 3
+i = i + 1 until i >= 3
+```
+
 ## Error Handling
 
 Raise explicit failures:
