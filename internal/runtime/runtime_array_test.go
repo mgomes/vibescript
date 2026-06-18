@@ -103,6 +103,28 @@ func TestArrayAppendAssignmentPreservesAliasIsolation(t *testing.T) {
 	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(3)})
 }
 
+func TestArrayAppendAssignmentDetachesEscapedBlockResults(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def block_results()
+      out = []
+      results = [1, 2].map do |v|
+        out = out.push(v)
+      end
+      second = results[1]
+      second[0] = 9
+      results
+    end
+    `)
+
+	results := callFunc(t, script, "block_results", nil).Array()
+	if len(results) != 2 {
+		t.Fatalf("block_results length = %d, want 2", len(results))
+	}
+	compareArrays(t, results[0], []Value{NewInt(1)})
+	compareArrays(t, results[1], []Value{NewInt(9), NewInt(2)})
+}
+
 func TestArrayPhaseTwoHelpers(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

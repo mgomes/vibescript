@@ -786,6 +786,7 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	if err != nil {
 		return NewNil(), err
 	}
+	val = callEnv.detachArrayAppendResult(val)
 	if fn.ReturnTy != nil {
 		normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
 			owner:    fn.owner,

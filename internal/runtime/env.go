@@ -1,6 +1,9 @@
 package runtime
 
-import "maps"
+import (
+	"maps"
+	"reflect"
+)
 
 // Env represents a lexical scope that maps variable names to values.
 //
@@ -160,6 +163,31 @@ func (e *Env) setArrayAppendBuffer(name string, buffer []Value) {
 		e.arrayAppendBuffers = make(map[string][]Value)
 	}
 	e.arrayAppendBuffers[name] = buffer
+}
+
+func (e *Env) detachArrayAppendResult(val Value) Value {
+	if val.Kind() != KindArray {
+		return val
+	}
+	items := val.Array()
+	if len(items) == 0 {
+		return val
+	}
+	ptr := reflect.ValueOf(items).Pointer()
+	if ptr == 0 {
+		return val
+	}
+	for scope := e; scope != nil; scope = scope.parent {
+		for _, buffer := range scope.arrayAppendBuffers {
+			if len(buffer) != len(items) || reflect.ValueOf(buffer).Pointer() != ptr {
+				continue
+			}
+			detached := make([]Value, len(items))
+			copy(detached, items)
+			return NewArray(detached)
+		}
+	}
+	return val
 }
 
 // visibleNames returns every name bound in this scope or any enclosing

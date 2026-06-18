@@ -390,9 +390,9 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		return NewNil(), err
 	}
 	if returned {
-		return val, nil
+		return blockEnv.detachArrayAppendResult(val), nil
 	}
-	return val, nil
+	return blockEnv.detachArrayAppendResult(val), nil
 }
 
 func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
