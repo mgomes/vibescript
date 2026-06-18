@@ -11,7 +11,7 @@ enum ReviewState
   Approved
 end
 
-def member() -> Status
+def member -> Status
   Status::Draft
 end
 
@@ -25,7 +25,7 @@ def block_names(values) -> array
   end
 end
 
-def facts() -> hash
+def facts -> hash
   draft = Status::Draft
 
   {
