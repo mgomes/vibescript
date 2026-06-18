@@ -8,8 +8,8 @@ package capabilitycontract
 import (
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
+	"unsafe"
 
 	"github.com/mgomes/vibescript/vibes/value"
 )
@@ -37,6 +37,23 @@ func CloneKwargs(kwargs map[string]value.Value) map[string]value.Value {
 		return nil
 	}
 	return CloneHash(kwargs)
+}
+
+// CloneKwargsDataOnly validates and deep-copies keyword arguments in one
+// pass so host callbacks receive isolated data-only values.
+func CloneKwargsDataOnly(method string, kwargs map[string]value.Value) (map[string]value.Value, error) {
+	if len(kwargs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]value.Value, len(kwargs))
+	for key, val := range kwargs {
+		cloned, err := CloneDataOnlyValue(fmt.Sprintf("%s keyword %s", method, key), val)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = cloned
+	}
+	return out, nil
 }
 
 // CloneHash returns a deep copy of the provided string-keyed map. An
@@ -84,6 +101,28 @@ func DeepCloneValue(val value.Value) value.Value {
 	}
 }
 
+// CloneHashValue checks that val is a hash or object, validates that it
+// contains only data values, and returns an isolated copy of its entries.
+func CloneHashValue(label string, val value.Value) (map[string]value.Value, error) {
+	cloned, err := CloneDataOnlyValue(label, val)
+	if err != nil {
+		return nil, err
+	}
+	if cloned.Kind() != value.KindHash && cloned.Kind() != value.KindObject {
+		return nil, fmt.Errorf("%s expected hash, got %s", label, valueKindName(val.Kind()))
+	}
+	return cloned.Hash(), nil
+}
+
+// CloneDataOnlyValue validates and deep-copies val in one graph walk.
+func CloneDataOnlyValue(label string, val value.Value) (value.Value, error) {
+	cloned, issue := cloneDataOnlyValue(val, newSeenSet())
+	if err := dataOnlyIssueError(label, issue); err != nil {
+		return value.NewNil(), err
+	}
+	return cloned, nil
+}
+
 // IsNilImplementation reports whether impl is a nil interface or a
 // typed-nil pointer / channel / func / map / slice. Capability
 // constructors use it to reject zero-value implementations that would
@@ -118,10 +157,10 @@ func EnsureBlock(block value.Value, name string) error {
 // val. Capability boundaries call it so host code never receives a
 // script-side callable it cannot safely invoke.
 func ValidateDataOnlyValue(label string, val value.Value) error {
-	if containsCallable(val, newSeenSet()) {
+	switch validateDataOnly(val, newSeenSet(), newSeenSet()) {
+	case dataOnlyCallable:
 		return fmt.Errorf("%s must be data-only", label)
-	}
-	if containsCycle(val, newSeenSet(), newSeenSet()) {
+	case dataOnlyCycle:
 		return fmt.Errorf("%s must not contain cyclic references", label)
 	}
 	return nil
@@ -163,10 +202,7 @@ func ValidateAnyReturn(method string) func(result value.Value) error {
 // CloneMethodResult validates and deep-copies a host-returned Value so
 // the host's mutable state is not aliased into the script heap.
 func CloneMethodResult(method string, result value.Value) (value.Value, error) {
-	if err := ValidateDataOnlyValue(method+" return value", result); err != nil {
-		return value.NewNil(), err
-	}
-	return DeepCloneValue(result), nil
+	return CloneDataOnlyValue(method+" return value", result)
 }
 
 type seenSet struct {
@@ -181,87 +217,152 @@ func newSeenSet() *seenSet {
 	}
 }
 
-func containsCallable(val value.Value, seen *seenSet) bool {
-	switch val.Kind() {
-	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance:
-		return true
-	case value.KindArray:
-		values := val.Array()
-		id := value.SliceIdentity{
-			Ptr: reflect.ValueOf(values).Pointer(),
-			Len: len(values),
-			Cap: cap(values),
-		}
-		if _, ok := seen.arrays[id]; ok {
-			return false
-		}
-		seen.arrays[id] = struct{}{}
-		return slices.ContainsFunc(values, func(item value.Value) bool {
-			return containsCallable(item, seen)
-		})
-	case value.KindHash, value.KindObject:
-		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
-		if _, ok := seen.maps[ptr]; ok {
-			return false
-		}
-		seen.maps[ptr] = struct{}{}
-		for _, item := range entries {
-			if containsCallable(item, seen) {
-				return true
-			}
-		}
-		return false
+type dataOnlyResult uint8
+
+const (
+	dataOnlyOK dataOnlyResult = iota
+	dataOnlyCallable
+	dataOnlyCycle
+)
+
+func dataOnlyIssueError(label string, issue dataOnlyResult) error {
+	switch issue {
+	case dataOnlyCallable:
+		return fmt.Errorf("%s must be data-only", label)
+	case dataOnlyCycle:
+		return fmt.Errorf("%s must not contain cyclic references", label)
 	default:
-		return false
+		return nil
 	}
 }
 
-func containsCycle(val value.Value, visiting, seen *seenSet) bool {
+func sliceIdentity(values []value.Value) value.SliceIdentity {
+	return value.SliceIdentity{
+		Ptr: uintptr(unsafe.Pointer(unsafe.SliceData(values))),
+		Len: len(values),
+		Cap: cap(values),
+	}
+}
+
+func validateDataOnly(val value.Value, visiting, seen *seenSet) dataOnlyResult {
 	switch val.Kind() {
+	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance:
+		return dataOnlyCallable
 	case value.KindArray:
 		values := val.Array()
-		id := value.SliceIdentity{
-			Ptr: reflect.ValueOf(values).Pointer(),
-			Len: len(values),
-			Cap: cap(values),
-		}
+		id := sliceIdentity(values)
 		if _, ok := seen.arrays[id]; ok {
-			return false
+			return dataOnlyOK
 		}
 		if _, ok := visiting.arrays[id]; ok {
-			return true
+			return dataOnlyCycle
 		}
 		visiting.arrays[id] = struct{}{}
-		if slices.ContainsFunc(values, func(item value.Value) bool {
-			return containsCycle(item, visiting, seen)
-		}) {
-			return true
+		issue := dataOnlyOK
+		for _, item := range values {
+			switch result := validateDataOnly(item, visiting, seen); result {
+			case dataOnlyCallable:
+				return dataOnlyCallable
+			case dataOnlyCycle:
+				issue = dataOnlyCycle
+			}
 		}
 		delete(visiting.arrays, id)
 		seen.arrays[id] = struct{}{}
-		return false
+		return issue
 	case value.KindHash, value.KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
 		if _, ok := seen.maps[ptr]; ok {
-			return false
+			return dataOnlyOK
 		}
 		if _, ok := visiting.maps[ptr]; ok {
-			return true
+			return dataOnlyCycle
 		}
 		visiting.maps[ptr] = struct{}{}
+		issue := dataOnlyOK
 		for _, item := range entries {
-			if containsCycle(item, visiting, seen) {
-				return true
+			switch result := validateDataOnly(item, visiting, seen); result {
+			case dataOnlyCallable:
+				return dataOnlyCallable
+			case dataOnlyCycle:
+				issue = dataOnlyCycle
 			}
 		}
 		delete(visiting.maps, ptr)
 		seen.maps[ptr] = struct{}{}
-		return false
+		return issue
 	default:
-		return false
+		return dataOnlyOK
 	}
+}
+
+func cloneDataOnlyValue(val value.Value, visiting *seenSet) (value.Value, dataOnlyResult) {
+	switch val.Kind() {
+	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance:
+		return value.NewNil(), dataOnlyCallable
+	case value.KindArray:
+		values := val.Array()
+		id := sliceIdentity(values)
+		if _, ok := visiting.arrays[id]; ok {
+			return value.NewNil(), dataOnlyCycle
+		}
+		visiting.arrays[id] = struct{}{}
+		cloned := make([]value.Value, len(values))
+		issue := dataOnlyOK
+		for i, item := range values {
+			next, result := cloneDataOnlyValue(item, visiting)
+			switch result {
+			case dataOnlyCallable:
+				return value.NewNil(), dataOnlyCallable
+			case dataOnlyCycle:
+				issue = dataOnlyCycle
+			default:
+				cloned[i] = next
+			}
+		}
+		delete(visiting.arrays, id)
+		if issue != dataOnlyOK {
+			return value.NewNil(), issue
+		}
+		return value.NewArray(cloned), dataOnlyOK
+	case value.KindHash:
+		return cloneDataOnlyMap(val.Hash(), visiting, value.NewHash)
+	case value.KindObject:
+		return cloneDataOnlyMap(val.Hash(), visiting, value.NewObject)
+	default:
+		return val, dataOnlyOK
+	}
+}
+
+func cloneDataOnlyMap(
+	entries map[string]value.Value,
+	visiting *seenSet,
+	construct func(map[string]value.Value) value.Value,
+) (value.Value, dataOnlyResult) {
+	ptr := reflect.ValueOf(entries).Pointer()
+	if _, ok := visiting.maps[ptr]; ok {
+		return value.NewNil(), dataOnlyCycle
+	}
+	visiting.maps[ptr] = struct{}{}
+	cloned := make(map[string]value.Value, len(entries))
+	issue := dataOnlyOK
+	for key, item := range entries {
+		next, result := cloneDataOnlyValue(item, visiting)
+		switch result {
+		case dataOnlyCallable:
+			return value.NewNil(), dataOnlyCallable
+		case dataOnlyCycle:
+			issue = dataOnlyCycle
+		default:
+			cloned[key] = next
+		}
+	}
+	delete(visiting.maps, ptr)
+	if issue != dataOnlyOK {
+		return value.NewNil(), issue
+	}
+	return construct(cloned), dataOnlyOK
 }
 
 func valueKindName(kind value.ValueKind) string {

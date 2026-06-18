@@ -168,6 +168,38 @@ func TestCloneKwargs(t *testing.T) {
 	})
 }
 
+func TestCloneKwargsDataOnly(t *testing.T) {
+	t.Parallel()
+	t.Run("valid_kwargs_deep_cloned", func(t *testing.T) {
+		original := map[string]value.Value{
+			"opts": value.NewHash(map[string]value.Value{
+				"items": value.NewArray([]value.Value{value.NewString("a")}),
+			}),
+		}
+		clone, err := CloneKwargsDataOnly("db.find", original)
+		if err != nil {
+			t.Fatalf("CloneKwargsDataOnly err = %v, want nil", err)
+		}
+		if !clone["opts"].Equal(original["opts"]) {
+			t.Fatalf("clone[opts] = %v, want %v", clone["opts"], original["opts"])
+		}
+
+		clone["opts"].Hash()["items"].Array()[0] = value.NewString("changed")
+		if !original["opts"].Hash()["items"].Array()[0].Equal(value.NewString("a")) {
+			t.Fatalf("mutating clone leaked into original: %v", original["opts"])
+		}
+	})
+	t.Run("callable_rejected", func(t *testing.T) {
+		_, err := CloneKwargsDataOnly("db.find", map[string]value.Value{"fn": runtimeKind(value.KindBlock)})
+		if err == nil {
+			t.Fatal("CloneKwargsDataOnly err = nil, want data-only error")
+		}
+		if want := "db.find keyword fn must be data-only"; err.Error() != want {
+			t.Fatalf("CloneKwargsDataOnly err = %q, want %q", err.Error(), want)
+		}
+	})
+}
+
 func TestCloneHash(t *testing.T) {
 	t.Parallel()
 	t.Run("nil_returns_empty_non_nil", func(t *testing.T) {
@@ -207,6 +239,59 @@ func TestCloneHash(t *testing.T) {
 		original["nested"].Hash()["added"] = value.NewInt(1)
 		if _, ok := clone["nested"].Hash()["added"]; ok {
 			t.Fatalf("mutating original leaked into clone: %v", clone["nested"])
+		}
+	})
+}
+
+func TestCloneHashValue(t *testing.T) {
+	t.Parallel()
+	t.Run("object_value_accepted_and_cloned", func(t *testing.T) {
+		original := value.NewObject(map[string]value.Value{
+			"items": value.NewArray([]value.Value{value.NewInt(1)}),
+		})
+		clone, err := CloneHashValue("payload", original)
+		if err != nil {
+			t.Fatalf("CloneHashValue err = %v, want nil", err)
+		}
+		if !clone["items"].Equal(original.Hash()["items"]) {
+			t.Fatalf("clone[items] = %v, want %v", clone["items"], original.Hash()["items"])
+		}
+
+		clone["items"].Array()[0] = value.NewInt(99)
+		if !original.Hash()["items"].Array()[0].Equal(value.NewInt(1)) {
+			t.Fatalf("mutating clone leaked into original: %v", original)
+		}
+	})
+	t.Run("data_only_checked_before_kind", func(t *testing.T) {
+		_, err := CloneHashValue("payload", runtimeKind(value.KindBlock))
+		if err == nil {
+			t.Fatal("CloneHashValue err = nil, want data-only error")
+		}
+		if want := "payload must be data-only"; err.Error() != want {
+			t.Fatalf("CloneHashValue err = %q, want %q", err.Error(), want)
+		}
+	})
+	t.Run("non_hash_rejected", func(t *testing.T) {
+		_, err := CloneHashValue("payload", value.NewInt(1))
+		if err == nil {
+			t.Fatal("CloneHashValue err = nil, want kind error")
+		}
+		if want := "payload expected hash, got int"; err.Error() != want {
+			t.Fatalf("CloneHashValue err = %q, want %q", err.Error(), want)
+		}
+	})
+}
+
+func TestCloneDataOnlyValue(t *testing.T) {
+	t.Parallel()
+	t.Run("callable_priority_over_cycle", func(t *testing.T) {
+		val := value.NewArray([]value.Value{cyclicArray(), runtimeKind(value.KindBlock)})
+		_, err := CloneDataOnlyValue("payload", val)
+		if err == nil {
+			t.Fatal("CloneDataOnlyValue err = nil, want data-only error")
+		}
+		if want := "payload must be data-only"; err.Error() != want {
+			t.Fatalf("CloneDataOnlyValue err = %q, want %q", err.Error(), want)
 		}
 	})
 }
@@ -486,6 +571,11 @@ func TestValidateDataOnlyValue(t *testing.T) {
 			name:    "indirect_cycle_array_through_hash",
 			val:     cyclicArrayThroughHash(),
 			wantErr: "payload must not contain cyclic references",
+		},
+		{
+			name:    "callable_priority_over_cycle",
+			val:     value.NewArray([]value.Value{cyclicArray(), runtimeKind(value.KindBlock)}),
+			wantErr: "payload must be data-only",
 		},
 	}
 	for _, tc := range tests {

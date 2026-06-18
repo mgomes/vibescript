@@ -272,11 +272,10 @@ func (a *dbCapabilityAdapter) Bind(_ CapabilityBinding) (map[string]Value, error
 func (a *dbCapabilityAdapter) CapabilityContracts() map[string]CapabilityMethodContract {
 	src := a.cap.Contracts()
 	out := make(map[string]CapabilityMethodContract, len(src))
-	for k, v := range src {
-		out[k] = CapabilityMethodContract{
-			ValidateArgs:   v.ValidateArgs,
-			ValidateReturn: v.ValidateReturn,
-		}
+	for k := range src {
+		// DB methods validate and clone at the host boundary so payload graphs
+		// are not walked once by the runtime and again by the adapter.
+		out[k] = CapabilityMethodContract{}
 	}
 	return out
 }
