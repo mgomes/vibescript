@@ -88,11 +88,12 @@ func (e *HashLiteral) Pos() Position { return e.Position }
 
 // CallExpr represents a function or method call.
 type CallExpr struct {
-	Callee   Expression
-	Args     []Expression
-	KwArgs   []KeywordArg
-	Block    *BlockLiteral
-	Position Position
+	Callee          Expression
+	Args            []Expression
+	KwArgs          []KeywordArg
+	BareKeywordArgs bool
+	Block           *BlockLiteral
+	Position        Position
 }
 
 func (e *CallExpr) exprNode()     {}

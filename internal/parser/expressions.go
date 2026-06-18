@@ -71,12 +71,10 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 		}
 
 		if p.canParseParenlessCall(left, precedence, lineLimited) {
-			p.nextToken()
-			arg := p.parseLineExpression(lowestPrec)
-			if arg == nil {
+			left = p.parseParenlessCallExpression(left)
+			if left == nil {
 				return nil
 			}
-			left = &ast.CallExpr{Callee: left, Args: []ast.Expression{arg}, KwArgs: []ast.KeywordArg{}, Position: left.Pos()}
 			if lineLimited {
 				limitLine = p.curToken.Pos.Line
 			}
@@ -1136,6 +1134,33 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 	return expr
 }
 
+func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expression {
+	if function == nil {
+		return nil
+	}
+	expr := &ast.CallExpr{Callee: function, Position: function.Pos()}
+	args := []ast.Expression{}
+	kwargs := []ast.KeywordArg{}
+	bareKeywordArgs := false
+
+	p.nextToken()
+	p.parseParenlessCallArgument(&args, &kwargs, &bareKeywordArgs)
+
+	for p.peekToken.Type == ast.TokenComma &&
+		p.peekToken.Pos.Line == p.curToken.Pos.Line &&
+		p.peekPeek.Pos.Line == p.curToken.Pos.Line &&
+		isParenlessArgumentStart(p.peekPeek.Type) {
+		p.nextToken()
+		p.nextToken()
+		p.parseParenlessCallArgument(&args, &kwargs, &bareKeywordArgs)
+	}
+
+	expr.Args = args
+	expr.KwArgs = kwargs
+	expr.BareKeywordArgs = bareKeywordArgs
+	return expr
+}
+
 func (p *parser) parseTrailingBlockExpression(callee ast.Expression) ast.Expression {
 	return p.callWithBlock(callee, p.parseBlockLiteral())
 }
@@ -1200,6 +1225,52 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 	if expr != nil {
 		*args = append(*args, expr)
 	}
+}
+
+func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, bareKeywordArgs *bool) {
+	switch p.curToken.Type {
+	case ast.TokenAsterisk:
+		p.recoverUnsupportedCallExpansion("call splat is not supported; pass positional arguments explicitly")
+		return
+	case ast.TokenPower:
+		p.recoverUnsupportedCallExpansion("keyword splat is not supported; pass keyword arguments explicitly")
+		return
+	}
+
+	if p.curToken.Type == ast.TokenAmpersand {
+		p.recoverUnsupportedAmpersandCallArgument()
+		return
+	}
+
+	if isLabelNameToken(p.curToken) && p.peekToken.Type == ast.TokenColon {
+		name := p.curToken.Literal
+		pos := p.curToken.Pos
+		p.nextToken()
+		*bareKeywordArgs = true
+		if p.parenlessKeywordArgumentCanUseShorthand() {
+			*kwargs = append(*kwargs, ast.KeywordArg{Name: name, Value: &ast.Identifier{Name: name, Position: pos}})
+			return
+		}
+		p.nextToken()
+		value := p.parseLineExpression(lowestPrec)
+		if value == nil {
+			return
+		}
+		*kwargs = append(*kwargs, ast.KeywordArg{Name: name, Value: value})
+		return
+	}
+
+	expr := p.parseLineExpression(lowestPrec)
+	if expr != nil {
+		*args = append(*args, expr)
+	}
+}
+
+func (p *parser) parenlessKeywordArgumentCanUseShorthand() bool {
+	if p.peekToken.Type == ast.TokenEOF || p.peekToken.Type == ast.TokenComma {
+		return true
+	}
+	return p.peekToken.Pos.Line != p.curToken.Pos.Line
 }
 
 func (p *parser) recoverUnsupportedCallExpansion(message string) {

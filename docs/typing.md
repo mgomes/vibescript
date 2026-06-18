@@ -65,6 +65,7 @@ Arguments can be bound positionally or by name (or mixed):
 pick_second(1, 2)
 pick_second(n: 1, m: 2)
 pick_second(1, m: 2)
+pick_second 1, m: 2
 ```
 
 Use a trailing colon in a parameter list for required keyword-only parameters,
@@ -77,9 +78,21 @@ end
 
 name = "Ada"
 greet(name:)
+greet name:
 ```
 
 Unknown keyword args and missing required args raise errors.
+
+Parenless label arguments can also supply a positional options hash when the
+callee has no matching keyword/parameter name:
+
+```vibe
+def configure(opts)
+  opts[:retries]
+end
+
+configure retries: 3
+```
 
 ## Returns
 

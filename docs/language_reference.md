@@ -150,12 +150,22 @@ fees.apply(amount)
 require("billing/rules", as: "rules")
 ```
 
-Single positional calls may omit parentheses when the argument stays on
-the same line:
+Calls may omit parentheses when all arguments stay on the same line:
 
 ```vibe
 fees.apply amount
 normalize input
+add 1, 2
+require "billing/rules", as: "rules"
+render status: "ok"
+```
+
+Parenless label arguments bind as keyword arguments when the callee accepts
+them. When a script function has a positional hash/options parameter instead,
+the same source form is passed as a final hash:
+
+```vibe
+accept_options retry: true, limit: 3
 ```
 
 Blocks can be passed with `do ... end`:

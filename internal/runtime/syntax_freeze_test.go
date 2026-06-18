@@ -235,6 +235,21 @@ end`,
 end`,
 		},
 		{
+			name: "parenless_call_arguments",
+			source: `def configure(name: string = "x", retries: int = 0)
+  [name, retries]
+end
+
+def accept(opts)
+  opts[:a]
+end
+
+def run
+  name = "Ada"
+  [configure name:, retries: 3, accept a: 1]
+end`,
+		},
+		{
 			name: "string_interpolation",
 			source: `def run(name)
   "hello #{name.upcase}, total #{2 + 3}"

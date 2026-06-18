@@ -140,6 +140,83 @@ end`
 	}
 }
 
+func TestParserParenlessArgumentListCalls(t *testing.T) {
+	t.Parallel()
+	source := `def run(name, retries)
+  add 1, 2
+  configure name: "Ada", retries: 3
+  configure name:, retries:
+  accept a: 1, b: 2
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "add"},
+				Args: []ast.Expression{
+					&ast.IntegerLiteral{Value: 1},
+					&ast.IntegerLiteral{Value: 2},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		&ast.ExprStmt{
+			Expr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "configure"},
+				Args:   []ast.Expression{},
+				KwArgs: []ast.KeywordArg{
+					{Name: "name", Value: &ast.StringLiteral{Value: "Ada"}},
+					{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
+				},
+				BareKeywordArgs: true,
+			},
+		},
+		&ast.ExprStmt{
+			Expr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "configure"},
+				Args:   []ast.Expression{},
+				KwArgs: []ast.KeywordArg{
+					{Name: "name", Value: &ast.Identifier{Name: "name"}},
+					{Name: "retries", Value: &ast.Identifier{Name: "retries"}},
+				},
+				BareKeywordArgs: true,
+			},
+		},
+		&ast.ExprStmt{
+			Expr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "accept"},
+				Args:   []ast.Expression{},
+				KwArgs: []ast.KeywordArg{
+					{Name: "a", Value: &ast.IntegerLiteral{Value: 1}},
+					{Name: "b", Value: &ast.IntegerLiteral{Value: 2}},
+				},
+				BareKeywordArgs: true,
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserParenlessCallDoesNotContinueCommaAcrossLine(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  add 1,
+  2
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want newline-separated comma diagnostic", source)
+	}
+}
+
 func TestParserParenlessCallDoesNotStealExistingCallOrIndexSyntax(t *testing.T) {
 	t.Parallel()
 	source := `def run
