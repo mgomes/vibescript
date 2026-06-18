@@ -26,6 +26,10 @@ func (p *parser) parseLineExpression(precedence int) ast.Expression {
 func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLimited bool) ast.Expression {
 	prefix := prefixParserKind(p.curToken.Type)
 	if prefix == prefixParserNone {
+		if p.curToken.Type == ast.TokenRange {
+			p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), "range is missing start expression")
+			return nil
+		}
 		p.errorUnexpected(p.curToken)
 		return nil
 	}
@@ -399,6 +403,10 @@ func (p *parser) parseInfixExpression(left ast.Expression) ast.Expression {
 func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 	pos := p.curToken.Pos
 	precedence := p.curPrecedence()
+	if prefixParserKind(p.peekToken.Type) == prefixParserNone {
+		p.addParseErrorSpan(pos, tokenEnd(p.curToken), "range is missing end expression")
+		return nil
+	}
 	p.nextToken()
 	right := p.parseExpression(precedence)
 	if right == nil {
