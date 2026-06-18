@@ -154,6 +154,13 @@ func TestLexerStampsSourceAccurateTokenEnds(t *testing.T) {
 			wantEnd: ast.Position{Line: 1, Column: 7},
 		},
 		{
+			name:    "spaceship_span_includes_all_runes",
+			source:  "<=>",
+			tokType: ast.TokenSpaceship,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 4},
+		},
+		{
 			name:    "multibyte_runes_counted_once",
 			source:  `"héllo"`,
 			tokType: ast.TokenString,

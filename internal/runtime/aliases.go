@@ -125,6 +125,7 @@ const (
 	tokenGT        = ast.TokenGT
 	tokenLTE       = ast.TokenLTE
 	tokenGTE       = ast.TokenGTE
+	tokenSpaceship = ast.TokenSpaceship
 	tokenEQ        = ast.TokenEQ
 	tokenNotEQ     = ast.TokenNotEQ
 	tokenAnd       = ast.TokenAnd

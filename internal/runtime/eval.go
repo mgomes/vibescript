@@ -305,13 +305,19 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	case tokenNotEQ:
 		return NewBool(!left.Equal(right)), nil
 	case tokenLT:
-		return compareValues(expr, left, right, func(c int) bool { return c < 0 })
+		return compareValues(left, right, func(c int) bool { return c < 0 })
 	case tokenLTE:
-		return compareValues(expr, left, right, func(c int) bool { return c <= 0 })
+		return compareValues(left, right, func(c int) bool { return c <= 0 })
 	case tokenGT:
-		return compareValues(expr, left, right, func(c int) bool { return c > 0 })
+		return compareValues(left, right, func(c int) bool { return c > 0 })
 	case tokenGTE:
-		return compareValues(expr, left, right, func(c int) bool { return c >= 0 })
+		return compareValues(left, right, func(c int) bool { return c >= 0 })
+	case tokenSpaceship:
+		order, err := compareValueOrder(left, right)
+		if err != nil {
+			return NewNil(), exec.wrapError(err, expr.Pos())
+		}
+		return NewInt(int64(order)), nil
 	default:
 		return NewNil(), exec.errorAt(expr.Pos(), "unsupported operator")
 	}

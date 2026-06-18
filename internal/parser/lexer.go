@@ -245,7 +245,15 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 		}
 	case '<':
-		if l.peekRune() == '=' {
+		if l.peekRune() == '=' && l.peekRuneN(1) == '>' {
+			start := ast.Position{Line: l.line, Column: l.column}
+			first := l.ch
+			l.readRune()
+			second := l.ch
+			l.readRune()
+			tok = ast.Token{Type: ast.TokenSpaceship, Literal: string(first) + string(second) + string(l.ch), Pos: start}
+			l.readRune()
+		} else if l.peekRune() == '=' {
 			first := l.ch
 			l.readRune()
 			tok = l.makeToken(ast.TokenLTE, string(first)+string(l.ch))

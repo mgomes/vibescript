@@ -530,68 +530,76 @@ func floorModInt(left, right int64) int64 {
 	return remainder
 }
 
-func compareValues(expr *BinaryExpr, left, right Value, cmp func(int) bool) (Value, error) {
+func compareValues(left, right Value, cmp func(int) bool) (Value, error) {
+	order, err := compareValueOrder(left, right)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewBool(cmp(order)), nil
+}
+
+func compareValueOrder(left, right Value) (int, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
 		switch {
 		case left.Int() < right.Int():
-			return NewBool(cmp(-1)), nil
+			return -1, nil
 		case left.Int() > right.Int():
-			return NewBool(cmp(1)), nil
+			return 1, nil
 		default:
-			return NewBool(cmp(0)), nil
+			return 0, nil
 		}
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		lf, rf := left.Float(), right.Float()
 		switch {
 		case lf < rf:
-			return NewBool(cmp(-1)), nil
+			return -1, nil
 		case lf > rf:
-			return NewBool(cmp(1)), nil
+			return 1, nil
 		default:
-			return NewBool(cmp(0)), nil
+			return 0, nil
 		}
 	case left.Kind() == KindString && right.Kind() == KindString:
 		switch {
 		case left.String() < right.String():
-			return NewBool(cmp(-1)), nil
+			return -1, nil
 		case left.String() > right.String():
-			return NewBool(cmp(1)), nil
+			return 1, nil
 		default:
-			return NewBool(cmp(0)), nil
+			return 0, nil
 		}
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		if left.Money().Currency() != right.Money().Currency() {
-			return NewNil(), fmt.Errorf("money currency mismatch for comparison")
+			return 0, fmt.Errorf("money currency mismatch for comparison")
 		}
 		switch {
 		case left.Money().Cents() < right.Money().Cents():
-			return NewBool(cmp(-1)), nil
+			return -1, nil
 		case left.Money().Cents() > right.Money().Cents():
-			return NewBool(cmp(1)), nil
+			return 1, nil
 		default:
-			return NewBool(cmp(0)), nil
+			return 0, nil
 		}
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
 		diff := left.Duration().Seconds() - right.Duration().Seconds()
 		switch {
 		case diff < 0:
-			return NewBool(cmp(-1)), nil
+			return -1, nil
 		case diff > 0:
-			return NewBool(cmp(1)), nil
+			return 1, nil
 		default:
-			return NewBool(cmp(0)), nil
+			return 0, nil
 		}
 	case left.Kind() == KindTime && right.Kind() == KindTime:
 		switch {
 		case left.Time().Before(right.Time()):
-			return NewBool(cmp(-1)), nil
+			return -1, nil
 		case left.Time().After(right.Time()):
-			return NewBool(cmp(1)), nil
+			return 1, nil
 		default:
-			return NewBool(cmp(0)), nil
+			return 0, nil
 		}
 	default:
-		return NewNil(), fmt.Errorf("unsupported comparison operands")
+		return 0, fmt.Errorf("unsupported comparison operands")
 	}
 }

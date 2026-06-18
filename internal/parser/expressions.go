@@ -58,7 +58,7 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPercent, ast.TokenRange, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenAnd, ast.TokenOr:
+	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPercent, ast.TokenRange, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
 		return true
 	case ast.TokenMinus:
 		return p.minusContinuesLine(tok)
@@ -238,7 +238,7 @@ func isMemberNameToken(tt ast.TokenType) bool {
 		return true
 	}
 	switch tt {
-	case ast.TokenExport, ast.TokenBegin, ast.TokenRescue, ast.TokenEnsure, ast.TokenRaise:
+	case ast.TokenExport, ast.TokenBegin, ast.TokenRescue, ast.TokenEnsure, ast.TokenRaise, ast.TokenSpaceship:
 		return true
 	default:
 		return false
