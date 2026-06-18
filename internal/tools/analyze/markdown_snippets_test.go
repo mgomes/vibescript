@@ -164,6 +164,18 @@ func TestMarkdownKnownFailurePolicySelfInvalidatesWhenOnlyTopLevelFails(t *testi
 	}
 }
 
+func TestExtractMarkdownVibeSnippetsRejectsUnterminatedFence(t *testing.T) {
+	t.Parallel()
+
+	_, err := extractMarkdownVibeSnippets("docs/broken.md", "intro\n```vibe\nvalue = 1\n")
+	if err == nil {
+		t.Fatal("extractMarkdownVibeSnippets() error = nil, want unterminated fence error")
+	}
+	if got := err.Error(); !strings.Contains(got, "docs/broken.md:2 unterminated vibe code fence") {
+		t.Fatalf("extractMarkdownVibeSnippets() error = %q, want unterminated fence location", got)
+	}
+}
+
 func checkMarkdownSnippet(engine *runtime.Engine, snippet markdownSnippet, policy markdownSnippetPolicy, hasPolicy bool) error {
 	source := snippet.Source
 	if hasPolicy && policy.Mode == markdownSnippetWrapped {
@@ -228,12 +240,16 @@ func collectMarkdownVibeSnippets(root string) ([]markdownSnippet, error) {
 			return nil, err
 		}
 		rel = filepath.ToSlash(rel)
-		snippets = append(snippets, extractMarkdownVibeSnippets(rel, string(data))...)
+		found, err := extractMarkdownVibeSnippets(rel, string(data))
+		if err != nil {
+			return nil, err
+		}
+		snippets = append(snippets, found...)
 	}
 	return snippets, nil
 }
 
-func extractMarkdownVibeSnippets(path, markdown string) []markdownSnippet {
+func extractMarkdownVibeSnippets(path, markdown string) ([]markdownSnippet, error) {
 	lines := strings.Split(markdown, "\n")
 	var snippets []markdownSnippet
 	var current []string
@@ -267,7 +283,10 @@ func extractMarkdownVibeSnippets(path, markdown string) []markdownSnippet {
 		current = append(current, line)
 	}
 
-	return snippets
+	if inVibeFence {
+		return nil, fmt.Errorf("%s:%d unterminated vibe code fence", path, startLine)
+	}
+	return snippets, nil
 }
 
 func isVibeFenceStart(line string) bool {
