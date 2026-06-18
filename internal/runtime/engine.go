@@ -48,11 +48,10 @@ type Engine struct {
 	modSuggestVersion uint64
 
 	// builtinProto is the frozen env shared as every call root's parent.
-	// It holds the builtins whose values need no per-call cloning
-	// (everything except array/hash/object builtins), so call setup
-	// skips re-defining them. Rebuilt lazily after RegisterBuiltin.
-	builtinProto   *Env
-	clonedBuiltins int
+	// Mutable namespace builtins are cloned lazily by Env.Get before a
+	// script can mutate them, so calls that do not touch those namespaces
+	// skip their map-clone cost entirely. Rebuilt lazily after RegisterBuiltin.
+	builtinProto *Env
 }
 
 // NewEngine constructs an Engine with sane defaults and registers built-ins.
@@ -234,10 +233,7 @@ func (e *Engine) builtinSnapshot() map[string]Value {
 	return out
 }
 
-// attachBuiltins chains root to the engine's frozen builtin proto env
-// and defines the per-call cloned builtins, all under one lock
-// acquisition so a concurrent RegisterBuiltin cannot produce a root
-// whose proto and clones reflect different builtin snapshots.
+// attachBuiltins chains root to the engine's frozen builtin proto env.
 func (e *Engine) attachBuiltins(root *Env, extraStatics int) {
 	e.builtinsMu.RLock()
 	if e.builtinProto != nil {
@@ -252,32 +248,19 @@ func (e *Engine) attachBuiltins(root *Env, extraStatics int) {
 	if e.builtinProto == nil {
 		proto := newEnv(nil)
 		proto.growStatics(len(e.builtins))
-		cloned := 0
 		for name, builtin := range e.builtins {
-			if builtinNeedsCallClone(builtin) {
-				cloned++
-				continue
-			}
 			proto.DefineStatic(name, builtin)
 		}
 		proto.frozen = true
 		e.builtinProto = proto
-		e.clonedBuiltins = cloned
 	}
 	e.bindBuiltinsLocked(root, extraStatics)
 }
 
-// bindBuiltinsLocked wires root to the current proto and defines the
-// mutable builtins. Callers must hold builtinsMu.
+// bindBuiltinsLocked wires root to the current proto. Callers must hold builtinsMu.
 func (e *Engine) bindBuiltinsLocked(root *Env, extraStatics int) {
 	root.parent = e.builtinProto
-	root.growStatics(e.clonedBuiltins + extraStatics)
-	for name, builtin := range e.builtins {
-		if !builtinNeedsCallClone(builtin) {
-			continue
-		}
-		root.DefineStatic(name, cloneBuiltinValueForCall(builtin))
-	}
+	root.growStatics(extraStatics)
 }
 
 // builtinNeedsCallClone reports whether a builtin value is mutable from

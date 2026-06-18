@@ -21,5 +21,5 @@ BenchmarkExecutionJSONParseLoop 3000000 3200 180000
 BenchmarkExecutionJSONStringifyLoop 3000000 2000 75000
 BenchmarkExecutionRegexReplaceAllLoop 4000000 4000
 BenchmarkExecutionTallyLoop 10000000 2000
-BenchmarkCallShortScript 20000 60
+BenchmarkCallShortScript 5000 12 3500
 BenchmarkModuleRequireCacheHit 120000 220

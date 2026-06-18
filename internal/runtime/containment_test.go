@@ -29,6 +29,38 @@ end`)
 	}
 }
 
+func TestBuiltinObjectCloneIsLazyAndCallLocal(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	root := newEnv(nil)
+	engine.attachBuiltins(root, 0)
+
+	if root.parent == nil || !root.parent.frozen {
+		t.Fatalf("expected root to be attached to frozen builtin proto")
+	}
+	if _, ok := root.statics["JSON"]; ok {
+		t.Fatalf("JSON was eagerly cloned into the call root")
+	}
+	protoJSON, ok := root.parent.statics["JSON"]
+	if !ok || protoJSON.Kind() != KindObject {
+		t.Fatalf("builtin proto JSON = (%#v, %t), want object", protoJSON, ok)
+	}
+
+	callJSON, ok := root.Get("JSON")
+	if !ok || callJSON.Kind() != KindObject {
+		t.Fatalf("root.Get(JSON) = (%#v, %t), want object", callJSON, ok)
+	}
+	if _, ok := root.statics["JSON"]; !ok {
+		t.Fatalf("JSON was not cloned into the call root after first access")
+	}
+
+	callJSON.Hash()["parse"] = NewString("poison")
+	if valueBuiltin(protoJSON.Hash()["parse"]) == nil {
+		t.Fatalf("mutating call-local JSON changed the frozen builtin proto")
+	}
+}
+
 func TestScriptCallReturnsIsolatedBuiltinObjects(t *testing.T) {
 	script := compileScriptDefault(t, `def leak
   JSON

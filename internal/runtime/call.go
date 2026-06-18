@@ -234,14 +234,10 @@ type callFunctionRebinder struct {
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
 	return &callFunctionRebinder{
-		script:        script,
-		root:          root,
-		callClasses:   callClasses,
-		callEnums:     callEnums,
-		seenFunctions: make(map[*ScriptFunction]*ScriptFunction),
-		seenInstances: make(map[*Instance]Value),
-		seenArrays:    make(map[sliceIdentity]Value),
-		seenMaps:      make(map[uintptr]map[string]Value),
+		script:      script,
+		root:        root,
+		callClasses: callClasses,
+		callEnums:   callEnums,
 	}
 }
 
@@ -261,6 +257,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		clonedIvars := make(map[string]Value, len(inst.Ivars))
 		cloned := NewInstance(&Instance{Class: reboundClass, Ivars: clonedIvars})
+		if r.seenInstances == nil {
+			r.seenInstances = make(map[*Instance]Value)
+		}
 		r.seenInstances[inst] = cloned
 		for name, ivar := range inst.Ivars {
 			clonedIvars[name] = r.rebindValue(ivar)
@@ -307,6 +306,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			return NewFunction(clone)
 		}
 		clone := cloneFunctionForEnv(fn, r.root)
+		if r.seenFunctions == nil {
+			r.seenFunctions = make(map[*ScriptFunction]*ScriptFunction)
+		}
 		r.seenFunctions[fn] = clone
 		return NewFunction(clone)
 	case KindArray:
@@ -321,6 +323,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		clonedItems := make([]Value, len(items))
 		clonedArray := NewArray(clonedItems)
+		if r.seenArrays == nil {
+			r.seenArrays = make(map[sliceIdentity]Value)
+		}
 		r.seenArrays[id] = clonedArray
 		for i := range items {
 			clonedItems[i] = r.rebindValue(items[i])
@@ -333,6 +338,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			return NewHash(cloneMap)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
+		if r.seenMaps == nil {
+			r.seenMaps = make(map[uintptr]map[string]Value)
+		}
 		r.seenMaps[ptr] = clonedEntries
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
@@ -345,6 +353,9 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			return NewObject(cloneMap)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
+		if r.seenMaps == nil {
+			r.seenMaps = make(map[uintptr]map[string]Value)
+		}
 		r.seenMaps[ptr] = clonedEntries
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
