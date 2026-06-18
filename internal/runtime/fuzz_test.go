@@ -1174,6 +1174,23 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return err
 		}
 		return validateFuzzExpression(context+".index", e.Index)
+	case *DestructureTarget:
+		if len(e.Elements) == 0 {
+			return fmt.Errorf("%s destructuring target has no elements", context)
+		}
+		seenRest := false
+		for i, element := range e.Elements {
+			if element.Rest {
+				if seenRest {
+					return fmt.Errorf("%s.elements[%d] has duplicate rest target", context, i)
+				}
+				seenRest = true
+			}
+			if err := validateFuzzExpression(fmt.Sprintf("%s.elements[%d].target", context, i), element.Target); err != nil {
+				return err
+			}
+		}
+		return nil
 	case *IvarExpr:
 		if e.Name == "" {
 			return fmt.Errorf("%s instance variable name is empty", context)

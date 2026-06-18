@@ -658,6 +658,25 @@ end
 	}
 }
 
+func TestCompletionOffersDestructuredLocals(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/destructured-locals.vibe"
+	openDoc(t, server, uri, `def run()
+  first, *rest, last = [1, 2, 3]
+  nested, (left, right) = [4, [5, 6]]
+  first
+end
+`)
+
+	labels := completionLabels(t, server, uri, 3, 2)
+	for _, want := range []string{"first", "rest", "last", "nested", "left", "right"} {
+		if _, ok := labels[want]; !ok {
+			t.Fatalf("completion missing destructured local %q", want)
+		}
+	}
+}
+
 func TestCompletionSurvivesUnparsableEdits(t *testing.T) {
 	t.Parallel()
 	server := newCompletionTestServer()

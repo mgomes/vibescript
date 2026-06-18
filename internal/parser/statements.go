@@ -657,6 +657,14 @@ func (p *parser) parsePropertyDecl(kind ast.TokenType) ast.PropertyDecl {
 }
 
 func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
+	if p.curToken.Type == ast.TokenAsterisk {
+		target := p.parseDestructureTargetList(nil)
+		if target == nil {
+			return nil
+		}
+		return p.parseAssignmentValue(target)
+	}
+
 	expr := p.parseLineExpression(lowestPrec)
 	if expr == nil {
 		return nil
@@ -667,15 +675,129 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 		expr = p.callWithBlock(expr, p.parseBlockLiteral())
 	}
 
+	if p.peekToken.Type == ast.TokenComma {
+		target := p.parseDestructureTargetList(expr)
+		if target == nil {
+			return nil
+		}
+		return p.parseAssignmentValue(target)
+	}
+
 	if p.peekToken.Type == ast.TokenAssign && isAssignable(expr) {
-		pos := expr.Pos()
-		p.nextToken()
-		p.nextToken()
-		value := p.parseExpressionWithBlock()
-		return &ast.AssignStmt{Target: expr, Value: value, Position: pos}
+		return p.parseAssignmentValue(expr)
 	}
 
 	return &ast.ExprStmt{Expr: expr, Position: expr.Pos()}
+}
+
+func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
+	if p.peekToken.Type != ast.TokenAssign {
+		p.addParseError(p.curToken.Pos, "parallel assignment targets require '='")
+		return nil
+	}
+
+	pos := target.Pos()
+	p.nextToken()
+	p.nextToken()
+	value := p.parseExpressionWithBlock()
+	return &ast.AssignStmt{Target: target, Value: value, Position: pos}
+}
+
+func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression {
+	var pos ast.Position
+	elements := []ast.DestructureElement{}
+	seenRest := false
+
+	if first != nil {
+		if !isAssignable(first) {
+			p.addParseError(first.Pos(), "invalid destructuring assignment target")
+			return nil
+		}
+		pos = first.Pos()
+		elements = append(elements, ast.DestructureElement{Target: first})
+	} else {
+		element, ok := p.parseDestructureElement()
+		if !ok {
+			return nil
+		}
+		pos = element.Target.Pos()
+		seenRest = element.Rest
+		elements = append(elements, element)
+	}
+
+	for p.peekToken.Type == ast.TokenComma {
+		p.nextToken()
+		p.nextToken()
+		element, ok := p.parseDestructureElement()
+		if !ok {
+			return nil
+		}
+		if element.Rest {
+			if seenRest {
+				p.addParseError(element.Target.Pos(), "duplicate rest assignment target")
+				return nil
+			}
+			seenRest = true
+		}
+		elements = append(elements, element)
+	}
+
+	return &ast.DestructureTarget{Elements: elements, Position: pos}
+}
+
+func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
+	rest := false
+	if p.curToken.Type == ast.TokenAsterisk {
+		rest = true
+		p.nextToken()
+	}
+
+	target := p.parseDestructureSingleTarget()
+	if target == nil {
+		return ast.DestructureElement{}, false
+	}
+	return ast.DestructureElement{Target: target, Rest: rest}, true
+}
+
+func (p *parser) parseDestructureSingleTarget() ast.Expression {
+	switch p.curToken.Type {
+	case ast.TokenLParen:
+		return p.parseNestedDestructureTarget(ast.TokenRParen, ")")
+	case ast.TokenLBracket:
+		return p.parseNestedDestructureTarget(ast.TokenRBracket, "]")
+	default:
+		target := p.parseLineExpression(lowestPrec)
+		if target == nil {
+			return nil
+		}
+		if !isAssignable(target) {
+			p.addParseError(target.Pos(), "invalid destructuring assignment target")
+			return nil
+		}
+		return target
+	}
+}
+
+func (p *parser) parseNestedDestructureTarget(stop ast.TokenType, _ string) ast.Expression {
+	pos := p.curToken.Pos
+	if p.peekToken.Type == stop {
+		p.errorExpected(p.peekToken, "destructuring assignment target")
+		return nil
+	}
+
+	p.nextToken()
+	target := p.parseDestructureTargetList(nil)
+	if target == nil {
+		return nil
+	}
+	if !p.expectPeek(stop) {
+		return nil
+	}
+	destructure, ok := target.(*ast.DestructureTarget)
+	if !ok {
+		return nil
+	}
+	return &ast.DestructureTarget{Elements: destructure.Elements, Position: pos}
 }
 
 func (p *parser) parseExpressionWithBlock() ast.Expression {

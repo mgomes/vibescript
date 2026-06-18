@@ -1079,9 +1079,7 @@ func localNames(statements []ast.Statement) []string {
 		for _, stmt := range stmts {
 			switch st := stmt.(type) {
 			case *ast.AssignStmt:
-				if ident, ok := st.Target.(*ast.Identifier); ok {
-					names = append(names, ident.Name)
-				}
+				appendAssignmentTargetNames(&names, st.Target)
 			case *ast.ForStmt:
 				names = append(names, st.Iterator)
 				walkStmts(st.Body)
@@ -1104,6 +1102,17 @@ func localNames(statements []ast.Statement) []string {
 	}
 	walkStmts(statements)
 	return names
+}
+
+func appendAssignmentTargetNames(names *[]string, target ast.Expression) {
+	switch t := target.(type) {
+	case *ast.Identifier:
+		*names = append(*names, t.Name)
+	case *ast.DestructureTarget:
+		for _, element := range t.Elements {
+			appendAssignmentTargetNames(names, element.Target)
+		}
+	}
 }
 
 // builtinSignatures maps global function builtins to their documented

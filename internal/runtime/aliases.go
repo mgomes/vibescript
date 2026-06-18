@@ -61,6 +61,8 @@ type (
 	MemberExpr         = ast.MemberExpr
 	ScopeExpr          = ast.ScopeExpr
 	IndexExpr          = ast.IndexExpr
+	DestructureElement = ast.DestructureElement
+	DestructureTarget  = ast.DestructureTarget
 	IvarExpr           = ast.IvarExpr
 	ClassVarExpr       = ast.ClassVarExpr
 	UnaryExpr          = ast.UnaryExpr

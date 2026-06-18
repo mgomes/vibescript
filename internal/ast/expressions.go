@@ -134,6 +134,21 @@ type IndexExpr struct {
 func (e *IndexExpr) exprNode()     {}
 func (e *IndexExpr) Pos() Position { return e.Position }
 
+// DestructureElement represents one target in a destructuring assignment.
+type DestructureElement struct {
+	Target Expression
+	Rest   bool
+}
+
+// DestructureTarget represents a comma-separated assignment target list.
+type DestructureTarget struct {
+	Elements []DestructureElement
+	Position Position
+}
+
+func (e *DestructureTarget) exprNode()     {}
+func (e *DestructureTarget) Pos() Position { return e.Position }
+
 // IvarExpr represents an instance variable reference (e.g. @name).
 type IvarExpr struct {
 	Name     string

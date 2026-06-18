@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mgomes/vibescript/internal/ast"
+	vibesruntime "github.com/mgomes/vibescript/internal/runtime"
 	"github.com/mgomes/vibescript/vibes"
 	"github.com/mgomes/vibescript/vibes/value"
 )
@@ -477,7 +478,7 @@ func (m *replModel) evaluate(input string) (string, bool) {
 }
 
 func (m *replModel) extractAssignments(script *vibes.Script, result value.Value) {
-	if result.IsNil() || script == nil {
+	if script == nil {
 		return
 	}
 
@@ -491,12 +492,21 @@ func (m *replModel) extractAssignments(script *vibes.Script, result value.Value)
 		return
 	}
 
-	ident, ok := assign.Target.(*ast.Identifier)
-	if !ok {
-		return
-	}
+	m.extractTargetAssignment(assign.Target, result)
+}
 
-	m.env[ident.Name] = result
+func (m *replModel) extractTargetAssignment(target ast.Expression, result value.Value) {
+	switch t := target.(type) {
+	case *ast.Identifier:
+		m.env[t.Name] = result
+	case *ast.DestructureTarget:
+		_ = vibesruntime.AssignDestructure(t, result, func(target ast.Expression, result value.Value) error {
+			if ident, ok := target.(*ast.Identifier); ok {
+				m.env[ident.Name] = result
+			}
+			return nil
+		})
+	}
 }
 
 func formatValue(v value.Value) string {

@@ -22,6 +22,9 @@ Common parser diagnostics:
 - `invalid hash pair: expected symbol-style key like name:`
 - `missing value for hash key ...`
 - `missing value for keyword argument ...`
+- `parallel assignment targets require '='`
+- `duplicate rest assignment target`
+- `invalid destructuring assignment target`
 - `trailing comma in block parameter list`
 
 Hosts that need positions programmatically (editors, linters, CI
