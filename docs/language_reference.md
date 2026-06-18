@@ -127,6 +127,14 @@ fees.apply(amount)
 require("billing/rules", as: "rules")
 ```
 
+Single positional calls may omit parentheses when the argument stays on
+the same line:
+
+```vibe
+fees.apply amount
+normalize input
+```
+
 Blocks can be passed with `do ... end`:
 
 ```vibe
