@@ -618,6 +618,10 @@ func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs
 }
 
 func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
+	if member, ok := call.Callee.(*MemberExpr); ok {
+		return exec.evalMemberCallExpr(call, member, env)
+	}
+
 	callee, receiver, err := exec.evalCallTarget(call, env)
 	if err != nil {
 		return NewNil(), err
@@ -646,6 +650,114 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
+	receiver, err := exec.evalExpression(member.Object, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(receiver); err != nil {
+		return NewNil(), err
+	}
+
+	if canCallBuiltinMemberDirect(receiver, member.Property) {
+		return exec.evalDirectBuiltinMemberCallExpr(call, receiver, member.Property, env)
+	}
+
+	var callee Value
+	if directCallee, handled, err := exec.evalDirectMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
+		if err != nil {
+			return NewNil(), err
+		}
+		callee = directCallee
+	} else {
+		var err error
+		callee, err = exec.getMember(receiver, member.Property, member.Pos())
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+
+	args, err := exec.evalCallArgs(call, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	kwargs, err := exec.evalCallKwArgs(call, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	block, err := exec.evalCallBlock(call, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
+		return NewNil(), err
+	}
+
+	result, callErr := exec.invokeCallable(callee, receiver, args, kwargs, block, call.Pos())
+	if callErr != nil {
+		return NewNil(), callErr
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
+}
+
+func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver Value, property string, env *Env) (Value, error) {
+	args, err := exec.evalCallArgs(call, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	kwargs, err := exec.evalCallKwArgs(call, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	block, err := exec.evalCallBlock(call, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
+		return NewNil(), err
+	}
+
+	result, err := callBuiltinMemberDirect(receiver, property, args, kwargs, block)
+	if err != nil {
+		if errors.Is(err, errLoopBreak) {
+			return NewNil(), exec.errorAt(call.Pos(), "break cannot cross call boundary")
+		}
+		if errors.Is(err, errLoopNext) {
+			return NewNil(), exec.errorAt(call.Pos(), "next cannot cross call boundary")
+		}
+		return NewNil(), exec.wrapError(err, call.Pos())
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
+}
+
+func canCallBuiltinMemberDirect(receiver Value, property string) bool {
+	switch receiver.Kind() {
+	case KindDuration:
+		return canCallDurationMemberDirect(property)
+	case KindTime:
+		return canCallTimeMemberDirect(property)
+	default:
+		return false
+	}
+}
+
+func callBuiltinMemberDirect(receiver Value, property string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	switch receiver.Kind() {
+	case KindDuration:
+		return callDurationMemberDirect(receiver.Duration(), property, args, kwargs, block)
+	case KindTime:
+		return callTimeMemberDirect(receiver.Time(), property, args, kwargs, block)
+	default:
+		return NewNil(), fmt.Errorf("unsupported member access on %s", receiver.Kind())
+	}
 }
 
 func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebinder, globals map[string]Value) error {
