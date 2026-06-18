@@ -37,22 +37,7 @@ type markdownSnippetPolicy struct {
 	Reason string
 }
 
-var markdownSnippetPolicies = []markdownSnippetPolicy{
-	{
-		Path:   "README.md",
-		Line:   20,
-		Hash:   "7633934f4d14",
-		Mode:   markdownSnippetKnownFailure,
-		Reason: "#214 tracks trailing commas in hash literals",
-	},
-	{
-		Path:   "docs/hashes.md",
-		Line:   5,
-		Hash:   "e2d2b177ca01",
-		Mode:   markdownSnippetKnownFailure,
-		Reason: "#214 tracks trailing commas in hash literals",
-	},
-}
+var markdownSnippetPolicies []markdownSnippetPolicy
 
 func TestMarkdownVibeSnippetsAreCovered(t *testing.T) {
 	t.Parallel()
