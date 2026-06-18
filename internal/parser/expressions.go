@@ -16,9 +16,16 @@ func (p *parser) parseExpression(precedence int) ast.Expression {
 }
 
 func (p *parser) parseLineExpression(precedence int) ast.Expression {
+	return p.parseLineExpressionUntil(precedence)
+}
+
+func (p *parser) parseLineExpressionUntil(precedence int, stop ...ast.TokenType) ast.Expression {
 	p.lineLimitedExprs++
+	stopLen := len(p.lineLimitedStops)
+	p.lineLimitedStops = append(p.lineLimitedStops, stop...)
 	defer func() {
 		p.lineLimitedExprs--
+		p.lineLimitedStops = p.lineLimitedStops[:stopLen]
 	}()
 	return p.parseExpression(precedence)
 }
@@ -44,6 +51,10 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 	}
 
 	for p.peekToken.Type != ast.TokenEOF {
+		if lineLimited && p.peekStopsLineExpression() {
+			return left
+		}
+
 		if lineLimited && p.peekToken.Type == ast.TokenSemicolon {
 			return left
 		}
@@ -88,6 +99,21 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 	}
 
 	return left
+}
+
+func (p *parser) peekStopsLineExpression() bool {
+	if p.peekToken.Pos.Line != p.curToken.Pos.Line {
+		return false
+	}
+	for _, stop := range p.lineLimitedStops {
+		if p.peekToken.Type == stop {
+			if stop == ast.TokenDo && p.peekPeek.Type == ast.TokenPipe {
+				return false
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func (p *parser) recoverUnsupportedSafeNavigation() {
@@ -963,6 +989,9 @@ func (p *parser) callWithBlock(callee ast.Expression, block *ast.BlockLiteral) a
 }
 
 func (p *parser) canAttachPeekBlock() bool {
+	if p.lineLimitedExprs > 0 && p.peekStopsLineExpression() {
+		return false
+	}
 	if p.peekToken.Type == ast.TokenDo {
 		return true
 	}

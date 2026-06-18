@@ -20,6 +20,7 @@ type parser struct {
 	insideClass      bool
 	privateNext      bool
 	lineLimitedExprs int
+	lineLimitedStops []ast.TokenType
 	statementNesting int
 	typeDepth        int
 }

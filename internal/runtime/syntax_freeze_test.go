@@ -65,7 +65,7 @@ end`,
   for i in 1..3
     total = total + i
   end
-  for i in 1...3
+  for i in 1...3 do
     total = total + i
   end
 
@@ -85,7 +85,7 @@ end`,
 			source: `def run(limit)
   total = 0
   i = 0
-  until i >= limit
+  until i >= limit do
     total = total + i
     i = i + 1
   end

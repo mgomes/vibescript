@@ -228,12 +228,12 @@ func (p *parser) parseForStatement() ast.Statement {
 	}
 
 	p.nextToken()
-	iterable := p.parseLineExpression(lowestPrec)
+	iterable := p.parseLoopConditionExpression()
 	if iterable == nil {
 		return nil
 	}
 
-	p.nextToken()
+	p.advanceToLoopBody()
 	body := p.parseBlock(ast.TokenEnd)
 
 	if p.curToken.Type != ast.TokenEnd {
@@ -246,12 +246,12 @@ func (p *parser) parseForStatement() ast.Statement {
 func (p *parser) parseWhileStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseLineExpression(lowestPrec)
+	condition := p.parseLoopConditionExpression()
 	if condition == nil {
 		return nil
 	}
 
-	p.nextToken()
+	p.advanceToLoopBody()
 	body := p.parseBlock(ast.TokenEnd)
 
 	if p.curToken.Type != ast.TokenEnd {
@@ -264,12 +264,12 @@ func (p *parser) parseWhileStatement() ast.Statement {
 func (p *parser) parseUntilStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseLineExpression(lowestPrec)
+	condition := p.parseLoopConditionExpression()
 	if condition == nil {
 		return nil
 	}
 
-	p.nextToken()
+	p.advanceToLoopBody()
 	body := p.parseBlock(ast.TokenEnd)
 
 	if p.curToken.Type != ast.TokenEnd {
@@ -277,6 +277,17 @@ func (p *parser) parseUntilStatement() ast.Statement {
 	}
 
 	return &ast.UntilStmt{Condition: condition, Body: body, Position: pos}
+}
+
+func (p *parser) parseLoopConditionExpression() ast.Expression {
+	return p.parseLineExpressionUntil(lowestPrec, ast.TokenDo)
+}
+
+func (p *parser) advanceToLoopBody() {
+	if p.peekToken.Type == ast.TokenDo && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		p.nextToken()
+	}
+	p.nextToken()
 }
 
 func (p *parser) parseBreakStatement() ast.Statement {
