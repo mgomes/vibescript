@@ -45,6 +45,9 @@ func remapSnippetCompileError(err error, snippet string, sourceMap snippetSource
 		if sourceMap.isSyntheticEndPosition(issue.Pos, snippet) && strings.Contains(message, "unexpected token 'end'") {
 			message = "unexpected end of snippet"
 		}
+		if strings.Contains(message, "end of input") {
+			message = "unexpected end of snippet"
+		}
 		fmt.Fprintf(&b, "parse error at %d:%d: %s", pos.Line, pos.Column, message)
 		if frame := source.FormatCodeFrame(snippet, pos); frame != "" {
 			b.WriteString("\n")

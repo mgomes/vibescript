@@ -118,6 +118,48 @@ func TestRunCommandInlineEval(t *testing.T) {
 			wantOut: "6",
 		},
 		{
+			name: "top_level_function_declaration",
+			args: []string{"-e", `def helper
+  1
+end
+helper`},
+			wantOut: "1",
+		},
+		{
+			name: "top_level_class_declaration",
+			args: []string{"-e", `class Helper
+  def value
+    42
+  end
+end
+Helper.new.value`},
+			wantOut: "42",
+		},
+		{
+			name: "top_level_enum_declaration",
+			args: []string{"-e", `enum Status
+  Draft
+end
+Status::Draft.name`},
+			wantOut: "Draft",
+		},
+		{
+			name: "top_level_export_declaration",
+			args: []string{"-e", `export def helper
+  "exported"
+end
+helper`},
+			wantOut: "exported",
+		},
+		{
+			name: "top_level_private_declaration",
+			args: []string{"-e", `private def helper
+  "private"
+end
+helper`},
+			wantOut: "private",
+		},
+		{
 			name: "check_only_compiles_without_executing",
 			args: []string{"-check", "-e", "1 + 2"},
 		},
