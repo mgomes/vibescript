@@ -94,7 +94,9 @@ func (l *lexer) NextToken() ast.Token {
 }
 
 func (l *lexer) scanToken() ast.Token {
-	l.skipWhitespaceAndComments()
+	if tok, ok := l.skipWhitespaceAndComments(); ok {
+		return tok
+	}
 
 	tok := ast.Token{Pos: ast.Position{Line: l.line, Column: l.column}}
 
@@ -357,7 +359,7 @@ func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
 	return ast.Token{Type: tt, Literal: literal, Pos: ast.Position{Line: l.line, Column: l.column}}
 }
 
-func (l *lexer) skipWhitespaceAndComments() {
+func (l *lexer) skipWhitespaceAndComments() (ast.Token, bool) {
 	for {
 		switch l.ch {
 		case ' ', '\t', '\r', '\n':
@@ -366,8 +368,17 @@ func (l *lexer) skipWhitespaceAndComments() {
 		case '#':
 			l.skipComment()
 			continue
+		case '=':
+			if !l.atLineLeadingWhitespace() || !l.blockCommentMarkerAtCurrent("=begin") {
+				return ast.Token{}, false
+			}
+			pos := ast.Position{Line: l.line, Column: l.column}
+			if err := l.skipBlockComment(); err != "" {
+				return ast.Token{Type: ast.TokenIllegal, Literal: err, Pos: pos}, true
+			}
+			continue
 		default:
-			return
+			return ast.Token{}, false
 		}
 	}
 }
@@ -376,6 +387,69 @@ func (l *lexer) skipComment() {
 	for l.ch != 0 && l.ch != '\n' {
 		l.readRune()
 	}
+}
+
+func (l *lexer) skipBlockComment() string {
+	for l.ch != 0 && l.ch != '\n' {
+		l.readRune()
+	}
+	if l.ch == '\n' {
+		l.readRune()
+	}
+
+	for {
+		for l.ch == ' ' || l.ch == '\t' || l.ch == '\r' {
+			l.readRune()
+		}
+		if l.ch == 0 {
+			return "unterminated block comment"
+		}
+		if l.atLineLeadingWhitespace() && l.blockCommentMarkerAtCurrent("=end") {
+			for l.ch != 0 && l.ch != '\n' {
+				l.readRune()
+			}
+			return ""
+		}
+		for l.ch != 0 && l.ch != '\n' {
+			l.readRune()
+		}
+		if l.ch == '\n' {
+			l.readRune()
+		}
+	}
+}
+
+func (l *lexer) blockCommentMarkerAtCurrent(marker string) bool {
+	start := l.currentOffset()
+	if !strings.HasPrefix(l.input[start:], marker) {
+		return false
+	}
+	next := start + len(marker)
+	if next >= len(l.input) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(l.input[next:])
+	switch r {
+	case 0, ' ', '\t', '\r', '\n':
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *lexer) atLineLeadingWhitespace() bool {
+	idx := l.currentOffset()
+	for idx > 0 {
+		r, w := utf8.DecodeLastRuneInString(l.input[:idx])
+		if r == '\n' {
+			return true
+		}
+		if r != ' ' && r != '\t' && r != '\r' {
+			return false
+		}
+		idx -= w
+	}
+	return true
 }
 
 func (l *lexer) readIdentifier() string {
