@@ -1256,7 +1256,15 @@ func (p *parser) parseYieldExpression() ast.Expression {
 		}
 	} else if p.peekToken.Pos.Line == pos.Line && prefixParserKind(p.peekToken.Type) != prefixParserNone {
 		p.nextToken()
-		args = append(args, p.parseExpression(lowestPrec))
+		args = append(args, p.parseLineExpression(lowestPrec))
+		for p.peekToken.Type == ast.TokenComma &&
+			p.peekToken.Pos.Line == pos.Line &&
+			p.peekPeek.Pos.Line == pos.Line &&
+			prefixParserKind(p.peekPeek.Type) != prefixParserNone {
+			p.nextToken()
+			p.nextToken()
+			args = append(args, p.parseLineExpression(lowestPrec))
+		}
 	}
 	return &ast.YieldExpr{Args: args, Position: pos}
 }
