@@ -726,14 +726,16 @@ func taskLazyGlobalsFromContext(ctx context.Context) *taskLazyGlobals {
 }
 
 type taskGlobalCloner struct {
-	seenArrays map[sliceIdentity]Value
-	seenMaps   map[uintptr]map[string]Value
+	seenArrays    map[sliceIdentity]Value
+	seenMaps      map[uintptr]map[string]Value
+	seenInstances map[*Instance]Value
 }
 
 func newTaskGlobalCloner() *taskGlobalCloner {
 	return &taskGlobalCloner{
-		seenArrays: make(map[sliceIdentity]Value),
-		seenMaps:   make(map[uintptr]map[string]Value),
+		seenArrays:    make(map[sliceIdentity]Value),
+		seenMaps:      make(map[uintptr]map[string]Value),
+		seenInstances: make(map[*Instance]Value),
 	}
 }
 
@@ -780,6 +782,21 @@ func (cloner *taskGlobalCloner) clone(val Value) Value {
 			clonedEntries[key] = cloner.clone(item)
 		}
 		return NewObject(clonedEntries)
+	case KindInstance:
+		inst := valueInstance(val)
+		if inst == nil {
+			return val
+		}
+		if clone, seen := cloner.seenInstances[inst]; seen {
+			return clone
+		}
+		clonedIvars := make(map[string]Value, len(inst.Ivars))
+		cloned := NewInstance(&Instance{Class: inst.Class, Ivars: clonedIvars})
+		cloner.seenInstances[inst] = cloned
+		for name, item := range inst.Ivars {
+			clonedIvars[name] = cloner.clone(item)
+		}
+		return cloned
 	default:
 		return val
 	}

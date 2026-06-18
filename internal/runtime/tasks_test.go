@@ -433,6 +433,72 @@ end`)
 	}
 }
 
+func TestTasksRunSnapshotsReassignedInstanceGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `class Box
+  getter value
+
+  def initialize(value)
+    @value = value
+  end
+
+  def set(value)
+    @value = value
+  end
+end
+
+def read_shared()
+  probe.wait()
+  shared.value
+end
+
+def run()
+  shared = Box.new(1)
+  Tasks.run(max: 1) do |tasks|
+    task = tasks.spawn(:read_shared)
+    shared.set(2)
+    task.value
+  end
+end`)
+
+	probe := &taskBlockingProbe{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan callResult, 1)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		val, err := script.Call(ctx, "run", nil, CallOptions{
+			Globals: map[string]Value{
+				"probe":  probe.value(),
+				"shared": NewNil(),
+			},
+		})
+		done <- callResult{value: val, err: err}
+	})
+
+	select {
+	case <-probe.started:
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("run returned before task entered probe: %v", result.err)
+		}
+		t.Fatalf("run returned before task entered probe: %s", result.value.String())
+	}
+
+	close(probe.release)
+	result := <-done
+	wg.Wait()
+	if result.err != nil {
+		t.Fatalf("run failed: %v", result.err)
+	}
+	if result.value.Kind() != KindInt || result.value.Int() != 1 {
+		t.Fatalf("run returned %s, want 1", result.value.String())
+	}
+}
+
 func TestNestedTasksInheritLazyGlobals(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `def read_shared(item)
