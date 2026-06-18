@@ -451,6 +451,42 @@ end`)
 	}
 }
 
+func TestRequireDetectsCircularExecutionForExportedModuleFunction(t *testing.T) {
+	t.Parallel()
+
+	moduleRoot := tempModuleTree(t,
+		moduleFile{path: "a.vibe", content: `def call_b(seed)
+  mod = require("b")
+  mod.call_a(seed)
+end
+`},
+		moduleFile{path: "b.vibe", content: `def call_a(seed)
+  require("a")
+  seed
+end
+`},
+	)
+	engine := mustNewEngineWithModuleRoot(t, moduleRoot)
+	script := compileScriptWithEngine(t, engine, `def export_entry()
+  mod = require("a")
+  mod.call_b
+end
+
+def run(entry)
+  entry(1)
+end`)
+
+	entry, err := script.Call(context.Background(), "export_entry", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("export_entry error = %v", err)
+	}
+	if entry.Kind() != KindFunction {
+		t.Fatalf("export_entry = %#v, want function", entry)
+	}
+
+	requireCallErrorContains(t, script, "run", []Value{entry}, CallOptions{}, "require: circular dependency detected: a -> b -> a")
+}
+
 func TestClearModuleCacheForcesModuleReload(t *testing.T) {
 	t.Parallel()
 	root := tempModuleTree(t, moduleFile{
@@ -1436,6 +1472,38 @@ func TestFormatModuleCycleUsesConciseChain(t *testing.T) {
 	want := filepath.ToSlash(filepath.Join("nested", "a")) + " -> " + filepath.ToSlash(filepath.Join("nested", "b")) + " -> " + filepath.ToSlash(filepath.Join("nested", "a"))
 	if got != want {
 		t.Fatalf("expected cycle %q, got %q", want, got)
+	}
+}
+
+func TestModuleCycleFromExecutionUsesConciseChain(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join("tmp", "modules")
+	a := moduleCacheKey(root, "a.vibe")
+	b := moduleCacheKey(root, "b.vibe")
+
+	cycle, ok := moduleCycleFromExecution([]moduleContext{
+		{key: a},
+		{key: a},
+		{key: b},
+	}, a)
+	if !ok {
+		t.Fatal("moduleCycleFromExecution did not find cycle")
+	}
+	want := []string{a, b, a}
+	if len(cycle) != len(want) {
+		t.Fatalf("cycle length = %d, want %d: %#v", len(cycle), len(want), cycle)
+	}
+	for i := range want {
+		if cycle[i] != want[i] {
+			t.Fatalf("cycle[%d] = %q, want %q in %#v", i, cycle[i], want[i], cycle)
+		}
+	}
+
+	if _, ok := moduleCycleFromExecution([]moduleContext{{key: a}}, a); ok {
+		t.Fatal("moduleCycleFromExecution found cycle for single current module")
+	}
+	if _, ok := moduleCycleFromExecution([]moduleContext{{key: a}, {key: b}}, b); ok {
+		t.Fatal("moduleCycleFromExecution found cycle when next is only current module")
 	}
 }
 

@@ -170,57 +170,74 @@ func cloneFunctionForEnv(fn *ScriptFunction, env *Env) *ScriptFunction {
 func moduleCycleFromLoadStack(stack []string, next string) ([]string, bool) {
 	for idx, key := range stack {
 		if key == next {
-			cycle := append(append([]string(nil), stack[idx:]...), next)
+			cycle := make([]string, len(stack)-idx+1)
+			copy(cycle, stack[idx:])
+			cycle[len(cycle)-1] = next
 			return cycle, true
 		}
 	}
 	return nil, false
-}
-
-func moduleExecutionChain(stack []moduleContext) []string {
-	chain := make([]string, 0, len(stack))
-	for _, ctx := range stack {
-		if ctx.key == "" {
-			continue
-		}
-		if len(chain) > 0 && chain[len(chain)-1] == ctx.key {
-			continue
-		}
-		chain = append(chain, ctx.key)
-	}
-	return chain
 }
 
 func moduleCycleFromExecution(stack []moduleContext, next string) ([]string, bool) {
-	chain := moduleExecutionChain(stack)
-	if len(chain) < 2 {
+	if next == "" {
 		return nil, false
 	}
-	for idx, key := range chain[:len(chain)-1] {
-		if key == next {
-			cycle := append(append([]string(nil), chain[idx:]...), next)
-			return cycle, true
+
+	firstMatch := -1
+	chainLen := 0
+	lastKey := ""
+	for _, ctx := range stack {
+		key := ctx.key
+		if key == "" || key == lastKey {
+			continue
 		}
+		if key == next && firstMatch < 0 {
+			firstMatch = chainLen
+		}
+		lastKey = key
+		chainLen++
 	}
-	return nil, false
+	if chainLen < 2 || firstMatch < 0 || firstMatch >= chainLen-1 {
+		return nil, false
+	}
+
+	cycle := make([]string, 0, chainLen-firstMatch+1)
+	chainIdx := 0
+	lastKey = ""
+	for _, ctx := range stack {
+		key := ctx.key
+		if key == "" || key == lastKey {
+			continue
+		}
+		if chainIdx >= firstMatch {
+			cycle = append(cycle, key)
+		}
+		lastKey = key
+		chainIdx++
+	}
+	cycle = append(cycle, next)
+	return cycle, true
 }
 
 func formatModuleCycle(cycle []string) string {
 	if len(cycle) == 0 {
 		return ""
 	}
-	normalized := make([]string, 0, len(cycle))
+
+	var b strings.Builder
+	lastKey := ""
 	for _, key := range cycle {
-		if len(normalized) > 0 && normalized[len(normalized)-1] == key {
+		if key == lastKey {
 			continue
 		}
-		normalized = append(normalized, key)
+		if b.Len() > 0 {
+			b.WriteString(" -> ")
+		}
+		b.WriteString(moduleDisplayName(key))
+		lastKey = key
 	}
-	parts := make([]string, len(normalized))
-	for idx, key := range normalized {
-		parts[idx] = moduleDisplayName(key)
-	}
-	return strings.Join(parts, " -> ")
+	return b.String()
 }
 
 func (e *Engine) loadModule(name string, caller *moduleContext) (moduleEntry, error) {
