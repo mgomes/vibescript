@@ -18,17 +18,66 @@ func (e *Engine) Compile(source string) (*Script, error) {
 // same parser pass. It is intended for internal tooling paths that need both
 // diagnostics and navigation data without reparsing clean source.
 func CompileWithProgram(e *Engine, source string) (*Script, *ast.Program, []error, error) {
-	if e.config.MaxSourceBytes > 0 && len(source) > e.config.MaxSourceBytes {
-		return nil, nil, nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", len(source), e.config.MaxSourceBytes)
-	}
-
-	program, parseErrors := parser.Parse(source)
-	if len(parseErrors) > 0 {
-		return nil, program, parseErrors, combineErrors(parseErrors)
+	program, parseErrors, err := parseSource(e, source)
+	if err != nil {
+		return nil, program, parseErrors, err
 	}
 
 	script, err := compileParsed(e, source, program)
 	return script, program, nil, err
+}
+
+// CompileSnippet compiles source as an inline snippet. Top-level declarations
+// remain top-level, while executable top-level statements are moved into a
+// synthetic entrypoint function so callers can invoke the snippet through the
+// same Script.Call contract as ordinary scripts.
+func (e *Engine) CompileSnippet(source, entrypoint string) (*Script, error) {
+	if strings.TrimSpace(entrypoint) == "" {
+		return nil, fmt.Errorf("snippet entrypoint cannot be empty")
+	}
+
+	program, _, err := parseSource(e, source)
+	if err != nil {
+		return nil, err
+	}
+
+	return compileParsed(e, source, snippetEntrypointProgram(program, entrypoint))
+}
+
+func parseSource(e *Engine, source string) (*ast.Program, []error, error) {
+	if e.config.MaxSourceBytes > 0 && len(source) > e.config.MaxSourceBytes {
+		return nil, nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", len(source), e.config.MaxSourceBytes)
+	}
+
+	program, parseErrors := parser.Parse(source)
+	if len(parseErrors) > 0 {
+		return program, parseErrors, combineErrors(parseErrors)
+	}
+
+	return program, nil, nil
+}
+
+func snippetEntrypointProgram(program *ast.Program, entrypoint string) *ast.Program {
+	if program == nil {
+		return &ast.Program{}
+	}
+
+	out := &ast.Program{Statements: make([]ast.Statement, 0, len(program.Statements)+1)}
+	body := make([]ast.Statement, 0)
+	pos := Position{Line: 1, Column: 1}
+	for _, stmt := range program.Statements {
+		switch stmt.(type) {
+		case *FunctionStmt, *ClassStmt, *EnumStmt:
+			out.Statements = append(out.Statements, stmt)
+		default:
+			if len(body) == 0 {
+				pos = stmt.Pos()
+			}
+			body = append(body, stmt)
+		}
+	}
+	out.Statements = append(out.Statements, &FunctionStmt{Name: entrypoint, Body: body, Position: pos})
+	return out
 }
 
 func compileParsed(e *Engine, source string, program *ast.Program) (*Script, error) {

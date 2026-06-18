@@ -136,15 +136,14 @@ func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error 
 	return nil
 }
 
-// evalSnippetFunction is the synthetic function that wraps -e snippets.
-// The engine rejects top-level statements, so like the REPL the CLI
-// compiles the snippet as a function body and invokes it.
+// evalSnippetFunction is the synthetic function that executes -e snippets.
+// Snippet compilation keeps declarations at top level and moves executable
+// top-level statements into this entrypoint.
 const evalSnippetFunction = "__eval__"
 
 var evalSnippetSourceMap = snippetSourceMap{
 	syntheticFunction: evalSnippetFunction,
 	displayFunction:   "<snippet>",
-	lineOffset:        1,
 }
 
 func evalSnippet(ctx context.Context, snippet string, modulePaths []string, checkOnly bool, out io.Writer) error {
@@ -163,8 +162,7 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
 	}
-	wrapped := fmt.Sprintf("def %s()\n%s\nend", evalSnippetFunction, snippet)
-	script, err := engine.Compile(wrapped)
+	script, err := engine.CompileSnippet(snippet, evalSnippetFunction)
 	if err != nil {
 		return fmt.Errorf("compile failed: %w", remapSnippetCompileError(err, snippet, evalSnippetSourceMap))
 	}
