@@ -29,5 +29,9 @@ pairs.map do |(left, right)|
 end
 ```
 
+Ruby-style ampersand block forwarding (`&block`) and symbol-to-proc shorthand
+(`&:method_name`) are not supported. Write an explicit `do ... end` or brace
+block instead.
+
 Reference scripts live in `examples/blocks/` and `examples/hashes/` (for merge
 and reporting helpers).

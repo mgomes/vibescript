@@ -865,6 +865,11 @@ func (p *parser) canAttachPeekBlock() bool {
 }
 
 func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg) {
+	if p.curToken.Type == ast.TokenAmpersand {
+		p.recoverUnsupportedAmpersandCallArgument()
+		return
+	}
+
 	if isLabelNameToken(p.curToken) && p.peekToken.Type == ast.TokenColon {
 		name := p.curToken.Literal
 		pos := p.curToken.Pos
@@ -885,6 +890,21 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 	expr := p.parseExpression(lowestPrec)
 	if expr != nil {
 		*args = append(*args, expr)
+	}
+}
+
+func (p *parser) recoverUnsupportedAmpersandCallArgument() {
+	p.addParseErrorSpan(
+		p.curToken.Pos,
+		tokenEnd(p.curToken),
+		"ampersand block forwarding and symbol-to-proc shorthand are not supported; use an explicit do/end or brace block",
+	)
+	startLine := p.curToken.Pos.Line
+	for p.peekToken.Type != ast.TokenEOF &&
+		p.peekToken.Pos.Line == startLine &&
+		p.peekToken.Type != ast.TokenComma &&
+		p.peekToken.Type != ast.TokenRParen {
+		p.nextToken()
 	}
 }
 
