@@ -105,6 +105,20 @@ func TestLexerStampsSourceAccurateTokenEnds(t *testing.T) {
 			wantEnd: ast.Position{Line: 1, Column: 7},
 		},
 		{
+			name:    "single_quoted_string_span_includes_quotes",
+			source:  `'abc'`,
+			tokType: ast.TokenString,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 6},
+		},
+		{
+			name:    "single_quoted_string_span_includes_escapes",
+			source:  `'a\'b'`,
+			tokType: ast.TokenString,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 7},
+		},
+		{
 			name:    "integer_span_includes_underscores",
 			source:  "1_000",
 			tokType: ast.TokenInt,

@@ -831,11 +831,14 @@ func TestEnclosingCall(t *testing.T) {
 		{name: "hash_arg_commas_ignored", source: "charge({a: 1, b: 2}, ", line: 0, chr: 21, callee: "charge", param: 1, ok: true},
 		{name: "string_comma_ignored", source: `charge("1,00", `, line: 0, chr: 15, callee: "charge", param: 1, ok: true},
 		{name: "string_paren_ignored", source: `charge("a)b", `, line: 0, chr: 14, callee: "charge", param: 1, ok: true},
+		{name: "single_string_comma_ignored", source: `charge('1,00', `, line: 0, chr: 15, callee: "charge", param: 1, ok: true},
+		{name: "single_string_paren_ignored", source: `charge('a)b', `, line: 0, chr: 14, callee: "charge", param: 1, ok: true},
 		{name: "cursor_inside_array_literal", source: "charge([1, ", line: 0, chr: 11, callee: "charge", param: 0, ok: true},
 		{name: "member_call_suppressed", source: "price.format(", line: 0, chr: 13, ok: false},
 		{name: "comment_suppressed", source: "# money_cents(", line: 0, chr: 14, ok: false},
 		{name: "space_before_paren", source: "charge (100, ", line: 0, chr: 13, callee: "charge", param: 1, ok: true},
 		{name: "hash_in_string_not_comment", source: `charge("#", `, line: 0, chr: 12, callee: "charge", param: 1, ok: true},
+		{name: "hash_in_single_string_not_comment", source: `charge('#', `, line: 0, chr: 12, callee: "charge", param: 1, ok: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -848,6 +851,37 @@ func TestEnclosingCall(t *testing.T) {
 			}
 			if callee != tc.callee || param != tc.param {
 				t.Fatalf("enclosingCall(%q) = (%q, %d), want (%q, %d)", tc.source, callee, param, tc.callee, tc.param)
+			}
+		})
+	}
+}
+
+func TestParenlessCall(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		source    string
+		line, chr int
+		callee    string
+		param     int
+		ok        bool
+	}{
+		{name: "after_comma", source: "assert true, ", line: 0, chr: 13, callee: "assert", param: 1, ok: true},
+		{name: "single_string_comma_ignored", source: `assert true, 'a,b'`, line: 0, chr: 18, callee: "assert", param: 1, ok: true},
+		{name: "single_string_hash_not_comment", source: `assert true, 'a#b', `, line: 0, chr: 20, callee: "assert", param: 2, ok: true},
+		{name: "comment_suppressed", source: "# assert true, ", line: 0, chr: 15, ok: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			callee, param, ok := parenlessCall(tc.source, tc.line, tc.chr)
+			if ok != tc.ok {
+				t.Fatalf("parenlessCall(%q) ok = %v, want %v", tc.source, ok, tc.ok)
+			}
+			if !tc.ok {
+				return
+			}
+			if callee != tc.callee || param != tc.param {
+				t.Fatalf("parenlessCall(%q) = (%q, %d), want (%q, %d)", tc.source, callee, param, tc.callee, tc.param)
 			}
 		})
 	}
