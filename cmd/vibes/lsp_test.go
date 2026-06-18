@@ -1106,6 +1106,43 @@ func TestDocumentSymbolsSurviveMidEditParses(t *testing.T) {
 	}
 }
 
+func TestPublishDiagnosticsClearsNavigationWhenParsingIsSkipped(t *testing.T) {
+	t.Parallel()
+	server := &lspServer{
+		engine:   vibes.MustNewEngine(vibes.Config{MaxSourceBytes: 64}),
+		docs:     make(map[string]string),
+		lines:    make(map[string][]string),
+		compiled: make(map[string]*vibes.Script),
+		programs: make(map[string]*ast.Program),
+	}
+	uri := "file:///tmp/too-large.vibe"
+	source := "def old\n  1\nend\n"
+	server.setDocument(uri, source)
+	diagnostics := server.publishDiagnostics(uri, source).Params.(map[string]any)["diagnostics"].([]map[string]any)
+	if len(diagnostics) != 0 {
+		t.Fatalf("initial diagnostics = %#v, want none", diagnostics)
+	}
+	if server.programs[uri] == nil {
+		t.Fatal("initial publish did not cache navigation program")
+	}
+	if server.compiled[uri] == nil {
+		t.Fatal("initial publish did not cache compiled script")
+	}
+
+	oversized := strings.Repeat(source, 8)
+	server.setDocument(uri, oversized)
+	diagnostics = server.publishDiagnostics(uri, oversized).Params.(map[string]any)["diagnostics"].([]map[string]any)
+	if len(diagnostics) == 0 {
+		t.Fatal("oversized publish diagnostics = none, want source-size diagnostic")
+	}
+	if _, ok := server.programs[uri]; ok {
+		t.Fatal("oversized publish kept stale navigation program")
+	}
+	if _, ok := server.compiled[uri]; ok {
+		t.Fatal("oversized publish kept stale compiled script")
+	}
+}
+
 func TestInitializeAdvertisesDotCompletionTrigger(t *testing.T) {
 	t.Parallel()
 	server := newCompletionTestServer()
@@ -1407,6 +1444,22 @@ func BenchmarkLSPDefinitionLargeDocument(b *testing.B) {
 		}
 		if _, ok := messages[0].Result.(map[string]any); !ok {
 			b.Fatalf("definition result = %#v, want location", messages[0].Result)
+		}
+	}
+}
+
+func BenchmarkLSPPublishDiagnosticsLargeDocument(b *testing.B) {
+	server := newCompletionTestServer()
+	uri := "file:///tmp/diagnostics-large.vibe"
+	source, _ := largeLSPNavigationSource(2_000)
+	server.setDocument(uri, source)
+
+	b.ReportAllocs()
+	for range b.N {
+		message := server.publishDiagnostics(uri, source)
+		diagnostics := message.Params.(map[string]any)["diagnostics"].([]map[string]any)
+		if len(diagnostics) != 0 {
+			b.Fatalf("publishDiagnostics diagnostics = %#v, want none", diagnostics)
 		}
 	}
 }
