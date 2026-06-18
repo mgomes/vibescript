@@ -88,6 +88,58 @@ end`,
 	}
 }
 
+func TestParserLoopDoSeparatorsAfterCalls(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  while ready(1) do
+    tick
+  end
+
+  until done(2) do
+    tick
+  end
+
+  for item in range(1, 3) do
+    tick
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.WhileStmt{
+			Condition: callExpression("ready", &ast.IntegerLiteral{Value: 1}),
+			Body: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.Identifier{Name: "tick"}},
+			},
+		},
+		&ast.UntilStmt{
+			Condition: callExpression("done", &ast.IntegerLiteral{Value: 2}),
+			Body: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.Identifier{Name: "tick"}},
+			},
+		},
+		&ast.ForStmt{
+			Iterator: "item",
+			Iterable: callExpression(
+				"range",
+				&ast.IntegerLiteral{Value: 1},
+				&ast.IntegerLiteral{Value: 3},
+			),
+			Body: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.Identifier{Name: "tick"}},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func whileIncrementStatement() ast.Statement {
 	return &ast.WhileStmt{
 		Condition: &ast.BinaryExpr{
@@ -96,6 +148,14 @@ func whileIncrementStatement() ast.Statement {
 			Right:    &ast.IntegerLiteral{Value: 2},
 		},
 		Body: []ast.Statement{incrementIStatement()},
+	}
+}
+
+func callExpression(name string, args ...ast.Expression) ast.Expression {
+	return &ast.CallExpr{
+		Callee: &ast.Identifier{Name: name},
+		Args:   args,
+		KwArgs: []ast.KeywordArg{},
 	}
 }
 

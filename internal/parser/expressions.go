@@ -986,6 +986,9 @@ func (p *parser) callWithBlock(callee ast.Expression, block *ast.BlockLiteral) a
 }
 
 func (p *parser) canAttachPeekBlock() bool {
+	if p.lineLimitedExprs > 0 && p.peekStopsLineExpression() {
+		return false
+	}
 	if p.peekToken.Type == ast.TokenDo {
 		return true
 	}
