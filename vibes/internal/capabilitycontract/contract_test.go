@@ -228,6 +228,7 @@ func TestDeepCloneValue(t *testing.T) {
 			{name: "duration", val: value.NewDuration(value.DurationFromSeconds(90))},
 			{name: "time", val: value.NewTime(time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC))},
 			{name: "range", val: value.NewRange(value.Range{Start: 1, End: 5})},
+			{name: "exclusive_range", val: value.NewRange(value.Range{Start: 1, End: 5, Exclusive: true})},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -401,6 +402,7 @@ func TestValidateDataOnlyValue(t *testing.T) {
 		{name: "duration", val: value.NewDuration(value.DurationFromSeconds(5))},
 		{name: "time", val: value.NewTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))},
 		{name: "range", val: value.NewRange(value.Range{Start: 0, End: 3})},
+		{name: "exclusive_range", val: value.NewRange(value.Range{Start: 0, End: 3, Exclusive: true})},
 		{name: "empty_array", val: value.NewArray(nil)},
 		{name: "empty_hash", val: value.NewHash(map[string]value.Value{})},
 		{

@@ -26,7 +26,7 @@ func (p *parser) parseLineExpression(precedence int) ast.Expression {
 func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLimited bool) ast.Expression {
 	prefix := prefixParserKind(p.curToken.Type)
 	if prefix == prefixParserNone {
-		if p.curToken.Type == ast.TokenRange {
+		if p.curToken.Type == ast.TokenRange || p.curToken.Type == ast.TokenRangeExcl {
 			p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), "range is missing start expression")
 			return nil
 		}
@@ -347,7 +347,7 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 		return infixParserInfixExpression
 	case ast.TokenQuestion:
 		return infixParserConditionalExpression
-	case ast.TokenRange:
+	case ast.TokenRange, ast.TokenRangeExcl:
 		return infixParserRangeExpression
 	case ast.TokenLParen:
 		return infixParserCallExpression
@@ -389,7 +389,7 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
+	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
 		return true
 	case ast.TokenMinus:
 		return p.minusContinuesLine(tok)
@@ -545,6 +545,7 @@ func (p *parser) parseConditionalExpression(condition ast.Expression) ast.Expres
 
 func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 	pos := p.curToken.Pos
+	exclusive := p.curToken.Type == ast.TokenRangeExcl
 	precedence := p.curPrecedence()
 	if prefixParserKind(p.peekToken.Type) == prefixParserNone {
 		p.addParseErrorSpan(pos, tokenEnd(p.curToken), "range is missing end expression")
@@ -555,7 +556,7 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 	if right == nil {
 		return nil
 	}
-	return &ast.RangeExpr{Start: left, End: right, Position: pos}
+	return &ast.RangeExpr{Start: left, End: right, Exclusive: exclusive, Position: pos}
 }
 
 func (p *parser) parseMemberExpression(object ast.Expression) ast.Expression {

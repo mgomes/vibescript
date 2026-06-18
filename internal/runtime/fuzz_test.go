@@ -846,7 +846,7 @@ func (d *fuzzData) value(depth int) Value {
 		return NewTime(time.Unix(d.int64(0, 4_102_444_800), 0).UTC())
 	case 5:
 		start := d.int64(-100, 100)
-		return NewRange(Range{Start: start, End: start + d.int64(0, 20)})
+		return NewRange(Range{Start: start, End: start + d.int64(0, 20), Exclusive: d.intn(2) == 1})
 	case 6:
 		length := d.intn(5)
 		values := make([]Value, length)

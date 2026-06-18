@@ -63,6 +63,9 @@ end`,
   for i in 1..3
     total = total + i
   end
+  for i in 1...3
+    total = total + i
+  end
 
   selected = values.select do |v|
     v > 1
