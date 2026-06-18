@@ -1219,6 +1219,25 @@ func validateFuzzExpression(context string, expr Expression) error {
 			return err
 		}
 		return validateFuzzExpression(context+".alternate", e.Alternate)
+	case *IfExpr:
+		if err := validateFuzzExpression(context+".condition", e.Condition); err != nil {
+			return err
+		}
+		if err := validateFuzzExpression(context+".consequent", e.Consequent); err != nil {
+			return err
+		}
+		for i, branch := range e.ElseIf {
+			if err := validateFuzzExpression(fmt.Sprintf("%s.elseif[%d].condition", context, i), branch.Condition); err != nil {
+				return err
+			}
+			if err := validateFuzzExpression(fmt.Sprintf("%s.elseif[%d].result", context, i), branch.Result); err != nil {
+				return err
+			}
+		}
+		if e.Alternate != nil {
+			return validateFuzzExpression(context+".alternate", e.Alternate)
+		}
+		return nil
 	case *RangeExpr:
 		if err := validateFuzzExpression(context+".start", e.Start); err != nil {
 			return err

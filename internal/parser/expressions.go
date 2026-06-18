@@ -266,6 +266,7 @@ const (
 	prefixParserHashLiteral
 	prefixParserPrefixExpression
 	prefixParserYieldExpression
+	prefixParserIfExpression
 	prefixParserCaseExpression
 )
 
@@ -305,6 +306,8 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserPrefixExpression
 	case ast.TokenYield:
 		return prefixParserYieldExpression
+	case ast.TokenIf:
+		return prefixParserIfExpression
 	case ast.TokenCase:
 		return prefixParserCaseExpression
 	default:
@@ -348,6 +351,8 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parsePrefixExpression()
 	case prefixParserYieldExpression:
 		return p.parseYieldExpression()
+	case prefixParserIfExpression:
+		return p.parseIfExpression()
 	case prefixParserCaseExpression:
 		return p.parseCaseExpression()
 	default:
@@ -1086,6 +1091,74 @@ func isWordBooleanKeywordToken(tok ast.Token) bool {
 	default:
 		return false
 	}
+}
+
+func (p *parser) parseIfExpression() ast.Expression {
+	pos := p.curToken.Pos
+	p.nextToken()
+	condition := p.parseLineExpression(lowestPrec)
+	if condition == nil {
+		return nil
+	}
+
+	p.nextToken()
+	p.consumeIfExpressionResultSeparator()
+	consequent := p.parseExpressionWithBlock()
+	if consequent == nil {
+		return nil
+	}
+	p.nextToken()
+	p.skipStatementSeparators()
+
+	var elseifBranches []ast.IfExprBranch
+	for p.curToken.Type == ast.TokenElsif {
+		p.nextToken()
+		cond := p.parseLineExpression(lowestPrec)
+		if cond == nil {
+			return nil
+		}
+		p.nextToken()
+		p.consumeIfExpressionResultSeparator()
+		result := p.parseExpressionWithBlock()
+		if result == nil {
+			return nil
+		}
+		elseifBranches = append(elseifBranches, ast.IfExprBranch{Condition: cond, Result: result})
+		p.nextToken()
+		p.skipStatementSeparators()
+	}
+
+	var alternate ast.Expression
+	if p.curToken.Type == ast.TokenElse {
+		p.nextToken()
+		p.skipStatementSeparators()
+		alternate = p.parseExpressionWithBlock()
+		if alternate == nil {
+			return nil
+		}
+		p.nextToken()
+		p.skipStatementSeparators()
+	}
+
+	if p.curToken.Type != ast.TokenEnd {
+		p.errorExpected(p.curToken, "end")
+		return nil
+	}
+
+	return &ast.IfExpr{
+		Condition:  condition,
+		Consequent: consequent,
+		ElseIf:     elseifBranches,
+		Alternate:  alternate,
+		Position:   pos,
+	}
+}
+
+func (p *parser) consumeIfExpressionResultSeparator() {
+	if p.curToken.Type == ast.TokenThen {
+		p.nextToken()
+	}
+	p.skipStatementSeparators()
 }
 
 func (p *parser) parseCaseExpression() ast.Expression {

@@ -200,6 +200,24 @@ type ConditionalExpr struct {
 func (e *ConditionalExpr) exprNode()     {}
 func (e *ConditionalExpr) Pos() Position { return e.Position }
 
+// IfExprBranch represents one elsif branch in an if expression.
+type IfExprBranch struct {
+	Condition Expression
+	Result    Expression
+}
+
+// IfExpr represents a value-producing if/elsif/else expression.
+type IfExpr struct {
+	Condition  Expression
+	Consequent Expression
+	ElseIf     []IfExprBranch
+	Alternate  Expression
+	Position   Position
+}
+
+func (e *IfExpr) exprNode()     {}
+func (e *IfExpr) Pos() Position { return e.Position }
+
 // RangeExpr represents a range expression (e.g. 1..10).
 type RangeExpr struct {
 	Start     Expression

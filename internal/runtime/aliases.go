@@ -68,6 +68,8 @@ type (
 	UnaryExpr          = ast.UnaryExpr
 	BinaryExpr         = ast.BinaryExpr
 	ConditionalExpr    = ast.ConditionalExpr
+	IfExprBranch       = ast.IfExprBranch
+	IfExpr             = ast.IfExpr
 	RangeExpr          = ast.RangeExpr
 	CaseWhenClause     = ast.CaseWhenClause
 	CaseExpr           = ast.CaseExpr
