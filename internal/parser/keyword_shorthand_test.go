@@ -34,3 +34,30 @@ end`
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestParserWordBooleanKeywordArguments(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  takes(and: 1, or: 2)
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "takes"},
+			Args:   []ast.Expression{},
+			KwArgs: []ast.KeywordArg{
+				{Name: "and", Value: &ast.IntegerLiteral{Value: 1}},
+				{Name: "or", Value: &ast.IntegerLiteral{Value: 2}},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}

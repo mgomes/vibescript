@@ -5,14 +5,24 @@ import "testing"
 func TestWordBooleanOperators(t *testing.T) {
 	t.Parallel()
 
-	script := compileScript(t, `def run
+	script := compileScript(t, `def echo(**opts)
+  opts
+end
+
+def run
+  labels = {and: 1, or: 2}
+  kwargs = echo(and: 3, or: 4)
   {
     and_false: true and false,
     and_value: "left" and "right",
     and_short: nil and missing,
     or_true: false or true,
     or_value: "left" or missing,
-    precedence: true or false and false
+    precedence: true or false and false,
+    hash_and: labels[:and],
+    hash_or: labels[:or],
+    kw_and: kwargs[:and],
+    kw_or: kwargs[:or]
   }
 end`)
 
@@ -21,6 +31,10 @@ end`)
 		"and_false":  NewBool(false),
 		"and_value":  NewString("right"),
 		"and_short":  NewNil(),
+		"hash_and":   NewInt(1),
+		"hash_or":    NewInt(2),
+		"kw_and":     NewInt(3),
+		"kw_or":      NewInt(4),
 		"or_true":    NewBool(true),
 		"or_value":   NewString("left"),
 		"precedence": NewBool(true),

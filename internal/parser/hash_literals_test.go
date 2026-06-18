@@ -44,3 +44,36 @@ end`
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestParserWordBooleanHashKeys(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  {and: 1, or: 2}
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.HashLiteral{
+				Pairs: []ast.HashPair{
+					{
+						Key:   &ast.SymbolLiteral{Name: "and"},
+						Value: &ast.IntegerLiteral{Value: 1},
+					},
+					{
+						Key:   &ast.SymbolLiteral{Name: "or"},
+						Value: &ast.IntegerLiteral{Value: 2},
+					},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
