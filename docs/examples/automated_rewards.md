@@ -4,18 +4,20 @@
 # vibe: 0.4
 # uses: db, jobs
 
+def reward_for_total(total)
+  if total >= money("500.00 USD")
+    "gold"
+  elsif total >= money("250.00 USD")
+    "silver"
+  else
+    nil
+  end
+end
+
 def schedule_reward_checks
   players = db.query("Player", where: { status: "active" })
   players.each do |player|
-    total = player[:raised]
-    reward = case total
-             when total >= money("500.00 USD")
-               "gold"
-             when total >= money("250.00 USD")
-               "silver"
-             else
-               nil
-             end
+    reward = reward_for_total(player[:raised])
 
     if reward != nil
       jobs.enqueue(
