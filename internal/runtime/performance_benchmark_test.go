@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -384,6 +385,48 @@ end`)
 		engine.ClearModuleCache()
 		if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
 			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkModuleRequireRepeatedMissingSuggestion(b *testing.B) {
+	moduleRoot := b.TempDir()
+	moduleSource := []byte("def value\n  1\nend\n")
+	if err := os.WriteFile(filepath.Join(moduleRoot, "missing_candiate.vibe"), moduleSource, 0o644); err != nil {
+		b.Fatalf("write close module candidate: %v", err)
+	}
+	for i := range 2047 {
+		name := "candidate_" + strconv.Itoa(i) + ".vibe"
+		if err := os.WriteFile(filepath.Join(moduleRoot, name), moduleSource, 0o644); err != nil {
+			b.Fatalf("write module candidate %d: %v", i, err)
+		}
+	}
+
+	engine := MustNewEngine(Config{
+		StepQuota:        2_000_000,
+		MemoryQuotaBytes: 2 << 20,
+		ModulePaths:      []string{moduleRoot},
+	})
+	script := compileScriptWithEngine(b, engine, `def run
+  begin
+    require("missing_candidate")
+  rescue
+    nil
+  end
+end`)
+
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		b.Fatalf("warm missing require call failed: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+		if err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+		if result.Kind() != KindNil {
+			b.Fatalf("call = %s, want nil", result.Kind())
 		}
 	}
 }

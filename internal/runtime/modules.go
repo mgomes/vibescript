@@ -312,12 +312,62 @@ const moduleSuggestWalkLimit = 2048
 // under each search root that module policy would allow, written the way a
 // script would require them.
 func (e *Engine) searchPathModuleSuggestion(request moduleRequest) string {
+	cacheKey := request.normalized
+	e.modMu.RLock()
+	version := e.modSuggestVersion
+	suggestion, ok := e.modSuggestText[cacheKey]
+	e.modMu.RUnlock()
+	if ok {
+		return suggestion
+	}
+
 	target := moduleDisplayFromRelative(request.normalized)
 	candidates := make([]string, 0, 16)
 	for _, root := range e.modPaths {
-		candidates = append(candidates, e.moduleCandidatesUnderRoot(root)...)
+		candidates = append(candidates, e.cachedModuleCandidatesUnderRoot(root)...)
 	}
-	return didYouMean(target, candidates)
+	suggestion = didYouMean(target, candidates)
+
+	e.modMu.Lock()
+	if e.modSuggestText == nil {
+		e.modSuggestText = make(map[string]string)
+	}
+	if cached, ok := e.modSuggestText[cacheKey]; ok {
+		e.modMu.Unlock()
+		return cached
+	}
+	if version == e.modSuggestVersion && len(e.modSuggestText) < e.config.MaxCachedModules {
+		e.modSuggestText[cacheKey] = suggestion
+	}
+	e.modMu.Unlock()
+	return suggestion
+}
+
+func (e *Engine) cachedModuleCandidatesUnderRoot(root string) []string {
+	cleanRoot := filepath.Clean(root)
+	e.modMu.RLock()
+	version := e.modSuggestVersion
+	candidates, ok := e.modSuggest[cleanRoot]
+	e.modMu.RUnlock()
+	if ok {
+		return candidates
+	}
+
+	candidates = e.moduleCandidatesUnderRoot(cleanRoot)
+
+	e.modMu.Lock()
+	if e.modSuggest == nil {
+		e.modSuggest = make(map[string][]string)
+	}
+	if cached, ok := e.modSuggest[cleanRoot]; ok {
+		e.modMu.Unlock()
+		return cached
+	}
+	if version == e.modSuggestVersion {
+		e.modSuggest[cleanRoot] = candidates
+	}
+	e.modMu.Unlock()
+	return candidates
 }
 
 func (e *Engine) moduleCandidatesUnderRoot(root string) []string {
