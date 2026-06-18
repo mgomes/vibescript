@@ -38,3 +38,84 @@ func TestParenlessSingleArgumentCalls(t *testing.T) {
 	}
 	compareArrays(t, callFunc(t, script, "push_arg", nil), []Value{NewInt(1), NewInt(2)})
 }
+
+func TestParenlessArgumentListCalls(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def add(a, b)
+      a + b
+    end
+
+    def keywords(name: string = "x", retries: int = 0)
+      [name, retries]
+    end
+
+    def normal_keyword(name)
+      name
+    end
+
+    def accept(opts)
+      opts[:a] + opts[:b]
+    end
+
+    def mixed(prefix, opts)
+      prefix + opts[:suffix]
+    end
+
+    def keyword_and_positional(opts, name:)
+      [opts, name]
+    end
+
+    def call_add
+      add 1, 2
+    end
+
+    def call_keywords
+      keywords name: "Ada", retries: 3
+    end
+
+    def call_keyword_shorthand
+      name = "Grace"
+      retries = 4
+      keywords name:, retries:
+    end
+
+    def call_normal_keyword
+      normal_keyword name: "Ada"
+    end
+
+    def call_bare_options
+      accept a: 1, b: 2
+    end
+
+    def call_mixed
+      mixed "pre", suffix: "fix"
+    end
+
+    def strict_parenthesized_options
+      accept(a: 1, b: 2)
+    end
+
+    def strict_keyword_signature
+      keyword_and_positional retry: true, name: "Ada"
+    end
+    `)
+
+	if got := callFunc(t, script, "call_add", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("call_add() = %v, want 3", got)
+	}
+	compareArrays(t, callFunc(t, script, "call_keywords", nil), []Value{NewString("Ada"), NewInt(3)})
+	compareArrays(t, callFunc(t, script, "call_keyword_shorthand", nil), []Value{NewString("Grace"), NewInt(4)})
+	if got := callFunc(t, script, "call_normal_keyword", nil); !got.Equal(NewString("Ada")) {
+		t.Fatalf("call_normal_keyword() = %v, want Ada", got)
+	}
+	if got := callFunc(t, script, "call_bare_options", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("call_bare_options() = %v, want 3", got)
+	}
+	if got := callFunc(t, script, "call_mixed", nil); !got.Equal(NewString("prefix")) {
+		t.Fatalf("call_mixed() = %v, want prefix", got)
+	}
+	requireCallErrorContains(t, script, "strict_parenthesized_options", nil, CallOptions{}, "missing argument opts")
+	requireCallErrorContains(t, script, "strict_keyword_signature", nil, CallOptions{}, "missing argument opts")
+}
