@@ -39,6 +39,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 			}
 			return NewNil(), exec.errorAt(e.Pos(), "undefined variable %s%s", e.Name, didYouMean(e.Name, env.visibleNames()))
 		}
+		env.clearArrayAppendBuffer(e.Name)
 		if autoCall {
 			return exec.autoInvokeIfNeeded(e, val, NewNil())
 		}
@@ -545,6 +546,120 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	}
 }
 
+func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Value, bool, error) {
+	target, ok := stmt.Target.(*Identifier)
+	if !ok {
+		return NewNil(), false, nil
+	}
+
+	switch value := stmt.Value.(type) {
+	case *CallExpr:
+		member, ok := value.Callee.(*MemberExpr)
+		if !ok || member.Property != "push" || len(value.KwArgs) > 0 || value.Block != nil {
+			return NewNil(), false, nil
+		}
+		receiver, ok := member.Object.(*Identifier)
+		if !ok || receiver.Name != target.Name {
+			return NewNil(), false, nil
+		}
+		return exec.evalArrayPushAppendAssignment(target.Name, value, env)
+	case *BinaryExpr:
+		if value.Operator != tokenPlus {
+			return NewNil(), false, nil
+		}
+		left, ok := value.Left.(*Identifier)
+		if !ok || left.Name != target.Name {
+			return NewNil(), false, nil
+		}
+		right, ok := value.Right.(*ArrayLiteral)
+		if !ok {
+			return NewNil(), false, nil
+		}
+		return exec.evalArrayConcatAppendAssignment(target.Name, value, right, env)
+	default:
+		return NewNil(), false, nil
+	}
+}
+
+func (exec *Execution) evalArrayPushAppendAssignment(name string, call *CallExpr, env *Env) (Value, bool, error) {
+	receiver, ok := env.Get(name)
+	if !ok || receiver.Kind() != KindArray {
+		return NewNil(), false, nil
+	}
+	if err := exec.checkMemoryWith(receiver); err != nil {
+		return NewNil(), true, err
+	}
+	if len(call.Args) == 0 {
+		return NewNil(), true, exec.wrapError(fmt.Errorf("array.push expects at least one argument"), call.Pos())
+	}
+
+	args, err := exec.evalCallArgs(call, env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkCallMemoryRoots(receiver, args, nil, NewNil()); err != nil {
+		return NewNil(), true, err
+	}
+
+	return exec.assignArrayAppendResult(name, receiver.Array(), args, env), true, nil
+}
+
+func (exec *Execution) evalArrayConcatAppendAssignment(name string, expr *BinaryExpr, right *ArrayLiteral, env *Env) (Value, bool, error) {
+	receiver, ok := env.Get(name)
+	if !ok || receiver.Kind() != KindArray {
+		return NewNil(), false, nil
+	}
+	if err := exec.checkMemoryWith(receiver); err != nil {
+		return NewNil(), true, err
+	}
+
+	values, err := exec.evalArrayLiteralElements(right, env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	rightValue := arrayValueFromAppendBuffer(values)
+	if err := exec.checkMemoryWith(receiver, rightValue); err != nil {
+		return NewNil(), true, err
+	}
+
+	result := exec.assignArrayAppendResult(name, receiver.Array(), values, env)
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, exec.wrapError(err, expr.Pos())
+	}
+	return result, true, nil
+}
+
+func (exec *Execution) evalArrayLiteralElements(literal *ArrayLiteral, env *Env) ([]Value, error) {
+	values := make([]Value, len(literal.Elements))
+	for i, element := range literal.Elements {
+		val, err := exec.evalExpressionWithAuto(element, env, true)
+		if err != nil {
+			return nil, err
+		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return nil, err
+		}
+		values[i] = val
+	}
+	return values, nil
+}
+
+func (exec *Execution) assignArrayAppendResult(name string, base, extras []Value, env *Env) Value {
+	buffer, ok := env.arrayAppendBuffer(name)
+	if !ok {
+		buffer = make([]Value, len(base), len(base)+len(extras))
+		copy(buffer, base)
+	}
+	buffer = append(buffer, extras...)
+	result := arrayValueFromAppendBuffer(buffer)
+	env.assignArrayAppendBuffer(name, result, buffer)
+	return result
+}
+
+func arrayValueFromAppendBuffer(buffer []Value) Value {
+	return NewArray(buffer[:len(buffer):len(buffer)])
+}
+
 func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 	startVal, err := exec.evalExpression(expr.Start, env)
 	if err != nil {
@@ -856,6 +971,9 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	case *RaiseStmt:
 		return exec.evalRaiseStatement(s, env)
 	case *AssignStmt:
+		if val, handled, err := exec.evalArrayAppendAssignment(s, env); handled || err != nil {
+			return val, false, err
+		}
 		val, err := exec.evalExpression(s.Value, env)
 		if err != nil {
 			return NewNil(), false, err

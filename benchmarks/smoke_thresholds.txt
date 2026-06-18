@@ -1,6 +1,6 @@
 # Benchmark smoke thresholds for CI guardrails.
 # Format:
-# <benchmark_name> <max_ns_per_op> <max_allocs_per_op>
+# <benchmark_name> <max_ns_per_op> <max_allocs_per_op> [max_bytes_per_op]
 #
 # Enforced by scripts/bench_smoke_check.sh, which CI runs on every pull
 # request and push to master (the "Benchmark smoke gates" step in
@@ -11,6 +11,8 @@
 
 BenchmarkExecutionArithmeticLoop 5000000 1000
 BenchmarkExecutionArrayPipeline 40000000 20000
+BenchmarkExecutionArrayPushAccumulation 3000000 10000 800000
+BenchmarkExecutionArrayConcatAccumulation 3500000 12000 900000
 BenchmarkExecutionMethodDispatchLoop 8000000 6000
 BenchmarkExecutionCapabilityFindLoop 12000000 9000
 BenchmarkExecutionCapabilityWorkflowLoop 16000000 15000

@@ -36,6 +36,73 @@ func TestArrayPushPopAndSum(t *testing.T) {
 	}
 }
 
+func TestArrayAppendAssignmentAccumulation(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def push_accumulate(n)
+      out = []
+      for i in 1..n
+        out = out.push(i)
+      end
+      out
+    end
+
+    def concat_accumulate(n)
+      out = []
+      for i in 1..n
+        out = out + [i]
+      end
+      out
+    end
+    `)
+
+	want := []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5)}
+	compareArrays(t, callFunc(t, script, "push_accumulate", []Value{NewInt(5)}), want)
+	compareArrays(t, callFunc(t, script, "concat_accumulate", []Value{NewInt(5)}), want)
+}
+
+func TestArrayAppendAssignmentPreservesAliasIsolation(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def push_alias()
+      a = [1]
+      b = a
+      a = a.push(2)
+      b[0] = 9
+      { a: a, b: b }
+    end
+
+    def concat_alias()
+      a = [1]
+      b = a
+      a = a + [2]
+      b[0] = 9
+      { a: a, b: b }
+    end
+
+    def repeated_alias()
+      a = []
+      a = a.push(1)
+      b = a
+      a = a.push(2)
+      b = b.push(3)
+      { a: a, b: b }
+    end
+    `)
+
+	push := callFunc(t, script, "push_alias", nil).Hash()
+	compareArrays(t, push["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, push["b"], []Value{NewInt(9)})
+
+	concat := callFunc(t, script, "concat_alias", nil).Hash()
+	compareArrays(t, concat["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, concat["b"], []Value{NewInt(9)})
+
+	repeated := callFunc(t, script, "repeated_alias", nil).Hash()
+	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, repeated["b"], []Value{NewInt(1), NewInt(3)})
+}
+
 func TestArrayPhaseTwoHelpers(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
