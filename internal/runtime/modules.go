@@ -27,7 +27,10 @@ type moduleRequest struct {
 	explicitRelative bool
 }
 
-const moduleKeySeparator = "::"
+const (
+	moduleKeySeparator       = "::"
+	moduleEntrypointFunction = "<module>"
+)
 
 func (e *Engine) getCachedModule(key string) (moduleEntry, bool) {
 	e.modMu.RLock()
@@ -130,7 +133,7 @@ func (e *Engine) compileAndCacheModule(key, root, relative, fullPath string, con
 		return moduleEntry{}, err
 	}
 
-	script, err := e.Compile(string(content))
+	script, err := e.CompileSnippet(string(content), moduleEntrypointFunction)
 	if err != nil {
 		return moduleEntry{}, fmt.Errorf("require: compiling %s failed: %w", fullPath, err)
 	}
@@ -165,6 +168,30 @@ func cloneFunctionForEnv(fn *ScriptFunction, env *Env) *ScriptFunction {
 	clone := *fn
 	clone.Env = env
 	return &clone
+}
+
+func executeModuleEntrypoint(exec *Execution, entry moduleEntry, moduleEnv *Env) error {
+	fn := entry.script.functions[moduleEntrypointFunction]
+	if fn == nil || len(fn.Body) == 0 {
+		return nil
+	}
+
+	if err := exec.pushFrame(moduleDisplayName(entry.key), fn.Pos, entry.script, entry.script); err != nil {
+		return err
+	}
+	exec.pushModuleContext(moduleContext{
+		key:    entry.key,
+		path:   entry.path,
+		root:   entry.script.moduleRoot,
+		script: entry.script,
+	})
+	_, _, err := exec.evalStatements(fn.Body, moduleEnv)
+	if err != nil {
+		err = exec.wrapError(err, fn.Pos)
+	}
+	exec.popModuleContext()
+	exec.popFrame()
+	return err
 }
 
 func moduleCycleFromLoadStack(stack []string, next string) ([]string, bool) {
@@ -848,13 +875,26 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		moduleEnv.Define(name, enumVal)
 		exports[name] = enumVal
 	}
+	moduleClasses := cloneClassesForCall(entry.script.classes, moduleEnv)
+	for name, classDef := range moduleClasses {
+		moduleEnv.Define(name, NewClass(classDef))
+	}
 	for name, fn := range entry.script.functions {
+		if name == moduleEntrypointFunction {
+			continue
+		}
 		clone := cloneFunctionForEnv(fn, moduleEnv)
 		fnVal := NewFunction(clone)
 		moduleEnv.Define(name, fnVal)
 		if shouldExportModuleFunction(fn) {
 			exports[name] = fnVal
 		}
+	}
+	if err := initializeClassBodiesForCall(exec, moduleEnv, moduleClasses); err != nil {
+		return NewNil(), err
+	}
+	if err := executeModuleEntrypoint(exec, entry, moduleEnv); err != nil {
+		return NewNil(), err
 	}
 
 	exportsVal := NewObject(exports)

@@ -76,6 +76,8 @@ end`)
 
 The interpreter searches each configured directory for `<module>.vibe` in order
 and caches compiled modules so subsequent calls to `require` are inexpensive.
+Executable top-level statements in a required module run as a module initializer
+before its exports are returned.
 For long-running hosts, call `engine.ClearModuleCache()` between runs when
 module sources can change.
 Use `Config.ModuleAllowList` / `Config.ModuleDenyList` for policy hooks over

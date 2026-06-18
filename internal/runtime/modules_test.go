@@ -1107,6 +1107,39 @@ end`)
 	}
 }
 
+func TestRequireRunsModuleTopLevelBody(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "settings.vibe"), []byte(`offset = 10
+
+def add(value)
+  value + offset
+end
+`), 0o644); err != nil {
+		t.Fatalf("write module: %v", err)
+	}
+	engine := MustNewEngine(Config{ModulePaths: []string{dir}})
+	script := compileScriptWithEngine(t, engine, `def run(value)
+  settings = require("settings")
+  {
+    sum: settings.add(value),
+    exports: settings
+  }
+end`)
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(5)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	out := result.Hash()
+	if got := out["sum"]; got.Kind() != KindInt || got.Int() != 15 {
+		t.Fatalf("expected module top-level offset to produce 15, got %#v", got)
+	}
+	if _, leaked := out["exports"].Hash()[moduleEntrypointFunction]; leaked {
+		t.Fatalf("synthetic module entrypoint leaked in exports: %#v", out["exports"])
+	}
+}
+
 func TestRequireModuleAllowList(t *testing.T) {
 	t.Parallel()
 	engine := MustNewEngine(Config{
