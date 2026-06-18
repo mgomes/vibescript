@@ -42,6 +42,17 @@ func (c *Capability) Contracts() map[string]Contract {
 }
 
 func (c *Capability) validateFindContractArgs(args []value.Value, kwargs map[string]value.Value, block value.Value) error {
+	if err := c.validateFindCallShapeArgs(args, kwargs, block); err != nil {
+		return err
+	}
+	method := c.name + ".find"
+	if err := capabilitycontract.ValidateDataOnlyValue(method+" id", args[1]); err != nil {
+		return err
+	}
+	return capabilitycontract.ValidateKwargsDataOnly(method, kwargs)
+}
+
+func (c *Capability) validateFindCallShapeArgs(args []value.Value, _ map[string]value.Value, block value.Value) error {
 	method := c.name + ".find"
 	if len(args) != 2 {
 		return fmt.Errorf("%s expects collection and id", method)
@@ -52,13 +63,17 @@ func (c *Capability) validateFindContractArgs(args []value.Value, kwargs map[str
 	if _, err := capabilitycontract.NameArg(method, "collection", args[0]); err != nil {
 		return err
 	}
-	if err := capabilitycontract.ValidateDataOnlyValue(method+" id", args[1]); err != nil {
-		return err
-	}
-	return capabilitycontract.ValidateKwargsDataOnly(method, kwargs)
+	return nil
 }
 
 func (c *Capability) validateQueryContractArgs(args []value.Value, kwargs map[string]value.Value, block value.Value) error {
+	if err := c.validateQueryCallShapeArgs(args, kwargs, block); err != nil {
+		return err
+	}
+	return capabilitycontract.ValidateKwargsDataOnly(c.name+".query", kwargs)
+}
+
+func (c *Capability) validateQueryCallShapeArgs(args []value.Value, _ map[string]value.Value, block value.Value) error {
 	method := c.name + ".query"
 	if len(args) != 1 {
 		return fmt.Errorf("%s expects collection", method)
@@ -69,10 +84,24 @@ func (c *Capability) validateQueryContractArgs(args []value.Value, kwargs map[st
 	if _, err := capabilitycontract.NameArg(method, "collection", args[0]); err != nil {
 		return err
 	}
-	return capabilitycontract.ValidateKwargsDataOnly(method, kwargs)
+	return nil
 }
 
 func (c *Capability) validateUpdateContractArgs(args []value.Value, kwargs map[string]value.Value, block value.Value) error {
+	if err := c.validateUpdateCallShapeArgs(args, kwargs, block); err != nil {
+		return err
+	}
+	method := c.name + ".update"
+	if err := capabilitycontract.ValidateDataOnlyValue(method+" id", args[1]); err != nil {
+		return err
+	}
+	if err := capabilitycontract.ValidateHashValue(method+" attributes", args[2]); err != nil {
+		return err
+	}
+	return capabilitycontract.ValidateKwargsDataOnly(method, kwargs)
+}
+
+func (c *Capability) validateUpdateCallShapeArgs(args []value.Value, _ map[string]value.Value, block value.Value) error {
 	method := c.name + ".update"
 	if len(args) != 3 {
 		return fmt.Errorf("%s expects collection, id, and attributes", method)
@@ -83,16 +112,17 @@ func (c *Capability) validateUpdateContractArgs(args []value.Value, kwargs map[s
 	if _, err := capabilitycontract.NameArg(method, "collection", args[0]); err != nil {
 		return err
 	}
-	if err := capabilitycontract.ValidateDataOnlyValue(method+" id", args[1]); err != nil {
-		return err
-	}
-	if err := capabilitycontract.ValidateHashValue(method+" attributes", args[2]); err != nil {
-		return err
-	}
-	return capabilitycontract.ValidateKwargsDataOnly(method, kwargs)
+	return nil
 }
 
 func (c *Capability) validateSumContractArgs(args []value.Value, kwargs map[string]value.Value, block value.Value) error {
+	if err := c.validateSumCallShapeArgs(args, kwargs, block); err != nil {
+		return err
+	}
+	return capabilitycontract.ValidateKwargsDataOnly(c.name+".sum", kwargs)
+}
+
+func (c *Capability) validateSumCallShapeArgs(args []value.Value, _ map[string]value.Value, block value.Value) error {
 	method := c.name + ".sum"
 	if len(args) != 2 {
 		return fmt.Errorf("%s expects collection and field", method)
@@ -106,10 +136,17 @@ func (c *Capability) validateSumContractArgs(args []value.Value, kwargs map[stri
 	if _, err := capabilitycontract.NameArg(method, "field", args[1]); err != nil {
 		return err
 	}
-	return capabilitycontract.ValidateKwargsDataOnly(method, kwargs)
+	return nil
 }
 
 func (c *Capability) validateEachContractArgs(args []value.Value, kwargs map[string]value.Value, block value.Value) error {
+	if err := c.validateEachCallShapeArgs(args, kwargs, block); err != nil {
+		return err
+	}
+	return capabilitycontract.ValidateKwargsDataOnly(c.name+".each", kwargs)
+}
+
+func (c *Capability) validateEachCallShapeArgs(args []value.Value, _ map[string]value.Value, block value.Value) error {
 	method := c.name + ".each"
 	if len(args) != 1 {
 		return fmt.Errorf("%s expects collection", method)
@@ -120,5 +157,5 @@ func (c *Capability) validateEachContractArgs(args []value.Value, kwargs map[str
 	if _, err := capabilitycontract.NameArg(method, "collection", args[0]); err != nil {
 		return err
 	}
-	return capabilitycontract.ValidateKwargsDataOnly(method, kwargs)
+	return nil
 }
