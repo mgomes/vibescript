@@ -107,6 +107,21 @@ end`,
 end`,
 		},
 		{
+			name: "begin_rescue_ruby_style_binding",
+			source: `def run(flag)
+  begin
+    if flag
+      raise("boom")
+    end
+    "ok"
+  rescue RuntimeError => err
+    err.message
+  ensure
+    now()
+  end
+end`,
+		},
+		{
 			name: "begin_rescue_else_ensure",
 			source: `def run(flag)
   begin

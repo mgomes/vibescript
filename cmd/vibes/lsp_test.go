@@ -687,6 +687,31 @@ end
 	}
 }
 
+func TestCompletionOffersRescueBindingOnlyInsideHandler(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/rescue-binding-locals.vibe"
+	openDoc(t, server, uri, `def run()
+  begin
+    raise("boom")
+  rescue RuntimeError => err
+    err.message
+  end
+  nil
+end
+`)
+
+	inside := completionLabels(t, server, uri, 4, 4)
+	if _, ok := inside["err"]; !ok {
+		t.Fatal("rescue binding missing inside handler")
+	}
+
+	after := completionLabels(t, server, uri, 6, 2)
+	if _, leaked := after["err"]; leaked {
+		t.Fatal("rescue binding leaked after handler")
+	}
+}
+
 func TestCompletionSurvivesUnparsableEdits(t *testing.T) {
 	t.Parallel()
 	server := newCompletionTestServer()

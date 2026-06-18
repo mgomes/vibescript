@@ -156,7 +156,7 @@ Hosts should never scrape message text. The supported channels today:
   (everything), `AssertionError` (failed `assert`), and `LimitError`
   (step quota, memory quota, and recursion-limit terminations),
   canonicalized by `ast.CanonicalRuntimeErrorType`. The same names are
-  what scripts match in `rescue(...)` clauses, so the script-facing and
+  what scripts match in typed `rescue` clauses, so the script-facing and
   host-facing taxonomies are one system. Extend it by adding a constant
   in `internal/ast/errortypes.go` and a classification rule in
   `classifyRuntimeErrorType` — do not invent a parallel code registry.

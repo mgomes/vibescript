@@ -1166,8 +1166,13 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 	runElse := err == nil && !returned
 
 	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
+		rescueEnv := env
+		if stmt.RescueBinding != "" {
+			rescueEnv = newEnv(env)
+			rescueEnv.Define(stmt.RescueBinding, rescuedErrorValue(err))
+		}
 		exec.pushRescuedError(err)
-		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, env)
+		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, rescueEnv)
 		exec.popRescuedError()
 		if rescueErr != nil {
 			val = NewNil()
@@ -1198,6 +1203,23 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 		return NewNil(), false, err
 	}
 	return val, returned, nil
+}
+
+func rescuedErrorValue(err error) Value {
+	fields := map[string]Value{
+		"type":       NewString(classifyRuntimeErrorType(err)),
+		"message":    NewString(err.Error()),
+		"code_frame": NewString(""),
+	}
+
+	var runtimeErr *RuntimeError
+	if errors.As(err, &runtimeErr) {
+		fields["type"] = NewString(classifyRuntimeErrorType(runtimeErr))
+		fields["message"] = NewString(runtimeErr.Message)
+		fields["code_frame"] = NewString(runtimeErr.CodeFrame)
+	}
+
+	return NewObject(fields)
 }
 
 func isLoopControlSignal(err error) bool {

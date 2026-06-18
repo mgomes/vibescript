@@ -588,6 +588,68 @@ func TestBeginRescueTypedMatching(t *testing.T) {
 	}
 }
 
+func TestBeginRescueRubyStyleBinding(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def ruby_typed()
+      begin
+        raise("boom")
+      rescue RuntimeError
+        "rescued"
+      end
+    end
+
+    def ruby_binding()
+      begin
+        raise("boom")
+      rescue => err
+        [err.type, err.message]
+      end
+    end
+
+    def ruby_typed_binding()
+      begin
+        assert false, "bad"
+      rescue AssertionError | RuntimeError => err
+        [err.type, err.message]
+      end
+    end
+
+    def ruby_parenthesized_binding()
+      begin
+        raise("boom")
+      rescue(RuntimeError) => err
+        err.type
+      end
+    end
+
+    def ruby_binding_scope()
+      begin
+        raise("boom")
+      rescue => err
+        "rescued"
+      end
+      err
+    end
+    `)
+
+	if got := callFunc(t, script, "ruby_typed", nil); !got.Equal(NewString("rescued")) {
+		t.Fatalf("ruby_typed mismatch: %v", got)
+	}
+	compareArrays(t, callFunc(t, script, "ruby_binding", nil), []Value{
+		NewString(runtimeErrorTypeBase),
+		NewString("boom"),
+	})
+	compareArrays(t, callFunc(t, script, "ruby_typed_binding", nil), []Value{
+		NewString(runtimeErrorTypeAssertion),
+		NewString("bad"),
+	})
+	if got := callFunc(t, script, "ruby_parenthesized_binding", nil); !got.Equal(NewString(runtimeErrorTypeBase)) {
+		t.Fatalf("ruby_parenthesized_binding mismatch: %v", got)
+	}
+	requireCallErrorContains(t, script, "ruby_binding_scope", nil, CallOptions{}, "undefined variable err")
+}
+
 func TestBeginRescueDoesNotCatchLoopControlSignals(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
