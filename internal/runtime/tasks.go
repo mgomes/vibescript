@@ -118,7 +118,7 @@ type taskGroup struct {
 	ctx                  context.Context
 	cancel               context.CancelFunc
 	opts                 CallOptions
-	strictValidated      bool
+	globals              map[string]Value
 	inheritedLazyGlobals *taskLazyGlobals
 	jobs                 chan *taskJob
 
@@ -150,15 +150,18 @@ type taskHandle struct {
 func newTaskGroup(exec *Execution, max int) *taskGroup {
 	ctx, cancel := context.WithCancel(exec.Context())
 	inheritedLazyGlobals := taskLazyGlobalsFromContext(exec.Context())
+	globals := exec.callOptions.Globals
 	if inheritedLazyGlobals != nil {
 		inheritedLazyGlobals = inheritedLazyGlobals.snapshotForNestedTasks()
+	} else {
+		globals = taskGlobalsFromRoot(exec.root, exec.callOptions.Globals)
 	}
 	group := &taskGroup{
 		script:               taskScript(exec),
 		ctx:                  ctx,
 		cancel:               cancel,
 		opts:                 exec.callOptions,
-		strictValidated:      exec.strictEffects,
+		globals:              globals,
 		inheritedLazyGlobals: inheritedLazyGlobals,
 		jobs:                 make(chan *taskJob, max),
 	}
@@ -173,6 +176,34 @@ func taskScript(exec *Execution) *Script {
 		return ctx.script
 	}
 	return exec.script
+}
+
+func taskGlobalsFromRoot(root *Env, globals map[string]Value) map[string]Value {
+	if len(globals) == 0 {
+		return nil
+	}
+	out := make(map[string]Value, len(globals))
+	for name, original := range globals {
+		if val, ok := rootBindingValue(root, name); ok {
+			out[name] = val
+			continue
+		}
+		out[name] = original
+	}
+	return out
+}
+
+func rootBindingValue(root *Env, name string) (Value, bool) {
+	if root == nil {
+		return Value{}, false
+	}
+	if val, ok := root.values[name]; ok {
+		return val, true
+	}
+	if val, ok := root.statics[name]; ok {
+		return val, true
+	}
+	return Value{}, false
 }
 
 func (group *taskGroup) managerValue() Value {
@@ -311,7 +342,7 @@ func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
 	if group.inheritedLazyGlobals != nil {
 		return group.inheritedLazyGlobals.fork()
 	}
-	return newTaskLazyGlobals(group.opts.Globals, group.strictValidated)
+	return newTaskLazyGlobals(group.globals, false)
 }
 
 func (group *taskGroup) wait() error {
@@ -654,16 +685,7 @@ func (globals *taskLazyGlobals) currentValueForFork(name string) Value {
 }
 
 func (globals *taskLazyGlobals) rootValue(name string) (Value, bool) {
-	if globals.root == nil {
-		return Value{}, false
-	}
-	if val, ok := globals.root.values[name]; ok {
-		return val, true
-	}
-	if val, ok := globals.root.statics[name]; ok {
-		return val, true
-	}
-	return Value{}, false
+	return rootBindingValue(globals.root, name)
 }
 
 type taskLazyGlobalBinding struct {

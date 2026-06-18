@@ -352,6 +352,29 @@ end`)
 	}
 }
 
+func TestTasksInheritCurrentRootGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared(item)
+  shared[:seed] + item
+end
+
+def run()
+  shared[:seed] = 10
+  Tasks.map([1, 2], max: 1, with: :read_shared)
+end`)
+
+	shared := NewHash(map[string]Value{"seed": NewInt(0)})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"shared": shared,
+		},
+	})
+	compareArrays(t, result, []Value{NewInt(11), NewInt(12)})
+	if got := shared.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host global shared[:seed] = %s, want 0", got.String())
+	}
+}
+
 func TestNestedTasksInheritLazyGlobals(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `def read_shared(item)
@@ -550,6 +573,23 @@ end`)
 	if len(shared.Hash()) != 0 {
 		t.Fatalf("host global shared hash = %s, want unchanged empty hash", shared.String())
 	}
+}
+
+func TestStrictEffectsRevalidatesMutatedTaskGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def identity(item)
+  item
+end
+
+def run()
+  shared[:tasks] = Tasks
+  Tasks.map([1], max: 1, with: :identity)
+end`)
+
+	shared := NewHash(map[string]Value{})
+	requireCallErrorContains(t, script, "run", nil, CallOptions{
+		Globals: map[string]Value{"shared": shared},
+	}, "strict effects: global shared must be data-only")
 }
 
 func TestTaskLazyGlobalCloneCacheCountsTowardMemoryQuota(t *testing.T) {
