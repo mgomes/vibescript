@@ -462,6 +462,75 @@ func TestRequireSuggestsCloseModuleNames(t *testing.T) {
 	})
 }
 
+func TestSearchPathModuleSuggestionCacheRefreshesAfterClear(t *testing.T) {
+	t.Parallel()
+	moduleSource := "def value\n  1\nend\n"
+	root := tempModuleTree(t, moduleFile{path: "wudget.vibe", content: moduleSource})
+	engine := mustNewEngineWithModuleRoot(t, root)
+	request, err := parseModuleRequest("widget")
+	if err != nil {
+		t.Fatalf("parseModuleRequest: %v", err)
+	}
+
+	first := engine.searchPathModuleSuggestion(request)
+	if !strings.Contains(first, `"wudget"`) {
+		t.Fatalf("searchPathModuleSuggestion initial = %q, want wudget suggestion", first)
+	}
+	cacheRoot := engine.modPaths[0]
+	if _, ok := engine.modSuggest[cacheRoot]; !ok {
+		t.Fatalf("expected module suggestion candidates for %q to be cached", cacheRoot)
+	}
+	if _, ok := engine.modSuggestText[request.normalized]; !ok {
+		t.Fatalf("expected module suggestion text for %q to be cached", request.normalized)
+	}
+
+	newModule := filepath.Join(root, "widzet.vibe")
+	if err := os.WriteFile(newModule, []byte(moduleSource), 0o644); err != nil {
+		t.Fatalf("write new module: %v", err)
+	}
+	cached := engine.searchPathModuleSuggestion(request)
+	if strings.Contains(cached, `"widzet"`) {
+		t.Fatalf("searchPathModuleSuggestion before ClearModuleCache = %q, want cached candidates", cached)
+	}
+
+	if cleared := engine.ClearModuleCache(); cleared != 0 {
+		t.Fatalf("ClearModuleCache() = %d, want no loaded modules", cleared)
+	}
+	refreshed := engine.searchPathModuleSuggestion(request)
+	if !strings.Contains(refreshed, `"widzet"`) {
+		t.Fatalf("searchPathModuleSuggestion after ClearModuleCache = %q, want refreshed widzet suggestion", refreshed)
+	}
+}
+
+func TestSearchPathModuleSuggestionTextCacheIsBounded(t *testing.T) {
+	t.Parallel()
+	moduleSource := "def value\n  1\nend\n"
+	root := tempModuleTree(t, moduleFile{path: "wudget.vibe", content: moduleSource})
+	engine := MustNewEngine(Config{ModulePaths: []string{root}, MaxCachedModules: 2})
+
+	names := []string{"widget_a", "widget_b", "widget_c"}
+	requests := make([]moduleRequest, 0, len(names))
+	for _, name := range names {
+		request, err := parseModuleRequest(name)
+		if err != nil {
+			t.Fatalf("parseModuleRequest(%q): %v", name, err)
+		}
+		requests = append(requests, request)
+		_ = engine.searchPathModuleSuggestion(request)
+	}
+
+	engine.modMu.RLock()
+	got := len(engine.modSuggestText)
+	_, overflowCached := engine.modSuggestText[requests[2].normalized]
+	engine.modMu.RUnlock()
+	if got != 2 {
+		t.Fatalf("cached suggestion text entries = %d, want 2", got)
+	}
+	if overflowCached {
+		t.Fatalf("expected overflow module miss %q to remain uncached", requests[2].raw)
+	}
+}
+
 func TestPrivateMethodsAreNotSuggestedToOutsideCallers(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `class Vault

@@ -36,13 +36,16 @@ type Config struct {
 
 // Engine executes Vibescript programs with deterministic limits.
 type Engine struct {
-	config     Config
-	builtins   map[string]Value
-	builtinsMu sync.RWMutex
-	modules    map[string]moduleEntry
-	modPaths   []string
-	modMu      sync.RWMutex
-	randomMu   sync.Mutex
+	config            Config
+	builtins          map[string]Value
+	builtinsMu        sync.RWMutex
+	modules           map[string]moduleEntry
+	modPaths          []string
+	modMu             sync.RWMutex
+	randomMu          sync.Mutex
+	modSuggest        map[string][]string
+	modSuggestText    map[string]string
+	modSuggestVersion uint64
 
 	// builtinProto is the frozen env shared as every call root's parent.
 	// It holds the builtins whose values need no per-call cloning
@@ -101,10 +104,12 @@ func NewEngine(cfg Config) (*Engine, error) {
 	cfg.ModuleDenyList = append([]string(nil), cfg.ModuleDenyList...)
 
 	engine := &Engine{
-		config:   cfg,
-		builtins: make(map[string]Value),
-		modules:  make(map[string]moduleEntry),
-		modPaths: append([]string(nil), cfg.ModulePaths...),
+		config:         cfg,
+		builtins:       make(map[string]Value),
+		modules:        make(map[string]moduleEntry),
+		modPaths:       append([]string(nil), cfg.ModulePaths...),
+		modSuggest:     make(map[string][]string),
+		modSuggestText: make(map[string]string),
 	}
 
 	registerCoreBuiltins(engine)
@@ -359,6 +364,9 @@ func (e *Engine) ClearModuleCache() int {
 
 	count := len(e.modules)
 	clear(e.modules)
+	clear(e.modSuggest)
+	clear(e.modSuggestText)
+	e.modSuggestVersion++
 	return count
 }
 
