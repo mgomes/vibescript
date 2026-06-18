@@ -54,6 +54,16 @@ def label(score)
 end
 ```
 
+Use `then` for compact single-line branch bodies:
+
+```vibe
+case score
+when 100 then "perfect"
+when 90, 95 then "great"
+else "ok"
+end
+```
+
 `when` range candidates test numeric membership. Inclusive and exclusive
 endpoints follow the same `..` / `...` range semantics used by `for` loops.
 Non-range candidates still use value equality.

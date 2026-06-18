@@ -1026,7 +1026,7 @@ func isLabelNameToken(tok ast.Token) bool {
 	switch tok.Type {
 	case ast.TokenIdent,
 		ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenSelf, ast.TokenPrivate, ast.TokenProperty, ast.TokenGetter, ast.TokenSetter,
-		ast.TokenEnd, ast.TokenReturn, ast.TokenYield, ast.TokenDo, ast.TokenFor, ast.TokenWhile, ast.TokenUntil,
+		ast.TokenEnd, ast.TokenReturn, ast.TokenYield, ast.TokenDo, ast.TokenThen, ast.TokenFor, ast.TokenWhile, ast.TokenUntil,
 		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenUnless, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
 		return true
@@ -1084,7 +1084,7 @@ func (p *parser) parseCaseExpression() ast.Expression {
 		}
 
 		p.nextToken()
-		p.skipStatementSeparators()
+		p.consumeCaseResultSeparator()
 		result := p.parseExpressionWithBlock()
 		if result == nil {
 			return nil
@@ -1117,6 +1117,13 @@ func (p *parser) parseCaseExpression() ast.Expression {
 	}
 
 	return &ast.CaseExpr{Target: target, Clauses: clauses, ElseExpr: elseExpr, Position: pos}
+}
+
+func (p *parser) consumeCaseResultSeparator() {
+	if p.curToken.Type == ast.TokenThen {
+		p.nextToken()
+	}
+	p.skipStatementSeparators()
 }
 
 func (p *parser) parseYieldExpression() ast.Expression {

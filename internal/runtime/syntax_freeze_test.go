@@ -189,10 +189,11 @@ end`,
 			name: "targetless_case_predicates",
 			source: `def run(value)
   case
-  when value == 1
+  when value == 1 then
     "one"
-  when value == 2
-    "two"
+  when value == 2 then "two"
+  when value == 3
+    "three"
   else
     "other"
   end
