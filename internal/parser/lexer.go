@@ -118,8 +118,15 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 		}
 	case '*':
-		tok = l.makeToken(ast.TokenAsterisk, "*")
-		l.readRune()
+		if l.peekRune() == '*' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenPower, string(first)+string(l.ch))
+			l.readRune()
+		} else {
+			tok = l.makeToken(ast.TokenAsterisk, "*")
+			l.readRune()
+		}
 	case '/':
 		tok = l.makeToken(ast.TokenSlash, "/")
 		l.readRune()

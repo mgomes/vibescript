@@ -298,7 +298,7 @@ const (
 
 func infixParserKind(tt ast.TokenType) infixParseKind {
 	switch tt {
-	case ast.TokenPlus, ast.TokenMinus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPercent,
+	case ast.TokenPlus, ast.TokenMinus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent,
 		ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
 		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
 		return infixParserInfixExpression
@@ -342,7 +342,7 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPercent, ast.TokenRange, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
+	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
 		return true
 	case ast.TokenMinus:
 		return p.minusContinuesLine(tok)
@@ -462,7 +462,11 @@ func (p *parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	operator := p.curToken.Type
 	precedence := p.curPrecedence()
 	p.nextToken()
-	right := p.parseExpression(precedence)
+	rightPrecedence := precedence
+	if operator == ast.TokenPower {
+		rightPrecedence--
+	}
+	right := p.parseExpression(rightPrecedence)
 	if right == nil {
 		return nil
 	}

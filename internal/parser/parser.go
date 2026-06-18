@@ -73,6 +73,7 @@ const (
 	precSum
 	precProduct
 	precPrefix
+	precPower
 	precCall
 )
 
@@ -92,6 +93,7 @@ var precedences = map[ast.TokenType]int{
 	ast.TokenSlash:     precProduct,
 	ast.TokenAsterisk:  precProduct,
 	ast.TokenPercent:   precProduct,
+	ast.TokenPower:     precPower,
 	ast.TokenLParen:    precCall,
 	ast.TokenDot:       precCall,
 	ast.TokenScope:     precCall,
