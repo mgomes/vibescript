@@ -8,42 +8,82 @@ import (
 )
 
 func (p *parser) parseStatement() ast.Statement {
+	var stmt ast.Statement
 	switch p.curToken.Type {
 	case ast.TokenDef:
-		return p.parseFunctionStatement()
+		stmt = p.parseFunctionStatement()
 	case ast.TokenClass:
-		return p.parseClassStatement()
+		stmt = p.parseClassStatement()
 	case ast.TokenEnum:
-		return p.parseEnumStatement()
+		stmt = p.parseEnumStatement()
 	case ast.TokenExport:
-		return p.parseExportStatement()
+		stmt = p.parseExportStatement()
 	case ast.TokenPrivate:
-		return p.parsePrivateStatement()
+		stmt = p.parsePrivateStatement()
 	case ast.TokenReturn:
-		return p.parseReturnStatement()
+		stmt = p.parseReturnStatement()
 	case ast.TokenRaise:
-		return p.parseRaiseStatement()
+		stmt = p.parseRaiseStatement()
 	case ast.TokenIf:
-		return p.parseIfStatement()
+		stmt = p.parseIfStatement()
 	case ast.TokenFor:
-		return p.parseForStatement()
+		stmt = p.parseForStatement()
 	case ast.TokenWhile:
-		return p.parseWhileStatement()
+		stmt = p.parseWhileStatement()
 	case ast.TokenUntil:
-		return p.parseUntilStatement()
+		stmt = p.parseUntilStatement()
 	case ast.TokenBreak:
-		return p.parseBreakStatement()
+		stmt = p.parseBreakStatement()
 	case ast.TokenNext:
-		return p.parseNextStatement()
+		stmt = p.parseNextStatement()
 	case ast.TokenBegin:
-		return p.parseBeginStatement()
+		stmt = p.parseBeginStatement()
 	case ast.TokenIdent:
 		if p.curToken.Literal == "assert" {
-			return p.parseAssertStatement()
+			stmt = p.parseAssertStatement()
+		} else {
+			stmt = p.parseExpressionOrAssignStatement()
 		}
-		return p.parseExpressionOrAssignStatement()
 	default:
-		return p.parseExpressionOrAssignStatement()
+		stmt = p.parseExpressionOrAssignStatement()
+	}
+	return p.parseModifierLoop(stmt)
+}
+
+func (p *parser) parseModifierLoop(stmt ast.Statement) ast.Statement {
+	if stmt == nil || (p.peekToken.Type != ast.TokenWhile && p.peekToken.Type != ast.TokenUntil) || p.peekToken.Pos.Line != p.curToken.Pos.Line {
+		return stmt
+	}
+
+	modifier := p.peekToken
+	if !canUseModifierLoop(stmt) {
+		p.nextToken()
+		p.nextToken()
+		_ = p.parseLineExpression(lowestPrec)
+		p.addParseError(modifier.Pos, fmt.Sprintf("modifier %s is only supported after expression or assignment statements", strings.ToLower(string(modifier.Type))))
+		return stmt
+	}
+
+	p.nextToken()
+	p.nextToken()
+	condition := p.parseLineExpression(lowestPrec)
+	if condition == nil {
+		return nil
+	}
+
+	body := []ast.Statement{stmt}
+	if modifier.Type == ast.TokenWhile {
+		return &ast.WhileStmt{Condition: condition, Body: body, Position: modifier.Pos}
+	}
+	return &ast.UntilStmt{Condition: condition, Body: body, Position: modifier.Pos}
+}
+
+func canUseModifierLoop(stmt ast.Statement) bool {
+	switch stmt.(type) {
+	case *ast.AssignStmt, *ast.ExprStmt:
+		return true
+	default:
+		return false
 	}
 }
 
