@@ -41,6 +41,49 @@ func TestDocsExampleSnippetsCompile(t *testing.T) {
 	}
 }
 
+func TestAutomatedRewardsExampleRewardThresholds(t *testing.T) {
+	t.Parallel()
+	snippet := readDocsExampleSnippet(t, "automated_rewards.md")
+	script := compileScript(t, snippet)
+
+	tests := []struct {
+		name  string
+		cents int64
+		want  Value
+	}{
+		{name: "gold", cents: 50_000, want: NewString("gold")},
+		{name: "silver", cents: 25_000, want: NewString("silver")},
+		{name: "none", cents: 24_999, want: NewNil()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			moneyValue, err := newMoneyFromCents(tc.cents, "USD")
+			if err != nil {
+				t.Fatalf("newMoneyFromCents(%d, USD): %v", tc.cents, err)
+			}
+			got := callScript(t, t.Context(), script, "reward_for_total", []Value{NewMoney(moneyValue)}, CallOptions{})
+			if !got.Equal(tc.want) {
+				t.Fatalf("reward_for_total(%d cents) = %s, want %s", tc.cents, got, tc.want)
+			}
+		})
+	}
+}
+
+func readDocsExampleSnippet(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join("..", "..", "docs", "examples", name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	snippets := extractVibeCodeFences(string(data))
+	if len(snippets) != 1 {
+		t.Fatalf("%s has %d vibe snippets, want 1", name, len(snippets))
+	}
+	return snippets[0]
+}
+
 func extractVibeCodeFences(markdown string) []string {
 	lines := strings.Split(markdown, "\n")
 	var snippets []string
