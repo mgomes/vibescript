@@ -578,7 +578,7 @@ func nextRegexReplaceAllSubmatchIndex(re *regexp.Regexp, text string, start int)
 	if loc == nil {
 		return nil, false
 	}
-	direct := offsetRegexSubmatchIndex(loc, start)
+	direct := offsetRegexSubmatchIndexInPlace(loc, start)
 	if start == 0 || direct[0] > start {
 		return direct, true
 	}
@@ -589,7 +589,7 @@ func nextRegexReplaceAllSubmatchIndex(re *regexp.Regexp, text string, start int)
 		return nil, false
 	}
 
-	first := offsetRegexSubmatchIndex(locs[0], windowStart)
+	first := offsetRegexSubmatchIndexInPlace(locs[0], windowStart)
 	if first[0] >= start {
 		return first, true
 	}
@@ -599,21 +599,22 @@ func nextRegexReplaceAllSubmatchIndex(re *regexp.Regexp, text string, start int)
 	if len(locs) < 2 {
 		return nil, false
 	}
-	second := offsetRegexSubmatchIndex(locs[1], windowStart)
+	second := offsetRegexSubmatchIndexInPlace(locs[1], windowStart)
 	if second[0] >= start {
 		return second, true
 	}
 	return nil, false
 }
 
-func offsetRegexSubmatchIndex(loc []int, offset int) []int {
-	abs := make([]int, len(loc))
-	for i, index := range loc {
-		if index < 0 {
-			abs[i] = -1
+func offsetRegexSubmatchIndexInPlace(loc []int, offset int) []int {
+	if offset == 0 {
+		return loc
+	}
+	for i := range loc {
+		if loc[i] < 0 {
 			continue
 		}
-		abs[i] = index + offset
+		loc[i] += offset
 	}
-	return abs
+	return loc
 }
