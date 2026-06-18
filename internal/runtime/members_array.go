@@ -230,11 +230,16 @@ func arrayMemberGrouping(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.tally does not take arguments")
 			}
 			arr := receiver.Array()
-			counts := make(map[string]int64, len(arr))
+			hasBlock := valueBlock(block) != nil
+			initialCapacity, err := arrayTallyInitialCapacity(arr, hasBlock)
+			if err != nil {
+				return NewNil(), fmt.Errorf("array.tally values must be symbol or string")
+			}
+			counts := make(map[string]int64, initialCapacity)
 			var blockArg [1]Value
 			for _, item := range arr {
 				keyValue := item
-				if valueBlock(block) != nil {
+				if hasBlock {
 					blockArg[0] = item
 					mapped, err := exec.CallBlock(block, blockArg[:])
 					if err != nil {
@@ -257,6 +262,46 @@ func arrayMemberGrouping(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
+	length := len(arr)
+	if length <= 256 {
+		return length, nil
+	}
+	if hasBlock {
+		return 256, nil
+	}
+
+	// Sample direct values only; blocks may be expensive or effectful, so
+	// block tallies use the conservative fixed cap above.
+	const sampleLimit = 64
+	var keys [sampleLimit]string
+	distinct := 0
+	for _, item := range arr[:sampleLimit] {
+		key, err := valueToHashKey(item)
+		if err != nil {
+			return 0, err
+		}
+		found := false
+		for i := range distinct {
+			if keys[i] == key {
+				found = true
+				break
+			}
+		}
+		if !found {
+			keys[distinct] = key
+			distinct++
+		}
+	}
+	if distinct == sampleLimit {
+		return length, nil
+	}
+	if distinct <= 8 {
+		return 16, nil
+	}
+	return 256, nil
 }
 
 func arrayMemberQuery(property string) (Value, error) {
