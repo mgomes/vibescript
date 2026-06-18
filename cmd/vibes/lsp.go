@@ -1221,29 +1221,29 @@ func maskNonCode(runes []rune) []rune {
 	return masked
 }
 
-// maskStringLiterals replaces double-quoted string literals — quotes,
-// contents, and escapes — with spaces, so structural scans do not trip
-// on commas, parentheses, or brackets inside them. An unterminated
-// literal masks through to the end.
+// maskStringLiterals replaces quoted string literals, including quotes,
+// contents, and escapes, with spaces, so structural scans do not trip on
+// commas, parentheses, or brackets inside them. An unterminated literal
+// masks through to the end.
 func maskStringLiterals(runes []rune) []rune {
 	masked := make([]rune, len(runes))
-	inString := false
+	var quote rune
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
-		if inString {
+		if quote != 0 {
 			masked[i] = ' '
 			if r == '\\' && i+1 < len(runes) {
 				i++
 				masked[i] = ' '
 				continue
 			}
-			if r == '"' {
-				inString = false
+			if r == quote {
+				quote = 0
 			}
 			continue
 		}
-		if r == '"' {
-			inString = true
+		if r == '"' || r == '\'' {
+			quote = r
 			masked[i] = ' '
 			continue
 		}

@@ -244,7 +244,16 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 		}
 	case '"':
-		literal, err := l.readString()
+		literal, err := l.readDoubleQuotedString()
+		if err != "" {
+			tok.Type = ast.TokenIllegal
+			tok.Literal = err
+		} else {
+			tok.Type = ast.TokenString
+			tok.Literal = literal
+		}
+	case '\'':
+		literal, err := l.readSingleQuotedString()
 		if err != "" {
 			tok.Type = ast.TokenIllegal
 			tok.Literal = err
@@ -378,7 +387,7 @@ done:
 	return literal, hasDot
 }
 
-func (l *lexer) readString() (string, string) {
+func (l *lexer) readDoubleQuotedString() (string, string) {
 	var sb strings.Builder
 
 	for {
@@ -404,6 +413,32 @@ func (l *lexer) readString() (string, string) {
 			default:
 				l.readRune()
 				sb.WriteRune(next)
+			}
+		default:
+			sb.WriteRune(l.ch)
+		}
+	}
+}
+
+func (l *lexer) readSingleQuotedString() (string, string) {
+	var sb strings.Builder
+
+	for {
+		l.readRune()
+		switch l.ch {
+		case 0:
+			return "", "unterminated string"
+		case '\'':
+			l.readRune()
+			return sb.String(), ""
+		case '\\':
+			next := l.peekRune()
+			switch next {
+			case '\'', '\\':
+				l.readRune()
+				sb.WriteRune(next)
+			default:
+				sb.WriteRune(l.ch)
 			}
 		default:
 			sb.WriteRune(l.ch)
