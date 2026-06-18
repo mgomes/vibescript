@@ -72,9 +72,11 @@ func (exec *Execution) classMember(obj Value, property string, pos Position) (Va
 		if fn.Private && !exec.isCurrentReceiver(obj) {
 			return NewNil(), exec.errorAt(pos, "private method %s", property)
 		}
-		return NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
-		}), nil
+		})
+		valueBuiltin(method).BareKeywordHashTarget = fn
+		return method, nil
 	}
 	if val, ok := cl.ClassVars[property]; ok {
 		return val, nil
@@ -95,9 +97,11 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position) 
 		if fn.Private && !exec.isCurrentReceiver(obj) {
 			return NewNil(), exec.errorAt(pos, "private method %s", property)
 		}
-		return NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
-		}), nil
+		})
+		valueBuiltin(method).BareKeywordHashTarget = fn
+		return method, nil
 	}
 	if val, ok := inst.Ivars[property]; ok {
 		return val, nil
