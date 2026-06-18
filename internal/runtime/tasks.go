@@ -562,7 +562,8 @@ func (globals *taskLazyGlobals) snapshotForNestedTasks() *taskLazyGlobals {
 	if globals == nil {
 		return nil
 	}
-	return newTaskLazyGlobals(globals.valuesForFork(), globals.strictValidated)
+	strictValidated := globals.strictValidated && len(globals.clones) == 0
+	return newTaskLazyGlobals(globals.valuesForFork(), strictValidated)
 }
 
 func (globals *taskLazyGlobals) materialize(name string) Value {

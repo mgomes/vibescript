@@ -497,6 +497,32 @@ end`)
 	}
 }
 
+func TestStrictEffectsRevalidatesNestedMaterializedTaskGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def read_shared()
+  shared.size
+end
+
+def add_callable_then_spawn(item)
+  shared[:tasks] = Tasks
+  Tasks.run(max: 1) do |tasks|
+    tasks.spawn(:read_shared).value
+  end
+end
+
+def run()
+  Tasks.map([1], max: 1, with: :add_callable_then_spawn)
+end`)
+
+	shared := NewHash(map[string]Value{})
+	requireCallErrorContains(t, script, "run", nil, CallOptions{
+		Globals: map[string]Value{"shared": shared},
+	}, "strict effects: global shared must be data-only")
+	if len(shared.Hash()) != 0 {
+		t.Fatalf("host global shared hash = %s, want unchanged empty hash", shared.String())
+	}
+}
+
 func TestStrictEffectsRejectLazyTaskCallableGlobals(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
