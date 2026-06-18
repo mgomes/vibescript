@@ -118,6 +118,9 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	for _, group := range exec.activeTaskGroups {
 		total += group.retainedResultMemory(est)
 	}
+	if globals := taskLazyGlobalsFromContext(exec.Context()); globals != nil {
+		total += globals.retainedCloneMemory(est)
+	}
 
 	total += len(exec.callStack) * estimatedCallFrameBytes
 	total += len(exec.receiverStack) * estimatedValueBytes

@@ -552,6 +552,40 @@ end`)
 	}
 }
 
+func TestTaskLazyGlobalCloneCacheCountsTowardMemoryQuota(t *testing.T) {
+	t.Parallel()
+	values := make([]Value, 256)
+	for i := range values {
+		values[i] = NewString("payload")
+	}
+	root := newEnv(nil)
+	lazyGlobals := newTaskLazyGlobals(map[string]Value{
+		"shared": NewArray(values),
+	}, false)
+	root.defineLazy("shared", taskLazyGlobalBinding{globals: lazyGlobals, name: "shared"})
+	lazyGlobals.root = root
+	exec := &Execution{
+		ctx:  contextWithTaskLazyGlobals(context.Background(), lazyGlobals),
+		root: root,
+	}
+
+	if _, ok := root.Get("shared"); !ok {
+		t.Fatalf("expected shared lazy global to materialize")
+	}
+	root.Assign("shared", NewNil())
+	withClone := exec.estimateMemoryUsage()
+	clones := lazyGlobals.clones
+	lazyGlobals.clones = nil
+	withoutClone := exec.estimateMemoryUsage()
+	lazyGlobals.clones = clones
+	if withClone <= withoutClone {
+		t.Fatalf("memory with retained clone = %d, want greater than %d", withClone, withoutClone)
+	}
+
+	exec.memoryQuota = withClone - 1
+	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
+}
+
 func TestStrictEffectsRejectLazyTaskCallableGlobals(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()

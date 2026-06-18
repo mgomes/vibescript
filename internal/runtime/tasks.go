@@ -606,6 +606,18 @@ func (globals *taskLazyGlobals) valuesForValidation() map[string]Value {
 	return out
 }
 
+func (globals *taskLazyGlobals) retainedCloneMemory(est *memoryEstimator) int {
+	if globals == nil || len(globals.clones) == 0 {
+		return 0
+	}
+	total := estimatedMapBaseBytes + len(globals.clones)*estimatedMapEntryBytes
+	for name, val := range globals.clones {
+		total += estimatedStringHeaderBytes + len(name)
+		total += est.value(val)
+	}
+	return total
+}
+
 func (globals *taskLazyGlobals) valuesForFork() (map[string]Value, bool) {
 	if len(globals.clones) == 0 && !globals.hasCurrentBindings() {
 		return globals.values, false
