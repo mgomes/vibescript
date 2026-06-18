@@ -570,11 +570,12 @@ func completionLabels(t *testing.T, server *lspServer, uri string, line, charact
 
 func newCompletionTestServer() *lspServer {
 	return &lspServer{
-		engine:   vibes.MustNewEngine(vibes.Config{}),
-		docs:     make(map[string]string),
-		lines:    make(map[string][]string),
-		compiled: make(map[string]*vibes.Script),
-		programs: make(map[string]*ast.Program),
+		engine:      vibes.MustNewEngine(vibes.Config{}),
+		docs:        make(map[string]string),
+		lines:       make(map[string][]string),
+		compiled:    make(map[string]*vibes.Script),
+		completions: make(map[string]*lspCompletionIndex),
+		programs:    make(map[string]*ast.Program),
 	}
 }
 
@@ -1109,11 +1110,12 @@ func TestDocumentSymbolsSurviveMidEditParses(t *testing.T) {
 func TestPublishDiagnosticsClearsNavigationWhenParsingIsSkipped(t *testing.T) {
 	t.Parallel()
 	server := &lspServer{
-		engine:   vibes.MustNewEngine(vibes.Config{MaxSourceBytes: 64}),
-		docs:     make(map[string]string),
-		lines:    make(map[string][]string),
-		compiled: make(map[string]*vibes.Script),
-		programs: make(map[string]*ast.Program),
+		engine:      vibes.MustNewEngine(vibes.Config{MaxSourceBytes: 64}),
+		docs:        make(map[string]string),
+		lines:       make(map[string][]string),
+		compiled:    make(map[string]*vibes.Script),
+		completions: make(map[string]*lspCompletionIndex),
+		programs:    make(map[string]*ast.Program),
 	}
 	uri := "file:///tmp/too-large.vibe"
 	source := "def old\n  1\nend\n"
@@ -1128,6 +1130,9 @@ func TestPublishDiagnosticsClearsNavigationWhenParsingIsSkipped(t *testing.T) {
 	if server.compiled[uri] == nil {
 		t.Fatal("initial publish did not cache compiled script")
 	}
+	if server.completions[uri] == nil {
+		t.Fatal("initial publish did not cache completion index")
+	}
 
 	oversized := strings.Repeat(source, 8)
 	server.setDocument(uri, oversized)
@@ -1140,6 +1145,9 @@ func TestPublishDiagnosticsClearsNavigationWhenParsingIsSkipped(t *testing.T) {
 	}
 	if _, ok := server.compiled[uri]; ok {
 		t.Fatal("oversized publish kept stale compiled script")
+	}
+	if _, ok := server.completions[uri]; ok {
+		t.Fatal("oversized publish kept stale completion index")
 	}
 }
 
@@ -1464,6 +1472,31 @@ func BenchmarkLSPPublishDiagnosticsLargeDocument(b *testing.B) {
 	}
 }
 
+func BenchmarkLSPCompletionLargeDocument(b *testing.B) {
+	server := newCompletionTestServer()
+	uri := "file:///tmp/completion-large.vibe"
+	source, completionLine := largeLSPCompletionSource(2_000, 8)
+	server.setDocument(uri, source)
+	diagnostics := server.publishDiagnostics(uri, source).Params.(map[string]any)["diagnostics"].([]map[string]any)
+	if len(diagnostics) != 0 {
+		b.Fatalf("large completion source diagnostics = %#v, want none", diagnostics)
+	}
+	message := benchmarkPositionRequest(b, "textDocument/completion", uri, completionLine, 2)
+
+	b.ReportAllocs()
+	for range b.N {
+		messages := server.handleMessage(message)
+		if len(messages) != 1 {
+			b.Fatalf("completion responses = %d, want 1", len(messages))
+		}
+		result := messages[0].Result.(map[string]any)
+		items := result["items"].([]map[string]any)
+		if len(items) < 2_000 {
+			b.Fatalf("completion items = %d, want at least function completions", len(items))
+		}
+	}
+}
+
 func BenchmarkLSPHoverLargeDocument(b *testing.B) {
 	server, uri, callLine := benchmarkLSPNavigationServer(b)
 	message := benchmarkPositionRequest(b, "textDocument/hover", uri, callLine, 4)
@@ -1551,4 +1584,35 @@ func largeLSPNavigationSource(functionCount int) (string, int) {
 	}
 	callLine := 5 + 4*(functionCount-1)
 	return b.String(), callLine
+}
+
+func largeLSPCompletionSource(functionCount, localCount int) (string, int) {
+	var b strings.Builder
+	b.Grow(functionCount * (40 + localCount*24))
+	line := 0
+	completionLine := 0
+	for i := range functionCount {
+		b.WriteString("def caller_")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString("(arg)\n")
+		line++
+		for j := range localCount {
+			if i == functionCount-1 && j == localCount-1 {
+				completionLine = line
+			}
+			b.WriteString("  local_")
+			b.WriteString(strconv.Itoa(i))
+			b.WriteString("_")
+			b.WriteString(strconv.Itoa(j))
+			b.WriteString(" = arg\n")
+			line++
+		}
+		b.WriteString("  local_")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString("_")
+		b.WriteString(strconv.Itoa(localCount - 1))
+		b.WriteString("\nend\n\n")
+		line += 3
+	}
+	return b.String(), completionLine
 }
