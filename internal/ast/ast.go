@@ -38,9 +38,20 @@ func (p *Program) Pos() Position {
 	return p.Statements[0].Pos()
 }
 
+// ParamKind identifies how a function parameter receives values.
+type ParamKind int
+
+const (
+	ParamNormal ParamKind = iota
+	ParamRest
+	ParamKeywordRest
+	ParamBlock
+)
+
 // Param represents a function or block parameter.
 type Param struct {
 	Name       string
+	Kind       ParamKind
 	Type       *TypeExpr
 	DefaultVal Expression
 	IsIvar     bool

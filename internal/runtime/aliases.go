@@ -21,9 +21,10 @@ type (
 	Expression = ast.Expression
 	Program    = ast.Program
 
-	Param    = ast.Param
-	TypeExpr = ast.TypeExpr
-	TypeKind = ast.TypeKind
+	Param     = ast.Param
+	ParamKind = ast.ParamKind
+	TypeExpr  = ast.TypeExpr
+	TypeKind  = ast.TypeKind
 
 	Token     = ast.Token
 	TokenType = ast.TokenType
@@ -76,6 +77,13 @@ type (
 )
 
 const (
+	ParamNormal      = ast.ParamNormal
+	ParamRest        = ast.ParamRest
+	ParamKeywordRest = ast.ParamKeywordRest
+	ParamBlock       = ast.ParamBlock
+)
+
+const (
 	TypeAny      = ast.TypeAny
 	TypeInt      = ast.TypeInt
 	TypeFloat    = ast.TypeFloat
@@ -96,74 +104,75 @@ const (
 )
 
 const (
-	tokenIllegal  = ast.TokenIllegal
-	tokenEOF      = ast.TokenEOF
-	tokenIdent    = ast.TokenIdent
-	tokenInt      = ast.TokenInt
-	tokenFloat    = ast.TokenFloat
-	tokenString   = ast.TokenString
-	tokenSymbol   = ast.TokenSymbol
-	tokenAssign   = ast.TokenAssign
-	tokenPlus     = ast.TokenPlus
-	tokenMinus    = ast.TokenMinus
-	tokenBang     = ast.TokenBang
-	tokenAsterisk = ast.TokenAsterisk
-	tokenSlash    = ast.TokenSlash
-	tokenPercent  = ast.TokenPercent
-	tokenLT       = ast.TokenLT
-	tokenGT       = ast.TokenGT
-	tokenLTE      = ast.TokenLTE
-	tokenGTE      = ast.TokenGTE
-	tokenEQ       = ast.TokenEQ
-	tokenNotEQ    = ast.TokenNotEQ
-	tokenAnd      = ast.TokenAnd
-	tokenOr       = ast.TokenOr
-	tokenComma    = ast.TokenComma
-	tokenColon    = ast.TokenColon
-	tokenScope    = ast.TokenScope
-	tokenDot      = ast.TokenDot
-	tokenRange    = ast.TokenRange
-	tokenLParen   = ast.TokenLParen
-	tokenRParen   = ast.TokenRParen
-	tokenLBrace   = ast.TokenLBrace
-	tokenRBrace   = ast.TokenRBrace
-	tokenLBracket = ast.TokenLBracket
-	tokenRBracket = ast.TokenRBracket
-	tokenPipe     = ast.TokenPipe
-	tokenArrow    = ast.TokenArrow
-	tokenIvar     = ast.TokenIvar
-	tokenClassVar = ast.TokenClassVar
-	tokenDef      = ast.TokenDef
-	tokenClass    = ast.TokenClass
-	tokenEnum     = ast.TokenEnum
-	tokenExport   = ast.TokenExport
-	tokenSelf     = ast.TokenSelf
-	tokenPrivate  = ast.TokenPrivate
-	tokenProperty = ast.TokenProperty
-	tokenGetter   = ast.TokenGetter
-	tokenSetter   = ast.TokenSetter
-	tokenBegin    = ast.TokenBegin
-	tokenRescue   = ast.TokenRescue
-	tokenEnsure   = ast.TokenEnsure
-	tokenRaise    = ast.TokenRaise
-	tokenEnd      = ast.TokenEnd
-	tokenReturn   = ast.TokenReturn
-	tokenYield    = ast.TokenYield
-	tokenDo       = ast.TokenDo
-	tokenFor      = ast.TokenFor
-	tokenWhile    = ast.TokenWhile
-	tokenUntil    = ast.TokenUntil
-	tokenBreak    = ast.TokenBreak
-	tokenNext     = ast.TokenNext
-	tokenIn       = ast.TokenIn
-	tokenIf       = ast.TokenIf
-	tokenCase     = ast.TokenCase
-	tokenWhen     = ast.TokenWhen
-	tokenElsif    = ast.TokenElsif
-	tokenElse     = ast.TokenElse
-	tokenTrue     = ast.TokenTrue
-	tokenFalse    = ast.TokenFalse
-	tokenNil      = ast.TokenNil
+	tokenIllegal   = ast.TokenIllegal
+	tokenEOF       = ast.TokenEOF
+	tokenIdent     = ast.TokenIdent
+	tokenInt       = ast.TokenInt
+	tokenFloat     = ast.TokenFloat
+	tokenString    = ast.TokenString
+	tokenSymbol    = ast.TokenSymbol
+	tokenAssign    = ast.TokenAssign
+	tokenPlus      = ast.TokenPlus
+	tokenMinus     = ast.TokenMinus
+	tokenBang      = ast.TokenBang
+	tokenAsterisk  = ast.TokenAsterisk
+	tokenSlash     = ast.TokenSlash
+	tokenPercent   = ast.TokenPercent
+	tokenLT        = ast.TokenLT
+	tokenGT        = ast.TokenGT
+	tokenLTE       = ast.TokenLTE
+	tokenGTE       = ast.TokenGTE
+	tokenEQ        = ast.TokenEQ
+	tokenNotEQ     = ast.TokenNotEQ
+	tokenAnd       = ast.TokenAnd
+	tokenOr        = ast.TokenOr
+	tokenAmpersand = ast.TokenAmpersand
+	tokenComma     = ast.TokenComma
+	tokenColon     = ast.TokenColon
+	tokenScope     = ast.TokenScope
+	tokenDot       = ast.TokenDot
+	tokenRange     = ast.TokenRange
+	tokenLParen    = ast.TokenLParen
+	tokenRParen    = ast.TokenRParen
+	tokenLBrace    = ast.TokenLBrace
+	tokenRBrace    = ast.TokenRBrace
+	tokenLBracket  = ast.TokenLBracket
+	tokenRBracket  = ast.TokenRBracket
+	tokenPipe      = ast.TokenPipe
+	tokenArrow     = ast.TokenArrow
+	tokenIvar      = ast.TokenIvar
+	tokenClassVar  = ast.TokenClassVar
+	tokenDef       = ast.TokenDef
+	tokenClass     = ast.TokenClass
+	tokenEnum      = ast.TokenEnum
+	tokenExport    = ast.TokenExport
+	tokenSelf      = ast.TokenSelf
+	tokenPrivate   = ast.TokenPrivate
+	tokenProperty  = ast.TokenProperty
+	tokenGetter    = ast.TokenGetter
+	tokenSetter    = ast.TokenSetter
+	tokenBegin     = ast.TokenBegin
+	tokenRescue    = ast.TokenRescue
+	tokenEnsure    = ast.TokenEnsure
+	tokenRaise     = ast.TokenRaise
+	tokenEnd       = ast.TokenEnd
+	tokenReturn    = ast.TokenReturn
+	tokenYield     = ast.TokenYield
+	tokenDo        = ast.TokenDo
+	tokenFor       = ast.TokenFor
+	tokenWhile     = ast.TokenWhile
+	tokenUntil     = ast.TokenUntil
+	tokenBreak     = ast.TokenBreak
+	tokenNext      = ast.TokenNext
+	tokenIn        = ast.TokenIn
+	tokenIf        = ast.TokenIf
+	tokenCase      = ast.TokenCase
+	tokenWhen      = ast.TokenWhen
+	tokenElsif     = ast.TokenElsif
+	tokenElse      = ast.TokenElse
+	tokenTrue      = ast.TokenTrue
+	tokenFalse     = ast.TokenFalse
+	tokenNil       = ast.TokenNil
 )
 
 func cloneParams(params []Param) []Param            { return ast.CloneParams(params) }

@@ -521,37 +521,118 @@ func (p *parser) parsePrivateStatement() ast.Statement {
 
 func (p *parser) parseParams() []ast.Param {
 	params := []ast.Param{}
+	seenRest := false
+	seenKeywordRest := false
+	seenBlock := false
 	for {
-		if p.curToken.Type != ast.TokenIdent && p.curToken.Type != ast.TokenIvar {
-			p.errorExpected(p.curToken, "parameter name")
+		param, paramPos, ok := p.parseParam()
+		if !ok {
 			return params
 		}
-		param := ast.Param{Name: p.curToken.Literal}
-		if p.curToken.Type == ast.TokenIvar {
-			param.IsIvar = true
-			param.Name = strings.TrimPrefix(param.Name, "@")
-		}
-		if p.peekToken.Type == ast.TokenColon {
-			p.nextToken()
-			p.nextToken()
-			param.Type = p.parseTypeExpr()
-			if param.Type == nil {
+		switch param.Kind {
+		case ast.ParamNormal:
+			if seenRest || seenKeywordRest || seenBlock {
+				p.addParseError(paramPos, "ordinary parameters must precede rest, keyword rest, and block capture parameters")
 				return params
 			}
+		case ast.ParamRest:
+			if seenRest {
+				p.addParseError(paramPos, "duplicate rest parameter")
+				return params
+			}
+			if seenKeywordRest || seenBlock {
+				p.addParseError(paramPos, "rest parameter must precede keyword rest and block capture parameters")
+				return params
+			}
+			seenRest = true
+		case ast.ParamKeywordRest:
+			if seenKeywordRest {
+				p.addParseError(paramPos, "duplicate keyword rest parameter")
+				return params
+			}
+			if seenBlock {
+				p.addParseError(paramPos, "keyword rest parameter must precede block capture parameter")
+				return params
+			}
+			seenKeywordRest = true
+		case ast.ParamBlock:
+			if seenBlock {
+				p.addParseError(paramPos, "duplicate block capture parameter")
+				return params
+			}
+			seenBlock = true
 		}
-		if p.peekToken.Type == ast.TokenAssign {
-			p.nextToken()
-			p.nextToken()
-			param.DefaultVal = p.parseExpression(lowestPrec)
-		}
+
 		params = append(params, param)
 		if p.peekToken.Type != ast.TokenComma {
 			break
+		}
+		if param.Kind == ast.ParamBlock {
+			p.addParseError(p.peekToken.Pos, "block capture parameter must be last")
+			return params
 		}
 		p.nextToken()
 		p.nextToken()
 	}
 	return params
+}
+
+func (p *parser) parseParam() (ast.Param, ast.Position, bool) {
+	kind := ast.ParamNormal
+	switch p.curToken.Type {
+	case ast.TokenAsterisk:
+		kind = ast.ParamRest
+		if p.peekToken.Type == ast.TokenAsterisk {
+			kind = ast.ParamKeywordRest
+			p.nextToken()
+		}
+		p.nextToken()
+	case ast.TokenAmpersand:
+		kind = ast.ParamBlock
+		p.nextToken()
+	}
+
+	if p.curToken.Type != ast.TokenIdent && (kind != ast.ParamNormal || p.curToken.Type != ast.TokenIvar) {
+		p.errorExpected(p.curToken, parameterNameExpectation(kind))
+		return ast.Param{}, ast.Position{}, false
+	}
+	pos := p.curToken.Pos
+	param := ast.Param{Name: p.curToken.Literal, Kind: kind}
+	if p.curToken.Type == ast.TokenIvar {
+		param.IsIvar = true
+		param.Name = strings.TrimPrefix(param.Name, "@")
+	}
+	if p.peekToken.Type == ast.TokenColon {
+		p.nextToken()
+		p.nextToken()
+		param.Type = p.parseTypeExpr()
+		if param.Type == nil {
+			return ast.Param{}, ast.Position{}, false
+		}
+	}
+	if p.peekToken.Type == ast.TokenAssign {
+		if kind != ast.ParamNormal {
+			p.addParseError(p.peekToken.Pos, "capture parameters cannot have default values")
+			return ast.Param{}, ast.Position{}, false
+		}
+		p.nextToken()
+		p.nextToken()
+		param.DefaultVal = p.parseExpression(lowestPrec)
+	}
+	return param, pos, true
+}
+
+func parameterNameExpectation(kind ast.ParamKind) string {
+	switch kind {
+	case ast.ParamRest:
+		return "rest parameter name"
+	case ast.ParamKeywordRest:
+		return "keyword rest parameter name"
+	case ast.ParamBlock:
+		return "block capture parameter name"
+	default:
+		return "parameter name"
+	}
 }
 
 func (p *parser) parsePropertyDecl(kind ast.TokenType) ast.PropertyDecl {

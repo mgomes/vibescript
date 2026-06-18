@@ -23,6 +23,7 @@ func cloneParams(params []Param) []Param {
 	for i, param := range params {
 		out[i] = Param{
 			Name:       param.Name,
+			Kind:       param.Kind,
 			Type:       cloneTypeExpr(param.Type),
 			DefaultVal: cloneExpression(param.DefaultVal),
 			IsIvar:     param.IsIvar,
