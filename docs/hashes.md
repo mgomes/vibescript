@@ -1,6 +1,7 @@
 # Hashes in Vibescript
 
-Hashes are symbol-keyed dictionaries. Declare them with Ruby-style shorthand:
+Hashes are dictionaries whose keys share one string lookup space. Declare common
+identifier-shaped keys with Ruby-style shorthand:
 
 ```vibe
 player = {
@@ -10,8 +11,21 @@ player = {
 }
 ```
 
-Keys default to symbols (`name:`) but you can access values using either symbol
-or string notation: `player[:name]` or `player["name"]`.
+Shorthand labels (`name:`) are normalized into the same key space as strings,
+so you can access values using either symbol or string notation:
+`player[:name]` or `player["name"]`.
+
+Use quoted keys for JSON-shaped payloads or names that are not valid
+identifiers:
+
+```vibe
+player = {
+  "first-name": "Ada",
+  "last name": "Lovelace"
+}
+
+player["first-name"] # "Ada"
+```
 
 Dot access keeps hash method names reserved. If a stored key is named like a
 hash method, use index access for the entry:

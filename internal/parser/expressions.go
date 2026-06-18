@@ -300,16 +300,25 @@ func (p *parser) parseHashLiteral() ast.Expression {
 }
 
 func (p *parser) parseHashPair() ast.HashPair {
-	if !isLabelNameToken(p.curToken.Type) || p.peekToken.Type != ast.TokenColon {
-		p.addParseError(p.curToken.Pos, "invalid hash pair: expected symbol-style key like name:")
+	if p.peekToken.Type != ast.TokenColon {
+		p.addParseError(p.curToken.Pos, `invalid hash pair: expected key like name: or "name":`)
 		return ast.HashPair{}
 	}
 
-	key := &ast.SymbolLiteral{Name: p.curToken.Literal, Position: p.curToken.Pos}
+	var key ast.Expression
+	switch {
+	case isLabelNameToken(p.curToken.Type):
+		key = &ast.SymbolLiteral{Name: p.curToken.Literal, Position: p.curToken.Pos}
+	case p.curToken.Type == ast.TokenString:
+		key = &ast.StringLiteral{Value: p.curToken.Literal, Position: p.curToken.Pos}
+	default:
+		p.addParseError(p.curToken.Pos, `invalid hash pair: expected key like name: or "name":`)
+		return ast.HashPair{}
+	}
 	p.nextToken()
 	p.nextToken()
 	if p.curToken.Type == ast.TokenComma || p.curToken.Type == ast.TokenRBrace {
-		p.addParseError(p.curToken.Pos, fmt.Sprintf("missing value for hash key %s", key.Name))
+		p.addParseError(p.curToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
 		return ast.HashPair{}
 	}
 
@@ -318,6 +327,17 @@ func (p *parser) parseHashPair() ast.HashPair {
 		return ast.HashPair{}
 	}
 	return ast.HashPair{Key: key, Value: value}
+}
+
+func hashKeyName(key ast.Expression) string {
+	switch k := key.(type) {
+	case *ast.SymbolLiteral:
+		return k.Name
+	case *ast.StringLiteral:
+		return k.Value
+	default:
+		return "unknown"
+	}
 }
 
 func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
