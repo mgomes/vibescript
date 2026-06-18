@@ -341,10 +341,13 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 		}
 	case '"':
-		literal, err := l.readDoubleQuotedString()
+		literal, interpolated, err := l.readDoubleQuotedString()
 		if err != "" {
 			tok.Type = ast.TokenIllegal
 			tok.Literal = err
+		} else if interpolated {
+			tok.Type = ast.TokenInterpolatedString
+			tok.Literal = literal
 		} else {
 			tok.Type = ast.TokenString
 			tok.Literal = literal
@@ -556,35 +559,58 @@ done:
 	return literal, hasDot
 }
 
-func (l *lexer) readDoubleQuotedString() (string, string) {
-	var sb strings.Builder
+func (l *lexer) readDoubleQuotedString() (string, bool, string) {
+	var decoded strings.Builder
+	var raw strings.Builder
+	interpolated := false
 
 	for {
 		l.readRune()
 		switch l.ch {
 		case 0:
-			return "", "unterminated string"
+			return "", false, "unterminated string"
 		case '"':
 			l.readRune()
-			return sb.String(), ""
+			if interpolated {
+				return raw.String(), true, ""
+			}
+			return decoded.String(), false, ""
 		case '\\':
 			next := l.peekRune()
+			if next == 0 {
+				return "", false, "unterminated string"
+			}
 			switch next {
 			case '"', '\\':
 				l.readRune()
-				sb.WriteRune(next)
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteRune(next)
 			case 'n':
 				l.readRune()
-				sb.WriteByte('\n')
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteByte('\n')
 			case 't':
 				l.readRune()
-				sb.WriteByte('\t')
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteByte('\t')
 			default:
 				l.readRune()
-				sb.WriteRune(next)
+				raw.WriteRune('\\')
+				raw.WriteRune(next)
+				decoded.WriteRune(next)
+			}
+		case '#':
+			raw.WriteRune(l.ch)
+			decoded.WriteRune(l.ch)
+			if l.peekRune() == '{' {
+				interpolated = true
 			}
 		default:
-			sb.WriteRune(l.ch)
+			raw.WriteRune(l.ch)
+			decoded.WriteRune(l.ch)
 		}
 	}
 }

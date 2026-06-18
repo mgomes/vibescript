@@ -220,6 +220,12 @@ end`,
 end`,
 		},
 		{
+			name: "string_interpolation",
+			source: `def run(name)
+  "hello #{name.upcase}, total #{2 + 3}"
+end`,
+		},
+		{
 			name: "parenless_yield_args",
 			source: `def caller
   yield 1, 2

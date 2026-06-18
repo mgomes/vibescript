@@ -2,6 +2,18 @@
 
 Vibescript provides several methods for string manipulation.
 
+## Interpolation
+
+Double-quoted strings interpolate single expressions inside `#{...}`:
+
+```vibe
+name = "Ada"
+"Hello #{name}" # "Hello Ada"
+```
+
+Escape the marker with `\#{...}` when literal text is required. Single-quoted
+strings do not interpolate.
+
 ## Locale Behavior
 
 String transforms are locale-insensitive and deterministic across supported
