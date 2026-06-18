@@ -339,7 +339,7 @@ func (est *memoryEstimator) slice(values []Value) int {
 		return size
 	}
 
-	id := reflect.ValueOf(values).Pointer()
+	id := uintptr(unsafe.Pointer(unsafe.SliceData(values)))
 	if id != 0 {
 		if _, seen := est.seenSlices[id]; seen {
 			return 0
