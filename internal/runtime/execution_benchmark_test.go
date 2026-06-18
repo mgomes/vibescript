@@ -87,6 +87,44 @@ end`)
 	}
 }
 
+func BenchmarkExecutionArrayPushAccumulation(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(n)
+  out = []
+  for i in 1..n
+    out = out.push(i)
+  end
+  out.size
+end`)
+
+	args := []Value{NewInt(400)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkExecutionArrayConcatAccumulation(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(n)
+  out = []
+  for i in 1..n
+    out = out + [i]
+  end
+  out.size
+end`)
+
+	args := []Value{NewInt(400)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
 func BenchmarkExecutionMethodDispatchLoop(b *testing.B) {
 	script := compileScriptWithEngine(b, benchmarkEngine(), `class Counter
   def initialize(seed)

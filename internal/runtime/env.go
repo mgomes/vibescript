@@ -1,6 +1,9 @@
 package runtime
 
-import "maps"
+import (
+	"maps"
+	"reflect"
+)
 
 // Env represents a lexical scope that maps variable names to values.
 //
@@ -11,10 +14,11 @@ import "maps"
 // staticBytes counter instead of re-walking every binding on each check
 // — the root env's builtin set dominated estimation cost otherwise.
 type Env struct {
-	parent      *Env
-	values      map[string]Value
-	statics     map[string]Value
-	staticBytes int32
+	parent             *Env
+	values             map[string]Value
+	statics            map[string]Value
+	staticBytes        int32
+	arrayAppendBuffers map[string][]Value
 
 	// frozen marks engine-shared scopes (the builtin proto). Their
 	// bindings are readable through the chain but never written:
@@ -52,6 +56,7 @@ func (e *Env) Get(name string) (Value, bool) {
 func (e *Env) Define(name string, val Value) {
 	e.values[name] = val
 	e.dropStatic(name)
+	e.dropArrayAppendBuffer(name)
 }
 
 // growStatics pre-sizes the statics map for n upcoming DefineStatic
@@ -81,6 +86,17 @@ func (e *Env) DefineStatic(name string, val Value) {
 // and names found in a frozen scope rebind in the nearest mutable scope
 // below it, so engine-shared bindings are never written.
 func (e *Env) Assign(name string, val Value) bool {
+	e.assignValue(name, val)
+	return true
+}
+
+func (e *Env) assignArrayAppendBuffer(name string, val Value, buffer []Value) bool {
+	scope := e.assignValue(name, val)
+	scope.setArrayAppendBuffer(name, buffer)
+	return true
+}
+
+func (e *Env) assignValue(name string, val Value) *Env {
 	last := e
 	for scope := e; scope != nil; scope = scope.parent {
 		if scope.frozen {
@@ -89,26 +105,89 @@ func (e *Env) Assign(name string, val Value) bool {
 			if inValues || inStatics {
 				last.values[name] = val
 				last.dropStatic(name)
-				return true
+				last.dropArrayAppendBuffer(name)
+				return last
 			}
 			continue
 		}
 		if _, ok := scope.values[name]; ok {
 			scope.values[name] = val
-			return true
+			scope.dropArrayAppendBuffer(name)
+			return scope
 		}
 		if _, ok := scope.statics[name]; ok {
 			// The binding is no longer immutable-by-binding; demote it
 			// so estimation starts walking its (now mutable) value.
 			scope.dropStatic(name)
 			scope.values[name] = val
-			return true
+			scope.dropArrayAppendBuffer(name)
+			return scope
 		}
 		last = scope
 	}
 	last.values[name] = val
 	last.dropStatic(name)
-	return true
+	last.dropArrayAppendBuffer(name)
+	return last
+}
+
+func (e *Env) arrayAppendBuffer(name string) ([]Value, bool) {
+	scope, ok := e.lookupBindingScope(name)
+	if !ok || scope.arrayAppendBuffers == nil {
+		return nil, false
+	}
+	buffer, ok := scope.arrayAppendBuffers[name]
+	return buffer, ok
+}
+
+func (e *Env) clearArrayAppendBuffer(name string) {
+	if scope, ok := e.lookupBindingScope(name); ok {
+		scope.dropArrayAppendBuffer(name)
+	}
+}
+
+func (e *Env) lookupBindingScope(name string) (*Env, bool) {
+	for scope := e; scope != nil; scope = scope.parent {
+		if _, ok := scope.values[name]; ok {
+			return scope, true
+		}
+		if _, ok := scope.statics[name]; ok {
+			return scope, true
+		}
+	}
+	return nil, false
+}
+
+func (e *Env) setArrayAppendBuffer(name string, buffer []Value) {
+	if e.arrayAppendBuffers == nil {
+		e.arrayAppendBuffers = make(map[string][]Value)
+	}
+	e.arrayAppendBuffers[name] = buffer
+}
+
+func (e *Env) detachArrayAppendResult(val Value) Value {
+	if val.Kind() != KindArray {
+		return val
+	}
+	items := val.Array()
+	if len(items) == 0 {
+		return val
+	}
+	ptr := reflect.ValueOf(items).Pointer()
+	if ptr == 0 {
+		return val
+	}
+	for scope := e; scope != nil; scope = scope.parent {
+		for _, buffer := range scope.arrayAppendBuffers {
+			if len(buffer) != len(items) || reflect.ValueOf(buffer).Pointer() != ptr {
+				continue
+			}
+			detached := make([]Value, len(items))
+			copy(detached, items)
+			return NewArray(detached)
+		}
+	}
+	return val
 }
 
 // visibleNames returns every name bound in this scope or any enclosing
@@ -156,6 +235,16 @@ func (e *Env) dropStatic(name string) {
 	}
 	delete(e.statics, name)
 	e.staticBytes -= int32(staticEntryBytes(name))
+}
+
+func (e *Env) dropArrayAppendBuffer(name string) {
+	if e.arrayAppendBuffers == nil {
+		return
+	}
+	delete(e.arrayAppendBuffers, name)
+	if len(e.arrayAppendBuffers) == 0 {
+		e.arrayAppendBuffers = nil
+	}
 }
 
 // staticEntryBytes is the estimation cost of one static binding: its map

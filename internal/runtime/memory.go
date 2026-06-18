@@ -187,6 +187,13 @@ func (est *memoryEstimator) env(env *Env) int {
 	est.seenEnvs[env] = struct{}{}
 
 	size := estimatedEnvBytes + estimatedMapBaseBytes + int(env.staticBytes) + len(env.values)*estimatedMapEntryBytes
+	if len(env.arrayAppendBuffers) > 0 {
+		size += estimatedMapBaseBytes + len(env.arrayAppendBuffers)*estimatedMapEntryBytes
+		for name, buffer := range env.arrayAppendBuffers {
+			size += estimatedStringHeaderBytes + len(name)
+			size += est.slice(buffer)
+		}
+	}
 	for name, val := range env.values {
 		size += estimatedStringHeaderBytes + len(name)
 		size += est.value(val)
