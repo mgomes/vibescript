@@ -16,7 +16,9 @@ func TestCoreSyntaxFreezeSnippetsCompile(t *testing.T) {
   payload = {
     active: true,
     count: 3,
-    tags: ["a", "b"]
+    tags: ["a", "b"],
+    :owner => "Ada",
+    "first-name" => "Ada"
   }
   payload
 end`,

@@ -19,7 +19,7 @@ parse error at 2:9: missing value for hash key foo
 
 Common parser diagnostics:
 
-- `invalid hash pair: expected symbol-style key like name:`
+- `invalid hash pair: expected key like name:, "name":, :name =>, or expression =>`
 - `missing value for hash key ...`
 - `parallel assignment targets require '='`
 - `duplicate rest assignment target`

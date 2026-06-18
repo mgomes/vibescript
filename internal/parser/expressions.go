@@ -663,11 +663,13 @@ func (p *parser) parseHashLiteral() ast.Expression {
 }
 
 func (p *parser) parseHashPair() ast.HashPair {
-	if p.peekToken.Type != ast.TokenColon {
-		p.addParseError(p.curToken.Pos, `invalid hash pair: expected key like name: or "name":`)
-		return ast.HashPair{}
+	if p.peekToken.Type == ast.TokenColon {
+		return p.parseColonHashPair()
 	}
+	return p.parseHashRocketPair()
+}
 
+func (p *parser) parseColonHashPair() ast.HashPair {
 	var key ast.Expression
 	switch {
 	case isLabelNameToken(p.curToken):
@@ -675,10 +677,29 @@ func (p *parser) parseHashPair() ast.HashPair {
 	case p.curToken.Type == ast.TokenString:
 		key = &ast.StringLiteral{Value: p.curToken.Literal, Position: p.curToken.Pos}
 	default:
-		p.addParseError(p.curToken.Pos, `invalid hash pair: expected key like name: or "name":`)
+		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
 		return ast.HashPair{}
 	}
 	p.nextToken()
+	return p.parseHashPairValue(key)
+}
+
+func (p *parser) parseHashRocketPair() ast.HashPair {
+	key := p.parseExpression(lowestPrec)
+	if key == nil {
+		return ast.HashPair{}
+	}
+	if p.peekToken.Type != ast.TokenArrow {
+		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
+		return ast.HashPair{}
+	}
+	p.nextToken()
+	return p.parseHashPairValue(key)
+}
+
+const invalidHashPairMessage = `invalid hash pair: expected key like name:, "name":, :name =>, or expression =>`
+
+func (p *parser) parseHashPairValue(key ast.Expression) ast.HashPair {
 	p.nextToken()
 	if p.curToken.Type == ast.TokenComma || p.curToken.Type == ast.TokenRBrace {
 		p.addParseError(p.curToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
