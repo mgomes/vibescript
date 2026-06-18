@@ -13,12 +13,13 @@ Vibescript supports these control-flow forms:
 ## `for` loops
 
 Ranges with `..` include the final endpoint. Ranges with `...` exclude the
-final endpoint. Descending ranges use the same rule.
+final endpoint. Descending ranges use the same rule. `do` may be used as an
+optional body separator after the iterable expression.
 
 ```vibe
 def sum_first_five
   total = 0
-  for n in 1..5
+  for n in 1..5 do
     total = total + n
   end
   total
@@ -97,10 +98,12 @@ end
 
 ## `while` and `until`
 
+`do` may be used as an optional body separator after the condition.
+
 ```vibe
 def countdown(n)
   out = []
-  while n > 0
+  while n > 0 do
     out = out + [n]
     n = n - 1
   end
@@ -110,7 +113,7 @@ end
 def count_up(limit)
   out = []
   n = 0
-  until n >= limit
+  until n >= limit do
     out = out + [n]
     n = n + 1
   end
