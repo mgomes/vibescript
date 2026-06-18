@@ -27,6 +27,7 @@ func cloneParams(params []Param) []Param {
 			Type:       cloneTypeExpr(param.Type),
 			DefaultVal: cloneExpression(param.DefaultVal),
 			IsIvar:     param.IsIvar,
+			Target:     cloneExpression(param.Target),
 		}
 	}
 	return out

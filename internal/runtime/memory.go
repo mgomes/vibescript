@@ -246,7 +246,7 @@ func (est *memoryEstimator) value(val Value) int {
 		est.seenBlocks[blk] = struct{}{}
 		size += estimatedBlockBytes + estimatedSliceBaseBytes + len(blk.Params)*estimatedStringHeaderBytes
 		for _, param := range blk.Params {
-			size += len(param.Name)
+			size += estimatedParamBytes(param)
 		}
 		size += estimatedStringHeaderBytes*3 + len(blk.moduleKey) + len(blk.modulePath) + len(blk.moduleRoot)
 		size += est.env(blk.Env)
@@ -255,6 +255,29 @@ func (est *memoryEstimator) value(val Value) int {
 	}
 
 	return size
+}
+
+func estimatedParamBytes(param Param) int {
+	size := len(param.Name)
+	if param.Target != nil {
+		size += estimatedParamTargetBytes(param.Target)
+	}
+	return size
+}
+
+func estimatedParamTargetBytes(target Expression) int {
+	switch t := target.(type) {
+	case *Identifier:
+		return len(t.Name)
+	case *DestructureTarget:
+		size := 0
+		for _, element := range t.Elements {
+			size += estimatedParamTargetBytes(element.Target)
+		}
+		return size
+	default:
+		return 0
+	}
 }
 
 func (est *memoryEstimator) stringPayloadSize(str string) int {

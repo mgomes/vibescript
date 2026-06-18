@@ -383,6 +383,12 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 			}
 			val = normalized
 		}
+		if param.Target != nil {
+			if err := exec.bindBlockParamTarget(blockEnv, param.Target, val); err != nil {
+				return NewNil(), err
+			}
+			continue
+		}
 		blockEnv.Define(param.Name, val)
 	}
 	val, returned, err := exec.evalStatements(blk.Body, blockEnv)
@@ -393,6 +399,20 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		return blockEnv.detachArrayAppendResult(val), nil
 	}
 	return blockEnv.detachArrayAppendResult(val), nil
+}
+
+func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value) error {
+	switch t := target.(type) {
+	case *Identifier:
+		env.Define(t.Name, value)
+		return nil
+	case *DestructureTarget:
+		return AssignDestructure(t, value, func(target Expression, value Value) error {
+			return exec.bindBlockParamTarget(env, target, value)
+		})
+	default:
+		return exec.errorAt(target.Pos(), "invalid block parameter target")
+	}
 }
 
 func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
