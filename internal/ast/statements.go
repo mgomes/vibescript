@@ -116,6 +116,7 @@ type TryStmt struct {
 	Body     []Statement
 	RescueTy *TypeExpr
 	Rescue   []Statement
+	Else     []Statement
 	Ensure   []Statement
 	Position Position
 }

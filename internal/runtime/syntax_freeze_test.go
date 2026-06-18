@@ -107,6 +107,23 @@ end`,
 end`,
 		},
 		{
+			name: "begin_rescue_else_ensure",
+			source: `def run(flag)
+  begin
+    if flag
+      raise("boom")
+    end
+    "ok"
+  rescue(RuntimeError)
+    "rescued"
+  else
+    "clean"
+  ensure
+    now()
+  end
+end`,
+		},
+		{
 			name: "require_with_alias_keyword",
 			source: `def run(value)
   helpers = require("public/helpers", as: "helpers")

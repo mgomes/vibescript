@@ -1015,6 +1015,9 @@ func validateFuzzStatement(context string, stmt Statement) error {
 		if err := validateFuzzStatements(context+".rescue", s.Rescue); err != nil {
 			return err
 		}
+		if err := validateFuzzStatements(context+".else", s.Else); err != nil {
+			return err
+		}
 		return validateFuzzStatements(context+".ensure", s.Ensure)
 	case *ClassStmt:
 		if s.Name == "" {

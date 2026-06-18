@@ -107,6 +107,7 @@ Semantics:
 - `rescue` runs only when the `begin` body raises an error.
 - `rescue` supports optional typed matching via `rescue(<Type>)`.
 - `rescue` supports `AssertionError`, `LimitError`, `RuntimeError`, and unions such as `rescue(AssertionError | RuntimeError)`.
+- `else` runs only when the `begin` body finishes without a rescued error.
 - `ensure` always runs (success, rescue path, or failure path).
 - Without `rescue`, original runtime errors still propagate after `ensure` executes.
 - Unmatched typed rescues do not swallow the original error.
