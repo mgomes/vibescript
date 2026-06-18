@@ -949,6 +949,16 @@ func TestExamples(t *testing.T) {
 			want: intVal(18),
 		},
 		{
+			name:     "ranges/exclusive_range_sum",
+			file:     "ranges/usage.vibe",
+			function: "exclusive_range_sum",
+			args: []Value{
+				intVal(3),
+				intVal(6),
+			},
+			want: intVal(12),
+		},
+		{
 			name:     "ranges/descending_range_collect",
 			file:     "ranges/usage.vibe",
 			function: "descending_range_collect",

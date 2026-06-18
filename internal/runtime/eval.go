@@ -822,7 +822,7 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), exec.errorAt(expr.End.Pos(), "%s", err.Error())
 	}
-	return NewRange(Range{Start: start, End: end}), nil
+	return NewRange(Range{Start: start, End: end, Exclusive: expr.Exclusive}), nil
 }
 
 func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
@@ -895,13 +895,7 @@ func caseCandidateMatches(target, candidate Value) bool {
 
 	switch target.Kind() {
 	case KindInt:
-		rng := candidate.Range()
-		start, end := rng.Start, rng.End
-		if start > end {
-			start, end = end, start
-		}
-		value := target.Int()
-		return value >= start && value <= end
+		return rangeContainsInt(candidate.Range(), target.Int())
 	case KindFloat:
 		return rangeContainsFloat(candidate.Range(), target.Float())
 	default:
@@ -909,17 +903,42 @@ func caseCandidateMatches(target, candidate Value) bool {
 	}
 }
 
+func rangeContainsInt(rng Range, value int64) bool {
+	if rng.Start <= rng.End {
+		if rng.Exclusive {
+			return value >= rng.Start && value < rng.End
+		}
+		return value >= rng.Start && value <= rng.End
+	}
+	if rng.Exclusive {
+		return value <= rng.Start && value > rng.End
+	}
+	return value <= rng.Start && value >= rng.End
+}
+
 func rangeContainsFloat(rng Range, value float64) bool {
 	if math.IsNaN(value) || value < minInt64Float || value >= maxInt64FloatExclusive {
 		return false
 	}
 
-	start, end := rng.Start, rng.End
-	if start > end {
-		start, end = end, start
+	floor := int64(math.Floor(value))
+	ceil := int64(math.Ceil(value))
+	if rng.Start <= rng.End {
+		if floor < rng.Start {
+			return false
+		}
+		if rng.Exclusive {
+			return floor < rng.End
+		}
+		return ceil <= rng.End
 	}
-
-	return int64(math.Floor(value)) >= start && int64(math.Ceil(value)) <= end
+	if ceil > rng.Start {
+		return false
+	}
+	if rng.Exclusive {
+		return ceil > rng.End
+	}
+	return floor >= rng.End
 }
 
 func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, error) {
@@ -960,7 +979,7 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 	case KindRange:
 		r := iterable.Range()
 		if r.Start <= r.End {
-			for i := r.Start; i <= r.End; i++ {
+			for i := r.Start; rangeLoopAscendingContinues(i, r); i++ {
 				env.Assign(stmt.Iterator, NewInt(i))
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
@@ -978,7 +997,7 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				last = val
 			}
 		} else {
-			for i := r.Start; i >= r.End; i-- {
+			for i := r.Start; rangeLoopDescendingContinues(i, r); i-- {
 				env.Assign(stmt.Iterator, NewInt(i))
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
@@ -1001,6 +1020,20 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 	}
 
 	return last, false, nil
+}
+
+func rangeLoopAscendingContinues(value int64, rng Range) bool {
+	if rng.Exclusive {
+		return value < rng.End
+	}
+	return value <= rng.End
+}
+
+func rangeLoopDescendingContinues(value int64, rng Range) bool {
+	if rng.Exclusive {
+		return value > rng.End
+	}
+	return value >= rng.End
 }
 
 func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, bool, error) {

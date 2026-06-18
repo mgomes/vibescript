@@ -202,9 +202,10 @@ func (e *ConditionalExpr) Pos() Position { return e.Position }
 
 // RangeExpr represents a range expression (e.g. 1..10).
 type RangeExpr struct {
-	Start    Expression
-	End      Expression
-	Position Position
+	Start     Expression
+	End       Expression
+	Exclusive bool
+	Position  Position
 }
 
 func (e *RangeExpr) exprNode()     {}

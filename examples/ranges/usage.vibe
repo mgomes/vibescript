@@ -8,6 +8,14 @@ def inclusive_range_sum(start, finish)
   total
 end
 
+def exclusive_range_sum(start, finish)
+  total = 0
+  for value in start...finish
+    total = total + value
+  end
+  total
+end
+
 def descending_range_collect(start, finish)
   output = ""
   for value in start..finish

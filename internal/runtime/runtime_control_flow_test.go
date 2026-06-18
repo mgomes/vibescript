@@ -152,6 +152,92 @@ func TestUntilLoops(t *testing.T) {
 	requireCallRuntimeErrorType(t, spinScript, "spin_until", nil, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+func TestForRangeLoops(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def inclusive_range_values
+      out = []
+      for n in 1..5
+        out = out + [n]
+      end
+      out
+    end
+
+    def exclusive_range_values
+      out = []
+      for n in 1...5
+        out = out + [n]
+      end
+      out
+    end
+
+    def descending_inclusive_range_values
+      out = []
+      for n in 5..1
+        out = out + [n]
+      end
+      out
+    end
+
+    def descending_exclusive_range_values
+      out = []
+      for n in 5...1
+        out = out + [n]
+      end
+      out
+    end
+
+    def empty_exclusive_range_values
+      out = []
+      for n in 3...3
+        out = out + [n]
+      end
+      out
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want []Value
+	}{
+		{
+			name: "inclusive",
+			fn:   "inclusive_range_values",
+			want: []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5)},
+		},
+		{
+			name: "exclusive",
+			fn:   "exclusive_range_values",
+			want: []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)},
+		},
+		{
+			name: "descending_inclusive",
+			fn:   "descending_inclusive_range_values",
+			want: []Value{NewInt(5), NewInt(4), NewInt(3), NewInt(2), NewInt(1)},
+		},
+		{
+			name: "descending_exclusive",
+			fn:   "descending_exclusive_range_values",
+			want: []Value{NewInt(5), NewInt(4), NewInt(3), NewInt(2)},
+		},
+		{
+			name: "same_endpoint_exclusive",
+			fn:   "empty_exclusive_range_values",
+			want: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, nil)
+			compareArrays(t, got, tc.want)
+		})
+	}
+}
+
 func TestUnlessConditionals(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -392,6 +478,26 @@ func TestCaseWhenExpressions(t *testing.T) {
       end
     end
 
+    def exclusive_range_label(value)
+      case value
+      when 1...5
+        "low"
+      when 10...6
+        "high"
+      else
+        "other"
+      end
+    end
+
+    def exclusive_range_target(value)
+      case value
+      when 1...5
+        "same exclusive range"
+      else
+        "other"
+      end
+    end
+
     def large_integer_range(value)
       case value
       when 9007199254740992..9007199254740992
@@ -458,6 +564,16 @@ func TestCaseWhenExpressions(t *testing.T) {
 		{name: "range_miss_uses_else", fn: "range_label", arg: NewInt(11), want: NewString("other")},
 		{name: "range_matches_float", fn: "float_range_label", arg: NewFloat(3.5), want: NewString("inside")},
 		{name: "range_target_keeps_equality", fn: "range_target", arg: NewRange(Range{Start: 1, End: 5}), want: NewString("same range")},
+		{name: "exclusive_range_matches_integer", fn: "exclusive_range_label", arg: NewInt(4), want: NewString("low")},
+		{name: "exclusive_range_excludes_ascending_end", fn: "exclusive_range_label", arg: NewInt(5), want: NewString("other")},
+		{name: "exclusive_descending_range_matches_integer", fn: "exclusive_range_label", arg: NewInt(7), want: NewString("high")},
+		{name: "exclusive_range_excludes_descending_end", fn: "exclusive_range_label", arg: NewInt(6), want: NewString("other")},
+		{name: "exclusive_range_matches_fractional_float", fn: "exclusive_range_label", arg: NewFloat(4.5), want: NewString("low")},
+		{name: "exclusive_range_excludes_float_at_end", fn: "exclusive_range_label", arg: NewFloat(5), want: NewString("other")},
+		{name: "exclusive_descending_range_matches_fractional_float", fn: "exclusive_range_label", arg: NewFloat(6.5), want: NewString("high")},
+		{name: "exclusive_descending_range_excludes_float_at_end", fn: "exclusive_range_label", arg: NewFloat(6), want: NewString("other")},
+		{name: "exclusive_range_target_keeps_equality", fn: "exclusive_range_target", arg: NewRange(Range{Start: 1, End: 5, Exclusive: true}), want: NewString("same exclusive range")},
+		{name: "exclusive_range_target_rejects_inclusive_range", fn: "exclusive_range_target", arg: NewRange(Range{Start: 1, End: 5}), want: NewString("other")},
 		{name: "large_integer_range_matches_exact", fn: "large_integer_range", arg: NewInt(9007199254740992), want: NewString("exact")},
 		{name: "large_integer_range_does_not_round", fn: "large_integer_range", arg: NewInt(9007199254740993), want: NewString("miss")},
 		{name: "large_float_range_does_not_round_bounds", fn: "large_float_range", arg: NewFloat(9007199254740992), want: NewString("miss")},

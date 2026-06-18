@@ -90,6 +90,7 @@ var precedences = map[ast.TokenType]int{
 	ast.TokenGTE:       precComparison,
 	ast.TokenSpaceship: precComparison,
 	ast.TokenRange:     precRange,
+	ast.TokenRangeExcl: precRange,
 	ast.TokenPlus:      precSum,
 	ast.TokenMinus:     precSum,
 	ast.TokenSlash:     precProduct,

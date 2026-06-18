@@ -8,9 +8,12 @@ Vibescript supports these control-flow forms:
 - `for` loops over arrays and ranges
 - `while` and `until` loops
 - loop control with `break` and `next`
-- numeric ranges via `start..finish`
+- numeric ranges via `start..finish` and `start...finish`
 
 ## `for` loops
+
+Ranges with `..` include the final endpoint. Ranges with `...` exclude the
+final endpoint. Descending ranges use the same rule.
 
 ```vibe
 def sum_first_five
@@ -19,6 +22,16 @@ def sum_first_five
     total = total + n
   end
   total
+end
+```
+
+```vibe
+def first_four
+  out = []
+  for n in 1...5
+    out = out + [n]
+  end
+  out
 end
 ```
 
@@ -41,7 +54,9 @@ def label(score)
 end
 ```
 
-`when` range candidates test numeric membership. Non-range candidates still use value equality.
+`when` range candidates test numeric membership. Inclusive and exclusive
+endpoints follow the same `..` / `...` range semantics used by `for` loops.
+Non-range candidates still use value equality.
 
 Targetless `case` evaluates each `when` expression as a predicate in order.
 

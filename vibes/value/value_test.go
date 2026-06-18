@@ -372,6 +372,7 @@ func TestValueString(t *testing.T) {
 			"2024-06-01T12:30:00.5Z",
 		},
 		{"range", value.NewRange(value.Range{Start: 1, End: 5}), "1..5"},
+		{"exclusive_range", value.NewRange(value.Range{Start: 1, End: 5, Exclusive: true}), "1...5"},
 		{"negative_range", value.NewRange(value.Range{Start: -3, End: -1}), "-3..-1"},
 		{"empty_array", value.NewArray(nil), "[]"},
 		{
@@ -483,6 +484,18 @@ func TestValueEqual(t *testing.T) {
 			"range_mismatch",
 			value.NewRange(value.Range{Start: 1, End: 3}),
 			value.NewRange(value.Range{Start: 1, End: 4}),
+			false,
+		},
+		{
+			"exclusive_ranges",
+			value.NewRange(value.Range{Start: 1, End: 3, Exclusive: true}),
+			value.NewRange(value.Range{Start: 1, End: 3, Exclusive: true}),
+			true,
+		},
+		{
+			"range_exclusivity_mismatch",
+			value.NewRange(value.Range{Start: 1, End: 3}),
+			value.NewRange(value.Range{Start: 1, End: 3, Exclusive: true}),
 			false,
 		},
 		{

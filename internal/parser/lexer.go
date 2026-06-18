@@ -247,8 +247,15 @@ func (l *lexer) scanToken() ast.Token {
 		if l.peekRune() == '.' {
 			first := l.ch
 			l.readRune()
-			tok = l.makeToken(ast.TokenRange, string(first)+string(l.ch))
-			l.readRune()
+			if l.peekRune() == '.' {
+				second := l.ch
+				l.readRune()
+				tok = l.makeToken(ast.TokenRangeExcl, string(first)+string(second)+string(l.ch))
+				l.readRune()
+			} else {
+				tok = l.makeToken(ast.TokenRange, string(first)+string(l.ch))
+				l.readRune()
+			}
 		} else {
 			tok = l.makeToken(ast.TokenDot, ".")
 			l.readRune()

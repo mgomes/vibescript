@@ -99,6 +99,9 @@ func (v Value) String() string {
 		return v.stringWithState(newValueStringState())
 	case KindRange:
 		r := v.data.(Range)
+		if r.Exclusive {
+			return fmt.Sprintf("%d...%d", r.Start, r.End)
+		}
 		return fmt.Sprintf("%d..%d", r.Start, r.End)
 	default:
 		if RuntimeStringer != nil {

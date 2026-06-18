@@ -26,6 +26,8 @@ Vibescript supports these literal/value categories:
 - ranges (`1..5`, `1...5`)
 - duration literals (`5.minutes`, `2.days`)
 
+Ranges with `..` include the final endpoint. Ranges with `...` exclude it.
+
 See `docs/arrays.md`, `docs/hashes.md`, `docs/strings.md`, `docs/durations.md`,
 and `docs/time.md` for full method coverage.
 
