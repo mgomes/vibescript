@@ -19,6 +19,9 @@ var hashMemberNames = []string{
 
 var hashBuiltinMembers = newMemberTable(hashMemberNames)
 
+// Most script hashes are small records/options; larger maps fall back to heap.
+const smallHashKeyBufferSize = 8
+
 func hashMember(obj Value, property string) (Value, error) {
 	if member, ok := hashBuiltinMembers.lookup(property, hashMemberBuiltin); ok {
 		return member, nil
@@ -38,8 +41,11 @@ func hashMemberBuiltin(property string) (Value, error) {
 	}
 }
 
-func sortedHashKeys(entries map[string]Value) []string {
-	keys := make([]string, 0, len(entries))
+func sortedHashKeysInto(entries map[string]Value, buf []string) []string {
+	keys := buf[:0]
+	if cap(keys) < len(entries) {
+		keys = make([]string, 0, len(entries))
+	}
 	for key := range entries {
 		keys = append(keys, key)
 	}
@@ -72,8 +78,11 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 			defer delete(state.seenHashes, id)
 		}
 		out := make(map[string]Value, len(entries))
-		for _, key := range sortedHashKeys(entries) {
-			nextKeyValue, err := exec.CallBlock(block, []Value{NewSymbol(key)})
+		var blockArg [1]Value
+		var keyBuf [smallHashKeyBufferSize]string
+		for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+			blockArg[0] = NewSymbol(key)
+			nextKeyValue, err := exec.CallBlock(block, blockArg[:])
 			if err != nil {
 				return NewNil(), err
 			}
@@ -153,7 +162,9 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.keys does not take arguments")
 			}
-			keys := sortedHashKeys(receiver.Hash())
+			entries := receiver.Hash()
+			var keyBuf [smallHashKeyBufferSize]string
+			keys := sortedHashKeysInto(entries, keyBuf[:])
 			values := make([]Value, len(keys))
 			for i, k := range keys {
 				values[i] = NewSymbol(k)
@@ -166,7 +177,8 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.values does not take arguments")
 			}
 			entries := receiver.Hash()
-			keys := sortedHashKeys(entries)
+			var keyBuf [smallHashKeyBufferSize]string
+			keys := sortedHashKeysInto(entries, keyBuf[:])
 			values := make([]Value, len(keys))
 			for i, k := range keys {
 				values[i] = entries[k]
@@ -221,8 +233,12 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			for _, key := range sortedHashKeys(entries) {
-				if _, err := exec.CallBlock(block, []Value{NewSymbol(key), entries[key]}); err != nil {
+			var blockArgs [2]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				blockArgs[0] = NewSymbol(key)
+				blockArgs[1] = entries[key]
+				if _, err := exec.CallBlock(block, blockArgs[:]); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -236,8 +252,12 @@ func hashMemberQuery(property string) (Value, error) {
 			if err := ensureBlock(block, "hash.each_key"); err != nil {
 				return NewNil(), err
 			}
-			for _, key := range sortedHashKeys(receiver.Hash()) {
-				if _, err := exec.CallBlock(block, []Value{NewSymbol(key)}); err != nil {
+			entries := receiver.Hash()
+			var blockArg [1]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				blockArg[0] = NewSymbol(key)
+				if _, err := exec.CallBlock(block, blockArg[:]); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -252,8 +272,11 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			for _, key := range sortedHashKeys(entries) {
-				if _, err := exec.CallBlock(block, []Value{entries[key]}); err != nil {
+			var blockArg [1]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				blockArg[0] = entries[key]
+				if _, err := exec.CallBlock(block, blockArg[:]); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -323,8 +346,12 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			out := make(map[string]Value, len(entries))
-			for _, key := range sortedHashKeys(entries) {
-				include, err := exec.CallBlock(block, []Value{NewSymbol(key), entries[key]})
+			var blockArgs [2]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				blockArgs[0] = NewSymbol(key)
+				blockArgs[1] = entries[key]
+				include, err := exec.CallBlock(block, blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -344,8 +371,12 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			out := make(map[string]Value, len(entries))
-			for _, key := range sortedHashKeys(entries) {
-				exclude, err := exec.CallBlock(block, []Value{NewSymbol(key), entries[key]})
+			var blockArgs [2]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				blockArgs[0] = NewSymbol(key)
+				blockArgs[1] = entries[key]
+				exclude, err := exec.CallBlock(block, blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -365,8 +396,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			out := make(map[string]Value, len(entries))
-			for _, key := range sortedHashKeys(entries) {
-				nextKey, err := exec.CallBlock(block, []Value{NewSymbol(key)})
+			var blockArg [1]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				blockArg[0] = NewSymbol(key)
+				nextKey, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -396,7 +430,8 @@ func hashMemberTransforms(property string) (Value, error) {
 			entries := receiver.Hash()
 			mapping := args[0].Hash()
 			out := make(map[string]Value, len(entries))
-			for _, key := range sortedHashKeys(entries) {
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				value := entries[key]
 				if mapped, ok := mapping[key]; ok {
 					nextKey, err := valueToHashKey(mapped)
@@ -420,8 +455,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			out := make(map[string]Value, len(entries))
-			for _, key := range sortedHashKeys(entries) {
-				nextValue, err := exec.CallBlock(block, []Value{entries[key]})
+			var blockArg [1]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				blockArg[0] = entries[key]
+				nextValue, err := exec.CallBlock(block, blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
