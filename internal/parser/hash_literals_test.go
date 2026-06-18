@@ -86,7 +86,7 @@ func TestParserWordBooleanHashKeys(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
-  {and: 1, or: 2}
+  {and: 1, or: 2, not: 3}
 end`
 
 	got, errs := parseSource(t, source)
@@ -105,6 +105,10 @@ end`
 					{
 						Key:   &ast.SymbolLiteral{Name: "or"},
 						Value: &ast.IntegerLiteral{Value: 2},
+					},
+					{
+						Key:   &ast.SymbolLiteral{Name: "not"},
+						Value: &ast.IntegerLiteral{Value: 3},
 					},
 				},
 			},

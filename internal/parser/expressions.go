@@ -271,7 +271,7 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserArrayLiteral
 	case ast.TokenLBrace:
 		return prefixParserHashLiteral
-	case ast.TokenBang, ast.TokenMinus:
+	case ast.TokenBang, ast.TokenNot, ast.TokenMinus:
 		return prefixParserPrefixExpression
 	case ast.TokenYield:
 		return prefixParserYieldExpression
@@ -1026,7 +1026,7 @@ func isLabelNameToken(tok ast.Token) bool {
 		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenUnless, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
 		return true
-	case ast.TokenAnd, ast.TokenOr:
+	case ast.TokenAnd, ast.TokenOr, ast.TokenNot:
 		return isWordBooleanKeywordToken(tok)
 	default:
 		return false
@@ -1039,6 +1039,8 @@ func isWordBooleanKeywordToken(tok ast.Token) bool {
 		return tok.Literal == "and"
 	case ast.TokenOr:
 		return tok.Literal == "or"
+	case ast.TokenNot:
+		return tok.Literal == "not"
 	default:
 		return false
 	}

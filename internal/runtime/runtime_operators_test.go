@@ -10,34 +10,46 @@ func TestWordBooleanOperators(t *testing.T) {
 end
 
 def run
-  labels = {and: 1, or: 2}
-  kwargs = echo(and: 3, or: 4)
+  labels = {and: 1, or: 2, not: 3}
+  kwargs = echo(and: 4, or: 5, not: 6)
   {
     and_false: true and false,
     and_value: "left" and "right",
     and_short: nil and missing,
+    not_false_and_true: not false and true,
+    not_true_or_true: not true or true,
+    not_grouped_and: not (true and false),
+    symbolic_not: !false,
     or_true: false or true,
     or_value: "left" or missing,
     precedence: true or false and false,
     hash_and: labels[:and],
     hash_or: labels[:or],
+    hash_not: labels[:not],
     kw_and: kwargs[:and],
-    kw_or: kwargs[:or]
+    kw_or: kwargs[:or],
+    kw_not: kwargs[:not]
   }
 end`)
 
 	got := callFunc(t, script, "run", nil).Hash()
 	want := map[string]Value{
-		"and_false":  NewBool(false),
-		"and_value":  NewString("right"),
-		"and_short":  NewNil(),
-		"hash_and":   NewInt(1),
-		"hash_or":    NewInt(2),
-		"kw_and":     NewInt(3),
-		"kw_or":      NewInt(4),
-		"or_true":    NewBool(true),
-		"or_value":   NewString("left"),
-		"precedence": NewBool(true),
+		"and_false":          NewBool(false),
+		"and_value":          NewString("right"),
+		"and_short":          NewNil(),
+		"hash_and":           NewInt(1),
+		"hash_or":            NewInt(2),
+		"hash_not":           NewInt(3),
+		"kw_and":             NewInt(4),
+		"kw_or":              NewInt(5),
+		"kw_not":             NewInt(6),
+		"not_false_and_true": NewBool(true),
+		"not_true_or_true":   NewBool(true),
+		"not_grouped_and":    NewBool(true),
+		"or_true":            NewBool(true),
+		"or_value":           NewString("left"),
+		"precedence":         NewBool(true),
+		"symbolic_not":       NewBool(true),
 	}
 	if diff := valueMapDiff(want, got); diff != "" {
 		t.Fatalf("run() mismatch (-want +got):\n%s", diff)

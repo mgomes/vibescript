@@ -28,6 +28,7 @@ func TestKeywords(t *testing.T) {
 		"in",
 		"next",
 		"nil",
+		"not",
 		"or",
 		"private",
 		"property",

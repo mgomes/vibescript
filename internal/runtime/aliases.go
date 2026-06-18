@@ -119,6 +119,7 @@ const (
 	tokenPlus      = ast.TokenPlus
 	tokenMinus     = ast.TokenMinus
 	tokenBang      = ast.TokenBang
+	tokenNot       = ast.TokenNot
 	tokenAsterisk  = ast.TokenAsterisk
 	tokenPower     = ast.TokenPower
 	tokenSlash     = ast.TokenSlash

@@ -170,7 +170,7 @@ end`,
 		{
 			name: "word_boolean_operators",
 			source: `def run
-  true or false and false
+  not false and true or false
 end`,
 		},
 		{
