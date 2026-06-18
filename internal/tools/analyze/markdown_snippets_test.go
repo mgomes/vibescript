@@ -149,10 +149,29 @@ end
 	}
 }
 
+func TestMarkdownKnownFailurePolicySelfInvalidatesWhenOnlyTopLevelFails(t *testing.T) {
+	t.Parallel()
+
+	engine := runtime.MustNewEngine(runtime.Config{})
+	snippet := markdownSnippet{
+		Path:   "docs/reference.md",
+		Line:   1,
+		Source: "value = 1\n",
+	}
+	err := checkMarkdownSnippet(engine, snippet, markdownSnippetPolicy{Mode: markdownSnippetKnownFailure}, true)
+	if err != nil {
+		t.Fatalf("checkMarkdownSnippet() error = %v, want nil after reference wrapper", err)
+	}
+}
+
 func checkMarkdownSnippet(engine *runtime.Engine, snippet markdownSnippet, policy markdownSnippetPolicy, hasPolicy bool) error {
 	source := snippet.Source
 	if hasPolicy && policy.Mode == markdownSnippetWrapped {
 		source = wrapMarkdownSnippet(source)
+	}
+	if hasPolicy && policy.Mode == markdownSnippetKnownFailure && shouldWrapReferenceSnippet(snippet.Path) {
+		_, err := compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownSnippet(source))
+		return err
 	}
 	compileFailed, err := compileAndAnalyzeMarkdownSnippet(engine, source)
 	if compileFailed && !hasPolicy && shouldWrapReferenceSnippet(snippet.Path) {
