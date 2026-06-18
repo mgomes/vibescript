@@ -509,6 +509,9 @@ Both directions enforce a 1 MiB payload limit.
 Note the argument order: `match` takes the pattern first, while the replace
 helpers take the text first.
 
+Regex patterns are quoted strings. Ruby-style `/pattern/` regex literals are
+not supported.
+
 - `Regex.match(pattern, text) -> string | nil` – first match, or `nil`.
 - `Regex.replace(text, pattern, replacement) -> string` – replace the first
   match; `replacement` supports `$1` style group expansion.

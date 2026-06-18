@@ -117,6 +117,9 @@ raw = JSON.stringify({ id: "p-1", score: 10, tags: ["a", "b"] })
 
 ## Regex
 
+Regex patterns are quoted strings. Ruby-style `/pattern/` regex literals are
+not supported.
+
 ### `Regex.match(pattern, text)`
 
 Returns the first match string or `nil` when no match exists.

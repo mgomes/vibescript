@@ -30,6 +30,10 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 			p.addParseErrorSpan(p.curToken.Pos, tokenEnd(p.curToken), "range is missing start expression")
 			return nil
 		}
+		if p.curToken.Type == ast.TokenSlash {
+			p.recoverUnsupportedRegexLiteral()
+			return nil
+		}
 		p.errorUnexpected(p.curToken)
 		return nil
 	}
@@ -102,6 +106,71 @@ func isParenlessArgumentStart(tt ast.TokenType) bool {
 		return false
 	}
 	return prefixParserKind(tt) != prefixParserNone
+}
+
+func (p *parser) recoverUnsupportedRegexLiteral() {
+	startLine := p.curToken.Pos.Line
+	closingSlash := p.findUnsupportedRegexLiteralClose()
+	spanEnd := tokenEnd(p.curToken)
+	if closingSlash != (ast.Position{}) {
+		spanEnd = ast.Position{Line: closingSlash.Line, Column: closingSlash.Column + 1}
+	}
+	p.addParseErrorSpan(
+		p.curToken.Pos,
+		spanEnd,
+		"regex literals are not supported; use quoted string patterns with Regex.match or string regex helpers",
+	)
+	if closingSlash != (ast.Position{}) {
+		p.recoverToPosition(closingSlash)
+		return
+	}
+	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line == startLine {
+		p.nextToken()
+	}
+}
+
+func (p *parser) findUnsupportedRegexLiteralClose() ast.Position {
+	start := p.curToken.Pos
+	if start.Line <= 0 || start.Column <= 0 {
+		return ast.Position{}
+	}
+	lines := strings.Split(p.l.input, "\n")
+	if start.Line > len(lines) {
+		return ast.Position{}
+	}
+	lineRunes := []rune(lines[start.Line-1])
+	if start.Column > len(lineRunes) || lineRunes[start.Column-1] != '/' {
+		return ast.Position{}
+	}
+
+	escaped := false
+	for i := start.Column; i < len(lineRunes); i++ {
+		r := lineRunes[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == '/' {
+			return ast.Position{Line: start.Line, Column: i + 1}
+		}
+	}
+	return ast.Position{}
+}
+
+func (p *parser) recoverToPosition(pos ast.Position) {
+	for p.peekToken.Type != ast.TokenEOF {
+		if p.peekToken.Pos.Line > pos.Line || (p.peekToken.Pos.Line == pos.Line && p.peekToken.Pos.Column > pos.Column) {
+			return
+		}
+		p.nextToken()
+		if p.curToken.Pos == pos {
+			return
+		}
+	}
 }
 
 type prefixParseKind uint8
