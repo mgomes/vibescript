@@ -8,11 +8,6 @@ import (
 	"github.com/mgomes/vibescript/vibes/source"
 )
 
-type (
-	prefixParseFn func() ast.Expression
-	infixParseFn  func(ast.Expression) ast.Expression
-)
-
 type parser struct {
 	l *lexer
 
@@ -21,9 +16,6 @@ type parser struct {
 	peekPeek  ast.Token
 
 	errors []error
-
-	prefixFns map[ast.TokenType]prefixParseFn
-	infixFns  map[ast.TokenType]infixParseFn
 
 	insideClass      bool
 	privateNext      bool
@@ -36,61 +28,11 @@ func newParser(input string) *parser {
 	l := newLexer(input)
 	p := &parser{l: l}
 
-	p.prefixFns = make(map[ast.TokenType]prefixParseFn)
-	p.infixFns = make(map[ast.TokenType]infixParseFn)
-
-	p.registerPrefix(ast.TokenIdent, p.parseIdentifier)
-	p.registerPrefix(ast.TokenInt, p.parseIntegerLiteral)
-	p.registerPrefix(ast.TokenFloat, p.parseFloatLiteral)
-	p.registerPrefix(ast.TokenString, p.parseStringLiteral)
-	p.registerPrefix(ast.TokenWords, p.parsePercentWordsLiteral)
-	p.registerPrefix(ast.TokenSymbols, p.parsePercentSymbolsLiteral)
-	p.registerPrefix(ast.TokenTrue, p.parseBooleanLiteral)
-	p.registerPrefix(ast.TokenFalse, p.parseBooleanLiteral)
-	p.registerPrefix(ast.TokenNil, p.parseNilLiteral)
-	p.registerPrefix(ast.TokenSymbol, p.parseSymbolLiteral)
-	p.registerPrefix(ast.TokenIvar, p.parseIvarLiteral)
-	p.registerPrefix(ast.TokenClassVar, p.parseClassVarLiteral)
-	p.registerPrefix(ast.TokenSelf, p.parseSelfLiteral)
-	p.registerPrefix(ast.TokenLParen, p.parseGroupedExpression)
-	p.registerPrefix(ast.TokenLBracket, p.parseArrayLiteral)
-	p.registerPrefix(ast.TokenLBrace, p.parseHashLiteral)
-	p.registerPrefix(ast.TokenBang, p.parsePrefixExpression)
-	p.registerPrefix(ast.TokenMinus, p.parsePrefixExpression)
-	p.registerPrefix(ast.TokenYield, p.parseYieldExpression)
-	p.registerPrefix(ast.TokenCase, p.parseCaseExpression)
-
-	p.infixFns[ast.TokenPlus] = p.parseInfixExpression
-	p.infixFns[ast.TokenMinus] = p.parseInfixExpression
-	p.infixFns[ast.TokenSlash] = p.parseInfixExpression
-	p.infixFns[ast.TokenAsterisk] = p.parseInfixExpression
-	p.infixFns[ast.TokenPercent] = p.parseInfixExpression
-	p.infixFns[ast.TokenRange] = p.parseRangeExpression
-	p.infixFns[ast.TokenEQ] = p.parseInfixExpression
-	p.infixFns[ast.TokenNotEQ] = p.parseInfixExpression
-	p.infixFns[ast.TokenLT] = p.parseInfixExpression
-	p.infixFns[ast.TokenLTE] = p.parseInfixExpression
-	p.infixFns[ast.TokenGT] = p.parseInfixExpression
-	p.infixFns[ast.TokenGTE] = p.parseInfixExpression
-	p.infixFns[ast.TokenSpaceship] = p.parseInfixExpression
-	p.infixFns[ast.TokenAnd] = p.parseInfixExpression
-	p.infixFns[ast.TokenOr] = p.parseInfixExpression
-	p.infixFns[ast.TokenLParen] = p.parseCallExpression
-	p.infixFns[ast.TokenDot] = p.parseMemberExpression
-	p.infixFns[ast.TokenScope] = p.parseScopeExpression
-	p.infixFns[ast.TokenLBracket] = p.parseIndexExpression
-	p.infixFns[ast.TokenDo] = p.parseTrailingBlockExpression
-	p.infixFns[ast.TokenLBrace] = p.parseTrailingBlockExpression
-
 	p.nextToken()
 	p.nextToken()
 	p.nextToken()
 
 	return p
-}
-
-func (p *parser) registerPrefix(tt ast.TokenType, fn prefixParseFn) {
-	p.prefixFns[tt] = fn
 }
 
 func (p *parser) nextToken() {
