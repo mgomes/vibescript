@@ -1098,9 +1098,6 @@ func localNames(statements []ast.Statement) []string {
 			case *ast.UntilStmt:
 				walkStmts(st.Body)
 			case *ast.TryStmt:
-				if st.RescueBinding != "" {
-					names = append(names, st.RescueBinding)
-				}
 				walkStmts(st.Body)
 				walkStmts(st.Else)
 				walkStmts(st.Rescue)
