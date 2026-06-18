@@ -92,6 +92,7 @@ const (
 	TokenNext     TokenType = "NEXT"
 	TokenIn       TokenType = "IN"
 	TokenIf       TokenType = "IF"
+	TokenUnless   TokenType = "UNLESS"
 	TokenCase     TokenType = "CASE"
 	TokenWhen     TokenType = "WHEN"
 	TokenElsif    TokenType = "ELSIF"
@@ -137,6 +138,7 @@ var keywordTokenTypes = map[string]TokenType{
 	"next":     TokenNext,
 	"in":       TokenIn,
 	"if":       TokenIf,
+	"unless":   TokenUnless,
 	"and":      TokenAnd,
 	"or":       TokenOr,
 	"case":     TokenCase,

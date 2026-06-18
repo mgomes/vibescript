@@ -37,6 +37,7 @@ func TestKeywords(t *testing.T) {
 		"self",
 		"setter",
 		"true",
+		"unless",
 		"until",
 		"when",
 		"while",
@@ -52,7 +53,7 @@ func TestKeywords(t *testing.T) {
 			t.Fatalf("LookupIdent(%q) = TokenIdent, want reserved token", keyword)
 		}
 	}
-	for _, ident := range []string{"require", "unless"} {
+	for _, ident := range []string{"require"} {
 		if got := LookupIdent(ident); got != TokenIdent {
 			t.Fatalf("LookupIdent(%q) = %s, want TokenIdent", ident, got)
 		}

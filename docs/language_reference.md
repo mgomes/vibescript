@@ -167,6 +167,12 @@ elsif amount == 0
 else
   "invalid"
 end
+
+unless amount <= 0
+  "ok"
+else
+  "invalid"
+end
 ```
 
 Looping:
@@ -182,6 +188,7 @@ end
 Supported control-flow constructs include:
 
 - `if` / `elsif` / `else`
+- `unless` / `else`
 - `while`
 - `until`
 - `for ... in`
@@ -189,11 +196,13 @@ Supported control-flow constructs include:
 - `next`
 - `return`
 
-Short expression and assignment statements can also use modifier loops:
+Short expression and assignment statements can also use modifier loops and
+`unless` conditionals:
 
 ```vibe
 i = i + 1 while i < 3
 i = i + 1 until i >= 3
+status = "open" unless suspended
 ```
 
 ## Error Handling

@@ -15,8 +15,8 @@ planning:
 - Core literals: `nil`, booleans, numbers, strings, symbols, arrays, hashes,
   and ranges.
 - Assignment to variables, indexes, members, and destructuring targets.
-- Control flow: `if`/`elsif`/`else`, `while`, `until`, `for ... in`,
-  `break`, `next`, and `return`.
+- Control flow: `if`/`elsif`/`else`, `unless`/`else`, `while`, `until`,
+  `for ... in`, `break`, `next`, and `return`.
 - Block syntax (`do ... end`) and block arguments.
 - Structured error handling (`begin`/`rescue`/`ensure`) and `raise`.
 - Module loading via `require(...)` with keyword options.

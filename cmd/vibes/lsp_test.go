@@ -215,12 +215,6 @@ func TestLSPKeywordCompletionsMatchParserKeywords(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("keyword completions = %#v, want parser keywords %#v", got, want)
 	}
-	for _, unsupported := range []string{"unless"} {
-		if classifyWord(unsupported) == "keyword" {
-			t.Fatalf("classifyWord(%q) = keyword, want unsupported syntax excluded from keyword completions", unsupported)
-		}
-	}
-
 	require := findCompletionItem(t, items, "require")
 	if require["detail"] != "builtin" {
 		t.Fatalf("require detail = %#v, want builtin", require["detail"])

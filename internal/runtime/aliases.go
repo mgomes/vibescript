@@ -170,6 +170,7 @@ const (
 	tokenNext      = ast.TokenNext
 	tokenIn        = ast.TokenIn
 	tokenIf        = ast.TokenIf
+	tokenUnless    = ast.TokenUnless
 	tokenCase      = ast.TokenCase
 	tokenWhen      = ast.TokenWhen
 	tokenElsif     = ast.TokenElsif

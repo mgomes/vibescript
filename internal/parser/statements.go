@@ -26,6 +26,8 @@ func (p *parser) parseStatement() ast.Statement {
 		stmt = p.parseRaiseStatement()
 	case ast.TokenIf:
 		stmt = p.parseIfStatement()
+	case ast.TokenUnless:
+		stmt = p.parseUnlessStatement()
 	case ast.TokenFor:
 		stmt = p.parseForStatement()
 	case ast.TokenWhile:
@@ -47,16 +49,16 @@ func (p *parser) parseStatement() ast.Statement {
 	default:
 		stmt = p.parseExpressionOrAssignStatement()
 	}
-	return p.parseModifierLoop(stmt)
+	return p.parseStatementModifier(stmt)
 }
 
-func (p *parser) parseModifierLoop(stmt ast.Statement) ast.Statement {
-	if stmt == nil || (p.peekToken.Type != ast.TokenWhile && p.peekToken.Type != ast.TokenUntil) || p.peekToken.Pos.Line != p.curToken.Pos.Line {
+func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
+	if stmt == nil || !isStatementModifier(p.peekToken.Type) || p.peekToken.Pos.Line != p.curToken.Pos.Line {
 		return stmt
 	}
 
 	modifier := p.peekToken
-	if !canUseModifierLoop(stmt) {
+	if !canUseStatementModifier(stmt) {
 		p.nextToken()
 		p.nextToken()
 		_ = p.parseLineExpression(lowestPrec)
@@ -72,13 +74,23 @@ func (p *parser) parseModifierLoop(stmt ast.Statement) ast.Statement {
 	}
 
 	body := []ast.Statement{stmt}
-	if modifier.Type == ast.TokenWhile {
+	switch modifier.Type {
+	case ast.TokenWhile:
 		return &ast.WhileStmt{Condition: condition, Body: body, Position: modifier.Pos}
+	case ast.TokenUntil:
+		return &ast.UntilStmt{Condition: condition, Body: body, Position: modifier.Pos}
+	case ast.TokenUnless:
+		return &ast.IfStmt{Condition: condition, Alternate: body, Position: modifier.Pos}
+	default:
+		return stmt
 	}
-	return &ast.UntilStmt{Condition: condition, Body: body, Position: modifier.Pos}
 }
 
-func canUseModifierLoop(stmt ast.Statement) bool {
+func isStatementModifier(tt ast.TokenType) bool {
+	return tt == ast.TokenWhile || tt == ast.TokenUntil || tt == ast.TokenUnless
+}
+
+func canUseStatementModifier(stmt ast.Statement) bool {
 	switch stmt.(type) {
 	case *ast.AssignStmt, *ast.ExprStmt:
 		return true
@@ -171,6 +183,30 @@ func (p *parser) parseIfStatement() ast.Statement {
 	}
 
 	return &ast.IfStmt{Condition: condition, Consequent: consequent, ElseIf: elseifClauses, Alternate: alternate, Position: pos}
+}
+
+func (p *parser) parseUnlessStatement() ast.Statement {
+	pos := p.curToken.Pos
+	p.nextToken()
+	condition := p.parseLineExpression(lowestPrec)
+	if condition == nil {
+		return nil
+	}
+
+	p.nextToken()
+	body := p.parseBlock(ast.TokenEnd, ast.TokenElse)
+
+	var alternate []ast.Statement
+	if p.curToken.Type == ast.TokenElse {
+		p.nextToken()
+		alternate = p.parseBlock(ast.TokenEnd)
+	}
+
+	if p.curToken.Type != ast.TokenEnd {
+		p.errorExpected(p.curToken, "end")
+	}
+
+	return &ast.IfStmt{Condition: condition, Consequent: alternate, Alternate: body, Position: pos}
 }
 
 func (p *parser) parseForStatement() ast.Statement {
