@@ -247,11 +247,13 @@ func (p *parser) parseNextStatement() ast.Statement {
 func (p *parser) parseBeginStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	body := p.parseBlock(ast.TokenRescue, ast.TokenEnsure, ast.TokenEnd)
+	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
 
 	var rescueTy *ast.TypeExpr
 	var rescueBody []ast.Statement
+	rescuePresent := false
 	if p.curToken.Type == ast.TokenRescue {
+		rescuePresent = true
 		rescuePos := p.curToken.Pos
 		if p.peekToken.Type == ast.TokenLParen && p.peekToken.Pos.Line == rescuePos.Line {
 			p.nextToken()
@@ -268,7 +270,17 @@ func (p *parser) parseBeginStatement() ast.Statement {
 			}
 		}
 		p.nextToken()
-		rescueBody = p.parseBlock(ast.TokenEnsure, ast.TokenEnd)
+		rescueBody = p.parseBlock(ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+	}
+
+	var elseBody []ast.Statement
+	if p.curToken.Type == ast.TokenElse {
+		if !rescuePresent {
+			p.addParseError(p.curToken.Pos, "begin else requires rescue")
+			return nil
+		}
+		p.nextToken()
+		elseBody = p.parseBlock(ast.TokenEnsure, ast.TokenEnd)
 	}
 
 	var ensureBody []ast.Statement
@@ -287,7 +299,7 @@ func (p *parser) parseBeginStatement() ast.Statement {
 		return nil
 	}
 
-	return &ast.TryStmt{Body: body, RescueTy: rescueTy, Rescue: rescueBody, Ensure: ensureBody, Position: pos}
+	return &ast.TryStmt{Body: body, RescueTy: rescueTy, Rescue: rescueBody, Else: elseBody, Ensure: ensureBody, Position: pos}
 }
 
 func (p *parser) validateRescueTypeExpr(ty *ast.TypeExpr, pos ast.Position) bool {

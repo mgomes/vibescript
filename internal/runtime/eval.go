@@ -1145,6 +1145,7 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
 	val, returned, err := exec.evalStatements(stmt.Body, env)
+	runElse := err == nil && !returned
 
 	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
 		exec.pushRescuedError(err)
@@ -1159,6 +1160,10 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 			returned = rescueReturned
 			err = nil
 		}
+	}
+
+	if runElse && len(stmt.Else) > 0 {
+		val, returned, err = exec.evalStatements(stmt.Else, env)
 	}
 
 	if len(stmt.Ensure) > 0 {

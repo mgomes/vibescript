@@ -121,6 +121,7 @@ func cloneStatement(stmt Statement) Statement {
 		clone.Body = cloneStatements(s.Body)
 		clone.RescueTy = cloneTypeExpr(s.RescueTy)
 		clone.Rescue = cloneStatements(s.Rescue)
+		clone.Else = cloneStatements(s.Else)
 		clone.Ensure = cloneStatements(s.Ensure)
 		return &clone
 	case *ClassStmt:
