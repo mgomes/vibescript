@@ -1217,8 +1217,10 @@ func validateFuzzExpression(context string, expr Expression) error {
 		}
 		return validateFuzzExpression(context+".end", e.End)
 	case *CaseExpr:
-		if err := validateFuzzExpression(context+".target", e.Target); err != nil {
-			return err
+		if e.Target != nil {
+			if err := validateFuzzExpression(context+".target", e.Target); err != nil {
+				return err
+			}
 		}
 		if len(e.Clauses) == 0 {
 			return fmt.Errorf("%s case has no clauses", context)

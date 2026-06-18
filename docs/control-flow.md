@@ -42,6 +42,21 @@ end
 
 `when` range candidates test numeric membership. Non-range candidates still use value equality.
 
+Targetless `case` evaluates each `when` expression as a predicate in order.
+
+```vibe
+def label(score)
+  case
+  when score == 100
+    "perfect"
+  when score >= 80
+    "passing"
+  else
+    "ok"
+  end
+end
+```
+
 ## `while` and `until`
 
 ```vibe

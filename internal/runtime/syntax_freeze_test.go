@@ -136,6 +136,19 @@ end`,
   Time.utc(2024, 1, 1) <=> Time.utc(2024, 1, 2)
 end`,
 		},
+		{
+			name: "targetless_case_predicates",
+			source: `def run(value)
+  case
+  when value == 1
+    "one"
+  when value == 2
+    "two"
+  else
+    "other"
+  end
+end`,
+		},
 	}
 
 	for _, tc := range cases {

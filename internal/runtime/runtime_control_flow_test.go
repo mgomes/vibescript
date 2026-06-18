@@ -354,6 +354,33 @@ func TestCaseWhenExpressions(t *testing.T) {
         "miss"
       end
     end
+
+    def predicate_label(value)
+      case
+      when value == 1
+        "one"
+      when value == 2
+        "two"
+      else
+        "other"
+      end
+    end
+
+    def predicate_multi(value)
+      case
+      when value < 0, value == 0
+        "non-positive"
+      else
+        "positive"
+      end
+    end
+
+    def predicate_unmatched(value)
+      case
+      when value < 0
+        "negative"
+      end
+    end
     `)
 
 	cases := []struct {
@@ -379,6 +406,13 @@ func TestCaseWhenExpressions(t *testing.T) {
 		{name: "large_integer_range_matches_exact", fn: "large_integer_range", arg: NewInt(9007199254740992), want: NewString("exact")},
 		{name: "large_integer_range_does_not_round", fn: "large_integer_range", arg: NewInt(9007199254740993), want: NewString("miss")},
 		{name: "large_float_range_does_not_round_bounds", fn: "large_float_range", arg: NewFloat(9007199254740992), want: NewString("miss")},
+		{name: "predicate_case_first_match", fn: "predicate_label", arg: NewInt(1), want: NewString("one")},
+		{name: "predicate_case_second_match", fn: "predicate_label", arg: NewInt(2), want: NewString("two")},
+		{name: "predicate_case_else", fn: "predicate_label", arg: NewInt(3), want: NewString("other")},
+		{name: "predicate_case_multi_first_match", fn: "predicate_multi", arg: NewInt(-1), want: NewString("non-positive")},
+		{name: "predicate_case_multi_second_match", fn: "predicate_multi", arg: NewInt(0), want: NewString("non-positive")},
+		{name: "predicate_case_multi_else", fn: "predicate_multi", arg: NewInt(1), want: NewString("positive")},
+		{name: "predicate_case_unmatched_returns_nil", fn: "predicate_unmatched", arg: NewInt(1), want: NewNil()},
 	}
 	for _, tc := range cases {
 		tc := tc
