@@ -129,7 +129,9 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		return NewNil(), err
 	}
 	if lazyTaskGlobals != nil {
-		bindLazyTaskGlobalsForCall(root, lazyTaskGlobals, rebinder)
+		if err := bindLazyTaskGlobalsForCall(exec, root, lazyTaskGlobals, rebinder); err != nil {
+			return NewNil(), err
+		}
 	}
 
 	if err := exec.checkMemory(); err != nil {

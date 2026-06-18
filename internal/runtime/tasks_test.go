@@ -376,6 +376,57 @@ end`)
 	compareArrays(t, result, []Value{NewInt(11), NewInt(12)})
 }
 
+func TestNestedTasksInheritMaterializedGlobalMutations(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared(item)
+  shared[:seed] + item
+end
+
+def write_then_spawn(item)
+  shared[:seed] = item
+  Tasks.run(max: 1) do |tasks|
+    tasks.spawn(:read_shared, 10).value
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :write_then_spawn)
+end`)
+
+	shared := NewHash(map[string]Value{"seed": NewInt(0)})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"shared": shared,
+		},
+	})
+	compareArrays(t, result, []Value{NewInt(11), NewInt(12)})
+	if got := shared.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host global shared[:seed] = %s, want 0", got.String())
+	}
+}
+
+func TestStrictEffectsRejectLazyTaskCallableGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
+  db.save("player-1")
+end`)
+
+	called := false
+	lazyGlobals := newTaskLazyGlobals(map[string]Value{
+		"db": NewObject(map[string]Value{
+			"save": NewBuiltin("db.save", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				called = true
+				return NewString("saved"), nil
+			}),
+		}),
+	}, false)
+	_, err := script.callWithLazyTaskGlobals(context.Background(), "run", nil, CallOptions{}, lazyGlobals)
+	requireErrorContains(t, err, "strict effects: global db must be data-only")
+	if called {
+		t.Fatalf("callable lazy global should not execute when strict validation fails")
+	}
+}
+
 func TestTaskRetainedResultsCountTowardParentMemoryQuota(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{

@@ -774,14 +774,20 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 	return nil
 }
 
-func bindLazyTaskGlobalsForCall(root *Env, globals *taskLazyGlobals, rebinder *callFunctionRebinder) {
+func bindLazyTaskGlobalsForCall(exec *Execution, root *Env, globals *taskLazyGlobals, rebinder *callFunctionRebinder) error {
 	if globals == nil || len(globals.values) == 0 {
-		return
+		return nil
+	}
+	if exec.strictEffects {
+		if err := globals.ensureStrictValidated(); err != nil {
+			return err
+		}
 	}
 	globals.rebinder = rebinder
 	for name := range globals.values {
 		root.defineLazy(name, taskLazyGlobalBinding{globals: globals, name: name})
 	}
+	return nil
 }
 
 func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (Value, error) {
