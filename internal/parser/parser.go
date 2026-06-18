@@ -43,6 +43,8 @@ func newParser(input string) *parser {
 	p.registerPrefix(ast.TokenInt, p.parseIntegerLiteral)
 	p.registerPrefix(ast.TokenFloat, p.parseFloatLiteral)
 	p.registerPrefix(ast.TokenString, p.parseStringLiteral)
+	p.registerPrefix(ast.TokenWords, p.parsePercentWordsLiteral)
+	p.registerPrefix(ast.TokenSymbols, p.parsePercentSymbolsLiteral)
 	p.registerPrefix(ast.TokenTrue, p.parseBooleanLiteral)
 	p.registerPrefix(ast.TokenFalse, p.parseBooleanLiteral)
 	p.registerPrefix(ast.TokenNil, p.parseNilLiteral)
@@ -245,6 +247,10 @@ func tokenLabel(tt ast.TokenType) string {
 		return "string"
 	case ast.TokenSymbol:
 		return "symbol"
+	case ast.TokenWords:
+		return "percent word array"
+	case ast.TokenSymbols:
+		return "percent symbol array"
 	case ast.TokenIvar:
 		return "instance variable"
 	case ast.TokenClassVar:
