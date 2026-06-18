@@ -694,6 +694,54 @@ func TestBeginRescueEnsure(t *testing.T) {
 	requireCallErrorContains(t, script, "ensure_without_rescue", nil, CallOptions{}, "division by zero")
 }
 
+func TestFunctionLevelRescueEnsure(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def safe_div(a, b)
+      a / b
+    rescue RuntimeError => err
+      [err.type, err.message]
+    end
+
+    def success_else()
+      "body"
+    rescue
+      "rescue"
+    else
+      "else"
+    ensure
+      "ensure"
+    end
+
+    def ensure_return_override()
+      10
+    ensure
+      return 42
+    end
+
+    def ensure_without_rescue()
+      1 / 0
+    ensure
+      123
+    end
+    `)
+
+	if got := callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(2)}); !got.Equal(NewInt(5)) {
+		t.Fatalf("safe_div success mismatch: %v", got)
+	}
+	compareArrays(t, callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(0)}), []Value{
+		NewString(runtimeErrorTypeBase),
+		NewString("division by zero"),
+	})
+	if got := callFunc(t, script, "success_else", nil); !got.Equal(NewString("else")) {
+		t.Fatalf("success_else mismatch: %v", got)
+	}
+	if got := callFunc(t, script, "ensure_return_override", nil); !got.Equal(NewInt(42)) {
+		t.Fatalf("ensure_return_override mismatch: %v", got)
+	}
+	requireCallErrorContains(t, script, "ensure_without_rescue", nil, CallOptions{}, "division by zero")
+}
+
 func TestBeginRescueTypedMatching(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
