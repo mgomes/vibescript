@@ -37,3 +37,22 @@ end`
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestParserRejectsSymbolicBooleanLabels(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		`def run
+  {&&: 1}
+end`,
+		`def run
+  takes(||: 2)
+end`,
+	}
+	for _, source := range cases {
+		_, errs := parseSource(t, source)
+		if len(errs) == 0 {
+			t.Fatalf("parseSource(%q) errors = none, want symbolic boolean label error", source)
+		}
+	}
+}
