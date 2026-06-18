@@ -152,6 +152,61 @@ func TestUntilLoops(t *testing.T) {
 	requireCallRuntimeErrorType(t, spinScript, "spin_until", nil, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+func TestUnlessConditionals(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def block_form(flag)
+      unless flag
+        "open"
+      else
+        "blocked"
+      end
+    end
+
+    def block_without_else(flag)
+      unless flag
+        "open"
+      end
+    end
+
+    def modifier_form(flag)
+      out = []
+      out = out + ["open"] unless flag
+      out
+    end
+
+    def modifier_expression(flag)
+      "open" unless flag
+    end
+    `)
+
+	cases := []struct {
+		name string
+		fn   string
+		arg  Value
+		want Value
+	}{
+		{name: "block_false_runs_body", fn: "block_form", arg: NewBool(false), want: NewString("open")},
+		{name: "block_true_runs_else", fn: "block_form", arg: NewBool(true), want: NewString("blocked")},
+		{name: "without_else_false_runs_body", fn: "block_without_else", arg: NewBool(false), want: NewString("open")},
+		{name: "without_else_true_returns_nil", fn: "block_without_else", arg: NewBool(true), want: NewNil()},
+		{name: "modifier_false_runs_statement", fn: "modifier_form", arg: NewBool(false), want: NewArray([]Value{NewString("open")})},
+		{name: "modifier_true_skips_statement", fn: "modifier_form", arg: NewBool(true), want: NewArray(nil)},
+		{name: "modifier_expression_false_returns_value", fn: "modifier_expression", arg: NewBool(false), want: NewString("open")},
+		{name: "modifier_expression_true_returns_nil", fn: "modifier_expression", arg: NewBool(true), want: NewNil()},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, []Value{tc.arg})
+			if !got.Equal(tc.want) {
+				t.Fatalf("%s(%v) = %v, want %v", tc.fn, tc.arg, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLineTerminatedHeadersAndStatements(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

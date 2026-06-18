@@ -92,6 +92,16 @@ end`,
 end`,
 		},
 		{
+			name: "unless_conditionals",
+			source: `def run(blocked)
+  unless blocked
+    "open"
+  else
+    "closed"
+  end
+end`,
+		},
+		{
 			name: "begin_rescue_ensure",
 			source: `def run(flag)
   begin

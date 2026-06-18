@@ -812,7 +812,7 @@ func isLabelNameToken(tok ast.Token) bool {
 	case ast.TokenIdent,
 		ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenSelf, ast.TokenPrivate, ast.TokenProperty, ast.TokenGetter, ast.TokenSetter,
 		ast.TokenEnd, ast.TokenReturn, ast.TokenYield, ast.TokenDo, ast.TokenFor, ast.TokenWhile, ast.TokenUntil,
-		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
+		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenUnless, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
 		return true
 	case ast.TokenAnd, ast.TokenOr:

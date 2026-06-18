@@ -233,6 +233,8 @@ func tokenLabel(tt ast.TokenType) string {
 		return "'in'"
 	case ast.TokenIf:
 		return "'if'"
+	case ast.TokenUnless:
+		return "'unless'"
 	case ast.TokenElsif:
 		return "'elsif'"
 	case ast.TokenElse:
