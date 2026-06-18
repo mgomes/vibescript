@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -216,14 +217,6 @@ end`)
 }
 
 func BenchmarkExecutionTallyLoop(b *testing.B) {
-	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values, n)
-  out = {}
-  for i in 1..n
-    out = values.tally
-  end
-  out
-end`)
-
 	values := make([]Value, 600)
 	for i := range values {
 		if i%2 == 0 {
@@ -232,6 +225,26 @@ end`)
 			values[i] = NewString("complete")
 		}
 	}
+	benchmarkExecutionTallyLoop(b, values)
+}
+
+func BenchmarkExecutionTallyUniqueLoop(b *testing.B) {
+	values := make([]Value, 600)
+	for i := range values {
+		values[i] = NewString(fmt.Sprintf("status-%03d", i))
+	}
+	benchmarkExecutionTallyLoop(b, values)
+}
+
+func benchmarkExecutionTallyLoop(b *testing.B, values []Value) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(values, n)
+  out = {}
+  for i in 1..n
+    out = values.tally
+  end
+  out
+end`)
+
 	args := []Value{NewArray(values), NewInt(80)}
 
 	b.ReportAllocs()
