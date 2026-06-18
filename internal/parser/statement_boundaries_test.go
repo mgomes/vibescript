@@ -447,6 +447,49 @@ end`
 	}
 }
 
+func TestParserThenControlFlowSeparators(t *testing.T) {
+	t.Parallel()
+	source := `def run(value)
+  if value == 1 then "one" elsif value == 2 then "two" else "other" end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.IfStmt{
+			Condition: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "value"},
+				Operator: ast.TokenEQ,
+				Right:    &ast.IntegerLiteral{Value: 1},
+			},
+			Consequent: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "one"}},
+			},
+			ElseIf: []*ast.IfStmt{
+				{
+					Condition: &ast.BinaryExpr{
+						Left:     &ast.Identifier{Name: "value"},
+						Operator: ast.TokenEQ,
+						Right:    &ast.IntegerLiteral{Value: 2},
+					},
+					Consequent: []ast.Statement{
+						&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "two"}},
+					},
+				},
+			},
+			Alternate: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "other"}},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func parsedFunctionBody(t testing.TB, program *ast.Program) []ast.Statement {
 	t.Helper()
 	if len(program.Statements) != 1 {

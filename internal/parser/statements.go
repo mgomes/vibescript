@@ -81,6 +81,8 @@ func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 
 	body := []ast.Statement{stmt}
 	switch modifier.Type {
+	case ast.TokenIf:
+		return &ast.IfStmt{Condition: condition, Consequent: body, Position: modifier.Pos}
 	case ast.TokenWhile:
 		return &ast.WhileStmt{Condition: condition, Body: body, Position: modifier.Pos}
 	case ast.TokenUntil:
@@ -93,7 +95,7 @@ func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 }
 
 func isStatementModifier(tt ast.TokenType) bool {
-	return tt == ast.TokenWhile || tt == ast.TokenUntil || tt == ast.TokenUnless
+	return tt == ast.TokenIf || tt == ast.TokenWhile || tt == ast.TokenUntil || tt == ast.TokenUnless
 }
 
 func canUseStatementModifier(stmt ast.Statement) bool {
@@ -164,6 +166,7 @@ func (p *parser) parseIfStatement() ast.Statement {
 	}
 
 	p.nextToken()
+	p.consumeConditionalBodySeparator()
 	consequent := p.parseBlock(ast.TokenEnd, ast.TokenElse, ast.TokenElsif)
 
 	var elseifClauses []*ast.IfStmt
@@ -174,6 +177,7 @@ func (p *parser) parseIfStatement() ast.Statement {
 			return nil
 		}
 		p.nextToken()
+		p.consumeConditionalBodySeparator()
 		body := p.parseBlock(ast.TokenEnd, ast.TokenElse, ast.TokenElsif)
 		clause := &ast.IfStmt{Condition: cond, Consequent: body, Position: cond.Pos()}
 		elseifClauses = append(elseifClauses, clause)
@@ -201,6 +205,7 @@ func (p *parser) parseUnlessStatement() ast.Statement {
 	}
 
 	p.nextToken()
+	p.consumeConditionalBodySeparator()
 	body := p.parseBlock(ast.TokenEnd, ast.TokenElse)
 
 	var alternate []ast.Statement
@@ -214,6 +219,13 @@ func (p *parser) parseUnlessStatement() ast.Statement {
 	}
 
 	return &ast.IfStmt{Condition: condition, Consequent: alternate, Alternate: body, Position: pos}
+}
+
+func (p *parser) consumeConditionalBodySeparator() {
+	if p.curToken.Type == ast.TokenThen {
+		p.nextToken()
+	}
+	p.skipStatementSeparators()
 }
 
 func (p *parser) parseForStatement() ast.Statement {

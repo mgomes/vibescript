@@ -72,6 +72,41 @@ end`
 	}
 }
 
+func TestParserModifierIfConditional(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(flag)
+  value = "ok" if flag
+  "done" if true
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.IfStmt{
+			Condition: &ast.Identifier{Name: "flag"},
+			Consequent: []ast.Statement{
+				&ast.AssignStmt{
+					Target: &ast.Identifier{Name: "value"},
+					Value:  &ast.StringLiteral{Value: "ok"},
+				},
+			},
+		},
+		&ast.IfStmt{
+			Condition: &ast.BoolLiteral{Value: true},
+			Consequent: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "done"}},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserModifierUnlessConditional(t *testing.T) {
 	t.Parallel()
 
@@ -104,6 +139,24 @@ end`
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserModifierIfRejectsComplexStatements(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  while ready
+    tick
+  end if again
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want modifier if placement error", source)
+	}
+	if got, want := errs[0].Error(), "modifier if is only supported after expression or assignment statements"; !strings.Contains(got, want) {
+		t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
 	}
 }
 

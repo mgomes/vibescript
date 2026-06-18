@@ -220,6 +220,21 @@ end`,
 end`,
 		},
 		{
+			name: "inline_then_conditionals",
+			source: `def run(value)
+  if value == 1 then "one" elsif value == 2 then "two" else "other" end
+end`,
+		},
+		{
+			name: "modifier_if_unless_conditionals",
+			source: `def run(flag)
+  value = 0
+  value = 1 if flag
+  value = 2 unless flag
+  value
+end`,
+		},
+		{
 			name: "string_interpolation",
 			source: `def run(name)
   "hello #{name.upcase}, total #{2 + 3}"
