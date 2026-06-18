@@ -3,7 +3,6 @@ package runtime
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/mgomes/vibescript/internal/ast"
@@ -51,7 +50,6 @@ var (
 	errLoopNext            = errors.New("loop next")
 	errStepQuotaExceeded   = errors.New("step quota exceeded")
 	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
-	stringTemplatePattern  = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}`)
 )
 
 // Error returns the error message with a code frame and formatted stack trace.

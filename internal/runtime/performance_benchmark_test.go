@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -257,6 +258,56 @@ end`)
 	for range b.N {
 		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
 			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkExecutionStringTemplateManyPlaceholders(b *testing.B) {
+	script := compileScriptWithEngine(b, benchmarkEngine(), `def run(text, context, n)
+  out = ""
+  for i in 1..n
+    out = text.template(context)
+  end
+  out
+end`)
+
+	text := strings.Repeat("{{name}} scored {{score}} in {{region}} for {{team}}. ", 20)
+	contextValue := NewHash(map[string]Value{
+		"name":   NewString("Alex"),
+		"score":  NewInt(42),
+		"region": NewString("east"),
+		"team":   NewSymbol("blue"),
+	})
+	args := []Value{NewString(text), contextValue, NewInt(40)}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := script.Call(context.Background(), "run", args, CallOptions{}); err != nil {
+			b.Fatalf("call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkStringTemplateMalformedOpeners(b *testing.B) {
+	text := strings.Repeat("{{1", 2_000) + "}} {{name}}"
+	contextValue := NewHash(map[string]Value{
+		"name": NewString("Alex"),
+	})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		got, err := stringTemplate(text, contextValue, false)
+		if err != nil {
+			b.Fatalf("stringTemplate malformed openers error = %v", err)
+		}
+		const wantSuffix = " Alex"
+		if !strings.HasSuffix(got, wantSuffix) {
+			tail := got
+			if len(tail) > 32 {
+				tail = tail[len(tail)-32:]
+			}
+			b.Fatalf("stringTemplate malformed openers tail = %q, want suffix %q", tail, wantSuffix)
 		}
 	}
 }

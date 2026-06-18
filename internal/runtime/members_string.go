@@ -344,34 +344,90 @@ func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
 }
 
 func stringTemplate(text string, context Value, strict bool) (string, error) {
-	templateErr := error(nil)
-	rendered := stringTemplatePattern.ReplaceAllStringFunc(text, func(match string) string {
-		if templateErr != nil {
-			return match
+	var b strings.Builder
+	rendered := false
+	last := 0
+	search := 0
+	for search < len(text) {
+		openRel := strings.Index(text[search:], "{{")
+		if openRel < 0 {
+			break
 		}
-		submatch := stringTemplatePattern.FindStringSubmatch(match)
-		if len(submatch) != 2 {
-			return match
+		open := search + openRel
+		keyPath, end, ok := parseTemplateAt(text, open)
+		if !ok {
+			search = open + 1
+			continue
 		}
-		keyPath := submatch[1]
+		if !rendered {
+			b.Grow(len(text))
+			rendered = true
+		}
+		b.WriteString(text[last:open])
+		placeholder := text[open:end]
 		value, ok := stringTemplateLookup(context, keyPath)
 		if !ok {
 			if strict {
-				templateErr = fmt.Errorf("string.template missing placeholder %s", keyPath)
+				return "", fmt.Errorf("string.template missing placeholder %s", keyPath)
 			}
-			return match
+			b.WriteString(placeholder)
+			last = end
+			search = end
+			continue
 		}
 		segment, err := stringTemplateScalarValue(value, keyPath)
 		if err != nil {
-			templateErr = err
-			return match
+			return "", err
 		}
-		return segment
-	})
-	if templateErr != nil {
-		return "", templateErr
+		b.WriteString(segment)
+		last = end
+		search = end
 	}
-	return rendered, nil
+	if !rendered {
+		return text, nil
+	}
+	b.WriteString(text[last:])
+	return b.String(), nil
+}
+
+func parseTemplateAt(text string, open int) (string, int, bool) {
+	i := open + 2
+	for i < len(text) && isTemplateSpace(text[i]) {
+		i++
+	}
+	if i >= len(text) || !isTemplateKeyStart(text[i]) {
+		return "", 0, false
+	}
+	keyStart := i
+	i++
+	for i < len(text) && isTemplateKeyRune(text[i]) {
+		i++
+	}
+	keyEnd := i
+	for i < len(text) && isTemplateSpace(text[i]) {
+		i++
+	}
+	if i+1 >= len(text) || text[i] != '}' || text[i+1] != '}' {
+		return "", 0, false
+	}
+	return text[keyStart:keyEnd], i + 2, true
+}
+
+func isTemplateSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\f', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+func isTemplateKeyStart(b byte) bool {
+	return b == '_' || ('A' <= b && b <= 'Z') || ('a' <= b && b <= 'z')
+}
+
+func isTemplateKeyRune(b byte) bool {
+	return isTemplateKeyStart(b) || ('0' <= b && b <= '9') || b == '.' || b == '-'
 }
 
 func stringMemberQuery(property string) (Value, error) {
