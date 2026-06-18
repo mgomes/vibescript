@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestParenlessSingleArgumentCalls(t *testing.T) {
 	t.Parallel()
@@ -162,4 +165,53 @@ func TestParenlessBareOptionsForConstructors(t *testing.T) {
 		t.Fatalf("call_constructor() = %v, want Ada", got)
 	}
 	requireCallErrorContains(t, script, "strict_parenthesized_constructor", nil, CallOptions{}, "missing argument opts")
+}
+
+func TestParenlessBareOptionsForClonedConstructors(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	producer := compileScriptWithEngine(t, engine, `
+    class Person
+      def initialize(opts)
+        @name = opts[:name]
+      end
+
+      def name
+        @name
+      end
+    end
+
+    def export_class
+      Person
+    end
+    `)
+	consumer := compileScriptWithEngine(t, engine, `
+    def call_constructor(ctor)
+      person = ctor name: "Ada"
+      person.name
+    end
+    `)
+
+	classValue, err := producer.Call(context.Background(), "export_class", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("export_class() error = %v", err)
+	}
+	exec := newExecutionForCall(producer, context.Background(), newEnv(nil), CallOptions{})
+	constructor, err := exec.getMember(classValue, "new", Position{})
+	if err != nil {
+		t.Fatalf("getMember(Person, new) error = %v", err)
+	}
+	clonedConstructor := cloneValueForHost(constructor)
+	if clonedConstructor.Kind() != KindBuiltin {
+		t.Fatalf("cloned constructor kind = %s, want builtin", clonedConstructor.Kind())
+	}
+
+	got, err := consumer.Call(context.Background(), "call_constructor", []Value{clonedConstructor}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call_constructor(exported constructor) error = %v", err)
+	}
+	if !got.Equal(NewString("Ada")) {
+		t.Fatalf("call_constructor(exported constructor) = %v, want Ada", got)
+	}
 }
