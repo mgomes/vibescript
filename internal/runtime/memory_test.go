@@ -51,6 +51,24 @@ func TestMemoryEstimatorDeduplicatesAliasedStringPayload(t *testing.T) {
 	}
 }
 
+func TestMemoryEstimatorResetAllowsReuse(t *testing.T) {
+	t.Parallel()
+	payload := NewHash(map[string]Value{"id": NewInt(1)})
+	est := newMemoryEstimator()
+
+	first := est.value(payload)
+	aliased := est.value(payload)
+	est.reset()
+	reused := est.value(payload)
+
+	if aliased >= first {
+		t.Fatalf("aliased estimate = %d, want less than first estimate %d", aliased, first)
+	}
+	if reused != first {
+		t.Fatalf("reused estimate = %d, want first estimate %d", reused, first)
+	}
+}
+
 func TestEnvStaticBindingsAccountedWithoutWalk(t *testing.T) {
 	t.Parallel()
 	payload := strings.Repeat("a", 16384)

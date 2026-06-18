@@ -139,8 +139,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
-			left := make([]Value, 0, len(arr))
-			right := make([]Value, 0, len(arr))
+			initialCapacity := arrayPartitionInitialCapacity(len(arr))
+			left := make([]Value, 0, initialCapacity)
+			right := make([]Value, 0, initialCapacity)
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
@@ -165,7 +166,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
-			groups := make(map[string][]Value, len(arr))
+			groups := make(map[string][]Value, arrayGroupingInitialCapacity(len(arr)))
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
@@ -194,9 +195,10 @@ func arrayMemberGrouping(property string) (Value, error) {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
-			order := make([]string, 0, len(arr))
-			keyValues := make(map[string]Value, len(arr))
-			groups := make(map[string][]Value, len(arr))
+			initialCapacity := arrayGroupingInitialCapacity(len(arr))
+			order := make([]string, 0, initialCapacity)
+			keyValues := make(map[string]Value, initialCapacity)
+			groups := make(map[string][]Value, initialCapacity)
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
@@ -211,7 +213,6 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if _, exists := groups[key]; !exists {
 					order = append(order, key)
 					keyValues[key] = groupValue
-					groups[key] = []Value{}
 				}
 				groups[key] = append(groups[key], item)
 			}
@@ -262,6 +263,20 @@ func arrayMemberGrouping(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+func arrayGroupingInitialCapacity(length int) int {
+	if length <= 16 {
+		return length
+	}
+	return 16
+}
+
+func arrayPartitionInitialCapacity(length int) int {
+	if length <= 1 {
+		return length
+	}
+	return (length + 1) / 2
 }
 
 func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
