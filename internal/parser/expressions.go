@@ -24,13 +24,13 @@ func (p *parser) parseLineExpression(precedence int) ast.Expression {
 }
 
 func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLimited bool) ast.Expression {
-	prefix := p.prefixFns[p.curToken.Type]
-	if prefix == nil {
+	prefix := prefixParserKind(p.curToken.Type)
+	if prefix == prefixParserNone {
 		p.errorUnexpected(p.curToken)
 		return nil
 	}
 
-	left := prefix()
+	left := p.parsePrefix(prefix)
 	if left == nil {
 		return nil
 	}
@@ -39,12 +39,12 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 		if lineLimited && p.peekToken.Pos.Line > limitLine && !p.lineLimitedContinuationToken(p.peekToken) {
 			return left
 		}
-		infix := p.infixFns[p.peekToken.Type]
-		if infix == nil {
+		infix := infixParserKind(p.peekToken.Type)
+		if infix == infixParserNone {
 			return left
 		}
 		p.nextToken()
-		left = infix(left)
+		left = p.parseInfix(infix, left)
 		if left == nil {
 			return nil
 		}
@@ -54,6 +54,173 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 	}
 
 	return left
+}
+
+type prefixParseKind uint8
+
+const (
+	prefixParserNone prefixParseKind = iota
+	prefixParserIdentifier
+	prefixParserIntegerLiteral
+	prefixParserFloatLiteral
+	prefixParserStringLiteral
+	prefixParserPercentWordsLiteral
+	prefixParserPercentSymbolsLiteral
+	prefixParserBooleanLiteral
+	prefixParserNilLiteral
+	prefixParserSymbolLiteral
+	prefixParserIvarLiteral
+	prefixParserClassVarLiteral
+	prefixParserSelfLiteral
+	prefixParserGroupedExpression
+	prefixParserArrayLiteral
+	prefixParserHashLiteral
+	prefixParserPrefixExpression
+	prefixParserYieldExpression
+	prefixParserCaseExpression
+)
+
+func prefixParserKind(tt ast.TokenType) prefixParseKind {
+	switch tt {
+	case ast.TokenIdent:
+		return prefixParserIdentifier
+	case ast.TokenInt:
+		return prefixParserIntegerLiteral
+	case ast.TokenFloat:
+		return prefixParserFloatLiteral
+	case ast.TokenString:
+		return prefixParserStringLiteral
+	case ast.TokenWords:
+		return prefixParserPercentWordsLiteral
+	case ast.TokenSymbols:
+		return prefixParserPercentSymbolsLiteral
+	case ast.TokenTrue, ast.TokenFalse:
+		return prefixParserBooleanLiteral
+	case ast.TokenNil:
+		return prefixParserNilLiteral
+	case ast.TokenSymbol:
+		return prefixParserSymbolLiteral
+	case ast.TokenIvar:
+		return prefixParserIvarLiteral
+	case ast.TokenClassVar:
+		return prefixParserClassVarLiteral
+	case ast.TokenSelf:
+		return prefixParserSelfLiteral
+	case ast.TokenLParen:
+		return prefixParserGroupedExpression
+	case ast.TokenLBracket:
+		return prefixParserArrayLiteral
+	case ast.TokenLBrace:
+		return prefixParserHashLiteral
+	case ast.TokenBang, ast.TokenMinus:
+		return prefixParserPrefixExpression
+	case ast.TokenYield:
+		return prefixParserYieldExpression
+	case ast.TokenCase:
+		return prefixParserCaseExpression
+	default:
+		return prefixParserNone
+	}
+}
+
+func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
+	switch kind {
+	case prefixParserIdentifier:
+		return p.parseIdentifier()
+	case prefixParserIntegerLiteral:
+		return p.parseIntegerLiteral()
+	case prefixParserFloatLiteral:
+		return p.parseFloatLiteral()
+	case prefixParserStringLiteral:
+		return p.parseStringLiteral()
+	case prefixParserPercentWordsLiteral:
+		return p.parsePercentWordsLiteral()
+	case prefixParserPercentSymbolsLiteral:
+		return p.parsePercentSymbolsLiteral()
+	case prefixParserBooleanLiteral:
+		return p.parseBooleanLiteral()
+	case prefixParserNilLiteral:
+		return p.parseNilLiteral()
+	case prefixParserSymbolLiteral:
+		return p.parseSymbolLiteral()
+	case prefixParserIvarLiteral:
+		return p.parseIvarLiteral()
+	case prefixParserClassVarLiteral:
+		return p.parseClassVarLiteral()
+	case prefixParserSelfLiteral:
+		return p.parseSelfLiteral()
+	case prefixParserGroupedExpression:
+		return p.parseGroupedExpression()
+	case prefixParserArrayLiteral:
+		return p.parseArrayLiteral()
+	case prefixParserHashLiteral:
+		return p.parseHashLiteral()
+	case prefixParserPrefixExpression:
+		return p.parsePrefixExpression()
+	case prefixParserYieldExpression:
+		return p.parseYieldExpression()
+	case prefixParserCaseExpression:
+		return p.parseCaseExpression()
+	default:
+		return nil
+	}
+}
+
+type infixParseKind uint8
+
+const (
+	infixParserNone infixParseKind = iota
+	infixParserInfixExpression
+	infixParserRangeExpression
+	infixParserCallExpression
+	infixParserMemberExpression
+	infixParserScopeExpression
+	infixParserIndexExpression
+	infixParserTrailingBlockExpression
+)
+
+func infixParserKind(tt ast.TokenType) infixParseKind {
+	switch tt {
+	case ast.TokenPlus, ast.TokenMinus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPercent,
+		ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
+		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
+		return infixParserInfixExpression
+	case ast.TokenRange:
+		return infixParserRangeExpression
+	case ast.TokenLParen:
+		return infixParserCallExpression
+	case ast.TokenDot:
+		return infixParserMemberExpression
+	case ast.TokenScope:
+		return infixParserScopeExpression
+	case ast.TokenLBracket:
+		return infixParserIndexExpression
+	case ast.TokenDo, ast.TokenLBrace:
+		return infixParserTrailingBlockExpression
+	default:
+		return infixParserNone
+	}
+}
+
+func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expression {
+	switch kind {
+	case infixParserInfixExpression:
+		return p.parseInfixExpression(left)
+	case infixParserRangeExpression:
+		return p.parseRangeExpression(left)
+	case infixParserCallExpression:
+		return p.parseCallExpression(left)
+	case infixParserMemberExpression:
+		return p.parseMemberExpression(left)
+	case infixParserScopeExpression:
+		return p.parseScopeExpression(left)
+	case infixParserIndexExpression:
+		return p.parseIndexExpression(left)
+	case infixParserTrailingBlockExpression:
+		return p.parseTrailingBlockExpression(left)
+	default:
+		return nil
+	}
 }
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
@@ -689,7 +856,7 @@ func (p *parser) parseYieldExpression() ast.Expression {
 				return nil
 			}
 		}
-	} else if p.peekToken.Pos.Line == pos.Line && p.prefixFns[p.peekToken.Type] != nil {
+	} else if p.peekToken.Pos.Line == pos.Line && prefixParserKind(p.peekToken.Type) != prefixParserNone {
 		p.nextToken()
 		args = append(args, p.parseExpression(lowestPrec))
 	}
