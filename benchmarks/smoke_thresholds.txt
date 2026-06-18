@@ -17,8 +17,8 @@ BenchmarkExecutionArrayConcatAccumulation 3500000 12000 900000
 BenchmarkExecutionMethodDispatchLoop 8000000 6000
 BenchmarkExecutionCapabilityFindLoop 12000000 9000
 BenchmarkExecutionCapabilityWorkflowLoop 16000000 15000
-BenchmarkExecutionJSONParseLoop 3000000 5000
-BenchmarkExecutionJSONStringifyLoop 3000000 4000
+BenchmarkExecutionJSONParseLoop 3000000 3200 180000
+BenchmarkExecutionJSONStringifyLoop 3000000 2000 75000
 BenchmarkExecutionRegexReplaceAllLoop 4000000 4000
 BenchmarkExecutionTallyLoop 10000000 2000
 BenchmarkCallShortScript 20000 60

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"unicode/utf8"
 )
 
 func TestDurationMethods(t *testing.T) {
@@ -421,6 +422,67 @@ func TestJSONBuiltins(t *testing.T) {
 	requireCallErrorContains(t, script, "stringify_unsupported", nil, CallOptions{}, "JSON.stringify unsupported value type function")
 }
 
+func TestJSONStringifyEscaping(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def stringify_value(value)
+      JSON.stringify(value)
+    end
+    `)
+
+	tests := []struct {
+		name  string
+		value Value
+		want  string
+	}{
+		{name: "html_sensitive", value: NewString("<>&"), want: `"\u003c\u003e\u0026"`},
+		{name: "control_characters", value: NewString("line\n\t"), want: `"line\n\t"`},
+		{name: "line_separators", value: NewString("\u2028\u2029"), want: `"\u2028\u2029"`},
+		{name: "invalid_utf8", value: NewString("bad\xff"), want: `"bad\ufffd"`},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, "stringify_value", []Value{tc.value})
+			if got.Kind() != KindString || got.String() != tc.want {
+				t.Fatalf("JSON.stringify(%q) = %q, want %q", tc.value.String(), got.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestJSONParseEscapesAndNumbers(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def parse_payload()
+      JSON.parse("{\"newline\":\"line\\n\",\"emoji\":\"\\ud83d\\ude00\",\"bad\":\"\\ud800\",\"int\":9223372036854775808,\"float\":1e2}")
+    end
+    `)
+
+	parsed := callFunc(t, script, "parse_payload", nil)
+	if parsed.Kind() != KindHash {
+		t.Fatalf("parse_payload() = %s, want hash", parsed.Kind())
+	}
+	obj := parsed.Hash()
+	if got, want := obj["newline"], NewString("line\n"); !got.Equal(want) {
+		t.Fatalf("newline = %q, want %q", got.String(), want.String())
+	}
+	if got, want := obj["emoji"], NewString("😀"); !got.Equal(want) {
+		t.Fatalf("emoji = %q, want %q", got.String(), want.String())
+	}
+	if got, want := obj["bad"], NewString(string(utf8.RuneError)); !got.Equal(want) {
+		t.Fatalf("bad surrogate = %q, want %q", got.String(), want.String())
+	}
+	if got, want := obj["int"], NewFloat(9223372036854775808); !got.Equal(want) {
+		t.Fatalf("overflow integer = %s, want %s", got, want)
+	}
+	if got, want := obj["float"], NewFloat(100); !got.Equal(want) {
+		t.Fatalf("float = %s, want %s", got, want)
+	}
+}
+
 func TestRegexBuiltins(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -490,6 +552,10 @@ func TestJSONAndRegexMalformedInputs(t *testing.T) {
       JSON.parse("{\"a\":")
     end
 
+    def bad_json_number()
+      JSON.parse("1e10000")
+    end
+
     def bad_regex_replace()
       Regex.replace("abc", "[", "x")
     end
@@ -506,6 +572,7 @@ func TestJSONAndRegexMalformedInputs(t *testing.T) {
 	}{
 		{name: "json_trailing", fn: "bad_json_trailing", want: "JSON.parse invalid JSON: trailing data"},
 		{name: "json_syntax", fn: "bad_json_syntax", want: "JSON.parse invalid JSON"},
+		{name: "json_number", fn: "bad_json_number", want: "JSON.parse invalid number"},
 		{name: "regex_replace", fn: "bad_regex_replace", want: "Regex.replace invalid regex"},
 		{name: "regex_replace_all", fn: "bad_regex_replace_all", want: "Regex.replace_all invalid regex"},
 	}
