@@ -56,6 +56,18 @@ items = [1, 2, 3]
 items[0] = 10
 ```
 
+Compound assignment is supported for single assignment targets, including
+variables, member targets, and index targets:
+
+```vibe
+total += amount
+items[0] *= 2
+record[:score] **= 2
+```
+
+Supported compound assignment operators are `+=`, `-=`, `*=`, `/=`, `%=`, and
+`**=`. They reuse the corresponding arithmetic operator semantics.
+
 ## Functions
 
 Define functions with `def`/`end`:

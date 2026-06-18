@@ -33,6 +33,7 @@ end`,
   a, *middle, last = [1, 2, 3, 4]
   record = {count: 0}
   record.count = middle[0]
+  record[:count] += 1
   [a, record[:count], last]
 end`,
 		},

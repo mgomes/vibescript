@@ -35,8 +35,11 @@ func (s *RaiseStmt) Pos() Position { return s.Position }
 
 // AssignStmt represents a variable assignment.
 type AssignStmt struct {
-	Target   Expression
-	Value    Expression
+	Target Expression
+	Value  Expression
+	// Operator is empty for plain assignment and stores the arithmetic
+	// operator for compound assignment.
+	Operator TokenType
 	Position Position
 }
 
