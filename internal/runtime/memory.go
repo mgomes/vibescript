@@ -339,7 +339,7 @@ func (est *memoryEstimator) slice(values []Value) int {
 		return size
 	}
 
-	id := uintptr(unsafe.Pointer(unsafe.SliceData(values)))
+	id := sliceBackingIdentity(values)
 	if id != 0 {
 		if _, seen := est.seenSlices[id]; seen {
 			return 0
@@ -358,6 +358,13 @@ func (est *memoryEstimator) slice(values []Value) int {
 		size += est.value(val)
 	}
 	return size
+}
+
+func sliceBackingIdentity(values []Value) uintptr {
+	if cap(values) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(&values[:1][0]))
 }
 
 func (est *memoryEstimator) hash(values map[string]Value) int {
