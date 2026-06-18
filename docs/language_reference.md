@@ -146,6 +146,17 @@ end
 Ruby-style ampersand block forwarding and symbol-to-proc shorthand are not
 supported; use an explicit `do ... end` or brace block.
 
+Ruby-style safe navigation (`receiver&.member`) is not supported. Use an
+explicit nil check:
+
+```vibe
+if user == nil
+  nil
+else
+  user.name
+end
+```
+
 ## Operators
 
 Core operator families:
