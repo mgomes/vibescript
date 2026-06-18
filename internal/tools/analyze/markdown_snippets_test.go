@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mgomes/vibescript/internal/ast"
+	"github.com/mgomes/vibescript/internal/parser"
 	"github.com/mgomes/vibescript/internal/runtime"
 )
 
@@ -164,6 +166,30 @@ func TestMarkdownKnownFailurePolicySelfInvalidatesWhenOnlyTopLevelFails(t *testi
 	}
 }
 
+func TestMarkdownReferenceWrapperAnalyzesDeclarationsBeforeFallback(t *testing.T) {
+	t.Parallel()
+
+	engine := runtime.MustNewEngine(runtime.Config{})
+	snippet := markdownSnippet{
+		Path: "docs/reference.md",
+		Line: 1,
+		Source: `def clean_input(text)
+  return text
+  text
+end
+
+clean_input("  hello  ")
+`,
+	}
+	err := checkMarkdownSnippet(engine, snippet, markdownSnippetPolicy{}, false)
+	if err == nil {
+		t.Fatal("checkMarkdownSnippet() error = nil, want analyzer warning from original function")
+	}
+	if got := err.Error(); !strings.Contains(got, "analyze: unreachable statement") || !strings.Contains(got, "clean_input") {
+		t.Fatalf("checkMarkdownSnippet() error = %q, want analyzer warning from clean_input", got)
+	}
+}
+
 func TestExtractMarkdownVibeSnippetsRejectsUnterminatedFence(t *testing.T) {
 	t.Parallel()
 
@@ -187,6 +213,9 @@ func checkMarkdownSnippet(engine *runtime.Engine, snippet markdownSnippet, polic
 	}
 	compileFailed, err := compileAndAnalyzeMarkdownSnippet(engine, source)
 	if compileFailed && !hasPolicy && shouldWrapReferenceSnippet(snippet.Path) {
+		if err := analyzeMarkdownSnippetDeclarations(source); err != nil {
+			return err
+		}
 		_, err = compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownSnippet(source))
 	}
 	return err
@@ -308,10 +337,56 @@ func compileAndAnalyzeMarkdownSnippet(engine *runtime.Engine, source string) (bo
 		return true, fmt.Errorf("compile: %w", err)
 	}
 	if warnings := Script(script); len(warnings) > 0 {
-		first := warnings[0]
-		return false, fmt.Errorf("analyze: %s at %d:%d in %s", first.Message, first.Pos.Line, first.Pos.Column, first.Function)
+		return false, markdownSnippetWarningError(warnings[0])
 	}
 	return false, nil
+}
+
+func analyzeMarkdownSnippetDeclarations(source string) error {
+	program, parseErrors := parser.Parse(source)
+	if len(parseErrors) > 0 {
+		return nil
+	}
+	warnings := analyzeMarkdownSnippetProgramDeclarations(program)
+	if len(warnings) == 0 {
+		return nil
+	}
+	return markdownSnippetWarningError(warnings[0])
+}
+
+func analyzeMarkdownSnippetProgramDeclarations(program *ast.Program) []Warning {
+	if program == nil {
+		return nil
+	}
+
+	var warnings []Warning
+	for _, stmt := range program.Statements {
+		switch typed := stmt.(type) {
+		case *ast.FunctionStmt:
+			lintStatements(typed.Name, typed.Body, &warnings)
+		case *ast.ClassStmt:
+			for _, method := range typed.Methods {
+				lintStatements(typed.Name+"#"+method.Name, method.Body, &warnings)
+			}
+			for _, method := range typed.ClassMethods {
+				lintStatements(typed.Name+"."+method.Name, method.Body, &warnings)
+			}
+		}
+	}
+	sort.SliceStable(warnings, func(i, j int) bool {
+		if warnings[i].Pos.Line != warnings[j].Pos.Line {
+			return warnings[i].Pos.Line < warnings[j].Pos.Line
+		}
+		if warnings[i].Pos.Column != warnings[j].Pos.Column {
+			return warnings[i].Pos.Column < warnings[j].Pos.Column
+		}
+		return warnings[i].Function < warnings[j].Function
+	})
+	return warnings
+}
+
+func markdownSnippetWarningError(warning Warning) error {
+	return fmt.Errorf("analyze: %s at %d:%d in %s", warning.Message, warning.Pos.Line, warning.Pos.Column, warning.Function)
 }
 
 func shouldWrapReferenceSnippet(path string) bool {
