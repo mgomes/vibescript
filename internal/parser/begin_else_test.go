@@ -50,6 +50,67 @@ end`
 	}
 }
 
+func TestParserFunctionRescueElseEnsure(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  raise("boom")
+rescue RuntimeError => err
+  err.message
+else
+  "ok"
+ensure
+  cleanup
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 1 {
+		t.Fatalf("function body length = %d, want 1", len(body))
+	}
+	stmt, ok := body[0].(*ast.TryStmt)
+	if !ok {
+		t.Fatalf("body[0] = %T, want *ast.TryStmt", body[0])
+	}
+	if stmt.RescueTy == nil || stmt.RescueTy.Name != "RuntimeError" {
+		t.Fatalf("RescueTy = %#v, want RuntimeError", stmt.RescueTy)
+	}
+	if stmt.RescueBinding != "err" {
+		t.Fatalf("RescueBinding = %q, want err", stmt.RescueBinding)
+	}
+	wantBody := []ast.Statement{
+		&ast.RaiseStmt{Value: &ast.StringLiteral{Value: "boom"}},
+	}
+	if diff := cmp.Diff(wantBody, stmt.Body, astCmpOpts); diff != "" {
+		t.Fatalf("try body mismatch (-want +got):\n%s", diff)
+	}
+	wantRescue := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.MemberExpr{
+			Object:   &ast.Identifier{Name: "err"},
+			Property: "message",
+		}},
+	}
+	if diff := cmp.Diff(wantRescue, stmt.Rescue, astCmpOpts); diff != "" {
+		t.Fatalf("try rescue mismatch (-want +got):\n%s", diff)
+	}
+	wantElse := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.StringLiteral{Value: "ok"}},
+	}
+	if diff := cmp.Diff(wantElse, stmt.Else, astCmpOpts); diff != "" {
+		t.Fatalf("try else mismatch (-want +got):\n%s", diff)
+	}
+	wantEnsure := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.Identifier{Name: "cleanup"}},
+	}
+	if diff := cmp.Diff(wantEnsure, stmt.Ensure, astCmpOpts); diff != "" {
+		t.Fatalf("try ensure mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserBeginRescueRubyStyleClauses(t *testing.T) {
 	t.Parallel()
 

@@ -123,6 +123,19 @@ end`,
 end`,
 		},
 		{
+			name: "function_rescue_ensure",
+			source: `def run(flag)
+  if flag
+    raise("boom")
+  end
+  "ok"
+rescue RuntimeError => err
+  err.message
+ensure
+  now()
+end`,
+		},
+		{
 			name: "begin_rescue_ruby_style_binding",
 			source: `def run(flag)
   begin

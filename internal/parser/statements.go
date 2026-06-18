@@ -302,7 +302,10 @@ func (p *parser) parseBeginStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
 	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+	return p.parseRescueElseEnsureTail(pos, body, "begin")
+}
 
+func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statement, owner string) ast.Statement {
 	var rescueTy *ast.TypeExpr
 	var rescueBinding string
 	var rescuePos ast.Position
@@ -323,7 +326,7 @@ func (p *parser) parseBeginStatement() ast.Statement {
 	var elseBody []ast.Statement
 	if p.curToken.Type == ast.TokenElse {
 		if !rescuePresent {
-			p.addParseError(p.curToken.Pos, "begin else requires rescue")
+			p.addParseError(p.curToken.Pos, fmt.Sprintf("%s else requires rescue", owner))
 			return nil
 		}
 		p.nextToken()
@@ -342,7 +345,7 @@ func (p *parser) parseBeginStatement() ast.Statement {
 	}
 
 	if len(rescueBody) == 0 && len(ensureBody) == 0 {
-		p.addParseError(pos, "begin requires rescue and/or ensure")
+		p.addParseError(pos, fmt.Sprintf("%s requires rescue and/or ensure", owner))
 		return nil
 	}
 
@@ -486,25 +489,18 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		}
 		p.nextToken()
 	}
-	body := []ast.Statement{}
-	p.statementNesting++
-	defer func() {
-		p.statementNesting--
-	}()
-	for p.curToken.Type != ast.TokenEnd && p.curToken.Type != ast.TokenEOF {
-		p.skipStatementSeparators()
-		if p.curToken.Type == ast.TokenEnd || p.curToken.Type == ast.TokenEOF {
-			break
+	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+	switch p.curToken.Type {
+	case ast.TokenRescue, ast.TokenElse, ast.TokenEnsure:
+		tryStmt := p.parseRescueElseEnsureTail(pos, body, "function")
+		if tryStmt == nil {
+			return nil
 		}
-		stmt := p.parseStatement()
-		if stmt != nil {
-			body = append(body, stmt)
-		}
-		p.nextToken()
-	}
-
-	if p.curToken.Type != ast.TokenEnd {
+		body = []ast.Statement{tryStmt}
+	case ast.TokenEnd:
+	default:
 		p.errorExpected(p.curToken, "end")
+		return nil
 	}
 
 	private := false
