@@ -10,13 +10,30 @@ import (
 )
 
 func (e *Engine) Compile(source string) (*Script, error) {
+	script, _, _, err := CompileWithProgram(e, source)
+	return script, err
+}
+
+// CompileWithProgram compiles source and returns the parsed program from the
+// same parser pass. It is intended for internal tooling paths that need both
+// diagnostics and navigation data without reparsing clean source.
+func CompileWithProgram(e *Engine, source string) (*Script, *ast.Program, []error, error) {
 	if e.config.MaxSourceBytes > 0 && len(source) > e.config.MaxSourceBytes {
-		return nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", len(source), e.config.MaxSourceBytes)
+		return nil, nil, nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", len(source), e.config.MaxSourceBytes)
 	}
 
 	program, parseErrors := parser.Parse(source)
 	if len(parseErrors) > 0 {
-		return nil, combineErrors(parseErrors)
+		return nil, program, parseErrors, combineErrors(parseErrors)
+	}
+
+	script, err := compileParsed(e, source, program)
+	return script, program, nil, err
+}
+
+func compileParsed(e *Engine, source string, program *ast.Program) (*Script, error) {
+	if program == nil {
+		return nil, fmt.Errorf("program is nil")
 	}
 
 	functions := make(map[string]*ScriptFunction)

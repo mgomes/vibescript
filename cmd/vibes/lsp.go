@@ -14,7 +14,7 @@ import (
 	"unicode"
 
 	"github.com/mgomes/vibescript/internal/ast"
-	"github.com/mgomes/vibescript/internal/parser"
+	vibesruntime "github.com/mgomes/vibescript/internal/runtime"
 	"github.com/mgomes/vibescript/vibes"
 )
 
@@ -413,17 +413,21 @@ func (s *lspServer) documentLines(uri string) []string {
 }
 
 func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
-	script, diagnostics := compileForDiagnostics(s.engine, source)
+	script, program, parseErrs, diagnostics := compileForDiagnostics(s.engine, source)
 	if script != nil && s.compiled != nil {
 		s.compiled[uri] = script
+	} else if program == nil && len(parseErrs) == 0 && s.compiled != nil {
+		delete(s.compiled, uri)
 	}
-	if program, parseErrs := parser.Parse(source); program != nil && s.programs != nil {
+	if program != nil && s.programs != nil {
 		// A clean parse is authoritative even when empty (the symbols
 		// are genuinely gone); a broken mid-edit parse only replaces
 		// the cache when it still yielded statements.
 		if len(parseErrs) == 0 || len(program.Statements) > 0 {
 			s.programs[uri] = program
 		}
+	} else if len(parseErrs) == 0 && s.programs != nil {
+		delete(s.programs, uri)
 	}
 	return lspOutboundMessage{
 		JSONRPC: "2.0",
@@ -436,23 +440,38 @@ func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
 }
 
 func diagnosticsForSource(engine *vibes.Engine, source string) []map[string]any {
-	_, diagnostics := compileForDiagnostics(engine, source)
+	_, _, _, diagnostics := compileForDiagnostics(engine, source)
 	return diagnostics
 }
 
-// compileForDiagnostics compiles once, returning the script (nil when
-// compilation failed) alongside the diagnostics payload.
-func compileForDiagnostics(engine *vibes.Engine, source string) (*vibes.Script, []map[string]any) {
-	script, err := engine.Compile(source)
+// compileForDiagnostics parses once, compiles the parsed program when possible,
+// and returns the AST so diagnostics and navigation caches stay in sync.
+func compileForDiagnostics(engine *vibes.Engine, source string) (*vibes.Script, *ast.Program, []error, []map[string]any) {
+	script, program, parseErrs, err := vibesruntime.CompileWithProgram(engine, source)
 	if err == nil {
-		return script, []map[string]any{}
+		return script, program, nil, []map[string]any{}
+	}
+
+	if len(parseErrs) > 0 {
+		issues := vibes.ParseIssues(err)
+		if len(issues) == 0 {
+			return nil, program, parseErrs, []map[string]any{
+				newDiagnostic(diagnosticRange{}, err.Error()),
+			}
+		}
+		lines := strings.Split(source, "\n")
+		out := make([]map[string]any, 0, len(issues))
+		for _, issue := range issues {
+			out = append(out, newDiagnostic(rangeForIssue(issue, lines), issue.Message))
+		}
+		return nil, program, parseErrs, out
 	}
 
 	issues := vibes.ParseIssues(err)
 	if len(issues) == 0 {
 		// Non-parse compile failures (size limits, duplicate top-level
 		// names) carry no position; surface them at the document start.
-		return nil, []map[string]any{
+		return nil, program, nil, []map[string]any{
 			newDiagnostic(diagnosticRange{}, err.Error()),
 		}
 	}
@@ -462,7 +481,7 @@ func compileForDiagnostics(engine *vibes.Engine, source string) (*vibes.Script, 
 	for _, issue := range issues {
 		out = append(out, newDiagnostic(rangeForIssue(issue, lines), issue.Message))
 	}
-	return nil, out
+	return nil, program, nil, out
 }
 
 // diagnosticRange is an LSP range in 0-indexed line/character offsets.

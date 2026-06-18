@@ -47,6 +47,28 @@ func TestCompileInvalidUTF8IsLinear(t *testing.T) {
 	}
 }
 
+func TestCompileWithProgramHonorsMaxSourceBytesBeforeParse(t *testing.T) {
+	t.Parallel()
+	engine := MustNewEngine(Config{MaxSourceBytes: 4})
+
+	script, program, parseErrs, err := CompileWithProgram(engine, "def broken(")
+	if err == nil {
+		t.Fatal("CompileWithProgram oversized source error = nil")
+	}
+	if !strings.Contains(err.Error(), "source exceeds maximum size") {
+		t.Fatalf("CompileWithProgram oversized source error = %v", err)
+	}
+	if script != nil {
+		t.Fatalf("CompileWithProgram oversized script = %#v, want nil", script)
+	}
+	if program != nil {
+		t.Fatalf("CompileWithProgram oversized program = %#v, want nil", program)
+	}
+	if len(parseErrs) != 0 {
+		t.Fatalf("CompileWithProgram oversized parseErrs = %d, want 0", len(parseErrs))
+	}
+}
+
 func BenchmarkCombineErrors(b *testing.B) {
 	errs := make([]error, 2048)
 	for i := range errs {
