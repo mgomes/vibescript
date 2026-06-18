@@ -375,6 +375,64 @@ end`)
 	}
 }
 
+func TestTasksRunSnapshotsCurrentRootGlobalsAtScopeCreation(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared()
+  probe.wait()
+  shared[:seed]
+end
+
+def run()
+  shared[:seed] = 1
+  Tasks.run(max: 1) do |tasks|
+    task = tasks.spawn(:read_shared)
+    shared[:seed] = 2
+    task.value
+  end
+end`)
+
+	shared := NewHash(map[string]Value{"seed": NewInt(0)})
+	probe := &taskBlockingProbe{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan callResult, 1)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		val, err := script.Call(ctx, "run", nil, CallOptions{
+			Globals: map[string]Value{
+				"probe":  probe.value(),
+				"shared": shared,
+			},
+		})
+		done <- callResult{value: val, err: err}
+	})
+
+	select {
+	case <-probe.started:
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("run returned before task entered probe: %v", result.err)
+		}
+		t.Fatalf("run returned before task entered probe: %s", result.value.String())
+	}
+
+	close(probe.release)
+	result := <-done
+	wg.Wait()
+	if result.err != nil {
+		t.Fatalf("run failed: %v", result.err)
+	}
+	if result.value.Kind() != KindInt || result.value.Int() != 1 {
+		t.Fatalf("run returned %s, want 1", result.value.String())
+	}
+	if got := shared.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host global shared[:seed] = %s, want 0", got.String())
+	}
+}
+
 func TestNestedTasksInheritLazyGlobals(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `def read_shared(item)

@@ -31,7 +31,7 @@ func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[s
 		return NewNil(), err
 	}
 
-	group := newTaskGroup(exec, max)
+	group := newTaskGroup(exec, max, true)
 	exec.pushTaskGroup(group)
 	defer exec.popTaskGroup()
 	defer group.releaseRetainedResults()
@@ -78,7 +78,7 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 		return NewArray(nil), nil
 	}
 
-	group := newTaskGroup(exec, max)
+	group := newTaskGroup(exec, max, false)
 	exec.pushTaskGroup(group)
 	defer exec.popTaskGroup()
 	defer group.releaseRetainedResults()
@@ -147,7 +147,7 @@ type taskHandle struct {
 	err   error
 }
 
-func newTaskGroup(exec *Execution, max int) *taskGroup {
+func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 	ctx, cancel := context.WithCancel(exec.Context())
 	inheritedLazyGlobals := taskLazyGlobalsFromContext(exec.Context())
 	globals := exec.callOptions.Globals
@@ -155,6 +155,9 @@ func newTaskGroup(exec *Execution, max int) *taskGroup {
 		inheritedLazyGlobals = inheritedLazyGlobals.snapshotForNestedTasks()
 	} else {
 		globals = taskGlobalsFromRoot(exec.root, exec.callOptions.Globals)
+		if detachRootGlobals {
+			globals = cloneTaskGlobals(globals)
+		}
 	}
 	group := &taskGroup{
 		script:               taskScript(exec),
@@ -603,9 +606,11 @@ func (globals *taskLazyGlobals) materialize(name string) Value {
 		return clone
 	}
 	source := globals.values[name]
-	cloned := globals.cloner.clone(source)
+	var cloned Value
 	if globals.rebinder != nil {
-		cloned = globals.rebinder.rebindValue(cloned)
+		cloned = globals.rebinder.rebindValue(source)
+	} else {
+		cloned = globals.cloner.clone(source)
 	}
 	globals.clones[name] = cloned
 	return cloned
