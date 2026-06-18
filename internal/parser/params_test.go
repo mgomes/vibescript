@@ -49,6 +49,36 @@ end`
 	}
 }
 
+func TestParserFunctionRequiredKeywordParameters(t *testing.T) {
+	t.Parallel()
+	source := `def takes(name:, age:)
+  name
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	want := &ast.Program{
+		Statements: []ast.Statement{
+			&ast.FunctionStmt{
+				Name: "takes",
+				Params: []ast.Param{
+					{Name: "name", Kind: ast.ParamKeyword},
+					{Name: "age", Kind: ast.ParamKeyword},
+				},
+				Body: []ast.Statement{
+					&ast.ExprStmt{Expr: &ast.Identifier{Name: "name"}},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(want, got, astCmpOpts); diff != "" {
+		t.Fatalf("program mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserFunctionCaptureParameterErrors(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -61,7 +91,7 @@ func TestParserFunctionCaptureParameterErrors(t *testing.T) {
 			source: `def bad(*items, tail)
   nil
 end`,
-			wantErr: "ordinary parameters must precede rest, keyword rest, and block capture parameters",
+			wantErr: "ordinary parameters must precede rest, keyword, keyword rest, and block capture parameters",
 		},
 		{
 			name: "block_not_last",

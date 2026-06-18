@@ -10,6 +10,7 @@ type ParamKind = runtime.ParamKind
 
 const (
 	ParamNormal      = runtime.ParamNormal
+	ParamKeyword     = runtime.ParamKeyword
 	ParamRest        = runtime.ParamRest
 	ParamKeywordRest = runtime.ParamKeywordRest
 	ParamBlock       = runtime.ParamBlock

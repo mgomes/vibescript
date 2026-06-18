@@ -11,17 +11,16 @@ read [`error_conventions.md`](error_conventions.md).
 Compilation failures include a parser message and a source code frame:
 
 ```text
-parse error at 2:12: missing value for keyword argument foo
-  --> line 2, column 12
- 2 |   call(foo: )
-   |            ^
+parse error at 2:9: missing value for hash key foo
+  --> line 2, column 9
+ 2 |   {foo: }
+   |         ^
 ```
 
 Common parser diagnostics:
 
 - `invalid hash pair: expected symbol-style key like name:`
 - `missing value for hash key ...`
-- `missing value for keyword argument ...`
 - `parallel assignment targets require '='`
 - `duplicate rest assignment target`
 - `invalid destructuring assignment target`

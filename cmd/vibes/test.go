@@ -195,7 +195,7 @@ func runTestFunction(ctx context.Context, script *vibes.Script, name string) err
 		return fmt.Errorf("function %s not found", name)
 	}
 	for _, param := range fn.Params {
-		if param.Kind == vibes.ParamNormal && param.DefaultVal == nil {
+		if (param.Kind == vibes.ParamNormal || param.Kind == vibes.ParamKeyword) && param.DefaultVal == nil {
 			return errors.New("test functions must not require parameters")
 		}
 	}

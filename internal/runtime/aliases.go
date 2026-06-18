@@ -80,6 +80,7 @@ type (
 
 const (
 	ParamNormal      = ast.ParamNormal
+	ParamKeyword     = ast.ParamKeyword
 	ParamRest        = ast.ParamRest
 	ParamKeywordRest = ast.ParamKeywordRest
 	ParamBlock       = ast.ParamBlock

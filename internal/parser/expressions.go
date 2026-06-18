@@ -555,12 +555,13 @@ func (p *parser) canAttachPeekBlock() bool {
 func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg) {
 	if isLabelNameToken(p.curToken.Type) && p.peekToken.Type == ast.TokenColon {
 		name := p.curToken.Literal
+		pos := p.curToken.Pos
 		p.nextToken()
-		p.nextToken()
-		if p.curToken.Type == ast.TokenComma || p.curToken.Type == ast.TokenRParen {
-			p.addParseError(p.curToken.Pos, fmt.Sprintf("missing value for keyword argument %s", name))
+		if p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRParen {
+			*kwargs = append(*kwargs, ast.KeywordArg{Name: name, Value: &ast.Identifier{Name: name, Position: pos}})
 			return
 		}
+		p.nextToken()
 		value := p.parseExpression(lowestPrec)
 		if value == nil {
 			return

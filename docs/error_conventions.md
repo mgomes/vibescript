@@ -52,7 +52,7 @@ a semantic that already has one.
 | Expectation | `expected X, got Y` | The parser needed a specific token or construct (`expected end, got EOF`). Always via `errorExpected`. |
 | Unexpected token | `unexpected token X` | No parse rule applies at this token. |
 | Invalid construct | `invalid X` | A literal or construct is malformed (`invalid integer literal`). |
-| Missing piece | `missing value for X` | A construct started but a required part is absent (`missing value for keyword argument foo`). |
+| Missing piece | `missing value for X` | A construct started but a required part is absent (`missing value for hash key foo`). |
 | Duplicate | `duplicate X NAME` | The same name is declared twice (`duplicate shape field id`). |
 | Placement | `X is only supported ...` / `X cannot be used with ...` / `X expects ...` | A keyword appears in the wrong position (`export is only supported for top-level functions`). |
 | Structural requirement | `X must ...` / `X requires ...` | A construct is well-formed but violates a rule (`enum Status must define at least one member`, `begin requires rescue and/or ensure`). |
