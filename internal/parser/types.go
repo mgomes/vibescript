@@ -182,7 +182,7 @@ func (p *parser) parseTypeShapeFieldName() (string, bool) {
 	switch p.curToken.Type {
 	case ast.TokenIdent, ast.TokenString, ast.TokenSymbol, ast.TokenEnum:
 		return p.curToken.Literal, true
-	case ast.TokenAnd, ast.TokenOr:
+	case ast.TokenAnd, ast.TokenOr, ast.TokenNot:
 		if isWordBooleanKeywordToken(p.curToken) {
 			return p.curToken.Literal, true
 		}

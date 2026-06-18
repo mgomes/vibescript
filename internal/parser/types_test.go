@@ -127,7 +127,7 @@ end`
 
 func TestParserTypeShapeAllowsWordBooleanFieldNames(t *testing.T) {
 	t.Parallel()
-	source := `def run(payload: { and: bool, or: bool, nested: { and: bool } })
+	source := `def run(payload: { and: bool, or: bool, not: bool, nested: { not: bool } })
   payload
 end`
 
@@ -144,11 +144,12 @@ end`
 		Kind: ast.TypeShape,
 		Shape: map[string]*ast.TypeExpr{
 			"and": {Name: "bool", Kind: ast.TypeBool},
+			"not": {Name: "bool", Kind: ast.TypeBool},
 			"or":  {Name: "bool", Kind: ast.TypeBool},
 			"nested": {
 				Kind: ast.TypeShape,
 				Shape: map[string]*ast.TypeExpr{
-					"and": {Name: "bool", Kind: ast.TypeBool},
+					"not": {Name: "bool", Kind: ast.TypeBool},
 				},
 			},
 		},

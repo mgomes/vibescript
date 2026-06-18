@@ -182,7 +182,7 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 		default:
 			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary - operand")
 		}
-	case tokenBang:
+	case tokenBang, tokenNot:
 		return NewBool(!right.Truthy()), nil
 	default:
 		return NewNil(), exec.errorAt(e.Pos(), "unsupported unary operator")

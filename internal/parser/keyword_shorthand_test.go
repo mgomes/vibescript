@@ -39,7 +39,7 @@ func TestParserWordBooleanKeywordArguments(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
-  takes(and: 1, or: 2)
+  takes(and: 1, or: 2, not: 3)
 end`
 
 	got, errs := parseSource(t, source)
@@ -54,6 +54,7 @@ end`
 			KwArgs: []ast.KeywordArg{
 				{Name: "and", Value: &ast.IntegerLiteral{Value: 1}},
 				{Name: "or", Value: &ast.IntegerLiteral{Value: 2}},
+				{Name: "not", Value: &ast.IntegerLiteral{Value: 3}},
 			},
 		}},
 	}

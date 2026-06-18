@@ -44,6 +44,7 @@ const (
 	TokenPlus           TokenType = "+"
 	TokenMinus          TokenType = "-"
 	TokenBang           TokenType = "!"
+	TokenNot            TokenType = "NOT"
 	TokenAsterisk       TokenType = "*"
 	TokenPower          TokenType = "**"
 	TokenSlash          TokenType = "/"
@@ -150,6 +151,7 @@ var keywordTokenTypes = map[string]TokenType{
 	"unless":   TokenUnless,
 	"and":      TokenAnd,
 	"or":       TokenOr,
+	"not":      TokenNot,
 	"case":     TokenCase,
 	"when":     TokenWhen,
 	"elsif":    TokenElsif,

@@ -181,7 +181,7 @@ Core operator families:
 
 - Arithmetic: `+`, `-`, `*`, `/`, `%`, `**`
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
-- Boolean: `&&`/`and`, `||`/`or`, unary `!`
+- Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
 - Conditional: `condition ? when_true : when_false`
 
 Operator precedence follows conventional arithmetic/boolean ordering.
@@ -189,10 +189,10 @@ Exponentiation with `**` is right-associative and binds more tightly than
 unary `-`, so `-2 ** 2` is parsed as `-(2 ** 2)`. Integer powers stay `int`
 when the exponent is non-negative and the result fits in 64 bits; mixed
 numeric powers and negative integer exponents return `float`. Integer
-overflow and non-finite float powers raise runtime errors. `and` has the same
-precedence as `&&`, and `or` has the same precedence as `||`. Ternary
-conditionals have lower precedence than `or`, associate to the right, and
-evaluate only the selected branch.
+overflow and non-finite float powers raise runtime errors. `not` has the same
+prefix precedence as `!`, `and` has the same precedence as `&&`, and `or` has
+the same precedence as `||`. Ternary conditionals have lower precedence than
+`or`, associate to the right, and evaluate only the selected branch.
 
 ## Control Flow
 

@@ -12,7 +12,7 @@ func TestParserWordBooleanOperators(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
-  true or false and false
+  not false and true or false
 end`
 
 	got, errs := parseSource(t, source)
@@ -23,13 +23,16 @@ end`
 	wantBody := []ast.Statement{
 		&ast.ExprStmt{
 			Expr: &ast.BinaryExpr{
-				Left:     &ast.BoolLiteral{Value: true},
-				Operator: ast.TokenOr,
-				Right: &ast.BinaryExpr{
-					Left:     &ast.BoolLiteral{Value: false},
+				Left: &ast.BinaryExpr{
+					Left: &ast.UnaryExpr{
+						Operator: ast.TokenNot,
+						Right:    &ast.BoolLiteral{Value: false},
+					},
 					Operator: ast.TokenAnd,
-					Right:    &ast.BoolLiteral{Value: false},
+					Right:    &ast.BoolLiteral{Value: true},
 				},
+				Operator: ast.TokenOr,
+				Right:    &ast.BoolLiteral{Value: false},
 			},
 		},
 	}
