@@ -102,6 +102,7 @@ type lspServer struct {
 	writer *bufio.Writer
 	engine *vibes.Engine
 	docs   map[string]string
+	lines  map[string][]string
 	// compiled holds the most recent successfully compiled script per
 	// document, so completion can offer user-defined symbols while the
 	// buffer is mid-edit and temporarily unparsable.
@@ -118,6 +119,7 @@ func runLSP() error {
 		writer:   bufio.NewWriter(os.Stdout),
 		engine:   vibes.MustNewEngine(vibes.Config{}),
 		docs:     make(map[string]string),
+		lines:    make(map[string][]string),
 		compiled: make(map[string]*vibes.Script),
 		programs: make(map[string]*ast.Program),
 	}
@@ -191,7 +193,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 		if err := json.Unmarshal(incoming.Params, &params); err != nil {
 			return nil
 		}
-		s.docs[params.TextDocument.URI] = params.TextDocument.Text
+		s.setDocument(params.TextDocument.URI, params.TextDocument.Text)
 		return []lspOutboundMessage{
 			s.publishDiagnostics(params.TextDocument.URI, params.TextDocument.Text),
 		}
@@ -204,7 +206,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 			return nil
 		}
 		latest := params.ContentChanges[len(params.ContentChanges)-1].Text
-		s.docs[params.TextDocument.URI] = latest
+		s.setDocument(params.TextDocument.URI, latest)
 		return []lspOutboundMessage{
 			s.publishDiagnostics(params.TextDocument.URI, latest),
 		}
@@ -232,7 +234,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 			{
 				JSONRPC: "2.0",
 				ID:      incoming.ID,
-				Result:  formattingEdits(source),
+				Result:  formattingEditsForLines(source, s.documentLines(params.TextDocument.URI)),
 			},
 		}
 	case "textDocument/definition":
@@ -250,8 +252,9 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 			}
 		}
 		uri := params.TextDocument.URI
-		word := wordAtPosition(s.docs[uri], params.Position.Line, params.Position.Character)
-		location := definitionLocation(s.programs[uri], uri, splitLSPLines(s.docs[uri]), word)
+		lines := s.documentLines(uri)
+		word := wordAtPosition(lines, params.Position.Line, params.Position.Character)
+		location := definitionLocation(s.programs[uri], uri, lines, word)
 		if location == nil {
 			return []lspOutboundMessage{
 				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
@@ -279,7 +282,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 			{
 				JSONRPC: "2.0",
 				ID:      incoming.ID,
-				Result:  documentSymbols(s.programs[uri], splitLSPLines(s.docs[uri])),
+				Result:  documentSymbols(s.programs[uri], s.documentLines(uri)),
 			},
 		}
 	case "textDocument/signatureHelp":
@@ -296,8 +299,8 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				},
 			}
 		}
-		source := s.docs[params.TextDocument.URI]
-		help := s.signatureHelpAt(params.TextDocument.URI, source, params.Position.Line, params.Position.Character)
+		uri := params.TextDocument.URI
+		help := s.signatureHelpAt(uri, s.documentLines(uri), params.Position.Line, params.Position.Character)
 		if help == nil {
 			return []lspOutboundMessage{
 				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
@@ -320,8 +323,8 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				},
 			}
 		}
-		source := s.docs[params.TextDocument.URI]
-		items := s.completionItemsAt(params.TextDocument.URI, source, params.Position.Line, params.Position.Character)
+		uri := params.TextDocument.URI
+		items := s.completionItemsAt(uri, s.documentLines(uri), params.Position.Line, params.Position.Character)
 		return []lspOutboundMessage{
 			{
 				JSONRPC: "2.0",
@@ -346,8 +349,7 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 				},
 			}
 		}
-		source := s.docs[params.TextDocument.URI]
-		word := wordAtPosition(source, params.Position.Line, params.Position.Character)
+		word := wordAtPosition(s.documentLines(params.TextDocument.URI), params.Position.Line, params.Position.Character)
 		if word == "" {
 			return []lspOutboundMessage{
 				{JSONRPC: "2.0", ID: incoming.ID, Result: jsonNull},
@@ -381,6 +383,33 @@ func (s *lspServer) handleMessage(incoming lspInboundMessage) []lspOutboundMessa
 			},
 		}
 	}
+}
+
+func (s *lspServer) setDocument(uri, source string) {
+	if s.docs == nil {
+		s.docs = make(map[string]string)
+	}
+	if s.lines == nil {
+		s.lines = make(map[string][]string)
+	}
+	s.docs[uri] = source
+	s.lines[uri] = splitLSPLines(source)
+}
+
+func (s *lspServer) documentLines(uri string) []string {
+	if s.lines == nil {
+		s.lines = make(map[string][]string)
+	}
+	if lines, ok := s.lines[uri]; ok {
+		return lines
+	}
+	source := ""
+	if s.docs != nil {
+		source = s.docs[uri]
+	}
+	lines := splitLSPLines(source)
+	s.lines[uri] = lines
+	return lines
 }
 
 func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
@@ -550,8 +579,7 @@ func classifyWord(word string) string {
 	return "symbol"
 }
 
-func wordAtPosition(source string, line, character int) string {
-	lines := strings.Split(source, "\n")
+func wordAtPosition(lines []string, line, character int) string {
 	if line < 0 || line >= len(lines) {
 		return ""
 	}
@@ -672,11 +700,14 @@ func (s *lspServer) writePayload(msg lspOutboundMessage) error {
 // one full-document edit when the canonical formatter changes the
 // source, or no edits when it is already formatted.
 func formattingEdits(source string) []map[string]any {
+	return formattingEditsForLines(source, splitLSPLines(source))
+}
+
+func formattingEditsForLines(source string, lines []string) []map[string]any {
 	formatted := formatVibeSource(source)
 	if formatted == source {
 		return []map[string]any{}
 	}
-	lines := splitLSPLines(source)
 	lastLine := len(lines) - 1
 	return []map[string]any{
 		{
@@ -723,12 +754,12 @@ func splitLSPLines(text string) []string {
 // builtins, user-defined functions, and the enclosing function's
 // parameters and locals from the most recent successfully compiled
 // version of the document.
-func (s *lspServer) completionItemsAt(uri, source string, line, character int) []map[string]any {
-	if isMemberContext(source, line, character) {
+func (s *lspServer) completionItemsAt(uri string, lines []string, line, character int) []map[string]any {
+	if isMemberContext(lines, line, character) {
 		return memberCompletionItems()
 	}
 	items := completionItems()
-	items = append(items, scriptCompletionItems(s.compiled[uri], splitLSPLines(source), line)...)
+	items = append(items, scriptCompletionItems(s.compiled[uri], lines, line)...)
 	return items
 }
 
@@ -737,8 +768,7 @@ func (s *lspServer) completionItemsAt(uri, source string, line, character int) [
 // inside a numeric literal ("1.5") does not count, but an empty or
 // alphabetic suffix after a numeric receiver does — "1." and "1.days"
 // are member accesses.
-func isMemberContext(source string, line, character int) bool {
-	lines := splitLSPLines(source)
+func isMemberContext(lines []string, line, character int) bool {
 	if line < 0 || line >= len(lines) {
 		return false
 	}
@@ -1002,10 +1032,10 @@ var builtinSignatures = map[string]string{
 
 // signatureHelpAt resolves the innermost call around the cursor and
 // returns LSP SignatureHelp for it, or nil when no signature is known.
-func (s *lspServer) signatureHelpAt(uri, source string, line, character int) map[string]any {
-	callee, activeParam, ok := enclosingCall(source, line, character)
+func (s *lspServer) signatureHelpAt(uri string, lines []string, line, character int) map[string]any {
+	callee, activeParam, ok := enclosingCall(lines, line, character)
 	if !ok {
-		callee, activeParam, ok = parenlessCall(source, line, character)
+		callee, activeParam, ok = parenlessCall(lines, line, character)
 		if !ok {
 			return nil
 		}
@@ -1053,8 +1083,7 @@ func signatureHelpResponse(label string, paramLabels []string, activeParam int) 
 // enclosingCall scans the cursor's line backwards for the innermost
 // unclosed call and reports the callee name and the zero-based argument
 // index at the cursor. Multi-line calls degrade to no result.
-func enclosingCall(source string, line, character int) (string, int, bool) {
-	lines := splitLSPLines(source)
+func enclosingCall(lines []string, line, character int) (string, int, bool) {
 	if line < 0 || line >= len(lines) {
 		return "", 0, false
 	}
@@ -1130,8 +1159,7 @@ var parenlessStatementBuiltins = map[string]struct{}{
 // parenlessCall resolves the no-paren statement call form: the line's
 // first word, when it is a paren-less-capable builtin followed by
 // arguments, with the active argument counted by top-level commas.
-func parenlessCall(source string, line, character int) (string, int, bool) {
-	lines := splitLSPLines(source)
+func parenlessCall(lines []string, line, character int) (string, int, bool) {
 	if line < 0 || line >= len(lines) {
 		return "", 0, false
 	}
