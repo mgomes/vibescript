@@ -114,11 +114,12 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 }
 
 type taskGroup struct {
-	script *Script
-	ctx    context.Context
-	cancel context.CancelFunc
-	opts   CallOptions
-	jobs   chan *taskJob
+	script               *Script
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	opts                 CallOptions
+	inheritedLazyGlobals *taskLazyGlobals
+	jobs                 chan *taskJob
 
 	tasks   sync.WaitGroup
 	workers sync.WaitGroup
@@ -148,11 +149,12 @@ type taskHandle struct {
 func newTaskGroup(exec *Execution, max int) *taskGroup {
 	ctx, cancel := context.WithCancel(exec.Context())
 	group := &taskGroup{
-		script: taskScript(exec),
-		ctx:    ctx,
-		cancel: cancel,
-		opts:   exec.callOptions,
-		jobs:   make(chan *taskJob, max),
+		script:               taskScript(exec),
+		ctx:                  ctx,
+		cancel:               cancel,
+		opts:                 exec.callOptions,
+		inheritedLazyGlobals: taskLazyGlobalsFromContext(exec.Context()),
+		jobs:                 make(chan *taskJob, max),
 	}
 	for range max {
 		group.workers.Go(group.worker)
@@ -274,7 +276,7 @@ func (group *taskGroup) runJob(job *taskJob) {
 	}
 
 	opts := group.callOptionsForJob(job)
-	result, err := group.script.Call(group.ctx, job.functionName, job.args, opts)
+	result, err := group.script.callWithLazyTaskGlobals(group.ctx, job.functionName, job.args, opts, group.lazyGlobalsForJob())
 	if err != nil {
 		taskErr := fmt.Errorf("task %s failed: %w", job.functionName, err)
 		group.recordErr(taskErr)
@@ -294,9 +296,16 @@ func (group *taskGroup) runJob(job *taskJob) {
 
 func (group *taskGroup) callOptionsForJob(job *taskJob) CallOptions {
 	opts := group.opts
-	opts.Globals = cloneTaskGlobals(group.opts.Globals)
+	opts.Globals = nil
 	opts.Keywords = job.kwargs
 	return opts
+}
+
+func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
+	if group.inheritedLazyGlobals != nil {
+		return group.inheritedLazyGlobals.fork()
+	}
+	return newTaskLazyGlobals(group.opts.Globals)
 }
 
 func (group *taskGroup) wait() error {
@@ -507,6 +516,82 @@ func cloneTaskGlobals(globals map[string]Value) map[string]Value {
 		out[name] = cloner.clone(val)
 	}
 	return out
+}
+
+type taskLazyGlobals struct {
+	values   map[string]Value
+	cloner   *taskGlobalCloner
+	rebinder *callFunctionRebinder
+	clones   map[string]Value
+}
+
+func newTaskLazyGlobals(values map[string]Value) *taskLazyGlobals {
+	if len(values) == 0 {
+		return nil
+	}
+	return &taskLazyGlobals{
+		values: values,
+		cloner: newTaskGlobalCloner(),
+		clones: make(map[string]Value),
+	}
+}
+
+func (globals *taskLazyGlobals) len() int {
+	if globals == nil {
+		return 0
+	}
+	return len(globals.values)
+}
+
+func (globals *taskLazyGlobals) fork() *taskLazyGlobals {
+	if globals == nil {
+		return nil
+	}
+	return newTaskLazyGlobals(globals.values)
+}
+
+func (globals *taskLazyGlobals) materialize(name string) Value {
+	if clone, ok := globals.clones[name]; ok {
+		return clone
+	}
+	cloned := globals.cloner.clone(globals.values[name])
+	if globals.rebinder != nil {
+		cloned = globals.rebinder.rebindValue(cloned)
+	}
+	globals.clones[name] = cloned
+	return cloned
+}
+
+type taskLazyGlobalBinding struct {
+	globals *taskLazyGlobals
+	name    string
+}
+
+func (binding taskLazyGlobalBinding) materialize() Value {
+	return binding.globals.materialize(binding.name)
+}
+
+type taskLazyGlobalsContext struct {
+	context.Context
+	globals *taskLazyGlobals
+}
+
+func contextWithTaskLazyGlobals(ctx context.Context, globals *taskLazyGlobals) context.Context {
+	if globals == nil {
+		return ctx
+	}
+	return taskLazyGlobalsContext{Context: ctx, globals: globals}
+}
+
+func taskLazyGlobalsFromContext(ctx context.Context) *taskLazyGlobals {
+	if ctx == nil {
+		return nil
+	}
+	taskCtx, ok := ctx.(taskLazyGlobalsContext)
+	if !ok {
+		return nil
+	}
+	return taskCtx.globals
 }
 
 type taskGlobalCloner struct {

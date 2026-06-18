@@ -774,6 +774,16 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 	return nil
 }
 
+func bindLazyTaskGlobalsForCall(root *Env, globals *taskLazyGlobals, rebinder *callFunctionRebinder) {
+	if globals == nil || len(globals.values) == 0 {
+		return
+	}
+	globals.rebinder = rebinder
+	for name := range globals.values {
+		root.defineLazy(name, taskLazyGlobalBinding{globals: globals, name: name})
+	}
+}
+
 func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (Value, error) {
 	if err := exec.pushFrame(fn.Name, fn.Pos, fn.owner, fn.owner); err != nil {
 		return NewNil(), err

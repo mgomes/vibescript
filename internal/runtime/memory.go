@@ -196,7 +196,11 @@ func (est *memoryEstimator) env(env *Env) int {
 	}
 	for name, val := range env.values {
 		size += estimatedStringHeaderBytes + len(name)
-		size += est.value(val)
+		if _, ok := lazyValue(val); ok {
+			size += estimatedValueBytes
+		} else {
+			size += est.value(val)
+		}
 	}
 	size += est.env(env.parent)
 	return size

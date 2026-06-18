@@ -325,6 +325,57 @@ end`)
 	}
 }
 
+func TestTasksInheritedGlobalsPreserveAliasesWithinJob(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def alias_probe(item)
+  left[:item] = item
+  [right[:item], left.size, right.size]
+end
+
+def run()
+  Tasks.map([7], max: 1, with: :alias_probe)
+end`)
+
+	shared := NewHash(map[string]Value{})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"left":  shared,
+			"right": shared,
+		},
+	})
+	if result.Kind() != KindArray || len(result.Array()) != 1 {
+		t.Fatalf("run result = %s, want single result array", result.String())
+	}
+	compareArrays(t, result.Array()[0], []Value{NewInt(7), NewInt(1), NewInt(1)})
+	if len(shared.Hash()) != 0 {
+		t.Fatalf("host global shared hash = %s, want unchanged empty hash", shared.String())
+	}
+}
+
+func TestNestedTasksInheritLazyGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared(item)
+  shared[:seed] + item
+end
+
+def spawn_read(item)
+  Tasks.run(max: 1) do |tasks|
+    tasks.spawn(:read_shared, item).value
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :spawn_read)
+end`)
+
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"shared": NewHash(map[string]Value{"seed": NewInt(10)}),
+		},
+	})
+	compareArrays(t, result, []Value{NewInt(11), NewInt(12)})
+}
+
 func TestTaskRetainedResultsCountTowardParentMemoryQuota(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{
