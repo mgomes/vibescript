@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,10 +43,24 @@ func waitForOutput(t *testing.T, w *syncWriter, want string) {
 	t.Fatalf("timed out waiting for output %q, got %q", want, w.String())
 }
 
-func writeScriptFile(t *testing.T, path, source string) {
+func waitForOutputCountAbove(t *testing.T, w *syncWriter, want string, previous int) int {
 	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		count := strings.Count(w.String(), want)
+		if count > previous {
+			return count
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for output %q count > %d, got %q", want, previous, w.String())
+	return previous
+}
+
+func writeScriptFile(tb testing.TB, path, source string) {
+	tb.Helper()
 	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
+		tb.Fatalf("write %s: %v", path, err)
 	}
 }
 
@@ -124,8 +139,56 @@ func TestWatchScriptRerunsOnModuleFileChange(t *testing.T) {
 
 	waitForOutput(t, out, "module watch up")
 
-	writeScriptFile(t, modulePath, "def helper()\n  2\nend\n")
+	writeScriptFile(t, modulePath, "def helper()\n  22\nend\n")
 	waitForOutput(t, status, "change detected")
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("watchScript returned %v, want nil after cancel", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchScript did not stop after context cancel")
+	}
+}
+
+func TestWatchScriptRerunsOnAddedAndDeletedModuleFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "main.vibe")
+	writeScriptFile(t, scriptPath, "def run()\n  \"module inventory watch\"\nend\n")
+	modulePath := filepath.Join(dir, "helper.vibe")
+	writeScriptFile(t, modulePath, "def helper()\n  1\nend\n")
+
+	inv := runInvocation{
+		scriptPath: scriptPath,
+		function:   "run",
+		moduleDirs: []string{dir},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := &syncWriter{}
+	status := &syncWriter{}
+	done := make(chan error, 1)
+	go func() {
+		done <- watchScript(ctx, inv, 10*time.Millisecond, out, status)
+	}()
+
+	waitForOutput(t, out, "module inventory watch")
+
+	nestedDir := filepath.Join(dir, "billing")
+	if err := os.Mkdir(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeScriptFile(t, filepath.Join(nestedDir, "fees.vibe"), "def fees()\n  2\nend\n")
+	changes := waitForOutputCountAbove(t, status, "change detected", 0)
+
+	if err := os.Remove(modulePath); err != nil {
+		t.Fatalf("remove module: %v", err)
+	}
+	waitForOutputCountAbove(t, status, "change detected", changes)
 
 	cancel()
 	select {
@@ -172,4 +235,68 @@ func TestSnapshotWatchTargetsStampsVibeFilesRecursively(t *testing.T) {
 			t.Fatalf("snapshot missing %s: %v", path, snapshot)
 		}
 	}
+}
+
+func TestWatchKnownSnapshotChangedDetectsEditsAndDeletes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "main.vibe")
+	writeScriptFile(t, scriptPath, "def run()\n  nil\nend\n")
+	modulePath := filepath.Join(dir, "helper.vibe")
+	writeScriptFile(t, modulePath, "def helper()\n  1\nend\n")
+
+	inv := runInvocation{scriptPath: scriptPath, moduleDirs: []string{dir}}
+	snapshot := snapshotWatchTargets(inv)
+	if watchKnownSnapshotChanged(snapshot) {
+		t.Fatal("unchanged snapshot reported a change")
+	}
+
+	writeScriptFile(t, modulePath, "def helper()\n  22\nend\n")
+	if !watchKnownSnapshotChanged(snapshot) {
+		t.Fatal("edited module file did not report a known-file change")
+	}
+
+	snapshot = snapshotWatchTargets(inv)
+	if err := os.Remove(modulePath); err != nil {
+		t.Fatalf("remove module: %v", err)
+	}
+	if !watchKnownSnapshotChanged(snapshot) {
+		t.Fatal("deleted module file did not report a known-file change")
+	}
+}
+
+func BenchmarkSnapshotWatchTargetsLargeModuleRoot(b *testing.B) {
+	inv := largeWatchInvocation(b, 2048)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		_ = snapshotWatchTargets(inv)
+	}
+}
+
+func BenchmarkWatchKnownSnapshotChangedLargeModuleRoot(b *testing.B) {
+	inv := largeWatchInvocation(b, 2048)
+	snapshot := snapshotWatchTargets(inv)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if watchKnownSnapshotChanged(snapshot) {
+			b.Fatal("unchanged snapshot reported a change")
+		}
+	}
+}
+
+func largeWatchInvocation(tb testing.TB, moduleFileCount int) runInvocation {
+	tb.Helper()
+	dir := tb.TempDir()
+	scriptPath := filepath.Join(dir, "main.vibe")
+	writeScriptFile(tb, scriptPath, "def run()\n  nil\nend\n")
+	for i := range moduleFileCount {
+		moduleDir := filepath.Join(dir, fmt.Sprintf("pkg%02d", i/128))
+		if err := os.MkdirAll(moduleDir, 0o755); err != nil {
+			tb.Fatalf("mkdir %s: %v", moduleDir, err)
+		}
+		writeScriptFile(tb, filepath.Join(moduleDir, fmt.Sprintf("mod%04d.vibe", i)), "def helper()\n  1\nend\n")
+	}
+	return runInvocation{scriptPath: scriptPath, moduleDirs: []string{dir}}
 }
