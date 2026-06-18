@@ -704,7 +704,7 @@ func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
 }
 
 func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression {
-	pos := p.curToken.Pos
+	var pos ast.Position
 	elements := []ast.DestructureElement{}
 	seenRest := false
 
