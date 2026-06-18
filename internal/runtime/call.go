@@ -815,22 +815,50 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 
 	for _, param := range fn.Params {
 		var val Value
-		if argIdx < len(args) {
-			val = args[argIdx]
-			argIdx++
-		} else if kw, ok := kwargs[param.Name]; ok {
-			val = kw
-			if usedKw != nil {
-				usedKw[param.Name] = true
+		switch param.Kind {
+		case ParamRest:
+			rest := append([]Value(nil), args[argIdx:]...)
+			val = NewArray(rest)
+			argIdx = len(args)
+		case ParamKeywordRest:
+			rest := make(map[string]Value)
+			for name, kw := range kwargs {
+				if usedKw != nil && usedKw[name] {
+					continue
+				}
+				rest[name] = kw
+				if usedKw != nil {
+					usedKw[name] = true
+				}
 			}
-		} else if param.DefaultVal != nil {
-			defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
-			if err != nil {
-				return err
+			val = NewHash(rest)
+		case ParamBlock:
+			block, ok := env.Get("__block__")
+			if ok {
+				val = block
+			} else {
+				val = NewNil()
 			}
-			val = defaultVal
-		} else {
-			return exec.errorAt(pos, "missing argument %s", param.Name)
+		case ParamNormal:
+			if argIdx < len(args) {
+				val = args[argIdx]
+				argIdx++
+			} else if kw, ok := kwargs[param.Name]; ok {
+				val = kw
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal != nil {
+				defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
+				if err != nil {
+					return err
+				}
+				val = defaultVal
+			} else {
+				return exec.errorAt(pos, "missing argument %s", param.Name)
+			}
+		default:
+			return exec.errorAt(pos, "unknown parameter kind for %s", param.Name)
 		}
 
 		if param.Type != nil {

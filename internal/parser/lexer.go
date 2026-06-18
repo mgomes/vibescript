@@ -230,7 +230,7 @@ func (l *lexer) scanToken() ast.Token {
 			tok = l.makeToken(ast.TokenAnd, string(first)+string(l.ch))
 			l.readRune()
 		} else {
-			tok = l.makeToken(ast.TokenIllegal, string(l.ch))
+			tok = l.makeToken(ast.TokenAmpersand, "&")
 			l.readRune()
 		}
 	case '|':

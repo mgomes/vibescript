@@ -1353,6 +1353,14 @@ func maskStringLiterals(runes []rune) []rune {
 // present, and a default marker when the parameter is optional.
 func paramLabel(param ast.Param) string {
 	label := param.Name
+	switch param.Kind {
+	case ast.ParamRest:
+		label = "*" + label
+	case ast.ParamKeywordRest:
+		label = "**" + label
+	case ast.ParamBlock:
+		label = "&" + label
+	}
 	if param.Type != nil {
 		label += ": " + ast.FormatTypeExpr(param.Type)
 	}
