@@ -243,7 +243,57 @@ func stringBangResult(original, updated string) Value {
 }
 
 func stringSquish(text string) string {
-	return strings.Join(strings.Fields(text), " ")
+	if stringIsSquished(text) {
+		return text
+	}
+
+	var b strings.Builder
+	b.Grow(len(text))
+	pendingSpace := false
+	fieldStart := -1
+	for i, r := range text {
+		if unicode.IsSpace(r) {
+			if fieldStart >= 0 {
+				if pendingSpace {
+					b.WriteByte(' ')
+				}
+				b.WriteString(text[fieldStart:i])
+				pendingSpace = true
+				fieldStart = -1
+			}
+			continue
+		}
+		if fieldStart < 0 {
+			fieldStart = i
+		}
+	}
+	if fieldStart >= 0 {
+		if pendingSpace {
+			b.WriteByte(' ')
+		}
+		b.WriteString(text[fieldStart:])
+	}
+	return b.String()
+}
+
+func stringIsSquished(text string) bool {
+	if text == "" {
+		return true
+	}
+	sawText := false
+	previousSpace := false
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			if !sawText || previousSpace || r != ' ' {
+				return false
+			}
+			previousSpace = true
+			continue
+		}
+		sawText = true
+		previousSpace = false
+	}
+	return !previousSpace
 }
 
 func stringTemplateOption(kwargs map[string]Value) (bool, error) {
