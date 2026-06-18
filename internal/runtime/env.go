@@ -21,6 +21,7 @@ type Env struct {
 	statics            map[string]Value
 	staticBytes        int32
 	arrayAppendBuffers map[string][]Value
+	assignBoundary     bool
 
 	// frozen marks engine-shared scopes (the builtin proto). Their
 	// bindings are readable through the chain but never written:
@@ -38,6 +39,14 @@ func newEnvWithCapacity(parent *Env, capacity int) *Env {
 		capacity = 0
 	}
 	return &Env{parent: parent, values: make(map[string]Value, capacity)}
+}
+
+// newAssignmentBoundaryEnv can read parent bindings, but missing-name writes
+// stop in this scope instead of escaping into an outer mutable scope.
+func newAssignmentBoundaryEnv(parent *Env) *Env {
+	env := newEnv(parent)
+	env.assignBoundary = true
+	return env
 }
 
 // Get looks up a variable by name, traversing parent scopes if needed.
@@ -127,6 +136,12 @@ func (e *Env) assignValue(name string, val Value) *Env {
 			// so estimation starts walking its (now mutable) value.
 			scope.dropStatic(name)
 			scope.values[name] = val
+			scope.dropArrayAppendBuffer(name)
+			return scope
+		}
+		if scope.assignBoundary {
+			scope.values[name] = val
+			scope.dropStatic(name)
 			scope.dropArrayAppendBuffer(name)
 			return scope
 		}

@@ -170,6 +170,25 @@ func cloneFunctionForEnv(fn *ScriptFunction, env *Env) *ScriptFunction {
 	return &clone
 }
 
+func moduleContextForEntry(entry moduleEntry) moduleContext {
+	return moduleContext{
+		key:    entry.key,
+		path:   entry.path,
+		root:   entry.script.moduleRoot,
+		script: entry.script,
+	}
+}
+
+func initializeModuleForCall(exec *Execution, entry moduleEntry, moduleEnv *Env, moduleClasses map[string]*ClassDef) error {
+	exec.pushModuleContext(moduleContextForEntry(entry))
+	defer exec.popModuleContext()
+
+	if err := initializeClassBodiesForCall(exec, moduleEnv, moduleClasses); err != nil {
+		return err
+	}
+	return executeModuleEntrypoint(exec, entry, moduleEnv)
+}
+
 func executeModuleEntrypoint(exec *Execution, entry moduleEntry, moduleEnv *Env) error {
 	fn := entry.script.functions[moduleEntrypointFunction]
 	if fn == nil || len(fn.Body) == 0 {
@@ -179,18 +198,12 @@ func executeModuleEntrypoint(exec *Execution, entry moduleEntry, moduleEnv *Env)
 	if err := exec.pushFrame(moduleDisplayName(entry.key), fn.Pos, entry.script, entry.script); err != nil {
 		return err
 	}
-	exec.pushModuleContext(moduleContext{
-		key:    entry.key,
-		path:   entry.path,
-		root:   entry.script.moduleRoot,
-		script: entry.script,
-	})
+	defer exec.popFrame()
+
 	_, _, err := exec.evalStatements(fn.Body, moduleEnv)
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}
-	exec.popModuleContext()
-	exec.popFrame()
 	return err
 }
 
@@ -867,7 +880,7 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 		}
 	}()
 
-	moduleEnv := newEnv(exec.root)
+	moduleEnv := newAssignmentBoundaryEnv(exec.root)
 	exports := make(map[string]Value, len(entry.script.functions)+len(entry.script.enums))
 	moduleEnums := cloneEnumsForCall(entry.script.enums)
 	for name, enumDef := range moduleEnums {
@@ -894,10 +907,7 @@ func builtinRequire(exec *Execution, receiver Value, args []Value, kwargs map[st
 	if err := validateRequireAliasBinding(exec.root, alias, exportsVal); err != nil {
 		return NewNil(), err
 	}
-	if err := initializeClassBodiesForCall(exec, moduleEnv, moduleClasses); err != nil {
-		return NewNil(), err
-	}
-	if err := executeModuleEntrypoint(exec, entry, moduleEnv); err != nil {
+	if err := initializeModuleForCall(exec, entry, moduleEnv, moduleClasses); err != nil {
 		return NewNil(), err
 	}
 

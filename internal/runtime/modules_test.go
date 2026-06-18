@@ -1109,16 +1109,13 @@ end`)
 
 func TestRequireRunsModuleTopLevelBody(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "settings.vibe"), []byte(`offset = 10
+	dir := tempModuleTree(t, moduleFile{path: "settings.vibe", content: `offset = 10
 
 def add(value)
   value + offset
 end
-`), 0o644); err != nil {
-		t.Fatalf("write module: %v", err)
-	}
-	engine := MustNewEngine(Config{ModulePaths: []string{dir}})
+`})
+	engine := mustNewEngineWithModuleRoot(t, dir)
 	script := compileScriptWithEngine(t, engine, `def run(value)
   settings = require("settings")
   {
@@ -1137,6 +1134,81 @@ end`)
 	}
 	if _, leaked := out["exports"].Hash()[moduleEntrypointFunction]; leaked {
 		t.Fatalf("synthetic module entrypoint leaked in exports: %#v", out["exports"])
+	}
+}
+
+func TestRequireKeepsModuleTopLevelAssignmentsLocal(t *testing.T) {
+	t.Parallel()
+	dir := tempModuleTree(t, moduleFile{path: "settings.vibe", content: `offset = 10
+secret = "module-local"
+
+def add(value)
+  value + offset
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	script := compileScriptWithEngine(t, engine, `def run(value)
+  offset = 99
+  settings = require("settings")
+  {
+    sum: settings.add(value),
+    caller_offset: offset
+  }
+end`)
+
+	result, err := script.Call(context.Background(), "run", []Value{NewInt(5)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("run(5) failed: %v", err)
+	}
+	out := result.Hash()
+	if got := out["sum"]; got.Kind() != KindInt || got.Int() != 15 {
+		t.Fatalf("run(5).sum = %#v, want 15", got)
+	}
+	if got := out["caller_offset"]; got.Kind() != KindInt || got.Int() != 99 {
+		t.Fatalf("run(5).caller_offset = %#v, want 99", got)
+	}
+
+	leakProbe := compileScriptWithEngine(t, engine, `def run()
+  require("settings")
+  secret
+end`)
+	err = callScriptErr(t, context.Background(), leakProbe, "run", nil, CallOptions{})
+	requireErrorContains(t, err, "undefined variable secret")
+}
+
+func TestRequireInitializesModuleClassBodiesWithModuleContext(t *testing.T) {
+	t.Parallel()
+	dir := tempModuleTree(t,
+		moduleFile{path: "dep.vibe", content: `def value
+  7
+end
+`},
+		moduleFile{path: "entry.vibe", content: `class UsesDep
+  dep = require("./dep")
+  @@value = dep.value
+
+  def self.value
+    @@value
+  end
+end
+
+def value
+  UsesDep.value
+end
+`},
+	)
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	script := compileScriptWithEngine(t, engine, `def run()
+  entry = require("entry")
+  entry.value
+end`)
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("run() failed: %v", err)
+	}
+	if result.Kind() != KindInt || result.Int() != 7 {
+		t.Fatalf("run() = %#v, want 7", result)
 	}
 }
 
