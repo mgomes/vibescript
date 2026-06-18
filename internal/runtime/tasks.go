@@ -608,9 +608,10 @@ func (globals *taskLazyGlobals) valuesForFork() map[string]Value {
 	if len(globals.clones) == 0 {
 		return globals.values
 	}
+	cloner := newTaskGlobalCloner()
 	out := make(map[string]Value, len(globals.values))
 	for name := range globals.values {
-		out[name] = globals.materialize(name)
+		out[name] = cloner.clone(globals.materialize(name))
 	}
 	return out
 }
