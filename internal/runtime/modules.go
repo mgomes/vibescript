@@ -248,9 +248,6 @@ func (e *Engine) loadRelativeModule(request moduleRequest, caller moduleContext)
 	key := moduleCacheKey(caller.root, relative)
 
 	if entry, ok := e.getCachedModule(key); ok {
-		if _, err := moduleRelativePath(caller.root, candidate); err != nil {
-			return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
-		}
 		return entry, nil
 	}
 
@@ -282,12 +279,12 @@ func (e *Engine) loadSearchPathModule(request moduleRequest) (moduleEntry, error
 		key := moduleCacheKey(root, request.normalized)
 		candidate := filepath.Join(root, request.normalized)
 
-		if _, err := moduleRelativePath(root, candidate); err != nil {
-			return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
-		}
-
 		if entry, ok := e.getCachedModule(key); ok {
 			return entry, nil
+		}
+
+		if _, err := moduleRelativePath(root, candidate); err != nil {
+			return moduleEntry{}, fmt.Errorf("require: module name %q escapes module root", request.raw)
 		}
 		data, readErr := e.readModuleSource(candidate)
 		if readErr != nil {
