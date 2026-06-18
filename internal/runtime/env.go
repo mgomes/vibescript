@@ -3,6 +3,8 @@ package runtime
 import (
 	"maps"
 	"reflect"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 // Env represents a lexical scope that maps variable names to values.
@@ -41,6 +43,11 @@ func newEnvWithCapacity(parent *Env, capacity int) *Env {
 // Get looks up a variable by name, traversing parent scopes if needed.
 func (e *Env) Get(name string) (Value, bool) {
 	if val, ok := e.values[name]; ok {
+		if lazy, ok := lazyValue(val); ok {
+			val = lazy.materialize()
+			e.values[name] = val
+			e.dropArrayAppendBuffer(name)
+		}
 		return val, true
 	}
 	if val, ok := e.statics[name]; ok {
@@ -226,6 +233,16 @@ func (e *Env) CloneShallow() *Env {
 	return clone
 }
 
+type lazyEnvValue interface {
+	materialize() Value
+}
+
+func (e *Env) defineLazy(name string, lazy lazyEnvValue) {
+	e.values[name] = newLazyValue(lazy)
+	e.dropStatic(name)
+	e.dropArrayAppendBuffer(name)
+}
+
 func (e *Env) dropStatic(name string) {
 	if e.statics == nil {
 		return
@@ -253,4 +270,16 @@ func (e *Env) dropArrayAppendBuffer(name string) {
 // whose payloads do not count against script memory quotas.
 func staticEntryBytes(name string) int {
 	return estimatedMapEntryBytes + estimatedStringHeaderBytes + len(name) + estimatedValueBytes
+}
+
+func newLazyValue(lazy lazyEnvValue) Value {
+	return value.NewValue(KindBuiltin, lazy)
+}
+
+func lazyValue(val Value) (lazyEnvValue, bool) {
+	if val.Kind() != KindBuiltin {
+		return nil, false
+	}
+	lazy, ok := val.Data().(lazyEnvValue)
+	return lazy, ok
 }

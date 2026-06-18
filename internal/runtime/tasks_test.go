@@ -325,6 +325,516 @@ end`)
 	}
 }
 
+func TestTasksInheritedGlobalsPreserveAliasesWithinJob(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def alias_probe(item)
+  left[:item] = item
+  [right[:item], left.size, right.size]
+end
+
+def run()
+  Tasks.map([7], max: 1, with: :alias_probe)
+end`)
+
+	shared := NewHash(map[string]Value{})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"left":  shared,
+			"right": shared,
+		},
+	})
+	if result.Kind() != KindArray || len(result.Array()) != 1 {
+		t.Fatalf("run result = %s, want single result array", result.String())
+	}
+	compareArrays(t, result.Array()[0], []Value{NewInt(7), NewInt(1), NewInt(1)})
+	if len(shared.Hash()) != 0 {
+		t.Fatalf("host global shared hash = %s, want unchanged empty hash", shared.String())
+	}
+}
+
+func TestTasksInheritCurrentRootGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared(item)
+  shared[:seed] + item
+end
+
+def run()
+  shared[:seed] = 10
+  Tasks.map([1, 2], max: 1, with: :read_shared)
+end`)
+
+	shared := NewHash(map[string]Value{"seed": NewInt(0)})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"shared": shared,
+		},
+	})
+	compareArrays(t, result, []Value{NewInt(11), NewInt(12)})
+	if got := shared.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host global shared[:seed] = %s, want 0", got.String())
+	}
+}
+
+func TestTasksRunSnapshotsCurrentRootGlobalsAtScopeCreation(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared()
+  probe.wait()
+  shared[:seed]
+end
+
+def run()
+  shared[:seed] = 1
+  Tasks.run(max: 1) do |tasks|
+    task = tasks.spawn(:read_shared)
+    shared[:seed] = 2
+    task.value
+  end
+end`)
+
+	shared := NewHash(map[string]Value{"seed": NewInt(0)})
+	probe := &taskBlockingProbe{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan callResult, 1)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		val, err := script.Call(ctx, "run", nil, CallOptions{
+			Globals: map[string]Value{
+				"probe":  probe.value(),
+				"shared": shared,
+			},
+		})
+		done <- callResult{value: val, err: err}
+	})
+
+	select {
+	case <-probe.started:
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("run returned before task entered probe: %v", result.err)
+		}
+		t.Fatalf("run returned before task entered probe: %s", result.value.String())
+	}
+
+	close(probe.release)
+	result := <-done
+	wg.Wait()
+	if result.err != nil {
+		t.Fatalf("run failed: %v", result.err)
+	}
+	if result.value.Kind() != KindInt || result.value.Int() != 1 {
+		t.Fatalf("run returned %s, want 1", result.value.String())
+	}
+	if got := shared.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host global shared[:seed] = %s, want 0", got.String())
+	}
+}
+
+func TestTasksRunSnapshotsReassignedInstanceGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `class Box
+  getter value
+
+  def initialize(value)
+    @value = value
+  end
+
+  def set(value)
+    @value = value
+  end
+end
+
+def read_shared()
+  probe.wait()
+  shared.value
+end
+
+def run()
+  shared = Box.new(1)
+  Tasks.run(max: 1) do |tasks|
+    task = tasks.spawn(:read_shared)
+    shared.set(2)
+    task.value
+  end
+end`)
+
+	probe := &taskBlockingProbe{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan callResult, 1)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		val, err := script.Call(ctx, "run", nil, CallOptions{
+			Globals: map[string]Value{
+				"probe":  probe.value(),
+				"shared": NewNil(),
+			},
+		})
+		done <- callResult{value: val, err: err}
+	})
+
+	select {
+	case <-probe.started:
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("run returned before task entered probe: %v", result.err)
+		}
+		t.Fatalf("run returned before task entered probe: %s", result.value.String())
+	}
+
+	close(probe.release)
+	result := <-done
+	wg.Wait()
+	if result.err != nil {
+		t.Fatalf("run failed: %v", result.err)
+	}
+	if result.value.Kind() != KindInt || result.value.Int() != 1 {
+		t.Fatalf("run returned %s, want 1", result.value.String())
+	}
+}
+
+func TestNestedTasksInheritLazyGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared(item)
+  shared[:seed] + item
+end
+
+def spawn_read(item)
+  Tasks.run(max: 1) do |tasks|
+    tasks.spawn(:read_shared, item).value
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :spawn_read)
+end`)
+
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"shared": NewHash(map[string]Value{"seed": NewInt(10)}),
+		},
+	})
+	compareArrays(t, result, []Value{NewInt(11), NewInt(12)})
+}
+
+func TestNestedTasksInheritMaterializedGlobalMutations(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared(item)
+  shared[:seed] + item
+end
+
+def write_then_spawn(item)
+  shared[:seed] = item
+  Tasks.run(max: 1) do |tasks|
+    tasks.spawn(:read_shared, 10).value
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :write_then_spawn)
+end`)
+
+	shared := NewHash(map[string]Value{"seed": NewInt(0)})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"shared": shared,
+		},
+	})
+	compareArrays(t, result, []Value{NewInt(11), NewInt(12)})
+	if got := shared.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host global shared[:seed] = %s, want 0", got.String())
+	}
+}
+
+func TestNestedTasksSnapshotMaterializedGlobalsAtGroupCreation(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared()
+  probe.wait()
+  shared[:seed]
+end
+
+def write_then_spawn(item)
+  shared[:seed] = item
+  Tasks.run(max: 1) do |tasks|
+    task = tasks.spawn(:read_shared)
+    shared[:seed] = item + 10
+    task.value
+  end
+end
+
+def run()
+  Tasks.map([1], max: 1, with: :write_then_spawn)
+end`)
+
+	shared := NewHash(map[string]Value{"seed": NewInt(0)})
+	probe := &taskBlockingProbe{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan callResult, 1)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		val, err := script.Call(ctx, "run", nil, CallOptions{
+			Globals: map[string]Value{
+				"probe":  probe.value(),
+				"shared": shared,
+			},
+		})
+		done <- callResult{value: val, err: err}
+	})
+
+	select {
+	case <-probe.started:
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("run returned before nested child entered probe: %v", result.err)
+		}
+		t.Fatalf("run returned before nested child entered probe: %s", result.value.String())
+	}
+
+	close(probe.release)
+	result := <-done
+	wg.Wait()
+	if result.err != nil {
+		t.Fatalf("run failed: %v", result.err)
+	}
+	compareArrays(t, result.value, []Value{NewInt(1)})
+	if got := shared.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host global shared[:seed] = %s, want 0", got.String())
+	}
+}
+
+func TestNestedTasksInheritReassignedGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_shared()
+  shared[:seed]
+end
+
+def reassign_then_spawn(item)
+  shared = {seed: item}
+  Tasks.run(max: 1) do |tasks|
+    tasks.spawn(:read_shared).value
+  end
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :reassign_then_spawn)
+end`)
+
+	shared := NewHash(map[string]Value{"seed": NewInt(0)})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"shared": shared,
+		},
+	})
+	compareArrays(t, result, []Value{NewInt(1), NewInt(2)})
+	if got := shared.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host global shared[:seed] = %s, want 0", got.String())
+	}
+}
+
+func TestNestedTasksInheritMaterializedNestedGlobalAliases(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_child(item)
+  child[:seed] + item
+end
+
+def write_nested_then_spawn(item)
+  parent[:child][:seed] = item
+  Tasks.map([10, 20], max: 2, with: :read_child)
+end
+
+def run()
+  Tasks.map([1, 2], max: 1, with: :write_nested_then_spawn)
+end`)
+
+	child := NewHash(map[string]Value{"seed": NewInt(0)})
+	parent := NewHash(map[string]Value{"child": child})
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"parent": parent,
+			"child":  child,
+		},
+	})
+	compareArrays(t, result, []Value{
+		NewArray([]Value{NewInt(11), NewInt(21)}),
+		NewArray([]Value{NewInt(12), NewInt(22)}),
+	})
+	if got := child.Hash()["seed"]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("host child[:seed] = %s, want 0", got.String())
+	}
+}
+
+func TestStrictEffectsRevalidatesNestedMaterializedTaskGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def read_shared()
+  shared.size
+end
+
+def add_callable_then_spawn(item)
+  shared[:tasks] = Tasks
+  Tasks.run(max: 1) do |tasks|
+    tasks.spawn(:read_shared).value
+  end
+end
+
+def run()
+  Tasks.map([1], max: 1, with: :add_callable_then_spawn)
+end`)
+
+	shared := NewHash(map[string]Value{})
+	requireCallErrorContains(t, script, "run", nil, CallOptions{
+		Globals: map[string]Value{"shared": shared},
+	}, "strict effects: global shared must be data-only")
+	if len(shared.Hash()) != 0 {
+		t.Fatalf("host global shared hash = %s, want unchanged empty hash", shared.String())
+	}
+}
+
+func TestStrictEffectsRevalidatesMutatedTaskGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def identity(item)
+  item
+end
+
+def run()
+  shared[:tasks] = Tasks
+  Tasks.map([1], max: 1, with: :identity)
+end`)
+
+	shared := NewHash(map[string]Value{})
+	requireCallErrorContains(t, script, "run", nil, CallOptions{
+		Globals: map[string]Value{"shared": shared},
+	}, "strict effects: global shared must be data-only")
+}
+
+func TestTaskLazyGlobalCloneCacheCountsTowardMemoryQuota(t *testing.T) {
+	t.Parallel()
+	values := make([]Value, 256)
+	for i := range values {
+		values[i] = NewString("payload")
+	}
+	root := newEnv(nil)
+	lazyGlobals := newTaskLazyGlobals(map[string]Value{
+		"shared": NewArray(values),
+	}, false, false)
+	root.defineLazy("shared", taskLazyGlobalBinding{globals: lazyGlobals, name: "shared"})
+	lazyGlobals.root = root
+	exec := &Execution{
+		ctx:  contextWithTaskLazyGlobals(context.Background(), lazyGlobals),
+		root: root,
+	}
+
+	if _, ok := root.Get("shared"); !ok {
+		t.Fatalf("expected shared lazy global to materialize")
+	}
+	root.Assign("shared", NewNil())
+	withClone := exec.estimateMemoryUsage()
+	clones := lazyGlobals.clones
+	lazyGlobals.clones = nil
+	withoutClone := exec.estimateMemoryUsage()
+	lazyGlobals.clones = clones
+	if withClone <= withoutClone {
+		t.Fatalf("memory with retained clone = %d, want greater than %d", withClone, withoutClone)
+	}
+
+	exec.memoryQuota = withClone - 1
+	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
+}
+
+func TestTaskRunSnapshotGlobalsCountTowardMemoryQuota(t *testing.T) {
+	t.Parallel()
+	values := make([]Value, 256)
+	for i := range values {
+		values[i] = NewString("payload")
+	}
+	root := newEnv(nil)
+	root.Define("shared", NewArray(values))
+	exec := &Execution{
+		ctx:  context.Background(),
+		root: root,
+		callOptions: CallOptions{
+			Globals: map[string]Value{"shared": NewNil()},
+		},
+	}
+
+	withoutSnapshot := exec.estimateMemoryUsage()
+	group := newTaskGroup(exec, 1, true)
+	defer func() {
+		group.cancel()
+		if err := group.closeAndWait(); err != nil {
+			t.Errorf("close task group: %v", err)
+		}
+	}()
+	exec.pushTaskGroup(group)
+	defer exec.popTaskGroup()
+
+	withSnapshot := exec.estimateMemoryUsage()
+	if withSnapshot <= withoutSnapshot {
+		t.Fatalf("memory with task snapshot = %d, want greater than %d", withSnapshot, withoutSnapshot)
+	}
+
+	exec.memoryQuota = withSnapshot - 1
+	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
+}
+
+func TestStrictEffectsRejectLazyTaskCallableGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
+  db.save("player-1")
+end`)
+
+	called := false
+	lazyGlobals := newTaskLazyGlobals(map[string]Value{
+		"db": NewObject(map[string]Value{
+			"save": NewBuiltin("db.save", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+				called = true
+				return NewString("saved"), nil
+			}),
+		}),
+	}, false, false)
+	_, err := script.callWithLazyTaskGlobals(context.Background(), "run", nil, CallOptions{}, lazyGlobals)
+	requireErrorContains(t, err, "strict effects: global db must be data-only")
+	if called {
+		t.Fatalf("callable lazy global should not execute when strict validation fails")
+	}
+}
+
+func TestTasksInheritedEnumGlobalsSupportTypeAnnotations(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def label(status: Status)
+  status.name
+end
+
+def run()
+  Tasks.map([:draft], max: 1, with: :label)
+end`)
+	statusDef, err := compileEnumDef(&EnumStmt{
+		Name: "Status",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"Status": NewEnum(statusDef),
+		},
+	})
+	compareArrays(t, result, []Value{NewString("Draft")})
+}
+
 func TestTaskRetainedResultsCountTowardParentMemoryQuota(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{

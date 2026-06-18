@@ -116,7 +116,12 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 		total += est.value(mod)
 	}
 	for _, group := range exec.activeTaskGroups {
+		total += group.retainedSnapshotMemory(est)
 		total += group.retainedResultMemory(est)
+	}
+	if globals := taskLazyGlobalsFromContext(exec.Context()); globals != nil {
+		total += globals.retainedSourceMemory(est)
+		total += globals.retainedCloneMemory(est)
 	}
 
 	total += len(exec.callStack) * estimatedCallFrameBytes
@@ -196,7 +201,11 @@ func (est *memoryEstimator) env(env *Env) int {
 	}
 	for name, val := range env.values {
 		size += estimatedStringHeaderBytes + len(name)
-		size += est.value(val)
+		if _, ok := lazyValue(val); ok {
+			size += estimatedValueBytes
+		} else {
+			size += est.value(val)
+		}
 	}
 	size += est.env(env.parent)
 	return size

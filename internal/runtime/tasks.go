@@ -31,7 +31,7 @@ func builtinTasksRun(exec *Execution, receiver Value, args []Value, kwargs map[s
 		return NewNil(), err
 	}
 
-	group := newTaskGroup(exec, max)
+	group := newTaskGroup(exec, max, true)
 	exec.pushTaskGroup(group)
 	defer exec.popTaskGroup()
 	defer group.releaseRetainedResults()
@@ -78,7 +78,7 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 		return NewArray(nil), nil
 	}
 
-	group := newTaskGroup(exec, max)
+	group := newTaskGroup(exec, max, false)
 	exec.pushTaskGroup(group)
 	defer exec.popTaskGroup()
 	defer group.releaseRetainedResults()
@@ -114,11 +114,14 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 }
 
 type taskGroup struct {
-	script *Script
-	ctx    context.Context
-	cancel context.CancelFunc
-	opts   CallOptions
-	jobs   chan *taskJob
+	script               *Script
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	opts                 CallOptions
+	globals              map[string]Value
+	detachedGlobals      bool
+	inheritedLazyGlobals *taskLazyGlobals
+	jobs                 chan *taskJob
 
 	tasks   sync.WaitGroup
 	workers sync.WaitGroup
@@ -145,14 +148,29 @@ type taskHandle struct {
 	err   error
 }
 
-func newTaskGroup(exec *Execution, max int) *taskGroup {
+func newTaskGroup(exec *Execution, max int, detachRootGlobals bool) *taskGroup {
 	ctx, cancel := context.WithCancel(exec.Context())
+	inheritedLazyGlobals := taskLazyGlobalsFromContext(exec.Context())
+	globals := exec.callOptions.Globals
+	detachedGlobals := false
+	if inheritedLazyGlobals != nil {
+		inheritedLazyGlobals = inheritedLazyGlobals.snapshotForNestedTasks()
+	} else {
+		globals = taskGlobalsFromRoot(exec.root, exec.callOptions.Globals)
+		if detachRootGlobals {
+			globals = cloneTaskGlobals(globals)
+			detachedGlobals = true
+		}
+	}
 	group := &taskGroup{
-		script: taskScript(exec),
-		ctx:    ctx,
-		cancel: cancel,
-		opts:   exec.callOptions,
-		jobs:   make(chan *taskJob, max),
+		script:               taskScript(exec),
+		ctx:                  ctx,
+		cancel:               cancel,
+		opts:                 exec.callOptions,
+		globals:              globals,
+		detachedGlobals:      detachedGlobals,
+		inheritedLazyGlobals: inheritedLazyGlobals,
+		jobs:                 make(chan *taskJob, max),
 	}
 	for range max {
 		group.workers.Go(group.worker)
@@ -165,6 +183,34 @@ func taskScript(exec *Execution) *Script {
 		return ctx.script
 	}
 	return exec.script
+}
+
+func taskGlobalsFromRoot(root *Env, globals map[string]Value) map[string]Value {
+	if len(globals) == 0 {
+		return nil
+	}
+	out := make(map[string]Value, len(globals))
+	for name, original := range globals {
+		if val, ok := rootBindingValue(root, name); ok {
+			out[name] = val
+			continue
+		}
+		out[name] = original
+	}
+	return out
+}
+
+func rootBindingValue(root *Env, name string) (Value, bool) {
+	if root == nil {
+		return Value{}, false
+	}
+	if val, ok := root.values[name]; ok {
+		return val, true
+	}
+	if val, ok := root.statics[name]; ok {
+		return val, true
+	}
+	return Value{}, false
 }
 
 func (group *taskGroup) managerValue() Value {
@@ -274,7 +320,7 @@ func (group *taskGroup) runJob(job *taskJob) {
 	}
 
 	opts := group.callOptionsForJob(job)
-	result, err := group.script.Call(group.ctx, job.functionName, job.args, opts)
+	result, err := group.script.callWithLazyTaskGlobals(group.ctx, job.functionName, job.args, opts, group.lazyGlobalsForJob())
 	if err != nil {
 		taskErr := fmt.Errorf("task %s failed: %w", job.functionName, err)
 		group.recordErr(taskErr)
@@ -294,9 +340,16 @@ func (group *taskGroup) runJob(job *taskJob) {
 
 func (group *taskGroup) callOptionsForJob(job *taskJob) CallOptions {
 	opts := group.opts
-	opts.Globals = cloneTaskGlobals(group.opts.Globals)
+	opts.Globals = nil
 	opts.Keywords = job.kwargs
 	return opts
+}
+
+func (group *taskGroup) lazyGlobalsForJob() *taskLazyGlobals {
+	if group.inheritedLazyGlobals != nil {
+		return group.inheritedLazyGlobals.fork()
+	}
+	return newTaskLazyGlobals(group.globals, false, group.detachedGlobals)
 }
 
 func (group *taskGroup) wait() error {
@@ -358,6 +411,17 @@ func (group *taskGroup) retainedResultMemory(est *memoryEstimator) int {
 	total := 0
 	for _, result := range group.retainedResults {
 		total += est.value(result)
+	}
+	return total
+}
+
+func (group *taskGroup) retainedSnapshotMemory(est *memoryEstimator) int {
+	total := 0
+	if group.detachedGlobals && len(group.globals) > 0 {
+		total += est.hash(group.globals)
+	}
+	if group.inheritedLazyGlobals != nil {
+		total += group.inheritedLazyGlobals.retainedSourceMemory(est)
 	}
 	return total
 }
@@ -509,15 +573,188 @@ func cloneTaskGlobals(globals map[string]Value) map[string]Value {
 	return out
 }
 
+type taskLazyGlobals struct {
+	values          map[string]Value
+	detachedValues  bool
+	strictValidated bool
+	cloner          *taskGlobalCloner
+	rebinder        *callFunctionRebinder
+	root            *Env
+	clones          map[string]Value
+}
+
+func newTaskLazyGlobals(values map[string]Value, strictValidated, detachedValues bool) *taskLazyGlobals {
+	if len(values) == 0 {
+		return nil
+	}
+	return &taskLazyGlobals{
+		values:          values,
+		detachedValues:  detachedValues,
+		strictValidated: strictValidated,
+		cloner:          newTaskGlobalCloner(),
+		clones:          make(map[string]Value),
+	}
+}
+
+func (globals *taskLazyGlobals) len() int {
+	if globals == nil {
+		return 0
+	}
+	return len(globals.values)
+}
+
+func (globals *taskLazyGlobals) fork() *taskLazyGlobals {
+	if globals == nil {
+		return nil
+	}
+	return newTaskLazyGlobals(globals.values, globals.strictValidated, globals.detachedValues)
+}
+
+func (globals *taskLazyGlobals) snapshotForNestedTasks() *taskLazyGlobals {
+	if globals == nil {
+		return nil
+	}
+	values, detached := globals.valuesForFork()
+	return newTaskLazyGlobals(values, globals.strictValidated && !detached, globals.detachedValues || detached)
+}
+
+func (globals *taskLazyGlobals) materialize(name string) Value {
+	if clone, ok := globals.clones[name]; ok {
+		return clone
+	}
+	source := globals.values[name]
+	var cloned Value
+	if globals.rebinder != nil {
+		cloned = globals.rebinder.rebindValue(source)
+	} else {
+		cloned = globals.cloner.clone(source)
+	}
+	globals.clones[name] = cloned
+	return cloned
+}
+
+func (globals *taskLazyGlobals) ensureStrictValidated() error {
+	if globals.strictValidated {
+		return nil
+	}
+	if err := validateStrictGlobals(globals.valuesForValidation()); err != nil {
+		return err
+	}
+	globals.strictValidated = true
+	return nil
+}
+
+func (globals *taskLazyGlobals) valuesForValidation() map[string]Value {
+	if len(globals.clones) == 0 {
+		return globals.values
+	}
+	out := make(map[string]Value, len(globals.values))
+	for name, val := range globals.values {
+		if clone, ok := globals.clones[name]; ok {
+			out[name] = clone
+			continue
+		}
+		out[name] = val
+	}
+	return out
+}
+
+func (globals *taskLazyGlobals) retainedCloneMemory(est *memoryEstimator) int {
+	if globals == nil || len(globals.clones) == 0 {
+		return 0
+	}
+	return est.hash(globals.clones)
+}
+
+func (globals *taskLazyGlobals) retainedSourceMemory(est *memoryEstimator) int {
+	if globals == nil || !globals.detachedValues || len(globals.values) == 0 {
+		return 0
+	}
+	return est.hash(globals.values)
+}
+
+func (globals *taskLazyGlobals) valuesForFork() (map[string]Value, bool) {
+	if len(globals.clones) == 0 && !globals.hasCurrentBindings() {
+		return globals.values, false
+	}
+	cloner := newTaskGlobalCloner()
+	out := make(map[string]Value, len(globals.values))
+	for name := range globals.values {
+		out[name] = cloner.clone(globals.currentValueForFork(name))
+	}
+	return out, true
+}
+
+func (globals *taskLazyGlobals) hasCurrentBindings() bool {
+	if globals.root == nil {
+		return false
+	}
+	for name := range globals.values {
+		if val, ok := globals.rootValue(name); ok {
+			if _, lazy := lazyValue(val); !lazy {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (globals *taskLazyGlobals) currentValueForFork(name string) Value {
+	if val, ok := globals.rootValue(name); ok {
+		if _, lazy := lazyValue(val); !lazy {
+			return val
+		}
+	}
+	return globals.materialize(name)
+}
+
+func (globals *taskLazyGlobals) rootValue(name string) (Value, bool) {
+	return rootBindingValue(globals.root, name)
+}
+
+type taskLazyGlobalBinding struct {
+	globals *taskLazyGlobals
+	name    string
+}
+
+func (binding taskLazyGlobalBinding) materialize() Value {
+	return binding.globals.materialize(binding.name)
+}
+
+type taskLazyGlobalsContext struct {
+	context.Context
+	globals *taskLazyGlobals
+}
+
+func contextWithTaskLazyGlobals(ctx context.Context, globals *taskLazyGlobals) context.Context {
+	if globals == nil {
+		return ctx
+	}
+	return taskLazyGlobalsContext{Context: ctx, globals: globals}
+}
+
+func taskLazyGlobalsFromContext(ctx context.Context) *taskLazyGlobals {
+	if ctx == nil {
+		return nil
+	}
+	taskCtx, ok := ctx.(taskLazyGlobalsContext)
+	if !ok {
+		return nil
+	}
+	return taskCtx.globals
+}
+
 type taskGlobalCloner struct {
-	seenArrays map[sliceIdentity]Value
-	seenMaps   map[uintptr]map[string]Value
+	seenArrays    map[sliceIdentity]Value
+	seenMaps      map[uintptr]map[string]Value
+	seenInstances map[*Instance]Value
 }
 
 func newTaskGlobalCloner() *taskGlobalCloner {
 	return &taskGlobalCloner{
-		seenArrays: make(map[sliceIdentity]Value),
-		seenMaps:   make(map[uintptr]map[string]Value),
+		seenArrays:    make(map[sliceIdentity]Value),
+		seenMaps:      make(map[uintptr]map[string]Value),
+		seenInstances: make(map[*Instance]Value),
 	}
 }
 
@@ -564,6 +801,21 @@ func (cloner *taskGlobalCloner) clone(val Value) Value {
 			clonedEntries[key] = cloner.clone(item)
 		}
 		return NewObject(clonedEntries)
+	case KindInstance:
+		inst := valueInstance(val)
+		if inst == nil {
+			return val
+		}
+		if clone, seen := cloner.seenInstances[inst]; seen {
+			return clone
+		}
+		clonedIvars := make(map[string]Value, len(inst.Ivars))
+		cloned := NewInstance(&Instance{Class: inst.Class, Ivars: clonedIvars})
+		cloner.seenInstances[inst] = cloned
+		for name, item := range inst.Ivars {
+			clonedIvars[name] = cloner.clone(item)
+		}
+		return cloned
 	default:
 		return val
 	}

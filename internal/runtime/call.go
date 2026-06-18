@@ -774,6 +774,27 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 	return nil
 }
 
+func bindLazyTaskGlobalsForCall(exec *Execution, root *Env, globals *taskLazyGlobals, rebinder *callFunctionRebinder) error {
+	if globals == nil || len(globals.values) == 0 {
+		return nil
+	}
+	if exec.strictEffects {
+		if err := globals.ensureStrictValidated(); err != nil {
+			return err
+		}
+	}
+	globals.root = root
+	globals.rebinder = rebinder
+	for name, val := range globals.values {
+		if val.Kind() == KindEnum {
+			root.Define(name, rebinder.rebindValue(val))
+			continue
+		}
+		root.defineLazy(name, taskLazyGlobalBinding{globals: globals, name: name})
+	}
+	return nil
+}
+
 func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (Value, error) {
 	if err := exec.pushFrame(fn.Name, fn.Pos, fn.owner, fn.owner); err != nil {
 		return NewNil(), err

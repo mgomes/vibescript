@@ -78,6 +78,85 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	return val, nil
 }
 
+// callWithLazyTaskGlobals keeps task-only lazy global binding off the public Call hot path.
+func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args []Value, opts CallOptions, lazyTaskGlobals *taskLazyGlobals) (Value, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if lazyTaskGlobals != nil {
+		ctx = contextWithTaskLazyGlobals(ctx, lazyTaskGlobals)
+	}
+
+	_, ok := s.functions[name]
+	if !ok {
+		candidates := slices.Collect(maps.Keys(s.functions))
+		return NewNil(), fmt.Errorf("function %s not found%s", name, didYouMean(name, candidates))
+	}
+
+	rootCapacity := len(s.classes) + len(opts.Globals) + len(opts.Capabilities)*2
+	if lazyTaskGlobals != nil {
+		rootCapacity += lazyTaskGlobals.len()
+	}
+	root := newEnvWithCapacity(nil, rootCapacity)
+	s.engine.attachBuiltins(root, len(s.functions)+len(s.enums))
+
+	callFunctions := cloneFunctionsForCall(s.functions, root)
+	fn, ok := callFunctions[name]
+	if !ok {
+		return NewNil(), fmt.Errorf("function %s not found", name)
+	}
+	for n, fnDecl := range callFunctions {
+		root.DefineStatic(n, NewFunction(fnDecl))
+	}
+
+	callClasses := cloneClassesForCall(s.classes, root)
+	for n, classDef := range callClasses {
+		root.Define(n, NewClass(classDef))
+	}
+	callEnums := cloneEnumsForCall(s.enums)
+	for n, enumDef := range callEnums {
+		root.DefineStatic(n, NewEnum(enumDef))
+	}
+	rebinder := newCallFunctionRebinder(s, root, callClasses, callEnums)
+
+	exec := newExecutionForCall(s, ctx, root, opts)
+
+	if err := bindCapabilitiesForCall(exec, root, rebinder, opts.Capabilities); err != nil {
+		return NewNil(), err
+	}
+
+	if err := bindGlobalsForCall(exec, root, rebinder, opts.Globals); err != nil {
+		return NewNil(), err
+	}
+	if lazyTaskGlobals != nil {
+		if err := bindLazyTaskGlobalsForCall(exec, root, lazyTaskGlobals, rebinder); err != nil {
+			return NewNil(), err
+		}
+	}
+
+	if err := exec.checkMemory(); err != nil {
+		return NewNil(), exec.wrapError(err, fn.Pos)
+	}
+
+	if err := initializeClassBodiesForCall(exec, root, callClasses); err != nil {
+		return NewNil(), err
+	}
+
+	callEnv, err := prepareCallEnvForFunction(exec, root, rebinder, fn, args, opts.Keywords)
+	if err != nil {
+		return NewNil(), exec.wrapError(err, fn.Pos)
+	}
+
+	val, err := executeFunctionForCall(exec, fn, callEnv)
+	if err != nil {
+		return NewNil(), err
+	}
+	if valueNeedsHostClone(val) {
+		return cloneValueForHost(val), nil
+	}
+	return val, nil
+}
+
 // Function looks up a compiled function by name.
 func (s *Script) Function(name string) (*ScriptFunction, bool) {
 	fn, ok := s.functions[name]
