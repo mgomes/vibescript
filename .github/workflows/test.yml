@@ -155,6 +155,9 @@ jobs:
       - name: Gate examples coverage
         run: go test ./internal/runtime -run 'TestExamples|TestDocsExampleSnippetsCompile'
 
+      - name: Gate Markdown snippet coverage
+        run: go test ./internal/tools/analyze -run TestMarkdownVibeSnippetsAreCovered
+
       - name: Gate known-issues bug bar
         run: ./scripts/check_known_issues.sh
 

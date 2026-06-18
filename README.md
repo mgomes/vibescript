@@ -260,7 +260,7 @@ result, err := script.Call(ctx, "run", nil, vibes.CallOptions{
 
 Scripts can use `Tasks` for bounded structured concurrency:
 
-```ruby
+```vibe
 def score_user(user)
   analytics.score(user)
 end

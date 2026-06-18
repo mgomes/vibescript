@@ -22,7 +22,7 @@ Vibescript also exposes host-controlled execution bounds through `Config`: step 
 
 `Tasks.run` creates a scoped task manager:
 
-```ruby
+```vibe
 Tasks.run(max: 8) do |tasks|
   profile = tasks.spawn(:load_profile, user_id)
   orders = tasks.spawn(:load_orders, user_id)
@@ -33,7 +33,7 @@ end
 
 `max:` is optional:
 
-```ruby
+```vibe
 Tasks.run do |tasks|
   tasks.spawn(:send_email, user)
   tasks.spawn(:record_metric, user)
@@ -46,7 +46,7 @@ The default is `Config.DefaultTaskConcurrency`, which defaults to `4` unless the
 
 `Tasks.run` always waits for all spawned tasks before returning, even when the script never calls `tasks.wait`. `tasks.wait` remains available as an explicit barrier for tasks spawned so far:
 
-```ruby
+```vibe
 Tasks.run(max: 4) do |tasks|
   tasks.spawn(:warm_cache)
   tasks.wait
@@ -59,13 +59,13 @@ end
 
 `Tasks.map` is the result-collecting helper:
 
-```ruby
+```vibe
 scores = Tasks.map(users, with: :score_user)
 ```
 
 This is equivalent to spawning one task per item, waiting for all tasks, and returning task values in input order. `Tasks.map` accepts the same optional `max:` override:
 
-```ruby
+```vibe
 scores = Tasks.map(users, max: 8, with: :score_user)
 ```
 
