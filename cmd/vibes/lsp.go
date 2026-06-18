@@ -107,6 +107,9 @@ type lspServer struct {
 	// document, so completion can offer user-defined symbols while the
 	// buffer is mid-edit and temporarily unparsable.
 	compiled map[string]*vibes.Script
+	// completions holds the per-document script-local completion index
+	// derived from compiled and re-anchored to the current buffer lines.
+	completions map[string]*lspCompletionIndex
 	// programs holds the most recent parse that produced any top-level
 	// statements per document. Unlike compiled it tolerates partial
 	// parses, so navigation keeps working while the buffer is mid-edit.
@@ -115,13 +118,14 @@ type lspServer struct {
 
 func runLSP() error {
 	server := &lspServer{
-		reader:   bufio.NewReader(os.Stdin),
-		writer:   bufio.NewWriter(os.Stdout),
-		engine:   vibes.MustNewEngine(vibes.Config{}),
-		docs:     make(map[string]string),
-		lines:    make(map[string][]string),
-		compiled: make(map[string]*vibes.Script),
-		programs: make(map[string]*ast.Program),
+		reader:      bufio.NewReader(os.Stdin),
+		writer:      bufio.NewWriter(os.Stdout),
+		engine:      vibes.MustNewEngine(vibes.Config{}),
+		docs:        make(map[string]string),
+		lines:       make(map[string][]string),
+		compiled:    make(map[string]*vibes.Script),
+		completions: make(map[string]*lspCompletionIndex),
+		programs:    make(map[string]*ast.Program),
 	}
 	return server.serve()
 }
@@ -394,6 +398,9 @@ func (s *lspServer) setDocument(uri, source string) {
 	}
 	s.docs[uri] = source
 	s.lines[uri] = splitLSPLines(source)
+	if s.completions != nil {
+		delete(s.completions, uri)
+	}
 }
 
 func (s *lspServer) documentLines(uri string) []string {
@@ -416,8 +423,12 @@ func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
 	script, program, parseErrs, diagnostics := compileForDiagnostics(s.engine, source)
 	if script != nil && s.compiled != nil {
 		s.compiled[uri] = script
+		s.setCompletionIndex(uri, script)
 	} else if program == nil && len(parseErrs) == 0 && s.compiled != nil {
 		delete(s.compiled, uri)
+		s.clearCompletionIndex(uri)
+	} else if cached := s.compiled[uri]; cached != nil {
+		s.setCompletionIndex(uri, cached)
 	}
 	if program != nil && s.programs != nil {
 		// A clean parse is authoritative even when empty (the symbols
@@ -436,6 +447,19 @@ func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
 			"uri":         uri,
 			"diagnostics": diagnostics,
 		},
+	}
+}
+
+func (s *lspServer) setCompletionIndex(uri string, script *vibes.Script) {
+	if s.completions == nil {
+		return
+	}
+	s.completions[uri] = newLSPCompletionIndex(script, s.documentLines(uri))
+}
+
+func (s *lspServer) clearCompletionIndex(uri string) {
+	if s.completions != nil {
+		delete(s.completions, uri)
 	}
 }
 
@@ -560,7 +584,16 @@ func newDiagnostic(rng diagnosticRange, message string) map[string]any {
 	}
 }
 
+var (
+	lspStaticCompletionItems = buildCompletionItems()
+	lspStaticMemberItems     = buildMemberCompletionItems()
+)
+
 func completionItems() []map[string]any {
+	return append([]map[string]any(nil), lspStaticCompletionItems...)
+}
+
+func buildCompletionItems() []map[string]any {
 	labels := make([]string, 0, len(lspKeywords)+len(lspBuiltins))
 	labels = append(labels, lspKeywords...)
 	labels = append(labels, lspBuiltins...)
@@ -778,7 +811,9 @@ func (s *lspServer) completionItemsAt(uri string, lines []string, line, characte
 		return memberCompletionItems()
 	}
 	items := completionItems()
-	items = append(items, scriptCompletionItems(s.compiled[uri], lines, line)...)
+	if index := s.completions[uri]; index != nil {
+		items = append(items, index.itemsAt(line)...)
+	}
 	return items
 }
 
@@ -824,6 +859,10 @@ func isMemberContext(lines []string, line, character int) bool {
 // memberCompletionItems returns the type-unaware union of every builtin
 // member method, labeled with the receiver types that provide it.
 func memberCompletionItems() []map[string]any {
+	return append([]map[string]any(nil), lspStaticMemberItems...)
+}
+
+func buildMemberCompletionItems() []map[string]any {
 	byName := make(map[string][]string)
 	for receiver, names := range vibes.MemberCompletionNames() {
 		for _, name := range names {
@@ -849,18 +888,28 @@ func memberCompletionItems() []map[string]any {
 	return items
 }
 
-// scriptCompletionItems offers the script's function names plus the
-// parameters and locals of the function enclosing the cursor line.
-func scriptCompletionItems(script *vibes.Script, sourceLines []string, line int) []map[string]any {
+type lspCompletionIndex struct {
+	functions []map[string]any
+	scopes    []lspCompletionScope
+}
+
+type lspCompletionScope struct {
+	startLine int
+	endLine   int
+	items     []map[string]any
+}
+
+func newLSPCompletionIndex(script *vibes.Script, sourceLines []string) *lspCompletionIndex {
 	if script == nil {
 		return nil
 	}
-	var items []map[string]any
+	index := &lspCompletionIndex{}
 	functions := script.Functions()
-	enclosing := -1
-	enclosingStart := -1
-	for i, fn := range functions {
-		items = append(items, map[string]any{
+	defLines := topLevelDefLines(sourceLines)
+	index.functions = make([]map[string]any, 0, len(functions))
+	index.scopes = make([]lspCompletionScope, 0, len(functions))
+	for _, fn := range functions {
+		index.functions = append(index.functions, map[string]any{
 			"label":  fn.Name,
 			"kind":   3, // Function
 			"detail": "function",
@@ -869,31 +918,81 @@ func scriptCompletionItems(script *vibes.Script, sourceLines []string, line int)
 		// lines, so anchor each function to its "def name" line in the
 		// current buffer (duplicate names cannot compile) and fall
 		// back to the cached position when the anchor is gone.
-		start := findDefLine(sourceLines, fn.Name)
-		if start < 0 {
+		start, ok := defLines[fn.Name]
+		if !ok {
 			start = fn.Pos.Line - 1
 		}
 		bodyExtent := lastStatementLine(fn.Body) - (fn.Pos.Line - 1)
-		if start <= line && line <= functionEndLine(sourceLines, start, bodyExtent) &&
-			(enclosing < 0 || start > enclosingStart) {
-			enclosing = i
-			enclosingStart = start
+		scope := lspCompletionScope{
+			startLine: start,
+			endLine:   functionEndLine(sourceLines, start, bodyExtent),
 		}
-	}
-	if enclosing >= 0 {
-		fn := functions[enclosing]
-		seen := make(map[string]struct{})
+		seen := make(map[string]struct{}, len(fn.Params))
 		for _, param := range fn.Params {
-			addLocalItem(&items, seen, param.Name, "parameter")
+			addLocalItem(&scope.items, seen, param.Name, "parameter")
 		}
 		for _, name := range localNames(fn.Body) {
-			addLocalItem(&items, seen, name, "local")
+			addLocalItem(&scope.items, seen, name, "local")
+		}
+		sortCompletionItems(scope.items)
+		index.scopes = append(index.scopes, scope)
+	}
+	sortCompletionItems(index.functions)
+	return index
+}
+
+func topLevelDefLines(sourceLines []string) map[string]int {
+	lines := make(map[string]int)
+	for i, lineText := range sourceLines {
+		decl := lineText
+		for _, modifier := range []string{"export ", "private "} {
+			if rest, ok := strings.CutPrefix(decl, modifier); ok {
+				decl = rest
+				break
+			}
+		}
+		rest, ok := strings.CutPrefix(decl, "def ")
+		if !ok {
+			continue
+		}
+		nameEnd := strings.IndexFunc(rest, func(r rune) bool {
+			return r == '(' || r == ' ' || r == '\t'
+		})
+		if nameEnd < 0 {
+			nameEnd = len(rest)
+		}
+		if name := rest[:nameEnd]; name != "" {
+			if _, exists := lines[name]; !exists {
+				lines[name] = i
+			}
 		}
 	}
+	return lines
+}
+
+func (idx *lspCompletionIndex) itemsAt(line int) []map[string]any {
+	if idx == nil {
+		return nil
+	}
+	enclosing := -1
+	for i, scope := range idx.scopes {
+		if scope.startLine <= line && line <= scope.endLine &&
+			(enclosing < 0 || scope.startLine > idx.scopes[enclosing].startLine) {
+			enclosing = i
+		}
+	}
+	items := make([]map[string]any, 0, len(idx.functions))
+	items = append(items, idx.functions...)
+	if enclosing >= 0 {
+		items = append(items, idx.scopes[enclosing].items...)
+	}
+	return items
+}
+
+func sortCompletionItems(items []map[string]any) {
 	sort.Slice(items, func(i, j int) bool {
 		return items[i]["label"].(string) < items[j]["label"].(string)
 	})
-	return items
 }
 
 // functionEndLine estimates the 0-based line of the "end" closing a
@@ -916,33 +1015,6 @@ func functionEndLine(sourceLines []string, startLine, bodyExtent int) int {
 		return max(textualEnd, startLine+bodyExtent)
 	}
 	return textualEnd
-}
-
-// findDefLine locates the 0-based line declaring the named top-level
-// function in the current buffer, or -1 when absent. Only unindented
-// declarations qualify — indented defs are class methods, which may
-// share a top-level function's name — but the export and private
-// modifiers that can decorate a top-level def are accepted. A missed
-// anchor falls back to the cached position rather than mis-anchoring.
-func findDefLine(sourceLines []string, name string) int {
-	target := "def " + name
-	for i, lineText := range sourceLines {
-		decl := lineText
-		for _, modifier := range []string{"export ", "private "} {
-			if rest, ok := strings.CutPrefix(decl, modifier); ok {
-				decl = rest
-				break
-			}
-		}
-		if !strings.HasPrefix(decl, target) {
-			continue
-		}
-		rest := strings.TrimRight(decl[len(target):], " \t")
-		if rest == "" || strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, " ") {
-			return i
-		}
-	}
-	return -1
 }
 
 // lastStatementLine returns the greatest 0-based line covered by the
