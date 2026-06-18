@@ -137,6 +137,8 @@ var keywordTokenTypes = map[string]TokenType{
 	"next":     TokenNext,
 	"in":       TokenIn,
 	"if":       TokenIf,
+	"and":      TokenAnd,
+	"or":       TokenOr,
 	"case":     TokenCase,
 	"when":     TokenWhen,
 	"elsif":    TokenElsif,

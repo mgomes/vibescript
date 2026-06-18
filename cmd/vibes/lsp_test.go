@@ -205,7 +205,7 @@ func TestLSPKeywordCompletionsMatchParserKeywords(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("keyword completions = %#v, want parser keywords %#v", got, want)
 	}
-	for _, unsupported := range []string{"and", "or", "unless"} {
+	for _, unsupported := range []string{"unless"} {
 		if classifyWord(unsupported) == "keyword" {
 			t.Fatalf("classifyWord(%q) = keyword, want unsupported syntax excluded from keyword completions", unsupported)
 		}

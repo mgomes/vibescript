@@ -138,9 +138,11 @@ Core operator families:
 
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
-- Boolean: `and`, `or`, unary `!`
+- Boolean: `&&`/`and`, `||`/`or`, unary `!`
 
-Operator precedence follows conventional arithmetic/boolean ordering.
+Operator precedence follows conventional arithmetic/boolean ordering:
+`and` has the same precedence as `&&`, and `or` has the same precedence as
+`||`.
 
 ## Control Flow
 
