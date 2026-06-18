@@ -1,6 +1,9 @@
 package value
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Kind returns the ValueKind of v.
 func (v Value) Kind() ValueKind { return v.kind }
@@ -11,7 +14,12 @@ func (v Value) IsNil() bool { return v.kind == KindNil }
 // Bool returns the boolean content of v, or false if v is not a bool.
 func (v Value) Bool() bool {
 	if v.kind == KindBool {
-		return v.data.(bool)
+		if v.data == nil {
+			return v.scalar != 0
+		}
+		if b, ok := v.data.(bool); ok {
+			return b
+		}
 	}
 	return false
 }
@@ -20,9 +28,15 @@ func (v Value) Bool() bool {
 func (v Value) Int() int64 {
 	switch v.kind {
 	case KindInt:
-		return v.data.(int64)
+		if v.data == nil {
+			return int64(v.scalar)
+		}
+		if i, ok := v.data.(int64); ok {
+			return i
+		}
+		return 0
 	case KindFloat:
-		return int64(v.data.(float64))
+		return int64(v.Float())
 	default:
 		return 0
 	}
@@ -32,9 +46,15 @@ func (v Value) Int() int64 {
 func (v Value) Float() float64 {
 	switch v.kind {
 	case KindFloat:
-		return v.data.(float64)
+		if v.data == nil {
+			return math.Float64frombits(v.scalar)
+		}
+		if f, ok := v.data.(float64); ok {
+			return f
+		}
+		return 0
 	case KindInt:
-		return float64(v.data.(int64))
+		return float64(v.Int())
 	default:
 		return 0
 	}
@@ -69,7 +89,13 @@ func (v Value) Duration() Duration {
 	if v.kind != KindDuration {
 		return Duration{}
 	}
-	return v.data.(Duration)
+	if v.data == nil {
+		return DurationFromSeconds(int64(v.scalar))
+	}
+	if d, ok := v.data.(Duration); ok {
+		return d
+	}
+	return Duration{}
 }
 
 // Time returns the time content of v, or a zero time if v is not a time.
