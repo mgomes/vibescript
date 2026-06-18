@@ -197,7 +197,7 @@ func tokenLabel(tt ast.TokenType) string {
 		return "integer"
 	case ast.TokenFloat:
 		return "float"
-	case ast.TokenString:
+	case ast.TokenString, ast.TokenInterpolatedString:
 		return "string"
 	case ast.TokenSymbol:
 		return "symbol"

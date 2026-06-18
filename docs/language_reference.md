@@ -19,7 +19,7 @@ Vibescript supports these literal/value categories:
 
 - `nil`, `true`, `false`
 - integers and floats (`1`, `42`, `3.14`)
-- strings (`"hello"`)
+- strings (`"hello"`, `"hello #{name}"`)
 - symbols (`:name`)
 - arrays (`[1, 2, 3]`)
 - hashes (`{name: "Ada", active: true}`)
@@ -31,6 +31,11 @@ hash rockets (`:name => value`, `"name" => value`, or an expression that
 evaluates to a symbol or string).
 
 Ranges with `..` include the final endpoint. Ranges with `...` exclude it.
+
+Double-quoted strings support `#{...}` interpolation. Each interpolation must
+contain one expression; the expression value is converted with the same string
+form used by `to_s`. Escape an interpolation marker as `\#{...}` for literal
+text. Single-quoted strings do not interpolate.
 
 See `docs/arrays.md`, `docs/hashes.md`, `docs/strings.md`, `docs/durations.md`,
 and `docs/time.md` for full method coverage.

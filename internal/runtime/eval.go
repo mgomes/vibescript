@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/mgomes/vibescript/internal/ast"
 )
@@ -50,6 +51,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return NewFloat(e.Value), nil
 	case *StringLiteral:
 		return NewString(e.Value), nil
+	case *InterpolatedString:
+		return exec.evalInterpolatedStringLiteral(e, env)
 	case *BoolLiteral:
 		return NewBool(e.Value), nil
 	case *NilLiteral:
@@ -164,6 +167,23 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	default:
 		return NewNil(), exec.errorAt(expr.Pos(), "unsupported expression")
 	}
+}
+
+func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, env *Env) (Value, error) {
+	var sb strings.Builder
+	for _, part := range lit.Parts {
+		switch p := part.(type) {
+		case StringText:
+			sb.WriteString(p.Text)
+		case StringExpr:
+			val, err := exec.evalExpressionWithAuto(p.Expr, env, true)
+			if err != nil {
+				return NewNil(), err
+			}
+			sb.WriteString(val.String())
+		}
+	}
+	return NewString(sb.String()), nil
 }
 
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {

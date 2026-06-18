@@ -1,9 +1,11 @@
 package parser
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/internal/ast"
 )
@@ -253,6 +255,7 @@ const (
 	prefixParserIntegerLiteral
 	prefixParserFloatLiteral
 	prefixParserStringLiteral
+	prefixParserInterpolatedStringLiteral
 	prefixParserPercentWordsLiteral
 	prefixParserPercentSymbolsLiteral
 	prefixParserBooleanLiteral
@@ -280,6 +283,8 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserFloatLiteral
 	case ast.TokenString:
 		return prefixParserStringLiteral
+	case ast.TokenInterpolatedString:
+		return prefixParserInterpolatedStringLiteral
 	case ast.TokenWords:
 		return prefixParserPercentWordsLiteral
 	case ast.TokenSymbols:
@@ -325,6 +330,8 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parseFloatLiteral()
 	case prefixParserStringLiteral:
 		return p.parseStringLiteral()
+	case prefixParserInterpolatedStringLiteral:
+		return p.parseInterpolatedStringLiteral()
 	case prefixParserPercentWordsLiteral:
 		return p.parsePercentWordsLiteral()
 	case prefixParserPercentSymbolsLiteral:
@@ -467,6 +474,160 @@ func (p *parser) parseFloatLiteral() ast.Expression {
 
 func (p *parser) parseStringLiteral() ast.Expression {
 	return &ast.StringLiteral{Value: p.curToken.Literal, Position: p.curToken.Pos}
+}
+
+func (p *parser) parseInterpolatedStringLiteral() ast.Expression {
+	parts, ok := p.parseInterpolatedStringParts(p.curToken.Literal, p.curToken.Pos)
+	if !ok {
+		return nil
+	}
+	return &ast.InterpolatedString{Parts: parts, Position: p.curToken.Pos}
+}
+
+func (p *parser) parseInterpolatedStringParts(raw string, pos ast.Position) ([]ast.StringPart, bool) {
+	parts := []ast.StringPart{}
+	textStart := 0
+	for i := 0; i < len(raw); {
+		if raw[i] == '\\' {
+			i = skipEscapedByte(raw, i)
+			continue
+		}
+		if raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{' {
+			if textStart < i {
+				parts = append(parts, ast.StringText{Text: decodeDoubleQuotedText(raw[textStart:i])})
+			}
+			exprStart := i + 2
+			exprEnd, ok := findStringInterpolationEnd(raw, exprStart)
+			if !ok {
+				p.addParseError(pos, "unterminated string interpolation")
+				return nil, false
+			}
+			exprRaw := strings.TrimSpace(raw[exprStart:exprEnd])
+			if exprRaw == "" {
+				p.addParseError(pos, "empty string interpolation")
+				return nil, false
+			}
+			expr, ok := p.parseStringInterpolationExpression(exprRaw, pos)
+			if !ok {
+				return nil, false
+			}
+			parts = append(parts, ast.StringExpr{Expr: expr})
+			i = exprEnd + 1
+			textStart = i
+			continue
+		}
+		i++
+	}
+	if textStart < len(raw) {
+		parts = append(parts, ast.StringText{Text: decodeDoubleQuotedText(raw[textStart:])})
+	}
+	return parts, true
+}
+
+func skipEscapedByte(raw string, i int) int {
+	if i+1 >= len(raw) {
+		return len(raw)
+	}
+	return i + 2
+}
+
+func findStringInterpolationEnd(raw string, start int) (int, bool) {
+	depth := 1
+	for i := start; i < len(raw); {
+		switch raw[i] {
+		case '\\':
+			i = skipEscapedByte(raw, i)
+		case '\'', '"':
+			next, ok := skipQuotedInterpolationString(raw, i)
+			if !ok {
+				return 0, false
+			}
+			i = next
+		case '{':
+			depth++
+			i++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	return 0, false
+}
+
+func skipQuotedInterpolationString(raw string, start int) (int, bool) {
+	quote := raw[start]
+	for i := start + 1; i < len(raw); {
+		switch raw[i] {
+		case '\\':
+			i = skipEscapedByte(raw, i)
+		case quote:
+			return i + 1, true
+		default:
+			i++
+		}
+	}
+	return 0, false
+}
+
+func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position) (ast.Expression, bool) {
+	exprParser := newParser(raw)
+	expr := exprParser.parseLineExpression(lowestPrec)
+	if len(exprParser.errors) > 0 {
+		p.addParseError(pos, fmt.Sprintf("invalid string interpolation: %s", parseErrorMessage(exprParser.errors[0])))
+		return nil, false
+	}
+	if expr == nil {
+		p.addParseError(pos, "invalid string interpolation")
+		return nil, false
+	}
+	if exprParser.peekToken.Type != ast.TokenEOF {
+		p.addParseError(pos, "string interpolation must contain a single expression")
+		return nil, false
+	}
+	return expr, true
+}
+
+func parseErrorMessage(err error) string {
+	var parseErr *parseError
+	if errors.As(err, &parseErr) {
+		return parseErr.Message()
+	}
+	return err.Error()
+}
+
+func decodeDoubleQuotedText(raw string) string {
+	var sb strings.Builder
+	for i := 0; i < len(raw); {
+		r, size := utf8.DecodeRuneInString(raw[i:])
+		if r != '\\' {
+			sb.WriteRune(r)
+			i += size
+			continue
+		}
+		i += size
+		if i >= len(raw) {
+			sb.WriteRune('\\')
+			break
+		}
+		next, nextSize := utf8.DecodeRuneInString(raw[i:])
+		switch next {
+		case '"', '\\':
+			sb.WriteRune(next)
+		case 'n':
+			sb.WriteByte('\n')
+		case 't':
+			sb.WriteByte('\t')
+		default:
+			sb.WriteRune(next)
+		}
+		i += nextSize
+	}
+	return sb.String()
 }
 
 func (p *parser) parsePercentWordsLiteral() ast.Expression {
