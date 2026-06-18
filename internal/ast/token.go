@@ -62,6 +62,7 @@ const (
 	TokenQuestion       TokenType = "?"
 
 	TokenComma     TokenType = ","
+	TokenSemicolon TokenType = ";"
 	TokenColon     TokenType = ":"
 	TokenScope     TokenType = "::"
 	TokenDot       TokenType = "."
