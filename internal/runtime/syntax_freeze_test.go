@@ -196,6 +196,17 @@ end`,
 end`,
 		},
 		{
+			name: "if_expressions",
+			source: `def run(flag)
+  label = if flag
+    "enabled"
+  else
+    "disabled"
+  end
+  label
+end`,
+		},
+		{
 			name: "targetless_case_predicates",
 			source: `def run(value)
   case

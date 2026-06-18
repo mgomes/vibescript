@@ -84,6 +84,25 @@ def label(score)
 end
 ```
 
+## `if` expressions
+
+`if` / `elsif` / `else` can be used where a value expression is expected.
+The selected branch expression becomes the value. When no branch matches and
+there is no `else`, the expression returns `nil`.
+
+```vibe
+def label(score)
+  result = if score >= 90
+    "great"
+  elsif score >= 80
+    "passing"
+  else
+    "retry"
+  end
+  result
+end
+```
+
 ## Ternary expressions
 
 Use `condition ? when_true : when_false` for short conditional values. The

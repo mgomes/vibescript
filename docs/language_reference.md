@@ -214,6 +214,16 @@ else
 end
 ```
 
+`if` / `elsif` / `else` can also be used as a value-producing expression:
+
+```vibe
+status = if active
+  "open"
+else
+  "closed"
+end
+```
+
 Looping:
 
 ```vibe

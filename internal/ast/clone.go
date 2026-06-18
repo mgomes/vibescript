@@ -282,6 +282,13 @@ func cloneExpression(expr Expression) Expression {
 		clone.Consequent = cloneExpression(e.Consequent)
 		clone.Alternate = cloneExpression(e.Alternate)
 		return &clone
+	case *IfExpr:
+		clone := *e
+		clone.Condition = cloneExpression(e.Condition)
+		clone.Consequent = cloneExpression(e.Consequent)
+		clone.ElseIf = cloneIfExprBranches(e.ElseIf)
+		clone.Alternate = cloneExpression(e.Alternate)
+		return &clone
 	case *RangeExpr:
 		clone := *e
 		clone.Start = cloneExpression(e.Start)
@@ -306,6 +313,20 @@ func cloneExpression(expr Expression) Expression {
 	default:
 		return expr
 	}
+}
+
+func cloneIfExprBranches(branches []IfExprBranch) []IfExprBranch {
+	if branches == nil {
+		return nil
+	}
+	out := make([]IfExprBranch, len(branches))
+	for i, branch := range branches {
+		out[i] = IfExprBranch{
+			Condition: cloneExpression(branch.Condition),
+			Result:    cloneExpression(branch.Result),
+		}
+	}
+	return out
 }
 
 func cloneDestructureElements(elements []DestructureElement) []DestructureElement {

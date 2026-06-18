@@ -90,6 +90,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalBinaryExpr(e, env)
 	case *ConditionalExpr:
 		return exec.evalConditionalExpr(e, env)
+	case *IfExpr:
+		return exec.evalIfExpr(e, env)
 	case *RangeExpr:
 		return exec.evalRangeExpr(e, env)
 	case *CaseExpr:
@@ -366,6 +368,53 @@ func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Val
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+func (exec *Execution) evalIfExpr(expr *IfExpr, env *Env) (Value, error) {
+	resultExpr, err := exec.matchIfExpressionBranch(expr, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if resultExpr == nil {
+		return NewNil(), nil
+	}
+
+	result, err := exec.evalExpressionWithAuto(resultExpr, env, true)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
+}
+
+func (exec *Execution) matchIfExpressionBranch(expr *IfExpr, env *Env) (Expression, error) {
+	condition, err := exec.evalExpression(expr.Condition, env)
+	if err != nil {
+		return nil, err
+	}
+	if err := exec.checkMemoryWith(condition); err != nil {
+		return nil, err
+	}
+	if condition.Truthy() {
+		return expr.Consequent, nil
+	}
+
+	for _, branch := range expr.ElseIf {
+		condition, err := exec.evalExpression(branch.Condition, env)
+		if err != nil {
+			return nil, err
+		}
+		if err := exec.checkMemoryWith(condition); err != nil {
+			return nil, err
+		}
+		if condition.Truthy() {
+			return branch.Result, nil
+		}
+	}
+
+	return expr.Alternate, nil
 }
 
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
