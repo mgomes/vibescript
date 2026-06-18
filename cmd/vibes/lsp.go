@@ -27,30 +27,7 @@ const maxLSPPayloadBytes = 8 << 20
 // invalid JSON-RPC that strict clients reject.
 var jsonNull = json.RawMessage("null")
 
-var lspKeywords = []string{
-	"and",
-	"break",
-	"class",
-	"def",
-	"else",
-	"elsif",
-	"end",
-	"false",
-	"for",
-	"if",
-	"in",
-	"next",
-	"nil",
-	"or",
-	"raise",
-	"require",
-	"rescue",
-	"return",
-	"true",
-	"unless",
-	"until",
-	"while",
-}
+var lspKeywords = ast.Keywords()
 
 var lspBuiltins = []string{
 	"assert",
@@ -58,6 +35,7 @@ var lspBuiltins = []string{
 	"money_cents",
 	"now",
 	"random_id",
+	"require",
 	"to_float",
 	"to_int",
 	"uuid",
