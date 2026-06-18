@@ -103,6 +103,24 @@ func (p *parser) parseStringLiteral() ast.Expression {
 	return &ast.StringLiteral{Value: p.curToken.Literal, Position: p.curToken.Pos}
 }
 
+func (p *parser) parsePercentWordsLiteral() ast.Expression {
+	entries := decodePercentLiteralEntries(p.curToken.Literal)
+	elements := make([]ast.Expression, len(entries))
+	for i, entry := range entries {
+		elements[i] = &ast.StringLiteral{Value: entry, Position: p.curToken.Pos}
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
+func (p *parser) parsePercentSymbolsLiteral() ast.Expression {
+	entries := decodePercentLiteralEntries(p.curToken.Literal)
+	elements := make([]ast.Expression, len(entries))
+	for i, entry := range entries {
+		elements[i] = &ast.SymbolLiteral{Name: entry, Position: p.curToken.Pos}
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
 func (p *parser) parseBooleanLiteral() ast.Expression {
 	return &ast.BoolLiteral{Value: p.curToken.Type == ast.TokenTrue, Position: p.curToken.Pos}
 }

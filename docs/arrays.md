@@ -6,6 +6,13 @@ Arrays are ordered collections. Use square brackets to declare literals:
 players = ["alex", "maya", "li"]
 ```
 
+For static string or symbol lists, percent array literals are also supported:
+
+```vibe
+words = %w[alpha beta gamma]
+statuses = %i[draft published archived]
+```
+
 ## Transformations
 
 Common enumerable helpers include:

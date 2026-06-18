@@ -26,11 +26,13 @@ const (
 	TokenIllegal TokenType = "ILLEGAL"
 	TokenEOF     TokenType = "EOF"
 
-	TokenIdent  TokenType = "IDENT"
-	TokenInt    TokenType = "INT"
-	TokenFloat  TokenType = "FLOAT"
-	TokenString TokenType = "STRING"
-	TokenSymbol TokenType = "SYMBOL"
+	TokenIdent   TokenType = "IDENT"
+	TokenInt     TokenType = "INT"
+	TokenFloat   TokenType = "FLOAT"
+	TokenString  TokenType = "STRING"
+	TokenSymbol  TokenType = "SYMBOL"
+	TokenWords   TokenType = "WORDS"
+	TokenSymbols TokenType = "SYMBOLS"
 
 	TokenAssign    TokenType = "="
 	TokenPlus      TokenType = "+"

@@ -122,8 +122,39 @@ func (l *lexer) scanToken() ast.Token {
 		tok = l.makeToken(ast.TokenSlash, "/")
 		l.readRune()
 	case '%':
-		tok = l.makeToken(ast.TokenPercent, "%")
-		l.readRune()
+		switch l.peekRune() {
+		case 'w':
+			if isPercentLiteralDelimiter(l.peekRuneN(1)) {
+				entries, err := l.readPercentArrayLiteral()
+				if err != "" {
+					tok.Type = ast.TokenIllegal
+					tok.Literal = err
+				} else {
+					tok.Type = ast.TokenWords
+					tok.Literal = encodePercentLiteralEntries(entries)
+				}
+			} else {
+				tok = l.makeToken(ast.TokenPercent, "%")
+				l.readRune()
+			}
+		case 'i':
+			if isPercentLiteralDelimiter(l.peekRuneN(1)) {
+				entries, err := l.readPercentArrayLiteral()
+				if err != "" {
+					tok.Type = ast.TokenIllegal
+					tok.Literal = err
+				} else {
+					tok.Type = ast.TokenSymbols
+					tok.Literal = encodePercentLiteralEntries(entries)
+				}
+			} else {
+				tok = l.makeToken(ast.TokenPercent, "%")
+				l.readRune()
+			}
+		default:
+			tok = l.makeToken(ast.TokenPercent, "%")
+			l.readRune()
+		}
 	case '(':
 		tok = l.makeToken(ast.TokenLParen, "(")
 		l.readRune()
@@ -444,6 +475,130 @@ func (l *lexer) readSingleQuotedString() (string, string) {
 			sb.WriteRune(l.ch)
 		}
 	}
+}
+
+func (l *lexer) readPercentArrayLiteral() ([]string, string) {
+	l.readRune()
+	l.readRune()
+	open := l.ch
+	close, paired := percentLiteralClose(open)
+	if close == 0 {
+		return nil, "invalid percent array delimiter"
+	}
+
+	depth := 1
+	var raw strings.Builder
+	for {
+		l.readRune()
+		switch l.ch {
+		case 0:
+			return nil, "unterminated percent array literal"
+		case '\\':
+			raw.WriteRune(l.ch)
+			if l.peekRune() != 0 {
+				l.readRune()
+				raw.WriteRune(l.ch)
+			}
+		default:
+			if paired && l.ch == open {
+				depth++
+			}
+			if l.ch == close {
+				depth--
+				if depth == 0 {
+					l.readRune()
+					return splitPercentLiteralWords(raw.String(), open, close), ""
+				}
+			}
+			raw.WriteRune(l.ch)
+		}
+	}
+}
+
+func isPercentLiteralDelimiter(r rune) bool {
+	return r != 0 && !unicode.IsSpace(r) && !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+}
+
+func percentLiteralClose(open rune) (rune, bool) {
+	switch open {
+	case '[':
+		return ']', true
+	case '(':
+		return ')', true
+	case '{':
+		return '}', true
+	case '<':
+		return '>', true
+	default:
+		if !isPercentLiteralDelimiter(open) {
+			return 0, false
+		}
+		return open, false
+	}
+}
+
+const percentLiteralEntrySeparator = "\x00"
+
+func encodePercentLiteralEntries(entries []string) string {
+	return strings.Join(entries, percentLiteralEntrySeparator)
+}
+
+func decodePercentLiteralEntries(literal string) []string {
+	if literal == "" {
+		return nil
+	}
+	return strings.Split(literal, percentLiteralEntrySeparator)
+}
+
+func splitPercentLiteralWords(raw string, open, close rune) []string {
+	var words []string
+	var sb strings.Builder
+	inWord := false
+	escaped := false
+
+	flush := func() {
+		if !inWord {
+			return
+		}
+		words = append(words, sb.String())
+		sb.Reset()
+		inWord = false
+	}
+
+	for _, r := range raw {
+		if escaped {
+			if isPercentWordEscapable(r, open, close) {
+				sb.WriteRune(r)
+			} else {
+				sb.WriteRune('\\')
+				sb.WriteRune(r)
+			}
+			inWord = true
+			escaped = false
+			continue
+		}
+
+		switch {
+		case r == '\\':
+			escaped = true
+			inWord = true
+		case unicode.IsSpace(r):
+			flush()
+		default:
+			sb.WriteRune(r)
+			inWord = true
+		}
+	}
+
+	if escaped {
+		sb.WriteRune('\\')
+	}
+	flush()
+	return words
+}
+
+func isPercentWordEscapable(r, open, close rune) bool {
+	return unicode.IsSpace(r) || r == '\\' || r == open || r == close
 }
 
 // ast.Identifier classification and keyword lookup are now provided by
