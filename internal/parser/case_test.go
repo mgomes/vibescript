@@ -60,3 +60,47 @@ end`
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestParserCaseWhenThenSeparators(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  case 2
+  when 1, 3 then "odd"
+  when 2 then "two"
+  else "other"
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.CaseExpr{
+				Target: &ast.IntegerLiteral{Value: 2},
+				Clauses: []ast.CaseWhenClause{
+					{
+						Values: []ast.Expression{
+							&ast.IntegerLiteral{Value: 1},
+							&ast.IntegerLiteral{Value: 3},
+						},
+						Result: &ast.StringLiteral{Value: "odd"},
+					},
+					{
+						Values: []ast.Expression{
+							&ast.IntegerLiteral{Value: 2},
+						},
+						Result: &ast.StringLiteral{Value: "two"},
+					},
+				},
+				ElseExpr: &ast.StringLiteral{Value: "other"},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}

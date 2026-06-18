@@ -96,6 +96,7 @@ const (
 	TokenReturn   TokenType = "RETURN"
 	TokenYield    TokenType = "YIELD"
 	TokenDo       TokenType = "DO"
+	TokenThen     TokenType = "THEN"
 	TokenFor      TokenType = "FOR"
 	TokenWhile    TokenType = "WHILE"
 	TokenUntil    TokenType = "UNTIL"
@@ -142,6 +143,7 @@ var keywordTokenTypes = map[string]TokenType{
 	"return":   TokenReturn,
 	"yield":    TokenYield,
 	"do":       TokenDo,
+	"then":     TokenThen,
 	"for":      TokenFor,
 	"while":    TokenWhile,
 	"until":    TokenUntil,

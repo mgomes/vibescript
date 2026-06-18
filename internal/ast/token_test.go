@@ -37,6 +37,7 @@ func TestKeywords(t *testing.T) {
 		"return",
 		"self",
 		"setter",
+		"then",
 		"true",
 		"unless",
 		"until",

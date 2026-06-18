@@ -238,6 +238,8 @@ func tokenLabel(tt ast.TokenType) string {
 		return "'yield'"
 	case ast.TokenDo:
 		return "'do'"
+	case ast.TokenThen:
+		return "'then'"
 	case ast.TokenFor:
 		return "'for'"
 	case ast.TokenIn:

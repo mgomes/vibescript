@@ -431,6 +431,14 @@ func TestCaseWhenExpressions(t *testing.T) {
       end
     end
 
+    def compact_label(score)
+      case score
+      when 100 then "perfect"
+      when 90, 95 then "great"
+      else "ok"
+      end
+    end
+
     def classify(value)
       case value
       when nil
@@ -563,6 +571,9 @@ func TestCaseWhenExpressions(t *testing.T) {
 		{name: "label_100_perfect", fn: "label", arg: NewInt(100), want: NewString("perfect")},
 		{name: "label_95_great", fn: "label", arg: NewInt(95), want: NewString("great")},
 		{name: "label_70_default", fn: "label", arg: NewInt(70), want: NewString("ok")},
+		{name: "compact_label_100_perfect", fn: "compact_label", arg: NewInt(100), want: NewString("perfect")},
+		{name: "compact_label_95_great", fn: "compact_label", arg: NewInt(95), want: NewString("great")},
+		{name: "compact_label_70_default", fn: "compact_label", arg: NewInt(70), want: NewString("ok")},
 		{name: "classify_nil_missing", fn: "classify", arg: NewNil(), want: NewString("missing")},
 		{name: "classify_true_yes", fn: "classify", arg: NewBool(true), want: NewString("yes")},
 		{name: "classify_one_other", fn: "classify", arg: NewInt(1), want: NewString("other")},
