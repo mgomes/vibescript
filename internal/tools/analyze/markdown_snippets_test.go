@@ -154,9 +154,9 @@ func checkMarkdownSnippet(engine *runtime.Engine, snippet markdownSnippet, polic
 	if hasPolicy && policy.Mode == markdownSnippetWrapped {
 		source = wrapMarkdownSnippet(source)
 	}
-	err, compileFailed := compileAndAnalyzeMarkdownSnippet(engine, source)
+	compileFailed, err := compileAndAnalyzeMarkdownSnippet(engine, source)
 	if compileFailed && !hasPolicy && shouldWrapReferenceSnippet(snippet.Path) {
-		err, _ = compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownSnippet(source))
+		_, err = compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownSnippet(source))
 	}
 	return err
 }
@@ -264,16 +264,16 @@ func markdownSnippetHash(source string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func compileAndAnalyzeMarkdownSnippet(engine *runtime.Engine, source string) (error, bool) {
+func compileAndAnalyzeMarkdownSnippet(engine *runtime.Engine, source string) (bool, error) {
 	script, err := engine.Compile(source)
 	if err != nil {
-		return fmt.Errorf("compile: %w", err), true
+		return true, fmt.Errorf("compile: %w", err)
 	}
 	if warnings := Script(script); len(warnings) > 0 {
 		first := warnings[0]
-		return fmt.Errorf("analyze: %s at %d:%d in %s", first.Message, first.Pos.Line, first.Pos.Column, first.Function), false
+		return false, fmt.Errorf("analyze: %s at %d:%d in %s", first.Message, first.Pos.Line, first.Pos.Column, first.Function)
 	}
-	return nil, false
+	return false, nil
 }
 
 func shouldWrapReferenceSnippet(path string) bool {
