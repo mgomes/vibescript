@@ -303,6 +303,49 @@ func TestUnlessConditionals(t *testing.T) {
 	}
 }
 
+func TestThenControlFlowSeparators(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def if_then(flag)
+      if flag then "yes" else "no" end
+    end
+
+    def if_elsif_then(value)
+      if value == 1 then "one" elsif value == 2 then "two" else "other" end
+    end
+
+    def unless_then(flag)
+      unless flag then "open" else "closed" end
+    end
+    `)
+
+	cases := []struct {
+		name string
+		fn   string
+		args []Value
+		want Value
+	}{
+		{name: "if_true", fn: "if_then", args: []Value{NewBool(true)}, want: NewString("yes")},
+		{name: "if_false", fn: "if_then", args: []Value{NewBool(false)}, want: NewString("no")},
+		{name: "elsif_first_branch", fn: "if_elsif_then", args: []Value{NewInt(1)}, want: NewString("one")},
+		{name: "elsif_second_branch", fn: "if_elsif_then", args: []Value{NewInt(2)}, want: NewString("two")},
+		{name: "elsif_else_branch", fn: "if_elsif_then", args: []Value{NewInt(3)}, want: NewString("other")},
+		{name: "unless_false", fn: "unless_then", args: []Value{NewBool(false)}, want: NewString("open")},
+		{name: "unless_true", fn: "unless_then", args: []Value{NewBool(true)}, want: NewString("closed")},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, tc.args)
+			if !got.Equal(tc.want) {
+				t.Fatalf("%s(%v) = %v, want %v", tc.fn, tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLineTerminatedHeadersAndStatements(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
