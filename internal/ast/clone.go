@@ -255,6 +255,10 @@ func cloneExpression(expr Expression) Expression {
 		clone.Object = cloneExpression(e.Object)
 		clone.Index = cloneExpression(e.Index)
 		return &clone
+	case *DestructureTarget:
+		clone := *e
+		clone.Elements = cloneDestructureElements(e.Elements)
+		return &clone
 	case *IvarExpr:
 		clone := *e
 		return &clone
@@ -294,6 +298,20 @@ func cloneExpression(expr Expression) Expression {
 	default:
 		return expr
 	}
+}
+
+func cloneDestructureElements(elements []DestructureElement) []DestructureElement {
+	if elements == nil {
+		return nil
+	}
+	out := make([]DestructureElement, len(elements))
+	for i, element := range elements {
+		out[i] = DestructureElement{
+			Target: cloneExpression(element.Target),
+			Rest:   element.Rest,
+		}
+	}
+	return out
 }
 
 func cloneHashPairs(pairs []HashPair) []HashPair {

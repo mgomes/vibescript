@@ -92,6 +92,39 @@ func TestEvaluate(t *testing.T) {
 			},
 		},
 		{
+			name:  "destructuring_assignment_stores_variables",
+			input: "first, *rest, last = [1, 2, 3, 4]",
+			check: func(t *testing.T, m *replModel, _ string) {
+				first, ok := m.env["first"]
+				if !ok {
+					t.Fatalf("expected first to be stored in repl env")
+				}
+				if first.Kind() != value.KindInt || first.Int() != 1 {
+					t.Fatalf("unexpected first value: %#v", first)
+				}
+
+				rest, ok := m.env["rest"]
+				if !ok {
+					t.Fatalf("expected rest to be stored in repl env")
+				}
+				if rest.Kind() != value.KindArray {
+					t.Fatalf("unexpected rest kind: %#v", rest)
+				}
+				restValues := rest.Array()
+				if len(restValues) != 2 || restValues[0].Int() != 2 || restValues[1].Int() != 3 {
+					t.Fatalf("unexpected rest values: %#v", restValues)
+				}
+
+				last, ok := m.env["last"]
+				if !ok {
+					t.Fatalf("expected last to be stored in repl env")
+				}
+				if last.Kind() != value.KindInt || last.Int() != 4 {
+					t.Fatalf("unexpected last value: %#v", last)
+				}
+			},
+		},
+		{
 			name:  "equality_does_not_overwrite_variable",
 			setup: func(m *replModel) { m.env["a"] = value.NewInt(5) },
 			input: "a == 5",

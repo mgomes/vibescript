@@ -28,6 +28,15 @@ end`,
 end`,
 		},
 		{
+			name: "assignment_targets",
+			source: `def run
+  a, *middle, last = [1, 2, 3, 4]
+  record = {count: 0}
+  record.count = middle[0]
+  [a, record[:count], last]
+end`,
+		},
+		{
 			name: "class_definition_and_methods",
 			source: `class Counter
   @@n = 0

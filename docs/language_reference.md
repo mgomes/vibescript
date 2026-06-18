@@ -35,6 +35,17 @@ total = 0
 total = total + 10
 ```
 
+Parallel and destructuring assignment split array values across targets:
+
+```vibe
+a, b = [1, 2]
+first, *middle, last = [1, 2, 3, 4]
+x, (y, z) = [1, [2, 3]]
+```
+
+Missing values bind as `nil`, extra values are ignored unless captured by a
+`*rest` target, and scalar right-hand values are treated as one value.
+
 Index assignment is supported for mutable collections:
 
 ```vibe

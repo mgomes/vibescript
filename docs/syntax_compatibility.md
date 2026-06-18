@@ -14,6 +14,7 @@ planning:
 - Class declarations with class/instance methods and variables.
 - Core literals: `nil`, booleans, numbers, strings, symbols, arrays, hashes,
   and ranges.
+- Assignment to variables, indexes, members, and destructuring targets.
 - Control flow: `if`/`elsif`/`else`, `while`, `until`, `for ... in`,
   `break`, `next`, and `return`.
 - Block syntax (`do ... end`) and block arguments.
@@ -26,6 +27,6 @@ planning:
   be called out in migration notes and release notes.
 - After `v1.0.0`, breaking syntax changes require a major version bump.
 - Parser behavior for the frozen baseline is protected by
-  `vibes/syntax_freeze_test.go`.
+  `internal/runtime/syntax_freeze_test.go`.
 
 For versioning semantics, see `docs/versioning.md`.

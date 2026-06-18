@@ -464,6 +464,10 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	case *Identifier:
 		env.Assign(t.Name, value)
 		return nil
+	case *DestructureTarget:
+		return AssignDestructure(t, value, func(target Expression, value Value) error {
+			return exec.assign(target, value, env)
+		})
 	case *MemberExpr:
 		obj, err := exec.evalExpression(t.Object, env)
 		if err != nil {
@@ -544,6 +548,74 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 	default:
 		return exec.errorAt(target.Pos(), "invalid assignment target")
 	}
+}
+
+// AssignDestructure applies Vibescript's destructuring assignment rules and
+// invokes assign for each concrete leaf target.
+func AssignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
+	values := destructureValues(value)
+	restIndex := -1
+	for i, element := range target.Elements {
+		if element.Rest {
+			restIndex = i
+			break
+		}
+	}
+
+	if restIndex == -1 {
+		for i, element := range target.Elements {
+			if err := assignDestructureValue(element.Target, valueAt(values, i), assign); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	for i := range restIndex {
+		if err := assignDestructureValue(target.Elements[i].Target, valueAt(values, i), assign); err != nil {
+			return err
+		}
+	}
+
+	trailing := len(target.Elements) - restIndex - 1
+	for i := range trailing {
+		targetIndex := len(target.Elements) - trailing + i
+		valueIndex := len(values) - trailing + i
+		if valueIndex < restIndex {
+			valueIndex = -1
+		}
+		if err := assignDestructureValue(target.Elements[targetIndex].Target, valueAt(values, valueIndex), assign); err != nil {
+			return err
+		}
+	}
+
+	restEnd := len(values) - trailing
+	if restEnd < restIndex {
+		restEnd = restIndex
+	}
+	restValues := append([]Value(nil), values[restIndex:restEnd]...)
+	return assignDestructureValue(target.Elements[restIndex].Target, NewArray(restValues), assign)
+}
+
+func assignDestructureValue(target Expression, value Value, assign func(Expression, Value) error) error {
+	if nested, ok := target.(*DestructureTarget); ok {
+		return AssignDestructure(nested, value, assign)
+	}
+	return assign(target, value)
+}
+
+func destructureValues(value Value) []Value {
+	if value.Kind() == KindArray {
+		return value.Array()
+	}
+	return []Value{value}
+}
+
+func valueAt(values []Value, index int) Value {
+	if index < 0 || index >= len(values) {
+		return NewNil()
+	}
+	return values[index]
 }
 
 func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Value, bool, error) {
