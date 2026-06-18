@@ -592,12 +592,15 @@ func isLabelNameToken(tt ast.TokenType) bool {
 func (p *parser) parseCaseExpression() ast.Expression {
 	pos := p.curToken.Pos
 	p.nextToken()
-	target := p.parseLineExpression(lowestPrec)
-	if target == nil {
-		return nil
+	var target ast.Expression
+	if p.curToken.Type != ast.TokenWhen {
+		target = p.parseLineExpression(lowestPrec)
+		if target == nil {
+			return nil
+		}
+		p.nextToken()
 	}
 
-	p.nextToken()
 	clauses := []ast.CaseWhenClause{}
 	for p.curToken.Type == ast.TokenWhen {
 		p.nextToken()

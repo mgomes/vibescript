@@ -206,6 +206,8 @@ type CaseWhenClause struct {
 
 // CaseExpr represents a case/when expression.
 type CaseExpr struct {
+	// Target is nil for targetless case expressions where each when value is
+	// evaluated as a predicate.
 	Target   Expression
 	Clauses  []CaseWhenClause
 	ElseExpr Expression

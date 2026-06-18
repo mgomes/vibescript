@@ -779,12 +779,17 @@ func (exec *Execution) evalRangeExpr(expr *RangeExpr, env *Env) (Value, error) {
 }
 
 func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
-	target, err := exec.evalExpression(expr.Target, env)
-	if err != nil {
-		return NewNil(), err
-	}
-	if err := exec.checkMemoryWith(target); err != nil {
-		return NewNil(), err
+	var target Value
+	hasTarget := expr.Target != nil
+	if hasTarget {
+		var err error
+		target, err = exec.evalExpression(expr.Target, env)
+		if err != nil {
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(target); err != nil {
+			return NewNil(), err
+		}
 	}
 
 	for _, clause := range expr.Clauses {
@@ -797,7 +802,7 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 			if err := exec.checkMemoryWith(candidate); err != nil {
 				return NewNil(), err
 			}
-			if caseCandidateMatches(target, candidate) {
+			if caseWhenMatches(hasTarget, target, candidate) {
 				matched = true
 				break
 			}
@@ -827,6 +832,13 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 	}
 
 	return NewNil(), nil
+}
+
+func caseWhenMatches(hasTarget bool, target, candidate Value) bool {
+	if !hasTarget {
+		return candidate.Truthy()
+	}
+	return caseCandidateMatches(target, candidate)
 }
 
 func caseCandidateMatches(target, candidate Value) bool {
