@@ -107,6 +107,9 @@ func (p *parser) peekStopsLineExpression() bool {
 	}
 	for _, stop := range p.lineLimitedStops {
 		if p.peekToken.Type == stop {
+			if stop == ast.TokenDo && p.peekPeek.Type == ast.TokenPipe {
+				return false
+			}
 			return true
 		}
 	}

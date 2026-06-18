@@ -140,6 +140,78 @@ end`
 	}
 }
 
+func TestParserLoopHeadersPreserveDoBlocksWithParameters(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  while items.any? do |item|
+    item > 0
+  end
+    tick
+  end
+
+  for item in values.select do |value|
+    value > 0
+  end
+    tick(item)
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.WhileStmt{
+			Condition: &ast.CallExpr{
+				Callee: &ast.MemberExpr{
+					Object:   &ast.Identifier{Name: "items"},
+					Property: "any?",
+				},
+				Block: &ast.BlockLiteral{
+					Params: []ast.Param{{Name: "item"}},
+					Body: []ast.Statement{
+						&ast.ExprStmt{Expr: &ast.BinaryExpr{
+							Left:     &ast.Identifier{Name: "item"},
+							Operator: ast.TokenGT,
+							Right:    &ast.IntegerLiteral{Value: 0},
+						}},
+					},
+				},
+			},
+			Body: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.Identifier{Name: "tick"}},
+			},
+		},
+		&ast.ForStmt{
+			Iterator: "item",
+			Iterable: &ast.CallExpr{
+				Callee: &ast.MemberExpr{
+					Object:   &ast.Identifier{Name: "values"},
+					Property: "select",
+				},
+				Block: &ast.BlockLiteral{
+					Params: []ast.Param{{Name: "value"}},
+					Body: []ast.Statement{
+						&ast.ExprStmt{Expr: &ast.BinaryExpr{
+							Left:     &ast.Identifier{Name: "value"},
+							Operator: ast.TokenGT,
+							Right:    &ast.IntegerLiteral{Value: 0},
+						}},
+					},
+				},
+			},
+			Body: []ast.Statement{
+				&ast.ExprStmt{Expr: callExpression("tick", &ast.Identifier{Name: "item"})},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func whileIncrementStatement() ast.Statement {
 	return &ast.WhileStmt{
 		Condition: &ast.BinaryExpr{
