@@ -7,16 +7,26 @@ import (
 	"github.com/mgomes/vibescript/vibes/value"
 )
 
+const inlineEnvBindingCapacity = 3
+
+type envBinding struct {
+	name  string
+	value Value
+}
+
 // Env represents a lexical scope that maps variable names to values.
 //
-// Bindings live in two maps: values holds normal script bindings, while
+// Bindings live in two stores: inline holds small normal script scopes without
+// a map allocation, values holds larger normal script scopes, and
 // statics holds bindings whose deep size never changes after definition
 // (builtins, per-call function clones). Statics are stored separately so
 // memory-quota estimation can account for them in O(1) through the
 // staticBytes counter instead of re-walking every binding on each check
-// — the root env's builtin set dominated estimation cost otherwise.
+// -- the root env's builtin set dominated estimation cost otherwise.
 type Env struct {
 	parent             *Env
+	inline             [inlineEnvBindingCapacity]envBinding
+	inlineLen          uint8
 	values             map[string]Value
 	statics            map[string]Value
 	staticBytes        int32
@@ -38,7 +48,11 @@ func newEnvWithCapacity(parent *Env, capacity int) *Env {
 	if capacity < 0 {
 		capacity = 0
 	}
-	return &Env{parent: parent, values: make(map[string]Value, capacity)}
+	env := &Env{parent: parent}
+	if capacity > inlineEnvBindingCapacity {
+		env.values = make(map[string]Value, capacity)
+	}
+	return env
 }
 
 // newAssignmentBoundaryEnv can read parent bindings, but missing-name writes
@@ -51,6 +65,15 @@ func newAssignmentBoundaryEnv(parent *Env) *Env {
 
 // Get looks up a variable by name, traversing parent scopes if needed.
 func (e *Env) Get(name string) (Value, bool) {
+	if idx, ok := e.inlineIndex(name); ok {
+		val := e.inline[idx].value
+		if lazy, ok := lazyValue(val); ok {
+			val = lazy.materialize()
+			e.inline[idx].value = val
+			e.dropArrayAppendBuffer(name)
+		}
+		return val, true
+	}
 	if val, ok := e.values[name]; ok {
 		if lazy, ok := lazyValue(val); ok {
 			val = lazy.materialize()
@@ -70,7 +93,7 @@ func (e *Env) Get(name string) (Value, bool) {
 
 // Define binds a new variable in the current scope.
 func (e *Env) Define(name string, val Value) {
-	e.values[name] = val
+	e.setDynamic(name, val)
 	e.dropStatic(name)
 	e.dropArrayAppendBuffer(name)
 }
@@ -87,7 +110,7 @@ func (e *Env) growStatics(n int) {
 // DefineStatic binds a variable whose deep size is fixed at definition
 // time, keeping it out of the per-check estimation walk.
 func (e *Env) DefineStatic(name string, val Value) {
-	delete(e.values, name)
+	e.deleteDynamic(name)
 	if e.statics == nil {
 		e.statics = make(map[string]Value)
 	}
@@ -116,18 +139,17 @@ func (e *Env) assignValue(name string, val Value) *Env {
 	last := e
 	for scope := e; scope != nil; scope = scope.parent {
 		if scope.frozen {
-			_, inValues := scope.values[name]
+			inValues := scope.hasDynamic(name)
 			_, inStatics := scope.statics[name]
 			if inValues || inStatics {
-				last.values[name] = val
+				last.setDynamic(name, val)
 				last.dropStatic(name)
 				last.dropArrayAppendBuffer(name)
 				return last
 			}
 			continue
 		}
-		if _, ok := scope.values[name]; ok {
-			scope.values[name] = val
+		if scope.setExistingDynamic(name, val) {
 			scope.dropArrayAppendBuffer(name)
 			return scope
 		}
@@ -135,19 +157,19 @@ func (e *Env) assignValue(name string, val Value) *Env {
 			// The binding is no longer immutable-by-binding; demote it
 			// so estimation starts walking its (now mutable) value.
 			scope.dropStatic(name)
-			scope.values[name] = val
+			scope.setDynamic(name, val)
 			scope.dropArrayAppendBuffer(name)
 			return scope
 		}
 		if scope.assignBoundary {
-			scope.values[name] = val
+			scope.setDynamic(name, val)
 			scope.dropStatic(name)
 			scope.dropArrayAppendBuffer(name)
 			return scope
 		}
 		last = scope
 	}
-	last.values[name] = val
+	last.setDynamic(name, val)
 	last.dropStatic(name)
 	last.dropArrayAppendBuffer(name)
 	return last
@@ -170,7 +192,7 @@ func (e *Env) clearArrayAppendBuffer(name string) {
 
 func (e *Env) lookupBindingScope(name string) (*Env, bool) {
 	for scope := e; scope != nil; scope = scope.parent {
-		if _, ok := scope.values[name]; ok {
+		if scope.hasDynamic(name) {
 			return scope, true
 		}
 		if _, ok := scope.statics[name]; ok {
@@ -217,7 +239,7 @@ func (e *Env) detachArrayAppendResult(val Value) Value {
 // suggestions and is never called on successful lookups.
 func (e *Env) visibleNames() []string {
 	seen := make(map[string]struct{})
-	names := make([]string, 0, len(e.values))
+	names := make([]string, 0, e.dynamicLen())
 	add := func(name string) {
 		if _, ok := seen[name]; ok {
 			return
@@ -226,9 +248,9 @@ func (e *Env) visibleNames() []string {
 		names = append(names, name)
 	}
 	for scope := e; scope != nil; scope = scope.parent {
-		for name := range scope.values {
+		scope.rangeDynamicBindings(func(name string, _ Value) {
 			add(name)
-		}
+		})
 		for name := range scope.statics {
 			add(name)
 		}
@@ -238,8 +260,10 @@ func (e *Env) visibleNames() []string {
 
 // CloneShallow returns a copy of the environment with the same parent and a shallow copy of its bindings.
 func (e *Env) CloneShallow() *Env {
-	clone := newEnv(e.parent)
-	maps.Copy(clone.values, e.values)
+	clone := newEnvWithCapacity(e.parent, e.dynamicLen())
+	e.rangeDynamicBindings(func(name string, val Value) {
+		clone.setDynamic(name, val)
+	})
 	if len(e.statics) > 0 {
 		clone.statics = make(map[string]Value, len(e.statics))
 		maps.Copy(clone.statics, e.statics)
@@ -253,9 +277,108 @@ type lazyEnvValue interface {
 }
 
 func (e *Env) defineLazy(name string, lazy lazyEnvValue) {
-	e.values[name] = newLazyValue(lazy)
+	e.setDynamic(name, newLazyValue(lazy))
 	e.dropStatic(name)
 	e.dropArrayAppendBuffer(name)
+}
+
+func (e *Env) dynamicLen() int {
+	return int(e.inlineLen) + len(e.values)
+}
+
+func (e *Env) inlineIndex(name string) (int, bool) {
+	for i := range int(e.inlineLen) {
+		if e.inline[i].name == name {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (e *Env) hasDynamic(name string) bool {
+	if _, ok := e.inlineIndex(name); ok {
+		return true
+	}
+	_, ok := e.values[name]
+	return ok
+}
+
+func (e *Env) getOwn(name string) (Value, bool) {
+	if idx, ok := e.inlineIndex(name); ok {
+		return e.inline[idx].value, true
+	}
+	if val, ok := e.values[name]; ok {
+		return val, true
+	}
+	if val, ok := e.statics[name]; ok {
+		return val, true
+	}
+	return Value{}, false
+}
+
+func (e *Env) setExistingDynamic(name string, val Value) bool {
+	if idx, ok := e.inlineIndex(name); ok {
+		e.inline[idx].value = val
+		return true
+	}
+	if _, ok := e.values[name]; ok {
+		e.values[name] = val
+		return true
+	}
+	return false
+}
+
+func (e *Env) setDynamic(name string, val Value) {
+	if e.setExistingDynamic(name, val) {
+		return
+	}
+	if e.values != nil {
+		e.values[name] = val
+		return
+	}
+	if int(e.inlineLen) < len(e.inline) {
+		e.inline[e.inlineLen] = envBinding{name: name, value: val}
+		e.inlineLen++
+		return
+	}
+	e.promoteInlineBindings(int(e.inlineLen) + 1)
+	e.values[name] = val
+}
+
+func (e *Env) deleteDynamic(name string) {
+	if idx, ok := e.inlineIndex(name); ok {
+		last := int(e.inlineLen) - 1
+		copy(e.inline[idx:last], e.inline[idx+1:int(e.inlineLen)])
+		e.inline[last] = envBinding{}
+		e.inlineLen--
+		return
+	}
+	delete(e.values, name)
+}
+
+func (e *Env) promoteInlineBindings(capacity int) {
+	if capacity < int(e.inlineLen) {
+		capacity = int(e.inlineLen)
+	}
+	if e.values == nil {
+		e.values = make(map[string]Value, capacity)
+	}
+	for i := range int(e.inlineLen) {
+		binding := e.inline[i]
+		e.values[binding.name] = binding.value
+		e.inline[i] = envBinding{}
+	}
+	e.inlineLen = 0
+}
+
+func (e *Env) rangeDynamicBindings(visit func(string, Value)) {
+	for i := range int(e.inlineLen) {
+		binding := e.inline[i]
+		visit(binding.name, binding.value)
+	}
+	for name, val := range e.values {
+		visit(name, val)
+	}
 }
 
 func (e *Env) dropStatic(name string) {

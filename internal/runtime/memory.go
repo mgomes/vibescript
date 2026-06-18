@@ -207,7 +207,7 @@ func (est *memoryEstimator) env(env *Env) int {
 	}
 	est.seenEnvs[env] = struct{}{}
 
-	size := estimatedEnvBytes + estimatedMapBaseBytes + int(env.staticBytes) + len(env.values)*estimatedMapEntryBytes
+	size := estimatedEnvBytes + estimatedMapBaseBytes + int(env.staticBytes) + env.dynamicLen()*estimatedMapEntryBytes
 	if len(env.arrayAppendBuffers) > 0 {
 		size += estimatedMapBaseBytes + len(env.arrayAppendBuffers)*estimatedMapEntryBytes
 		for name, buffer := range env.arrayAppendBuffers {
@@ -215,14 +215,14 @@ func (est *memoryEstimator) env(env *Env) int {
 			size += est.slice(buffer)
 		}
 	}
-	for name, val := range env.values {
+	env.rangeDynamicBindings(func(name string, val Value) {
 		size += estimatedStringHeaderBytes + len(name)
 		if _, ok := lazyValue(val); ok {
 			size += estimatedValueBytes
 		} else {
 			size += est.value(val)
 		}
-	}
+	})
 	size += est.env(env.parent)
 	return size
 }

@@ -335,9 +335,9 @@ func (s *capabilityContractScanner) scanClosureEnv(env *Env, visit func(Value)) 
 			return
 		}
 		s.seenEnvs[env] = struct{}{}
-		for _, item := range env.values {
+		env.rangeDynamicBindings(func(_ string, item Value) {
 			visit(item)
-		}
+		})
 		for _, item := range env.statics {
 			visit(item)
 		}

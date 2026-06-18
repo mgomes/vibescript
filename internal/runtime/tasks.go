@@ -204,13 +204,7 @@ func rootBindingValue(root *Env, name string) (Value, bool) {
 	if root == nil {
 		return Value{}, false
 	}
-	if val, ok := root.values[name]; ok {
-		return val, true
-	}
-	if val, ok := root.statics[name]; ok {
-		return val, true
-	}
-	return Value{}, false
+	return root.getOwn(name)
 }
 
 func (group *taskGroup) managerValue() Value {

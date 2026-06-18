@@ -568,12 +568,12 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 	if clone, ok := state.envs[env]; ok {
 		return clone
 	}
-	clone := newEnvWithCapacity(nil, len(env.values))
+	clone := newEnvWithCapacity(nil, env.dynamicLen())
 	state.envs[env] = clone
 	clone.parent = cloneEnvForHost(env.parent, state)
-	for name, val := range env.values {
-		clone.values[name] = cloneValueForHostWithState(val, state)
-	}
+	env.rangeDynamicBindings(func(name string, val Value) {
+		clone.Define(name, cloneValueForHostWithState(val, state))
+	})
 	for name, val := range env.statics {
 		clone.DefineStatic(name, cloneValueForHostWithState(val, state))
 	}
