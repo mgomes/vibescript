@@ -174,6 +174,16 @@ end`,
 end`,
 		},
 		{
+			name: "trailing_commas",
+			source: `def passthrough(value, label:)
+  value
+end
+
+def run
+  passthrough([1, 2,], label: "ok",)
+end`,
+		},
+		{
 			name: "semicolon_statement_separators",
 			source: `def run(flag)
   if flag; 1; else; 2; end

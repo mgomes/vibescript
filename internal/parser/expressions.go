@@ -626,6 +626,9 @@ func (p *parser) parseArrayLiteral() ast.Expression {
 
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
+		if p.peekToken.Type == ast.TokenRBracket {
+			break
+		}
 		p.nextToken()
 		elements = append(elements, p.parseExpression(lowestPrec))
 	}
@@ -653,6 +656,9 @@ func (p *parser) parseHashLiteral() ast.Expression {
 
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
+		if p.peekToken.Type == ast.TokenRBrace {
+			break
+		}
 		p.nextToken()
 		if pair := p.parseHashPair(); pair.Key != nil {
 			pairs = append(pairs, pair)
@@ -918,6 +924,9 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
+		if p.peekToken.Type == ast.TokenRParen {
+			break
+		}
 		p.nextToken()
 		p.parseCallArgument(&args, &kwargs)
 	}
