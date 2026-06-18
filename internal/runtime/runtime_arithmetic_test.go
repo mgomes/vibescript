@@ -184,6 +184,52 @@ func TestExponentOperator(t *testing.T) {
 	}
 }
 
+func TestCompoundAssignments(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def run
+      total = 10
+      total += 5
+      total -= 3
+      total *= 4
+      total /= 6
+      total %= 5
+
+      power = 2
+      power **= 3
+
+      items = [1, 2]
+      index = 1
+      items[index] += 5
+
+      record = {score: 4, bonus: 1}
+      record[:score] *= 2
+      record.bonus += 3
+
+      {
+        total: total,
+        power: power,
+        item: items[1],
+        score: record[:score],
+        bonus: record.bonus
+      }
+    end
+    `)
+
+	got := callFunc(t, script, "run", nil).Hash()
+	want := map[string]Value{
+		"bonus": NewInt(4),
+		"item":  NewInt(7),
+		"power": NewInt(8),
+		"score": NewInt(8),
+		"total": NewInt(3),
+	}
+	if diff := valueMapDiff(want, got); diff != "" {
+		t.Fatalf("run() mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestIntegerArithmeticOverflowErrors(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

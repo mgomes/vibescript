@@ -833,7 +833,7 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 		return p.parseAssignmentValue(target)
 	}
 
-	if p.peekToken.Type == ast.TokenAssign && isAssignable(expr) {
+	if isAssignmentOperator(p.peekToken.Type) && isAssignable(expr) {
 		return p.parseAssignmentValue(expr)
 	}
 
@@ -841,16 +841,54 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 }
 
 func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
-	if p.peekToken.Type != ast.TokenAssign {
+	operatorToken := p.peekToken.Type
+	if !isAssignmentOperator(operatorToken) {
 		p.addParseError(p.curToken.Pos, "parallel assignment targets require '='")
 		return nil
+	}
+	if operatorToken != ast.TokenAssign {
+		if _, ok := target.(*ast.DestructureTarget); ok {
+			p.addParseErrorSpan(p.peekToken.Pos, tokenEnd(p.peekToken), "compound assignment is not supported for destructuring targets")
+			p.recoverAssignmentRemainder()
+			return nil
+		}
 	}
 
 	pos := target.Pos()
 	p.nextToken()
 	p.nextToken()
 	value := p.parseExpressionWithBlock()
-	return &ast.AssignStmt{Target: target, Value: value, Position: pos}
+	return &ast.AssignStmt{Target: target, Value: value, Operator: compoundAssignmentOperator(operatorToken), Position: pos}
+}
+
+func (p *parser) recoverAssignmentRemainder() {
+	startLine := p.peekToken.Pos.Line
+	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line == startLine {
+		p.nextToken()
+	}
+}
+
+func isAssignmentOperator(tt ast.TokenType) bool {
+	return tt == ast.TokenAssign || compoundAssignmentOperator(tt) != ""
+}
+
+func compoundAssignmentOperator(tt ast.TokenType) ast.TokenType {
+	switch tt {
+	case ast.TokenPlusAssign:
+		return ast.TokenPlus
+	case ast.TokenMinusAssign:
+		return ast.TokenMinus
+	case ast.TokenAsteriskAssign:
+		return ast.TokenAsterisk
+	case ast.TokenPowerAssign:
+		return ast.TokenPower
+	case ast.TokenSlashAssign:
+		return ast.TokenSlash
+	case ast.TokenPercentAssign:
+		return ast.TokenPercent
+	default:
+		return ""
+	}
 }
 
 func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression {

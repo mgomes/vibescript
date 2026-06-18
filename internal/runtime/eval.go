@@ -204,6 +204,10 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	if err := exec.checkMemoryWith(idx); err != nil {
 		return NewNil(), err
 	}
+	return exec.evalIndexValue(e, obj, idx)
+}
+
+func (exec *Execution) evalIndexValue(e *IndexExpr, obj, idx Value) (Value, error) {
 	switch obj.Kind() {
 	case KindString:
 		i, err := valueToInt(idx)
@@ -290,8 +294,17 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		return NewNil(), err
 	}
 
+	result, err := exec.evalBinaryOperator(expr.Operator, left, right, expr.Pos())
+	if err != nil {
+		return NewNil(), err
+	}
+	return result, nil
+}
+
+func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value, pos Position) (Value, error) {
 	var result Value
-	switch expr.Operator {
+	var err error
+	switch operator {
 	case tokenPlus:
 		result, err = addValues(left, right)
 	case tokenMinus:
@@ -319,15 +332,15 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 	case tokenSpaceship:
 		order, err := compareValueOrder(left, right)
 		if err != nil {
-			return NewNil(), exec.wrapError(err, expr.Pos())
+			return NewNil(), exec.wrapError(err, pos)
 		}
 		return NewInt(int64(order)), nil
 	default:
-		return NewNil(), exec.errorAt(expr.Pos(), "unsupported operator")
+		return NewNil(), exec.errorAt(pos, "unsupported operator")
 	}
 
 	if err != nil {
-		return NewNil(), exec.wrapError(err, expr.Pos())
+		return NewNil(), exec.wrapError(err, pos)
 	}
 	return result, nil
 }
@@ -529,16 +542,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return err
 		}
-		switch obj.Kind() {
-		case KindHash, KindObject:
-			m := obj.Hash()
-			m[t.Property] = value
-			return nil
-		case KindInstance, KindClass:
-			return exec.assignToMember(obj, t.Property, value, t.Pos())
-		default:
-			return exec.errorAt(target.Pos(), "cannot assign to %s", obj.Kind())
-		}
+		return exec.assignToEvaluatedMember(t, obj, value)
 	case *IvarExpr:
 		self, ok := env.Get("self")
 		if !ok || self.Kind() != KindInstance {
@@ -576,30 +580,46 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err := exec.checkMemoryWith(idx); err != nil {
 			return err
 		}
-		switch obj.Kind() {
-		case KindArray:
-			arr := obj.Array()
-			i, err := valueToInt(idx)
-			if err != nil {
-				return exec.errorAt(t.Index.Pos(), "%s", err.Error())
-			}
-			if i < 0 || i >= len(arr) {
-				return exec.errorAt(t.Index.Pos(), "array index out of bounds")
-			}
-			arr[i] = value
-			return nil
-		case KindHash, KindObject:
-			key, err := valueToHashKey(idx)
-			if err != nil {
-				return exec.errorAt(t.Index.Pos(), "%s", err.Error())
-			}
-			obj.Hash()[key] = value
-			return nil
-		default:
-			return exec.errorAt(t.Object.Pos(), "cannot index %s", obj.Kind())
-		}
+		return exec.assignToEvaluatedIndex(t, obj, idx, value)
 	default:
 		return exec.errorAt(target.Pos(), "invalid assignment target")
+	}
+}
+
+func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Value) error {
+	switch obj.Kind() {
+	case KindHash, KindObject:
+		obj.Hash()[target.Property] = value
+		return nil
+	case KindInstance, KindClass:
+		return exec.assignToMember(obj, target.Property, value, target.Pos())
+	default:
+		return exec.errorAt(target.Pos(), "cannot assign to %s", obj.Kind())
+	}
+}
+
+func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value Value) error {
+	switch obj.Kind() {
+	case KindArray:
+		arr := obj.Array()
+		i, err := valueToInt(idx)
+		if err != nil {
+			return exec.errorAt(target.Index.Pos(), "%s", err.Error())
+		}
+		if i < 0 || i >= len(arr) {
+			return exec.errorAt(target.Index.Pos(), "array index out of bounds")
+		}
+		arr[i] = value
+		return nil
+	case KindHash, KindObject:
+		key, err := valueToHashKey(idx)
+		if err != nil {
+			return exec.errorAt(target.Index.Pos(), "%s", err.Error())
+		}
+		obj.Hash()[key] = value
+		return nil
+	default:
+		return exec.errorAt(target.Object.Pos(), "cannot index %s", obj.Kind())
 	}
 }
 
@@ -1094,6 +1114,103 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 	return result, false, nil
 }
 
+func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value, error) {
+	current, assign, err := exec.prepareCompoundAssignmentTarget(stmt.Target, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(current); err != nil {
+		return NewNil(), err
+	}
+
+	right, err := exec.evalExpression(stmt.Value, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(current, right); err != nil {
+		return NewNil(), err
+	}
+
+	result, err := exec.evalBinaryOperator(stmt.Operator, current, right, stmt.Pos())
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), err
+	}
+	if err := assign(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
+}
+
+func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *Env) (Value, func(Value) error, error) {
+	switch t := target.(type) {
+	case *Identifier:
+		current, err := exec.evalExpression(t, env)
+		if err != nil {
+			return NewNil(), nil, err
+		}
+		return current, func(value Value) error {
+			env.Assign(t.Name, value)
+			return nil
+		}, nil
+	case *MemberExpr:
+		obj, err := exec.evalExpressionWithAuto(t.Object, env, true)
+		if err != nil {
+			return NewNil(), nil, err
+		}
+		if err := exec.checkMemoryWith(obj); err != nil {
+			return NewNil(), nil, err
+		}
+		member, err := exec.getMember(obj, t.Property, t.Pos())
+		if err != nil {
+			return NewNil(), nil, err
+		}
+		current, err := exec.autoInvokeIfNeeded(t, member, obj)
+		if err != nil {
+			return NewNil(), nil, err
+		}
+		return current, func(value Value) error {
+			return exec.assignToEvaluatedMember(t, obj, value)
+		}, nil
+	case *IndexExpr:
+		obj, err := exec.evalExpressionWithAuto(t.Object, env, true)
+		if err != nil {
+			return NewNil(), nil, err
+		}
+		if err := exec.checkMemoryWith(obj); err != nil {
+			return NewNil(), nil, err
+		}
+		idx, err := exec.evalExpressionWithAuto(t.Index, env, true)
+		if err != nil {
+			return NewNil(), nil, err
+		}
+		if err := exec.checkMemoryWith(idx); err != nil {
+			return NewNil(), nil, err
+		}
+		current, err := exec.evalIndexValue(t, obj, idx)
+		if err != nil {
+			return NewNil(), nil, err
+		}
+		return current, func(value Value) error {
+			return exec.assignToEvaluatedIndex(t, obj, idx, value)
+		}, nil
+	case *IvarExpr, *ClassVarExpr:
+		current, err := exec.evalExpression(t, env)
+		if err != nil {
+			return NewNil(), nil, err
+		}
+		return current, func(value Value) error {
+			return exec.assign(t, value, env)
+		}, nil
+	case *DestructureTarget:
+		return NewNil(), nil, exec.errorAt(t.Pos(), "compound assignment is not supported for destructuring targets")
+	default:
+		return NewNil(), nil, exec.errorAt(target.Pos(), "invalid assignment target")
+	}
+}
+
 func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, error) {
 	switch s := stmt.(type) {
 	case *ExprStmt:
@@ -1108,6 +1225,10 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	case *RaiseStmt:
 		return exec.evalRaiseStatement(s, env)
 	case *AssignStmt:
+		if s.Operator != "" {
+			val, err := exec.evalCompoundAssignment(s, env)
+			return val, false, err
+		}
 		if val, handled, err := exec.evalArrayAppendAssignment(s, env); handled || err != nil {
 			return val, false, err
 		}

@@ -105,13 +105,25 @@ func (l *lexer) scanToken() ast.Token {
 		tok.Type = ast.TokenEOF
 		tok.Literal = ""
 	case '+':
-		tok = l.makeToken(ast.TokenPlus, "+")
-		l.readRune()
+		if l.peekRune() == '=' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenPlusAssign, string(first)+string(l.ch))
+			l.readRune()
+		} else {
+			tok = l.makeToken(ast.TokenPlus, "+")
+			l.readRune()
+		}
 	case '-':
 		if l.peekRune() == '>' {
 			first := l.ch
 			l.readRune()
 			tok = l.makeToken(ast.TokenArrow, string(first)+string(l.ch))
+			l.readRune()
+		} else if l.peekRune() == '=' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenMinusAssign, string(first)+string(l.ch))
 			l.readRune()
 		} else {
 			tok = l.makeToken(ast.TokenMinus, "-")
@@ -121,15 +133,34 @@ func (l *lexer) scanToken() ast.Token {
 		if l.peekRune() == '*' {
 			first := l.ch
 			l.readRune()
-			tok = l.makeToken(ast.TokenPower, string(first)+string(l.ch))
+			if l.peekRune() == '=' {
+				second := l.ch
+				l.readRune()
+				tok = l.makeToken(ast.TokenPowerAssign, string(first)+string(second)+string(l.ch))
+				l.readRune()
+			} else {
+				tok = l.makeToken(ast.TokenPower, string(first)+string(l.ch))
+				l.readRune()
+			}
+		} else if l.peekRune() == '=' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenAsteriskAssign, string(first)+string(l.ch))
 			l.readRune()
 		} else {
 			tok = l.makeToken(ast.TokenAsterisk, "*")
 			l.readRune()
 		}
 	case '/':
-		tok = l.makeToken(ast.TokenSlash, "/")
-		l.readRune()
+		if l.peekRune() == '=' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenSlashAssign, string(first)+string(l.ch))
+			l.readRune()
+		} else {
+			tok = l.makeToken(ast.TokenSlash, "/")
+			l.readRune()
+		}
 	case '%':
 		switch l.peekRune() {
 		case 'w':
@@ -160,6 +191,11 @@ func (l *lexer) scanToken() ast.Token {
 				tok = l.makeToken(ast.TokenPercent, "%")
 				l.readRune()
 			}
+		case '=':
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenPercentAssign, string(first)+string(l.ch))
+			l.readRune()
 		default:
 			tok = l.makeToken(ast.TokenPercent, "%")
 			l.readRune()
