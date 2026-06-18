@@ -48,6 +48,11 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 			return left
 		}
 
+		if p.peekToken.Type == ast.TokenAmpersand && p.peekPeek.Type == ast.TokenDot {
+			p.recoverUnsupportedSafeNavigation()
+			return left
+		}
+
 		if p.canParseParenlessCall(left, precedence, lineLimited) {
 			p.nextToken()
 			arg := p.parseLineExpression(lowestPrec)
@@ -79,6 +84,43 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 	}
 
 	return left
+}
+
+func (p *parser) recoverUnsupportedSafeNavigation() {
+	start := p.peekToken
+	end := p.peekPeek.End
+	if end == (ast.Position{}) {
+		end = tokenEnd(start)
+	}
+	p.addParseErrorSpan(start.Pos, end, "safe navigation is not supported; use an explicit nil check")
+
+	startLine := start.Pos.Line
+	p.nextToken()
+	p.nextToken()
+	nesting := 0
+	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line == startLine {
+		if nesting == 0 && isSafeNavigationRecoveryStop(p.peekToken.Type) {
+			return
+		}
+		p.nextToken()
+		switch p.curToken.Type {
+		case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
+			nesting++
+		case ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
+			if nesting > 0 {
+				nesting--
+			}
+		}
+	}
+}
+
+func isSafeNavigationRecoveryStop(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TokenComma, ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, lineLimited bool) bool {
