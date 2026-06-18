@@ -49,16 +49,24 @@ func arrayMemberGrouping(property string) (Value, error) {
 			arr := receiver.Array()
 			out := make([]Value, len(arr))
 			copy(out, arr)
+			var runner *blockCallRunner
+			if valueBlock(block) != nil {
+				var err error
+				runner, err = newBlockCallRunner(exec, block, "array.sort")
+				if err != nil {
+					return NewNil(), err
+				}
+			}
 			var comparatorArgs [2]Value
 			var sortErr error
 			sort.SliceStable(out, func(i, j int) bool {
 				if sortErr != nil {
 					return false
 				}
-				if valueBlock(block) != nil {
+				if runner != nil {
 					comparatorArgs[0] = out[i]
 					comparatorArgs[1] = out[j]
-					cmpValue, err := exec.CallBlock(block, comparatorArgs[:])
+					cmpValue, err := runner.call(comparatorArgs[:])
 					if err != nil {
 						sortErr = err
 						return false
@@ -87,7 +95,8 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.sort_by does not take arguments")
 			}
-			if err := ensureBlock(block, "array.sort_by"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.sort_by")
+			if err != nil {
 				return NewNil(), err
 			}
 			type itemWithSortKey struct {
@@ -100,7 +109,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			var blockArg [1]Value
 			for i, item := range arr {
 				blockArg[0] = item
-				sortKey, err := exec.CallBlock(block, blockArg[:])
+				sortKey, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -135,7 +144,8 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.partition does not take arguments")
 			}
-			if err := ensureBlock(block, "array.partition"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.partition")
+			if err != nil {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
@@ -145,7 +155,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
-				match, err := exec.CallBlock(block, blockArg[:])
+				match, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -162,7 +172,8 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.group_by does not take arguments")
 			}
-			if err := ensureBlock(block, "array.group_by"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.group_by")
+			if err != nil {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
@@ -170,7 +181,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
-				groupValue, err := exec.CallBlock(block, blockArg[:])
+				groupValue, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -191,7 +202,8 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.group_by_stable does not take arguments")
 			}
-			if err := ensureBlock(block, "array.group_by_stable"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.group_by_stable")
+			if err != nil {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
@@ -202,7 +214,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
-				groupValue, err := exec.CallBlock(block, blockArg[:])
+				groupValue, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -237,12 +249,19 @@ func arrayMemberGrouping(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.tally values must be symbol or string")
 			}
 			counts := make(map[string]int64, initialCapacity)
+			var runner *blockCallRunner
+			if hasBlock {
+				runner, err = newBlockCallRunner(exec, block, "array.tally")
+				if err != nil {
+					return NewNil(), err
+				}
+			}
 			var blockArg [1]Value
 			for _, item := range arr {
 				keyValue := item
 				if hasBlock {
 					blockArg[0] = item
-					mapped, err := exec.CallBlock(block, blockArg[:])
+					mapped, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}
@@ -338,13 +357,14 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "each":
 		return NewAutoBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if err := ensureBlock(block, "array.each"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.each")
+			if err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
 				blockArg[0] = item
-				if _, err := exec.CallBlock(block, blockArg[:]); err != nil {
+				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -352,7 +372,8 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "map":
 		return NewAutoBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if err := ensureBlock(block, "array.map"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.map")
+			if err != nil {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
@@ -360,7 +381,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			var blockArg [1]Value
 			for i, item := range arr {
 				blockArg[0] = item
-				val, err := exec.CallBlock(block, blockArg[:])
+				val, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -370,7 +391,8 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "select":
 		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if err := ensureBlock(block, "array.select"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.select")
+			if err != nil {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
@@ -378,7 +400,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
-				val, err := exec.CallBlock(block, blockArg[:])
+				val, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -393,13 +415,14 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.find does not take arguments")
 			}
-			if err := ensureBlock(block, "array.find"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.find")
+			if err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
 				blockArg[0] = item
-				match, err := exec.CallBlock(block, blockArg[:])
+				match, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -414,13 +437,14 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.find_index does not take arguments")
 			}
-			if err := ensureBlock(block, "array.find_index"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.find_index")
+			if err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
 			for idx, item := range receiver.Array() {
 				blockArg[0] = item
-				match, err := exec.CallBlock(block, blockArg[:])
+				match, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -432,7 +456,8 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "reduce":
 		return NewAutoBuiltin("array.reduce", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if err := ensureBlock(block, "array.reduce"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "array.reduce")
+			if err != nil {
 				return NewNil(), err
 			}
 			if len(args) > 1 {
@@ -454,7 +479,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			for i := start; i < len(arr); i++ {
 				blockArgs[0] = acc
 				blockArgs[1] = arr[i]
-				next, err := exec.CallBlock(block, blockArgs[:])
+				next, err := runner.call(blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -570,11 +595,15 @@ func arrayMemberQuery(property string) (Value, error) {
 			if valueBlock(block) == nil {
 				return NewInt(int64(len(arr))), nil
 			}
+			runner, err := newBlockCallRunner(exec, block, "array.count")
+			if err != nil {
+				return NewNil(), err
+			}
 			total := int64(0)
 			var blockArg [1]Value
 			for _, item := range arr {
 				blockArg[0] = item
-				include, err := exec.CallBlock(block, blockArg[:])
+				include, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -589,11 +618,19 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.any? does not take arguments")
 			}
+			var runner *blockCallRunner
+			if valueBlock(block) != nil {
+				var err error
+				runner, err = newBlockCallRunner(exec, block, "array.any?")
+				if err != nil {
+					return NewNil(), err
+				}
+			}
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
-				if valueBlock(block) != nil {
+				if runner != nil {
 					blockArg[0] = item
-					val, err := exec.CallBlock(block, blockArg[:])
+					val, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}
@@ -613,11 +650,19 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.all? does not take arguments")
 			}
+			var runner *blockCallRunner
+			if valueBlock(block) != nil {
+				var err error
+				runner, err = newBlockCallRunner(exec, block, "array.all?")
+				if err != nil {
+					return NewNil(), err
+				}
+			}
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
-				if valueBlock(block) != nil {
+				if runner != nil {
 					blockArg[0] = item
-					val, err := exec.CallBlock(block, blockArg[:])
+					val, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}
@@ -637,11 +682,19 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.none? does not take arguments")
 			}
+			var runner *blockCallRunner
+			if valueBlock(block) != nil {
+				var err error
+				runner, err = newBlockCallRunner(exec, block, "array.none?")
+				if err != nil {
+					return NewNil(), err
+				}
+			}
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
-				if valueBlock(block) != nil {
+				if runner != nil {
 					blockArg[0] = item
-					val, err := exec.CallBlock(block, blockArg[:])
+					val, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}

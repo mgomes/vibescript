@@ -229,7 +229,8 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each does not take arguments")
 			}
-			if err := ensureBlock(block, "hash.each"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "hash.each")
+			if err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -238,7 +239,7 @@ func hashMemberQuery(property string) (Value, error) {
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
-				if _, err := exec.CallBlock(block, blockArgs[:]); err != nil {
+				if _, err := runner.call(blockArgs[:]); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -249,7 +250,8 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_key does not take arguments")
 			}
-			if err := ensureBlock(block, "hash.each_key"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "hash.each_key")
+			if err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -257,7 +259,7 @@ func hashMemberQuery(property string) (Value, error) {
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				blockArg[0] = NewSymbol(key)
-				if _, err := exec.CallBlock(block, blockArg[:]); err != nil {
+				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -268,7 +270,8 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_value does not take arguments")
 			}
-			if err := ensureBlock(block, "hash.each_value"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "hash.each_value")
+			if err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -276,7 +279,7 @@ func hashMemberQuery(property string) (Value, error) {
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				blockArg[0] = entries[key]
-				if _, err := exec.CallBlock(block, blockArg[:]); err != nil {
+				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -341,7 +344,8 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.select does not take arguments")
 			}
-			if err := ensureBlock(block, "hash.select"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "hash.select")
+			if err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -351,7 +355,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
-				include, err := exec.CallBlock(block, blockArgs[:])
+				include, err := runner.call(blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -366,7 +370,8 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.reject does not take arguments")
 			}
-			if err := ensureBlock(block, "hash.reject"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "hash.reject")
+			if err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -376,7 +381,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
-				exclude, err := exec.CallBlock(block, blockArgs[:])
+				exclude, err := runner.call(blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -391,7 +396,8 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_keys does not take arguments")
 			}
-			if err := ensureBlock(block, "hash.transform_keys"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "hash.transform_keys")
+			if err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -400,7 +406,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				blockArg[0] = NewSymbol(key)
-				nextKey, err := exec.CallBlock(block, blockArg[:])
+				nextKey, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -450,7 +456,8 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_values does not take arguments")
 			}
-			if err := ensureBlock(block, "hash.transform_values"); err != nil {
+			runner, err := newBlockCallRunner(exec, block, "hash.transform_values")
+			if err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -459,7 +466,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				blockArg[0] = entries[key]
-				nextValue, err := exec.CallBlock(block, blockArg[:])
+				nextValue, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}

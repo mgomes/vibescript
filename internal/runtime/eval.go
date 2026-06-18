@@ -463,6 +463,32 @@ func ensureBlock(block Value, name string) error {
 	return nil
 }
 
+type blockCallRunner struct {
+	exec *Execution
+	blk  *Block
+	env  *Env
+}
+
+func newBlockCallRunner(exec *Execution, block Value, name string) (*blockCallRunner, error) {
+	if err := ensureBlock(block, name); err != nil {
+		return nil, err
+	}
+	blk := valueBlock(block)
+	runner := &blockCallRunner{exec: exec, blk: blk}
+	if blockCanReuseEnv(blk) {
+		runner.env = newEnv(blk.Env)
+	}
+	return runner, nil
+}
+
+func (runner *blockCallRunner) call(args []Value) (Value, error) {
+	if runner.env == nil {
+		return runner.exec.callBlock(runner.blk, args, newEnv(runner.blk.Env))
+	}
+	runner.env.resetForBlockCall(runner.blk.Env)
+	return runner.exec.callBlock(runner.blk, args, runner.env)
+}
+
 // CallBlock invokes a block value with the provided arguments.
 // This is the public entry point for capability adapters that need to
 // call user-supplied blocks (e.g. db.each, db.tx).
@@ -471,6 +497,10 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		return NewNil(), err
 	}
 	blk := valueBlock(block)
+	return exec.callBlock(blk, args, newEnv(blk.Env))
+}
+
+func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env) (Value, error) {
 	exec.pushModuleContext(moduleContext{
 		key:    blk.moduleKey,
 		path:   blk.modulePath,
@@ -479,7 +509,6 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	})
 	defer exec.popModuleContext()
 
-	blockEnv := newEnv(blk.Env)
 	for i, param := range blk.Params {
 		var val Value
 		if i < len(args) {
@@ -514,6 +543,168 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		return blockEnv.detachArrayAppendResult(val), nil
 	}
 	return blockEnv.detachArrayAppendResult(val), nil
+}
+
+func blockCanReuseEnv(blk *Block) bool {
+	return !statementsCaptureCurrentEnv(blk.Body)
+}
+
+func statementsCaptureCurrentEnv(stmts []Statement) bool {
+	for _, stmt := range stmts {
+		if statementCapturesCurrentEnv(stmt) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementCapturesCurrentEnv(stmt Statement) bool {
+	switch s := stmt.(type) {
+	case *FunctionStmt, *ClassStmt:
+		return true
+	case *ReturnStmt:
+		return expressionCapturesCurrentEnv(s.Value)
+	case *RaiseStmt:
+		return expressionCapturesCurrentEnv(s.Value)
+	case *AssignStmt:
+		return expressionCapturesCurrentEnv(s.Target) || expressionCapturesCurrentEnv(s.Value)
+	case *ExprStmt:
+		return expressionCapturesCurrentEnv(s.Expr)
+	case *IfStmt:
+		if expressionCapturesCurrentEnv(s.Condition) ||
+			statementsCaptureCurrentEnv(s.Consequent) ||
+			statementsCaptureCurrentEnv(s.Alternate) {
+			return true
+		}
+		for _, branch := range s.ElseIf {
+			if statementCapturesCurrentEnv(branch) {
+				return true
+			}
+		}
+		return false
+	case *ForStmt:
+		return expressionCapturesCurrentEnv(s.Iterable) || statementsCaptureCurrentEnv(s.Body)
+	case *WhileStmt:
+		return expressionCapturesCurrentEnv(s.Condition) || statementsCaptureCurrentEnv(s.Body)
+	case *UntilStmt:
+		return expressionCapturesCurrentEnv(s.Condition) || statementsCaptureCurrentEnv(s.Body)
+	case *BreakStmt, *NextStmt, *EnumStmt:
+		return false
+	case *TryStmt:
+		return statementsCaptureCurrentEnv(s.Body) ||
+			statementsCaptureCurrentEnv(s.Rescue) ||
+			statementsCaptureCurrentEnv(s.Else) ||
+			statementsCaptureCurrentEnv(s.Ensure)
+	default:
+		return true
+	}
+}
+
+func expressionCapturesCurrentEnv(expr Expression) bool {
+	switch e := expr.(type) {
+	case nil:
+		return false
+	case *BlockLiteral:
+		return true
+	case *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
+		return false
+	case *ArrayLiteral:
+		for _, elem := range e.Elements {
+			if expressionCapturesCurrentEnv(elem) {
+				return true
+			}
+		}
+		return false
+	case *HashLiteral:
+		for _, pair := range e.Pairs {
+			if expressionCapturesCurrentEnv(pair.Key) || expressionCapturesCurrentEnv(pair.Value) {
+				return true
+			}
+		}
+		return false
+	case *CallExpr:
+		if expressionCapturesCurrentEnv(e.Callee) || e.Block != nil {
+			return true
+		}
+		for _, arg := range e.Args {
+			if expressionCapturesCurrentEnv(arg) {
+				return true
+			}
+		}
+		for _, kw := range e.KwArgs {
+			if expressionCapturesCurrentEnv(kw.Value) {
+				return true
+			}
+		}
+		return false
+	case *MemberExpr:
+		return expressionCapturesCurrentEnv(e.Object)
+	case *ScopeExpr:
+		return expressionCapturesCurrentEnv(e.Object)
+	case *IndexExpr:
+		return expressionCapturesCurrentEnv(e.Object) || expressionCapturesCurrentEnv(e.Index)
+	case *DestructureTarget:
+		for _, elem := range e.Elements {
+			if expressionCapturesCurrentEnv(elem.Target) {
+				return true
+			}
+		}
+		return false
+	case *UnaryExpr:
+		return expressionCapturesCurrentEnv(e.Right)
+	case *BinaryExpr:
+		return expressionCapturesCurrentEnv(e.Left) || expressionCapturesCurrentEnv(e.Right)
+	case *ConditionalExpr:
+		return expressionCapturesCurrentEnv(e.Condition) ||
+			expressionCapturesCurrentEnv(e.Consequent) ||
+			expressionCapturesCurrentEnv(e.Alternate)
+	case *IfExpr:
+		if expressionCapturesCurrentEnv(e.Condition) ||
+			expressionCapturesCurrentEnv(e.Consequent) ||
+			expressionCapturesCurrentEnv(e.Alternate) {
+			return true
+		}
+		for _, branch := range e.ElseIf {
+			if expressionCapturesCurrentEnv(branch.Condition) || expressionCapturesCurrentEnv(branch.Result) {
+				return true
+			}
+		}
+		return false
+	case *RangeExpr:
+		return expressionCapturesCurrentEnv(e.Start) || expressionCapturesCurrentEnv(e.End)
+	case *CaseExpr:
+		if expressionCapturesCurrentEnv(e.Target) || expressionCapturesCurrentEnv(e.ElseExpr) {
+			return true
+		}
+		for _, clause := range e.Clauses {
+			for _, value := range clause.Values {
+				if expressionCapturesCurrentEnv(value) {
+					return true
+				}
+			}
+			if expressionCapturesCurrentEnv(clause.Result) {
+				return true
+			}
+		}
+		return false
+	case *YieldExpr:
+		for _, arg := range e.Args {
+			if expressionCapturesCurrentEnv(arg) {
+				return true
+			}
+		}
+		return false
+	case *InterpolatedString:
+		for _, part := range e.Parts {
+			stringExpr, ok := part.(StringExpr)
+			if ok && expressionCapturesCurrentEnv(stringExpr.Expr) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
 }
 
 func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value) error {
