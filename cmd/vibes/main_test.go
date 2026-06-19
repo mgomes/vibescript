@@ -418,6 +418,36 @@ end`,
 			wantErr: "analysis found 1 issue(s)",
 		},
 		{
+			name: "unreachable_inside_begin_else",
+			script: `def run()
+  begin
+    1
+  rescue
+    2
+  else
+    return 3
+    4
+  end
+end`,
+			wantOut: []string{"unreachable statement"},
+			wantErr: "analysis found 1 issue(s)",
+		},
+		{
+			name: "unreachable_after_terminating_begin_rescue_else",
+			script: `def run()
+  begin
+    1
+  rescue
+    return 2
+  else
+    return 3
+  end
+  4
+end`,
+			wantOut: []string{"unreachable statement"},
+			wantErr: "analysis found 1 issue(s)",
+		},
+		{
 			name: "unreachable_statements_in_class_methods",
 			script: `class Reporter
   def instance_path()

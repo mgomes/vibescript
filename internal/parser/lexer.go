@@ -29,7 +29,8 @@ type lexer struct {
 	prevLine   int
 	prevColumn int
 
-	ch rune
+	ch        rune
+	lastToken ast.Token
 }
 
 func newLexer(input string) *lexer {
@@ -89,6 +90,7 @@ func (l *lexer) NextToken() ast.Token {
 	tok := l.scanToken()
 	if tok.Type != ast.TokenEOF {
 		tok.End = ast.Position{Line: l.prevLine, Column: l.prevColumn + 1}
+		l.lastToken = tok
 	}
 	return tok
 }
@@ -164,7 +166,7 @@ func (l *lexer) scanToken() ast.Token {
 	case '%':
 		switch l.peekRune() {
 		case 'w':
-			if isPercentLiteralDelimiter(l.peekRuneN(1)) {
+			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral()
 				if err != "" {
 					tok.Type = ast.TokenIllegal
@@ -178,7 +180,7 @@ func (l *lexer) scanToken() ast.Token {
 				l.readRune()
 			}
 		case 'i':
-			if isPercentLiteralDelimiter(l.peekRuneN(1)) {
+			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral()
 				if err != "" {
 					tok.Type = ast.TokenIllegal
@@ -681,6 +683,30 @@ func (l *lexer) readPercentArrayLiteral() ([]string, string) {
 
 func isPercentLiteralDelimiter(r rune) bool {
 	return r != 0 && !unicode.IsSpace(r) && !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+}
+
+func (l *lexer) canStartPercentArrayLiteral() bool {
+	start := l.currentOffset()
+	if start == 0 {
+		return true
+	}
+	prev, _ := utf8.DecodeLastRuneInString(l.input[:start])
+	if unicode.IsSpace(prev) {
+		return true
+	}
+	return !canEndExpressionToken(l.lastToken.Type)
+}
+
+func canEndExpressionToken(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TokenIdent, ast.TokenInt, ast.TokenFloat, ast.TokenString, ast.TokenInterpolatedString,
+		ast.TokenSymbol, ast.TokenWords, ast.TokenSymbols, ast.TokenTrue, ast.TokenFalse, ast.TokenNil,
+		ast.TokenSelf, ast.TokenIvar, ast.TokenClassVar, ast.TokenRParen, ast.TokenRBracket,
+		ast.TokenRBrace, ast.TokenEnd:
+		return true
+	default:
+		return false
+	}
 }
 
 func percentLiteralClose(open rune) (rune, bool) {

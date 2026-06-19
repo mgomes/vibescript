@@ -147,3 +147,63 @@ end`
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestParserModuloBeforeIndexedOrCalledWIIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name: "indexed_w",
+			source: `def run
+  total%w[0]
+end`,
+			wantExpr: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "total"},
+				Operator: ast.TokenPercent,
+				Right: &ast.IndexExpr{
+					Object: &ast.Identifier{Name: "w"},
+					Index:  &ast.IntegerLiteral{Value: 0},
+				},
+			},
+		},
+		{
+			name: "called_i",
+			source: `def run
+  total%i(0)
+end`,
+			wantExpr: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "total"},
+				Operator: ast.TokenPercent,
+				Right: &ast.CallExpr{
+					Callee: &ast.Identifier{Name: "i"},
+					Args: []ast.Expression{
+						&ast.IntegerLiteral{Value: 0},
+					},
+					KwArgs: []ast.KeywordArg{},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: tc.wantExpr},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
