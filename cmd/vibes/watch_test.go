@@ -229,6 +229,35 @@ func TestWatchNotifierWatchesSymlinkedRoot(t *testing.T) {
 	}
 }
 
+func TestSnapshotWatchTargetsWalksSymlinkedModuleRoot(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	realRoot := filepath.Join(parent, "real")
+	if err := os.Mkdir(realRoot, 0o755); err != nil {
+		t.Fatalf("mkdir real root: %v", err)
+	}
+	linkRoot := filepath.Join(parent, "link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	scriptPath := filepath.Join(parent, "main.vibe")
+	writeScriptFile(t, scriptPath, "def run()\n  nil\nend\n")
+	helperPath := filepath.Join(realRoot, "helper.vibe")
+	writeScriptFile(t, helperPath, "def helper()\n  1\nend\n")
+
+	snapshot := snapshotWatchTargets(runInvocation{scriptPath: scriptPath, moduleDirs: []string{linkRoot}})
+	resolvedHelper := filepath.Join(resolveWatchPath(realRoot), "helper.vibe")
+	if _, ok := snapshot[resolvedHelper]; !ok {
+		t.Fatalf("snapshot = %v, want helper under resolved root %s", snapshot, resolvedHelper)
+	}
+
+	writeScriptFile(t, helperPath, "def helper()\n  2\nend\n")
+	if !watchKnownSnapshotChanged(snapshot) {
+		t.Fatal("edited file under symlinked module root did not report a known-file change")
+	}
+}
+
 func TestSnapshotWatchTargetsStampsVibeFilesRecursively(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -250,10 +279,10 @@ func TestSnapshotWatchTargetsStampsVibeFilesRecursively(t *testing.T) {
 	snapshot := snapshotWatchTargets(inv)
 
 	want := map[string]bool{
-		scriptPath:                                          true,
-		filepath.Join(dir, "helper.vibe"):                   true,
-		filepath.Join(dir, "billing", "fees.vibe"):          true,
-		filepath.Join(dir, "billing", "deep", "rates.vibe"): true,
+		resolveWatchPath(scriptPath):                                          true,
+		filepath.Join(resolveWatchPath(dir), "helper.vibe"):                   true,
+		filepath.Join(resolveWatchPath(dir), "billing", "fees.vibe"):          true,
+		filepath.Join(resolveWatchPath(dir), "billing", "deep", "rates.vibe"): true,
 	}
 	if len(snapshot) != len(want) {
 		t.Fatalf("snapshot has %d entries (%v), want %d", len(snapshot), snapshot, len(want))

@@ -145,9 +145,9 @@ func snapshotWatchTargets(inv runInvocation) watchSnapshot {
 		snapshot[path] = stampWatchTarget(path)
 	}
 
-	stamp(inv.scriptPath)
+	stamp(resolveWatchPath(inv.scriptPath))
 	for _, dir := range inv.moduleDirs {
-		_ = filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		_ = filepath.WalkDir(resolveWatchPath(dir), func(path string, entry os.DirEntry, err error) error {
 			if err != nil || entry.IsDir() || filepath.Ext(entry.Name()) != ".vibe" {
 				return nil
 			}
@@ -235,16 +235,21 @@ func (n *watchNotifier) Close() error {
 }
 
 func (n *watchNotifier) watchTree(root string) error {
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err == nil {
-		root = resolvedRoot
-	}
+	root = resolveWatchPath(root)
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || !entry.IsDir() {
 			return nil
 		}
 		return n.watchDir(path)
 	})
+}
+
+func resolveWatchPath(path string) string {
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(resolvedPath)
+	}
+	return filepath.Clean(path)
 }
 
 func (n *watchNotifier) watchDir(path string) error {
