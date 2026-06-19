@@ -238,3 +238,66 @@ end`,
 		})
 	}
 }
+
+func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name: "word_array",
+			source: `def run
+  collect %w[alpha beta]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.StringLiteral{Value: "alpha"},
+						&ast.StringLiteral{Value: "beta"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "symbol_array_member_call",
+			source: `def run
+  logger.info %i[ok]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.MemberExpr{
+					Object:   &ast.Identifier{Name: "logger"},
+					Property: "info",
+				},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.SymbolLiteral{Name: "ok"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: tc.wantExpr},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
