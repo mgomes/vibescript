@@ -78,6 +78,7 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 	out := &ast.Program{Statements: make([]ast.Statement, 0, len(program.Statements)+1)}
 	body := make([]ast.Statement, 0)
 	deferredClassBodies := make(map[string]struct{})
+	hasExecutableTopLevel := snippetHasExecutableTopLevel(program)
 	pos := Position{Line: 1, Column: 1}
 	for _, stmt := range program.Statements {
 		switch typed := stmt.(type) {
@@ -85,7 +86,7 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 			out.Statements = append(out.Statements, typed)
 		case *ClassStmt:
 			out.Statements = append(out.Statements, typed)
-			if len(typed.Body) > 0 {
+			if len(typed.Body) > 0 && hasExecutableTopLevel {
 				if len(body) == 0 {
 					pos = typed.Pos()
 				}
@@ -104,6 +105,18 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Pro
 		deferredClassBodies = nil
 	}
 	return out, deferredClassBodies
+}
+
+func snippetHasExecutableTopLevel(program *ast.Program) bool {
+	for _, stmt := range program.Statements {
+		switch stmt.(type) {
+		case *FunctionStmt, *ClassStmt, *EnumStmt:
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func compileParsed(e *Engine, source string, program *ast.Program) (*Script, error) {
