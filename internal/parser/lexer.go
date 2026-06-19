@@ -723,9 +723,24 @@ func (l *lexer) percentArrayLiteralLooksLikeArgument() bool {
 	if len(entries) != 1 {
 		return true
 	}
-	return strings.ContainsFunc(raw, func(r rune) bool {
+	if strings.ContainsFunc(raw, func(r rune) bool {
 		return unicode.IsSpace(r) || r == '\\'
-	})
+	}) {
+		return true
+	}
+	return !isCompactNumericPercentArrayEntry(entries[0])
+}
+
+func isCompactNumericPercentArrayEntry(entry string) bool {
+	if entry == "" {
+		return false
+	}
+	for _, r := range entry {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func (l *lexer) peekPercentArrayLiteralEntries() ([]string, string, bool) {

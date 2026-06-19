@@ -248,7 +248,7 @@ func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
 		wantExpr ast.Expression
 	}{
 		{
-			name: "word_array",
+			name: "multi_word_array",
 			source: `def run
   collect %w[alpha beta]
 end`,
@@ -258,6 +258,36 @@ end`,
 					&ast.ArrayLiteral{Elements: []ast.Expression{
 						&ast.StringLiteral{Value: "alpha"},
 						&ast.StringLiteral{Value: "beta"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "single_word_array",
+			source: `def run
+  collect %w[ok]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.StringLiteral{Value: "ok"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "single_symbol_array",
+			source: `def run
+  collect %i[ok]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.SymbolLiteral{Name: "ok"},
 					}},
 				},
 				KwArgs: []ast.KeywordArg{},
