@@ -329,6 +329,7 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 		var ok bool
 		rescueTy, rescueBinding, ok = p.parseRescueClause(rescuePos)
 		if !ok {
+			p.recoverToBlockEnd()
 			return nil
 		}
 		p.nextToken()
@@ -379,6 +380,7 @@ func (p *parser) parseRescueClause(rescuePos ast.Position) (*ast.TypeExpr, strin
 			return nil, "", false
 		}
 		if !p.validateRescueTypeExpr(rescueTy, rescuePos) {
+			p.recoverRescueHeaderRemainder(rescuePos.Line)
 			return nil, "", false
 		}
 		if !p.expectPeek(ast.TokenRParen) {
@@ -391,11 +393,13 @@ func (p *parser) parseRescueClause(rescuePos ast.Position) (*ast.TypeExpr, strin
 			return nil, "", false
 		}
 		if !p.validateRescueTypeExpr(rescueTy, rescuePos) {
+			p.recoverRescueHeaderRemainder(rescuePos.Line)
 			return nil, "", false
 		}
 	case ast.TokenArrow:
 	case ast.TokenThinArrow:
 		p.addParseError(p.peekToken.Pos, "rescue binding must use =>")
+		p.recoverRescueHeaderRemainder(rescuePos.Line)
 		return nil, "", false
 	default:
 		return nil, "", true
@@ -404,6 +408,7 @@ func (p *parser) parseRescueClause(rescuePos ast.Position) (*ast.TypeExpr, strin
 	binding := ""
 	if p.peekToken.Type == ast.TokenThinArrow && p.peekToken.Pos.Line == rescuePos.Line {
 		p.addParseError(p.peekToken.Pos, "rescue binding must use =>")
+		p.recoverRescueHeaderRemainder(rescuePos.Line)
 		return nil, "", false
 	}
 	if p.peekToken.Type == ast.TokenArrow && p.peekToken.Pos.Line == rescuePos.Line {
@@ -420,10 +425,36 @@ func (p *parser) parseRescueBinding() (string, bool) {
 	p.nextToken()
 	if p.peekToken.Type != ast.TokenIdent {
 		p.addParseError(p.peekToken.Pos, "rescue binding must be an identifier")
+		p.recoverRescueHeaderRemainder(p.curToken.Pos.Line)
 		return "", false
 	}
 	p.nextToken()
 	return p.curToken.Literal, true
+}
+
+func (p *parser) recoverRescueHeaderRemainder(line int) {
+	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line == line && p.peekToken.Type != ast.TokenSemicolon {
+		p.nextToken()
+	}
+}
+
+func (p *parser) recoverToBlockEnd() {
+	depth := 0
+	for p.curToken.Type != ast.TokenEOF {
+		if p.curToken.Type == ast.TokenEnd && depth == 0 {
+			return
+		}
+		p.nextToken()
+		switch p.curToken.Type {
+		case ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenBegin, ast.TokenIf, ast.TokenUnless, ast.TokenFor, ast.TokenWhile, ast.TokenUntil, ast.TokenCase:
+			depth++
+		case ast.TokenEnd:
+			if depth == 0 {
+				return
+			}
+			depth--
+		}
+	}
 }
 
 func (p *parser) validateRescueTypeExpr(ty *ast.TypeExpr, pos ast.Position) bool {

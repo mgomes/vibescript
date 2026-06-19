@@ -924,6 +924,7 @@ func (p *parser) parseHashRocketPair() ast.HashPair {
 	}
 	if p.peekToken.Type != ast.TokenArrow {
 		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
+		p.recoverHashPairRemainder()
 		return ast.HashPair{}
 	}
 	p.nextToken()
@@ -954,6 +955,24 @@ func hashKeyName(key ast.Expression) string {
 		return k.Value
 	default:
 		return "unknown"
+	}
+}
+
+func (p *parser) recoverHashPairRemainder() {
+	nesting := 0
+	for p.peekToken.Type != ast.TokenEOF {
+		if nesting == 0 && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRBrace) {
+			return
+		}
+		p.nextToken()
+		switch p.curToken.Type {
+		case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
+			nesting++
+		case ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
+			if nesting > 0 {
+				nesting--
+			}
+		}
 	}
 }
 

@@ -128,8 +128,8 @@ func TestParserHashRocketsRequireFatArrow(t *testing.T) {
 end`
 
 	_, errs := parseSource(t, source)
-	if len(errs) == 0 {
-		t.Fatalf("parseSource(%q) errors = none, want hash rocket diagnostic", source)
+	if len(errs) != 1 {
+		t.Fatalf("parseSource(%q) errors = %d, want 1 hash rocket diagnostic: %v", source, len(errs), errs)
 	}
 	if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
 		t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
