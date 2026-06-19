@@ -394,11 +394,18 @@ func (p *parser) parseRescueClause(rescuePos ast.Position) (*ast.TypeExpr, strin
 			return nil, "", false
 		}
 	case ast.TokenArrow:
+	case ast.TokenThinArrow:
+		p.addParseError(p.peekToken.Pos, "rescue binding must use =>")
+		return nil, "", false
 	default:
 		return nil, "", true
 	}
 
 	binding := ""
+	if p.peekToken.Type == ast.TokenThinArrow && p.peekToken.Pos.Line == rescuePos.Line {
+		p.addParseError(p.peekToken.Pos, "rescue binding must use =>")
+		return nil, "", false
+	}
 	if p.peekToken.Type == ast.TokenArrow && p.peekToken.Pos.Line == rescuePos.Line {
 		var ok bool
 		binding, ok = p.parseRescueBinding()
@@ -493,7 +500,7 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		params = p.parseParamsWithOptions(paramParseOptions{lineLimitedDefaults: true})
 		p.nextToken()
 	}
-	if p.curToken.Type == ast.TokenArrow {
+	if p.curToken.Type == ast.TokenThinArrow {
 		p.nextToken()
 		returnTy = p.parseTypeExpr()
 		if returnTy == nil {
@@ -838,7 +845,7 @@ func (p *parser) peekEndsRequiredKeywordParam(options paramParseOptions) bool {
 	switch p.peekToken.Type {
 	case ast.TokenComma, ast.TokenRParen:
 		return true
-	case ast.TokenArrow, ast.TokenSemicolon, ast.TokenEOF:
+	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
 		return options.lineLimitedDefaults
 	default:
 		return options.lineLimitedDefaults && p.peekToken.Pos.Line != p.curToken.Pos.Line

@@ -211,6 +211,28 @@ end`,
 end`,
 			want: "rescue binding must be an identifier",
 		},
+		{
+			name: "thin_arrow_binding",
+			source: `def run
+  begin
+    raise("boom")
+  rescue RuntimeError -> err
+    "rescued"
+  end
+end`,
+			want: "rescue binding must use =>",
+		},
+		{
+			name: "bare_thin_arrow_binding",
+			source: `def run
+  begin
+    raise("boom")
+  rescue -> err
+    "rescued"
+  end
+end`,
+			want: "rescue binding must use =>",
+		},
 	}
 
 	for _, tt := range tests {

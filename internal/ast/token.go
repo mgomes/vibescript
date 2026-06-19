@@ -77,6 +77,7 @@ const (
 	TokenRBracket  TokenType = "]"
 	TokenPipe      TokenType = "|"
 	TokenArrow     TokenType = "=>"
+	TokenThinArrow TokenType = "->"
 	TokenIvar      TokenType = "IVAR"
 	TokenClassVar  TokenType = "CLASSVAR"
 

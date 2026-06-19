@@ -103,3 +103,20 @@ end`
 		})
 	}
 }
+
+func TestParserRejectsEndlessRangeBeforeNextStatement(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  1..
+  next_value
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) != 1 {
+		t.Fatalf("parseSource(%q) errors = %d, want 1: %v", source, len(errs), errs)
+	}
+	if got, want := errs[0].Error(), "range is missing end expression"; !strings.Contains(got, want) {
+		t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+	}
+}

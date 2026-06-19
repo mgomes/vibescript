@@ -140,3 +140,28 @@ end`
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestParserYieldWithParensAcceptsTrailingComma(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  yield(first, second,)
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.YieldExpr{
+			Args: []ast.Expression{
+				&ast.Identifier{Name: "first"},
+				&ast.Identifier{Name: "second"},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}

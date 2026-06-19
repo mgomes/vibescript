@@ -43,6 +43,14 @@ end`,
   user&.name = "Ada"
 end`,
 		},
+		{
+			name: "wrapped_method_call",
+			source: `def run
+  user&.
+    profile("public")
+  "fallback"
+end`,
+		},
 	}
 	for _, tc := range cases {
 		tc := tc

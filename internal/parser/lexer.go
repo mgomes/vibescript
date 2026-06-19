@@ -118,7 +118,7 @@ func (l *lexer) scanToken() ast.Token {
 		if l.peekRune() == '>' {
 			first := l.ch
 			l.readRune()
-			tok = l.makeToken(ast.TokenArrow, string(first)+string(l.ch))
+			tok = l.makeToken(ast.TokenThinArrow, string(first)+string(l.ch))
 			l.readRune()
 		} else if l.peekRune() == '=' {
 			first := l.ch

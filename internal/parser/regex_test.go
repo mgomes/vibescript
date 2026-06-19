@@ -39,6 +39,26 @@ end`
 	requireSingleRegexLiteralError(t, source)
 }
 
+func TestParserRejectsRegexLiteralWithSlashInCharacterClass(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  Regex.match(/[a/b]/, text)
+end`
+
+	requireSingleRegexLiteralError(t, source)
+}
+
+func TestParserRejectsRegexLiteralWithFlags(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  Regex.match(/id/i, text)
+end`
+
+	requireSingleRegexLiteralError(t, source)
+}
+
 func requireSingleRegexLiteralError(t *testing.T, source string) {
 	t.Helper()
 

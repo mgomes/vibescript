@@ -124,12 +124,18 @@ func (p *parser) recoverUnsupportedSafeNavigation() {
 	}
 	p.addParseErrorSpan(start.Pos, end, "safe navigation is not supported; use an explicit nil check")
 
-	startLine := start.Pos.Line
 	p.nextToken()
 	p.nextToken()
+	recoveryLine := start.Pos.Line
+	if p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line > recoveryLine {
+		recoveryLine = p.peekToken.Pos.Line
+	}
 	nesting := 0
-	for p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line == startLine {
+	for p.peekToken.Type != ast.TokenEOF {
 		if nesting == 0 && isSafeNavigationRecoveryStop(p.peekToken.Type) {
+			return
+		}
+		if nesting == 0 && p.peekToken.Pos.Line > recoveryLine && !p.lineLimitedContinuationToken(p.peekToken) {
 			return
 		}
 		p.nextToken()
@@ -176,6 +182,8 @@ func isParenlessArgumentStart(tt ast.TokenType) bool {
 	switch tt {
 	case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace, ast.TokenMinus:
 		return false
+	case ast.TokenAmpersand:
+		return true
 	}
 	return prefixParserKind(tt) != prefixParserNone
 }
@@ -216,6 +224,8 @@ func (p *parser) findUnsupportedRegexLiteralClose() ast.Position {
 	}
 
 	escaped := false
+	inCharClass := false
+	closingColumn := 0
 	for i := start.Column; i < len(lineRunes); i++ {
 		r := lineRunes[i]
 		if escaped {
@@ -226,11 +236,34 @@ func (p *parser) findUnsupportedRegexLiteralClose() ast.Position {
 			escaped = true
 			continue
 		}
-		if r == '/' {
-			return ast.Position{Line: start.Line, Column: i + 1}
+		if r == '[' && !inCharClass {
+			inCharClass = true
+			continue
+		}
+		if r == ']' && inCharClass {
+			inCharClass = false
+			continue
+		}
+		if r == '/' && !inCharClass {
+			closingColumn = i + 1
+			break
 		}
 	}
-	return ast.Position{}
+	if closingColumn == 0 {
+		return ast.Position{}
+	}
+	endColumn := closingColumn
+	for i := closingColumn; i < len(lineRunes); i++ {
+		if !isRegexFlagRune(lineRunes[i]) {
+			break
+		}
+		endColumn = i + 1
+	}
+	return ast.Position{Line: start.Line, Column: endColumn}
+}
+
+func isRegexFlagRune(r rune) bool {
+	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
 }
 
 func (p *parser) recoverToPosition(pos ast.Position) {
@@ -429,7 +462,7 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
+	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
 		return true
 	case ast.TokenMinus:
 		return p.minusContinuesLine(tok)
@@ -741,7 +774,7 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 	pos := p.curToken.Pos
 	exclusive := p.curToken.Type == ast.TokenRangeExcl
 	precedence := p.curPrecedence()
-	if prefixParserKind(p.peekToken.Type) == prefixParserNone {
+	if prefixParserKind(p.peekToken.Type) == prefixParserNone || (p.lineLimitedExprs > 0 && p.peekToken.Pos.Line != pos.Line) {
 		p.addParseErrorSpan(pos, tokenEnd(p.curToken), "range is missing end expression")
 		return nil
 	}
@@ -1292,11 +1325,21 @@ func (p *parser) recoverUnsupportedAmpersandCallArgument() {
 
 func (p *parser) recoverUnsupportedCallArgument() {
 	startLine := p.curToken.Pos.Line
+	nesting := 0
 	for p.peekToken.Type != ast.TokenEOF &&
-		p.peekToken.Pos.Line == startLine &&
-		p.peekToken.Type != ast.TokenComma &&
-		p.peekToken.Type != ast.TokenRParen {
+		p.peekToken.Pos.Line == startLine {
+		if nesting == 0 && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRParen) {
+			return
+		}
 		p.nextToken()
+		switch p.curToken.Type {
+		case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
+			nesting++
+		case ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
+			if nesting > 0 {
+				nesting--
+			}
+		}
 	}
 }
 
@@ -1482,6 +1525,9 @@ func (p *parser) parseYieldExpression() ast.Expression {
 			args = append(args, p.parseExpression(lowestPrec))
 			for p.peekToken.Type == ast.TokenComma {
 				p.nextToken()
+				if p.peekToken.Type == ast.TokenRParen {
+					break
+				}
 				p.nextToken()
 				args = append(args, p.parseExpression(lowestPrec))
 			}
