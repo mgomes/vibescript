@@ -398,6 +398,34 @@ end`
 	}
 }
 
+func TestParserQuestionOperatorLineContinuesAcrossNewline(t *testing.T) {
+	t.Parallel()
+	source := `def run(flag)
+  value = flag
+    ? 1
+    : 2
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "value"},
+			Value: &ast.ConditionalExpr{
+				Condition:  &ast.Identifier{Name: "flag"},
+				Consequent: &ast.IntegerLiteral{Value: 1},
+				Alternate:  &ast.IntegerLiteral{Value: 2},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserLineInitialMinusStartsBlockStatement(t *testing.T) {
 	t.Parallel()
 	source := `def run(flag)

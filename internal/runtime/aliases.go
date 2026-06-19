@@ -150,6 +150,7 @@ const (
 	tokenRBracket  = ast.TokenRBracket
 	tokenPipe      = ast.TokenPipe
 	tokenArrow     = ast.TokenArrow
+	tokenThinArrow = ast.TokenThinArrow
 	tokenIvar      = ast.TokenIvar
 	tokenClassVar  = ast.TokenClassVar
 	tokenDef       = ast.TokenDef

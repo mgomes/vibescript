@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -116,5 +117,21 @@ end`
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserHashRocketsRequireFatArrow(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  {:name -> "Ada"}
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) != 1 {
+		t.Fatalf("parseSource(%q) errors = %d, want 1 hash rocket diagnostic: %v", source, len(errs), errs)
+	}
+	if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
+		t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
 	}
 }

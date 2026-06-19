@@ -25,6 +25,13 @@ end`,
   ["a", "b"].map(&:upcase)
 end`,
 		},
+		{
+			name: "parenless_block_forwarding",
+			source: `def run
+  mapper = nil
+  values.map &mapper
+end`,
+		},
 	}
 	for _, tc := range cases {
 		tc := tc

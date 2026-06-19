@@ -211,6 +211,28 @@ end`,
 end`,
 			want: "rescue binding must be an identifier",
 		},
+		{
+			name: "thin_arrow_binding",
+			source: `def run
+  begin
+    raise("boom")
+  rescue RuntimeError -> err
+    "rescued"
+  end
+end`,
+			want: "rescue binding must use =>",
+		},
+		{
+			name: "bare_thin_arrow_binding",
+			source: `def run
+  begin
+    raise("boom")
+  rescue -> err
+    "rescued"
+  end
+end`,
+			want: "rescue binding must use =>",
+		},
 	}
 
 	for _, tt := range tests {
@@ -219,8 +241,8 @@ end`,
 			t.Parallel()
 
 			_, errs := parseSource(t, tt.source)
-			if len(errs) == 0 {
-				t.Fatalf("parseSource(%q) errors = nil, want %q", tt.source, tt.want)
+			if len(errs) != 1 {
+				t.Fatalf("parseSource(%q) errors = %d, want 1 containing %q: %v", tt.source, len(errs), tt.want, errs)
 			}
 			if got := errs[0].Error(); !strings.Contains(got, tt.want) {
 				t.Fatalf("parseSource(%q) error = %q, want substring %q", tt.source, got, tt.want)
