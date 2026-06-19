@@ -311,7 +311,9 @@ func cloneBuiltinValue(val Value) Value {
 		if builtin == nil {
 			return val
 		}
-		return newBuiltin(builtin.Name, builtin.Fn, builtin.AutoInvoke)
+		cloned := newBuiltin(builtin.Name, builtin.Fn, builtin.AutoInvoke)
+		valueBuiltin(cloned).BareKeywordHashTarget = builtin.BareKeywordHashTarget
+		return cloned
 	case KindArray:
 		arr := val.Array()
 		cloned := make([]Value, len(arr))

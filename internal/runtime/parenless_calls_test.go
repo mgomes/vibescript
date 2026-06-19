@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestParenlessSingleArgumentCalls(t *testing.T) {
 	t.Parallel()
@@ -118,4 +121,163 @@ func TestParenlessArgumentListCalls(t *testing.T) {
 	}
 	requireCallErrorContains(t, script, "strict_parenthesized_options", nil, CallOptions{}, "missing argument opts")
 	requireCallErrorContains(t, script, "strict_keyword_signature", nil, CallOptions{}, "missing argument opts")
+}
+
+func TestParenlessBareOptionsRejectLaterPositionals(t *testing.T) {
+	t.Parallel()
+
+	requireCompileErrorContainsDefault(t, `
+    def collect(opts, value)
+      [opts, value]
+    end
+
+    def run
+      collect first: 1, "tail"
+    end
+    `, "positional arguments cannot follow bare keyword arguments in parenless calls")
+}
+
+func TestParenlessBareOptionsForConstructors(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class Person
+      def initialize(opts)
+        @name = opts[:name]
+      end
+
+      def name
+        @name
+      end
+    end
+
+    def call_constructor
+      person = Person.new name: "Ada"
+      person.name
+    end
+
+    def strict_parenthesized_constructor
+      Person.new(name: "Ada")
+    end
+    `)
+
+	if got := callFunc(t, script, "call_constructor", nil); !got.Equal(NewString("Ada")) {
+		t.Fatalf("call_constructor() = %v, want Ada", got)
+	}
+	requireCallErrorContains(t, script, "strict_parenthesized_constructor", nil, CallOptions{}, "missing argument opts")
+}
+
+func TestParenlessBareOptionsForClonedConstructors(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	producer := compileScriptWithEngine(t, engine, `
+    class Person
+      def initialize(opts)
+        @name = opts[:name]
+      end
+
+      def name
+        @name
+      end
+    end
+
+    def export_class
+      Person
+    end
+    `)
+	consumer := compileScriptWithEngine(t, engine, `
+    def call_constructor(ctor)
+      person = ctor name: "Ada"
+      person.name
+    end
+    `)
+
+	classValue, err := producer.Call(context.Background(), "export_class", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("export_class() error = %v", err)
+	}
+	exec := newExecutionForCall(producer, context.Background(), newEnv(nil), CallOptions{})
+	constructor, err := exec.getMember(classValue, "new", Position{})
+	if err != nil {
+		t.Fatalf("getMember(Person, new) error = %v", err)
+	}
+	clonedConstructor := cloneValueForHost(constructor)
+	if clonedConstructor.Kind() != KindBuiltin {
+		t.Fatalf("cloned constructor kind = %s, want builtin", clonedConstructor.Kind())
+	}
+
+	got, err := consumer.Call(context.Background(), "call_constructor", []Value{clonedConstructor}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call_constructor(exported constructor) error = %v", err)
+	}
+	if !got.Equal(NewString("Ada")) {
+		t.Fatalf("call_constructor(exported constructor) = %v, want Ada", got)
+	}
+}
+
+func TestParenlessBareOptionsForMethodWrappers(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	producer := compileScriptWithEngine(t, engine, `
+    class Person
+      def configure(opts)
+        @name = opts[:name]
+        @name
+      end
+
+      def self.configure(opts)
+        @@name = opts[:name]
+        @@name
+      end
+    end
+
+    def export_class
+      Person
+    end
+
+    def export_person
+      Person.new()
+    end
+    `)
+	consumer := compileScriptWithEngine(t, engine, `
+    def call_configure(configure)
+      configure name: "Ada"
+    end
+    `)
+
+	exec := newExecutionForCall(producer, context.Background(), newEnv(nil), CallOptions{})
+
+	instanceValue, err := producer.Call(context.Background(), "export_person", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("export_person() error = %v", err)
+	}
+	instanceConfigure, err := exec.getMember(instanceValue, "configure", Position{})
+	if err != nil {
+		t.Fatalf("getMember(person, configure) error = %v", err)
+	}
+	got, err := consumer.Call(context.Background(), "call_configure", []Value{cloneValueForHost(instanceConfigure)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call_configure(instance configure) error = %v", err)
+	}
+	if !got.Equal(NewString("Ada")) {
+		t.Fatalf("call_configure(instance configure) = %v, want Ada", got)
+	}
+
+	classValue, err := producer.Call(context.Background(), "export_class", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("export_class() error = %v", err)
+	}
+	classConfigure, err := exec.getMember(classValue, "configure", Position{})
+	if err != nil {
+		t.Fatalf("getMember(Person, configure) error = %v", err)
+	}
+	got, err = consumer.Call(context.Background(), "call_configure", []Value{cloneValueForHost(classConfigure)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call_configure(class configure) error = %v", err)
+	}
+	if !got.Equal(NewString("Ada")) {
+		t.Fatalf("call_configure(class configure) = %v, want Ada", got)
+	}
 }

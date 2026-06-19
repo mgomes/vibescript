@@ -612,6 +612,8 @@ type Builtin struct {
 	Name       string
 	Fn         BuiltinFunc
 	AutoInvoke bool
+	// BareKeywordHashTarget receives parenless bare keyword hashes for builtin wrappers around script functions.
+	BareKeywordHashTarget *ScriptFunction
 }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.

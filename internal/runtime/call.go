@@ -605,10 +605,10 @@ func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Valu
 }
 
 func resolveBareKeywordArgs(call *CallExpr, callee Value, args []Value, kwargs map[string]Value) ([]Value, map[string]Value) {
-	if !call.BareKeywordArgs || len(kwargs) == 0 || callee.Kind() != KindFunction {
+	if !call.BareKeywordArgs || len(kwargs) == 0 {
 		return args, kwargs
 	}
-	fn := valueFunction(callee)
+	fn := bareKeywordHashTarget(callee)
 	if fn == nil || !functionCanReceiveBareKeywordHash(fn, len(args), kwargs) {
 		return args, kwargs
 	}
@@ -617,6 +617,21 @@ func resolveBareKeywordArgs(call *CallExpr, callee Value, args []Value, kwargs m
 		hash[name] = val
 	}
 	return append(args, NewHash(hash)), nil
+}
+
+func bareKeywordHashTarget(callee Value) *ScriptFunction {
+	switch callee.Kind() {
+	case KindFunction:
+		return valueFunction(callee)
+	case KindBuiltin:
+		builtin := valueBuiltin(callee)
+		if builtin == nil {
+			return nil
+		}
+		return builtin.BareKeywordHashTarget
+	default:
+		return nil
+	}
 }
 
 func functionCanReceiveBareKeywordHash(fn *ScriptFunction, positionalCount int, kwargs map[string]Value) bool {
