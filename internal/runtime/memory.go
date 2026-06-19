@@ -7,12 +7,12 @@ import (
 )
 
 const (
-	estimatedValueBytes        = 24
+	estimatedValueBytes        = int(unsafe.Sizeof(Value{}))
 	estimatedStringHeaderBytes = 16
 	estimatedSliceBaseBytes    = 24
 	estimatedMapBaseBytes      = 48
 	estimatedMapEntryBytes     = 32
-	estimatedEnvBytes          = 16
+	estimatedEnvBytes          = int(unsafe.Sizeof(Env{}))
 	estimatedInstanceBytes     = 16
 	estimatedBlockBytes        = 24
 	estimatedCallFrameBytes    = 48
@@ -197,7 +197,7 @@ func (est *memoryEstimator) env(env *Env) int {
 			return 0
 		}
 		est.seenFrozen = env
-		return estimatedEnvBytes + estimatedMapBaseBytes + int(env.staticBytes)
+		return estimatedEnvBytes + staticBindingsBytes(env)
 	}
 	if _, seen := est.seenEnvs[env]; seen {
 		return 0
@@ -207,7 +207,10 @@ func (est *memoryEstimator) env(env *Env) int {
 	}
 	est.seenEnvs[env] = struct{}{}
 
-	size := estimatedEnvBytes + estimatedMapBaseBytes + int(env.staticBytes) + env.dynamicLen()*estimatedMapEntryBytes
+	size := estimatedEnvBytes + staticBindingsBytes(env)
+	if env.values != nil {
+		size += estimatedMapBaseBytes + len(env.values)*estimatedMapEntryBytes
+	}
 	if len(env.arrayAppendBuffers) > 0 {
 		size += estimatedMapBaseBytes + len(env.arrayAppendBuffers)*estimatedMapEntryBytes
 		for name, buffer := range env.arrayAppendBuffers {
@@ -215,15 +218,45 @@ func (est *memoryEstimator) env(env *Env) int {
 			size += est.slice(buffer)
 		}
 	}
-	env.rangeDynamicBindings(func(name string, val Value) {
+	for i := range int(env.inlineLen) {
+		binding := env.inline[i]
+		size += len(binding.name)
+		size += est.inlineBindingValue(binding.value)
+	}
+	for name, val := range env.values {
 		size += estimatedStringHeaderBytes + len(name)
-		if _, ok := lazyValue(val); ok {
-			size += estimatedValueBytes
-		} else {
-			size += est.value(val)
-		}
-	})
+		size += est.mapBindingValue(val)
+	}
 	size += est.env(env.parent)
+	return size
+}
+
+func staticBindingsBytes(env *Env) int {
+	if env.statics == nil {
+		return 0
+	}
+	return estimatedMapBaseBytes + int(env.staticBytes)
+}
+
+func (est *memoryEstimator) inlineBindingValue(val Value) int {
+	if _, ok := lazyValue(val); ok {
+		return 0
+	}
+	return est.valuePayload(val)
+}
+
+func (est *memoryEstimator) mapBindingValue(val Value) int {
+	if _, ok := lazyValue(val); ok {
+		return estimatedValueBytes
+	}
+	return est.value(val)
+}
+
+func (est *memoryEstimator) valuePayload(val Value) int {
+	size := est.value(val) - estimatedValueBytes
+	if size < 0 {
+		return 0
+	}
 	return size
 }
 

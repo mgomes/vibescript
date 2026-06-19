@@ -412,6 +412,9 @@ func (e *Env) dropStatic(name string) {
 	}
 	delete(e.statics, name)
 	e.staticBytes -= int32(staticEntryBytes(name))
+	if len(e.statics) == 0 {
+		e.statics = nil
+	}
 }
 
 func (e *Env) dropArrayAppendBuffer(name string) {

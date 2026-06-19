@@ -686,11 +686,22 @@ func (globals *taskLazyGlobals) hasCurrentBindings() bool {
 	for name := range globals.values {
 		if val, ok := globals.rootValue(name); ok {
 			if _, lazy := lazyValue(val); !lazy {
+				if globals.isUnchangedEagerEnum(name, val) {
+					continue
+				}
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func (globals *taskLazyGlobals) isUnchangedEagerEnum(name string, val Value) bool {
+	source, ok := globals.values[name]
+	if !ok || source.Kind() != KindEnum || val.Kind() != KindEnum {
+		return false
+	}
+	return enumDefsEqual(valueEnum(source), valueEnum(val))
 }
 
 func (globals *taskLazyGlobals) currentValueForFork(name string) Value {

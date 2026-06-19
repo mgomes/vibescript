@@ -3,7 +3,19 @@ package runtime
 import (
 	"strings"
 	"testing"
+	"unsafe"
 )
+
+func TestMemoryEstimatorLayoutConstantsMatchRuntimeTypes(t *testing.T) {
+	t.Parallel()
+
+	if got, want := estimatedValueBytes, int(unsafe.Sizeof(Value{})); got != want {
+		t.Fatalf("estimatedValueBytes = %d, want runtime Value size %d", got, want)
+	}
+	if got, want := estimatedEnvBytes, int(unsafe.Sizeof(Env{})); got != want {
+		t.Fatalf("estimatedEnvBytes = %d, want runtime Env size %d", got, want)
+	}
+}
 
 func TestMemoryEstimatorDeduplicatesAliasedEmptySlices(t *testing.T) {
 	t.Parallel()
@@ -91,6 +103,31 @@ func TestEnvStaticBindingsAccountedWithoutWalk(t *testing.T) {
 	}
 }
 
+func TestEnvInlineBindingsUseEnvStorageInEstimate(t *testing.T) {
+	t.Parallel()
+
+	env := newEnv(nil)
+	emptySize := newMemoryEstimator().env(env)
+	if emptySize != estimatedEnvBytes {
+		t.Fatalf("empty inline env size = %d, want Env layout size %d", emptySize, estimatedEnvBytes)
+	}
+
+	env.Define("count", NewInt(1))
+	inlineSize := newMemoryEstimator().env(env)
+	if env.values != nil {
+		t.Fatalf("single inline binding allocated values map")
+	}
+	if want := estimatedEnvBytes + len("count"); inlineSize != want {
+		t.Fatalf("inline env size = %d, want %d", inlineSize, want)
+	}
+
+	env.Define("name", NewString("Ada"))
+	withPayload := newMemoryEstimator().env(env)
+	if withPayload <= inlineSize {
+		t.Fatalf("inline env with string payload = %d, want greater than int-only size %d", withPayload, inlineSize)
+	}
+}
+
 func TestEnvAssignDemotesStaticBindings(t *testing.T) {
 	t.Parallel()
 	payload := strings.Repeat("b", 16384)
@@ -103,6 +140,9 @@ func TestEnvAssignDemotesStaticBindings(t *testing.T) {
 	env.Assign("name", NewString(payload))
 	if env.staticBytes != 0 {
 		t.Fatalf("staticBytes after demotion = %d, want 0", env.staticBytes)
+	}
+	if env.statics != nil {
+		t.Fatalf("statics after demotion = %#v, want nil", env.statics)
 	}
 	val, ok := env.Get("name")
 	if !ok || !val.Equal(NewString(payload)) {
