@@ -871,6 +871,49 @@ func TestTaskLazyGlobalsIgnoreUnchangedEagerEnumsForNestedSnapshots(t *testing.T
 	}
 }
 
+func TestTaskLazyGlobalsTreatReboundScriptEnumsAsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `enum Status
+  Draft
+end
+
+def run()
+  nil
+end`)
+	sourceStatus := script.enums["Status"]
+	callEnums := cloneEnumsForCall(script.enums)
+	root := newEnv(nil)
+	rebinder := newCallFunctionRebinder(script, root, map[string]*ClassDef{}, callEnums)
+	payload := NewArray([]Value{NewString(strings.Repeat("payload", 256))})
+	globals := newTaskLazyGlobals(map[string]Value{
+		"payload": payload,
+		"Status":  NewEnum(sourceStatus),
+	}, false, false)
+
+	if err := bindLazyTaskGlobalsForCall(&Execution{}, root, globals, rebinder); err != nil {
+		t.Fatalf("bind lazy globals: %v", err)
+	}
+	reboundStatusValue, ok := root.getOwn("Status")
+	if !ok {
+		t.Fatalf("missing rebound Status binding")
+	}
+	if reboundStatus := valueEnum(reboundStatusValue); reboundStatus == sourceStatus {
+		t.Fatalf("test did not exercise a rebound enum clone")
+	}
+
+	if globals.hasCurrentBindings() {
+		t.Fatalf("rebound equivalent enum global forced nested task snapshot")
+	}
+	values, detached := globals.valuesForFork()
+	if detached {
+		t.Fatalf("valuesForFork detached unused payload because of rebound equivalent enum")
+	}
+	if got := values["payload"]; !got.Equal(payload) {
+		t.Fatalf("payload changed during lazy fork: got %s, want original", got.String())
+	}
+}
+
 func TestTaskRetainedResultsCountTowardParentMemoryQuota(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{

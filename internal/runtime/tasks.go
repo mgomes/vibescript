@@ -701,7 +701,7 @@ func (globals *taskLazyGlobals) isUnchangedEagerEnum(name string, val Value) boo
 	if !ok || source.Kind() != KindEnum || val.Kind() != KindEnum {
 		return false
 	}
-	return valueEnum(source) == valueEnum(val)
+	return enumDefsEqual(valueEnum(source), valueEnum(val))
 }
 
 func (globals *taskLazyGlobals) currentValueForFork(name string) Value {
