@@ -115,6 +115,24 @@ greet("top")`,
 			wantOut: "hello",
 		},
 		{
+			name: "explicit_function_initializes_deferred_class_body",
+			script: `class Settings
+  @@limit = 10
+
+  def self.limit
+    @@limit
+  end
+end
+
+def run
+  Settings.limit
+end
+
+99`,
+			args:    func(p string) []string { return []string{"-function", "run", p} },
+			wantOut: "10",
+		},
+		{
 			name:    "requires_script_path",
 			args:    func(string) []string { return nil },
 			wantErr: "script path required",

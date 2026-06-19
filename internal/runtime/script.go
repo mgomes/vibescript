@@ -59,7 +59,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
-	if err := initializeClassBodiesForCall(exec, root, callClasses, s.classOrder, s.deferredClassBodies); err != nil {
+	if err := initializeClassBodiesForCall(exec, root, callClasses, s.classOrder, deferredClassBodiesForFunction(fn, s.deferredClassBodies)); err != nil {
 		return NewNil(), err
 	}
 
@@ -138,7 +138,7 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
-	if err := initializeClassBodiesForCall(exec, root, callClasses, s.classOrder, s.deferredClassBodies); err != nil {
+	if err := initializeClassBodiesForCall(exec, root, callClasses, s.classOrder, deferredClassBodiesForFunction(fn, s.deferredClassBodies)); err != nil {
 		return NewNil(), err
 	}
 
@@ -155,6 +155,22 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		return cloneValueForHost(val), nil
 	}
 	return val, nil
+}
+
+func deferredClassBodiesForFunction(fn *ScriptFunction, deferred map[string]struct{}) map[string]struct{} {
+	if len(deferred) == 0 || fn == nil {
+		return nil
+	}
+	for _, stmt := range fn.Body {
+		classStmt, ok := stmt.(*ClassStmt)
+		if !ok {
+			continue
+		}
+		if _, ok := deferred[classStmt.Name]; ok {
+			return deferred
+		}
+	}
+	return nil
 }
 
 // Function looks up a compiled function by name.

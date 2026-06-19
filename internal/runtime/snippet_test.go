@@ -59,3 +59,34 @@ end
 		t.Fatalf("run() = %#v, want 10", got)
 	}
 }
+
+func TestCompileSnippetInitializesDeferredClassBodyBeforeNamedFunction(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	script, err := engine.CompileSnippet(`class Settings
+  @@limit = 10
+
+  def self.limit
+    @@limit
+  end
+end
+
+def run
+  Settings.limit
+end
+
+1 + 1
+`, "<script>")
+	if err != nil {
+		t.Fatalf("CompileSnippet failed: %v", err)
+	}
+	if len(script.deferredClassBodies) == 0 {
+		t.Fatalf("class body was not deferred")
+	}
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 10 {
+		t.Fatalf("run() = %#v, want 10", got)
+	}
+}
