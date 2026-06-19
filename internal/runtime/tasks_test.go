@@ -835,6 +835,42 @@ end`)
 	compareArrays(t, result, []Value{NewString("Draft")})
 }
 
+func TestTaskLazyGlobalsIgnoreUnchangedEagerEnumsForNestedSnapshots(t *testing.T) {
+	t.Parallel()
+
+	statusDef, err := compileEnumDef(&EnumStmt{
+		Name: "Status",
+		Members: []EnumMemberStmt{
+			{Name: "Draft"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile enum: %v", err)
+	}
+
+	payload := NewArray([]Value{NewString(strings.Repeat("payload", 256))})
+	status := NewEnum(statusDef)
+	globals := newTaskLazyGlobals(map[string]Value{
+		"payload": payload,
+		"Status":  status,
+	}, false, false)
+	root := newEnv(nil)
+	root.defineLazy("payload", taskLazyGlobalBinding{globals: globals, name: "payload"})
+	root.Define("Status", status)
+	globals.root = root
+
+	if globals.hasCurrentBindings() {
+		t.Fatalf("unchanged eager enum global forced nested task snapshot")
+	}
+	values, detached := globals.valuesForFork()
+	if detached {
+		t.Fatalf("valuesForFork detached unused payload because of unchanged eager enum")
+	}
+	if got := values["payload"]; !got.Equal(payload) {
+		t.Fatalf("payload changed during lazy fork: got %s, want original", got.String())
+	}
+}
+
 func TestTaskRetainedResultsCountTowardParentMemoryQuota(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{
