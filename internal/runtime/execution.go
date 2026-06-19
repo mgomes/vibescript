@@ -20,14 +20,16 @@ type ScriptFunction struct {
 
 // Script represents a parsed Vibescript module ready for execution.
 type Script struct {
-	engine     *Engine
-	functions  map[string]*ScriptFunction
-	classes    map[string]*ClassDef
-	enums      map[string]*EnumDef
-	source     string
-	moduleKey  string
-	modulePath string
-	moduleRoot string
+	engine              *Engine
+	functions           map[string]*ScriptFunction
+	classes             map[string]*ClassDef
+	classOrder          []string
+	deferredClassBodies map[string]struct{}
+	enums               map[string]*EnumDef
+	source              string
+	moduleKey           string
+	modulePath          string
+	moduleRoot          string
 }
 
 // CallOptions configures globals, capabilities, and other settings for a script invocation.

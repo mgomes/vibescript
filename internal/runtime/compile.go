@@ -49,7 +49,11 @@ func CompileSnippetWithProgram(e *Engine, source, entrypoint string) (*Script, *
 		return nil, program, parseErrors, err
 	}
 
-	script, err := compileParsed(e, source, snippetEntrypointProgram(program, entrypoint))
+	entrypointProgram, deferredClassBodies := snippetEntrypointProgram(program, entrypoint)
+	script, err := compileParsed(e, source, entrypointProgram)
+	if script != nil {
+		script.deferredClassBodies = deferredClassBodies
+	}
 	return script, program, nil, err
 }
 
@@ -66,18 +70,29 @@ func parseSource(e *Engine, source string) (*ast.Program, []error, error) {
 	return program, nil, nil
 }
 
-func snippetEntrypointProgram(program *ast.Program, entrypoint string) *ast.Program {
+func snippetEntrypointProgram(program *ast.Program, entrypoint string) (*ast.Program, map[string]struct{}) {
 	if program == nil {
-		return &ast.Program{}
+		return &ast.Program{}, nil
 	}
 
 	out := &ast.Program{Statements: make([]ast.Statement, 0, len(program.Statements)+1)}
 	body := make([]ast.Statement, 0)
+	deferredClassBodies := make(map[string]struct{})
+	hasExecutableTopLevel := snippetHasExecutableTopLevel(program)
 	pos := Position{Line: 1, Column: 1}
 	for _, stmt := range program.Statements {
-		switch stmt.(type) {
-		case *FunctionStmt, *ClassStmt, *EnumStmt:
-			out.Statements = append(out.Statements, stmt)
+		switch typed := stmt.(type) {
+		case *FunctionStmt, *EnumStmt:
+			out.Statements = append(out.Statements, typed)
+		case *ClassStmt:
+			out.Statements = append(out.Statements, typed)
+			if len(typed.Body) > 0 && hasExecutableTopLevel {
+				if len(body) == 0 {
+					pos = typed.Pos()
+				}
+				body = append(body, typed)
+				deferredClassBodies[typed.Name] = struct{}{}
+			}
 		default:
 			if len(body) == 0 {
 				pos = stmt.Pos()
@@ -86,7 +101,22 @@ func snippetEntrypointProgram(program *ast.Program, entrypoint string) *ast.Prog
 		}
 	}
 	out.Statements = append(out.Statements, &FunctionStmt{Name: entrypoint, Body: body, Position: pos})
-	return out
+	if len(deferredClassBodies) == 0 {
+		deferredClassBodies = nil
+	}
+	return out, deferredClassBodies
+}
+
+func snippetHasExecutableTopLevel(program *ast.Program) bool {
+	for _, stmt := range program.Statements {
+		switch stmt.(type) {
+		case *FunctionStmt, *ClassStmt, *EnumStmt:
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func compileParsed(e *Engine, source string, program *ast.Program) (*Script, error) {
@@ -96,6 +126,7 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 
 	functions := make(map[string]*ScriptFunction)
 	classes := make(map[string]*ClassDef)
+	classOrder := make([]string, 0)
 	enums := make(map[string]*EnumDef)
 
 	for _, stmt := range program.Statements {
@@ -122,6 +153,7 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 				return nil, fmt.Errorf("duplicate top-level name %s", s.Name)
 			}
 			classes[s.Name] = compileClassDef(s)
+			classOrder = append(classOrder, s.Name)
 		case *EnumStmt:
 			if _, exists := enums[s.Name]; exists {
 				return nil, fmt.Errorf("duplicate enum %s", s.Name)
@@ -142,7 +174,7 @@ func compileParsed(e *Engine, source string, program *ast.Program) (*Script, err
 		}
 	}
 
-	script := &Script{engine: e, functions: functions, classes: classes, enums: enums, source: source}
+	script := &Script{engine: e, functions: functions, classes: classes, classOrder: classOrder, enums: enums, source: source}
 	script.bindFunctionOwnership()
 	return script, nil
 }

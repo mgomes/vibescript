@@ -55,6 +55,23 @@ end`)
 	})
 }
 
+func TestParallelAssignmentRestTargetPreservesSourceOrder(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  *a, a = [1, 2, 3]
+  first = a
+  a, *a = [4, 5, 6]
+  [first, a]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewInt(3),
+		NewArray([]Value{NewInt(5), NewInt(6)}),
+	})
+}
+
 func TestParallelAssignmentNestedTargets(t *testing.T) {
 	t.Parallel()
 

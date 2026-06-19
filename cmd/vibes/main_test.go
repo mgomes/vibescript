@@ -70,6 +70,22 @@ end`,
 			wantOut: "ok",
 		},
 		{
+			name: "default_function_with_class_initializer",
+			script: `class Settings
+  @@limit = 10
+
+  def self.limit
+    @@limit
+  end
+end
+
+def run
+  Settings.limit
+end`,
+			args:    func(p string) []string { return []string{p} },
+			wantOut: "10",
+		},
+		{
 			name: "executes_top_level_script_body",
 			script: `def double(x)
   x * 2
@@ -97,6 +113,24 @@ end
 greet("top")`,
 			args:    func(p string) []string { return []string{"-function", "greet", p, "hello"} },
 			wantOut: "hello",
+		},
+		{
+			name: "explicit_function_initializes_deferred_class_body",
+			script: `class Settings
+  @@limit = 10
+
+  def self.limit
+    @@limit
+  end
+end
+
+def run
+  Settings.limit
+end
+
+99`,
+			args:    func(p string) []string { return []string{"-function", "run", p} },
+			wantOut: "10",
 		},
 		{
 			name:    "requires_script_path",

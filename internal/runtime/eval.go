@@ -904,30 +904,31 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 		return nil
 	}
 
-	for i := range restIndex {
-		if err := assignDestructureValue(target.Elements[i].Target, valueAt(values, i), assign); err != nil {
-			return err
-		}
-	}
-
 	trailing := len(target.Elements) - restIndex - 1
-	for i := range trailing {
-		targetIndex := len(target.Elements) - trailing + i
-		valueIndex := len(values) - trailing + i
-		if valueIndex < restIndex {
-			valueIndex = -1
-		}
-		if err := assignDestructureValue(target.Elements[targetIndex].Target, valueAt(values, valueIndex), assign); err != nil {
-			return err
-		}
-	}
-
 	restEnd := len(values) - trailing
 	if restEnd < restIndex {
 		restEnd = restIndex
 	}
 	restValues := append([]Value(nil), values[restIndex:restEnd]...)
-	return assignDestructureValue(target.Elements[restIndex].Target, NewArray(restValues), assign)
+	for i, element := range target.Elements {
+		var val Value
+		switch {
+		case i < restIndex:
+			val = valueAt(values, i)
+		case i == restIndex:
+			val = NewArray(restValues)
+		default:
+			valueIndex := len(values) - trailing + i - restIndex - 1
+			if valueIndex < restIndex {
+				valueIndex = -1
+			}
+			val = valueAt(values, valueIndex)
+		}
+		if err := assignDestructureValue(element.Target, val, assign); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func assignDestructureValue(target Expression, value Value, assign func(Expression, Value) error) error {
@@ -1581,6 +1582,19 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		return NewNil(), false, errLoopNext
 	case *TryStmt:
 		return exec.evalTryStatement(s, env)
+	case *ClassStmt:
+		classVal, ok := env.Get(s.Name)
+		if !ok {
+			return NewNil(), false, exec.errorAt(s.Pos(), "class %s is not bound", s.Name)
+		}
+		classDef := valueClass(classVal)
+		if classDef == nil {
+			return NewNil(), false, exec.errorAt(s.Pos(), "%s is not a class", s.Name)
+		}
+		if err := exec.initializeClassBody(classVal, classDef, env); err != nil {
+			return NewNil(), false, err
+		}
+		return classVal, false, nil
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement")
 	}

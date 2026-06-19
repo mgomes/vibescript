@@ -449,22 +449,43 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 	return nil
 }
 
-func initializeClassBodiesForCall(exec *Execution, root *Env, callClasses map[string]*ClassDef) error {
-	for name, classDef := range callClasses {
+func initializeClassBodiesForCall(exec *Execution, env *Env, callClasses map[string]*ClassDef, order []string, skip map[string]struct{}) error {
+	for _, name := range order {
+		classDef, ok := callClasses[name]
+		if !ok {
+			continue
+		}
+		if _, deferred := skip[name]; deferred {
+			continue
+		}
 		if len(classDef.Body) == 0 {
 			continue
 		}
-		classVal, _ := root.Get(name)
-		env := newEnv(root)
-		env.Define("self", classVal)
-		exec.pushReceiver(classVal)
-		_, _, err := exec.evalStatements(classDef.Body, env)
-		exec.popReceiver()
-		if err != nil {
+		classVal, ok := env.Get(name)
+		if !ok {
+			return exec.errorAt(classDef.Body[0].Pos(), "class %s is not bound", name)
+		}
+		if err := exec.initializeClassBody(classVal, classDef, env); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, parent *Env) error {
+	if classDef == nil || len(classDef.Body) == 0 || classDef.bodyRan {
+		return nil
+	}
+	env := newEnv(parent)
+	env.Define("self", classVal)
+	exec.pushReceiver(classVal)
+	defer exec.popReceiver()
+	_, _, err := exec.evalStatements(classDef.Body, env)
+	if err != nil {
+		return err
+	}
+	classDef.bodyRan = true
 	return nil
 }
 
