@@ -691,7 +691,7 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 		return true
 	}
 	prev, _ := utf8.DecodeLastRuneInString(l.input[:start])
-	if unicode.IsSpace(prev) {
+	if unicode.IsSpace(prev) && l.atLineLeadingWhitespace() {
 		return true
 	}
 	return !canEndExpressionToken(l.lastToken.Type)

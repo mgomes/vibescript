@@ -171,9 +171,40 @@ end`,
 			},
 		},
 		{
+			name: "spaced_indexed_w",
+			source: `def run
+  total %w[0]
+end`,
+			wantExpr: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "total"},
+				Operator: ast.TokenPercent,
+				Right: &ast.IndexExpr{
+					Object: &ast.Identifier{Name: "w"},
+					Index:  &ast.IntegerLiteral{Value: 0},
+				},
+			},
+		},
+		{
 			name: "called_i",
 			source: `def run
   total%i(0)
+end`,
+			wantExpr: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "total"},
+				Operator: ast.TokenPercent,
+				Right: &ast.CallExpr{
+					Callee: &ast.Identifier{Name: "i"},
+					Args: []ast.Expression{
+						&ast.IntegerLiteral{Value: 0},
+					},
+					KwArgs: []ast.KeywordArg{},
+				},
+			},
+		},
+		{
+			name: "spaced_called_i",
+			source: `def run
+  total %i(0)
 end`,
 			wantExpr: &ast.BinaryExpr{
 				Left:     &ast.Identifier{Name: "total"},
