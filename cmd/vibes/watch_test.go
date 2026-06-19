@@ -201,6 +201,34 @@ func TestWatchScriptRerunsOnAddedAndDeletedModuleFiles(t *testing.T) {
 	}
 }
 
+func TestWatchNotifierWatchesSymlinkedRoot(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	realRoot := filepath.Join(parent, "real")
+	if err := os.Mkdir(realRoot, 0o755); err != nil {
+		t.Fatalf("mkdir real root: %v", err)
+	}
+	linkRoot := filepath.Join(parent, "link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	notifier, err := newWatchNotifier(runInvocation{moduleDirs: []string{linkRoot}})
+	if err != nil {
+		t.Fatalf("newWatchNotifier failed: %v", err)
+	}
+	defer notifier.Close()
+
+	resolvedRoot, err := filepath.EvalSymlinks(realRoot)
+	if err != nil {
+		t.Fatalf("resolve real root: %v", err)
+	}
+	if _, ok := notifier.dirs[filepath.Clean(resolvedRoot)]; !ok {
+		t.Fatalf("watcher dirs = %v, want resolved root %s", notifier.dirs, resolvedRoot)
+	}
+}
+
 func TestSnapshotWatchTargetsStampsVibeFilesRecursively(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

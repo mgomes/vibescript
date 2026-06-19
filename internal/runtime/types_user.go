@@ -7,6 +7,7 @@ type ClassDef struct {
 	ClassMethods map[string]*ScriptFunction
 	ClassVars    map[string]Value
 	Body         []Statement
+	bodyRan      bool
 	owner        *Script
 }
 

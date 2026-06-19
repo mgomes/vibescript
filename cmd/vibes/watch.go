@@ -235,6 +235,10 @@ func (n *watchNotifier) Close() error {
 }
 
 func (n *watchNotifier) watchTree(root string) error {
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err == nil {
+		root = resolvedRoot
+	}
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || !entry.IsDir() {
 			return nil

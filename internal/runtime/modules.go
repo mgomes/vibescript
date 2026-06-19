@@ -183,7 +183,7 @@ func initializeModuleForCall(exec *Execution, entry moduleEntry, moduleEnv *Env,
 	exec.pushModuleContext(moduleContextForEntry(entry))
 	defer exec.popModuleContext()
 
-	if err := initializeClassBodiesForCall(exec, moduleEnv, moduleClasses); err != nil {
+	if err := initializeClassBodiesForCall(exec, moduleEnv, moduleClasses, entry.script.classOrder, entry.script.deferredClassBodies); err != nil {
 		return err
 	}
 	return executeModuleEntrypoint(exec, entry, moduleEnv)

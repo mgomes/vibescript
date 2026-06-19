@@ -168,6 +168,33 @@ clean_input("  hello  ")
 	}
 }
 
+func TestMarkdownReferenceWrapperKeepsDeclarationsTopLevel(t *testing.T) {
+	t.Parallel()
+
+	source := `def clean_input(text)
+  text.strip
+end
+
+class Formatter
+  def self.name
+    "formatter"
+  end
+end
+
+clean_input("  hello  ")
+`
+	wrapped := wrapMarkdownReferenceSnippet(source)
+	if strings.Contains(wrapped, "  def clean_input") {
+		t.Fatalf("wrapped snippet nested function declaration:\n%s", wrapped)
+	}
+	if strings.Contains(wrapped, "  class Formatter") {
+		t.Fatalf("wrapped snippet nested class declaration:\n%s", wrapped)
+	}
+	if !strings.Contains(wrapped, "def __doc_snippet__()\n  clean_input") {
+		t.Fatalf("wrapped snippet did not wrap executable statements only:\n%s", wrapped)
+	}
+}
+
 func TestExtractMarkdownVibeSnippetsRejectsUnterminatedFence(t *testing.T) {
 	t.Parallel()
 
@@ -183,10 +210,10 @@ func TestExtractMarkdownVibeSnippetsRejectsUnterminatedFence(t *testing.T) {
 func checkMarkdownSnippet(engine *runtime.Engine, snippet markdownSnippet, policy markdownSnippetPolicy, hasPolicy bool) error {
 	source := snippet.Source
 	if hasPolicy && policy.Mode == markdownSnippetWrapped {
-		source = wrapMarkdownSnippet(source)
+		source = wrapMarkdownReferenceSnippet(source)
 	}
 	if hasPolicy && policy.Mode == markdownSnippetKnownFailure && shouldWrapReferenceSnippet(snippet.Path) {
-		_, err := compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownSnippet(source))
+		_, err := compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownReferenceSnippet(source))
 		return err
 	}
 	compileFailed, err := compileAndAnalyzeMarkdownSnippet(engine, source)
@@ -194,7 +221,7 @@ func checkMarkdownSnippet(engine *runtime.Engine, snippet markdownSnippet, polic
 		if err := analyzeMarkdownSnippetDeclarations(source); err != nil {
 			return err
 		}
-		_, err = compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownSnippet(source))
+		_, err = compileAndAnalyzeMarkdownSnippet(engine, wrapMarkdownReferenceSnippet(source))
 	}
 	return err
 }
@@ -369,6 +396,61 @@ func markdownSnippetWarningError(warning Warning) error {
 
 func shouldWrapReferenceSnippet(path string) bool {
 	return path != "README.md" && strings.HasPrefix(path, "docs/") && !strings.HasPrefix(path, "docs/examples/")
+}
+
+func wrapMarkdownReferenceSnippet(source string) string {
+	program, parseErrors := parser.Parse(source)
+	if len(parseErrors) > 0 || program == nil {
+		return wrapMarkdownSnippet(source)
+	}
+
+	declarations, body := splitMarkdownSnippetTopLevelSource(source, program)
+	if len(body) == 0 {
+		return source
+	}
+	wrapped := wrapMarkdownSnippet(strings.Join(body, "\n\n") + "\n")
+	if len(declarations) == 0 {
+		return wrapped
+	}
+	return strings.Join(declarations, "\n\n") + "\n\n" + wrapped
+}
+
+func splitMarkdownSnippetTopLevelSource(source string, program *ast.Program) ([]string, []string) {
+	lines := strings.Split(strings.TrimRight(source, "\n"), "\n")
+	declarations := make([]string, 0)
+	body := make([]string, 0)
+	for i, stmt := range program.Statements {
+		start := stmt.Pos().Line - 1
+		if start < 0 || start >= len(lines) {
+			continue
+		}
+		end := len(lines)
+		if i+1 < len(program.Statements) {
+			end = program.Statements[i+1].Pos().Line - 1
+		}
+		if end < start {
+			end = start
+		}
+		chunk := strings.TrimRight(strings.Join(lines[start:end], "\n"), "\n")
+		if strings.TrimSpace(chunk) == "" {
+			continue
+		}
+		if isMarkdownSnippetDeclaration(stmt) {
+			declarations = append(declarations, chunk)
+			continue
+		}
+		body = append(body, chunk)
+	}
+	return declarations, body
+}
+
+func isMarkdownSnippetDeclaration(stmt ast.Statement) bool {
+	switch stmt.(type) {
+	case *ast.FunctionStmt, *ast.ClassStmt, *ast.EnumStmt:
+		return true
+	default:
+		return false
+	}
 }
 
 func wrapMarkdownSnippet(source string) string {

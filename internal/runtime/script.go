@@ -59,7 +59,7 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
-	if err := initializeClassBodiesForCall(exec, root, callClasses); err != nil {
+	if err := initializeClassBodiesForCall(exec, root, callClasses, s.classOrder, s.deferredClassBodies); err != nil {
 		return NewNil(), err
 	}
 
@@ -138,7 +138,7 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
-	if err := initializeClassBodiesForCall(exec, root, callClasses); err != nil {
+	if err := initializeClassBodiesForCall(exec, root, callClasses, s.classOrder, s.deferredClassBodies); err != nil {
 		return NewNil(), err
 	}
 

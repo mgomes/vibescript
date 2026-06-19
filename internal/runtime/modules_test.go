@@ -1137,6 +1137,34 @@ end`)
 	}
 }
 
+func TestRequireInitializesModuleClassBodiesInSourceOrder(t *testing.T) {
+	t.Parallel()
+	dir := tempModuleTree(t, moduleFile{path: "settings.vibe", content: `limit = 10
+
+class Settings
+  @@limit = limit
+
+  def self.limit
+    @@limit
+  end
+end
+
+def limit
+  Settings.limit
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	script := compileScriptWithEngine(t, engine, `def run
+  settings = require("settings")
+  settings.limit
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindInt || got.Int() != 10 {
+		t.Fatalf("run() = %#v, want 10", got)
+	}
+}
+
 func TestRequireKeepsModuleTopLevelAssignmentsLocal(t *testing.T) {
 	t.Parallel()
 	dir := tempModuleTree(t, moduleFile{path: "settings.vibe", content: `offset = 10
