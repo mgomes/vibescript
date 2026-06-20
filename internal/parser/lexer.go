@@ -565,9 +565,48 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 	var decoded strings.Builder
 	var raw strings.Builder
 	interpolated := false
+	interpolationDepth := 0
+	var interpolationQuote rune
 
 	for {
 		l.readRune()
+		if interpolationDepth > 0 {
+			if interpolationQuote == 0 && l.ch == '"' && !l.interpolationQuoteHasClose('"') {
+				l.readRune()
+				return raw.String(), true, ""
+			}
+			switch l.ch {
+			case 0:
+				return "", false, "unterminated string"
+			case '\\':
+				raw.WriteRune(l.ch)
+				decoded.WriteRune(l.ch)
+				if interpolationQuote != 0 && l.peekRune() != 0 {
+					l.readRune()
+					raw.WriteRune(l.ch)
+					decoded.WriteRune(l.ch)
+				}
+			default:
+				raw.WriteRune(l.ch)
+				decoded.WriteRune(l.ch)
+				if interpolationQuote != 0 {
+					if l.ch == interpolationQuote {
+						interpolationQuote = 0
+					}
+					continue
+				}
+				switch l.ch {
+				case '\'', '"':
+					interpolationQuote = l.ch
+				case '{':
+					interpolationDepth++
+				case '}':
+					interpolationDepth--
+				}
+			}
+			continue
+		}
+
 		switch l.ch {
 		case 0:
 			return "", false, "unterminated string"
@@ -608,13 +647,36 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 			raw.WriteRune(l.ch)
 			decoded.WriteRune(l.ch)
 			if l.peekRune() == '{' {
+				l.readRune()
+				raw.WriteRune(l.ch)
+				decoded.WriteRune(l.ch)
 				interpolated = true
+				interpolationDepth = 1
 			}
 		default:
 			raw.WriteRune(l.ch)
 			decoded.WriteRune(l.ch)
 		}
 	}
+}
+
+func (l *lexer) interpolationQuoteHasClose(quote rune) bool {
+	idx := l.offset
+	for idx < len(l.input) {
+		r, width := utf8.DecodeRuneInString(l.input[idx:])
+		idx += width
+		if r == '\\' {
+			if idx < len(l.input) {
+				_, escapedWidth := utf8.DecodeRuneInString(l.input[idx:])
+				idx += escapedWidth
+			}
+			continue
+		}
+		if r == quote {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *lexer) readSingleQuotedString() (string, string) {

@@ -519,11 +519,7 @@ func (p *parser) parseInterpolatedStringParts(raw string, pos ast.Position) ([]a
 	parts := []ast.StringPart{}
 	textStart := 0
 	for i := 0; i < len(raw); {
-		if raw[i] == '\\' {
-			i = skipEscapedByte(raw, i)
-			continue
-		}
-		if raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{' {
+		if raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{' && !interpolationMarkerEscaped(raw, i) {
 			if textStart < i {
 				parts = append(parts, ast.StringText{Text: decodeDoubleQuotedText(raw[textStart:i])})
 			}
@@ -553,6 +549,14 @@ func (p *parser) parseInterpolatedStringParts(raw string, pos ast.Position) ([]a
 		parts = append(parts, ast.StringText{Text: decodeDoubleQuotedText(raw[textStart:])})
 	}
 	return parts, true
+}
+
+func interpolationMarkerEscaped(raw string, hash int) bool {
+	backslashes := 0
+	for i := hash - 1; i >= 0 && raw[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 func skipEscapedByte(raw string, i int) int {
