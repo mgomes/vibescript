@@ -171,9 +171,9 @@ end`,
 			},
 		},
 		{
-			name: "spaced_indexed_w",
+			name: "spaced_operator_indexed_w",
 			source: `def run
-  total %w[0]
+  total % w[0]
 end`,
 			wantExpr: &ast.BinaryExpr{
 				Left:     &ast.Identifier{Name: "total"},
@@ -202,9 +202,9 @@ end`,
 			},
 		},
 		{
-			name: "spaced_called_i",
+			name: "spaced_operator_called_i",
 			source: `def run
-  total %i(0)
+  total % i(0)
 end`,
 			wantExpr: &ast.BinaryExpr{
 				Left:     &ast.Identifier{Name: "total"},
@@ -279,6 +279,21 @@ end`,
 			},
 		},
 		{
+			name: "single_numeric_word_array",
+			source: `def run
+  collect %w[123]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.StringLiteral{Value: "123"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
 			name: "single_symbol_array",
 			source: `def run
   collect %i[ok]
@@ -288,6 +303,21 @@ end`,
 				Args: []ast.Expression{
 					&ast.ArrayLiteral{Elements: []ast.Expression{
 						&ast.SymbolLiteral{Name: "ok"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "single_numeric_symbol_array",
+			source: `def run
+  collect %i[123]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.SymbolLiteral{Name: "123"},
 					}},
 				},
 				KwArgs: []ast.KeywordArg{},

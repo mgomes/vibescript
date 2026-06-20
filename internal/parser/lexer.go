@@ -29,9 +29,8 @@ type lexer struct {
 	prevLine   int
 	prevColumn int
 
-	ch            rune
-	previousToken ast.Token
-	lastToken     ast.Token
+	ch        rune
+	lastToken ast.Token
 }
 
 func newLexer(input string) *lexer {
@@ -91,7 +90,6 @@ func (l *lexer) NextToken() ast.Token {
 	tok := l.scanToken()
 	if tok.Type != ast.TokenEOF {
 		tok.End = ast.Position{Line: l.prevLine, Column: l.prevColumn + 1}
-		l.previousToken = l.lastToken
 		l.lastToken = tok
 	}
 	return tok
@@ -694,106 +692,9 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 	}
 	prev, _ := utf8.DecodeLastRuneInString(l.input[:start])
 	if unicode.IsSpace(prev) {
-		switch {
-		case l.atLineLeadingWhitespace():
-			return true
-		case !canEndExpressionToken(l.lastToken.Type):
-			return true
-		case l.lastTokenIsMemberName():
-			return true
-		default:
-			return l.percentArrayLiteralLooksLikeArgument()
-		}
+		return true
 	}
 	return !canEndExpressionToken(l.lastToken.Type)
-}
-
-func (l *lexer) lastTokenIsMemberName() bool {
-	if l.lastToken.Type != ast.TokenIdent {
-		return false
-	}
-	return l.previousToken.Type == ast.TokenDot || l.previousToken.Type == ast.TokenScope
-}
-
-func (l *lexer) percentArrayLiteralLooksLikeArgument() bool {
-	entries, raw, ok := l.peekPercentArrayLiteralEntries()
-	if !ok {
-		return false
-	}
-	if len(entries) != 1 {
-		return true
-	}
-	if strings.ContainsFunc(raw, func(r rune) bool {
-		return unicode.IsSpace(r) || r == '\\'
-	}) {
-		return true
-	}
-	return !isCompactNumericPercentArrayEntry(entries[0])
-}
-
-func isCompactNumericPercentArrayEntry(entry string) bool {
-	if entry == "" {
-		return false
-	}
-	for _, r := range entry {
-		if !unicode.IsDigit(r) {
-			return false
-		}
-	}
-	return true
-}
-
-func (l *lexer) peekPercentArrayLiteralEntries() ([]string, string, bool) {
-	idx := l.currentOffset()
-	if idx >= len(l.input) || l.input[idx] != '%' {
-		return nil, "", false
-	}
-	idx++
-	if idx >= len(l.input) {
-		return nil, "", false
-	}
-	kind, width := utf8.DecodeRuneInString(l.input[idx:])
-	if kind != 'w' && kind != 'i' {
-		return nil, "", false
-	}
-	idx += width
-	if idx >= len(l.input) {
-		return nil, "", false
-	}
-	open, width := utf8.DecodeRuneInString(l.input[idx:])
-	close, paired := percentLiteralClose(open)
-	if close == 0 {
-		return nil, "", false
-	}
-	idx += width
-
-	depth := 1
-	var raw strings.Builder
-	for idx < len(l.input) {
-		r, width := utf8.DecodeRuneInString(l.input[idx:])
-		idx += width
-		if r == '\\' {
-			raw.WriteRune(r)
-			if idx < len(l.input) {
-				next, nextWidth := utf8.DecodeRuneInString(l.input[idx:])
-				idx += nextWidth
-				raw.WriteRune(next)
-			}
-			continue
-		}
-		if paired && r == open {
-			depth++
-		}
-		if r == close {
-			depth--
-			if depth == 0 {
-				rawString := raw.String()
-				return splitPercentLiteralWords(rawString, open, close), rawString, true
-			}
-		}
-		raw.WriteRune(r)
-	}
-	return nil, "", false
 }
 
 func canEndExpressionToken(tt ast.TokenType) bool {
