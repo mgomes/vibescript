@@ -778,7 +778,7 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 	pos := p.curToken.Pos
 	exclusive := p.curToken.Type == ast.TokenRangeExcl
 	precedence := p.curPrecedence()
-	if prefixParserKind(p.peekToken.Type) == prefixParserNone || (p.lineLimitedExprs > 0 && p.peekToken.Pos.Line != pos.Line) {
+	if prefixParserKind(p.peekToken.Type) == prefixParserNone {
 		p.addParseErrorSpan(pos, tokenEnd(p.curToken), "range is missing end expression")
 		return nil
 	}

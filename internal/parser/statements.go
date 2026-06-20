@@ -440,19 +440,37 @@ func (p *parser) recoverRescueHeaderRemainder(line int) {
 
 func (p *parser) recoverToBlockEnd() {
 	depth := 0
+	pendingDoDepth := -1
+	pendingDoLine := -1
 	for p.curToken.Type != ast.TokenEOF {
-		if p.curToken.Type == ast.TokenEnd && depth == 0 {
-			return
-		}
 		p.nextToken()
+		if pendingDoLine != -1 && p.curToken.Pos.Line != pendingDoLine {
+			pendingDoDepth = -1
+			pendingDoLine = -1
+		}
 		switch p.curToken.Type {
-		case ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenBegin, ast.TokenIf, ast.TokenUnless, ast.TokenFor, ast.TokenWhile, ast.TokenUntil, ast.TokenCase:
+		case ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenBegin, ast.TokenIf, ast.TokenUnless, ast.TokenCase:
+			depth++
+		case ast.TokenFor, ast.TokenWhile, ast.TokenUntil:
+			depth++
+			pendingDoDepth = depth
+			pendingDoLine = p.curToken.Pos.Line
+		case ast.TokenDo:
+			if pendingDoDepth == depth && pendingDoLine == p.curToken.Pos.Line {
+				pendingDoDepth = -1
+				pendingDoLine = -1
+				break
+			}
 			depth++
 		case ast.TokenEnd:
 			if depth == 0 {
 				return
 			}
 			depth--
+			if pendingDoDepth > depth {
+				pendingDoDepth = -1
+				pendingDoLine = -1
+			}
 		}
 	}
 }
