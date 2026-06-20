@@ -557,7 +557,9 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		}
 		p.nextToken()
 	}
+	p.pushLocalScope(params)
 	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+	p.popLocalScope()
 	switch p.curToken.Type {
 	case ast.TokenRescue, ast.TokenElse, ast.TokenEnsure:
 		tryStmt := p.parseRescueElseEnsureTail(pos, body, "function")
@@ -987,7 +989,9 @@ func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
 	p.nextToken()
 	p.nextToken()
 	value := p.parseExpressionWithBlock()
-	return &ast.AssignStmt{Target: target, Value: value, Operator: compoundAssignmentOperator(operatorToken), Position: pos}
+	stmt := &ast.AssignStmt{Target: target, Value: value, Operator: compoundAssignmentOperator(operatorToken), Position: pos}
+	p.declareLocalTarget(target)
+	return stmt
 }
 
 func (p *parser) recoverAssignmentRemainder() {

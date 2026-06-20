@@ -239,6 +239,45 @@ end`,
 	}
 }
 
+func TestParserLocalModuloBeforeCompactWIIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  w = [3]
+  total %w[0]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "total"},
+			Value:  &ast.IntegerLiteral{Value: 10},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "w"},
+			Value: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.IntegerLiteral{Value: 3},
+			}},
+		},
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "total"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
 	t.Parallel()
 

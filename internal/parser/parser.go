@@ -23,17 +23,70 @@ type parser struct {
 	lineLimitedStops []ast.TokenType
 	statementNesting int
 	typeDepth        int
+	localScopes      []map[string]struct{}
 }
 
 func newParser(input string) *parser {
 	l := newLexer(input)
-	p := &parser{l: l}
+	p := &parser{l: l, localScopes: []map[string]struct{}{{}}}
 
 	p.nextToken()
 	p.nextToken()
 	p.nextToken()
 
 	return p
+}
+
+func (p *parser) pushLocalScope(params []ast.Param) {
+	scope := map[string]struct{}{}
+	p.localScopes = append(p.localScopes, scope)
+	for _, param := range params {
+		p.declareParamLocal(param)
+	}
+}
+
+func (p *parser) popLocalScope() {
+	if len(p.localScopes) <= 1 {
+		return
+	}
+	p.localScopes = p.localScopes[:len(p.localScopes)-1]
+}
+
+func (p *parser) declareParamLocal(param ast.Param) {
+	if param.Target != nil {
+		p.declareLocalTarget(param.Target)
+		return
+	}
+	if param.Name != "" && !param.IsIvar {
+		p.declareLocal(param.Name)
+	}
+}
+
+func (p *parser) declareLocalTarget(target ast.Expression) {
+	switch t := target.(type) {
+	case *ast.Identifier:
+		p.declareLocal(t.Name)
+	case *ast.DestructureTarget:
+		for _, element := range t.Elements {
+			p.declareLocalTarget(element.Target)
+		}
+	}
+}
+
+func (p *parser) declareLocal(name string) {
+	if len(p.localScopes) == 0 {
+		p.localScopes = append(p.localScopes, map[string]struct{}{})
+	}
+	p.localScopes[len(p.localScopes)-1][name] = struct{}{}
+}
+
+func (p *parser) isLocalName(name string) bool {
+	for i := len(p.localScopes) - 1; i >= 0; i-- {
+		if _, ok := p.localScopes[i][name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *parser) nextToken() {
