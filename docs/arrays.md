@@ -110,8 +110,8 @@ receiver.
   `n` yields nothing. `n` must be a positive integer. Returns `nil`.
 - `reverse_each` yields values from last to first and returns the receiver.
 - `cycle(n)` yields the whole array `n` times. A non-positive `n` yields nothing.
-  Omitting `n` cycles forever; the step quota and context cancellation bound the
-  otherwise unbounded loop. Returns `nil`.
+  Omitting `n` or passing `nil` cycles forever; the step quota and context
+  cancellation bound the otherwise unbounded loop. Returns `nil`.
 
 ```vibe
 def collect_slices(values, size)

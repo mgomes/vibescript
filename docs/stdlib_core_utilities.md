@@ -147,8 +147,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `reverse_each { |item| } -> array` – yield elements from last to first;
   returns the receiver.
 - `cycle(n = nil) { |item| } -> nil` – yield the whole array `n` times; a
-  non-positive `n` yields nothing. Omitting `n` cycles forever, bounded by the
-  step quota and context cancellation.
+  non-positive `n` yields nothing. Omitting `n` or passing `nil` cycles forever,
+  bounded by the step quota and context cancellation.
 - `map { |item| } -> array` – new array of block results.
 - `select { |item| } -> array` – elements for which the block is truthy.
 - `reject { |item| } -> array` – elements for which the block is falsy (the

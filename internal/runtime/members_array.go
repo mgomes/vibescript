@@ -496,7 +496,8 @@ func arrayPositiveConsSize(args []Value, method string) (int, error) {
 }
 
 // arrayCycleCount validates the optional repetition count for cycle. With no
-// argument the loop is infinite (infinite=true), mirroring Ruby's Array#cycle.
+// argument, or an explicit nil count, the loop is infinite (infinite=true),
+// mirroring Ruby's Array#cycle where cycle and cycle(nil) both repeat forever.
 // A negative count yields no iterations rather than an error, matching Ruby.
 func arrayCycleCount(args []Value, method string) (count int, infinite bool, err error) {
 	if len(args) == 0 {
@@ -506,6 +507,9 @@ func arrayCycleCount(args []Value, method string) (count int, infinite bool, err
 		return 0, false, fmt.Errorf("%s accepts at most one count", method)
 	}
 	countValue := args[0]
+	if countValue.Kind() == KindNil {
+		return 0, true, nil
+	}
 	if countValue.Kind() != KindInt {
 		return 0, false, fmt.Errorf("%s count must be an integer", method)
 	}

@@ -320,6 +320,21 @@ func TestArrayIterationHelpersParticipateInStepQuota(t *testing.T) {
 			source: `def run(); [1, 2].cycle do |v| end; end`,
 			args:   nil,
 		},
+		{
+			// A nil count is the explicit unbounded form, matching Ruby's
+			// cycle(nil); it must loop forever just like the omitted-count
+			// case, so the step quota is what stops it.
+			name:   "cycle nil count is unbounded",
+			source: `def run(); [1, 2].cycle(nil) do |v| end; end`,
+			args:   nil,
+		},
+		{
+			// Forwarding an optional count that defaults to nil must behave
+			// like the unbounded form rather than raising.
+			name:   "cycle forwarded nil count is unbounded",
+			source: `def run(); count = nil; [1, 2].cycle(count) do |v| end; end`,
+			args:   nil,
+		},
 	}
 
 	for _, tc := range cases {
