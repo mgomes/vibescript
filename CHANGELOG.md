@@ -9,6 +9,15 @@ All notable changes to this project will be documented in this file.
   the values for several keys at once, in the requested order. Unlike
   `values_at`, it raises a `key not found` error for any missing key; pass a
   block to compute a replacement value for each missing key instead of raising.
+- **Added: Ruby-style `Time#to_a` tuple conversion.** `Time#to_a` returns the
+  positional field tuple `[sec, min, hour, mday, month, year, wday, yday, isdst,
+  zone]`, matching Ruby for compatibility with positional field processing. Field
+  values reuse the existing `Time` accessors, so UTC, local, and offset receivers
+  stay consistent across both forms.
+- **Added: Ruby-style `String#chars` and `String#lines`.** `chars` returns an
+  array of the string's Unicode characters using the existing rune-aware
+  semantics, and `lines` splits on `"\n"` while retaining the trailing newline
+  on each line, leaving carriage returns attached so `"\r\n"` endings round-trip.
 - **Added: Ruby-style hash member, value, and store helpers.** `Hash#member?`
   joins `key?`/`has_key?`/`include?` as a key-membership alias, `Hash#value?` and
   `Hash#has_value?` report value membership using the same `==` equality as the
@@ -47,6 +56,11 @@ All notable changes to this project will be documented in this file.
 - **Added: Ruby-style numeric predicate and successor helpers.** Integers and
   floats gain `zero?`, `positive?`, `negative?`, and `nonzero?` (returning the
   receiver or `nil`), and integers gain `next`/`succ` and `pred`.
+- **Added: Ruby-style `Array#min`, `#max`, `#minmax`, `#min_by`, and `#max_by`.**
+  The extrema helpers reuse the comparison semantics of `sort`/`sort_by`, return
+  `nil` (or `[nil, nil]` for `minmax`) on empty arrays, resolve ties to the first
+  matching element, participate in step/cancellation accounting for the block
+  forms, and raise clear errors on incomparable mixed values.
 
 ## v0.50.0 - 2026-06-11
 

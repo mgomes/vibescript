@@ -107,6 +107,11 @@ Unicode characters, not bytes, unless noted.
   occurrence of `pattern`.
 - `split(separator = nil) -> array` – split on whitespace (dropping empty
   fields) without arguments, or on `separator` when given.
+- `chars -> array` – array of the string's Unicode characters, one per code
+  point (rune-aware, like `length` and `slice`).
+- `lines -> array` – array of lines split on `"\n"`, retaining the trailing
+  newline on each line; an empty string yields no lines and carriage returns
+  stay attached so `"\r\n"` endings round-trip.
 - `template(context, strict: false) -> string` – interpolate `{{key.path}}`
   placeholders from a hash; `strict: true` errors on missing placeholders.
 
@@ -206,6 +211,12 @@ items.pop(2) # {array: [1], popped: [2, 3]}
   first-seen group order.
 - `tally -> hash` / `tally { |item| } -> hash` – occurrence counts keyed by
   element (or block result); keys must be symbols or strings.
+- `min -> value | nil` / `max -> value | nil` – smallest/largest element using
+  natural ordering; `nil` for an empty array.
+- `minmax -> array` – `[min, max]` in one pass; `[nil, nil]` for an empty array.
+- `min_by { |item| } -> value | nil` / `max_by { |item| } -> value | nil` –
+  element with the smallest/largest block key; `nil` for an empty array. Ties
+  resolve to the first matching element.
 
 String and symbol ordering uses deterministic codepoint comparison (no locale
 collation).
@@ -452,6 +463,8 @@ formatting. Times also support `time + duration`, `time - duration`, and
 - `to_f -> float` – epoch seconds with fractional part.
 - `to_r -> float` – same as `to_f` (rationals are not supported).
 - `to_s -> string` – RFC3339Nano representation.
+- `to_a -> array` – positional tuple `[sec, min, hour, mday, month, year, wday,
+  yday, isdst, zone]`, matching Ruby's field order and the receiver's zone.
 - `iso8601` / `rfc3339` -> string – RFC3339 representation.
 - `hash -> int` – nanoseconds since the Unix epoch (identity value).
 

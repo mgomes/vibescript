@@ -23,7 +23,7 @@ var (
 		"wday", "yday", "hash", "utc_offset", "gmt_offset", "gmtoff", "to_f", "to_i", "tv_sec", "to_r", "zone",
 		"utc?", "gmt?", "dst?", "isdst",
 		"sunday?", "monday?", "tuesday?", "wednesday?", "thursday?", "friday?", "saturday?",
-		"<=>", "eql?", "to_s", "iso8601", "rfc3339", "format",
+		"<=>", "eql?", "to_s", "to_a", "iso8601", "rfc3339", "format",
 		"getutc", "getgm", "getlocal", "utc", "gmtime", "localtime", "round", "ceil", "floor",
 	}
 )
@@ -225,6 +225,8 @@ func timeMember(t time.Time, property string) (Value, error) {
 		}), nil
 	case "to_s":
 		return NewString(t.Format(time.RFC3339Nano)), nil
+	case "to_a":
+		return timeToArray(t), nil
 	case "iso8601", "rfc3339":
 		return NewString(t.Format(time.RFC3339)), nil
 	case "format":
@@ -306,6 +308,26 @@ func callTimeEql(t time.Time, args []Value) (Value, error) {
 		return NewNil(), fmt.Errorf("time.eql? expects a Time")
 	}
 	return NewBool(t.Equal(args[0].Time())), nil
+}
+
+// timeToArray builds the Ruby Time#to_a positional tuple:
+// [sec, min, hour, mday, month, year, wday, yday, isdst, zone].
+// Field values mirror the individual Time accessors so UTC, local, and
+// offset receivers stay consistent across both forms.
+func timeToArray(t time.Time) Value {
+	name, _ := t.Zone()
+	return NewArray([]Value{
+		NewInt(int64(t.Second())),
+		NewInt(int64(t.Minute())),
+		NewInt(int64(t.Hour())),
+		NewInt(int64(t.Day())),
+		NewInt(int64(t.Month())),
+		NewInt(int64(t.Year())),
+		NewInt(int64(t.Weekday())),
+		NewInt(int64(t.YearDay())),
+		NewBool(t.IsDST()),
+		NewString(name),
+	})
 }
 
 func callTimeFormat(t time.Time, args []Value) (Value, error) {
