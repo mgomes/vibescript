@@ -449,7 +449,7 @@ formatting. Times also support `time + duration`, `time - duration`, and
 - `to_f -> float` – epoch seconds with fractional part.
 - `to_r -> float` – same as `to_f` (rationals are not supported).
 - `to_s -> string` – RFC3339Nano representation.
-- `iso8601` / `rfc3339` -> string – RFC3339 representation.
+- `iso8601(ndigits = 0)` / `rfc3339(ndigits = 0)` -> string – RFC3339 representation. With no argument it emits whole seconds; a non-negative `ndigits` appends that many fractional-second digits, truncated toward zero (matching Ruby's `Time#iso8601`). Negative, non-integer, or out-of-range (above 100 digits) precision raises a runtime error.
 - `hash -> int` – nanoseconds since the Unix epoch (identity value).
 
 ### Zone Conversion

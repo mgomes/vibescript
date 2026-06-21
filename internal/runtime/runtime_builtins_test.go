@@ -416,6 +416,96 @@ func TestTimeRoundRejectsInvalidPrecision(t *testing.T) {
 	}
 }
 
+func TestTimeISO8601Precision(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "no argument keeps whole seconds", expr: "t.iso8601", want: "1970-01-01T00:00:00Z"},
+		{name: "no argument with parentheses", expr: "t.iso8601()", want: "1970-01-01T00:00:00Z"},
+		{name: "explicit zero keeps whole seconds", expr: "t.iso8601(0)", want: "1970-01-01T00:00:00Z"},
+		{name: "millisecond precision", expr: "t.iso8601(3)", want: "1970-01-01T00:00:00.123Z"},
+		{name: "microsecond precision", expr: "t.iso8601(6)", want: "1970-01-01T00:00:00.123456Z"},
+		{name: "fractional digits truncate toward zero", expr: "t.iso8601(5)", want: "1970-01-01T00:00:00.12345Z"},
+		{name: "nanosecond precision", expr: "t.iso8601(9)", want: "1970-01-01T00:00:00.123456000Z"},
+		{name: "sub-nanosecond digits zero pad", expr: "t.iso8601(12)", want: "1970-01-01T00:00:00.123456000000Z"},
+		{name: "rfc3339 mirrors iso8601 precision", expr: "t.rfc3339(3)", want: "1970-01-01T00:00:00.123Z"},
+		{name: "rfc3339 without argument", expr: "t.rfc3339", want: "1970-01-01T00:00:00Z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.parse("1970-01-01T00:00:00.123456Z")
+		      `+tc.expr+`
+		    end
+		    `)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString || result.String() != tc.want {
+				t.Fatalf("iso8601 result mismatch: got %v want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+func TestTimeISO8601PreservesOffset(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+	    def run()
+	      t = Time.parse("2020-03-04 05:06:07", "2006-01-02 15:04:05", in: "America/New_York")
+	      {
+	        iso0: t.iso8601,
+	        iso3: t.iso8601(3)
+	      }
+	    end
+	    `)
+	result := callFunc(t, script, "run", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	expect := map[string]string{
+		"iso0": "2020-03-04T05:06:07-05:00",
+		"iso3": "2020-03-04T05:06:07.000-05:00",
+	}
+	for key, want := range expect {
+		if val, ok := got[key]; !ok || val.String() != want {
+			t.Fatalf("iso8601 %s mismatch: got %v want %q", key, val, want)
+		}
+	}
+}
+
+func TestTimeISO8601RejectsInvalidPrecision(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "negative precision", expr: "t.iso8601(-1)", want: "time.iso8601 precision must be non-negative"},
+		{name: "string precision", expr: `t.iso8601("3")`, want: "time.iso8601 precision must be an Integer"},
+		{name: "float precision", expr: "t.iso8601(1.5)", want: "time.iso8601 precision must be an Integer"},
+		{name: "too many arguments", expr: "t.iso8601(0, 0)", want: "time.iso8601 expects at most one precision argument"},
+		{name: "precision beyond maximum", expr: "t.iso8601(101)", want: "time.iso8601 precision exceeds maximum 100 digits"},
+		{name: "rfc3339 negative precision", expr: "t.rfc3339(-1)", want: "time.rfc3339 precision must be non-negative"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.parse("1970-01-01T00:00:00.123456Z")
+		      `+tc.expr+`
+		    end
+		    `)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestTimeParseCommonLayouts(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

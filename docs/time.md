@@ -35,7 +35,23 @@ def formatted_timestamp
 end
 ```
 
-`Time#to_s` uses RFC3339Nano. `Time#iso8601` and `Time#rfc3339` return RFC3339.
+`Time#to_s` uses RFC3339Nano. `Time#iso8601` and `Time#rfc3339` return RFC3339, defaulting to whole-second precision.
+
+Both accept an optional `ndigits` argument (matching Ruby's `Time#iso8601(ndigits = 0)`) to append fractional-second digits. Fractional seconds are truncated toward zero, and requesting more digits than the nanosecond clock can resolve zero-pads the remainder:
+
+```vibe
+def fractional_timestamps
+  t = Time.parse("1970-01-01T00:00:00.123456Z")
+  {
+    seconds:      t.iso8601,     # "1970-01-01T00:00:00Z"
+    milliseconds: t.iso8601(3),  # "1970-01-01T00:00:00.123Z"
+    microseconds: t.iso8601(6),  # "1970-01-01T00:00:00.123456Z"
+    padded:       t.iso8601(12)  # "1970-01-01T00:00:00.123456000000Z"
+  }
+end
+```
+
+A negative `ndigits`, a non-integer argument, more than one argument, or a precision above 100 digits raises a runtime error.
 
 ## Accessors and predicates
 
@@ -49,7 +65,7 @@ end
 - Epoch: `to_i`/`tv_sec`, `to_f`, `to_r`
 - Zone conversion: `getutc`/`getgm`, `getlocal`, `utc`/`gmtime`, `localtime`
 - String: `to_s` (RFC3339Nano)
-- RFC3339 aliases: `iso8601`, `rfc3339`
+- RFC3339 aliases: `iso8601(ndigits = 0)`, `rfc3339(ndigits = 0)` (optional fractional-second precision)
 
 ## Comparisons and math
 

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -226,7 +227,9 @@ func timeMember(t time.Time, property string) (Value, error) {
 	case "to_s":
 		return NewString(t.Format(time.RFC3339Nano)), nil
 	case "iso8601", "rfc3339":
-		return NewString(t.Format(time.RFC3339)), nil
+		return NewAutoBuiltin("time."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return callTimeISO8601("time."+property, t, args)
+		}), nil
 	case "format":
 		return NewBuiltin("time.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return callTimeFormat(t, args)
@@ -260,7 +263,7 @@ func timeMember(t time.Time, property string) (Value, error) {
 
 func canCallTimeMemberDirect(property string) bool {
 	switch property {
-	case "<=>", "eql?", "format", "round", "ceil", "floor":
+	case "<=>", "eql?", "format", "iso8601", "rfc3339", "round", "ceil", "floor":
 		return true
 	default:
 		return false
@@ -275,6 +278,8 @@ func callTimeMemberDirect(t time.Time, property string, args []Value, kwargs map
 		return callTimeEql(t, args)
 	case "format":
 		return callTimeFormat(t, args)
+	case "iso8601", "rfc3339":
+		return callTimeISO8601("time."+property, t, args)
 	case "round":
 		return callTimeRound(t, args)
 	case "ceil":
@@ -315,9 +320,72 @@ func callTimeFormat(t time.Time, args []Value) (Value, error) {
 	return NewString(t.Format(args[0].String())), nil
 }
 
+// callTimeISO8601 renders an RFC3339/ISO8601 timestamp. With no argument it
+// emits whole-second precision; a non-negative ndigits argument appends that
+// many fractional-second digits, truncating toward zero like Ruby's
+// Time#iso8601(ndigits).
+func callTimeISO8601(method string, t time.Time, args []Value) (Value, error) {
+	ndigits, err := timeISO8601Precision(method, args)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(formatTimeISO8601(t, ndigits)), nil
+}
+
+// timeISO8601Precision resolves the optional ndigits argument (defaulting to 0)
+// into a fractional-second digit count, rejecting non-integer or negative
+// precision so misuse surfaces a clear error rather than silently coercing.
+func timeISO8601Precision(method string, args []Value) (int, error) {
+	if len(args) == 0 {
+		return 0, nil
+	}
+	if len(args) > 1 {
+		return 0, fmt.Errorf("%s expects at most one precision argument", method)
+	}
+	arg := args[0]
+	if arg.Kind() != KindInt {
+		return 0, fmt.Errorf("%s precision must be an Integer", method)
+	}
+	ndigits := arg.Int()
+	if ndigits < 0 {
+		return 0, fmt.Errorf("%s precision must be non-negative", method)
+	}
+	if ndigits > maxISO8601FractionDigits {
+		return 0, fmt.Errorf("%s precision exceeds maximum %d digits", method, maxISO8601FractionDigits)
+	}
+	return int(ndigits), nil
+}
+
+// formatTimeISO8601 formats t as RFC3339 with ndigits fractional-second digits.
+// Zero digits omit the fractional part entirely; digits beyond nanosecond
+// resolution are zero-padded since the underlying clock cannot represent them.
+func formatTimeISO8601(t time.Time, ndigits int) string {
+	if ndigits <= 0 {
+		return t.Format(time.RFC3339)
+	}
+	digits := ndigits
+	if digits > maxTimePrecisionDigits {
+		digits = maxTimePrecisionDigits
+	}
+	out := t.Format("2006-01-02T15:04:05." + strings.Repeat("0", digits) + "Z07:00")
+	if ndigits <= maxTimePrecisionDigits {
+		return out
+	}
+	// The fractional block sits immediately after the seconds' decimal point;
+	// pad the sub-nanosecond positions with zeros before the trailing offset.
+	insertAt := strings.IndexByte(out, '.') + 1 + maxTimePrecisionDigits
+	return out[:insertAt] + strings.Repeat("0", ndigits-maxTimePrecisionDigits) + out[insertAt:]
+}
+
 // maxTimePrecisionDigits is the most fractional-second digits Time can
 // represent, matching the nanosecond resolution of the underlying clock.
 const maxTimePrecisionDigits = 9
+
+// maxISO8601FractionDigits bounds the fractional-second digits Time#iso8601 will
+// render. Digits beyond nanosecond resolution are pure zero padding, so the
+// limit blocks pathologically large precision values from forcing huge string
+// allocations while staying well above any realistic precision request.
+const maxISO8601FractionDigits = 100
 
 func callTimeRound(t time.Time, args []Value) (Value, error) {
 	unit, err := timeRoundingUnit("time.round", args)
