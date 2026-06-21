@@ -570,6 +570,8 @@ func TestNonFiniteFloatRejectedInIndexAndSort(t *testing.T) {
 		{"nan in sort", `[2.0, 0.0 / 0.0, 1.0].sort`, "array.sort values are not comparable"},
 		{"nan in min", `[2.0, 0.0 / 0.0].min`, "array.min values are not comparable"},
 		{"nan in max", `[2.0, 0.0 / 0.0].max`, "array.max values are not comparable"},
+		{"infinity epoch in Time.at", `Time.at(1.0 / 0)`, "Time.at expects a finite numeric epoch"},
+		{"nan epoch in Time.at", `Time.at(0.0 / 0.0)`, "Time.at expects a finite numeric epoch"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

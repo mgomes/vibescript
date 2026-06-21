@@ -2,6 +2,7 @@ package value
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -115,6 +116,11 @@ func TimeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
 		seconds = val.Int()
 	case KindFloat:
 		f := val.Float()
+		// Reject non-finite epochs: int64() of Infinity/NaN is
+		// implementation-specific and would silently create a bogus time.
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return time.Time{}, fmt.Errorf("Time.at expects a finite numeric epoch")
+		}
 		seconds = int64(f)
 		nanos = int64((f - float64(seconds)) * 1e9)
 	default:
