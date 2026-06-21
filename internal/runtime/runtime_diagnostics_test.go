@@ -495,9 +495,9 @@ end`,
 			errMsg: "min must be <= max",
 		},
 		{
-			name:   "float.round with argument",
-			script: `def run() 1.5.round(1) end`,
-			errMsg: "does not take arguments",
+			name:   "float.round with float precision",
+			script: `def run() 1.5.round(1.0) end`,
+			errMsg: "precision must be an Integer",
 		},
 		{
 			name:   "float.clamp with non-numeric bounds",

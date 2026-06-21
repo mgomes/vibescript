@@ -15,6 +15,7 @@ var (
 		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
 		"abs", "clamp", "even?", "odd?", "times",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
+		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
 	}
 	floatMemberNames = []string{
@@ -29,6 +30,7 @@ var (
 	intBuiltinMemberNames = []string{
 		"abs", "clamp", "even?", "odd?", "times",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
+		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
 	}
 	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
@@ -187,6 +189,20 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return NewInt(n - 1), nil
 		}), nil
+	case "round", "floor", "ceil":
+		mode := roundModeFor(property)
+		name := "int." + property
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			ndigits, err := roundDigitsArg(name, args)
+			if err != nil {
+				return NewNil(), err
+			}
+			result, err := intRound(receiver.Int(), ndigits, mode, name)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewInt(result), nil
+		}), nil
 	case "div":
 		return NewAutoBuiltin("int.div", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			divisor, err := singleNumericArg("int.div", args)
@@ -270,41 +286,15 @@ func floatMemberBuiltin(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
-	case "round":
-		return NewAutoBuiltin("float.round", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("float.round does not take arguments")
-			}
-			rounded := math.Round(receiver.Float())
-			asInt, err := floatToInt64Checked(rounded, "float.round")
+	case "round", "floor", "ceil":
+		mode := roundModeFor(property)
+		name := "float." + property
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			ndigits, err := roundDigitsArg(name, args)
 			if err != nil {
 				return NewNil(), err
 			}
-			return NewInt(asInt), nil
-		}), nil
-	case "floor":
-		return NewAutoBuiltin("float.floor", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("float.floor does not take arguments")
-			}
-			floored := math.Floor(receiver.Float())
-			asInt, err := floatToInt64Checked(floored, "float.floor")
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewInt(asInt), nil
-		}), nil
-	case "ceil":
-		return NewAutoBuiltin("float.ceil", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("float.ceil does not take arguments")
-			}
-			ceiled := math.Ceil(receiver.Float())
-			asInt, err := floatToInt64Checked(ceiled, "float.ceil")
-			if err != nil {
-				return NewNil(), err
-			}
-			return NewInt(asInt), nil
+			return floatRound(receiver.Float(), ndigits, mode, name)
 		}), nil
 	case "zero?":
 		return NewAutoBuiltin("float.zero?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
