@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `String#chars` and `String#lines`.** `chars` returns an
+  array of the string's Unicode characters using the existing rune-aware
+  semantics, and `lines` splits on `"\n"` while retaining the trailing newline
+  on each line, leaving carriage returns attached so `"\r\n"` endings round-trip.
 - **Improved: Ruby-style `String#start_with?` and `String#end_with?`.** Both
   predicates now accept one or more string candidates and return true when any
   matches. Candidates are checked left to right and matching short-circuits like
