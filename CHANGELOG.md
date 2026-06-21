@@ -9,6 +9,12 @@ All notable changes to this project will be documented in this file.
   optional Ruby-style `ndigits` (defaulting to `0`) so `round(3)` and `round(6)`
   produce millisecond and microsecond precision, with non-negative `Integer`
   validation and clear errors on misuse.
+- **Fixed: Hash membership predicates align with Ruby.** `Hash#key?`,
+  `Hash#has_key?`, and `Hash#include?` now return `false` for candidate keys of
+  unsupported types instead of raising, matching Ruby's predicate semantics.
+- **Added: Ruby-style numeric predicate and successor helpers.** Integers and
+  floats gain `zero?`, `positive?`, `negative?`, and `nonzero?` (returning the
+  receiver or `nil`), and integers gain `next`/`succ` and `pred`.
 
 ## v0.50.0 - 2026-06-11
 

@@ -14,13 +14,20 @@ var (
 	intMemberNames = []string{
 		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
 		"abs", "clamp", "even?", "odd?", "times",
+		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 	}
-	floatMemberNames = []string{"abs", "clamp", "round", "floor", "ceil"}
+	floatMemberNames = []string{
+		"abs", "clamp", "round", "floor", "ceil",
+		"zero?", "positive?", "negative?", "nonzero?",
+	}
 	moneyMemberNames = []string{"currency", "cents", "amount", "format"}
 )
 
 var (
-	intBuiltinMemberNames   = []string{"abs", "clamp", "even?", "odd?", "times"}
+	intBuiltinMemberNames = []string{
+		"abs", "clamp", "even?", "odd?", "times",
+		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
+	}
 	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
 	floatBuiltinMembers     = newMemberTable(floatMemberNames)
 	moneyBuiltinMemberNames = []string{"format"}
@@ -121,6 +128,62 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
+	case "zero?":
+		return NewAutoBuiltin("int.zero?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("int.zero? does not take arguments")
+			}
+			return NewBool(receiver.Int() == 0), nil
+		}), nil
+	case "positive?":
+		return NewAutoBuiltin("int.positive?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("int.positive? does not take arguments")
+			}
+			return NewBool(receiver.Int() > 0), nil
+		}), nil
+	case "negative?":
+		return NewAutoBuiltin("int.negative?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("int.negative? does not take arguments")
+			}
+			return NewBool(receiver.Int() < 0), nil
+		}), nil
+	case "nonzero?":
+		// Ruby returns the receiver when nonzero and nil when zero, so the
+		// result is truthy exactly when the number is nonzero.
+		return NewAutoBuiltin("int.nonzero?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("int.nonzero? does not take arguments")
+			}
+			if receiver.Int() == 0 {
+				return NewNil(), nil
+			}
+			return receiver, nil
+		}), nil
+	case "next", "succ":
+		name := "int." + property
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			}
+			n := receiver.Int()
+			if n == math.MaxInt64 {
+				return NewNil(), fmt.Errorf("%s overflow", name)
+			}
+			return NewInt(n + 1), nil
+		}), nil
+	case "pred":
+		return NewAutoBuiltin("int.pred", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("int.pred does not take arguments")
+			}
+			n := receiver.Int()
+			if n == math.MinInt64 {
+				return NewNil(), fmt.Errorf("int.pred overflow")
+			}
+			return NewInt(n - 1), nil
+		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown int method %s", property)
 	}
@@ -199,6 +262,39 @@ func floatMemberBuiltin(property string) (Value, error) {
 				return NewNil(), err
 			}
 			return NewInt(asInt), nil
+		}), nil
+	case "zero?":
+		return NewAutoBuiltin("float.zero?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("float.zero? does not take arguments")
+			}
+			return NewBool(receiver.Float() == 0), nil
+		}), nil
+	case "positive?":
+		return NewAutoBuiltin("float.positive?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("float.positive? does not take arguments")
+			}
+			return NewBool(receiver.Float() > 0), nil
+		}), nil
+	case "negative?":
+		return NewAutoBuiltin("float.negative?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("float.negative? does not take arguments")
+			}
+			return NewBool(receiver.Float() < 0), nil
+		}), nil
+	case "nonzero?":
+		// Ruby returns the receiver when nonzero and nil when zero, so the
+		// result is truthy exactly when the number is nonzero.
+		return NewAutoBuiltin("float.nonzero?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("float.nonzero? does not take arguments")
+			}
+			if receiver.Float() == 0 {
+				return NewNil(), nil
+			}
+			return receiver, nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown float method %s", property)

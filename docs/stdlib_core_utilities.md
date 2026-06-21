@@ -296,6 +296,15 @@ aliases, so `1.second` reads naturally.
 - `even? -> bool` – true for even integers.
 - `odd? -> bool` – true for odd integers.
 - `times { |i| } -> int` – run the block with `0..n-1`; returns the receiver.
+- `zero? -> bool` – true when the integer is `0`.
+- `positive? -> bool` – true when greater than `0`.
+- `negative? -> bool` – true when less than `0`.
+- `nonzero? -> int?` – the receiver when nonzero, otherwise `nil`, matching
+  Ruby (the result is truthy exactly when the number is nonzero).
+- `next -> int` / `succ -> int` – the next integer (`self + 1`); errors on
+  64-bit overflow rather than wrapping.
+- `pred -> int` – the previous integer (`self - 1`); errors on 64-bit
+  underflow rather than wrapping.
 
 ## Floats
 
@@ -306,6 +315,11 @@ aliases, so `1.second` reads naturally.
   a 64-bit integer.
 - `floor -> int` – round toward negative infinity.
 - `ceil -> int` – round toward positive infinity.
+- `zero? -> bool` – true when the value is `0.0`.
+- `positive? -> bool` – true when greater than `0.0`.
+- `negative? -> bool` – true when less than `0.0`.
+- `nonzero? -> float?` – the receiver when nonzero, otherwise `nil`, matching
+  Ruby (the result is truthy exactly when the number is nonzero).
 
 `round`, `floor`, and `ceil` take no precision argument and always return an
 `int`.
