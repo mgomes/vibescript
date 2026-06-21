@@ -9,7 +9,9 @@ func TestNumericDivHelper(t *testing.T) {
 	t.Parallel()
 
 	// div performs floored division and always returns an integer, matching
-	// Ruby's Numeric#div including the sign behavior for negative operands.
+	// Ruby's Numeric#div. The quotient rounds toward negative infinity, so
+	// mixed-sign operands round down rather than taking the divisor's sign:
+	// (-5).div(2) is -3, not -2.
 	tests := []struct {
 		expr string
 		want int64

@@ -324,9 +324,10 @@ aliases, so `1.second` reads naturally.
   64-bit overflow rather than wrapping.
 - `pred -> int` – the previous integer (`self - 1`); errors on 64-bit
   underflow rather than wrapping.
-- `div(n) -> int` – floored division; the result has the divisor's sign for
-  mixed-sign operands. A zero divisor errors, and the one quotient outside the
-  64-bit range (`min_int.div(-1)`) errors rather than wrapping.
+- `div(n) -> int` – floored division; the quotient rounds toward negative
+  infinity, so mixed-sign operands round down (`(-5).div(2)` is `-3`). A zero
+  divisor errors, and the one quotient outside the 64-bit range
+  (`min_int.div(-1)`) errors rather than wrapping.
 - `divmod(n) -> [quotient, modulo]` – the floored quotient and the modulo whose
   sign follows the divisor. With integer arguments both elements are integers;
   a float argument makes the modulo a float.
