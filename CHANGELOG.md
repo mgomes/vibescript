@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style numeric division helpers.** Integers and floats now expose
+  `div` (floored division returning an integer), `divmod` (the floored quotient
+  paired with the divisor-signed modulo), `fdiv` (floating division), and
+  `remainder` (truncated-division remainder whose sign follows the receiver, so
+  it differs from `%` for mixed-sign operands). A zero divisor errors for all
+  four, and quotients outside the 64-bit range error rather than wrapping. Ruby's
+  `fdiv` infinity result is intentionally an error instead, matching the `/`
+  operator, and `quo` is intentionally omitted because Vibescript has no rational
+  number type.
 - **Added: Ruby-style `Time#to_a` tuple conversion.** `Time#to_a` returns the
   positional field tuple `[sec, min, hour, mday, month, year, wday, yday, isdst,
   zone]`, matching Ruby for compatibility with positional field processing. Field

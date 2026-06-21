@@ -324,6 +324,17 @@ aliases, so `1.second` reads naturally.
   64-bit overflow rather than wrapping.
 - `pred -> int` – the previous integer (`self - 1`); errors on 64-bit
   underflow rather than wrapping.
+- `div(n) -> int` – floored division; the result has the divisor's sign for
+  mixed-sign operands. A zero divisor errors, and the one quotient outside the
+  64-bit range (`min_int.div(-1)`) errors rather than wrapping.
+- `divmod(n) -> [quotient, modulo]` – the floored quotient and the modulo whose
+  sign follows the divisor. With integer arguments both elements are integers;
+  a float argument makes the modulo a float.
+- `fdiv(n) -> float` – floating division. Unlike Ruby, a zero divisor errors
+  rather than yielding infinity, matching the `/` operator.
+- `remainder(n) -> int|float` – remainder whose sign follows the receiver
+  (truncated division), which differs from `%` for operands of opposite sign;
+  a zero divisor errors.
 
 ## Floats
 
@@ -339,9 +350,21 @@ aliases, so `1.second` reads naturally.
 - `negative? -> bool` – true when less than `0.0`.
 - `nonzero? -> float?` – the receiver when nonzero, otherwise `nil`, matching
   Ruby (the result is truthy exactly when the number is nonzero).
+- `div(n) -> int` – floored division returning an integer; a zero divisor
+  errors, as does a quotient outside the 64-bit range.
+- `divmod(n) -> [int, float]` – the floored quotient (an integer) and the
+  float modulo whose sign follows the divisor.
+- `fdiv(n) -> float` – floating division; a zero divisor errors rather than
+  yielding infinity, matching the `/` operator.
+- `remainder(n) -> float` – remainder whose sign follows the receiver
+  (truncated division); a zero divisor errors.
 
 `round`, `floor`, and `ceil` take no precision argument and always return an
 `int`.
+
+Vibescript has no rational number type, so Ruby's `quo` (which returns a
+`Rational` for integer operands) is intentionally not provided; use `fdiv` for
+floating division.
 
 ## Money
 
