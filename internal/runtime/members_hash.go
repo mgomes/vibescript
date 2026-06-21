@@ -358,7 +358,38 @@ func hashMemberTransforms(property string) (Value, error) {
 			addition := args[0].Hash()
 			out := make(map[string]Value, len(base)+len(addition))
 			maps.Copy(out, base)
-			maps.Copy(out, addition)
+			// Without a block the incoming hash wins on key conflicts, matching
+			// Ruby's blockless Hash#merge.
+			if valueBlock(block) == nil {
+				maps.Copy(out, addition)
+				return NewHash(out), nil
+			}
+			// With a block, Ruby resolves conflicts by yielding
+			// (key, old_value, new_value) and storing the block result; keys
+			// present on only one side are copied without invoking the block.
+			// Conflicting keys are visited in sorted order so block side
+			// effects are deterministic, mirroring the other hash helpers.
+			runner, err := newBlockCallRunner(exec, block, "hash.merge")
+			if err != nil {
+				return NewNil(), err
+			}
+			var blockArgs [3]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(addition, keyBuf[:]) {
+				oldValue, conflict := base[key]
+				if !conflict {
+					out[key] = addition[key]
+					continue
+				}
+				blockArgs[0] = NewSymbol(key)
+				blockArgs[1] = oldValue
+				blockArgs[2] = addition[key]
+				resolved, err := runner.call(blockArgs[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				out[key] = resolved
+			}
 			return NewHash(out), nil
 		}), nil
 	case "store":

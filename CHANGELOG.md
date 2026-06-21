@@ -24,6 +24,13 @@ All notable changes to this project will be documented in this file.
   rest of the language, and `Hash#store(key, value)` returns a new hash with the
   key assigned. Like the other method-based hash helpers, `store` is
   immutable-style and leaves the receiver unchanged.
+- **Added: Ruby-style conflict blocks for `Hash#merge`.** `Hash#merge` now
+  honors an optional block to resolve key conflicts: for keys present in both
+  hashes the block is yielded `(key, old_value, new_value)` and its result is
+  stored, while keys present on only one side are copied without invoking the
+  block. Without a block the incoming hash still wins on conflicts. The conflict
+  key is yielded as a symbol, matching the other hash helpers, and the block was
+  previously accepted but silently ignored.
 - **Added: Ruby-style `call` on function values.** A function value now exposes
   a `call` member so `fn.call(...)` mirrors direct `fn(...)` invocation,
   forwarding positional arguments, keyword arguments, and an optional block.
