@@ -1,6 +1,7 @@
 package value_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -248,13 +249,94 @@ func TestTimeFromCalendarParts(t *testing.T) {
 
 	t.Run("float_microseconds_carry_subusec", func(t *testing.T) {
 		t.Parallel()
+		// Ruby truncates the exact value of the float toward zero rather than
+		// rounding: Time.utc(...,123456.7).nsec == 123456699, not 123456700.
 		args := append(intArgs(2024, 1, 2, 3, 4, 5), value.NewFloat(123456.7))
 		got, err := value.TimeFromCalendarParts(args, time.UTC)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Nanosecond() != 123_456_700 {
-			t.Fatalf("Nanosecond() = %d, want 123456700", got.Nanosecond())
+		if got.Nanosecond() != 123_456_699 {
+			t.Fatalf("Nanosecond() = %d, want 123456699", got.Nanosecond())
+		}
+	})
+
+	t.Run("float_microseconds_truncate_toward_zero", func(t *testing.T) {
+		t.Parallel()
+		// Each case mirrors observed Ruby output (Time.utc(...,usec).nsec). The
+		// fractional nanoseconds are floored, and the result is decided by the
+		// float's exact value rather than a second float multiplication.
+		tests := []struct {
+			name string
+			usec float64
+			want int
+		}{
+			{name: "half_usec", usec: 1.5, want: 1500},
+			{name: "just_under_usec", usec: 1.4999, want: 1499},
+			{name: "subnanosecond_floors", usec: 0.9999999, want: 999},
+			{name: "exact_value_009_floors_to_8", usec: 0.009, want: 8},
+			{name: "exact_value_011_floors_to_10", usec: 0.011, want: 10},
+			{name: "exact_value_1001_floors_to_1000", usec: 1.001, want: 1000},
+			{name: "max_fraction_stays_in_range", usec: 999999.9999, want: 999_999_999},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				args := append(intArgs(2024, 1, 2, 3, 4, 5), value.NewFloat(tc.usec))
+				got, err := value.TimeFromCalendarParts(args, time.UTC)
+				if err != nil {
+					t.Fatalf("TimeFromCalendarParts(usec=%v) error: %v", tc.usec, err)
+				}
+				if got.Nanosecond() != tc.want {
+					t.Fatalf("Nanosecond() for usec=%v = %d, want %d", tc.usec, got.Nanosecond(), tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("microsecond_out_of_range_rejected", func(t *testing.T) {
+		t.Parallel()
+		// Ruby raises "subsecx out of range" for these boundary inputs instead
+		// of silently rolling the value into an adjacent second.
+		wantErr := "Time constructor microsecond argument out of range (must be within one second)"
+		tests := []struct {
+			name string
+			arg  value.Value
+		}{
+			{name: "int_one_full_second", arg: value.NewInt(1_000_000)},
+			{name: "int_above_one_second", arg: value.NewInt(2_000_000)},
+			{name: "int_negative", arg: value.NewInt(-1)},
+			// 9e18 fits in int64 but 9e18*1000 overflows it; the guard must
+			// reject by magnitude before scaling rather than wrapping.
+			{name: "int_extreme_no_overflow", arg: value.NewInt(9_000_000_000_000_000_000)},
+			{name: "float_one_full_second", arg: value.NewFloat(1_000_000.0)},
+			{name: "float_just_above_one_second", arg: value.NewFloat(1_000_000.0001)},
+			{name: "float_negative", arg: value.NewFloat(-0.5)},
+			{name: "float_tiny_negative", arg: value.NewFloat(-0.0001)},
+			{name: "float_infinity", arg: value.NewFloat(math.Inf(1))},
+			{name: "float_nan", arg: value.NewFloat(math.NaN())},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				args := append(intArgs(2024, 1, 2, 3, 4, 5), tc.arg)
+				_, err := value.TimeFromCalendarParts(args, time.UTC)
+				if err == nil || err.Error() != wantErr {
+					t.Fatalf("TimeFromCalendarParts(%v) error = %v, want %q", tc.arg, err, wantErr)
+				}
+			})
+		}
+	})
+
+	t.Run("microsecond_max_valid_int", func(t *testing.T) {
+		t.Parallel()
+		args := append(intArgs(2024, 1, 2, 3, 4, 5), value.NewInt(999_999))
+		got, err := value.TimeFromCalendarParts(args, time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Nanosecond() != 999_999_000 || got.Second() != 5 {
+			t.Fatalf("got nsec=%d sec=%d, want nsec=999999000 sec=5", got.Nanosecond(), got.Second())
 		}
 	})
 

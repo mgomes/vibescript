@@ -3,6 +3,7 @@ package value
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -136,11 +137,11 @@ func TimeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, 
 
 	nanos := 0
 	if len(args) >= 7 {
-		usec, err := microsecondsArg(args[6])
+		ns, err := microsecondsArgNanos(args[6])
 		if err != nil {
 			return time.Time{}, err
 		}
-		nanos = usec
+		nanos = ns
 	}
 
 	loc := defaultLoc
@@ -150,18 +151,65 @@ func TimeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, 
 	return time.Date(year, time.Month(month), day, hour, min, sec, nanos, loc), nil
 }
 
-// microsecondsArg converts a Ruby-style microseconds-with-fraction argument
+// nanosPerSecond is the exclusive upper bound for a valid subsecond component,
+// expressed in nanoseconds.
+const nanosPerSecond = 1_000_000_000
+
+// microsPerSecond is the exclusive upper bound for a valid microsecond
+// argument.
+const microsPerSecond = 1_000_000
+
+// microsecondsArgNanos converts a Ruby-style microseconds-with-fraction argument
 // into nanoseconds. Integers are whole microseconds; floats carry sub-microsecond
-// precision down to the nanosecond. Non-numeric arguments are rejected.
-func microsecondsArg(val Value) (int, error) {
+// precision down to the nanosecond. The result must stay within a single second
+// ([0, 1_000_000_000) ns), matching Ruby's "subsecx out of range" rejection for
+// boundary inputs such as 1_000_000 microseconds; without this guard time.Date
+// would silently normalize an out-of-range component into an adjacent second.
+// Non-numeric arguments are rejected.
+func microsecondsArgNanos(val Value) (int, error) {
 	switch val.Kind() {
 	case KindInt:
-		return int(val.Int() * 1000), nil
+		// Validate the microsecond magnitude before scaling so an extreme
+		// integer cannot overflow int64 and wrap into the valid range.
+		usec := val.Int()
+		if usec < 0 || usec >= microsPerSecond {
+			return 0, microsecondRangeError()
+		}
+		return int(usec * 1000), nil
 	case KindFloat:
-		return int(math.Round(val.Float() * 1000)), nil
+		return floatMicrosecondsNanos(val.Float())
 	default:
 		return 0, fmt.Errorf("Time constructor microsecond argument must be numeric")
 	}
+}
+
+// floatMicrosecondsNanos converts a fractional microsecond value into whole
+// nanoseconds the way Ruby does: it operates on the float's exact value (via a
+// rational, so a second layer of float multiplication cannot perturb the
+// decimal result) and truncates toward zero. The value must be a finite,
+// non-negative quantity that stays within a single second.
+func floatMicrosecondsNanos(usec float64) (int, error) {
+	if math.IsNaN(usec) || math.IsInf(usec, 0) || usec < 0 {
+		return 0, microsecondRangeError()
+	}
+	exact := new(big.Rat).SetFloat64(usec)
+	if exact == nil {
+		return 0, microsecondRangeError()
+	}
+	exact.Mul(exact, big.NewRat(1000, 1))
+	nanos := new(big.Int).Quo(exact.Num(), exact.Denom()) // truncate toward zero
+	if !nanos.IsInt64() {
+		return 0, microsecondRangeError()
+	}
+	ns := nanos.Int64()
+	if ns < 0 || ns >= nanosPerSecond {
+		return 0, microsecondRangeError()
+	}
+	return int(ns), nil
+}
+
+func microsecondRangeError() error {
+	return fmt.Errorf("Time constructor microsecond argument out of range (must be within one second)")
 }
 
 // TimeFromEpoch converts a numeric epoch value into a time.Time anchored

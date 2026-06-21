@@ -276,7 +276,9 @@ func TestTimeCalendarConstructorSubsecond(t *testing.T) {
 		"utc_nsec":    NewInt(123456000),
 		"utc_offset":  NewInt(0),
 		"gm_offset":   NewInt(0),
-		"float_nsec":  NewInt(123456700),
+		// Ruby truncates the float's exact value toward zero rather than
+		// rounding: Time.utc(...,123456.7).nsec == 123456699.
+		"float_nsec": NewInt(123456699),
 	}
 	got := result.Hash()
 	for key, expected := range want {
@@ -310,6 +312,10 @@ func TestTimeCalendarConstructorArgRejection(t *testing.T) {
 	    def too_many()
 	      Time.utc(2024, 1, 2, 3, 4, 5, 6, 7)
 	    end
+
+	    def out_of_range(usec)
+	      Time.utc(2024, 1, 2, 3, 4, 5, usec)
+	    end
 	    `)
 
 	for _, method := range []string{"local", "mktime", "utc", "gm"} {
@@ -320,6 +326,19 @@ func TestTimeCalendarConstructorArgRejection(t *testing.T) {
 		"Time constructor expects at least year, month, day")
 	requireCallErrorContains(t, script, "too_many", nil, CallOptions{},
 		"Time constructor expects at most year, month, day, hour, minute, second, microsecond")
+
+	// Ruby raises for a subsecond component that does not fit in one second
+	// instead of rolling the timestamp into an adjacent second.
+	rangeArgs := []Value{
+		NewInt(1_000_000),
+		NewInt(-1),
+		NewFloat(1_000_000.0),
+		NewFloat(-0.5),
+	}
+	for _, arg := range rangeArgs {
+		requireCallErrorContains(t, script, "out_of_range", []Value{arg}, CallOptions{},
+			"Time constructor microsecond argument out of range (must be within one second)")
+	}
 }
 
 func TestTimeParseAndAliases(t *testing.T) {
