@@ -91,6 +91,8 @@ content and integers do not match equal-looking floats.
   requested order. Unlike `fetch`, it raises when a key is absent. Pass a block
   to compute a replacement for each missing key instead of raising.
 - `dig(*path)` for nested lookup.
+- `values_at(*keys)` to read several values at once, in requested key order, with
+  `nil` for missing keys.
 
 ```vibe
 def display_name_or_default(records, player_id)
@@ -100,6 +102,7 @@ end
 ```
 
 ```vibe
+{ a: 1, b: 2 }.values_at(:b, :c, :a)           # [2, nil, 1]
 { a: 1, b: 2 }.fetch_values(:a, :b)            # [1, 2]
 { a: 1 }.fetch_values(:a, :missing)            # raises "key not found: :missing"
 { a: 1 }.fetch_values(:a, :missing) { |k| k }  # [1, :missing]

@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var hashMemberNames = []string{
-	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "fetch", "fetch_values", "dig", "each", "each_key", "each_value",
+	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value",
 	"merge", "store", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 }
 
@@ -32,7 +32,7 @@ func hashMember(obj Value, property string) (Value, error) {
 
 func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "fetch", "fetch_values", "dig", "each", "each_key", "each_value":
+	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value":
 		return hashMemberQuery(property)
 	case "merge", "store", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
@@ -216,6 +216,23 @@ func hashMemberQuery(property string) (Value, error) {
 				values[i] = entries[k]
 			}
 			return NewArray(values), nil
+		}), nil
+	case "values_at":
+		return NewAutoBuiltin("hash.values_at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			entries := receiver.Hash()
+			out := make([]Value, len(args))
+			for i, arg := range args {
+				key, err := valueToHashKey(arg)
+				if err != nil {
+					return NewNil(), fmt.Errorf("hash.values_at keys must be symbol or string")
+				}
+				if value, ok := entries[key]; ok {
+					out[i] = value
+				} else {
+					out[i] = NewNil()
+				}
+			}
+			return NewArray(out), nil
 		}), nil
 	case "fetch":
 		return NewAutoBuiltin("hash.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
