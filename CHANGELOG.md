@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `Time#to_a` tuple conversion.** `Time#to_a` returns the
+  positional field tuple `[sec, min, hour, mday, month, year, wday, yday, isdst,
+  zone]`, matching Ruby for compatibility with positional field processing. Field
+  values reuse the existing `Time` accessors, so UTC, local, and offset receivers
+  stay consistent across both forms.
 - **Improved: Ruby-style `String#start_with?` and `String#end_with?`.** Both
   predicates now accept one or more string candidates and return true when any
   matches. Candidates are checked left to right and matching short-circuits like

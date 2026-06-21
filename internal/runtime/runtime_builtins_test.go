@@ -330,6 +330,61 @@ func TestTimeSpaceshipComparison(t *testing.T) {
 	})
 }
 
+func TestTimeToArray(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want []Value
+	}{
+		{
+			name: "utc matches ruby field order",
+			expr: `Time.utc(2024, 1, 2, 3, 4, 5).to_a`,
+			want: []Value{
+				NewInt(5), NewInt(4), NewInt(3), NewInt(2), NewInt(1), NewInt(2024),
+				NewInt(2), NewInt(2), NewBool(false), NewString("UTC"),
+			},
+		},
+		{
+			name: "standard time reports zone and no dst",
+			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "America/New_York").to_a`,
+			want: []Value{
+				NewInt(5), NewInt(4), NewInt(3), NewInt(2), NewInt(1), NewInt(2024),
+				NewInt(2), NewInt(2), NewBool(false), NewString("EST"),
+			},
+		},
+		{
+			name: "daylight time reports dst and adjusted yday",
+			expr: `Time.parse("2024-07-02 03:04:05", "2006-01-02 15:04:05", in: "America/New_York").to_a`,
+			want: []Value{
+				NewInt(5), NewInt(4), NewInt(3), NewInt(2), NewInt(7), NewInt(2024),
+				NewInt(2), NewInt(184), NewBool(true), NewString("EDT"),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			result := callFunc(t, script, "run", nil)
+			compareArrays(t, result, tc.want)
+		})
+	}
+}
+
+// TestTimeToArrayRejectsArguments documents that to_a is a plain accessor
+// returning an Array, so supplying arguments tries to call that result like a
+// function, matching the behavior of the other scalar Time accessors.
+func TestTimeToArrayRejectsArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def run()
+      Time.utc(2024, 1, 2).to_a(1)
+    end
+    `)
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "attempted to call non-callable value")
+}
+
 func TestTimeRoundPrecision(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
