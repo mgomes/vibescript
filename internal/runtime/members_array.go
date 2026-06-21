@@ -582,6 +582,13 @@ func arrayMemberQuery(property string) (Value, error) {
 				}
 				out = append(out, item)
 			}
+			// A short prefix should not retain a backing array sized to the
+			// whole receiver, so right-size the result after an early stop.
+			if len(out) < cap(out) {
+				trimmed := make([]Value, len(out))
+				copy(trimmed, out)
+				out = trimmed
+			}
 			return NewArray(out), nil
 		}), nil
 	case "drop_while":

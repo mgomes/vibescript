@@ -186,8 +186,11 @@ func TestArrayEnumerableHelpersParticipateInStepQuota(t *testing.T) {
 			source: `def run(values); values.take_while do |v| v >= 0 end; end`,
 		},
 		{
+			// Predicate stays true across the whole array so the block runs
+			// for every element and actually trips the step quota; a predicate
+			// that is immediately false would stop after one iteration.
 			name:   "drop_while",
-			source: `def run(values); values.drop_while do |v| v < 0 end; end`,
+			source: `def run(values); values.drop_while do |v| v >= 0 end; end`,
 		},
 		{
 			name:   "grep transform block",
