@@ -368,6 +368,81 @@ Splits a string into an array of strings.
 "path/to/file".split("/") # ["path", "to", "file"]
 ```
 
+### `partition(separator)`
+
+Splits the string around the **first** occurrence of `separator`, returning a
+three-element array of the text before the separator, the separator itself, and
+the text after it:
+
+```vibe
+"abc=def=ghi".partition("=") # ["abc", "=", "def=ghi"]
+```
+
+When the separator is not found, the whole string is returned as the first
+element with two empty trailing elements. An empty separator matches at the very
+start:
+
+```vibe
+"no-sep".partition("=") # ["no-sep", "", ""]
+"abc".partition("")     # ["", "", "abc"]
+```
+
+The separator must be a string.
+
+### `rpartition(separator)`
+
+Splits the string around the **last** occurrence of `separator`, returning a
+three-element array of the text before the separator, the separator itself, and
+the text after it:
+
+```vibe
+"abc=def=ghi".rpartition("=") # ["abc=def", "=", "ghi"]
+```
+
+When the separator is not found, the whole string is returned as the last
+element with two empty leading elements. An empty separator matches at the very
+end:
+
+```vibe
+"no-sep".rpartition("=") # ["", "", "no-sep"]
+"abc".rpartition("")     # ["abc", "", ""]
+```
+
+The separator must be a string.
+
+### `chars`
+
+Returns an array of the string's Unicode characters, one entry per code point.
+This is rune-aware, matching the behavior of `length` and `slice`:
+
+```vibe
+"abc".chars # ["a", "b", "c"]
+"héllo".chars # ["h", "é", "l", "l", "o"]
+"".chars # []
+```
+
+### `lines`
+
+Splits the string into lines using `"\n"` as the separator, keeping the trailing
+newline on each line. A trailing newline does not produce a final empty line,
+and an empty string yields no lines:
+
+```vibe
+"a\nb".lines   # ["a\n", "b"]
+"a\nb\n".lines # ["a\n", "b\n"]
+"".lines       # []
+```
+
+Only `\n` ends a line. Carriage returns are never treated as separators and are
+preserved verbatim, so a Windows-style `\r\n` line ending keeps the `\r`
+attached to the line that precedes the `\n` (input on the left contains literal
+carriage-return bytes):
+
+```text
+"a\r\nb".lines # ["a\r\n", "b"]
+"a\rb".lines   # ["a\rb"]
+```
+
 ## Templating
 
 ### `template(context, strict: false)`
