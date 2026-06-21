@@ -95,6 +95,37 @@ func asciiLower(b byte) byte {
 	return b
 }
 
+// caseInsensitiveEqual reports whether a and b are equal under case folding,
+// backing Ruby's String#casecmp?. When both operands are valid UTF-8 it uses
+// Unicode simple case folding (matching the upcase/downcase surface), so
+// full-fold cases like "ß" vs "SS" stay unequal. When either operand contains
+// invalid UTF-8 it folds byte-wise over the ASCII letters instead, mirroring
+// Ruby's binary-string path. The byte-wise fallback preserves byte identity:
+// distinct invalid sequences such as "\xff" and "\xfe" remain unequal, whereas
+// strings.EqualFold would decode both as utf8.RuneError and report them equal.
+func caseInsensitiveEqual(a, b string) bool {
+	if utf8.ValidString(a) && utf8.ValidString(b) {
+		return strings.EqualFold(a, b)
+	}
+	return asciiCaseEqual(a, b)
+}
+
+// asciiCaseEqual reports whether a and b are equal after folding only the ASCII
+// letters A-Z down to a-z, comparing every other byte ordinally. It is the
+// equality counterpart of asciiCaseCompare and is used for operands that are
+// not valid UTF-8.
+func asciiCaseEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range len(a) {
+		if asciiLower(a[i]) != asciiLower(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func stringRuneLen(text string) int {
 	if stringIsASCII(text) {
 		return len(text)
@@ -733,7 +764,7 @@ func stringMemberQuery(property string) (Value, error) {
 			if args[0].Kind() != KindString {
 				return NewNil(), nil
 			}
-			return NewBool(strings.EqualFold(receiver.String(), args[0].String())), nil
+			return NewBool(caseInsensitiveEqual(receiver.String(), args[0].String())), nil
 		}), nil
 	case "match":
 		return NewAutoBuiltin("string.match", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

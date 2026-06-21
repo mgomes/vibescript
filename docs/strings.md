@@ -223,6 +223,11 @@ Folding uses Unicode simple case mapping, consistent with `upcase` and
 `downcase`. Full-fold expansions such as German `ß` matching `SS` are not
 applied, so `"ß".casecmp?("SS")` is `false` (Ruby returns `true`).
 
+When either operand contains invalid UTF-8, folding falls back to byte-wise
+ASCII case folding so that distinct byte sequences stay distinct. This mirrors
+Ruby's binary-string path and preserves byte identity, where the Unicode path
+would otherwise treat every invalid byte as the same replacement character.
+
 ### `match(pattern)`
 
 Regex match returning `[full, capture1, ...]` or `nil`:

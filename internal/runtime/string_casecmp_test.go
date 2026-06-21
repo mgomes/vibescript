@@ -221,6 +221,79 @@ func TestStringCasecmpPredicateNonString(t *testing.T) {
 	}
 }
 
+// TestStringCasecmpPredicateInvalidUTF8 guards the byte-identity contract for
+// casecmp? when operands carry invalid UTF-8. Host-provided strings (via
+// NewString or capability values) can hold raw bytes that are not valid UTF-8,
+// and strings.EqualFold would decode every invalid byte as utf8.RuneError,
+// reporting distinct sequences such as "\xff" and "\xfe" as equal. casecmp?
+// must instead fold byte-wise over ASCII letters so that byte identity is
+// preserved, matching Ruby's binary-string path.
+func TestStringCasecmpPredicateInvalidUTF8(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run(a, b) a.casecmp?(b) end`)
+
+	cases := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		{name: "distinct invalid bytes differ", a: "\xff", b: "\xfe", want: false},
+		{name: "identical invalid bytes match", a: "\xff", b: "\xff", want: true},
+		{name: "ascii fold around shared invalid byte", a: "A\xff", b: "a\xff", want: true},
+		{name: "ascii fold with differing invalid byte", a: "a\xff", b: "A\xfe", want: false},
+		{name: "ascii prefix versus invalid trailing byte", a: "abc", b: "ab\xff", want: false},
+		{name: "invalid receiver versus valid argument", a: "\xff", b: "abc", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := callFunc(t, script, "run", []Value{NewString(tc.a), NewString(tc.b)})
+			if result.Kind() != KindBool {
+				t.Fatalf("expected bool, got %v", result.Kind())
+			}
+			if result.Bool() != tc.want {
+				t.Fatalf("casecmp?(%q, %q) = %v, want %v", tc.a, tc.b, result.Bool(), tc.want)
+			}
+		})
+	}
+}
+
+func TestCaseInsensitiveEqual(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		{name: "ascii_fold", a: "AbC", b: "aBc", want: true},
+		{name: "ascii_differ", a: "abc", b: "abd", want: false},
+		{name: "length_differs", a: "abc", b: "abcd", want: false},
+		{name: "empty_equal", a: "", b: "", want: true},
+		{name: "unicode_simple_fold", a: "héllo", b: "HÉLLO", want: true},
+		{name: "unicode_accent_fold", a: "ä", b: "Ä", want: true},
+		{name: "simple_fold_excludes_full_fold", a: "ß", b: "SS", want: false},
+		{name: "invalid_bytes_distinct", a: "\xff", b: "\xfe", want: false},
+		{name: "invalid_bytes_identical", a: "\xff", b: "\xff", want: true},
+		{name: "invalid_byte_with_ascii_fold", a: "A\xff", b: "a\xff", want: true},
+		{name: "invalid_byte_differs", a: "a\xff", b: "A\xfe", want: false},
+		{name: "valid_versus_invalid", a: "abc", b: "ab\xff", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := caseInsensitiveEqual(tc.a, tc.b); got != tc.want {
+				t.Fatalf("caseInsensitiveEqual(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStringCasecmpArityErrors(t *testing.T) {
 	t.Parallel()
 

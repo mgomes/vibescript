@@ -11,7 +11,9 @@ All notable changes to this project will be documented in this file.
   non-string argument, matching Ruby. `casecmp?` returns a boolean using Unicode
   simple case folding (consistent with `upcase`/`downcase`) or `nil` for a
   non-string argument; full-fold expansions such as `ß` matching `SS` are not
-  applied.
+  applied. When either operand contains invalid UTF-8, `casecmp?` folds
+  byte-wise over ASCII letters so distinct byte sequences stay distinct,
+  preserving byte identity like Ruby's binary-string path.
 - **Added: Ruby-style hash member, value, and store helpers.** `Hash#member?`
   joins `key?`/`has_key?`/`include?` as a key-membership alias, `Hash#value?` and
   `Hash#has_value?` report value membership using the same `==` equality as the
