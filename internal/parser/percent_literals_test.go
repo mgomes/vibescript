@@ -642,6 +642,50 @@ end`
 	}
 }
 
+// A parameter default may reference an earlier parameter, so the earlier
+// parameter must be a known local when the default is parsed: the percent
+// literal in the default is modulo, not a parenless call.
+func TestParserFunctionParamDefaultSeesEarlierParamsForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(total, w, x = total %w[0])
+  x
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	if len(got.Statements) != 1 {
+		t.Fatalf("parseSource returned %d statements, want 1", len(got.Statements))
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement[0] = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	var xParam *ast.Param
+	for i := range fn.Params {
+		if fn.Params[i].Name == "x" {
+			xParam = &fn.Params[i]
+		}
+	}
+	if xParam == nil {
+		t.Fatalf("parameter x not found")
+	}
+
+	want := &ast.BinaryExpr{
+		Left:     &ast.Identifier{Name: "total"},
+		Operator: ast.TokenPercent,
+		Right: &ast.IndexExpr{
+			Object: &ast.Identifier{Name: "w"},
+			Index:  &ast.IntegerLiteral{Value: 0},
+		},
+	}
+	if diff := cmp.Diff(want, xParam.DefaultVal, astCmpOpts); diff != "" {
+		t.Fatalf("parameter default mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
 	t.Parallel()
 

@@ -546,6 +546,15 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		p.nextToken()
 	}
 
+	// Push the function scope before parsing parameters so each parameter is
+	// visible to later parameters' default values, matching the runtime which
+	// binds earlier parameters before evaluating later defaults. The scope is
+	// also kept active through any rescue/else/ensure tail so the tail resolves
+	// function-body locals for name-sensitive parsing such as percent-literal
+	// vs modulo disambiguation.
+	p.pushLocalScope(nil, true)
+	defer p.popLocalScope()
+
 	params := []ast.Param{}
 	var returnTy *ast.TypeExpr
 	// Optional parens on the same line.
@@ -573,11 +582,6 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		}
 		p.nextToken()
 	}
-	p.pushLocalScope(params, true)
-	// Keep the function scope active through any rescue/else/ensure tail so
-	// the tail still resolves function-body locals for name-sensitive
-	// parsing such as percent-literal vs modulo disambiguation.
-	defer p.popLocalScope()
 	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
 	switch p.curToken.Type {
 	case ast.TokenRescue, ast.TokenElse, ast.TokenEnsure:
@@ -833,6 +837,10 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 		}
 
 		params = append(params, param)
+		// Declare the parameter as a local now so later parameters' default
+		// values resolve it (see parseFunctionStatement for why the scope is
+		// already active here).
+		p.declareParamLocal(param)
 		if p.peekToken.Type != ast.TokenComma {
 			break
 		}
