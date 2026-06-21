@@ -36,6 +36,41 @@ func valueToInt(val Value) (int, error) {
 	}
 }
 
+// errNegativeCount signals that a count argument was numeric but negative.
+// Callers detect it with errors.Is to emit a method-specific message.
+var errNegativeCount = errors.New("count must not be negative")
+
+// valueToCount converts a numeric count argument to a non-negative int,
+// truncating positive fractional values toward zero like Ruby's to_int. It
+// inspects the original numeric value's sign before truncating so that
+// fractional negatives such as -0.5 are rejected rather than silently
+// collapsing to 0. Numeric negatives return errNegativeCount; non-numeric
+// values, NaN, and values outside the int range return a generic error.
+func valueToCount(val Value) (int, error) {
+	switch val.Kind() {
+	case KindInt:
+		if val.Int() < 0 {
+			return 0, errNegativeCount
+		}
+		return int(val.Int()), nil
+	case KindFloat:
+		f := val.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) || f > math.MaxInt || f < math.MinInt {
+			return 0, fmt.Errorf("count must be integer")
+		}
+		// Truncate toward zero first, matching Ruby's to_int (and Array#first/
+		// #last), then reject only a negative integer. A fraction in (-1, 0)
+		// therefore becomes 0 rather than an error.
+		n := int(f)
+		if n < 0 {
+			return 0, errNegativeCount
+		}
+		return n, nil
+	default:
+		return 0, fmt.Errorf("count must be integer")
+	}
+}
+
 func sortComparisonResult(val Value) (int, error) {
 	switch val.Kind() {
 	case KindInt:

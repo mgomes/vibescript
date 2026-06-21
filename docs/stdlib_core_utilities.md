@@ -142,6 +142,17 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `each { |item| } -> array` – yield each element; returns the receiver.
 - `map { |item| } -> array` – new array of block results.
 - `select { |item| } -> array` – elements for which the block is truthy.
+- `reject { |item| } -> array` – elements for which the block is falsy (the
+  inverse of `select`).
+- `take_while { |item| } -> array` – leading elements until the block first
+  returns a falsy value; stops at the first miss.
+- `drop_while { |item| } -> array` – elements remaining after skipping the
+  leading run for which the block is truthy.
+- `grep(pattern) { |item| } -> array` – elements that match `pattern` using the
+  case-equality direction (`pattern === item`); a `Range` matches by membership
+  and other values by equality. The optional block transforms each match.
+- `grep_v(pattern) { |item| } -> array` – elements that do not match `pattern`,
+  with the same matching rules and optional transform block as `grep`.
 - `find { |item| } -> value | nil` – first element matching the block.
 - `find_index { |item| } -> int | nil` – index of the first match.
 - `reduce(initial = nil) { |acc, item| } -> value` – fold left; without
@@ -264,6 +275,9 @@ methods.
 
 - `fetch(key, default = nil) -> value` – value for `key`, or `default`/`nil`
   when missing.
+- `fetch_values(*keys) { |key| } -> array` – values for `keys` in requested
+  order. Raises `key not found` for any missing key; when a block is given it is
+  called with each missing key and its result is used instead.
 - `dig(*keys) -> value | nil` – nested lookup following `keys`; `nil` when any
   step is missing.
 - `keys -> array` – symbol keys in sorted order.
@@ -278,6 +292,10 @@ methods.
 ### Transform and Filter
 
 - `merge(other) -> hash` – combined entries; `other` wins on key conflicts.
+- `merge(other) { |key, old_value, new_value| } -> hash` – combined entries; for
+  keys present in both hashes the block resolves the conflict and its result is
+  stored. Keys present on only one side are copied without invoking the block,
+  and the conflict key is yielded as a symbol.
 - `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
   receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
 - `slice(*keys) -> hash` – only the listed keys (missing keys are skipped).
@@ -491,15 +509,19 @@ formatting. Times also support `time + duration`, `time - duration`, and
 - `to_s -> string` – RFC3339Nano representation.
 - `to_a -> array` – positional tuple `[sec, min, hour, mday, month, year, wday,
   yday, isdst, zone]`, matching Ruby's field order and the receiver's zone.
-- `iso8601` / `rfc3339` -> string – RFC3339 representation.
+- `iso8601(ndigits = 0)` / `rfc3339(ndigits = 0)` -> string – RFC3339 representation. With no argument it emits whole seconds; a non-negative `ndigits` appends that many fractional-second digits, truncated toward zero (matching Ruby's `Time#iso8601`). Negative, non-integer, or out-of-range (above 100 digits) precision raises a runtime error.
 - `hash -> int` – nanoseconds since the Unix epoch (identity value).
 
 ### Zone Conversion
 
 - `utc` / `gmtime` -> time – the same instant in UTC.
 - `getutc` / `getgm` -> time – aliases for `utc`.
-- `localtime -> time` – the same instant in the host's local zone.
-- `getlocal -> time` – alias for `localtime`.
+- `localtime(offset = nil) -> time` – the same instant in the supplied zone,
+  or the host's local zone when the argument is omitted or `nil`. The offset
+  follows the usual zone rules: a fixed offset such as `"+05:30"` or `"-04:00"`,
+  a named zone such as `"America/New_York"`, or `"UTC"`. Returns a new `Time`;
+  the receiver is never mutated.
+- `getlocal(offset = nil) -> time` – alias for `localtime`.
 
 ### Formatting
 
