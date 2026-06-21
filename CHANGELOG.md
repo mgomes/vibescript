@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `Hash#fetch_values`.** `Hash#fetch_values(*keys)` returns
+  the values for several keys at once, in the requested order. Unlike
+  `values_at`, it raises a `key not found` error for any missing key; pass a
+  block to compute a replacement value for each missing key instead of raising.
 - **Added: Ruby-style `Time#to_a` tuple conversion.** `Time#to_a` returns the
   positional field tuple `[sec, min, hour, mday, month, year, wday, yday, isdst,
   zone]`, matching Ruby for compatibility with positional field processing. Field

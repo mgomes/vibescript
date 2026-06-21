@@ -367,6 +367,84 @@ func TestHashExpandedHelpers(t *testing.T) {
 	compareHash(t, collision.Hash(), map[string]Value{"same": NewInt(2)})
 }
 
+func TestHashFetchValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   []Value
+	}{
+		{
+			name:   "returns values in requested order",
+			source: `def run() { a: 1, b: 2, c: 3 }.fetch_values(:c, :a) end`,
+			want:   []Value{NewInt(3), NewInt(1)},
+		},
+		{
+			name:   "no keys yields empty array",
+			source: `def run() { a: 1 }.fetch_values() end`,
+			want:   []Value{},
+		},
+		{
+			name:   "string keys collide with symbol keys",
+			source: `def run() { a: 1 }.fetch_values("a") end`,
+			want:   []Value{NewInt(1)},
+		},
+		{
+			name:   "block supplies values for missing keys",
+			source: `def run() { a: 1 }.fetch_values(:a, :missing) { |key| key } end`,
+			want:   []Value{NewInt(1), NewSymbol("missing")},
+		},
+		{
+			name:   "block only runs for absent keys",
+			source: `def run() { a: 1, b: 2 }.fetch_values(:a, :b) { |key| 0 } end`,
+			want:   []Value{NewInt(1), NewInt(2)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			compareArrays(t, callFunc(t, script, "run", nil), tt.want)
+		})
+	}
+}
+
+func TestHashFetchValuesErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{
+			name:    "missing symbol key without block raises",
+			source:  `def run() { a: 1 }.fetch_values(:a, :missing) end`,
+			wantErr: "hash.fetch_values key not found: :missing",
+		},
+		{
+			name:    "missing string key without block raises",
+			source:  `def run() { a: 1 }.fetch_values("missing") end`,
+			wantErr: `hash.fetch_values key not found: "missing"`,
+		},
+		{
+			name:    "unsupported key type rejected",
+			source:  `def run() { a: 1 }.fetch_values([1]) end`,
+			wantErr: "hash.fetch_values keys must be symbol or string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.wantErr)
+		})
+	}
+}
+
 func TestHashHelpersSupportObjectReceiver(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
