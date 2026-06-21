@@ -255,7 +255,8 @@ func TestTimeCalendarConstructorSubsecond(t *testing.T) {
 	        utc_nsec: Time.utc(2024, 1, 2, 3, 4, 5, 123456).nsec,
 	        utc_offset: Time.utc(2024, 1, 2, 3, 4, 5, 123456).utc_offset,
 	        gm_offset: Time.gm(2024, 1, 2, 3, 4, 5, 123456).utc_offset,
-	        float_nsec: Time.utc(2024, 1, 2, 3, 4, 5, 123456.7).nsec
+	        float_nsec: Time.utc(2024, 1, 2, 3, 4, 5, 123456.7).nsec,
+	        nil_usec: Time.utc(2024, 1, 2, 3, 4, 5, nil).usec
 	      }
 	    end
 
@@ -279,6 +280,8 @@ func TestTimeCalendarConstructorSubsecond(t *testing.T) {
 		// Ruby truncates the float's exact value toward zero rather than
 		// rounding: Time.utc(...,123456.7).nsec == 123456699.
 		"float_nsec": NewInt(123456699),
+		// An explicit nil subsecond is treated as omitted (zero), like Ruby.
+		"nil_usec": NewInt(0),
 	}
 	got := result.Hash()
 	for key, expected := range want {

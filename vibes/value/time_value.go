@@ -178,6 +178,10 @@ func microsecondsArgNanos(val Value) (int, error) {
 		return int(usec * 1000), nil
 	case KindFloat:
 		return floatMicrosecondsNanos(val.Float())
+	case KindNil:
+		// An explicit nil subsecond is treated as omitted (zero), matching
+		// Ruby's Time.utc(..., nil).
+		return 0, nil
 	default:
 		return 0, fmt.Errorf("Time constructor microsecond argument must be numeric")
 	}
