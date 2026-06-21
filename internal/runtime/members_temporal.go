@@ -237,12 +237,12 @@ func timeMember(t time.Time, property string) (Value, error) {
 		return NewNil(), fmt.Errorf("strftime is not supported; use format with Go layouts instead")
 	case "getutc", "getgm":
 		return NewTime(t.UTC()), nil
-	case "getlocal":
-		return NewTime(t.In(time.Local)), nil
+	case "getlocal", "localtime":
+		return NewAutoBuiltin("time."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return callTimeGetlocal(t, property, args)
+		}), nil
 	case "utc", "gmtime":
 		return NewTime(t.UTC()), nil
-	case "localtime":
-		return NewTime(t.In(time.Local)), nil
 	case "round":
 		return NewAutoBuiltin("time.round", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return callTimeRound(t, args)
@@ -262,7 +262,7 @@ func timeMember(t time.Time, property string) (Value, error) {
 
 func canCallTimeMemberDirect(property string) bool {
 	switch property {
-	case "<=>", "eql?", "format", "round", "ceil", "floor":
+	case "<=>", "eql?", "format", "round", "ceil", "floor", "getlocal", "localtime":
 		return true
 	default:
 		return false
@@ -283,6 +283,8 @@ func callTimeMemberDirect(t time.Time, property string, args []Value, kwargs map
 		return callTimeCeil(t, args)
 	case "floor":
 		return callTimeFloor(t, args)
+	case "getlocal", "localtime":
+		return callTimeGetlocal(t, property, args)
 	default:
 		return NewNil(), fmt.Errorf("unknown time method %s%s", property, didYouMean(property, timeMemberNames))
 	}
@@ -335,6 +337,30 @@ func callTimeFormat(t time.Time, args []Value) (Value, error) {
 		return NewNil(), fmt.Errorf("format expects a Go layout string")
 	}
 	return NewString(t.Format(args[0].String())), nil
+}
+
+// callTimeGetlocal implements Ruby's non-mutating Time#getlocal and
+// Time#localtime. With no argument it converts the receiver to the host's
+// local zone; with a timezone-offset argument (e.g. "+05:30" or "-04:00") it
+// converts to that fixed-offset zone using the shared location parser. The
+// underlying instant is preserved, only the displayed zone changes. localtime
+// is reconciled with Vibescript's immutable value model by returning a new
+// Time rather than mutating the receiver, matching getlocal.
+func callTimeGetlocal(t time.Time, method string, args []Value) (Value, error) {
+	if len(args) == 0 {
+		return NewTime(t.In(time.Local)), nil
+	}
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("%s expects at most one timezone offset argument", method)
+	}
+	loc, err := parseLocation(args[0])
+	if err != nil {
+		return NewNil(), err
+	}
+	if loc == nil {
+		loc = time.Local
+	}
+	return NewTime(t.In(loc)), nil
 }
 
 // maxTimePrecisionDigits is the most fractional-second digits Time can

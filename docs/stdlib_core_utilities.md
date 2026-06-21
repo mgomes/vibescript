@@ -469,8 +469,12 @@ formatting. Times also support `time + duration`, `time - duration`, and
 
 - `utc` / `gmtime` -> time – the same instant in UTC.
 - `getutc` / `getgm` -> time – aliases for `utc`.
-- `localtime -> time` – the same instant in the host's local zone.
-- `getlocal -> time` – alias for `localtime`.
+- `localtime(offset = nil) -> time` – the same instant in the supplied zone,
+  or the host's local zone when the argument is omitted or `nil`. The offset
+  follows the usual zone rules: a fixed offset such as `"+05:30"` or `"-04:00"`,
+  a named zone such as `"America/New_York"`, or `"UTC"`. Returns a new `Time`;
+  the receiver is never mutated.
+- `getlocal(offset = nil) -> time` – alias for `localtime`.
 
 ### Formatting
 

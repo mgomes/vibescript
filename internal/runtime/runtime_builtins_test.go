@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 	"unicode/utf8"
 )
 
@@ -463,6 +464,120 @@ func TestTimeRoundRejectsInvalidPrecision(t *testing.T) {
 			script := compileScript(t, `
 		    def run()
 		      t = Time.parse("1970-01-01T00:00:00.123456Z")
+		      `+tc.expr+`
+		    end
+		    `)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+func TestTimeGetlocalAndLocaltimeOffsets(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{
+			name: "getlocal positive offset",
+			expr: `t.getlocal("+05:30").format("2006-01-02T15:04:05 -0700")`,
+			want: "1970-01-01T05:30:00 +0530",
+		},
+		{
+			name: "getlocal negative offset",
+			expr: `t.getlocal("-04:00").format("2006-01-02T15:04:05 -0700")`,
+			want: "1969-12-31T20:00:00 -0400",
+		},
+		{
+			name: "localtime positive offset",
+			expr: `t.localtime("+05:30").format("2006-01-02T15:04:05 -0700")`,
+			want: "1970-01-01T05:30:00 +0530",
+		},
+		{
+			name: "localtime negative offset",
+			expr: `t.localtime("-04:00").format("2006-01-02T15:04:05 -0700")`,
+			want: "1969-12-31T20:00:00 -0400",
+		},
+		{
+			name: "named zone conversion",
+			expr: `t.getlocal("America/New_York").format("2006-01-02T15:04:05 MST")`,
+			want: "1969-12-31T19:00:00 EST",
+		},
+		{
+			name: "utc string offset",
+			expr: `t.localtime("UTC").to_s`,
+			want: "1970-01-01T00:00:00Z",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.utc(1970, 1, 1, 0, 0, 0)
+		      `+tc.expr+`
+		    end
+		    `)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString || result.String() != tc.want {
+				t.Fatalf("conversion result mismatch: got %v want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+// TestTimeGetlocalDefaultsToHostLocal checks that the no-argument and nil
+// forms convert to the host's local zone while preserving the instant, both
+// as property-style access (auto-invoked) and as explicit calls.
+func TestTimeGetlocalDefaultsToHostLocal(t *testing.T) {
+	t.Parallel()
+	instant := time.Unix(0, 0)
+	_, wantOffset := instant.In(time.Local).Zone()
+	cases := []struct {
+		name string
+		expr string
+	}{
+		{name: "getlocal property style", expr: "t.getlocal.utc_offset"},
+		{name: "getlocal call style", expr: "t.getlocal().utc_offset"},
+		{name: "getlocal nil argument", expr: "t.getlocal(nil).utc_offset"},
+		{name: "localtime property style", expr: "t.localtime.utc_offset"},
+		{name: "localtime call style", expr: "t.localtime().utc_offset"},
+		{name: "localtime nil argument", expr: "t.localtime(nil).utc_offset"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.utc(1970, 1, 1, 0, 0, 0)
+		      [t.getlocal.to_i, `+tc.expr+`]
+		    end
+		    `)
+			result := callFunc(t, script, "run", nil)
+			compareArrays(t, result, []Value{NewInt(0), NewInt(int64(wantOffset))})
+		})
+	}
+}
+
+func TestTimeGetlocalRejectsInvalidArguments(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "integer offset", expr: "t.getlocal(123)", want: "invalid timezone spec"},
+		{name: "unknown zone", expr: `t.getlocal("Not/AZone")`, want: `invalid timezone "Not/AZone"`},
+		{name: "too many arguments", expr: `t.getlocal("+05:30", "+06:00")`, want: "getlocal expects at most one timezone offset argument"},
+		{name: "localtime too many arguments", expr: `t.localtime("+05:30", "+06:00")`, want: "localtime expects at most one timezone offset argument"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.utc(1970, 1, 1, 0, 0, 0)
 		      `+tc.expr+`
 		    end
 		    `)
