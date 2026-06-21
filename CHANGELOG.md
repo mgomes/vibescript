@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `String#partition` and `String#rpartition`.** Both split a
+  string into a three-element `[head, separator, tail]` triple around the first
+  (`partition`) or last (`rpartition`) occurrence of the separator. A missing
+  separator keeps the whole string on the head (`partition`) or tail
+  (`rpartition`) with empty surrounding segments, and an empty separator matches
+  at the start or end respectively, matching Ruby. The separator must be a
+  string.
 - **Added: Ruby-style `Hash#fetch_values`.** `Hash#fetch_values(*keys)` returns
   the values for several keys at once, in the requested order. Unlike
   `values_at`, it raises a `key not found` error for any missing key; pass a

@@ -326,6 +326,48 @@ Splits a string into an array of strings.
 "path/to/file".split("/") # ["path", "to", "file"]
 ```
 
+### `partition(separator)`
+
+Splits the string around the **first** occurrence of `separator`, returning a
+three-element array of the text before the separator, the separator itself, and
+the text after it:
+
+```vibe
+"abc=def=ghi".partition("=") # ["abc", "=", "def=ghi"]
+```
+
+When the separator is not found, the whole string is returned as the first
+element with two empty trailing elements. An empty separator matches at the very
+start:
+
+```vibe
+"no-sep".partition("=") # ["no-sep", "", ""]
+"abc".partition("")     # ["", "", "abc"]
+```
+
+The separator must be a string.
+
+### `rpartition(separator)`
+
+Splits the string around the **last** occurrence of `separator`, returning a
+three-element array of the text before the separator, the separator itself, and
+the text after it:
+
+```vibe
+"abc=def=ghi".rpartition("=") # ["abc=def", "=", "ghi"]
+```
+
+When the separator is not found, the whole string is returned as the last
+element with two empty leading elements. An empty separator matches at the very
+end:
+
+```vibe
+"no-sep".rpartition("=") # ["", "", "no-sep"]
+"abc".rpartition("")     # ["abc", "", ""]
+```
+
+The separator must be a string.
+
 ### `chars`
 
 Returns an array of the string's Unicode characters, one entry per code point.
