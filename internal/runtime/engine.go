@@ -492,28 +492,28 @@ func registerTimeBuiltins(engine *Engine) {
 			return NewTime(t), nil
 		}),
 		"local": NewBuiltin("Time.local", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			t, err := timeFromParts(args, time.Local)
+			t, err := timeFromCalendarParts(args, time.Local)
 			if err != nil {
 				return NewNil(), err
 			}
 			return NewTime(t), nil
 		}),
 		"mktime": NewAutoBuiltin("Time.mktime", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			t, err := timeFromParts(args, time.Local)
+			t, err := timeFromCalendarParts(args, time.Local)
 			if err != nil {
 				return NewNil(), err
 			}
 			return NewTime(t), nil
 		}),
 		"utc": NewBuiltin("Time.utc", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			t, err := timeFromParts(args, time.UTC)
+			t, err := timeFromCalendarParts(args, time.UTC)
 			if err != nil {
 				return NewNil(), err
 			}
 			return NewTime(t), nil
 		}),
 		"gm": NewAutoBuiltin("Time.gm", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			t, err := timeFromParts(args, time.UTC)
+			t, err := timeFromCalendarParts(args, time.UTC)
 			if err != nil {
 				return NewNil(), err
 			}

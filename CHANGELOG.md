@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style subsecond parts for `Time.local`, `mktime`, `utc`, and
+  `gm`.** These calendar constructors now read their seventh positional argument
+  as microseconds-with-fraction instead of routing it through timezone parsing.
+  Integer microseconds are exact and floats carry sub-microsecond precision down
+  to the nanosecond, while a non-numeric microsecond argument raises a runtime
+  error. `Time.new` keeps its Ruby distinction of accepting a zone/offset in the
+  seventh position. Unlike Ruby, a string microsecond argument is rejected rather
+  than coerced via leading-digit parsing.
 - **Added: Ruby-style `Array#each_slice`, `each_cons`, `reverse_each`, and
   `cycle`.** `each_slice(n)` yields non-overlapping slices (including a shorter
   trailing slice) and `each_cons(n)` yields sliding windows; both require a

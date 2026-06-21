@@ -11,13 +11,21 @@ end
 ## Creating Time values
 
 - `Time.new(year, month, day, hour=0, min=0, sec=0, zone=nil, in: zone)`
-- `Time.local(...)` / `Time.mktime(...)`
-- `Time.utc(...)` / `Time.gm(...)`
+- `Time.local(year, month, day, hour=0, min=0, sec=0, usec=0)` / `Time.mktime(...)`
+- `Time.utc(year, month, day, hour=0, min=0, sec=0, usec=0)` / `Time.gm(...)`
 - `Time.at(seconds_since_epoch, in: zone)`
 - `Time.now(in: zone)`
 - `Time.parse(string, layout=nil, in: zone)`
 
 Zones accept Go-style names (e.g. `"America/New_York"`), `"UTC"`/`"GMT"`, `"LOCAL"`, or numeric offsets like `"+05:30"`.
+
+The seventh positional argument differs by constructor, matching Ruby. For `Time.new` it is a zone/offset (the location may also be set with `in:`). For `Time.local`/`Time.mktime`/`Time.utc`/`Time.gm` it is microseconds-with-fraction; the location is fixed by the constructor (local for `local`/`mktime`, UTC for `utc`/`gm`). Integer microseconds are exact and floats carry sub-microsecond precision down to the nanosecond. A non-numeric microsecond argument raises a runtime error.
+
+```vibe
+def with_microseconds
+  Time.utc(2024, 1, 2, 3, 4, 5, 123456).nsec # 123456000
+end
+```
 Without an explicit `layout`, `Time.parse` accepts common formats such as RFC3339/RFC1123, `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYY-MM-DD HH:MM:SS`, and `MM/DD/YYYY` (with optional time).
 
 ## Formatting
