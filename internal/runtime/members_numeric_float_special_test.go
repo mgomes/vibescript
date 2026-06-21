@@ -556,3 +556,26 @@ func TestFloatDivByZeroFamilyStillRaises(t *testing.T) {
 		})
 	}
 }
+
+// Non-finite floats produced by zero-division must not slip into index
+// coercion, and NaN must make ordering helpers fail rather than compare equal.
+func TestNonFiniteFloatRejectedInIndexAndSort(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{"infinity index via fetch", `[1].fetch(1.0 / 0, "fallback")`, "array.fetch index must be integer"},
+		{"nan in sort", `[2.0, 0.0 / 0.0, 1.0].sort`, "array.sort values are not comparable"},
+		{"nan in min", `[2.0, 0.0 / 0.0].min`, "array.min values are not comparable"},
+		{"nan in max", `[2.0, 0.0 / 0.0].max`, "array.max values are not comparable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}

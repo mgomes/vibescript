@@ -30,7 +30,15 @@ func valueToInt(val Value) (int, error) {
 	case KindInt:
 		return int(val.Int()), nil
 	case KindFloat:
-		return int(val.Float()), nil
+		f := val.Float()
+		// Reject non-finite and out-of-range floats so the new Infinity/NaN
+		// values cannot reach int() (which is implementation-specific for them)
+		// and slip into index/count helpers. float64(math.MaxInt) rounds up to
+		// 2^63, so reject `>=` it; float64(math.MinInt) is exactly -2^63.
+		if math.IsNaN(f) || math.IsInf(f, 0) || f >= float64(math.MaxInt) || f < float64(math.MinInt) {
+			return 0, fmt.Errorf("index must be integer")
+		}
+		return int(f), nil
 	default:
 		return 0, fmt.Errorf("index must be integer")
 	}
@@ -108,10 +116,17 @@ func arraySortCompareValues(left, right Value) (int, error) {
 			return 0, nil
 		}
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		lf, rf := left.Float(), right.Float()
+		// NaN is unordered: returning 0 (equal) here would let sort/min/max
+		// treat NaN as equal to every element. Report it as incomparable so
+		// callers fail consistently with the <=> operator (which yields nil).
+		if math.IsNaN(lf) || math.IsNaN(rf) {
+			return 0, fmt.Errorf("cannot compare NaN")
+		}
 		switch {
-		case left.Float() < right.Float():
+		case lf < rf:
 			return -1, nil
-		case left.Float() > right.Float():
+		case lf > rf:
 			return 1, nil
 		default:
 			return 0, nil
