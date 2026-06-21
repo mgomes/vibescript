@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `call` on function values.** A function value now exposes
+  a `call` member so `fn.call(...)` mirrors direct `fn(...)` invocation,
+  forwarding positional arguments, keyword arguments, and an optional block.
+  Arity and type errors stay anchored at the call site, and `call` is the only
+  member offered (with a "did you mean" hint for typos).
 - **Hardened CLI source-size enforcement.** `vibes run`, `vibes analyze`, and
   `vibes test` now read each script through a single size-checked descriptor,
   bounded at the engine's configured source-size limit, so an oversized file
