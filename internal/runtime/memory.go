@@ -84,6 +84,29 @@ func (exec *Execution) checkMemoryWithCallRoots(receiver Value, args []Value, kw
 	return nil
 }
 
+// checkProjectedStringBytes rejects allocations that would exceed the memory
+// quota before the string is built. Builtins that grow a string by a
+// user-controlled amount (such as the padding helpers) use it to fail fast
+// instead of materializing a huge buffer that the post-call check would only
+// catch after the allocation already happened. payloadBytes is the byte length
+// of the string that would be produced.
+func (exec *Execution) checkProjectedStringBytes(payloadBytes int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	est.reset()
+
+	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
+	used = saturatingAdd(used, payloadBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	est := exec.memoryEstimatorForCheck()
 

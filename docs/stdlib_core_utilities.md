@@ -99,6 +99,18 @@ Unicode characters, not bytes, unless noted.
 - `delete_prefix(prefix) -> string` – remove `prefix` when present.
 - `delete_suffix(suffix) -> string` – remove `suffix` when present.
 
+### Padding
+
+`width` counts Unicode characters (like `length`/`slice`); a `Float` width is
+truncated toward zero. A width at or below the receiver's length returns it
+unchanged. The pad string defaults to `" "`, must be non-empty, and is repeated
+then truncated at a character boundary to fill the span.
+
+- `center(width, pad = " ") -> string` – pad both sides, with the extra
+  character on the right when the padding cannot be split evenly.
+- `ljust(width, pad = " ") -> string` – left-justify, padding on the right.
+- `rjust(width, pad = " ") -> string` – right-justify, padding on the left.
+
 ### Replacement, Splitting, and Templating
 
 - `sub(pattern, replacement, regex: false) -> string` – replace the first
