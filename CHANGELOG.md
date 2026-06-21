@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `String#partition` and `String#rpartition`.** Both split a
+  string into a three-element `[head, separator, tail]` triple around the first
+  (`partition`) or last (`rpartition`) occurrence of the separator. A missing
+  separator keeps the whole string on the head (`partition`) or tail
+  (`rpartition`) with empty surrounding segments, and an empty separator matches
+  at the start or end respectively, matching Ruby. The separator must be a
+  string.
 - **Added: Ruby-style `Time#to_a` tuple conversion.** `Time#to_a` returns the
   positional field tuple `[sec, min, hour, mday, month, year, wday, yday, isdst,
   zone]`, matching Ruby for compatibility with positional field processing. Field
