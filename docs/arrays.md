@@ -22,6 +22,8 @@ Common enumerable helpers include:
 - `find` / `find_index` to locate the first matching item.
 - `reduce` to accumulate values.
 - `first(n)` / `last(n)` to slice without mutating.
+- `take(n)` / `drop(n)` to keep or skip a prefix; both reject negative counts.
+- `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
@@ -45,6 +47,9 @@ end
 ```vibe
 [1, 2, 3, 4, 5].chunk(2)   # [[1,2], [3,4], [5]]
 [1, 2, 3, 4].window(3)      # [[1,2,3], [2,3,4]]
+[1, 2, 3].take(2)           # [1, 2]
+[1, 2, 3].drop(1)           # [2, 3]
+[1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 ```
 
 ## Search and predicates
@@ -83,6 +88,31 @@ def summarize(players)
   {
     by_status: grouped,
     totals: counts
+  }
+end
+```
+
+## Extrema
+
+- `min` / `max` return the smallest/largest element using the same comparison
+  semantics as `sort`. They return `nil` for an empty array.
+- `minmax` returns a `[min, max]` pair in one pass; an empty array yields
+  `[nil, nil]`.
+- `min_by { ... }` / `max_by { ... }` select the element whose block-derived key
+  is smallest/largest, mirroring `sort_by`. They return `nil` for an empty
+  array.
+
+Ties resolve to the first matching element. Mixing incomparable values (for
+example numbers with strings) raises an error, just like `sort`.
+
+```vibe
+def extents(scores, words)
+  {
+    lowest: scores.min,
+    highest: scores.max,
+    bounds: scores.minmax,
+    shortest: words.min_by { |w| w.length },
+    longest: words.max_by { |w| w.length }
   }
 end
 ```

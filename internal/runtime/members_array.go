@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -14,7 +15,9 @@ import (
 var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "map", "select", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse",
+	"take", "drop", "zip",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
+	"min", "max", "minmax", "min_by", "max_by",
 }
 
 var arrayBuiltinMembers = newMemberTable(arrayMemberNames)
@@ -30,10 +33,12 @@ func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "each", "map", "select", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?":
 		return arrayMemberQuery(property)
-	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse":
+	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse", "take", "drop", "zip":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
+	case "min", "max", "minmax", "min_by", "max_by":
+		return arrayMemberExtrema(property)
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
@@ -282,6 +287,126 @@ func arrayMemberGrouping(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+func arrayMemberExtrema(property string) (Value, error) {
+	switch property {
+	case "min":
+		return arrayMemberMinMax("array.min", false), nil
+	case "max":
+		return arrayMemberMinMax("array.max", true), nil
+	case "minmax":
+		minmax := NewAutoBuiltin("array.minmax", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.minmax does not take arguments")
+			}
+			if valueBlock(block) != nil {
+				return NewNil(), fmt.Errorf("array.minmax does not accept a block")
+			}
+			arr := receiver.Array()
+			if len(arr) == 0 {
+				return NewArray([]Value{NewNil(), NewNil()}), nil
+			}
+			minVal := arr[0]
+			maxVal := arr[0]
+			for _, item := range arr[1:] {
+				cmpMin, err := arraySortCompareValues(item, minVal)
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.minmax values are not comparable")
+				}
+				if cmpMin < 0 {
+					minVal = item
+				}
+				cmpMax, err := arraySortCompareValues(item, maxVal)
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.minmax values are not comparable")
+				}
+				if cmpMax > 0 {
+					maxVal = item
+				}
+			}
+			return NewArray([]Value{minVal, maxVal}), nil
+		})
+		return minmax, nil
+	case "min_by":
+		return arrayMemberMinMaxBy("array.min_by", false), nil
+	case "max_by":
+		return arrayMemberMinMaxBy("array.max_by", true), nil
+	default:
+		return NewNil(), fmt.Errorf("unknown array method %s", property)
+	}
+}
+
+// arrayMemberMinMax builds the array.min / array.max builtin. When wantMax is
+// true it selects the maximum; otherwise the minimum. Ties resolve to the first
+// element encountered, matching Ruby's Enumerable#min/#max.
+func arrayMemberMinMax(name string, wantMax bool) Value {
+	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) > 0 {
+			return NewNil(), fmt.Errorf("%s does not take arguments", name)
+		}
+		if valueBlock(block) != nil {
+			return NewNil(), fmt.Errorf("%s does not accept a block; use min_by or max_by for block-based selection", name)
+		}
+		arr := receiver.Array()
+		if len(arr) == 0 {
+			return NewNil(), nil
+		}
+		best := arr[0]
+		for _, item := range arr[1:] {
+			cmp, err := arraySortCompareValues(item, best)
+			if err != nil {
+				return NewNil(), fmt.Errorf("%s values are not comparable", name)
+			}
+			if (wantMax && cmp > 0) || (!wantMax && cmp < 0) {
+				best = item
+			}
+		}
+		return best, nil
+	})
+}
+
+// arrayMemberMinMaxBy builds the array.min_by / array.max_by builtin. The block
+// derives a comparison key for each element using the same ordering as
+// array.sort_by. Ties resolve to the first element encountered, matching Ruby's
+// Enumerable#min_by/#max_by.
+func arrayMemberMinMaxBy(name string, wantMax bool) Value {
+	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) > 0 {
+			return NewNil(), fmt.Errorf("%s does not take arguments", name)
+		}
+		runner, err := newBlockCallRunner(exec, block, name)
+		if err != nil {
+			return NewNil(), err
+		}
+		arr := receiver.Array()
+		if len(arr) == 0 {
+			return NewNil(), nil
+		}
+		var blockArg [1]Value
+		blockArg[0] = arr[0]
+		bestKey, err := runner.call(blockArg[:])
+		if err != nil {
+			return NewNil(), err
+		}
+		best := arr[0]
+		for _, item := range arr[1:] {
+			blockArg[0] = item
+			key, err := runner.call(blockArg[:])
+			if err != nil {
+				return NewNil(), err
+			}
+			cmp, err := arraySortCompareValues(key, bestKey)
+			if err != nil {
+				return NewNil(), fmt.Errorf("%s block values are not comparable", name)
+			}
+			if (wantMax && cmp > 0) || (!wantMax && cmp < 0) {
+				best = item
+				bestKey = key
+			}
+		}
+		return best, nil
+	})
 }
 
 func arrayGroupingInitialCapacity(length int) int {
@@ -963,6 +1088,71 @@ func arrayMemberTransforms(property string) (Value, error) {
 				out[len(arr)-1-i] = item
 			}
 			return NewArray(out), nil
+		}), nil
+	case "take":
+		return NewAutoBuiltin("array.take", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.take expects exactly one count")
+			}
+			n, err := valueToCount(args[0])
+			if err != nil {
+				if errors.Is(err, errNegativeCount) {
+					return NewNil(), fmt.Errorf("array.take attempted with negative size")
+				}
+				return NewNil(), fmt.Errorf("array.take count must be integer")
+			}
+			arr := receiver.Array()
+			if n > len(arr) {
+				n = len(arr)
+			}
+			out := make([]Value, n)
+			copy(out, arr[:n])
+			return NewArray(out), nil
+		}), nil
+	case "drop":
+		return NewAutoBuiltin("array.drop", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.drop expects exactly one count")
+			}
+			n, err := valueToCount(args[0])
+			if err != nil {
+				if errors.Is(err, errNegativeCount) {
+					return NewNil(), fmt.Errorf("array.drop attempted with negative size")
+				}
+				return NewNil(), fmt.Errorf("array.drop count must be integer")
+			}
+			arr := receiver.Array()
+			if n > len(arr) {
+				n = len(arr)
+			}
+			out := make([]Value, len(arr)-n)
+			copy(out, arr[n:])
+			return NewArray(out), nil
+		}), nil
+	case "zip":
+		return NewAutoBuiltin("array.zip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			others := make([][]Value, len(args))
+			for i, arg := range args {
+				if arg.Kind() != KindArray {
+					return NewNil(), fmt.Errorf("array.zip arguments must be arrays")
+				}
+				others[i] = arg.Array()
+			}
+			arr := receiver.Array()
+			rows := make([]Value, len(arr))
+			for i := range arr {
+				row := make([]Value, len(args)+1)
+				row[0] = arr[i]
+				for j, other := range others {
+					if i < len(other) {
+						row[j+1] = other[i]
+					} else {
+						row[j+1] = NewNil()
+					}
+				}
+				rows[i] = NewArray(row)
+			}
+			return NewArray(rows), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)

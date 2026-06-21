@@ -14,7 +14,7 @@ import (
 var stringMemberNames = []string{
 	"size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "match", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
-	"sub", "sub!", "gsub", "gsub!", "split", "template",
+	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "template",
 }
 
 var stringBuiltinMembers = newMemberTable(stringMemberNames)
@@ -32,11 +32,61 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
-	case "sub", "sub!", "gsub", "gsub!", "split", "template":
+	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "template":
 		return stringMemberTextOps(property)
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
+}
+
+// stringLines splits text into lines using "\n" as the record separator,
+// retaining the trailing "\n" on each line as Ruby's String#lines does. A
+// trailing newline does not produce a final empty line, and an empty string
+// yields no lines. Carriage returns are preserved verbatim, so "a\r\nb" splits
+// into "a\r\n" and "b".
+func stringLines(text string) []string {
+	if text == "" {
+		return nil
+	}
+	var lines []string
+	for {
+		index := strings.IndexByte(text, '\n')
+		if index < 0 {
+			lines = append(lines, text)
+			break
+		}
+		lines = append(lines, text[:index+1])
+		text = text[index+1:]
+		if text == "" {
+			break
+		}
+	}
+	return lines
+}
+
+// stringPartition splits text around the first occurrence of sep, mirroring
+// Ruby's String#partition. It returns the segment before the separator, the
+// separator itself, and the segment after it. When the separator is absent the
+// whole string is returned as the head with two empty trailing segments. An
+// empty separator matches at the very start, yielding ("", "", text).
+func stringPartition(text, sep string) (head, separator, tail string) {
+	index := strings.Index(text, sep)
+	if index < 0 {
+		return text, "", ""
+	}
+	return text[:index], sep, text[index+len(sep):]
+}
+
+// stringRPartition splits text around the last occurrence of sep, mirroring
+// Ruby's String#rpartition. When the separator is absent the whole string is
+// returned as the tail with two empty leading segments. An empty separator
+// matches at the very end, yielding (text, "", "").
+func stringRPartition(text, sep string) (head, separator, tail string) {
+	index := strings.LastIndex(text, sep)
+	if index < 0 {
+		return "", "", text
+	}
+	return text[:index], sep, text[index+len(sep):]
 }
 
 func chompDefault(text string) string {
@@ -920,6 +970,52 @@ func stringMemberTextOps(property string) (Value, error) {
 			values := make([]Value, len(parts))
 			for i, part := range parts {
 				values[i] = NewString(part)
+			}
+			return NewArray(values), nil
+		}), nil
+	case "partition":
+		return NewAutoBuiltin("string.partition", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.partition expects exactly one separator")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.partition separator must be string")
+			}
+			head, sep, tail := stringPartition(receiver.String(), args[0].String())
+			return NewArray([]Value{NewString(head), NewString(sep), NewString(tail)}), nil
+		}), nil
+	case "rpartition":
+		return NewAutoBuiltin("string.rpartition", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.rpartition expects exactly one separator")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.rpartition separator must be string")
+			}
+			head, sep, tail := stringRPartition(receiver.String(), args[0].String())
+			return NewArray([]Value{NewString(head), NewString(sep), NewString(tail)}), nil
+		}), nil
+	case "chars":
+		return NewAutoBuiltin("string.chars", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.chars does not take arguments")
+			}
+			text := receiver.String()
+			values := make([]Value, 0, stringRuneLen(text))
+			for _, r := range text {
+				values = append(values, NewString(string(r)))
+			}
+			return NewArray(values), nil
+		}), nil
+	case "lines":
+		return NewAutoBuiltin("string.lines", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.lines does not take arguments")
+			}
+			lines := stringLines(receiver.String())
+			values := make([]Value, len(lines))
+			for i, line := range lines {
+				values[i] = NewString(line)
 			}
 			return NewArray(values), nil
 		}), nil

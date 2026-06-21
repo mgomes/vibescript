@@ -63,9 +63,10 @@ A negative `ndigits`, a non-integer argument, more than one argument, or a preci
 ## Conversions
 
 - Epoch: `to_i`/`tv_sec`, `to_f`, `to_r`
-- Zone conversion: `getutc`/`getgm`, `getlocal`, `utc`/`gmtime`, `localtime`
+- Zone conversion: `getutc`/`getgm`, `utc`/`gmtime`, and `getlocal(offset = nil)`/`localtime(offset = nil)`. With no argument the latter two convert to the host's local zone; passing a zone such as `"+05:30"`, `"-04:00"`, `"America/New_York"`, or `"UTC"` returns the same instant in that zone. They always return a new `Time` rather than mutating the receiver.
 - String: `to_s` (RFC3339Nano)
 - RFC3339 aliases: `iso8601(ndigits = 0)`, `rfc3339(ndigits = 0)` (optional fractional-second precision)
+- Tuple: `to_a` returns `[sec, min, hour, mday, month, year, wday, yday, isdst, zone]`, matching Ruby's positional field order. Field values reuse the individual accessors, so the result reflects the receiver's UTC/local/offset zone.
 
 ## Comparisons and math
 
