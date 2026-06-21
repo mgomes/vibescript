@@ -107,6 +107,11 @@ Unicode characters, not bytes, unless noted.
   occurrence of `pattern`.
 - `split(separator = nil) -> array` – split on whitespace (dropping empty
   fields) without arguments, or on `separator` when given.
+- `chars -> array` – array of the string's Unicode characters, one per code
+  point (rune-aware, like `length` and `slice`).
+- `lines -> array` – array of lines split on `"\n"`, retaining the trailing
+  newline on each line; an empty string yields no lines and carriage returns
+  stay attached so `"\r\n"` endings round-trip.
 - `template(context, strict: false) -> string` – interpolate `{{key.path}}`
   placeholders from a hash; `strict: true` errors on missing placeholders.
 
@@ -137,6 +142,17 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `each { |item| } -> array` – yield each element; returns the receiver.
 - `map { |item| } -> array` – new array of block results.
 - `select { |item| } -> array` – elements for which the block is truthy.
+- `reject { |item| } -> array` – elements for which the block is falsy (the
+  inverse of `select`).
+- `take_while { |item| } -> array` – leading elements until the block first
+  returns a falsy value; stops at the first miss.
+- `drop_while { |item| } -> array` – elements remaining after skipping the
+  leading run for which the block is truthy.
+- `grep(pattern) { |item| } -> array` – elements that match `pattern` using the
+  case-equality direction (`pattern === item`); a `Range` matches by membership
+  and other values by equality. The optional block transforms each match.
+- `grep_v(pattern) { |item| } -> array` – elements that do not match `pattern`,
+  with the same matching rules and optional transform block as `grep`.
 - `find { |item| } -> value | nil` – first element matching the block.
 - `find_index { |item| } -> int | nil` – index of the first match.
 - `reduce(initial = nil) { |acc, item| } -> value` – fold left; without
@@ -206,6 +222,12 @@ items.pop(2) # {array: [1], popped: [2, 3]}
   first-seen group order.
 - `tally -> hash` / `tally { |item| } -> hash` – occurrence counts keyed by
   element (or block result); keys must be symbols or strings.
+- `min -> value | nil` / `max -> value | nil` – smallest/largest element using
+  natural ordering; `nil` for an empty array.
+- `minmax -> array` – `[min, max]` in one pass; `[nil, nil]` for an empty array.
+- `min_by { |item| } -> value | nil` / `max_by { |item| } -> value | nil` –
+  element with the smallest/largest block key; `nil` for an empty array. Ties
+  resolve to the first matching element.
 
 String and symbol ordering uses deterministic codepoint comparison (no locale
 collation).
@@ -253,6 +275,9 @@ methods.
 
 - `fetch(key, default = nil) -> value` – value for `key`, or `default`/`nil`
   when missing.
+- `fetch_values(*keys) { |key| } -> array` – values for `keys` in requested
+  order. Raises `key not found` for any missing key; when a block is given it is
+  called with each missing key and its result is used instead.
 - `dig(*keys) -> value | nil` – nested lookup following `keys`; `nil` when any
   step is missing.
 - `keys -> array` – symbol keys in sorted order.
@@ -267,6 +292,10 @@ methods.
 ### Transform and Filter
 
 - `merge(other) -> hash` – combined entries; `other` wins on key conflicts.
+- `merge(other) { |key, old_value, new_value| } -> hash` – combined entries; for
+  keys present in both hashes the block resolves the conflict and its result is
+  stored. Keys present on only one side are copied without invoking the block,
+  and the conflict key is yielded as a symbol.
 - `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
   receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
 - `slice(*keys) -> hash` – only the listed keys (missing keys are skipped).
@@ -321,6 +350,21 @@ aliases, so `1.second` reads naturally.
   `-1300`).
 - `ceil(ndigits = 0) -> int` – like `round`, but negative `ndigits` round
   toward positive infinity (`1234.ceil(-2)` is `1300`).
+- `div(n) -> int` – floored division; the quotient rounds toward negative
+  infinity, so mixed-sign operands round down (`(-5).div(2)` is `-3`). A zero
+  divisor errors, and the one quotient outside the 64-bit range
+  (`min_int.div(-1)`) errors rather than wrapping.
+- `divmod(n) -> [quotient, modulo]` – the floored quotient and the modulo whose
+  sign follows the divisor. With integer arguments both elements are integers;
+  a float argument makes the modulo a float.
+- `fdiv(n) -> float` – floating division. Unlike Ruby, a zero divisor errors
+  rather than yielding infinity, matching the `/` operator.
+- `remainder(n) -> int|float` – remainder whose sign follows the receiver
+  (truncated division), which differs from `%` for operands of opposite sign;
+  a zero divisor errors.
+- `modulo(n) -> int|float` – the `%` operator as a method: the result's sign
+  follows the divisor (floored division). Integer operands yield an integer;
+  any float operand yields a float; a zero divisor errors.
 
 `round`, `floor`, and `ceil` accept an optional Integer precision. As in Ruby,
 the precision must fit a 32-bit signed integer (Ruby reads it through `NUM2INT`),
@@ -346,12 +390,26 @@ Ruby's arbitrary-precision integers.
 - `negative? -> bool` – true when less than `0.0`.
 - `nonzero? -> float?` – the receiver when nonzero, otherwise `nil`, matching
   Ruby (the result is truthy exactly when the number is nonzero).
+- `div(n) -> int` – floored division returning an integer; a zero divisor
+  errors, as does a quotient outside the 64-bit range.
+- `divmod(n) -> [int, float]` – the floored quotient (an integer) and the
+  float modulo whose sign follows the divisor.
+- `fdiv(n) -> float` – floating division; a zero divisor errors rather than
+  yielding infinity, matching the `/` operator.
+- `remainder(n) -> float` – remainder whose sign follows the receiver
+  (truncated division); a zero divisor errors.
+- `modulo(n) -> float` – the `%` operator as a method: the result's sign
+  follows the divisor (floored division); a zero divisor errors.
 
 `round`, `floor`, and `ceil` accept an optional Integer precision that defaults
 to `0`. As in Ruby, the precision must fit a 32-bit signed integer, so a
 magnitude beyond that range raises rather than acting as a no-op. Whenever the
 result is converted back to an `int` (zero or negative precision), values outside
 the 64-bit integer range raise an error.
+
+Vibescript has no rational number type, so Ruby's `quo` (which returns a
+`Rational` for integer operands) is intentionally not provided; use `fdiv` for
+floating division.
 
 ## Money
 
@@ -470,15 +528,21 @@ formatting. Times also support `time + duration`, `time - duration`, and
 - `to_f -> float` – epoch seconds with fractional part.
 - `to_r -> float` – same as `to_f` (rationals are not supported).
 - `to_s -> string` – RFC3339Nano representation.
-- `iso8601` / `rfc3339` -> string – RFC3339 representation.
+- `to_a -> array` – positional tuple `[sec, min, hour, mday, month, year, wday,
+  yday, isdst, zone]`, matching Ruby's field order and the receiver's zone.
+- `iso8601(ndigits = 0)` / `rfc3339(ndigits = 0)` -> string – RFC3339 representation. With no argument it emits whole seconds; a non-negative `ndigits` appends that many fractional-second digits, truncated toward zero (matching Ruby's `Time#iso8601`). Negative, non-integer, or out-of-range (above 100 digits) precision raises a runtime error.
 - `hash -> int` – nanoseconds since the Unix epoch (identity value).
 
 ### Zone Conversion
 
 - `utc` / `gmtime` -> time – the same instant in UTC.
 - `getutc` / `getgm` -> time – aliases for `utc`.
-- `localtime -> time` – the same instant in the host's local zone.
-- `getlocal -> time` – alias for `localtime`.
+- `localtime(offset = nil) -> time` – the same instant in the supplied zone,
+  or the host's local zone when the argument is omitted or `nil`. The offset
+  follows the usual zone rules: a fixed offset such as `"+05:30"` or `"-04:00"`,
+  a named zone such as `"America/New_York"`, or `"UTC"`. Returns a new `Time`;
+  the receiver is never mutated.
+- `getlocal(offset = nil) -> time` – alias for `localtime`.
 
 ### Formatting
 
