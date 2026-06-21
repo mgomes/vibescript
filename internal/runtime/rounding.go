@@ -298,6 +298,12 @@ func bigIntRound(n *big.Int, ndigits int, mode roundMode, method string) (int64,
 		return bigToInt64Checked(n, method)
 	}
 
+	if ndigits == math.MinInt {
+		// -ndigits would overflow where int is 32-bit (ndigits == math.MinInt32).
+		// The magnitude dwarfs any representable value, so resolve it via the
+		// beyond-magnitude path instead of negating.
+		return bigIntRoundBeyondMagnitude(n, math.MaxInt, mode, method)
+	}
 	digits := -ndigits
 	// When 10^digits has strictly more decimal digits than |n|, it exceeds |n|,
 	// so the toward-zero quotient is 0 and the result is fully determined by the
@@ -448,6 +454,11 @@ func intRound(n int64, ndigits int, mode roundMode, method string) (int64, error
 		return 0, nil
 	}
 
+	if ndigits == math.MinInt {
+		// -ndigits would overflow where int is 32-bit; the magnitude dwarfs any
+		// int64 value, so resolve it via the beyond-magnitude path.
+		return intRoundBeyondInt64(n, math.MaxInt, mode, method)
+	}
 	digits := -ndigits
 	p, ok := pow10Int64(digits)
 	if !ok {
