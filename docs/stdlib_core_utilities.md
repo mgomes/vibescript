@@ -444,6 +444,8 @@ formatting. Times also support `time + duration`, `time - duration`, and
 - `to_f -> float` – epoch seconds with fractional part.
 - `to_r -> float` – same as `to_f` (rationals are not supported).
 - `to_s -> string` – RFC3339Nano representation.
+- `to_a -> array` – positional tuple `[sec, min, hour, mday, month, year, wday,
+  yday, isdst, zone]`, matching Ruby's field order and the receiver's zone.
 - `iso8601` / `rfc3339` -> string – RFC3339 representation.
 - `hash -> int` – nanoseconds since the Unix epoch (identity value).
 
