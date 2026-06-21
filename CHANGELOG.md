@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `Time#iso8601(ndigits)` precision.** `Time#iso8601` and its
+  `Time#rfc3339` alias now accept an optional non-negative `ndigits` argument that
+  appends fractional-second digits, truncated toward zero like Ruby. No argument
+  keeps whole-second RFC3339 output, the timezone offset is preserved, and digits
+  beyond nanosecond resolution are zero-padded (capped at 100 digits to bound
+  allocations). Negative, non-integer, out-of-range, or extra arguments raise a
+  clear runtime error.
 - **Added: Ruby-style `values_at`, `zip`, `take`, and `drop` collection helpers.**
   `Hash#values_at(*keys)` returns values in requested key order with `nil` for
   missing keys. `Array#zip(*arrays)` combines arrays element-wise into rows keyed
