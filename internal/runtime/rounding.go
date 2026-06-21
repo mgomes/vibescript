@@ -309,7 +309,18 @@ func bigIntRound(n *big.Int, ndigits int, mode roundMode, method string) (int64,
 		return bigToInt64Checked(n, method)
 	}
 
-	p := pow10BigInt(-ndigits)
+	digits := -ndigits
+	// When 10^digits has strictly more decimal digits than |n|, it exceeds |n|,
+	// so the toward-zero quotient is 0 and the result is fully determined by the
+	// rounding direction. Resolving it here avoids materializing 10^digits with
+	// math/big, which for an extreme precision such as round(-1000000000) would
+	// allocate a billion-digit number and hang or exhaust memory before any
+	// normal limit applied.
+	if digits > decimalDigitCount(n) {
+		return bigIntRoundBeyondMagnitude(n, digits, mode, method)
+	}
+
+	p := pow10BigInt(digits)
 	base := new(big.Int)
 	r := new(big.Int)
 	base.QuoRem(n, p, r) // truncated quotient; r shares the sign of n
@@ -336,6 +347,60 @@ func bigIntRound(n *big.Int, ndigits int, mode roundMode, method string) (int64,
 		}
 	}
 	return bigToInt64Checked(base, method)
+}
+
+// bigIntRoundBeyondMagnitude buckets n to 10^digits when that bucket strictly
+// exceeds |n|, so the toward-zero base is 0 and only the away-from-zero target
+// (+/-10^digits) can be nonzero. The caller guarantees digits >
+// decimalDigitCount(n), which also means a half-way value can never reach the
+// bucket, so round-to-nearest collapses to zero. This avoids ever building
+// 10^digits when digits is astronomically large.
+func bigIntRoundBeyondMagnitude(n *big.Int, digits int, mode roundMode, method string) (int64, error) {
+	switch mode {
+	case roundFloor:
+		if n.Sign() > 0 {
+			return 0, nil
+		}
+		return negPow10Int64Checked(digits, method)
+	case roundCeil:
+		if n.Sign() < 0 {
+			return 0, nil
+		}
+		return posPow10Int64Checked(digits, method)
+	default:
+		// 10^digits > 10*|n| > 2*|n|, so n never reaches the half-way mark and
+		// rounds toward zero.
+		return 0, nil
+	}
+}
+
+// posPow10Int64Checked returns 10^digits as an int64, reporting an overflow when
+// the bucket exceeds the int64 range.
+func posPow10Int64Checked(digits int, method string) (int64, error) {
+	p, ok := pow10Int64(digits)
+	if !ok {
+		return 0, int64RangeError(method)
+	}
+	return p, nil
+}
+
+// negPow10Int64Checked returns -10^digits as an int64, reporting an overflow
+// when the bucket exceeds the int64 range.
+func negPow10Int64Checked(digits int, method string) (int64, error) {
+	p, ok := pow10Int64(digits)
+	if !ok {
+		return 0, int64RangeError(method)
+	}
+	return -p, nil
+}
+
+// decimalDigitCount returns the number of base-10 digits in |n|, treating zero
+// as a single digit.
+func decimalDigitCount(n *big.Int) int {
+	if n.Sign() == 0 {
+		return 1
+	}
+	return len(new(big.Int).Abs(n).Text(10))
 }
 
 // bigToInt64Checked converts n to an int64, reporting an overflow error when it

@@ -370,6 +370,69 @@ func TestFloatNegativePrecisionBucketsBeyondInt64(t *testing.T) {
 	}
 }
 
+// TestFloatNegativePrecisionExtremeDigits covers the negative-precision float
+// bucket path for precisions far beyond the value's magnitude. Without an early
+// guard, 1.5.round(-1000000000) would materialize 10**1000000000 with math/big,
+// allocating a billion-digit number that hangs or exhausts memory before any
+// script limit applied. Once the bucket strictly exceeds the value, the result
+// is fully determined: rounding toward the nearest multiple collapses to 0, and
+// flooring/ceiling away from zero lands on +/-10**digits, which overflows int64
+// for digits >= 19.
+func TestFloatNegativePrecisionExtremeDigits(t *testing.T) {
+	t.Parallel()
+
+	ok := []struct {
+		expr string
+		arg  float64
+		want int64
+	}{
+		// Astronomical precision: the bucket dwarfs the value, so round-to-nearest
+		// and the toward-zero direction both collapse to 0 without ever building
+		// the power of ten.
+		{"n.round(-1000000000)", 1.5, 0},
+		{"n.round(-1000000000)", -1.5, 0},
+		{"n.floor(-1000000000)", 1.5, 0},
+		{"n.ceil(-1000000000)", -1.5, 0},
+		// Buckets just past the magnitude that still fit int64 round away from
+		// zero to +/-10**digits.
+		{"n.floor(-3)", -1.5, -1000},
+		{"n.ceil(-3)", 1.5, 1000},
+		{"n.floor(-18)", -1.5, -1000000000000000000},
+		{"n.ceil(-18)", 1.5, 1000000000000000000},
+	}
+	for _, tc := range ok {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
+			got := callFunc(t, script, "run", []Value{NewFloat(tc.arg)})
+			if !got.Equal(NewInt(tc.want)) {
+				t.Fatalf("%s on %v = %v, want %d", tc.expr, tc.arg, got, tc.want)
+			}
+		})
+	}
+
+	overflow := []struct {
+		expr string
+		arg  float64
+		want string
+	}{
+		// Away-from-zero buckets of 10**19 or larger exceed int64, so they report
+		// an overflow instead of widening like Ruby's bignums. The billion-digit
+		// cases must reach this error without materializing the bucket.
+		{"n.ceil(-1000000000)", 1.5, "float.ceil result out of int64 range"},
+		{"n.floor(-1000000000)", -1.5, "float.floor result out of int64 range"},
+		{"n.ceil(-19)", 1.5, "float.ceil result out of int64 range"},
+		{"n.floor(-19)", -1.5, "float.floor result out of int64 range"},
+	}
+	for _, tc := range overflow {
+		t.Run(tc.expr+" overflow", func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
+			requireCallErrorContains(t, script, "run", []Value{NewFloat(tc.arg)}, CallOptions{}, tc.want)
+		})
+	}
+}
+
 // TestFloatNegativePrecisionExactBucketing covers large floats whose bucket fits
 // int64. Bucketing in binary float space lets scaling error shift the result
 // (e.g. 5e18 * 1e-3 / 1e-3 drifts off the exact multiple), so the integer path
