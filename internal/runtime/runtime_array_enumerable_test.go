@@ -75,6 +75,59 @@ func TestArrayRejectTakeDropGrep(t *testing.T) {
 	compareArrays(t, got["original"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
 }
 
+// TestArrayEnumerableSparseResultsAreRightSized guards against the filtering
+// helpers retaining a backing array sized to the whole receiver when the result
+// is sparse. reject/take_while/grep all preallocate capacity equal to the
+// receiver, so a result that drops most elements must be trimmed to avoid
+// charging the caller's memory quota for storage it cannot reach.
+func TestArrayEnumerableSparseResultsAreRightSized(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name:   "reject",
+			source: `def run(values); values.reject do |v| true end; end`,
+		},
+		{
+			name:   "take_while",
+			source: `def run(values); values.take_while do |v| false end; end`,
+		},
+		{
+			name:   "grep",
+			source: `def run(values); values.grep(-1); end`,
+		},
+		{
+			name:   "grep_v",
+			source: `def run(values); values.grep_v(0..100000); end`,
+		},
+	}
+
+	const receiverSize = 1000
+	// The receiver is large enough that retaining its backing array would be a
+	// real cost, so the quota is raised well above the default to ensure the
+	// test exercises trimming rather than the quota tripping on the input.
+	cfg := Config{MemoryQuotaBytes: 8 * 1024 * 1024}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, cfg, tc.source)
+			result := callFunc(t, script, "run", []Value{largeIntArray(receiverSize)})
+			if result.Kind() != KindArray {
+				t.Fatalf("expected array, got %v", result.Kind())
+			}
+			arr := result.Array()
+			if len(arr) != 0 {
+				t.Fatalf("expected empty result, got %d elements", len(arr))
+			}
+			if cap(arr) >= receiverSize {
+				t.Fatalf("sparse result retained oversized backing array: cap=%d, want trimmed below %d", cap(arr), receiverSize)
+			}
+		})
+	}
+}
+
 func TestArrayEnumerableHelperErrors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
