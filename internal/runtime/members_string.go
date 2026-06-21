@@ -12,7 +12,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var stringMemberNames = []string{
-	"size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "match", "scan", "index", "rindex", "slice",
+	"size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "template",
 }
@@ -28,7 +28,7 @@ func stringMember(str Value, property string) (Value, error) {
 
 func stringMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "match", "scan", "index", "rindex", "slice":
+	case "size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
@@ -56,6 +56,39 @@ func stringIsASCII(text string) bool {
 		}
 	}
 	return true
+}
+
+// asciiCaseCompare compares a and b byte-by-byte, folding only the ASCII
+// letters a-z and A-Z to a common case. This mirrors Ruby's String#casecmp,
+// which case-insensitively compares ASCII letters while leaving every other
+// byte (including multibyte UTF-8 sequences) to an ordinal comparison. The
+// result is normalized to -1, 0, or 1.
+func asciiCaseCompare(a, b string) int {
+	limit := min(len(a), len(b))
+	for i := range limit {
+		ca, cb := asciiUpper(a[i]), asciiUpper(b[i])
+		if ca != cb {
+			if ca < cb {
+				return -1
+			}
+			return 1
+		}
+	}
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func asciiUpper(b byte) byte {
+	if b >= 'a' && b <= 'z' {
+		return b - ('a' - 'A')
+	}
+	return b
 }
 
 func stringRuneLen(text string) int {
@@ -677,6 +710,26 @@ func stringMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.include? substring must be string")
 			}
 			return NewBool(strings.Contains(receiver.String(), args[0].String())), nil
+		}), nil
+	case "casecmp":
+		return NewAutoBuiltin("string.casecmp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.casecmp expects exactly one string")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), nil
+			}
+			return NewInt(int64(asciiCaseCompare(receiver.String(), args[0].String()))), nil
+		}), nil
+	case "casecmp?":
+		return NewAutoBuiltin("string.casecmp?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.casecmp? expects exactly one string")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), nil
+			}
+			return NewBool(strings.EqualFold(receiver.String(), args[0].String())), nil
 		}), nil
 	case "match":
 		return NewAutoBuiltin("string.match", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

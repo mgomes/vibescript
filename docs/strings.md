@@ -188,6 +188,36 @@ Returns true when `substring` appears in the string:
 "vibescript".include?("script") # true
 ```
 
+### `casecmp(other)`
+
+Case-insensitively compares two strings, returning `-1`, `0`, or `1`. Only the
+ASCII letters `a`-`z` are folded; every other byte (including multibyte UTF-8
+sequences) is compared ordinally, matching Ruby's `String#casecmp`. Returns
+`nil` when `other` is not a string:
+
+```vibe
+"abc".casecmp("ABC") # 0
+"abc".casecmp("ABD") # -1
+"abd".casecmp("ABC") # 1
+"abc".casecmp(1)     # nil
+```
+
+### `casecmp?(other)`
+
+Returns `true` when two strings are equal under Unicode case folding, `false`
+otherwise, and `nil` when `other` is not a string:
+
+```vibe
+"abc".casecmp?("ABC")     # true
+"héllo".casecmp?("HÉLLO") # true
+"abc".casecmp?("ABD")     # false
+"abc".casecmp?(1)         # nil
+```
+
+Folding uses Unicode simple case mapping, consistent with `upcase` and
+`downcase`. Full-fold expansions such as German `ß` matching `SS` are not
+applied, so `"ß".casecmp?("SS")` is `false` (Ruby returns `true`).
+
 ### `match(pattern)`
 
 Regex match returning `[full, capture1, ...]` or `nil`:
