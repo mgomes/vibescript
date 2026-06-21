@@ -273,6 +273,18 @@ end`,
 			wantErr: "jobs.enqueue payload must be data-only",
 		},
 		{
+			name: "callable_keyword",
+			source: `def helper(value)
+  value
+end
+
+def run()
+  jobs.enqueue("demo", { foo: "bar" }, callback: helper)
+end`,
+			queue:   &jobQueueStub{},
+			wantErr: "jobs.enqueue keyword callback must be data-only",
+		},
+		{
 			name: "negative_delay",
 			source: `def run()
   jobs.enqueue("demo", { foo: "bar" }, delay: -5)
