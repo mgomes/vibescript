@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style hash member, value, and store helpers.** `Hash#member?`
+  joins `key?`/`has_key?`/`include?` as a key-membership alias, `Hash#value?` and
+  `Hash#has_value?` report value membership using the same `==` equality as the
+  rest of the language, and `Hash#store(key, value)` returns a new hash with the
+  key assigned. Like the other method-based hash helpers, `store` is
+  immutable-style and leaves the receiver unchanged.
 - **Added: Ruby-style `call` on function values.** A function value now exposes
   a `call` member so `fn.call(...)` mirrors direct `fn(...)` invocation,
   forwarding positional arguments, keyword arguments, and an optional block.
