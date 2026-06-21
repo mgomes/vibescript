@@ -150,9 +150,13 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("hash.%s expects exactly one key", name)
 			}
+			// Ruby's membership predicates accept any object as the candidate
+			// key and report false when it is absent. Vibescript only stores
+			// symbol/string keys, so an unsupported candidate type can never be
+			// present and is reported as a non-member rather than a type error.
 			key, err := valueToHashKey(args[0])
 			if err != nil {
-				return NewNil(), fmt.Errorf("hash.%s key must be symbol or string", name)
+				return NewBool(false), nil
 			}
 			_, ok := receiver.Hash()[key]
 			return NewBool(ok), nil

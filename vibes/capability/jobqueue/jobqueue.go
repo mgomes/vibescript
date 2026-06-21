@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/mgomes/vibescript/vibes/value"
@@ -83,9 +84,27 @@ func MustNewCapability(name string, queue JobQueue) *Capability {
 func (c *Capability) HasRetry() bool { return c.Retry != nil }
 
 // ParseEnqueueOptions converts kwargs received from a script into a
-// structured JobQueueEnqueueOptions value. The name is used for error
-// messages so they line up with the script-visible capability name.
+// structured JobQueueEnqueueOptions value. It is the safe public entry
+// point: every extra keyword is checked to be data-only (no callables)
+// and acyclic before it is cloned into the returned options, so direct
+// embedders cannot smuggle a runtime-only value into the host. The name
+// is used for error messages so they line up with the script-visible
+// capability name.
 func ParseEnqueueOptions(name string, kwargs map[string]value.Value) (JobQueueEnqueueOptions, error) {
+	return parseEnqueueOptions(name, kwargs, true)
+}
+
+// ParseEnqueueOptionsValidated is the fast path for callers that have
+// already enforced the enqueue data-only contract on kwargs (for example
+// the runtime adapter, which validates arguments against the capability
+// contract before dispatching). It still parses and clones delay, key,
+// and extra kwargs, but skips the redundant data-only/cycle walk so the
+// option graph is not traversed twice.
+func ParseEnqueueOptionsValidated(name string, kwargs map[string]value.Value) (JobQueueEnqueueOptions, error) {
+	return parseEnqueueOptions(name, kwargs, false)
+}
+
+func parseEnqueueOptions(name string, kwargs map[string]value.Value, validate bool) (JobQueueEnqueueOptions, error) {
 	if len(kwargs) == 0 {
 		return JobQueueEnqueueOptions{}, nil
 	}
@@ -115,6 +134,12 @@ func ParseEnqueueOptions(name string, kwargs map[string]value.Value) (JobQueueEn
 			}
 			key = &s
 		default:
+			if validate {
+				label := fmt.Sprintf("%s.enqueue keyword %s", name, k)
+				if err := validateDataOnly(label, v); err != nil {
+					return JobQueueEnqueueOptions{}, err
+				}
+			}
 			extra[k] = deepCloneValue(v)
 		}
 	}
@@ -161,7 +186,8 @@ func isNilImpl(impl any) bool {
 // deepCloneValue mirrors vibes' deepCloneValue for data-only kinds so
 // option parsing can defensively clone hash arguments without reaching
 // back into vibes. Runtime-only kinds (block, builtin, class, ...) are
-// rejected upstream in vibes' capability contracts.
+// rejected by validateDataOnly before reaching this clone, so they are
+// returned unchanged here rather than silently leaking.
 func deepCloneValue(v value.Value) value.Value {
 	switch v.Kind() {
 	case value.KindArray:
@@ -187,5 +213,133 @@ func deepCloneValue(v value.Value) value.Value {
 		return value.NewObject(cloned)
 	default:
 		return v
+	}
+}
+
+// validateDataOnly rejects values that embed callables or cyclic references.
+// The jobqueue package inlines this check rather than depending on the parent
+// vibes package: only data-shaped kinds (Array, Hash, Object) require
+// traversal, so a self-contained scanner suffices. It mirrors the events
+// package's validator so both carved capabilities enforce the same contract.
+func validateDataOnly(label string, val value.Value) error {
+	if newCallableScanner().containsCallable(val) {
+		return fmt.Errorf("%s must be data-only", label)
+	}
+	if newCycleScanner().containsCycle(val) {
+		return fmt.Errorf("%s must not contain cyclic references", label)
+	}
+	return nil
+}
+
+type callableScanner struct {
+	seenArrays map[sliceID]struct{}
+	seenMaps   map[uintptr]struct{}
+}
+
+func newCallableScanner() *callableScanner {
+	return &callableScanner{
+		seenArrays: make(map[sliceID]struct{}),
+		seenMaps:   make(map[uintptr]struct{}),
+	}
+}
+
+func (s *callableScanner) containsCallable(val value.Value) bool {
+	switch val.Kind() {
+	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance:
+		return true
+	case value.KindArray:
+		values := val.Array()
+		id := identityOf(values)
+		if _, seen := s.seenArrays[id]; seen {
+			return false
+		}
+		s.seenArrays[id] = struct{}{}
+		return slices.ContainsFunc(values, s.containsCallable)
+	case value.KindHash, value.KindObject:
+		entries := val.Hash()
+		ptr := reflect.ValueOf(entries).Pointer()
+		if _, seen := s.seenMaps[ptr]; seen {
+			return false
+		}
+		s.seenMaps[ptr] = struct{}{}
+		for _, item := range entries {
+			if s.containsCallable(item) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+type cycleScanner struct {
+	visitingArrays map[sliceID]struct{}
+	visitingMaps   map[uintptr]struct{}
+	seenArrays     map[sliceID]struct{}
+	seenMaps       map[uintptr]struct{}
+}
+
+func newCycleScanner() *cycleScanner {
+	return &cycleScanner{
+		visitingArrays: make(map[sliceID]struct{}),
+		visitingMaps:   make(map[uintptr]struct{}),
+		seenArrays:     make(map[sliceID]struct{}),
+		seenMaps:       make(map[uintptr]struct{}),
+	}
+}
+
+func (s *cycleScanner) containsCycle(val value.Value) bool {
+	switch val.Kind() {
+	case value.KindArray:
+		values := val.Array()
+		id := identityOf(values)
+		if _, seen := s.seenArrays[id]; seen {
+			return false
+		}
+		if _, visiting := s.visitingArrays[id]; visiting {
+			return true
+		}
+		s.visitingArrays[id] = struct{}{}
+		if slices.ContainsFunc(values, s.containsCycle) {
+			return true
+		}
+		delete(s.visitingArrays, id)
+		s.seenArrays[id] = struct{}{}
+		return false
+	case value.KindHash, value.KindObject:
+		entries := val.Hash()
+		ptr := reflect.ValueOf(entries).Pointer()
+		if _, seen := s.seenMaps[ptr]; seen {
+			return false
+		}
+		if _, visiting := s.visitingMaps[ptr]; visiting {
+			return true
+		}
+		s.visitingMaps[ptr] = struct{}{}
+		for _, item := range entries {
+			if s.containsCycle(item) {
+				return true
+			}
+		}
+		delete(s.visitingMaps, ptr)
+		s.seenMaps[ptr] = struct{}{}
+		return false
+	default:
+		return false
+	}
+}
+
+type sliceID struct {
+	Ptr uintptr
+	Len int
+	Cap int
+}
+
+func identityOf(values []value.Value) sliceID {
+	return sliceID{
+		Ptr: reflect.ValueOf(values).Pointer(),
+		Len: len(values),
+		Cap: cap(values),
 	}
 }

@@ -6,9 +6,32 @@ All notable changes to this project will be documented in this file.
 
 - Ongoing work toward the next pre-1.0 release.
 - **Hardened CLI source-size enforcement.** `vibes run`, `vibes analyze`, and
-  `vibes test` now stat each script file and reject inputs larger than the
-  engine's configured source-size limit before reading them into memory,
-  matching the guard already applied during module loading.
+  `vibes test` now read each script through a single size-checked descriptor,
+  bounded at the engine's configured source-size limit, so an oversized file
+  (even one swapped or grown after the check) is rejected before it is loaded
+  fully into memory.
+- **Improved: Ruby-style `String#start_with?` and `String#end_with?`.** Both
+  predicates now accept one or more string candidates and return true when any
+  matches. Candidates are checked left to right and matching short-circuits like
+  Ruby, so a non-string candidate is only rejected if reached before a match.
+- **Hardened the public jobqueue option parser.** `jobqueue.ParseEnqueueOptions`
+  now rejects extra enqueue keywords that are not data-only or that contain
+  cyclic references instead of cloning them through to the host, closing a
+  contract gap for embedders that call it directly. A new
+  `jobqueue.ParseEnqueueOptionsValidated` fast path lets the runtime adapter skip
+  the redundant walk when it has already enforced the contract, and the carved
+  package gained direct unit tests for constructor validation, retry detection,
+  option parsing, cloning, and invalid/cyclic values.
+- **Added: `Time#round` precision argument.** `Time#round` now accepts an
+  optional Ruby-style `ndigits` (defaulting to `0`) so `round(3)` and `round(6)`
+  produce millisecond and microsecond precision, with non-negative `Integer`
+  validation and clear errors on misuse.
+- **Fixed: Hash membership predicates align with Ruby.** `Hash#key?`,
+  `Hash#has_key?`, and `Hash#include?` now return `false` for candidate keys of
+  unsupported types instead of raising, matching Ruby's predicate semantics.
+- **Added: Ruby-style numeric predicate and successor helpers.** Integers and
+  floats gain `zero?`, `positive?`, `negative?`, and `nonzero?` (returning the
+  receiver or `nil`), and integers gain `next`/`succ` and `pred`.
 
 ## v0.50.0 - 2026-06-11
 

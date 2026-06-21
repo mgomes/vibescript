@@ -315,11 +315,16 @@ func callTimeFormat(t time.Time, args []Value) (Value, error) {
 	return NewString(t.Format(args[0].String())), nil
 }
 
+// maxTimePrecisionDigits is the most fractional-second digits Time can
+// represent, matching the nanosecond resolution of the underlying clock.
+const maxTimePrecisionDigits = 9
+
 func callTimeRound(t time.Time, args []Value) (Value, error) {
-	if len(args) > 0 {
-		return NewNil(), fmt.Errorf("round does not accept precision")
+	unit, err := timeRoundingUnit("time.round", args)
+	if err != nil {
+		return NewNil(), err
 	}
-	return NewTime(t.Round(time.Second)), nil
+	return NewTime(t.Round(unit)), nil
 }
 
 func callTimeCeil(t time.Time, args []Value) (Value, error) {
@@ -338,4 +343,33 @@ func callTimeFloor(t time.Time, args []Value) (Value, error) {
 		return NewNil(), fmt.Errorf("floor does not accept precision")
 	}
 	return NewTime(t.Truncate(time.Second)), nil
+}
+
+// timeRoundingUnit resolves the optional Ruby-style precision argument
+// (ndigits, defaulting to 0) into the duration unit to round toward. With no
+// argument or 0 it rounds to whole seconds; positive ndigits round to that
+// many fractional-second digits, capped at nanosecond resolution.
+func timeRoundingUnit(method string, args []Value) (time.Duration, error) {
+	if len(args) == 0 {
+		return time.Second, nil
+	}
+	if len(args) > 1 {
+		return 0, fmt.Errorf("%s expects at most one precision argument", method)
+	}
+	arg := args[0]
+	if arg.Kind() != KindInt {
+		return 0, fmt.Errorf("%s precision must be an Integer", method)
+	}
+	ndigits := arg.Int()
+	if ndigits < 0 {
+		return 0, fmt.Errorf("%s precision must be non-negative", method)
+	}
+	if ndigits >= maxTimePrecisionDigits {
+		return time.Nanosecond, nil
+	}
+	unit := time.Second
+	for range ndigits {
+		unit /= 10
+	}
+	return unit, nil
 }

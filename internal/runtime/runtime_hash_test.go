@@ -438,6 +438,58 @@ func TestHashRocketLiteralKeys(t *testing.T) {
 	requireCallErrorContains(t, script, "unsupported_key", nil, CallOptions{}, "unsupported hash key type array")
 }
 
+func TestHashMembershipPredicatesAcceptAnyCandidateKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method string
+		key    string
+		want   bool
+	}{
+		{name: "key? present symbol", method: "key?", key: ":a", want: true},
+		{name: "key? present string", method: "key?", key: `"a"`, want: true},
+		{name: "key? absent symbol", method: "key?", key: ":missing", want: false},
+		{name: "key? integer candidate", method: "key?", key: "1", want: false},
+		{name: "key? float candidate", method: "key?", key: "1.5", want: false},
+		{name: "key? bool candidate", method: "key?", key: "true", want: false},
+		{name: "key? nil candidate", method: "key?", key: "nil", want: false},
+		{name: "key? array candidate", method: "key?", key: "[1]", want: false},
+		{name: "has_key? present symbol", method: "has_key?", key: ":a", want: true},
+		{name: "has_key? integer candidate", method: "has_key?", key: "1", want: false},
+		{name: "include? present symbol", method: "include?", key: ":a", want: true},
+		{name: "include? integer candidate", method: "include?", key: "1", want: false},
+		{name: "include? array candidate", method: "include?", key: "[:a]", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := "def run() { a: 1 }." + tt.method + "(" + tt.key + ") end"
+			script := compileScript(t, source)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindBool {
+				t.Fatalf("expected bool, got %v", result.Kind())
+			}
+			if result.Bool() != tt.want {
+				t.Fatalf("%s(%s) = %v, want %v", tt.method, tt.key, result.Bool(), tt.want)
+			}
+		})
+	}
+}
+
+func TestHashMembershipPredicatesRejectWrongArity(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"key?", "has_key?", "include?"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() { a: 1 }."+method+"(:a, :b) end")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "expects exactly one key")
+		})
+	}
+}
+
 func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

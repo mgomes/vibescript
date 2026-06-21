@@ -45,8 +45,11 @@ Unicode characters, not bytes, unless noted.
 
 ### Search and Matching
 
-- `start_with?(prefix) -> bool` – true when the string begins with `prefix`.
-- `end_with?(suffix) -> bool` – true when the string ends with `suffix`.
+- `start_with?(*prefixes) -> bool` – true when the string begins with any of
+  the given prefixes. Candidates are checked left to right and matching
+  short-circuits, so a non-string is only rejected if reached before a match.
+- `end_with?(*suffixes) -> bool` – true when the string ends with any of the
+  given suffixes, with the same left-to-right short-circuit behavior.
 - `include?(substring) -> bool` – true when `substring` occurs anywhere.
 - `index(substring, offset = 0) -> int | nil` – first character index at or
   after `offset`; `nil` when not found.
@@ -296,6 +299,15 @@ aliases, so `1.second` reads naturally.
 - `even? -> bool` – true for even integers.
 - `odd? -> bool` – true for odd integers.
 - `times { |i| } -> int` – run the block with `0..n-1`; returns the receiver.
+- `zero? -> bool` – true when the integer is `0`.
+- `positive? -> bool` – true when greater than `0`.
+- `negative? -> bool` – true when less than `0`.
+- `nonzero? -> int?` – the receiver when nonzero, otherwise `nil`, matching
+  Ruby (the result is truthy exactly when the number is nonzero).
+- `next -> int` / `succ -> int` – the next integer (`self + 1`); errors on
+  64-bit overflow rather than wrapping.
+- `pred -> int` – the previous integer (`self - 1`); errors on 64-bit
+  underflow rather than wrapping.
 
 ## Floats
 
@@ -306,6 +318,11 @@ aliases, so `1.second` reads naturally.
   a 64-bit integer.
 - `floor -> int` – round toward negative infinity.
 - `ceil -> int` – round toward positive infinity.
+- `zero? -> bool` – true when the value is `0.0`.
+- `positive? -> bool` – true when greater than `0.0`.
+- `negative? -> bool` – true when less than `0.0`.
+- `nonzero? -> float?` – the receiver when nonzero, otherwise `nil`, matching
+  Ruby (the result is truthy exactly when the number is nonzero).
 
 `round`, `floor`, and `ceil` take no precision argument and always return an
 `int`.
@@ -447,7 +464,11 @@ formatting. Times also support `time + duration`, `time - duration`, and
 
 - `<=>(other) -> int` – `-1`, `0`, or `1` ordering against another time.
 - `eql?(other) -> bool` – true when both times are the same instant.
-- `round -> time` – round to the nearest second (no precision argument).
+- `round(ndigits = 0) -> time` – round to the given number of fractional-second
+  digits, half away from zero. No argument or `0` rounds to whole seconds;
+  positive `ndigits` rounds to that many digits (e.g. `3` for milliseconds, `6`
+  for microseconds), capped at nanosecond resolution. `ndigits` must be a
+  non-negative `Integer`; other values raise an error.
 - `floor -> time` – truncate to the whole second.
 - `ceil -> time` – round up to the next whole second.
 

@@ -273,7 +273,7 @@ end`,
 		{
 			name:   "string.end_with? with missing suffix",
 			script: `def run() "hello".end_with? end`,
-			errMsg: "expects exactly one suffix",
+			errMsg: "expects at least one suffix",
 		},
 		{
 			name:   "string.lstrip with argument",
@@ -424,11 +424,6 @@ end`,
 			name:   "hash.size with argument",
 			script: `def run() {a: 1}.size(1) end`,
 			errMsg: "hash.size does not take arguments",
-		},
-		{
-			name:   "hash.key? with unsupported key type",
-			script: `def run() {a: 1}.key?(1) end`,
-			errMsg: "key must be symbol or string",
 		},
 		{
 			name:   "hash.fetch with too many args",

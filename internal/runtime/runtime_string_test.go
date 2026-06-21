@@ -88,6 +88,120 @@ func TestStringPredicatesAndLength(t *testing.T) {
 	}
 }
 
+func TestStringStartEndWithMultipleCandidates(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   bool
+	}{
+		{
+			name:   "start_with? any candidate matches",
+			script: `def run() "hello".start_with?("x", "he") end`,
+			want:   true,
+		},
+		{
+			name:   "start_with? later candidate matches",
+			script: `def run() "hello".start_with?("nope", "miss", "hell") end`,
+			want:   true,
+		},
+		{
+			name:   "start_with? no candidate matches",
+			script: `def run() "hello".start_with?("x", "lo") end`,
+			want:   false,
+		},
+		{
+			name:   "start_with? single candidate matches",
+			script: `def run() "hello".start_with?("he") end`,
+			want:   true,
+		},
+		{
+			name:   "start_with? match short-circuits before non-string",
+			script: `def run() "hello".start_with?("he", 123) end`,
+			want:   true,
+		},
+		{
+			name:   "end_with? match short-circuits before non-string",
+			script: `def run() "hello".end_with?("lo", 123) end`,
+			want:   true,
+		},
+		{
+			name:   "end_with? any candidate matches",
+			script: `def run() "hello".end_with?("x", "lo") end`,
+			want:   true,
+		},
+		{
+			name:   "end_with? later candidate matches",
+			script: `def run() "hello".end_with?("nope", "miss", "llo") end`,
+			want:   true,
+		},
+		{
+			name:   "end_with? no candidate matches",
+			script: `def run() "hello".end_with?("x", "he") end`,
+			want:   false,
+		},
+		{
+			name:   "end_with? single candidate matches",
+			script: `def run() "hello".end_with?("lo") end`,
+			want:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindBool {
+				t.Fatalf("expected bool, got %v", result.Kind())
+			}
+			if result.Bool() != tc.want {
+				t.Fatalf("got %v, want %v", result.Bool(), tc.want)
+			}
+		})
+	}
+}
+
+func TestStringStartEndWithErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "start_with? requires a prefix",
+			script: `def run() "hello".start_with? end`,
+			want:   "expects at least one prefix",
+		},
+		{
+			name:   "end_with? requires a suffix",
+			script: `def run() "hello".end_with? end`,
+			want:   "expects at least one suffix",
+		},
+		{
+			name:   "start_with? rejects non-string reached before a match",
+			script: `def run() "hello".start_with?(123, "he") end`,
+			want:   "prefix must be string",
+		},
+		{
+			name:   "end_with? rejects non-string reached before a match",
+			script: `def run() "hello".end_with?(123, "lo") end`,
+			want:   "suffix must be string",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestStringBoundaryHelpers(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

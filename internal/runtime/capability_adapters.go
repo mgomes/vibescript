@@ -68,7 +68,12 @@ func (c *jobQueueCapability) callEnqueue(exec *Execution, receiver Value, args [
 		}
 	}
 
-	options, err := jobqueue.ParseEnqueueOptions(name, kwargs)
+	// Whether the contract ran (capabilityArgsValidated) or the inline check
+	// above ran, validateEnqueueContractArgs has already walked kwargs for
+	// data-only and cycle violations, so use the validated parser to avoid
+	// traversing the option graph a second time. Direct embedders go through
+	// the safe jobqueue.ParseEnqueueOptions, which performs that walk.
+	options, err := jobqueue.ParseEnqueueOptionsValidated(name, kwargs)
 	if err != nil {
 		return NewNil(), err
 	}
