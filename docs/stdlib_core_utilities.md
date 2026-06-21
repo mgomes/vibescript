@@ -244,7 +244,10 @@ methods.
 - `empty? -> bool` – true when the hash has no entries.
 - `key?(key) -> bool` – true when `key` is present.
 - `has_key?(key) -> bool` – alias for `key?`.
+- `member?(key) -> bool` – alias for `key?`.
 - `include?(key) -> bool` – alias for `key?`.
+- `value?(value) -> bool` – true when any stored value equals `value` using `==`.
+- `has_value?(value) -> bool` – alias for `value?`.
 
 ### Access
 
@@ -264,6 +267,8 @@ methods.
 ### Transform and Filter
 
 - `merge(other) -> hash` – combined entries; `other` wins on key conflicts.
+- `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
+  receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
 - `slice(*keys) -> hash` – only the listed keys (missing keys are skipped).
 - `except(*keys) -> hash` – all entries except the listed keys.
 - `select { |key, value| } -> hash` – entries for which the block is truthy.
