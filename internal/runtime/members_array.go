@@ -12,7 +12,8 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "map", "select", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	"size", "length", "empty?", "each", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	"take_while", "drop_while", "grep", "grep_v",
 	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
@@ -29,7 +30,8 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "map", "select", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?":
+	case "size", "length", "empty?", "each", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse":
 		return arrayMemberTransforms(property)
@@ -533,6 +535,84 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			return NewArray(out), nil
 		}), nil
+	case "reject":
+		return NewAutoBuiltin("array.reject", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.reject does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.reject")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			out := make([]Value, 0, len(arr))
+			var blockArg [1]Value
+			for _, item := range arr {
+				blockArg[0] = item
+				val, err := runner.call(blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				if !val.Truthy() {
+					out = append(out, item)
+				}
+			}
+			return NewArray(out), nil
+		}), nil
+	case "take_while":
+		return NewAutoBuiltin("array.take_while", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.take_while does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.take_while")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			out := make([]Value, 0, len(arr))
+			var blockArg [1]Value
+			for _, item := range arr {
+				blockArg[0] = item
+				val, err := runner.call(blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				if !val.Truthy() {
+					break
+				}
+				out = append(out, item)
+			}
+			return NewArray(out), nil
+		}), nil
+	case "drop_while":
+		return NewAutoBuiltin("array.drop_while", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.drop_while does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.drop_while")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			start := len(arr)
+			var blockArg [1]Value
+			for idx, item := range arr {
+				blockArg[0] = item
+				val, err := runner.call(blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				if !val.Truthy() {
+					start = idx
+					break
+				}
+			}
+			out := make([]Value, len(arr)-start)
+			copy(out, arr[start:])
+			return NewArray(out), nil
+		}), nil
+	case "grep", "grep_v":
+		return arrayMemberGrep(property)
 	case "find":
 		return NewAutoBuiltin("array.find", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -835,6 +915,49 @@ func arrayMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+// arrayMemberGrep builds array.grep and array.grep_v. Both select elements
+// against a pattern using Ruby's case-equality direction (pattern === element),
+// reusing the same matcher that powers case/when clauses. grep keeps matching
+// elements; grep_v keeps the non-matching ones. An optional block transforms
+// each kept element, mirroring Ruby's Enumerable#grep.
+func arrayMemberGrep(property string) (Value, error) {
+	keep := property == "grep"
+	name := "array." + property
+	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) != 1 {
+			return NewNil(), fmt.Errorf("%s expects exactly one pattern argument", name)
+		}
+		pattern := args[0]
+		var runner *blockCallRunner
+		if valueBlock(block) != nil {
+			var err error
+			runner, err = newBlockCallRunner(exec, block, name)
+			if err != nil {
+				return NewNil(), err
+			}
+		}
+		arr := receiver.Array()
+		out := make([]Value, 0, len(arr))
+		var blockArg [1]Value
+		for _, item := range arr {
+			if caseCandidateMatches(item, pattern) != keep {
+				continue
+			}
+			if runner == nil {
+				out = append(out, item)
+				continue
+			}
+			blockArg[0] = item
+			transformed, err := runner.call(blockArg[:])
+			if err != nil {
+				return NewNil(), err
+			}
+			out = append(out, transformed)
+		}
+		return NewArray(out), nil
+	}), nil
 }
 
 func arrayMemberTransforms(property string) (Value, error) {

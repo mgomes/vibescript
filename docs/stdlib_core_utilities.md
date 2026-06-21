@@ -142,6 +142,17 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `each { |item| } -> array` – yield each element; returns the receiver.
 - `map { |item| } -> array` – new array of block results.
 - `select { |item| } -> array` – elements for which the block is truthy.
+- `reject { |item| } -> array` – elements for which the block is falsy (the
+  inverse of `select`).
+- `take_while { |item| } -> array` – leading elements until the block first
+  returns a falsy value; stops at the first miss.
+- `drop_while { |item| } -> array` – elements remaining after skipping the
+  leading run for which the block is truthy.
+- `grep(pattern) { |item| } -> array` – elements that match `pattern` using the
+  case-equality direction (`pattern === item`); a `Range` matches by membership
+  and other values by equality. The optional block transforms each match.
+- `grep_v(pattern) { |item| } -> array` – elements that do not match `pattern`,
+  with the same matching rules and optional transform block as `grep`.
 - `find { |item| } -> value | nil` – first element matching the block.
 - `find_index { |item| } -> int | nil` – index of the first match.
 - `reduce(initial = nil) { |acc, item| } -> value` – fold left; without
