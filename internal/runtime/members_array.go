@@ -963,6 +963,13 @@ func arrayMemberGrep(property string) (Value, error) {
 			}
 			out = append(out, transformed)
 		}
+		// A sparse match set should not retain a backing array sized to the
+		// whole receiver, so right-size the result.
+		if len(out) < cap(out) {
+			trimmed := make([]Value, len(out))
+			copy(trimmed, out)
+			out = trimmed
+		}
 		return NewArray(out), nil
 	}), nil
 }
