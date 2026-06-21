@@ -481,11 +481,157 @@ func TestHashMembershipPredicatesAcceptAnyCandidateKey(t *testing.T) {
 func TestHashMembershipPredicatesRejectWrongArity(t *testing.T) {
 	t.Parallel()
 
-	for _, method := range []string{"key?", "has_key?", "include?"} {
+	for _, method := range []string{"key?", "has_key?", "member?", "include?"} {
 		t.Run(method, func(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, "def run() { a: 1 }."+method+"(:a, :b) end")
 			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "expects exactly one key")
+		})
+	}
+}
+
+func TestHashMemberAliasMatchesKeyPredicate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{name: "present symbol", key: ":a", want: true},
+		{name: "present string", key: `"a"`, want: true},
+		{name: "absent symbol", key: ":missing", want: false},
+		{name: "integer candidate", key: "1", want: false},
+		{name: "array candidate", key: "[:a]", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() { a: 1 }.member?("+tt.key+") end")
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindBool {
+				t.Fatalf("expected bool, got %v", result.Kind())
+			}
+			if result.Bool() != tt.want {
+				t.Fatalf("member?(%s) = %v, want %v", tt.key, result.Bool(), tt.want)
+			}
+		})
+	}
+}
+
+func TestHashValuePredicates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method string
+		hash   string
+		value  string
+		want   bool
+	}{
+		{name: "value? int present", method: "value?", hash: "{ a: 1, b: 2 }", value: "1", want: true},
+		{name: "value? int absent", method: "value?", hash: "{ a: 1, b: 2 }", value: "3", want: false},
+		{name: "value? string present", method: "value?", hash: `{ a: "x" }`, value: `"x"`, want: true},
+		{name: "value? nil present", method: "value?", hash: "{ a: nil }", value: "nil", want: true},
+		{name: "value? composite present", method: "value?", hash: "{ a: [1, 2] }", value: "[1, 2]", want: true},
+		{name: "value? composite absent", method: "value?", hash: "{ a: [1, 2] }", value: "[1, 3]", want: false},
+		{name: "value? nested hash present", method: "value?", hash: "{ a: { b: 1 } }", value: "{ b: 1 }", want: true},
+		{name: "has_value? int present", method: "has_value?", hash: "{ a: 1 }", value: "1", want: true},
+		{name: "has_value? int absent", method: "has_value?", hash: "{ a: 1 }", value: "2", want: false},
+		{name: "has_value? distinguishes int and float", method: "has_value?", hash: "{ a: 1 }", value: "1.0", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() "+tt.hash+"."+tt.method+"("+tt.value+") end")
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindBool {
+				t.Fatalf("expected bool, got %v", result.Kind())
+			}
+			if result.Bool() != tt.want {
+				t.Fatalf("%s(%s) = %v, want %v", tt.method, tt.value, result.Bool(), tt.want)
+			}
+		})
+	}
+}
+
+func TestHashValuePredicatesRejectWrongArity(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"value?", "has_value?"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() { a: 1 }."+method+"(1, 2) end")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "expects exactly one value")
+		})
+	}
+}
+
+func TestHashStoreReturnsNewHash(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def add_key()
+      original = { a: 1 }
+      updated = original.store(:b, 2)
+      { original: original, updated: updated }
+    end
+
+    def overwrite()
+      { a: 1 }.store("a", 9)
+    end
+
+    def string_key()
+      { a: 1 }.store("b", 2)
+    end
+    `)
+
+	added := callFunc(t, script, "add_key", nil).Hash()
+	original := added["original"]
+	if original.Kind() != KindHash {
+		t.Fatalf("original expected hash, got %v", original.Kind())
+	}
+	compareHash(t, original.Hash(), map[string]Value{"a": NewInt(1)})
+
+	updated := added["updated"]
+	if updated.Kind() != KindHash {
+		t.Fatalf("updated expected hash, got %v", updated.Kind())
+	}
+	compareHash(t, updated.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+
+	overwritten := callFunc(t, script, "overwrite", nil)
+	if overwritten.Kind() != KindHash {
+		t.Fatalf("overwrite expected hash, got %v", overwritten.Kind())
+	}
+	compareHash(t, overwritten.Hash(), map[string]Value{"a": NewInt(9)})
+
+	stringKey := callFunc(t, script, "string_key", nil)
+	if stringKey.Kind() != KindHash {
+		t.Fatalf("string_key expected hash, got %v", stringKey.Kind())
+	}
+	compareHash(t, stringKey.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+}
+
+func TestHashStoreRejectsMisuse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{name: "missing value", source: "def run() { a: 1 }.store(:b) end", wantErr: "hash.store expects a key and a value"},
+		{name: "no arguments", source: "def run() { a: 1 }.store() end", wantErr: "hash.store expects a key and a value"},
+		{name: "too many arguments", source: "def run() { a: 1 }.store(:b, 2, 3) end", wantErr: "hash.store expects a key and a value"},
+		{name: "unsupported key", source: "def run() { a: 1 }.store([1], 2) end", wantErr: "hash.store key must be symbol or string"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.wantErr)
 		})
 	}
 }

@@ -23,11 +23,22 @@ type parser struct {
 	lineLimitedStops []ast.TokenType
 	statementNesting int
 	typeDepth        int
+	localScopes      []localScope
+}
+
+// localScope records the local names declared within a single lexical
+// scope. funcDef marks scopes introduced by a function definition, which
+// act as a lookup boundary: name resolution does not see locals declared
+// in scopes enclosing a function. Block scopes leave funcDef false so
+// they continue to close over their surrounding locals.
+type localScope struct {
+	names   map[string]struct{}
+	funcDef bool
 }
 
 func newParser(input string) *parser {
 	l := newLexer(input)
-	p := &parser{l: l}
+	p := &parser{l: l, localScopes: []localScope{{names: map[string]struct{}{}}}}
 
 	p.nextToken()
 	p.nextToken()
@@ -36,9 +47,105 @@ func newParser(input string) *parser {
 	return p
 }
 
+func (p *parser) pushLocalScope(params []ast.Param, funcDef bool) {
+	scope := localScope{names: map[string]struct{}{}, funcDef: funcDef}
+	p.localScopes = append(p.localScopes, scope)
+	for _, param := range params {
+		p.declareParamLocal(param)
+	}
+}
+
+func (p *parser) popLocalScope() {
+	if len(p.localScopes) <= 1 {
+		return
+	}
+	p.localScopes = p.localScopes[:len(p.localScopes)-1]
+}
+
+func (p *parser) declareParamLocal(param ast.Param) {
+	if param.Target != nil {
+		p.declareLocalTarget(param.Target)
+		return
+	}
+	if param.Name != "" && !param.IsIvar {
+		p.declareLocal(param.Name)
+	}
+}
+
+func (p *parser) declareLocalTarget(target ast.Expression) {
+	switch t := target.(type) {
+	case *ast.Identifier:
+		p.declareLocal(t.Name)
+	case *ast.DestructureTarget:
+		for _, element := range t.Elements {
+			p.declareLocalTarget(element.Target)
+		}
+	}
+}
+
+func (p *parser) declareLocal(name string) {
+	if len(p.localScopes) == 0 {
+		p.localScopes = append(p.localScopes, localScope{names: map[string]struct{}{}})
+	}
+	p.localScopes[len(p.localScopes)-1].names[name] = struct{}{}
+}
+
+// localDeclaredInTop reports whether name is already declared in the
+// innermost scope (not any enclosing scope).
+func (p *parser) localDeclaredInTop(name string) bool {
+	if len(p.localScopes) == 0 {
+		return false
+	}
+	_, ok := p.localScopes[len(p.localScopes)-1].names[name]
+	return ok
+}
+
+// undeclareLocal removes name from the innermost scope. It is used for
+// names whose visibility is limited to a sub-region of their scope, such
+// as a rescue exception binding.
+func (p *parser) undeclareLocal(name string) {
+	if len(p.localScopes) == 0 {
+		return
+	}
+	delete(p.localScopes[len(p.localScopes)-1].names, name)
+}
+
+func (p *parser) isLocalName(name string) bool {
+	for i := len(p.localScopes) - 1; i >= 0; i-- {
+		if _, ok := p.localScopes[i].names[name]; ok {
+			return true
+		}
+		// A function definition is a lookup boundary: locals declared in
+		// scopes enclosing the function (including snippet top-level
+		// locals) are not visible inside the function body.
+		if p.localScopes[i].funcDef {
+			break
+		}
+	}
+	return false
+}
+
 func (p *parser) nextToken() {
 	p.curToken = p.peekToken
 	p.peekToken = p.peekPeek
+	p.peekPeek = p.l.NextToken()
+}
+
+// reprimeAt repositions the lexer to resume scanning at the given byte
+// offset and rebuilds the lookahead from there. It is used after the
+// parser consumes a construct directly from source (such as a
+// percent-array call argument) whose interior the lexer may have
+// tokenized incorrectly while filling its lookahead.
+//
+// last is the synthetic token standing in for the consumed construct. It
+// becomes curToken so the expression-parsing contract holds (curToken is
+// left on the construct's final token, not the token after it) and the
+// lexer's lastToken, so token-adjacency gating stays correct. The two
+// following tokens are scanned fresh from offset.
+func (p *parser) reprimeAt(offset int, last ast.Token) {
+	p.l.seek(offset, last)
+	p.curToken = last
+	p.peekToken = p.l.NextToken()
 	p.peekPeek = p.l.NextToken()
 }
 

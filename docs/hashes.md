@@ -55,7 +55,8 @@ sizes[:size] # "XL"
 
 - `size` / `length`
 - `empty?`
-- `key?`, `has_key?`, `include?`
+- `key?`, `has_key?`, `member?`, `include?` for key membership.
+- `value?`, `has_value?` for value membership.
 
 ```vibe
 def has_required_fields(player)
@@ -63,13 +64,24 @@ def has_required_fields(player)
 end
 ```
 
-The membership predicates accept any candidate key. Hashes only store symbol
-and string keys, so a candidate of any other type can never be present and the
-predicate simply returns `false` instead of raising.
+The key membership predicates accept any candidate key. Hashes only store
+symbol and string keys, so a candidate of any other type can never be present
+and the predicate simply returns `false` instead of raising.
 
 ```vibe
 { a: 1 }.key?(1)     # false
+{ a: 1 }.member?(1)  # false
 { a: 1 }.include?(1) # false
+```
+
+`value?` and `has_value?` compare the candidate against each stored value using
+the same `==` equality as the rest of Vibescript, so deep collections match by
+content and integers do not match equal-looking floats.
+
+```vibe
+{ a: 1, b: 2 }.value?(2)        # true
+{ a: [1, 2] }.has_value?([1, 2]) # true
+{ a: 1 }.value?(1.0)            # false
 ```
 
 ## Access helpers
@@ -87,6 +99,9 @@ end
 ## Transform and filter helpers
 
 - `merge` combines two hashes into a new hash.
+- `store(key, value)` returns a new hash with the key assigned, leaving the
+  receiver unchanged. Like the other method-based helpers it is immutable-style;
+  use index assignment (`hash[key] = value`) when you want to mutate in place.
 - `compact` removes `nil` values.
 - `slice(*keys)` keeps only selected keys.
 - `except(*keys)` removes selected keys.

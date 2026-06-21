@@ -9,6 +9,22 @@ All notable changes to this project will be documented in this file.
   array of the string's Unicode characters using the existing rune-aware
   semantics, and `lines` splits on `"\n"` while retaining the trailing newline
   on each line, leaving carriage returns attached so `"\r\n"` endings round-trip.
+- **Added: Ruby-style hash member, value, and store helpers.** `Hash#member?`
+  joins `key?`/`has_key?`/`include?` as a key-membership alias, `Hash#value?` and
+  `Hash#has_value?` report value membership using the same `==` equality as the
+  rest of the language, and `Hash#store(key, value)` returns a new hash with the
+  key assigned. Like the other method-based hash helpers, `store` is
+  immutable-style and leaves the receiver unchanged.
+- **Added: Ruby-style `call` on function values.** A function value now exposes
+  a `call` member so `fn.call(...)` mirrors direct `fn(...)` invocation,
+  forwarding positional arguments, keyword arguments, and an optional block.
+  Arity and type errors stay anchored at the call site, and `call` is the only
+  member offered (with a "did you mean" hint for typos).
+- **Hardened CLI source-size enforcement.** `vibes run`, `vibes analyze`, and
+  `vibes test` now read each script through a single size-checked descriptor,
+  bounded at the engine's configured source-size limit, so an oversized file
+  (even one swapped or grown after the check) is rejected before it is loaded
+  fully into memory.
 - **Improved: Ruby-style `String#start_with?` and `String#end_with?`.** Both
   predicates now accept one or more string candidates and return true when any
   matches. Candidates are checked left to right and matching short-circuits like
@@ -31,6 +47,11 @@ All notable changes to this project will be documented in this file.
 - **Added: Ruby-style numeric predicate and successor helpers.** Integers and
   floats gain `zero?`, `positive?`, `negative?`, and `nonzero?` (returning the
   receiver or `nil`), and integers gain `next`/`succ` and `pred`.
+- **Added: Ruby-style `Array#min`, `#max`, `#minmax`, `#min_by`, and `#max_by`.**
+  The extrema helpers reuse the comparison semantics of `sort`/`sort_by`, return
+  `nil` (or `[nil, nil]` for `minmax`) on empty arrays, resolve ties to the first
+  matching element, participate in step/cancellation accounting for the block
+  forms, and raise clear errors on incomparable mixed values.
 
 ## v0.50.0 - 2026-06-11
 

@@ -52,6 +52,15 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 		return nil
 	}
 
+	return p.continueExpressionParse(left, precedence, limitLine, lineLimited)
+}
+
+// continueExpressionParse applies infix and postfix parselets to an already
+// parsed left-hand expression, following precedence and line-limit rules. It
+// is the shared continuation used both after parsing a prefix and after the
+// parser materializes an operand directly (such as a percent-array call
+// argument) that must still accept trailing postfixes like `[i]` or `.member`.
+func (p *parser) continueExpressionParse(left ast.Expression, precedence, limitLine int, lineLimited bool) ast.Expression {
 	for p.peekToken.Type != ast.TokenEOF {
 		if lineLimited && p.peekStopsLineExpression() {
 			return left
@@ -163,10 +172,16 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 	if !lineLimited || precedence != lowestPrec {
 		return false
 	}
-	if !isParenlessCallCallee(left) || !isParenlessArgumentStart(p.peekToken.Type) {
+	if !isParenlessCallCallee(left) {
 		return false
 	}
-	return p.peekToken.Pos.Line == p.curToken.Pos.Line
+	if p.peekToken.Pos.Line != p.curToken.Pos.Line {
+		return false
+	}
+	if p.peekStartsPercentArrayArgument(left) {
+		return true
+	}
+	return isParenlessArgumentStart(p.peekToken.Type)
 }
 
 func isParenlessCallCallee(expr ast.Expression) bool {
@@ -178,6 +193,16 @@ func isParenlessCallCallee(expr ast.Expression) bool {
 	}
 }
 
+func (p *parser) peekStartsPercentArrayArgument(callee ast.Expression) bool {
+	if p.peekToken.Type != ast.TokenPercent || !p.percentArrayLiteralArgumentAt(p.peekToken.Pos) {
+		return false
+	}
+	if ident, ok := callee.(*ast.Identifier); ok && p.isLocalName(ident.Name) {
+		return false
+	}
+	return true
+}
+
 func isParenlessArgumentStart(tt ast.TokenType) bool {
 	switch tt {
 	case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace, ast.TokenMinus:
@@ -186,6 +211,15 @@ func isParenlessArgumentStart(tt ast.TokenType) bool {
 		return true
 	}
 	return prefixParserKind(tt) != prefixParserNone
+}
+
+func (p *parser) percentArrayLiteralArgumentAt(pos ast.Position) bool {
+	offset, ok := sourceOffsetForPosition(p.l.input, pos)
+	if !ok || !offsetHasLeadingWhitespace(p.l.input, offset) {
+		return false
+	}
+	_, _, _, ok = scanPercentArrayLiteralAt(p.l.input, offset)
+	return ok
 }
 
 func (p *parser) recoverUnsupportedRegexLiteral() {
@@ -519,11 +553,7 @@ func (p *parser) parseInterpolatedStringParts(raw string, pos ast.Position) ([]a
 	parts := []ast.StringPart{}
 	textStart := 0
 	for i := 0; i < len(raw); {
-		if raw[i] == '\\' {
-			i = skipEscapedByte(raw, i)
-			continue
-		}
-		if raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{' {
+		if raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{' && !interpolationMarkerEscaped(raw, i) {
 			if textStart < i {
 				parts = append(parts, ast.StringText{Text: decodeDoubleQuotedText(raw[textStart:i])})
 			}
@@ -553,6 +583,14 @@ func (p *parser) parseInterpolatedStringParts(raw string, pos ast.Position) ([]a
 		parts = append(parts, ast.StringText{Text: decodeDoubleQuotedText(raw[textStart:])})
 	}
 	return parts, true
+}
+
+func interpolationMarkerEscaped(raw string, hash int) bool {
+	backslashes := 0
+	for i := hash - 1; i >= 0 && raw[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 func skipEscapedByte(raw string, i int) int {
@@ -607,6 +645,11 @@ func skipQuotedInterpolationString(raw string, start int) (int, bool) {
 
 func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position) (ast.Expression, bool) {
 	exprParser := newParser(raw)
+	// Inherit the enclosing local scopes so name-sensitive parsing (such as
+	// percent-literal vs modulo disambiguation) resolves locals the same way
+	// inside #{...} as it would inline. The copy keeps the sub-parser's scope
+	// stack independent while sharing the (read-only) name sets.
+	exprParser.localScopes = append([]localScope(nil), p.localScopes...)
 	expr := exprParser.parseLineExpression(lowestPrec)
 	if len(exprParser.errors) > 0 {
 		p.addParseError(pos, fmt.Sprintf("invalid string interpolation: %s", parseErrorMessage(exprParser.errors[0])))
@@ -670,6 +713,50 @@ func (p *parser) parsePercentWordsLiteral() ast.Expression {
 	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
 }
 
+func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
+	pos := p.curToken.Pos
+	offset, ok := sourceOffsetForPosition(p.l.input, p.curToken.Pos)
+	if !ok {
+		return nil
+	}
+	kind, entries, endOffset, ok := scanPercentArrayLiteralAt(p.l.input, offset)
+	if !ok {
+		return nil
+	}
+	end := sourcePositionForOffset(p.l.input, endOffset)
+	elements := make([]ast.Expression, len(entries))
+	litType := ast.TokenWords
+	for i, entry := range entries {
+		switch kind {
+		case 'w':
+			elements[i] = &ast.StringLiteral{Value: entry, Position: pos}
+		case 'i':
+			elements[i] = &ast.SymbolLiteral{Name: entry, Position: pos}
+			litType = ast.TokenSymbols
+		}
+	}
+	// The lexer already speculatively tokenized the literal's interior
+	// (treating the leading % as modulo), so its lookahead — and the
+	// bytes it has consumed — cannot be trusted past this point: a word
+	// such as "#" would otherwise start a comment that swallows the
+	// closing delimiter and following lines. Reposition the lexer to the
+	// byte after the literal and rebuild the lookahead from there instead
+	// of re-lexing the interior.
+	p.reprimeAt(endOffset, ast.Token{Type: litType, Pos: pos, End: end})
+
+	array := &ast.ArrayLiteral{Elements: elements, Position: pos}
+	// Continue parsing so trailing postfixes (such as `[i]` or `.member`) and
+	// operators bind to the literal, matching how other parenless arguments are
+	// parsed through the normal expression continuation rather than returning
+	// the bare array and leaving the postfix to apply to the whole call.
+	lineLimited := p.lineLimitedExprs > 0
+	limitLine := 0
+	if lineLimited {
+		limitLine = pos.Line
+	}
+	return p.continueExpressionParse(array, lowestPrec, limitLine, lineLimited)
+}
+
 func (p *parser) parsePercentSymbolsLiteral() ast.Expression {
 	entries := decodePercentLiteralEntries(p.curToken.Literal)
 	elements := make([]ast.Expression, len(entries))
@@ -677,6 +764,100 @@ func (p *parser) parsePercentSymbolsLiteral() ast.Expression {
 		elements[i] = &ast.SymbolLiteral{Name: entry, Position: p.curToken.Pos}
 	}
 	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
+func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bool) {
+	if start < 0 || start >= len(input) || input[start] != '%' {
+		return 0, nil, 0, false
+	}
+	idx := start + 1
+	if idx >= len(input) {
+		return 0, nil, 0, false
+	}
+	kind, width := utf8.DecodeRuneInString(input[idx:])
+	if kind != 'w' && kind != 'i' {
+		return 0, nil, 0, false
+	}
+	idx += width
+	if idx >= len(input) {
+		return 0, nil, 0, false
+	}
+	open, width := utf8.DecodeRuneInString(input[idx:])
+	close, paired := percentLiteralClose(open)
+	if close == 0 {
+		return 0, nil, 0, false
+	}
+	idx += width
+
+	depth := 1
+	var raw strings.Builder
+	for idx < len(input) {
+		r, width := utf8.DecodeRuneInString(input[idx:])
+		idx += width
+		if r == '\\' {
+			raw.WriteRune(r)
+			if idx < len(input) {
+				next, nextWidth := utf8.DecodeRuneInString(input[idx:])
+				idx += nextWidth
+				raw.WriteRune(next)
+			}
+			continue
+		}
+		if paired && r == open {
+			depth++
+		}
+		if r == close {
+			depth--
+			if depth == 0 {
+				return kind, splitPercentLiteralWords(raw.String(), open, close), idx, true
+			}
+		}
+		raw.WriteRune(r)
+	}
+	return 0, nil, 0, false
+}
+
+func sourceOffsetForPosition(input string, pos ast.Position) (int, bool) {
+	line, column := 1, 1
+	for idx, r := range input {
+		if line == pos.Line && column == pos.Column {
+			return idx, true
+		}
+		if r == '\n' {
+			line++
+			column = 1
+		} else {
+			column++
+		}
+	}
+	if line == pos.Line && column == pos.Column {
+		return len(input), true
+	}
+	return 0, false
+}
+
+func sourcePositionForOffset(input string, offset int) ast.Position {
+	line, column := 1, 1
+	for idx, r := range input {
+		if idx >= offset {
+			return ast.Position{Line: line, Column: column}
+		}
+		if r == '\n' {
+			line++
+			column = 1
+		} else {
+			column++
+		}
+	}
+	return ast.Position{Line: line, Column: column}
+}
+
+func offsetHasLeadingWhitespace(input string, offset int) bool {
+	if offset <= 0 || offset > len(input) {
+		return false
+	}
+	prev, _ := utf8.DecodeLastRuneInString(input[:offset])
+	return prev == ' ' || prev == '\t' || prev == '\r' || prev == '\n'
 }
 
 func (p *parser) parseBooleanLiteral() ast.Expression {
@@ -774,7 +955,7 @@ func (p *parser) parseRangeExpression(left ast.Expression) ast.Expression {
 	pos := p.curToken.Pos
 	exclusive := p.curToken.Type == ast.TokenRangeExcl
 	precedence := p.curPrecedence()
-	if prefixParserKind(p.peekToken.Type) == prefixParserNone || (p.lineLimitedExprs > 0 && p.peekToken.Pos.Line != pos.Line) {
+	if prefixParserKind(p.peekToken.Type) == prefixParserNone {
 		p.addParseErrorSpan(pos, tokenEnd(p.curToken), "range is missing end expression")
 		return nil
 	}
@@ -996,7 +1177,9 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 		p.nextToken()
 	}
 
+	p.pushLocalScope(params, false)
 	body := p.parseBlock(stopToken)
+	p.popLocalScope()
 	if p.curToken.Type != stopToken {
 		p.errorExpected(p.curToken, stopName)
 	}
@@ -1283,6 +1466,14 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 }
 
 func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, bareKeywordArgs *bool) {
+	if p.curToken.Type == ast.TokenPercent {
+		expr := p.parsePercentArrayLiteralArgument()
+		if expr != nil {
+			*args = append(*args, expr)
+		}
+		return
+	}
+
 	switch p.curToken.Type {
 	case ast.TokenAsterisk:
 		p.recoverUnsupportedCallExpansion("call splat is not supported; pass positional arguments explicitly")
