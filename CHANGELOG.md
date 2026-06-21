@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `Array#reject`, `take_while`, `drop_while`, `grep`, and
+  `grep_v`.** `reject` is the inverse of `select`; `take_while` and `drop_while`
+  split on the first block miss with early-stop semantics; `grep` and `grep_v`
+  filter using the language's case-equality direction (`pattern === element`,
+  the same matcher as `case`/`when`), so a `Range` matches by membership and
+  other values by equality, with an optional block transforming each kept
+  element. Regex patterns are not yet available, so string patterns match by
+  equality rather than substring.
 - **Added: Ruby-style `Time#iso8601(ndigits)` precision.** `Time#iso8601` and its
   `Time#rfc3339` alias now accept an optional non-negative `ndigits` argument that
   appends fractional-second digits, truncated toward zero like Ruby. No argument
