@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip",
@@ -32,7 +32,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse", "take", "drop", "zip":
@@ -465,6 +465,60 @@ func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
 	return 256, nil
 }
 
+// arrayPositiveSliceSize validates the single argument shared by each_slice as a
+// positive native-int size. Ruby raises "invalid slice size" for non-positive
+// values, and an out-of-range integer cannot index a Go slice, so both are
+// rejected before iteration begins.
+func arrayPositiveSliceSize(args []Value, method string) (int, error) {
+	if len(args) != 1 {
+		return 0, fmt.Errorf("%s expects a slice size", method)
+	}
+	sizeValue := args[0]
+	maxNativeInt := int64(^uint(0) >> 1)
+	if sizeValue.Kind() != KindInt || sizeValue.Int() <= 0 || sizeValue.Int() > maxNativeInt {
+		return 0, fmt.Errorf("%s invalid slice size", method)
+	}
+	return int(sizeValue.Int()), nil
+}
+
+// arrayPositiveConsSize validates the single argument shared by each_cons as a
+// positive native-int size. Ruby raises "invalid size" for non-positive values.
+func arrayPositiveConsSize(args []Value, method string) (int, error) {
+	if len(args) != 1 {
+		return 0, fmt.Errorf("%s expects a window size", method)
+	}
+	sizeValue := args[0]
+	maxNativeInt := int64(^uint(0) >> 1)
+	if sizeValue.Kind() != KindInt || sizeValue.Int() <= 0 || sizeValue.Int() > maxNativeInt {
+		return 0, fmt.Errorf("%s invalid size", method)
+	}
+	return int(sizeValue.Int()), nil
+}
+
+// arrayCycleCount validates the optional repetition count for cycle. With no
+// argument the loop is infinite (infinite=true), mirroring Ruby's Array#cycle.
+// A negative count yields no iterations rather than an error, matching Ruby.
+func arrayCycleCount(args []Value, method string) (count int, infinite bool, err error) {
+	if len(args) == 0 {
+		return 0, true, nil
+	}
+	if len(args) != 1 {
+		return 0, false, fmt.Errorf("%s accepts at most one count", method)
+	}
+	countValue := args[0]
+	if countValue.Kind() != KindInt {
+		return 0, false, fmt.Errorf("%s count must be an integer", method)
+	}
+	if countValue.Int() <= 0 {
+		return 0, false, nil
+	}
+	maxNativeInt := int64(^uint(0) >> 1)
+	if countValue.Int() > maxNativeInt {
+		return 0, false, fmt.Errorf("%s count is out of range", method)
+	}
+	return int(countValue.Int()), false, nil
+}
+
 func arrayMemberQuery(property string) (Value, error) {
 	switch property {
 	case "size", "length":
@@ -496,6 +550,103 @@ func arrayMemberQuery(property string) (Value, error) {
 				}
 			}
 			return receiver, nil
+		}), nil
+	case "each_slice":
+		return NewAutoBuiltin("array.each_slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			size, err := arrayPositiveSliceSize(args, "array.each_slice")
+			if err != nil {
+				return NewNil(), err
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.each_slice")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			var blockArg [1]Value
+			for i := 0; i < len(arr); i += size {
+				end := min(i+size, len(arr))
+				slice := make([]Value, end-i)
+				copy(slice, arr[i:end])
+				blockArg[0] = NewArray(slice)
+				if _, err := runner.call(blockArg[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewNil(), nil
+		}), nil
+	case "each_cons":
+		return NewAutoBuiltin("array.each_cons", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			size, err := arrayPositiveConsSize(args, "array.each_cons")
+			if err != nil {
+				return NewNil(), err
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.each_cons")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			var blockArg [1]Value
+			for i := 0; i+size <= len(arr); i++ {
+				window := make([]Value, size)
+				copy(window, arr[i:i+size])
+				blockArg[0] = NewArray(window)
+				if _, err := runner.call(blockArg[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewNil(), nil
+		}), nil
+	case "reverse_each":
+		return NewAutoBuiltin("array.reverse_each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.reverse_each does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.reverse_each")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			var blockArg [1]Value
+			for i := len(arr) - 1; i >= 0; i-- {
+				blockArg[0] = arr[i]
+				if _, err := runner.call(blockArg[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
+	case "cycle":
+		return NewAutoBuiltin("array.cycle", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			// A nil count cycles forever, mirroring Ruby's Array#cycle. The step
+			// quota and context cancellation bound the otherwise unbounded loop.
+			count, infinite, err := arrayCycleCount(args, "array.cycle")
+			if err != nil {
+				return NewNil(), err
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.cycle")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			if len(arr) == 0 {
+				return NewNil(), nil
+			}
+			var blockArg [1]Value
+			for rep := 0; infinite || rep < count; rep++ {
+				for _, item := range arr {
+					// Charge a step per yield so an empty or trivial block body
+					// cannot starve the quota or cancellation checks during a
+					// long (or infinite) cycle.
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					blockArg[0] = item
+					if _, err := runner.call(blockArg[:]); err != nil {
+						return NewNil(), err
+					}
+				}
+			}
+			return NewNil(), nil
 		}), nil
 	case "map":
 		return NewAutoBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

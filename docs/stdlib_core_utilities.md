@@ -140,6 +140,15 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 ### Iteration
 
 - `each { |item| } -> array` – yield each element; returns the receiver.
+- `each_slice(n) { |slice| } -> nil` – yield non-overlapping slices of length
+  `n` (the trailing slice may be shorter); `n` must be a positive integer.
+- `each_cons(n) { |window| } -> nil` – yield each sliding window of length `n`;
+  arrays shorter than `n` yield nothing and `n` must be a positive integer.
+- `reverse_each { |item| } -> array` – yield elements from last to first;
+  returns the receiver.
+- `cycle(n = nil) { |item| } -> nil` – yield the whole array `n` times; a
+  non-positive `n` yields nothing. Omitting `n` cycles forever, bounded by the
+  step quota and context cancellation.
 - `map { |item| } -> array` – new array of block results.
 - `select { |item| } -> array` – elements for which the block is truthy.
 - `reject { |item| } -> array` – elements for which the block is falsy (the
