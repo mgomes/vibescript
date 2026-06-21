@@ -59,14 +59,18 @@ func stringIsASCII(text string) bool {
 }
 
 // asciiCaseCompare compares a and b byte-by-byte, folding only the ASCII
-// letters a-z and A-Z to a common case. This mirrors Ruby's String#casecmp,
-// which case-insensitively compares ASCII letters while leaving every other
-// byte (including multibyte UTF-8 sequences) to an ordinal comparison. The
-// result is normalized to -1, 0, or 1.
+// letters A-Z down to a-z before each byte comparison. This mirrors Ruby's
+// String#casecmp, whose single-byte path applies TOLOWER to each byte, so
+// uppercase letters collapse onto their lowercase counterparts while every
+// other byte (punctuation and multibyte UTF-8 sequences alike) is compared
+// ordinally. Folding downward keeps the result consistent with Ruby for the
+// punctuation bytes between 'Z' and 'a' (such as '[', '\\', ']', '^', '_',
+// and '`'), where folding upward would invert the ordering. The result is
+// normalized to -1, 0, or 1.
 func asciiCaseCompare(a, b string) int {
 	limit := min(len(a), len(b))
 	for i := range limit {
-		ca, cb := asciiUpper(a[i]), asciiUpper(b[i])
+		ca, cb := asciiLower(a[i]), asciiLower(b[i])
 		if ca != cb {
 			if ca < cb {
 				return -1
@@ -84,9 +88,9 @@ func asciiCaseCompare(a, b string) int {
 	}
 }
 
-func asciiUpper(b byte) byte {
-	if b >= 'a' && b <= 'z' {
-		return b - ('a' - 'A')
+func asciiLower(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
 	}
 	return b
 }
