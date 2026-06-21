@@ -225,6 +225,9 @@ func TestStringPaddingRejectsOutOfRangeFloatWidths(t *testing.T) {
 		{"center huge negative float", "center_w", NewFloat(-1e20), "string.center width is out of range"},
 		{"center float just above int max", "center_w", NewFloat(hugePositive), "string.center width is out of range"},
 		{"center float just below int min", "center_w", NewFloat(hugeNegative), "string.center width is out of range"},
+		// Exactly 2^63: float64(math.MaxInt) rounds up to this, so it must be
+		// rejected rather than overflowing int() to math.MinInt.
+		{"center float at 2^63", "center_w", NewFloat(9223372036854775808.0), "string.center width is out of range"},
 		{"center NaN width", "center_w", NewFloat(math.NaN()), "string.center width is out of range"},
 		{"center positive infinity width", "center_w", NewFloat(math.Inf(1)), "string.center width is out of range"},
 		{"center negative infinity width", "center_w", NewFloat(math.Inf(-1)), "string.center width is out of range"},

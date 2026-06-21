@@ -69,11 +69,12 @@ func valueToPadWidth(val Value) (int, error) {
 			return 0, errWidthOutOfRange
 		}
 		// Truncate toward zero first, matching Ruby's to_int, then verify the
-		// result is representable. Comparing the truncated value against the int
-		// bounds avoids rejecting Floats like math.MaxInt rounded up, since the
-		// truncation toward zero is what ultimately must fit.
+		// result is representable as an int. float64(math.MaxInt) rounds up to
+		// 2^63, so a strict `>` check would let exactly 2^63 through and then
+		// int(2^63) overflows to math.MinInt; reject `>= float64(math.MaxInt)`
+		// instead. float64(math.MinInt) is exactly -2^63, so `<` is correct.
 		t := math.Trunc(f)
-		if t > math.MaxInt || t < math.MinInt {
+		if t >= float64(math.MaxInt) || t < float64(math.MinInt) {
 			return 0, errWidthOutOfRange
 		}
 		return int(t), nil
