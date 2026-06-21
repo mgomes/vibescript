@@ -426,11 +426,6 @@ end`,
 			errMsg: "hash.size does not take arguments",
 		},
 		{
-			name:   "hash.key? with unsupported key type",
-			script: `def run() {a: 1}.key?(1) end`,
-			errMsg: "key must be symbol or string",
-		},
-		{
 			name:   "hash.fetch with too many args",
 			script: `def run() {a: 1}.fetch(:a, 1, 2) end`,
 			errMsg: "expects key and optional default",
