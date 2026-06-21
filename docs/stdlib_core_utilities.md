@@ -317,7 +317,7 @@ aliases, so `1.second` reads naturally.
   unchanged; negative `ndigits` round to the matching power of ten (e.g.
   `1234.round(-2)` is `1200`) half away from zero.
 - `floor(ndigits = 0) -> int` – like `round`, but negative `ndigits` truncate
-  toward negative infinity (`1234.floor(-2)` is `1200`, `-1234.floor(-2)` is
+  toward negative infinity (`1234.floor(-2)` is `1200`, `(-1234).floor(-2)` is
   `-1300`).
 - `ceil(ndigits = 0) -> int` – like `round`, but negative `ndigits` round
   toward positive infinity (`1234.ceil(-2)` is `1300`).
