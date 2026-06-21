@@ -309,6 +309,44 @@ Removes the suffix when present:
 "report.csv".delete_suffix(".csv") # "report"
 ```
 
+## Padding
+
+`width` is measured in characters (Unicode code points), not bytes or display
+columns, so multibyte characters each count as one. When `width` is less than or
+equal to the receiver's length, the receiver is returned unchanged. A `Float`
+width is truncated toward zero. The pad string defaults to a single space and
+must not be empty; it is repeated and then truncated at a character boundary to
+fill the requested span.
+
+### `center(width, pad = " ")`
+
+Centers the string, padding both sides. When the padding cannot be split evenly,
+the extra character goes on the right:
+
+```vibe
+"hi".center(6, "-")     # "--hi--"
+"hi".center(5)          # " hi  "
+"hi".center(10, "12345") # "1234hi1234"
+```
+
+### `ljust(width, pad = " ")`
+
+Left-justifies the string, padding on the right:
+
+```vibe
+"hi".ljust(5, ".") # "hi..."
+"hi".ljust(7, "ab") # "hiababa"
+```
+
+### `rjust(width, pad = " ")`
+
+Right-justifies the string, padding on the left:
+
+```vibe
+"hi".rjust(5, ".") # "...hi"
+"hi".rjust(7, "ab") # "ababahi"
+```
+
 ## Compatibility Methods
 
 Vibescript strings are immutable, so mutating-style Ruby methods return a new string.

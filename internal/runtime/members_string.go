@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -15,6 +16,7 @@ var stringMemberNames = []string{
 	"size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "template",
+	"center", "ljust", "rjust",
 }
 
 var stringBuiltinMembers = newMemberTable(stringMemberNames)
@@ -34,6 +36,8 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberTransforms(property)
 	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "template":
 		return stringMemberTextOps(property)
+	case "center", "ljust", "rjust":
+		return stringMemberPadding(property)
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
@@ -1129,6 +1133,169 @@ func stringMemberTextOps(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
+}
+
+func stringMemberPadding(property string) (Value, error) {
+	switch property {
+	case "center":
+		return NewAutoBuiltin("string.center", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return stringPad(exec, "string.center", padCenter, receiver, args, kwargs)
+		}), nil
+	case "ljust":
+		return NewAutoBuiltin("string.ljust", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return stringPad(exec, "string.ljust", padRight, receiver, args, kwargs)
+		}), nil
+	case "rjust":
+		return NewAutoBuiltin("string.rjust", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return stringPad(exec, "string.rjust", padLeft, receiver, args, kwargs)
+		}), nil
+	default:
+		return NewNil(), fmt.Errorf("unknown string method %s", property)
+	}
+}
+
+// padSide selects how padding runes are distributed around the receiver.
+type padSide int
+
+const (
+	padRight padSide = iota
+	padLeft
+	padCenter
+)
+
+// stringPad implements the shared logic for center, ljust, and rjust. Width is
+// measured in runes to mirror Ruby's character-oriented padding, and a width at
+// or below the receiver length returns the receiver unchanged. The padding
+// string defaults to a single space, must be non-empty, and is repeated then
+// truncated by runes to fill the requested span. The projected byte length is
+// checked against the memory quota before any buffer is allocated so an
+// oversized width fails fast instead of materializing a huge string.
+func stringPad(exec *Execution, method string, side padSide, receiver Value, args []Value, kwargs map[string]Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not accept keyword arguments", method)
+	}
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("%s expects width and optional pad string", method)
+	}
+	width, err := valueToInt(args[0])
+	if err != nil {
+		return NewNil(), fmt.Errorf("%s width must be integer", method)
+	}
+	pad := " "
+	if len(args) == 2 {
+		if args[1].Kind() != KindString {
+			return NewNil(), fmt.Errorf("%s pad must be string", method)
+		}
+		pad = args[1].String()
+	}
+	if pad == "" {
+		return NewNil(), fmt.Errorf("%s pad must not be empty", method)
+	}
+
+	text := receiver.String()
+	srcRunes := stringRuneLen(text)
+	if width <= srcRunes {
+		return receiver, nil
+	}
+
+	totalPad := width - srcRunes
+	leftPad, rightPad := 0, 0
+	switch side {
+	case padLeft:
+		leftPad = totalPad
+	case padRight:
+		rightPad = totalPad
+	case padCenter:
+		leftPad = totalPad / 2
+		rightPad = totalPad - leftPad
+	}
+
+	// Saturating arithmetic keeps the projected size from overflowing on a huge
+	// width; the quota check below rejects anything that large regardless.
+	projected := saturatingAdd(len(text), saturatingAdd(padRuneBytes(pad, leftPad), padRuneBytes(pad, rightPad)))
+	if err := exec.checkProjectedStringBytes(projected); err != nil {
+		return NewNil(), err
+	}
+
+	var b strings.Builder
+	// Only preallocate when the projected size is exact; a saturated value means
+	// the request overflowed int and would never fit in memory anyway.
+	if projected < math.MaxInt {
+		b.Grow(projected)
+	}
+	writePadRunes(&b, pad, leftPad)
+	b.WriteString(text)
+	writePadRunes(&b, pad, rightPad)
+	return NewString(b.String()), nil
+}
+
+// padRuneBytes reports how many bytes count runes drawn from pad occupy. The
+// pad string is conceptually repeated and then truncated to count runes, so
+// full repeats contribute their whole byte length and the remainder contributes
+// a rune-aligned prefix. The byte total saturates at math.MaxInt so an
+// oversized count cannot overflow the projected-size check.
+func padRuneBytes(pad string, count int) int {
+	if count <= 0 {
+		return 0
+	}
+	padRunes := stringRuneLen(pad)
+	full := count / padRunes
+	remainder := count % padRunes
+	return saturatingAdd(saturatingMul(full, len(pad)), padPrefixBytes(pad, remainder))
+}
+
+// saturatingAdd returns a+b clamped to math.MaxInt instead of overflowing. Both
+// operands are non-negative byte counts.
+func saturatingAdd(a, b int) int {
+	if a > math.MaxInt-b {
+		return math.MaxInt
+	}
+	return a + b
+}
+
+// saturatingMul returns a*b clamped to math.MaxInt instead of overflowing. Both
+// operands are non-negative byte counts.
+func saturatingMul(a, b int) int {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > math.MaxInt/b {
+		return math.MaxInt
+	}
+	return a * b
+}
+
+// padPrefixBytes returns the byte length of the first runes of pad.
+func padPrefixBytes(pad string, runes int) int {
+	if runes <= 0 {
+		return 0
+	}
+	seen := 0
+	for i := range pad {
+		if seen == runes {
+			return i
+		}
+		seen++
+	}
+	return len(pad)
+}
+
+// writePadRunes appends count runes drawn from pad to b, repeating pad and
+// truncating the final repeat to a rune boundary.
+func writePadRunes(b *strings.Builder, pad string, count int) {
+	if count <= 0 {
+		return
+	}
+	padRunes := stringRuneLen(pad)
+	full := count / padRunes
+	for range full {
+		b.WriteString(pad)
+	}
+	remainder := count % padRunes
+	if remainder == 0 {
+		return
+	}
+	b.WriteString(pad[:padPrefixBytes(pad, remainder)])
 }
 
 func stringMemberTransforms(property string) (Value, error) {
