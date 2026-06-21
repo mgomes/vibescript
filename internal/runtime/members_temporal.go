@@ -239,7 +239,7 @@ func timeMember(t time.Time, property string) (Value, error) {
 		return NewTime(t.UTC()), nil
 	case "getlocal", "localtime":
 		return NewAutoBuiltin("time."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeGetlocal(t, property, args)
+			return callTimeGetlocal(t, property, args, kwargs)
 		}), nil
 	case "utc", "gmtime":
 		return NewTime(t.UTC()), nil
@@ -284,7 +284,7 @@ func callTimeMemberDirect(t time.Time, property string, args []Value, kwargs map
 	case "floor":
 		return callTimeFloor(t, args)
 	case "getlocal", "localtime":
-		return callTimeGetlocal(t, property, args)
+		return callTimeGetlocal(t, property, args, kwargs)
 	default:
 		return NewNil(), fmt.Errorf("unknown time method %s%s", property, didYouMean(property, timeMemberNames))
 	}
@@ -346,7 +346,10 @@ func callTimeFormat(t time.Time, args []Value) (Value, error) {
 // underlying instant is preserved, only the displayed zone changes. localtime
 // is reconciled with Vibescript's immutable value model by returning a new
 // Time rather than mutating the receiver, matching getlocal.
-func callTimeGetlocal(t time.Time, method string, args []Value) (Value, error) {
+func callTimeGetlocal(t time.Time, method string, args []Value, kwargs map[string]Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments; pass the offset positionally", method)
+	}
 	if len(args) == 0 {
 		return NewTime(t.In(time.Local)), nil
 	}

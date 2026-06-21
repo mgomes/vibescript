@@ -571,6 +571,8 @@ func TestTimeGetlocalRejectsInvalidArguments(t *testing.T) {
 		{name: "unknown zone", expr: `t.getlocal("Not/AZone")`, want: `invalid timezone "Not/AZone"`},
 		{name: "too many arguments", expr: `t.getlocal("+05:30", "+06:00")`, want: "getlocal expects at most one timezone offset argument"},
 		{name: "localtime too many arguments", expr: `t.localtime("+05:30", "+06:00")`, want: "localtime expects at most one timezone offset argument"},
+		{name: "keyword offset", expr: `t.getlocal(offset: "+05:30")`, want: "getlocal does not take keyword arguments"},
+		{name: "localtime keyword", expr: `t.localtime(in: "UTC")`, want: "localtime does not take keyword arguments"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
