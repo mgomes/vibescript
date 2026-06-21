@@ -632,23 +632,41 @@ func stringMemberQuery(property string) (Value, error) {
 		}), nil
 	case "start_with?":
 		return NewAutoBuiltin("string.start_with?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 1 {
-				return NewNil(), fmt.Errorf("string.start_with? expects exactly one prefix")
+			if len(args) == 0 {
+				return NewNil(), fmt.Errorf("string.start_with? expects at least one prefix")
 			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.start_with? prefix must be string")
+			value := receiver.String()
+			// Check candidates left to right and short-circuit on the first
+			// match, like Ruby: a non-string is only rejected if it is reached
+			// before any match.
+			for _, arg := range args {
+				if arg.Kind() != KindString {
+					return NewNil(), fmt.Errorf("string.start_with? prefix must be string")
+				}
+				if strings.HasPrefix(value, arg.String()) {
+					return NewBool(true), nil
+				}
 			}
-			return NewBool(strings.HasPrefix(receiver.String(), args[0].String())), nil
+			return NewBool(false), nil
 		}), nil
 	case "end_with?":
 		return NewAutoBuiltin("string.end_with?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 1 {
-				return NewNil(), fmt.Errorf("string.end_with? expects exactly one suffix")
+			if len(args) == 0 {
+				return NewNil(), fmt.Errorf("string.end_with? expects at least one suffix")
 			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.end_with? suffix must be string")
+			value := receiver.String()
+			// Check candidates left to right and short-circuit on the first
+			// match, like Ruby: a non-string is only rejected if it is reached
+			// before any match.
+			for _, arg := range args {
+				if arg.Kind() != KindString {
+					return NewNil(), fmt.Errorf("string.end_with? suffix must be string")
+				}
+				if strings.HasSuffix(value, arg.String()) {
+					return NewBool(true), nil
+				}
 			}
-			return NewBool(strings.HasSuffix(receiver.String(), args[0].String())), nil
+			return NewBool(false), nil
 		}), nil
 	case "include?":
 		return NewAutoBuiltin("string.include?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

@@ -273,7 +273,7 @@ end`,
 		{
 			name:   "string.end_with? with missing suffix",
 			script: `def run() "hello".end_with? end`,
-			errMsg: "expects exactly one suffix",
+			errMsg: "expects at least one suffix",
 		},
 		{
 			name:   "string.lstrip with argument",

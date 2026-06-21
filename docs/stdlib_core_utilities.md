@@ -45,8 +45,11 @@ Unicode characters, not bytes, unless noted.
 
 ### Search and Matching
 
-- `start_with?(prefix) -> bool` – true when the string begins with `prefix`.
-- `end_with?(suffix) -> bool` – true when the string ends with `suffix`.
+- `start_with?(*prefixes) -> bool` – true when the string begins with any of
+  the given prefixes. Candidates are checked left to right and matching
+  short-circuits, so a non-string is only rejected if reached before a match.
+- `end_with?(*suffixes) -> bool` – true when the string ends with any of the
+  given suffixes, with the same left-to-right short-circuit behavior.
 - `include?(substring) -> bool` – true when `substring` occurs anywhere.
 - `index(substring, offset = 0) -> int | nil` – first character index at or
   after `offset`; `nil` when not found.

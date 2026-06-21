@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Improved: Ruby-style `String#start_with?` and `String#end_with?`.** Both
+  predicates now accept one or more string candidates and return true when any
+  candidate matches, mirroring Ruby. Non-string candidates still raise a clear
+  type error.
 
 ## v0.50.0 - 2026-06-11
 
