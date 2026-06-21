@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `String#chars` and `String#lines`.** `chars` returns an
+  array of the string's Unicode characters using the existing rune-aware
+  semantics, and `lines` splits on `"\n"` while retaining the trailing newline
+  on each line, leaving carriage returns attached so `"\r\n"` endings round-trip.
 - **Added: Ruby-style hash member, value, and store helpers.** `Hash#member?`
   joins `key?`/`has_key?`/`include?` as a key-membership alias, `Hash#value?` and
   `Hash#has_value?` report value membership using the same `==` equality as the

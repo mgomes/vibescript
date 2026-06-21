@@ -107,6 +107,11 @@ Unicode characters, not bytes, unless noted.
   occurrence of `pattern`.
 - `split(separator = nil) -> array` – split on whitespace (dropping empty
   fields) without arguments, or on `separator` when given.
+- `chars -> array` – array of the string's Unicode characters, one per code
+  point (rune-aware, like `length` and `slice`).
+- `lines -> array` – array of lines split on `"\n"`, retaining the trailing
+  newline on each line; an empty string yields no lines and carriage returns
+  stay attached so `"\r\n"` endings round-trip.
 - `template(context, strict: false) -> string` – interpolate `{{key.path}}`
   placeholders from a hash; `strict: true` errors on missing placeholders.
 
