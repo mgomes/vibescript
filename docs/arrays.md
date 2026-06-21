@@ -23,6 +23,8 @@ Common enumerable helpers include:
 - `find` / `find_index` to locate the first matching item.
 - `reduce` to accumulate values.
 - `first(n)` / `last(n)` to slice without mutating.
+- `take(n)` / `drop(n)` to keep or skip a prefix; both reject negative counts.
+- `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
@@ -46,6 +48,9 @@ end
 ```vibe
 [1, 2, 3, 4, 5].chunk(2)   # [[1,2], [3,4], [5]]
 [1, 2, 3, 4].window(3)      # [[1,2,3], [2,3,4]]
+[1, 2, 3].take(2)           # [1, 2]
+[1, 2, 3].drop(1)           # [2, 3]
+[1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 ```
 
 ## Search and predicates

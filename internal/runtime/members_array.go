@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -15,6 +16,7 @@ var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse",
+	"take", "drop", "zip",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
 }
@@ -33,7 +35,7 @@ func arrayMemberBuiltin(property string) (Value, error) {
 	case "size", "length", "empty?", "each", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
-	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse":
+	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse", "take", "drop", "zip":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -1230,6 +1232,71 @@ func arrayMemberTransforms(property string) (Value, error) {
 				out[len(arr)-1-i] = item
 			}
 			return NewArray(out), nil
+		}), nil
+	case "take":
+		return NewAutoBuiltin("array.take", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.take expects exactly one count")
+			}
+			n, err := valueToCount(args[0])
+			if err != nil {
+				if errors.Is(err, errNegativeCount) {
+					return NewNil(), fmt.Errorf("array.take attempted with negative size")
+				}
+				return NewNil(), fmt.Errorf("array.take count must be integer")
+			}
+			arr := receiver.Array()
+			if n > len(arr) {
+				n = len(arr)
+			}
+			out := make([]Value, n)
+			copy(out, arr[:n])
+			return NewArray(out), nil
+		}), nil
+	case "drop":
+		return NewAutoBuiltin("array.drop", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.drop expects exactly one count")
+			}
+			n, err := valueToCount(args[0])
+			if err != nil {
+				if errors.Is(err, errNegativeCount) {
+					return NewNil(), fmt.Errorf("array.drop attempted with negative size")
+				}
+				return NewNil(), fmt.Errorf("array.drop count must be integer")
+			}
+			arr := receiver.Array()
+			if n > len(arr) {
+				n = len(arr)
+			}
+			out := make([]Value, len(arr)-n)
+			copy(out, arr[n:])
+			return NewArray(out), nil
+		}), nil
+	case "zip":
+		return NewAutoBuiltin("array.zip", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			others := make([][]Value, len(args))
+			for i, arg := range args {
+				if arg.Kind() != KindArray {
+					return NewNil(), fmt.Errorf("array.zip arguments must be arrays")
+				}
+				others[i] = arg.Array()
+			}
+			arr := receiver.Array()
+			rows := make([]Value, len(arr))
+			for i := range arr {
+				row := make([]Value, len(args)+1)
+				row[0] = arr[i]
+				for j, other := range others {
+					if i < len(other) {
+						row[j+1] = other[i]
+					} else {
+						row[j+1] = NewNil()
+					}
+				}
+				rows[i] = NewArray(row)
+			}
+			return NewArray(rows), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
