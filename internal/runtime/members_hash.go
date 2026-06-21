@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var hashMemberNames = []string{
-	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "fetch", "dig", "each", "each_key", "each_value",
+	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "fetch", "fetch_values", "dig", "each", "each_key", "each_value",
 	"merge", "store", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 }
 
@@ -32,12 +32,24 @@ func hashMember(obj Value, property string) (Value, error) {
 
 func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "fetch", "dig", "each", "each_key", "each_value":
+	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "fetch", "fetch_values", "dig", "each", "each_key", "each_value":
 		return hashMemberQuery(property)
 	case "merge", "store", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
+	}
+}
+
+// formatMissingHashKey renders a requested key for "key not found" errors,
+// mirroring Ruby's KeyError inspection: symbols render as :name and strings
+// render quoted.
+func formatMissingHashKey(key Value) string {
+	switch key.Kind() {
+	case KindSymbol:
+		return ":" + key.String()
+	default:
+		return fmt.Sprintf("%q", key.String())
 	}
 }
 
@@ -221,6 +233,31 @@ func hashMemberQuery(property string) (Value, error) {
 				return args[1], nil
 			}
 			return NewNil(), nil
+		}), nil
+	case "fetch_values":
+		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			entries := receiver.Hash()
+			out := make([]Value, len(args))
+			for i, arg := range args {
+				key, err := valueToHashKey(arg)
+				if err != nil {
+					return NewNil(), fmt.Errorf("hash.fetch_values keys must be symbol or string")
+				}
+				if value, ok := entries[key]; ok {
+					out[i] = value
+					continue
+				}
+				if valueBlock(block) == nil {
+					return NewNil(), fmt.Errorf("hash.fetch_values key not found: %s", formatMissingHashKey(arg))
+				}
+				blockArg := [1]Value{arg}
+				value, err := exec.CallBlock(block, blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				out[i] = value
+			}
+			return NewArray(out), nil
 		}), nil
 	case "dig":
 		return NewAutoBuiltin("hash.dig", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
