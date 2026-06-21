@@ -206,6 +206,12 @@ items.pop(2) # {array: [1], popped: [2, 3]}
   first-seen group order.
 - `tally -> hash` / `tally { |item| } -> hash` – occurrence counts keyed by
   element (or block result); keys must be symbols or strings.
+- `min -> value | nil` / `max -> value | nil` – smallest/largest element using
+  natural ordering; `nil` for an empty array.
+- `minmax -> array` – `[min, max]` in one pass; `[nil, nil]` for an empty array.
+- `min_by { |item| } -> value | nil` / `max_by { |item| } -> value | nil` –
+  element with the smallest/largest block key; `nil` for an empty array. Ties
+  resolve to the first matching element.
 
 String and symbol ordering uses deterministic codepoint comparison (no locale
 collation).
