@@ -416,6 +416,27 @@ func (l *lexer) currentOffset() int {
 	return l.offset - l.width
 }
 
+// seek repositions the lexer so the next scanned token begins at or after
+// the given byte offset. Line and column state is rebuilt by replaying
+// readRune from the start of the input, reusing the normal position
+// bookkeeping rather than recomputing it. last becomes lastToken so
+// gating that depends on the preceding token (such as percent-literal and
+// newline handling) behaves as if that token had just been scanned.
+func (l *lexer) seek(offset int, last ast.Token) {
+	l.offset = 0
+	l.width = 0
+	l.line = 1
+	l.column = 0
+	l.prevLine = 0
+	l.prevColumn = 0
+	l.ch = 0
+	l.readRune()
+	for l.currentOffset() < offset && l.ch != 0 {
+		l.readRune()
+	}
+	l.lastToken = last
+}
+
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
 	return ast.Token{Type: tt, Literal: literal, Pos: ast.Position{Line: l.line, Column: l.column}}
 }

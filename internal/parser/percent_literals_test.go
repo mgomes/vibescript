@@ -278,6 +278,128 @@ end`
 	}
 }
 
+// A percent-array argument whose interior looks like a comment must not
+// cause the lexer to swallow the closing delimiter and following lines.
+func TestParserPercentArrayArgumentDoesNotCommentOutFollowingLines(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  collect %w[#]
+  after
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "collect"},
+			Args: []ast.Expression{
+				&ast.ArrayLiteral{Elements: []ast.Expression{
+					&ast.StringLiteral{Value: "#"},
+				}},
+			},
+			KwArgs: []ast.KeywordArg{},
+		}},
+		&ast.ExprStmt{Expr: &ast.Identifier{Name: "after"}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A local declared in an enclosing snippet scope must not leak into a
+// function body: inside the function the name is not local, so the
+// percent literal is a parenless call argument, not modulo.
+func TestParserPercentArrayArgumentIgnoresEnclosingSnippetLocals(t *testing.T) {
+	t.Parallel()
+
+	source := `collect = 1
+def run
+  collect %w[ok]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	if len(got.Statements) != 2 {
+		t.Fatalf("parseSource returned %d statements, want 2", len(got.Statements))
+	}
+	fn, ok := got.Statements[1].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement[1] = %T, want *ast.FunctionStmt", got.Statements[1])
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "collect"},
+			Args: []ast.Expression{
+				&ast.ArrayLiteral{Elements: []ast.Expression{
+					&ast.StringLiteral{Value: "ok"},
+				}},
+			},
+			KwArgs: []ast.KeywordArg{},
+		}},
+	}
+	if diff := cmp.Diff(wantBody, fn.Body, astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Blocks still close over enclosing locals: a name assigned in the
+// surrounding scope remains local inside a block, so the percent literal
+// there is modulo, not a call argument. This guards the function-scope
+// boundary from over-broadening into block scopes.
+func TestParserBlockClosesOverEnclosingLocalForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  w = [3]
+  [1].each do |n|
+    total %w[0]
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 3 {
+		t.Fatalf("function body has %d statements, want 3", len(body))
+	}
+	exprStmt, ok := body[2].(*ast.ExprStmt)
+	if !ok {
+		t.Fatalf("body[2] = %T, want *ast.ExprStmt", body[2])
+	}
+	eachCall, ok := exprStmt.Expr.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("body[2].Expr = %T, want *ast.CallExpr", exprStmt.Expr)
+	}
+	if eachCall.Block == nil {
+		t.Fatalf("each call has no block")
+	}
+
+	wantBlockBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "total"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantBlockBody, eachCall.Block.Body, astCmpOpts); diff != "" {
+		t.Fatalf("block body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
 	t.Parallel()
 

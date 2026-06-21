@@ -711,17 +711,24 @@ func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 	}
 	end := sourcePositionForOffset(p.l.input, endOffset)
 	elements := make([]ast.Expression, len(entries))
+	litType := ast.TokenWords
 	for i, entry := range entries {
 		switch kind {
 		case 'w':
 			elements[i] = &ast.StringLiteral{Value: entry, Position: pos}
 		case 'i':
 			elements[i] = &ast.SymbolLiteral{Name: entry, Position: pos}
+			litType = ast.TokenSymbols
 		}
 	}
-	for p.curToken.Type != ast.TokenEOF && positionBefore(p.curToken.End, end) {
-		p.nextToken()
-	}
+	// The lexer already speculatively tokenized the literal's interior
+	// (treating the leading % as modulo), so its lookahead — and the
+	// bytes it has consumed — cannot be trusted past this point: a word
+	// such as "#" would otherwise start a comment that swallows the
+	// closing delimiter and following lines. Reposition the lexer to the
+	// byte after the literal and rebuild the lookahead from there instead
+	// of re-lexing the interior.
+	p.reprimeAt(endOffset, ast.Token{Type: litType, Pos: pos, End: end})
 	return &ast.ArrayLiteral{Elements: elements, Position: pos}
 }
 
@@ -826,13 +833,6 @@ func offsetHasLeadingWhitespace(input string, offset int) bool {
 	}
 	prev, _ := utf8.DecodeLastRuneInString(input[:offset])
 	return prev == ' ' || prev == '\t' || prev == '\r' || prev == '\n'
-}
-
-func positionBefore(left, right ast.Position) bool {
-	if left.Line != right.Line {
-		return left.Line < right.Line
-	}
-	return left.Column < right.Column
 }
 
 func (p *parser) parseBooleanLiteral() ast.Expression {
@@ -1152,7 +1152,7 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 		p.nextToken()
 	}
 
-	p.pushLocalScope(params)
+	p.pushLocalScope(params, false)
 	body := p.parseBlock(stopToken)
 	p.popLocalScope()
 	if p.curToken.Type != stopToken {

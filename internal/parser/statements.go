@@ -557,7 +557,7 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		}
 		p.nextToken()
 	}
-	p.pushLocalScope(params)
+	p.pushLocalScope(params, true)
 	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
 	p.popLocalScope()
 	switch p.curToken.Type {
