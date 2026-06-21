@@ -190,8 +190,10 @@ func floatRoundDigits(num float64, ndigits int, mode roundMode) float64 {
 		}
 		return floatFloorDigits(num, ndigits)
 	case roundCeil:
+		// Ceil of a tiny negative collapses to zero; Ruby yields +0.0, not the
+		// -0.0 that carrying the receiver's sign would produce.
 		if num < 0 && floatRoundUnderflow(ndigits, binexp) {
-			return math.Copysign(0, num)
+			return 0.0
 		}
 		if !accuratePow10(ndigits) {
 			return floatRoundByRational(num, ndigits, mode)
@@ -199,8 +201,10 @@ func floatRoundDigits(num float64, ndigits int, mode roundMode) float64 {
 		s := math.Pow(10, float64(ndigits))
 		return math.Ceil(num*s) / s
 	default:
+		// A value that underflows to zero rounds to +0.0, matching Ruby, which
+		// does not carry the sign of a tiny negative into the zero result.
 		if floatRoundUnderflow(ndigits, binexp) {
-			return math.Copysign(0, num)
+			return 0.0
 		}
 		if !accuratePow10(ndigits) {
 			return floatRoundByRational(num, ndigits, mode)
