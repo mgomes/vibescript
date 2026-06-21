@@ -63,6 +63,15 @@ def has_required_fields(player)
 end
 ```
 
+The membership predicates accept any candidate key. Hashes only store symbol
+and string keys, so a candidate of any other type can never be present and the
+predicate simply returns `false` instead of raising.
+
+```vibe
+{ a: 1 }.key?(1)     # false
+{ a: 1 }.include?(1) # false
+```
+
 ## Access helpers
 
 - `fetch(key, default=nil)` to supply defaults for missing keys.
