@@ -686,6 +686,55 @@ end`
 	}
 }
 
+// A postfix on a percent-array call argument binds to the literal, not to
+// the whole call: `collect %w[a][0]` is `collect((%w[a])[0])`.
+func TestParserPercentArrayArgumentBindsTrailingPostfix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		wantArg ast.Expression
+	}{
+		{
+			name:   "index",
+			source: "def run\n  collect %w[a][0]\nend",
+			wantArg: &ast.IndexExpr{
+				Object: &ast.ArrayLiteral{Elements: []ast.Expression{&ast.StringLiteral{Value: "a"}}},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		},
+		{
+			name:   "member",
+			source: "def run\n  collect %w[a].size\nend",
+			wantArg: &ast.MemberExpr{
+				Object:   &ast.ArrayLiteral{Elements: []ast.Expression{&ast.StringLiteral{Value: "a"}}},
+				Property: "size",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.CallExpr{
+					Callee: &ast.Identifier{Name: "collect"},
+					Args:   []ast.Expression{tc.wantArg},
+					KwArgs: []ast.KeywordArg{},
+				}},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
 	t.Parallel()
 

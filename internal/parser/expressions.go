@@ -52,6 +52,15 @@ func (p *parser) parseExpressionWithLineLimit(precedence, limitLine int, lineLim
 		return nil
 	}
 
+	return p.continueExpressionParse(left, precedence, limitLine, lineLimited)
+}
+
+// continueExpressionParse applies infix and postfix parselets to an already
+// parsed left-hand expression, following precedence and line-limit rules. It
+// is the shared continuation used both after parsing a prefix and after the
+// parser materializes an operand directly (such as a percent-array call
+// argument) that must still accept trailing postfixes like `[i]` or `.member`.
+func (p *parser) continueExpressionParse(left ast.Expression, precedence, limitLine int, lineLimited bool) ast.Expression {
 	for p.peekToken.Type != ast.TokenEOF {
 		if lineLimited && p.peekStopsLineExpression() {
 			return left
@@ -734,7 +743,18 @@ func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 	// byte after the literal and rebuild the lookahead from there instead
 	// of re-lexing the interior.
 	p.reprimeAt(endOffset, ast.Token{Type: litType, Pos: pos, End: end})
-	return &ast.ArrayLiteral{Elements: elements, Position: pos}
+
+	array := &ast.ArrayLiteral{Elements: elements, Position: pos}
+	// Continue parsing so trailing postfixes (such as `[i]` or `.member`) and
+	// operators bind to the literal, matching how other parenless arguments are
+	// parsed through the normal expression continuation rather than returning
+	// the bare array and leaving the postfix to apply to the whole call.
+	lineLimited := p.lineLimitedExprs > 0
+	limitLine := 0
+	if lineLimited {
+		limitLine = pos.Line
+	}
+	return p.continueExpressionParse(array, lowestPrec, limitLine, lineLimited)
 }
 
 func (p *parser) parsePercentSymbolsLiteral() ast.Expression {
