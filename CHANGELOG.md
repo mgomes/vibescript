@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style numeric predicate and successor helpers.** Integers and
+  floats gain `zero?`, `positive?`, `negative?`, and `nonzero?` (returning the
+  receiver or `nil`), and integers gain `next`/`succ` and `pred`.
 
 ## v0.50.0 - 2026-06-11
 
