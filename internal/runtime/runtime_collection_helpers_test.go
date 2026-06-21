@@ -92,7 +92,7 @@ func TestArrayTakeAndDropErrors(t *testing.T) {
 	requireCallErrorContains(t, script, "take_bad_type", base, CallOptions{}, "array.take count must be integer")
 }
 
-func TestArrayTakeAndDropRejectFractionalNegativeCounts(t *testing.T) {
+func TestArrayTakeAndDropTruncateNegativeFractionalCounts(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
     def take_n(values, n)
@@ -104,11 +104,13 @@ func TestArrayTakeAndDropRejectFractionalNegativeCounts(t *testing.T) {
     end
     `)
 
-	// A count in (-1, 0) truncates toward zero, so it must be rejected by
-	// inspecting the original numeric sign rather than collapsing to take(0).
 	base := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
-	requireCallErrorContains(t, script, "take_n", []Value{base, NewFloat(-0.5)}, CallOptions{}, "array.take attempted with negative size")
-	requireCallErrorContains(t, script, "drop_n", []Value{base, NewFloat(-0.5)}, CallOptions{}, "array.drop attempted with negative size")
+	// A count in (-1, 0) truncates toward zero like Ruby's to_int, so it
+	// behaves as 0 (matching Array#first/#last) rather than erroring.
+	compareArrays(t, callFunc(t, script, "take_n", []Value{base, NewFloat(-0.5)}), []Value{})
+	compareArrays(t, callFunc(t, script, "drop_n", []Value{base, NewFloat(-0.5)}), []Value{NewInt(1), NewInt(2), NewInt(3)})
+	// A fraction that truncates to a negative integer is still a negative
+	// count and is rejected.
 	requireCallErrorContains(t, script, "take_n", []Value{base, NewFloat(-2.9)}, CallOptions{}, "array.take attempted with negative size")
 	requireCallErrorContains(t, script, "drop_n", []Value{base, NewFloat(-2.9)}, CallOptions{}, "array.drop attempted with negative size")
 }

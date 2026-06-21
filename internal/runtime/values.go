@@ -55,14 +55,17 @@ func valueToCount(val Value) (int, error) {
 		return int(val.Int()), nil
 	case KindFloat:
 		f := val.Float()
-		switch {
-		case math.IsNaN(f), math.IsInf(f, 0), f > math.MaxInt, f < math.MinInt:
+		if math.IsNaN(f) || math.IsInf(f, 0) || f > math.MaxInt || f < math.MinInt {
 			return 0, fmt.Errorf("count must be integer")
-		case f < 0:
-			return 0, errNegativeCount
-		default:
-			return int(f), nil
 		}
+		// Truncate toward zero first, matching Ruby's to_int (and Array#first/
+		// #last), then reject only a negative integer. A fraction in (-1, 0)
+		// therefore becomes 0 rather than an error.
+		n := int(f)
+		if n < 0 {
+			return 0, errNegativeCount
+		}
+		return n, nil
 	default:
 		return 0, fmt.Errorf("count must be integer")
 	}
