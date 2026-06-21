@@ -330,6 +330,92 @@ func TestTimeSpaceshipComparison(t *testing.T) {
 	})
 }
 
+func TestTimeRoundPrecision(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "no argument rounds to seconds", expr: "t.round.to_s", want: "1970-01-01T00:00:00Z"},
+		{name: "explicit zero rounds to seconds", expr: "t.round(0).to_s", want: "1970-01-01T00:00:00Z"},
+		{name: "tenths precision", expr: "t.round(1).to_s", want: "1970-01-01T00:00:00.1Z"},
+		{name: "millisecond precision", expr: "t.round(3).to_s", want: "1970-01-01T00:00:00.123Z"},
+		{name: "microsecond precision", expr: "t.round(6).to_s", want: "1970-01-01T00:00:00.123456Z"},
+		{name: "nanosecond precision is the cap", expr: "t.round(9).to_s", want: "1970-01-01T00:00:00.123456Z"},
+		{name: "precision beyond nanosecond is unchanged", expr: "t.round(12).to_s", want: "1970-01-01T00:00:00.123456Z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.parse("1970-01-01T00:00:00.123456Z")
+		      `+tc.expr+`
+		    end
+		    `)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString || result.String() != tc.want {
+				t.Fatalf("round result mismatch: got %v want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+func TestTimeRoundHalfwayRoundsAwayFromZero(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+	    def run()
+	      {
+	        half_second: Time.parse("1970-01-01T00:00:00.5Z").round.to_s,
+	        carry: Time.parse("1970-01-01T00:00:00.9999995Z").round(6).to_s,
+	        round_up_tenths: Time.parse("1970-01-01T00:00:00.456Z").round(1).to_s
+	      }
+	    end
+	    `)
+	result := callFunc(t, script, "run", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+	expect := map[string]string{
+		"half_second":     "1970-01-01T00:00:01Z",
+		"carry":           "1970-01-01T00:00:01Z",
+		"round_up_tenths": "1970-01-01T00:00:00.5Z",
+	}
+	for key, want := range expect {
+		if val, ok := got[key]; !ok || val.String() != want {
+			t.Fatalf("round %s mismatch: got %v want %q", key, val, want)
+		}
+	}
+}
+
+func TestTimeRoundRejectsInvalidPrecision(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "negative precision", expr: "t.round(-1)", want: "time.round precision must be non-negative"},
+		{name: "string precision", expr: `t.round("3")`, want: "time.round precision must be an Integer"},
+		{name: "float precision", expr: "t.round(1.5)", want: "time.round precision must be an Integer"},
+		{name: "too many arguments", expr: "t.round(0, 0)", want: "time.round expects at most one precision argument"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.parse("1970-01-01T00:00:00.123456Z")
+		      `+tc.expr+`
+		    end
+		    `)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestTimeParseCommonLayouts(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
