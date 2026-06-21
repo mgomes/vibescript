@@ -15,12 +15,12 @@ var (
 		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
 		"abs", "clamp", "even?", "odd?", "times",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
-		"div", "divmod", "fdiv", "remainder",
+		"div", "divmod", "fdiv", "remainder", "modulo",
 	}
 	floatMemberNames = []string{
 		"abs", "clamp", "round", "floor", "ceil",
 		"zero?", "positive?", "negative?", "nonzero?",
-		"div", "divmod", "fdiv", "remainder",
+		"div", "divmod", "fdiv", "remainder", "modulo",
 	}
 	moneyMemberNames = []string{"currency", "cents", "amount", "format"}
 )
@@ -29,7 +29,7 @@ var (
 	intBuiltinMemberNames = []string{
 		"abs", "clamp", "even?", "odd?", "times",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
-		"div", "divmod", "fdiv", "remainder",
+		"div", "divmod", "fdiv", "remainder", "modulo",
 	}
 	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
 	floatBuiltinMembers     = newMemberTable(floatMemberNames)
@@ -219,6 +219,14 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return numericRemainder("int.remainder", receiver, divisor)
 		}), nil
+	case "modulo":
+		return NewAutoBuiltin("int.modulo", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			divisor, err := singleNumericArg("int.modulo", args)
+			if err != nil {
+				return NewNil(), err
+			}
+			return numericModulo("int.modulo", receiver, divisor)
+		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown int method %s", property)
 	}
@@ -363,6 +371,14 @@ func floatMemberBuiltin(property string) (Value, error) {
 			}
 			return numericRemainder("float.remainder", receiver, divisor)
 		}), nil
+	case "modulo":
+		return NewAutoBuiltin("float.modulo", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			divisor, err := singleNumericArg("float.modulo", args)
+			if err != nil {
+				return NewNil(), err
+			}
+			return numericModulo("float.modulo", receiver, divisor)
+		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown float method %s", property)
 	}
@@ -456,6 +472,28 @@ func numericRemainder(method string, receiver, divisor Value) (Value, error) {
 		return NewNil(), fmt.Errorf("%s by zero", method)
 	}
 	return NewFloat(math.Mod(receiver.Float(), divisor.Float())), nil
+}
+
+// numericModulo implements Ruby's modulo (the % operator): the result takes
+// the sign of the divisor (floored division), unlike remainder which takes the
+// sign of the dividend. Integer operands yield an integer; any float operand
+// yields a float.
+func numericModulo(method string, receiver, divisor Value) (Value, error) {
+	if receiver.Kind() == KindInt && divisor.Kind() == KindInt {
+		if divisor.Int() == 0 {
+			return NewNil(), fmt.Errorf("%s by zero", method)
+		}
+		return NewInt(floorModInt(receiver.Int(), divisor.Int())), nil
+	}
+	d := divisor.Float()
+	if d == 0 {
+		return NewNil(), fmt.Errorf("%s by zero", method)
+	}
+	m := math.Mod(receiver.Float(), d)
+	if m != 0 && (m < 0) != (d < 0) {
+		m += d
+	}
+	return NewFloat(m), nil
 }
 
 func moneyMember(m Money, property string) (Value, error) {

@@ -40,6 +40,58 @@ func TestNumericDivHelper(t *testing.T) {
 	}
 }
 
+func TestNumericModuloHelper(t *testing.T) {
+	t.Parallel()
+
+	// modulo is Ruby's % alias: the result takes the sign of the divisor
+	// (floored division), unlike remainder which follows the dividend.
+	intTests := []struct {
+		expr string
+		want int64
+	}{
+		{"7.modulo(3)", 1},
+		{"(-7).modulo(3)", 2},
+		{"7.modulo(-3)", -2},
+		{"(-7).modulo(-3)", -1},
+	}
+	for _, tc := range intTests {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			got := evalNumericExpr(t, tc.expr)
+			if got.Kind() != KindInt || got.Int() != tc.want {
+				t.Fatalf("%s = %v, want int %d", tc.expr, got, tc.want)
+			}
+		})
+	}
+
+	floatTests := []struct {
+		expr string
+		want float64
+	}{
+		{"7.modulo(2.5)", 2.0},
+		{"5.5.modulo(2)", 1.5},
+		{"(-5.5).modulo(2)", 0.5},
+		{"5.5.modulo(2.0)", 1.5},
+	}
+	for _, tc := range floatTests {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			got := evalNumericExpr(t, tc.expr)
+			if got.Kind() != KindFloat || got.Float() != tc.want {
+				t.Fatalf("%s = %v, want float %v", tc.expr, got, tc.want)
+			}
+		})
+	}
+
+	for _, expr := range []string{"7.modulo(0)", "7.5.modulo(0)", "7.modulo(0.0)"} {
+		t.Run(expr+" by zero", func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+expr+"\nend")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "by zero")
+		})
+	}
+}
+
 func TestNumericDivmodHelper(t *testing.T) {
 	t.Parallel()
 

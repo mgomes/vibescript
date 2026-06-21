@@ -335,6 +335,9 @@ aliases, so `1.second` reads naturally.
 - `remainder(n) -> int|float` – remainder whose sign follows the receiver
   (truncated division), which differs from `%` for operands of opposite sign;
   a zero divisor errors.
+- `modulo(n) -> int|float` – the `%` operator as a method: the result's sign
+  follows the divisor (floored division). Integer operands yield an integer;
+  any float operand yields a float; a zero divisor errors.
 
 ## Floats
 
@@ -358,6 +361,8 @@ aliases, so `1.second` reads naturally.
   yielding infinity, matching the `/` operator.
 - `remainder(n) -> float` – remainder whose sign follows the receiver
   (truncated division); a zero divisor errors.
+- `modulo(n) -> float` – the `%` operator as a method: the result's sign
+  follows the divisor (floored division); a zero divisor errors.
 
 `round`, `floor`, and `ceil` take no precision argument and always return an
 `int`.
