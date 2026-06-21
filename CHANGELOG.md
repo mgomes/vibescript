@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `String#casecmp` and `String#casecmp?`.** `casecmp`
+  case-insensitively compares two strings (folding only ASCII letters and
+  comparing other bytes ordinally) and returns `-1`, `0`, `1`, or `nil` for a
+  non-string argument, matching Ruby. `casecmp?` returns a boolean using Unicode
+  simple case folding (consistent with `upcase`/`downcase`) or `nil` for a
+  non-string argument; full-fold expansions such as `ß` matching `SS` are not
+  applied. When either operand contains invalid UTF-8, `casecmp?` folds
+  byte-wise over ASCII letters so distinct byte sequences stay distinct,
+  preserving byte identity like Ruby's binary-string path.
 - **Added: Ruby-style `Array#reject`, `take_while`, `drop_while`, `grep`, and
   `grep_v`.** `reject` is the inverse of `select`; `take_while` and `drop_while`
   split on the first block miss with early-stop semantics; `grep` and `grep_v`

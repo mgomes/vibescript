@@ -188,6 +188,48 @@ Returns true when `substring` appears in the string:
 "vibescript".include?("script") # true
 ```
 
+### `casecmp(other)`
+
+Case-insensitively compares two strings, returning `-1`, `0`, or `1`. Each ASCII
+letter `A`-`Z` is folded down to its lowercase form before the byte comparison;
+every other byte (including multibyte UTF-8 sequences) is compared ordinally,
+matching Ruby's `String#casecmp` (which applies an ASCII `TOLOWER` to each side
+in Ruby 2.7 and later). Folding downward keeps the punctuation bytes between `Z`
+and `a` (`[`, `\`, `]`, `^`, `_`, and `` ` ``) ordered as Ruby orders them: because
+uppercase letters fold into the `a`-`z` range, those punctuation bytes sort below
+the folded letters, so `"[".casecmp("A")` is `-1` rather than `1`. Returns `nil`
+when `other` is not a string:
+
+```vibe
+"abc".casecmp("ABC") # 0
+"abc".casecmp("ABD") # -1
+"abd".casecmp("ABC") # 1
+"[".casecmp("A")     # -1
+"z".casecmp("[")     # 1
+"abc".casecmp(1)     # nil
+```
+
+### `casecmp?(other)`
+
+Returns `true` when two strings are equal under Unicode case folding, `false`
+otherwise, and `nil` when `other` is not a string:
+
+```vibe
+"abc".casecmp?("ABC")     # true
+"héllo".casecmp?("HÉLLO") # true
+"abc".casecmp?("ABD")     # false
+"abc".casecmp?(1)         # nil
+```
+
+Folding uses Unicode simple case mapping, consistent with `upcase` and
+`downcase`. Full-fold expansions such as German `ß` matching `SS` are not
+applied, so `"ß".casecmp?("SS")` is `false` (Ruby returns `true`).
+
+When either operand contains invalid UTF-8, folding falls back to byte-wise
+ASCII case folding so that distinct byte sequences stay distinct. This mirrors
+Ruby's binary-string path and preserves byte identity, where the Unicode path
+would otherwise treat every invalid byte as the same replacement character.
+
 ### `match(pattern)`
 
 Regex match returning `[full, capture1, ...]` or `nil`:
