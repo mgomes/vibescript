@@ -506,6 +506,63 @@ func TestTimeISO8601RejectsInvalidPrecision(t *testing.T) {
 	}
 }
 
+func TestTimeMembersRejectKeywordArguments(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "iso8601 keyword precision", expr: "t.iso8601(ndigits: 3)", want: "time.iso8601 does not accept keyword arguments"},
+		{name: "iso8601 unknown keyword", expr: "t.iso8601(foo: 1)", want: "time.iso8601 does not accept keyword arguments"},
+		{name: "iso8601 keyword with positional", expr: "t.iso8601(3, ndigits: 6)", want: "time.iso8601 does not accept keyword arguments"},
+		{name: "rfc3339 keyword precision", expr: "t.rfc3339(ndigits: 3)", want: "time.rfc3339 does not accept keyword arguments"},
+		{name: "round keyword precision", expr: "t.round(ndigits: 3)", want: "time.round does not accept keyword arguments"},
+		{name: "ceil keyword precision", expr: "t.ceil(ndigits: 3)", want: "time.ceil does not accept keyword arguments"},
+		{name: "floor keyword precision", expr: "t.floor(ndigits: 3)", want: "time.floor does not accept keyword arguments"},
+		{name: "format keyword", expr: `t.format("2006", layout: "x")`, want: "time.format does not accept keyword arguments"},
+		{name: "eql keyword", expr: "t.eql?(t, strict: true)", want: "time.eql? does not accept keyword arguments"},
+		{name: "compare keyword", expr: "t.<=>(t, by: 1)", want: "time.<=> does not accept keyword arguments"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.parse("1970-01-01T00:00:00.123456Z")
+		      `+tc.expr+`
+		    end
+		    `)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+func TestDurationMembersRejectKeywordArguments(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "eql keyword", expr: "d.eql?(d, strict: true)", want: "duration.eql? does not accept keyword arguments"},
+		{name: "after keyword", expr: `d.after(at: "1970-01-01T00:00:00Z")`, want: "duration.after does not accept keyword arguments"},
+		{name: "before keyword", expr: `d.before(at: "1970-01-01T00:00:00Z")`, want: "duration.before does not accept keyword arguments"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      d = 5.seconds
+		      `+tc.expr+`
+		    end
+		    `)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestTimeParseCommonLayouts(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

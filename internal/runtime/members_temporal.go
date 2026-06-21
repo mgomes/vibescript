@@ -29,6 +29,17 @@ var (
 	}
 )
 
+// rejectTemporalKwargs reports an error when a temporal builtin receives any
+// keyword arguments. None of the Duration/Time members accept keywords, so a
+// non-empty kwargs map signals a misspelled or unsupported call (for example
+// t.iso8601(ndigits: 3)) that should surface rather than be silently dropped.
+func rejectTemporalKwargs(method string, kwargs map[string]Value) error {
+	if len(kwargs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s does not accept keyword arguments", method)
+}
+
 func durationMember(d Duration, property string, pos Position) (Value, error) {
 	switch property {
 	case "seconds", "second":
@@ -73,15 +84,15 @@ func durationMember(d Duration, property string, pos Position) (Value, error) {
 		return NewString(d.String()), nil
 	case "eql?":
 		return NewBuiltin("duration.eql?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callDurationEql(d, args)
+			return callDurationEql(d, args, kwargs)
 		}), nil
 	case "after", "since", "from_now":
 		return NewBuiltin("duration.after", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callDurationAfter(d, args)
+			return callDurationAfter(d, args, kwargs)
 		}), nil
 	case "ago", "before", "until":
 		return NewBuiltin("duration.before", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callDurationBefore(d, args)
+			return callDurationBefore(d, args, kwargs)
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown duration method %s%s", property, didYouMean(property, durationMemberNames))
@@ -100,24 +111,30 @@ func canCallDurationMemberDirect(property string) bool {
 func callDurationMemberDirect(d Duration, property string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	switch property {
 	case "eql?":
-		return callDurationEql(d, args)
+		return callDurationEql(d, args, kwargs)
 	case "after", "since", "from_now":
-		return callDurationAfter(d, args)
+		return callDurationAfter(d, args, kwargs)
 	case "ago", "before", "until":
-		return callDurationBefore(d, args)
+		return callDurationBefore(d, args, kwargs)
 	default:
 		return NewNil(), fmt.Errorf("unknown duration method %s%s", property, didYouMean(property, durationMemberNames))
 	}
 }
 
-func callDurationEql(d Duration, args []Value) (Value, error) {
+func callDurationEql(d Duration, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs("duration.eql?", kwargs); err != nil {
+		return NewNil(), err
+	}
 	if len(args) != 1 || args[0].Kind() != KindDuration {
 		return NewNil(), fmt.Errorf("duration.eql? expects a duration")
 	}
 	return NewBool(d.Seconds() == args[0].Duration().Seconds()), nil
 }
 
-func callDurationAfter(d Duration, args []Value) (Value, error) {
+func callDurationAfter(d Duration, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs("duration.after", kwargs); err != nil {
+		return NewNil(), err
+	}
 	start, err := durationTimeArg(args, true, "after")
 	if err != nil {
 		return NewNil(), err
@@ -126,7 +143,10 @@ func callDurationAfter(d Duration, args []Value) (Value, error) {
 	return NewTime(result), nil
 }
 
-func callDurationBefore(d Duration, args []Value) (Value, error) {
+func callDurationBefore(d Duration, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs("duration.before", kwargs); err != nil {
+		return NewNil(), err
+	}
 	start, err := durationTimeArg(args, true, "before")
 	if err != nil {
 		return NewNil(), err
@@ -218,21 +238,21 @@ func timeMember(t time.Time, property string) (Value, error) {
 		return NewBool(t.Weekday() == time.Saturday), nil
 	case "<=>":
 		return NewBuiltin("time.cmp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeCompare(t, args)
+			return callTimeCompare(t, args, kwargs)
 		}), nil
 	case "eql?":
 		return NewBuiltin("time.eql?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeEql(t, args)
+			return callTimeEql(t, args, kwargs)
 		}), nil
 	case "to_s":
 		return NewString(t.Format(time.RFC3339Nano)), nil
 	case "iso8601", "rfc3339":
 		return NewAutoBuiltin("time."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeISO8601("time."+property, t, args)
+			return callTimeISO8601("time."+property, t, args, kwargs)
 		}), nil
 	case "format":
 		return NewBuiltin("time.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeFormat(t, args)
+			return callTimeFormat(t, args, kwargs)
 		}), nil
 	case "strftime":
 		return NewNil(), fmt.Errorf("strftime is not supported; use format with Go layouts instead")
@@ -246,15 +266,15 @@ func timeMember(t time.Time, property string) (Value, error) {
 		return NewTime(t.In(time.Local)), nil
 	case "round":
 		return NewAutoBuiltin("time.round", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeRound(t, args)
+			return callTimeRound(t, args, kwargs)
 		}), nil
 	case "ceil":
 		return NewAutoBuiltin("time.ceil", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeCeil(t, args)
+			return callTimeCeil(t, args, kwargs)
 		}), nil
 	case "floor":
 		return NewAutoBuiltin("time.floor", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeFloor(t, args)
+			return callTimeFloor(t, args, kwargs)
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown time method %s%s", property, didYouMean(property, timeMemberNames))
@@ -273,25 +293,28 @@ func canCallTimeMemberDirect(property string) bool {
 func callTimeMemberDirect(t time.Time, property string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	switch property {
 	case "<=>":
-		return callTimeCompare(t, args)
+		return callTimeCompare(t, args, kwargs)
 	case "eql?":
-		return callTimeEql(t, args)
+		return callTimeEql(t, args, kwargs)
 	case "format":
-		return callTimeFormat(t, args)
+		return callTimeFormat(t, args, kwargs)
 	case "iso8601", "rfc3339":
-		return callTimeISO8601("time."+property, t, args)
+		return callTimeISO8601("time."+property, t, args, kwargs)
 	case "round":
-		return callTimeRound(t, args)
+		return callTimeRound(t, args, kwargs)
 	case "ceil":
-		return callTimeCeil(t, args)
+		return callTimeCeil(t, args, kwargs)
 	case "floor":
-		return callTimeFloor(t, args)
+		return callTimeFloor(t, args, kwargs)
 	default:
 		return NewNil(), fmt.Errorf("unknown time method %s%s", property, didYouMean(property, timeMemberNames))
 	}
 }
 
-func callTimeCompare(t time.Time, args []Value) (Value, error) {
+func callTimeCompare(t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs("time.<=>", kwargs); err != nil {
+		return NewNil(), err
+	}
 	if len(args) != 1 || args[0].Kind() != KindTime {
 		return NewNil(), fmt.Errorf("time comparison expects another Time")
 	}
@@ -306,14 +329,20 @@ func callTimeCompare(t time.Time, args []Value) (Value, error) {
 	}
 }
 
-func callTimeEql(t time.Time, args []Value) (Value, error) {
+func callTimeEql(t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs("time.eql?", kwargs); err != nil {
+		return NewNil(), err
+	}
 	if len(args) != 1 || args[0].Kind() != KindTime {
 		return NewNil(), fmt.Errorf("time.eql? expects a Time")
 	}
 	return NewBool(t.Equal(args[0].Time())), nil
 }
 
-func callTimeFormat(t time.Time, args []Value) (Value, error) {
+func callTimeFormat(t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs("time.format", kwargs); err != nil {
+		return NewNil(), err
+	}
 	if len(args) != 1 || args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("format expects a Go layout string")
 	}
@@ -324,8 +353,8 @@ func callTimeFormat(t time.Time, args []Value) (Value, error) {
 // emits whole-second precision; a non-negative ndigits argument appends that
 // many fractional-second digits, truncating toward zero like Ruby's
 // Time#iso8601(ndigits).
-func callTimeISO8601(method string, t time.Time, args []Value) (Value, error) {
-	ndigits, err := timeISO8601Precision(method, args)
+func callTimeISO8601(method string, t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+	ndigits, err := timeISO8601Precision(method, args, kwargs)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -333,9 +362,13 @@ func callTimeISO8601(method string, t time.Time, args []Value) (Value, error) {
 }
 
 // timeISO8601Precision resolves the optional ndigits argument (defaulting to 0)
-// into a fractional-second digit count, rejecting non-integer or negative
-// precision so misuse surfaces a clear error rather than silently coercing.
-func timeISO8601Precision(method string, args []Value) (int, error) {
+// into a fractional-second digit count, rejecting keyword arguments as well as
+// non-integer or negative precision so misuse surfaces a clear error rather
+// than silently coercing or dropping the requested precision.
+func timeISO8601Precision(method string, args []Value, kwargs map[string]Value) (int, error) {
+	if err := rejectTemporalKwargs(method, kwargs); err != nil {
+		return 0, err
+	}
 	if len(args) == 0 {
 		return 0, nil
 	}
@@ -387,15 +420,18 @@ const maxTimePrecisionDigits = 9
 // allocations while staying well above any realistic precision request.
 const maxISO8601FractionDigits = 100
 
-func callTimeRound(t time.Time, args []Value) (Value, error) {
-	unit, err := timeRoundingUnit("time.round", args)
+func callTimeRound(t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+	unit, err := timeRoundingUnit("time.round", args, kwargs)
 	if err != nil {
 		return NewNil(), err
 	}
 	return NewTime(t.Round(unit)), nil
 }
 
-func callTimeCeil(t time.Time, args []Value) (Value, error) {
+func callTimeCeil(t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs("time.ceil", kwargs); err != nil {
+		return NewNil(), err
+	}
 	if len(args) > 0 {
 		return NewNil(), fmt.Errorf("ceil does not accept precision")
 	}
@@ -406,7 +442,10 @@ func callTimeCeil(t time.Time, args []Value) (Value, error) {
 	return NewTime(rounded), nil
 }
 
-func callTimeFloor(t time.Time, args []Value) (Value, error) {
+func callTimeFloor(t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs("time.floor", kwargs); err != nil {
+		return NewNil(), err
+	}
 	if len(args) > 0 {
 		return NewNil(), fmt.Errorf("floor does not accept precision")
 	}
@@ -416,8 +455,12 @@ func callTimeFloor(t time.Time, args []Value) (Value, error) {
 // timeRoundingUnit resolves the optional Ruby-style precision argument
 // (ndigits, defaulting to 0) into the duration unit to round toward. With no
 // argument or 0 it rounds to whole seconds; positive ndigits round to that
-// many fractional-second digits, capped at nanosecond resolution.
-func timeRoundingUnit(method string, args []Value) (time.Duration, error) {
+// many fractional-second digits, capped at nanosecond resolution. Keyword
+// arguments are rejected since the method only accepts a positional ndigits.
+func timeRoundingUnit(method string, args []Value, kwargs map[string]Value) (time.Duration, error) {
+	if err := rejectTemporalKwargs(method, kwargs); err != nil {
+		return 0, err
+	}
 	if len(args) == 0 {
 		return time.Second, nil
 	}
