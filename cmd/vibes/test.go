@@ -128,11 +128,6 @@ func runTestFile(ctx context.Context, file string, modulePaths pathList, filter 
 		fmt.Fprintf(out, "--- FAIL: %s :: %s\n%s\n", file, name, indentLines(err.Error(), "    "))
 	}
 
-	source, err := os.ReadFile(file)
-	if err != nil {
-		failTest("(read)", err)
-		return summary
-	}
 	absPath, err := filepath.Abs(file)
 	if err != nil {
 		failTest("(resolve)", err)
@@ -146,6 +141,11 @@ func runTestFile(ctx context.Context, file string, modulePaths pathList, filter 
 	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: moduleDirs})
 	if err != nil {
 		failTest("(engine)", err)
+		return summary
+	}
+	source, err := readScriptSource(engine, file)
+	if err != nil {
+		failTest("(read)", err)
 		return summary
 	}
 	script, err := engine.Compile(string(source))

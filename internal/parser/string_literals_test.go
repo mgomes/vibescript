@@ -109,6 +109,38 @@ end`
 	}
 }
 
+func TestDoubleQuotedStringInterpolationWithQuotedExpression(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  "#{name || "guest"}"
+end`
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn := program.Statements[0].(*ast.FunctionStmt)
+	stmt := fn.Body[0].(*ast.ExprStmt)
+	lit, ok := stmt.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("expression = %T, want *ast.InterpolatedString", stmt.Expr)
+	}
+	if len(lit.Parts) != 1 {
+		t.Fatalf("parts length = %d, want 1", len(lit.Parts))
+	}
+	expr, ok := lit.Parts[0].(ast.StringExpr)
+	if !ok {
+		t.Fatalf("parts[0] = %T, want ast.StringExpr", lit.Parts[0])
+	}
+	binary, ok := expr.Expr.(*ast.BinaryExpr)
+	if !ok || binary.Operator != ast.TokenOr {
+		t.Fatalf("parts[0].Expr = %#v, want or expression", expr.Expr)
+	}
+	if right, ok := binary.Right.(*ast.StringLiteral); !ok || right.Value != "guest" {
+		t.Fatalf("or right = %#v, want guest string", binary.Right)
+	}
+}
+
 func TestEscapedDoubleQuotedInterpolationMarkerStaysLiteral(t *testing.T) {
 	t.Parallel()
 	source := `def run
@@ -127,6 +159,35 @@ end`
 	}
 	if lit.Value != "#{name}" {
 		t.Fatalf("literal value = %q, want #{name}", lit.Value)
+	}
+}
+
+func TestEscapedBackslashBeforeInterpolationMarker(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  "\\#{name}"
+end`
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn := program.Statements[0].(*ast.FunctionStmt)
+	stmt := fn.Body[0].(*ast.ExprStmt)
+	lit, ok := stmt.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("expression = %T, want *ast.InterpolatedString", stmt.Expr)
+	}
+	if len(lit.Parts) != 2 {
+		t.Fatalf("parts length = %d, want 2", len(lit.Parts))
+	}
+	if text, ok := lit.Parts[0].(ast.StringText); !ok || text.Text != `\` {
+		t.Fatalf("parts[0] = %#v, want backslash text", lit.Parts[0])
+	}
+	if expr, ok := lit.Parts[1].(ast.StringExpr); !ok {
+		t.Fatalf("parts[1] = %T, want ast.StringExpr", lit.Parts[1])
+	} else if ident, ok := expr.Expr.(*ast.Identifier); !ok || ident.Name != "name" {
+		t.Fatalf("parts[1].Expr = %#v, want identifier name", expr.Expr)
 	}
 }
 

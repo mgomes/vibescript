@@ -246,6 +246,10 @@ func (p *parser) parseForStatement() ast.Statement {
 	}
 
 	p.advanceToLoopBody()
+	// The iterator binds a local in the surrounding scope, so register it
+	// before parsing the body for name-sensitive parsing decisions such as
+	// percent-literal vs modulo disambiguation.
+	p.declareLocal(iterator)
 	body := p.parseBlock(ast.TokenEnd)
 
 	if p.curToken.Type != ast.TokenEnd {
@@ -333,7 +337,19 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 			return nil
 		}
 		p.nextToken()
+		// The rescue binding is local only within the rescue body: at runtime
+		// it lives in a child env and is undefined afterward. Other locals
+		// assigned in the body belong to the surrounding scope, so parse the
+		// body in the current scope and remove only the binding afterward
+		// (unless it was already a local before the handler).
+		bindingWasLocal := rescueBinding != "" && p.localDeclaredInTop(rescueBinding)
+		if rescueBinding != "" {
+			p.declareLocal(rescueBinding)
+		}
 		rescueBody = p.parseBlock(ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+		if rescueBinding != "" && !bindingWasLocal {
+			p.undeclareLocal(rescueBinding)
+		}
 	}
 
 	var elseBody []ast.Statement
@@ -440,19 +456,37 @@ func (p *parser) recoverRescueHeaderRemainder(line int) {
 
 func (p *parser) recoverToBlockEnd() {
 	depth := 0
+	pendingDoDepth := -1
+	pendingDoLine := -1
 	for p.curToken.Type != ast.TokenEOF {
-		if p.curToken.Type == ast.TokenEnd && depth == 0 {
-			return
-		}
 		p.nextToken()
+		if pendingDoLine != -1 && p.curToken.Pos.Line != pendingDoLine {
+			pendingDoDepth = -1
+			pendingDoLine = -1
+		}
 		switch p.curToken.Type {
-		case ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenBegin, ast.TokenIf, ast.TokenUnless, ast.TokenFor, ast.TokenWhile, ast.TokenUntil, ast.TokenCase:
+		case ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenBegin, ast.TokenIf, ast.TokenUnless, ast.TokenCase:
+			depth++
+		case ast.TokenFor, ast.TokenWhile, ast.TokenUntil:
+			depth++
+			pendingDoDepth = depth
+			pendingDoLine = p.curToken.Pos.Line
+		case ast.TokenDo:
+			if pendingDoDepth == depth && pendingDoLine == p.curToken.Pos.Line {
+				pendingDoDepth = -1
+				pendingDoLine = -1
+				break
+			}
 			depth++
 		case ast.TokenEnd:
 			if depth == 0 {
 				return
 			}
 			depth--
+			if pendingDoDepth > depth {
+				pendingDoDepth = -1
+				pendingDoLine = -1
+			}
 		}
 	}
 }
@@ -511,6 +545,15 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		name += "="
 		p.nextToken()
 	}
+
+	// Push the function scope before parsing parameters so each parameter is
+	// visible to later parameters' default values, matching the runtime which
+	// binds earlier parameters before evaluating later defaults. The scope is
+	// also kept active through any rescue/else/ensure tail so the tail resolves
+	// function-body locals for name-sensitive parsing such as percent-literal
+	// vs modulo disambiguation.
+	p.pushLocalScope(nil, true)
+	defer p.popLocalScope()
 
 	params := []ast.Param{}
 	var returnTy *ast.TypeExpr
@@ -794,6 +837,10 @@ func (p *parser) parseParamsWithOptions(options paramParseOptions) []ast.Param {
 		}
 
 		params = append(params, param)
+		// Declare the parameter as a local now so later parameters' default
+		// values resolve it (see parseFunctionStatement for why the scope is
+		// already active here).
+		p.declareParamLocal(param)
 		if p.peekToken.Type != ast.TokenComma {
 			break
 		}
@@ -969,7 +1016,9 @@ func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
 	p.nextToken()
 	p.nextToken()
 	value := p.parseExpressionWithBlock()
-	return &ast.AssignStmt{Target: target, Value: value, Operator: compoundAssignmentOperator(operatorToken), Position: pos}
+	stmt := &ast.AssignStmt{Target: target, Value: value, Operator: compoundAssignmentOperator(operatorToken), Position: pos}
+	p.declareLocalTarget(target)
+	return stmt
 }
 
 func (p *parser) recoverAssignmentRemainder() {

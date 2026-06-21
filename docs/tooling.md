@@ -91,6 +91,16 @@ are reported with the assertion message and source position. Flags:
 The exit code is non-zero when any test fails, so the command slots directly
 into CI.
 
+## Source-size limits
+
+The commands that compile a script file (`vibes run`, `vibes analyze`, and
+`vibes test`) stat each file and reject inputs larger than the engine's
+source-size limit *before* reading the file into memory. This mirrors how
+`require` guards module loading, so an oversized file fails fast with
+`source exceeds maximum size (<size> > <limit> bytes)` instead of being read
+in full and then rejected by the parser. The limit defaults to 1 MiB and is
+configured through `Config.MaxSourceBytes` when embedding the engine.
+
 ## `vibes lsp`
 
 Starts an LSP prototype over stdio, with hover, completion, and diagnostics.
