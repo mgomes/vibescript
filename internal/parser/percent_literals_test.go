@@ -594,6 +594,54 @@ total %w[0]`
 	}
 }
 
+// A string interpolation inherits the enclosing local scope, so a percent
+// literal inside #{...} disambiguates the same way it would inline.
+func TestParserStringInterpolationInheritsLocalsForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  w = [3]
+  "#{total %w[0]}"
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 3 {
+		t.Fatalf("function body has %d statements, want 3", len(body))
+	}
+	interp, ok := body[2].(*ast.ExprStmt).Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("body[2].Expr = %T, want *ast.InterpolatedString", body[2].(*ast.ExprStmt).Expr)
+	}
+	var exprPart *ast.StringExpr
+	for i := range interp.Parts {
+		if part, ok := interp.Parts[i].(ast.StringExpr); ok {
+			exprPart = &part
+			break
+		}
+	}
+	if exprPart == nil {
+		t.Fatalf("interpolation has no embedded expression part")
+	}
+
+	want := &ast.BinaryExpr{
+		Left:     &ast.Identifier{Name: "total"},
+		Operator: ast.TokenPercent,
+		Right: &ast.IndexExpr{
+			Object: &ast.Identifier{Name: "w"},
+			Index:  &ast.IntegerLiteral{Value: 0},
+		},
+	}
+	if diff := cmp.Diff(want, exprPart.Expr, astCmpOpts); diff != "" {
+		t.Fatalf("interpolation expression mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
 	t.Parallel()
 

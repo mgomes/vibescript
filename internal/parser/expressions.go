@@ -636,6 +636,11 @@ func skipQuotedInterpolationString(raw string, start int) (int, bool) {
 
 func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position) (ast.Expression, bool) {
 	exprParser := newParser(raw)
+	// Inherit the enclosing local scopes so name-sensitive parsing (such as
+	// percent-literal vs modulo disambiguation) resolves locals the same way
+	// inside #{...} as it would inline. The copy keeps the sub-parser's scope
+	// stack independent while sharing the (read-only) name sets.
+	exprParser.localScopes = append([]localScope(nil), p.localScopes...)
 	expr := exprParser.parseLineExpression(lowestPrec)
 	if len(exprParser.errors) > 0 {
 		p.addParseError(pos, fmt.Sprintf("invalid string interpolation: %s", parseErrorMessage(exprParser.errors[0])))
