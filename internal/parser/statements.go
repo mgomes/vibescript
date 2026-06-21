@@ -246,6 +246,10 @@ func (p *parser) parseForStatement() ast.Statement {
 	}
 
 	p.advanceToLoopBody()
+	// The iterator binds a local in the surrounding scope, so register it
+	// before parsing the body for name-sensitive parsing decisions such as
+	// percent-literal vs modulo disambiguation.
+	p.declareLocal(iterator)
 	body := p.parseBlock(ast.TokenEnd)
 
 	if p.curToken.Type != ast.TokenEnd {
@@ -333,6 +337,12 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 			return nil
 		}
 		p.nextToken()
+		// The rescue binding introduces a local in the surrounding scope, so
+		// register it before parsing the rescue body for name-sensitive
+		// parsing decisions such as percent-literal vs modulo disambiguation.
+		if rescueBinding != "" {
+			p.declareLocal(rescueBinding)
+		}
 		rescueBody = p.parseBlock(ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
 	}
 

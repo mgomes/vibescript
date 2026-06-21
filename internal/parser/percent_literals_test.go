@@ -400,6 +400,90 @@ end`
 	}
 }
 
+// A for-loop iterator binds a local in the surrounding scope, so the
+// percent literal in its body is modulo, not a parenless call argument.
+func TestParserForIteratorIsLocalForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  items = [1]
+  for w in items
+    w %w[0]
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 2 {
+		t.Fatalf("function body has %d statements, want 2", len(body))
+	}
+	forStmt, ok := body[1].(*ast.ForStmt)
+	if !ok {
+		t.Fatalf("body[1] = %T, want *ast.ForStmt", body[1])
+	}
+
+	wantForBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "w"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantForBody, forStmt.Body, astCmpOpts); diff != "" {
+		t.Fatalf("for body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A rescue binding introduces a local in the surrounding scope, so the
+// percent literal in the rescue body is modulo, not a call argument.
+func TestParserRescueBindingIsLocalForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  w = [3]
+  begin
+    1
+  rescue => err
+    err %w[0]
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 2 {
+		t.Fatalf("function body has %d statements, want 2", len(body))
+	}
+	tryStmt, ok := body[1].(*ast.TryStmt)
+	if !ok {
+		t.Fatalf("body[1] = %T, want *ast.TryStmt", body[1])
+	}
+
+	wantRescueBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "err"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantRescueBody, tryStmt.Rescue, astCmpOpts); diff != "" {
+		t.Fatalf("rescue body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
 	t.Parallel()
 
