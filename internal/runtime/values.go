@@ -40,6 +40,48 @@ func valueToInt(val Value) (int, error) {
 // Callers detect it with errors.Is to emit a method-specific message.
 var errNegativeCount = errors.New("count must not be negative")
 
+// errWidthNotInteger signals that a width argument was not a numeric value that
+// could represent an integer. Callers detect it with errors.Is to emit a
+// method-specific message.
+var errWidthNotInteger = errors.New("width must be integer")
+
+// errWidthOutOfRange signals that a width argument was a finite Float whose
+// truncated value falls outside the native int range, or a non-finite Float
+// (NaN/Inf). Callers detect it with errors.Is to emit a method-specific message
+// mirroring Ruby's RangeError for such widths.
+var errWidthOutOfRange = errors.New("width is out of range")
+
+// valueToPadWidth converts a numeric width argument to an int, truncating
+// fractional Floats toward zero like Ruby's to_int. Unlike valueToCount it
+// permits negative widths because padding helpers treat a width at or below the
+// receiver length as a no-op rather than an error. Non-finite Floats and Floats
+// whose truncated magnitude exceeds the int range return errWidthOutOfRange so
+// callers do not silently wrap a huge width into an in-range int (for example
+// 1e20 collapsing to math.MinInt) and bypass the projected-size guard.
+// Non-numeric values return errWidthNotInteger.
+func valueToPadWidth(val Value) (int, error) {
+	switch val.Kind() {
+	case KindInt:
+		return int(val.Int()), nil
+	case KindFloat:
+		f := val.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, errWidthOutOfRange
+		}
+		// Truncate toward zero first, matching Ruby's to_int, then verify the
+		// result is representable. Comparing the truncated value against the int
+		// bounds avoids rejecting Floats like math.MaxInt rounded up, since the
+		// truncation toward zero is what ultimately must fit.
+		t := math.Trunc(f)
+		if t > math.MaxInt || t < math.MinInt {
+			return 0, errWidthOutOfRange
+		}
+		return int(t), nil
+	default:
+		return 0, errWidthNotInteger
+	}
+}
+
 // valueToCount converts a numeric count argument to a non-negative int,
 // truncating positive fractional values toward zero like Ruby's to_int. It
 // inspects the original numeric value's sign before truncating so that

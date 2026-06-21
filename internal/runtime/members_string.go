@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -1165,11 +1166,14 @@ const (
 
 // stringPad implements the shared logic for center, ljust, and rjust. Width is
 // measured in runes to mirror Ruby's character-oriented padding, and a width at
-// or below the receiver length returns the receiver unchanged. The padding
-// string defaults to a single space, must be non-empty, and is repeated then
-// truncated by runes to fill the requested span. The projected byte length is
-// checked against the memory quota before any buffer is allocated so an
-// oversized width fails fast instead of materializing a huge string.
+// or below the receiver length returns the receiver unchanged. Float widths are
+// truncated toward zero like Ruby's to_int; a non-finite or out-of-range Float
+// width is rejected outright rather than wrapping into an in-range int that
+// would slip past the projected-size guard. The padding string defaults to a
+// single space, must be non-empty, and is repeated then truncated by runes to
+// fill the requested span. The projected byte length is checked against the
+// memory quota before any buffer is allocated so an oversized width fails fast
+// instead of materializing a huge string.
 func stringPad(exec *Execution, method string, side padSide, receiver Value, args []Value, kwargs map[string]Value) (Value, error) {
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("%s does not accept keyword arguments", method)
@@ -1177,8 +1181,11 @@ func stringPad(exec *Execution, method string, side padSide, receiver Value, arg
 	if len(args) < 1 || len(args) > 2 {
 		return NewNil(), fmt.Errorf("%s expects width and optional pad string", method)
 	}
-	width, err := valueToInt(args[0])
+	width, err := valueToPadWidth(args[0])
 	if err != nil {
+		if errors.Is(err, errWidthOutOfRange) {
+			return NewNil(), fmt.Errorf("%s width is out of range", method)
+		}
 		return NewNil(), fmt.Errorf("%s width must be integer", method)
 	}
 	pad := " "
