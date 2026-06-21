@@ -454,7 +454,7 @@ func appendJSONValue(buf []byte, val Value, state *jsonStringifyState) ([]byte, 
 	case KindFloat:
 		f := val.Float()
 		if math.IsInf(f, 0) || math.IsNaN(f) {
-			return nil, fmt.Errorf("JSON.stringify failed: json: unsupported value: %s", strconv.FormatFloat(f, 'g', -1, 64))
+			return nil, fmt.Errorf("JSON.stringify failed: json: unsupported value: %s", formatFloat(f))
 		}
 		return appendJSONFloat(buf, f), nil
 	case KindString, KindSymbol:

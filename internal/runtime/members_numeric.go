@@ -21,6 +21,7 @@ var (
 	floatMemberNames = []string{
 		"abs", "clamp", "round", "floor", "ceil",
 		"zero?", "positive?", "negative?", "nonzero?",
+		"nan?", "infinite?", "finite?",
 		"div", "divmod", "fdiv", "remainder", "modulo",
 	}
 	moneyMemberNames = []string{"currency", "cents", "amount", "format"}
@@ -225,7 +226,7 @@ func intMemberBuiltin(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			return numericFdiv("int.fdiv", receiver, divisor)
+			return numericFdiv(receiver, divisor)
 		}), nil
 	case "remainder":
 		return NewAutoBuiltin("int.remainder", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -329,6 +330,38 @@ func floatMemberBuiltin(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
+	case "nan?":
+		return NewAutoBuiltin("float.nan?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("float.nan? does not take arguments")
+			}
+			return NewBool(math.IsNaN(receiver.Float())), nil
+		}), nil
+	case "infinite?":
+		// Ruby returns 1 for +Infinity, -1 for -Infinity, and nil otherwise
+		// (including NaN and finite values), so the result is truthy exactly
+		// when the receiver is infinite and carries the sign of the infinity.
+		return NewAutoBuiltin("float.infinite?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("float.infinite? does not take arguments")
+			}
+			switch {
+			case math.IsInf(receiver.Float(), 1):
+				return NewInt(1), nil
+			case math.IsInf(receiver.Float(), -1):
+				return NewInt(-1), nil
+			default:
+				return NewNil(), nil
+			}
+		}), nil
+	case "finite?":
+		return NewAutoBuiltin("float.finite?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("float.finite? does not take arguments")
+			}
+			f := receiver.Float()
+			return NewBool(!math.IsNaN(f) && !math.IsInf(f, 0)), nil
+		}), nil
 	case "div":
 		return NewAutoBuiltin("float.div", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			divisor, err := singleNumericArg("float.div", args)
@@ -351,7 +384,7 @@ func floatMemberBuiltin(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			return numericFdiv("float.fdiv", receiver, divisor)
+			return numericFdiv(receiver, divisor)
 		}), nil
 	case "remainder":
 		return NewAutoBuiltin("float.remainder", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -386,13 +419,12 @@ func singleNumericArg(method string, args []Value) (Value, error) {
 	return args[0], nil
 }
 
-// numericFdiv implements Ruby's Numeric#fdiv, returning floating division. A
-// zero divisor errors instead of yielding infinity, matching Vibescript's `/`
-// operator, which keeps non-finite floats out of the value space.
-func numericFdiv(method string, receiver, divisor Value) (Value, error) {
-	if divisor.Float() == 0 {
-		return NewNil(), fmt.Errorf("%s by zero", method)
-	}
+// numericFdiv implements Ruby's Numeric#fdiv, returning floating division. Like
+// Vibescript's `/` operator, a zero divisor follows IEEE 754 rather than
+// raising: a finite nonzero receiver yields +/-Infinity and a zero receiver
+// yields NaN. This differs from div/divmod/modulo/remainder, which return
+// integers or floored results and still raise on a zero divisor like Ruby.
+func numericFdiv(receiver, divisor Value) (Value, error) {
 	return NewFloat(receiver.Float() / divisor.Float()), nil
 }
 

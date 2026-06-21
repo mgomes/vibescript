@@ -546,9 +546,10 @@ func divideValues(left, right Value) (Value, error) {
 		}
 		return NewInt(quotient), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		if right.Float() == 0 {
-			return NewNil(), errors.New("division by zero")
-		}
+		// Float division by zero follows IEEE 754 and Ruby: a finite nonzero
+		// numerator yields +/-Infinity and a zero numerator yields NaN, rather
+		// than raising. Integer division by zero is handled by the int/int case
+		// above and still errors, matching Ruby's ZeroDivisionError.
 		return NewFloat(left.Float() / right.Float()), nil
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
 		if right.Duration().Seconds() == 0 {

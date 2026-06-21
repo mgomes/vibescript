@@ -320,19 +320,19 @@ func TestNumericDivisionZeroErrors(t *testing.T) {
 		expr string
 		want string
 	}{
+		// div, divmod, remainder, and modulo still raise on a zero divisor like
+		// Ruby's ZeroDivisionError. fdiv is excluded here because, like the `/`
+		// operator, it follows IEEE 754 and yields Infinity/NaN instead of
+		// raising; that behavior is covered in the float special-value tests.
 		{"5.div(0)", "int.div by zero"},
 		{"5.divmod(0)", "int.divmod by zero"},
 		{"5.remainder(0)", "int.remainder by zero"},
-		{"5.fdiv(0)", "int.fdiv by zero"},
 		{"5.div(0.0)", "int.div by zero"},
 		{"5.divmod(0.0)", "int.divmod by zero"},
 		{"5.remainder(0.0)", "int.remainder by zero"},
-		{"5.fdiv(0.0)", "int.fdiv by zero"},
 		{"5.0.div(0.0)", "float.div by zero"},
 		{"5.0.divmod(0.0)", "float.divmod by zero"},
 		{"5.0.remainder(0.0)", "float.remainder by zero"},
-		{"5.0.fdiv(0.0)", "float.fdiv by zero"},
-		{"5.0.fdiv(0)", "float.fdiv by zero"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.expr, func(t *testing.T) {

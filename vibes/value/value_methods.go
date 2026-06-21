@@ -2,6 +2,7 @@ package value
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -84,7 +85,7 @@ func (v Value) String() string {
 	case KindInt:
 		return strconv.FormatInt(v.Int(), 10)
 	case KindFloat:
-		return strconv.FormatFloat(v.Float(), 'g', -1, 64)
+		return FormatFloat(v.Float())
 	case KindSymbol:
 		return v.data.(string)
 	case KindMoney:
@@ -110,6 +111,23 @@ func (v Value) String() string {
 			}
 		}
 		return fmt.Sprintf("<%v>", v.kind)
+	}
+}
+
+// FormatFloat renders a float the way Vibescript displays it, matching Ruby's
+// Float#to_s. Finite values use Go's shortest round-trippable form, while the
+// IEEE special values render as Ruby spells them ("Infinity", "-Infinity",
+// "NaN") instead of Go's "+Inf"/"-Inf"/"NaN".
+func FormatFloat(f float64) string {
+	switch {
+	case math.IsNaN(f):
+		return "NaN"
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
+	default:
+		return strconv.FormatFloat(f, 'g', -1, 64)
 	}
 }
 

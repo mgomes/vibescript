@@ -362,6 +362,9 @@ func TestValueString(t *testing.T) {
 		{"int", value.NewInt(-42), "-42"},
 		{"float", value.NewFloat(2.5), "2.5"},
 		{"float_compact_exponent", value.NewFloat(1e21), "1e+21"},
+		{"float_positive_infinity", value.NewFloat(math.Inf(1)), "Infinity"},
+		{"float_negative_infinity", value.NewFloat(math.Inf(-1)), "-Infinity"},
+		{"float_nan", value.NewFloat(math.NaN()), "NaN"},
 		{"string", value.NewString("hello"), "hello"},
 		{"symbol_renders_bare", value.NewSymbol("status"), "status"},
 		{"money", value.NewMoney(mustMoney(t, 1999, "usd")), "19.99 USD"},
@@ -398,6 +401,33 @@ func TestValueString(t *testing.T) {
 			t.Parallel()
 			if got := tc.val.String(); got != tc.want {
 				t.Fatalf("String() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatFloat(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   float64
+		want string
+	}{
+		{"finite", 2.5, "2.5"},
+		{"negative_finite", -0.125, "-0.125"},
+		{"zero", 0, "0"},
+		{"large_exponent", 1e21, "1e+21"},
+		{"positive_infinity", math.Inf(1), "Infinity"},
+		{"negative_infinity", math.Inf(-1), "-Infinity"},
+		{"nan", math.NaN(), "NaN"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := value.FormatFloat(tc.in); got != tc.want {
+				t.Fatalf("FormatFloat(%v) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
