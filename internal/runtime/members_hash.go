@@ -446,9 +446,13 @@ func hashMemberTransforms(property string) (Value, error) {
 		return NewBuiltin("hash.except", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			excluded := make(map[string]struct{}, len(args))
 			for _, arg := range args {
+				// Vibescript hash keys are only symbols or strings, so an
+				// unsupported argument can never match an entry. Ruby's
+				// Hash#except ignores keys that are not present, so we treat
+				// those arguments as misses rather than raising.
 				key, err := valueToHashKey(arg)
 				if err != nil {
-					return NewNil(), fmt.Errorf("hash.except keys must be symbol or string")
+					continue
 				}
 				excluded[key] = struct{}{}
 			}
