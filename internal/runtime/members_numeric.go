@@ -447,14 +447,18 @@ func numericDivmod(method string, receiver, divisor Value) (Value, error) {
 		modulo := floorModInt(receiver.Int(), divisor.Int())
 		return NewArray([]Value{NewInt(quotient), NewInt(modulo)}), nil
 	}
-	if divisor.Float() == 0 {
+	d := divisor.Float()
+	if d == 0 {
 		return NewNil(), fmt.Errorf("%s by zero", method)
 	}
-	quotient, err := floatToInt64Checked(math.Floor(receiver.Float()/divisor.Float()), method)
+	// Derive the modulo with the same floored math.Mod path as Numeric#modulo
+	// and %, then recover the quotient from it, so divmod's modulo matches the
+	// standalone modulo even for divisors that are not exactly representable.
+	modulo := flooredFloatMod(receiver.Float(), d)
+	quotient, err := floatToInt64Checked(math.Round((receiver.Float()-modulo)/d), method)
 	if err != nil {
 		return NewNil(), err
 	}
-	modulo := receiver.Float() - float64(quotient)*divisor.Float()
 	return NewArray([]Value{NewInt(quotient), NewFloat(modulo)}), nil
 }
 
@@ -489,11 +493,18 @@ func numericModulo(method string, receiver, divisor Value) (Value, error) {
 	if d == 0 {
 		return NewNil(), fmt.Errorf("%s by zero", method)
 	}
-	m := math.Mod(receiver.Float(), d)
-	if m != 0 && (m < 0) != (d < 0) {
-		m += d
+	return NewFloat(flooredFloatMod(receiver.Float(), d)), nil
+}
+
+// flooredFloatMod returns num mod den with the result taking the sign of den
+// (floored division), the float counterpart of Ruby's % operator. It is the
+// shared basis for Numeric#modulo and Numeric#divmod so they stay consistent.
+func flooredFloatMod(num, den float64) float64 {
+	m := math.Mod(num, den)
+	if m != 0 && (m < 0) != (den < 0) {
+		m += den
 	}
-	return NewFloat(m), nil
+	return m
 }
 
 func moneyMember(m Money, property string) (Value, error) {

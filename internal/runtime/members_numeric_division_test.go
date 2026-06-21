@@ -288,6 +288,29 @@ func TestNumericDivmodReconstructsDividend(t *testing.T) {
 	}
 }
 
+func TestNumericDivmodModuloMatchesStandaloneModulo(t *testing.T) {
+	t.Parallel()
+
+	// divmod's modulo element must equal the standalone modulo (and %) even
+	// for divisors that are not exactly representable, so both derive from the
+	// same floored math.Mod path rather than recomputing from the quotient.
+	exprs := []string{
+		"1.0.divmod(0.1)[1] == 1.0.modulo(0.1)",
+		"7.0.divmod(2.5)[1] == 7.0.modulo(2.5)",
+		"(-7.0).divmod(2.5)[1] == (-7.0).modulo(2.5)",
+		"3.3.divmod(1.1)[1] == 3.3.modulo(1.1)",
+	}
+	for _, expr := range exprs {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			got := evalNumericExpr(t, expr)
+			if got.Kind() != KindBool || !got.Bool() {
+				t.Fatalf("%s = %v, want true", expr, got)
+			}
+		})
+	}
+}
+
 func TestNumericDivisionZeroErrors(t *testing.T) {
 	t.Parallel()
 
