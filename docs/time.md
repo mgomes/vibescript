@@ -50,6 +50,7 @@ end
 - Zone conversion: `getutc`/`getgm`, `getlocal`, `utc`/`gmtime`, `localtime`
 - String: `to_s` (RFC3339Nano)
 - RFC3339 aliases: `iso8601`, `rfc3339`
+- Tuple: `to_a` returns `[sec, min, hour, mday, month, year, wday, yday, isdst, zone]`, matching Ruby's positional field order. Field values reuse the individual accessors, so the result reflects the receiver's UTC/local/offset zone.
 
 ## Comparisons and math
 

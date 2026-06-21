@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `Time#to_a` tuple conversion.** `Time#to_a` returns the
+  positional field tuple `[sec, min, hour, mday, month, year, wday, yday, isdst,
+  zone]`, matching Ruby for compatibility with positional field processing. Field
+  values reuse the existing `Time` accessors, so UTC, local, and offset receivers
+  stay consistent across both forms.
 - **Added: Ruby-style `String#chars` and `String#lines`.** `chars` returns an
   array of the string's Unicode characters using the existing rune-aware
   semantics, and `lines` splits on `"\n"` while retaining the trailing newline
