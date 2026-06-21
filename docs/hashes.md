@@ -88,12 +88,18 @@ content and integers do not match equal-looking floats.
 
 - `fetch(key, default=nil)` to supply defaults for missing keys.
 - `dig(*path)` for nested lookup.
+- `values_at(*keys)` to read several values at once, in requested key order, with
+  `nil` for missing keys.
 
 ```vibe
 def display_name_or_default(records, player_id)
   fallback = "unknown"
   records.dig(player_id, :meta, :display_name) || fallback
 end
+```
+
+```vibe
+{ a: 1, b: 2 }.values_at(:b, :c, :a)   # [2, nil, 1]
 ```
 
 ## Transform and filter helpers

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style `values_at`, `zip`, `take`, and `drop` collection helpers.**
+  `Hash#values_at(*keys)` returns values in requested key order with `nil` for
+  missing keys. `Array#zip(*arrays)` combines arrays element-wise into rows keyed
+  to the receiver's length, padding short arrays with `nil` and rejecting
+  non-array arguments. `Array#take(n)` and `Array#drop(n)` return prefix and
+  suffix slices without mutating the receiver, truncating fractional counts like
+  Ruby's `to_int` conversion and rejecting negative counts.
 - **Added: Ruby-style hash member, value, and store helpers.** `Hash#member?`
   joins `key?`/`has_key?`/`include?` as a key-membership alias, `Hash#value?` and
   `Hash#has_value?` report value membership using the same `==` equality as the
