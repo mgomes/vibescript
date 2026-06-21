@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Hardened CLI source-size enforcement.** `vibes run`, `vibes analyze`, and
+  `vibes test` now stat each script file and reject inputs larger than the
+  engine's configured source-size limit before reading them into memory,
+  matching the guard already applied during module loading.
 
 ## v0.50.0 - 2026-06-11
 

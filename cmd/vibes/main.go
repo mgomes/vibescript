@@ -114,13 +114,13 @@ type runInvocation struct {
 }
 
 func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error {
-	input, err := os.ReadFile(inv.scriptPath)
-	if err != nil {
-		return fmt.Errorf("read script: %w", err)
-	}
 	engine, err := vibes.NewEngine(vibes.Config{ModulePaths: inv.moduleDirs})
 	if err != nil {
 		return fmt.Errorf("create engine: %w", err)
+	}
+	input, err := readScriptSource(engine, inv.scriptPath)
+	if err != nil {
+		return fmt.Errorf("read script: %w", err)
 	}
 	script, err := engine.CompileSnippet(string(input), scriptEntrypointFunction)
 	if err != nil {

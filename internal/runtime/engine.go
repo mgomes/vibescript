@@ -383,6 +383,13 @@ func (e *Engine) ConfigSummary() string {
 	return fmt.Sprintf("steps=%d memory=%dB recursion=%d strict_effects=%t tasks=%d/%d", e.config.StepQuota, e.config.MemoryQuotaBytes, e.config.RecursionLimit, e.config.StrictEffects, e.config.DefaultTaskConcurrency, e.config.MaxTaskConcurrency)
 }
 
+// MaxSourceBytes reports the effective source-size limit, in bytes, applied
+// before parsing. The value reflects the configured limit after defaults are
+// resolved, so callers can reject oversized inputs before reading them.
+func (e *Engine) MaxSourceBytes() int {
+	return e.config.MaxSourceBytes
+}
+
 func registerDataBuiltins(engine *Engine) {
 	engine.builtins["JSON"] = NewObject(map[string]Value{
 		"parse":     NewBuiltin("JSON.parse", builtinJSONParse),
