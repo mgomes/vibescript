@@ -846,6 +846,49 @@ func TestHashStoreRejectsMisuse(t *testing.T) {
 	}
 }
 
+func TestHashExceptIgnoresUnsupportedKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   map[string]Value
+	}{
+		{
+			name:   "unsupported only preserves entries",
+			source: `def run() { a: 1 }.except(1) end`,
+			want:   map[string]Value{"a": NewInt(1)},
+		},
+		{
+			name:   "mixed unsupported and supported excludes supported",
+			source: `def run() { a: 1 }.except(1, :a) end`,
+			want:   map[string]Value{},
+		},
+		{
+			name:   "multiple unsupported keys are all ignored",
+			source: `def run() { a: 1, b: 2 }.except([3], { c: 4 }) end`,
+			want:   map[string]Value{"a": NewInt(1), "b": NewInt(2)},
+		},
+		{
+			name:   "string and symbol keys still excluded alongside unsupported",
+			source: `def run() { a: 1, b: 2, c: 3 }.except("a", 5, :c) end`,
+			want:   map[string]Value{"b": NewInt(2)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindHash {
+				t.Fatalf("except expected hash, got %v", result.Kind())
+			}
+			compareHash(t, result.Hash(), tt.want)
+		})
+	}
+}
+
 func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
