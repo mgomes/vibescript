@@ -2,6 +2,7 @@ package value
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -103,6 +104,64 @@ func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 		loc = time.Local
 	}
 	return time.Date(year, time.Month(month), day, hour, min, sec, 0, loc), nil
+}
+
+// TimeFromCalendarParts constructs a time.Time from year/month/day positional
+// arguments, with optional hour/minute/second and a subsecond argument. Unlike
+// TimeFromParts (which backs Time.new and reads the seventh argument as a
+// timezone), this matches Ruby's Time.local/mktime/utc/gm where the seventh
+// argument is microseconds-with-fraction and the location is fixed by the
+// constructor. A nil defaultLoc falls back to the local timezone.
+func TimeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
+	if len(args) < 3 {
+		return time.Time{}, fmt.Errorf("Time constructor expects at least year, month, day")
+	}
+	if len(args) > 7 {
+		return time.Time{}, fmt.Errorf("Time constructor expects at most year, month, day, hour, minute, second, microsecond")
+	}
+
+	getInt := func(idx int) int {
+		if idx >= len(args) {
+			return 0
+		}
+		return int(args[idx].Int())
+	}
+
+	year := getInt(0)
+	month := getInt(1)
+	day := getInt(2)
+	hour := getInt(3)
+	min := getInt(4)
+	sec := getInt(5)
+
+	nanos := 0
+	if len(args) >= 7 {
+		usec, err := microsecondsArg(args[6])
+		if err != nil {
+			return time.Time{}, err
+		}
+		nanos = usec
+	}
+
+	loc := defaultLoc
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.Date(year, time.Month(month), day, hour, min, sec, nanos, loc), nil
+}
+
+// microsecondsArg converts a Ruby-style microseconds-with-fraction argument
+// into nanoseconds. Integers are whole microseconds; floats carry sub-microsecond
+// precision down to the nanosecond. Non-numeric arguments are rejected.
+func microsecondsArg(val Value) (int, error) {
+	switch val.Kind() {
+	case KindInt:
+		return int(val.Int() * 1000), nil
+	case KindFloat:
+		return int(math.Round(val.Float() * 1000)), nil
+	default:
+		return 0, fmt.Errorf("Time constructor microsecond argument must be numeric")
+	}
 }
 
 // TimeFromEpoch converts a numeric epoch value into a time.Time anchored

@@ -243,6 +243,85 @@ func TestTimeFormatUsesGoLayout(t *testing.T) {
 	}
 }
 
+func TestTimeCalendarConstructorSubsecond(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+	    def subsecond()
+	      {
+	        local_usec: Time.local(2024, 1, 2, 3, 4, 5, 123456).usec,
+	        mktime_usec: Time.mktime(2024, 1, 2, 3, 4, 5, 123456).usec,
+	        utc_usec: Time.utc(2024, 1, 2, 3, 4, 5, 123456).usec,
+	        gm_usec: Time.gm(2024, 1, 2, 3, 4, 5, 123456).usec,
+	        utc_nsec: Time.utc(2024, 1, 2, 3, 4, 5, 123456).nsec,
+	        utc_offset: Time.utc(2024, 1, 2, 3, 4, 5, 123456).utc_offset,
+	        gm_offset: Time.gm(2024, 1, 2, 3, 4, 5, 123456).utc_offset,
+	        float_nsec: Time.utc(2024, 1, 2, 3, 4, 5, 123456.7).nsec
+	      }
+	    end
+
+	    def new_keeps_zone()
+	      Time.new(2024, 1, 2, 3, 4, 5, "+02:30").utc_offset
+	    end
+	    `)
+
+	result := callFunc(t, script, "subsecond", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	want := map[string]Value{
+		"local_usec":  NewInt(123456),
+		"mktime_usec": NewInt(123456),
+		"utc_usec":    NewInt(123456),
+		"gm_usec":     NewInt(123456),
+		"utc_nsec":    NewInt(123456000),
+		"utc_offset":  NewInt(0),
+		"gm_offset":   NewInt(0),
+		"float_nsec":  NewInt(123456700),
+	}
+	got := result.Hash()
+	for key, expected := range want {
+		if val, ok := got[key]; !ok || !val.Equal(expected) {
+			t.Fatalf("subsecond[%s] = %v, want %v", key, val, expected)
+		}
+	}
+
+	zone := callFunc(t, script, "new_keeps_zone", nil)
+	if zone.Kind() != KindInt || zone.Int() != 9000 {
+		t.Fatalf("Time.new zone offset = %v, want 9000", zone)
+	}
+}
+
+func TestTimeCalendarConstructorArgRejection(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+	    def string_subsec(method)
+	      case method
+	      when "local" then Time.local(2024, 1, 2, 3, 4, 5, "+02:30")
+	      when "mktime" then Time.mktime(2024, 1, 2, 3, 4, 5, "+02:30")
+	      when "utc" then Time.utc(2024, 1, 2, 3, 4, 5, "+02:30")
+	      when "gm" then Time.gm(2024, 1, 2, 3, 4, 5, "+02:30")
+	      end
+	    end
+
+	    def too_few()
+	      Time.utc(2024, 1)
+	    end
+
+	    def too_many()
+	      Time.utc(2024, 1, 2, 3, 4, 5, 6, 7)
+	    end
+	    `)
+
+	for _, method := range []string{"local", "mktime", "utc", "gm"} {
+		requireCallErrorContains(t, script, "string_subsec", []Value{NewString(method)}, CallOptions{},
+			"Time constructor microsecond argument must be numeric")
+	}
+	requireCallErrorContains(t, script, "too_few", nil, CallOptions{},
+		"Time constructor expects at least year, month, day")
+	requireCallErrorContains(t, script, "too_many", nil, CallOptions{},
+		"Time constructor expects at most year, month, day, hour, minute, second, microsecond")
+}
+
 func TestTimeParseAndAliases(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

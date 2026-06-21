@@ -659,12 +659,18 @@ Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
 `"LOCAL"`, or numeric offsets like `"+05:30"`.
 
 - `Time.new(year, month, day, hour = 0, min = 0, sec = 0, zone = nil,
-  in: nil) -> time` – build from calendar parts (local zone by default).
-- `Time.local(...)` / `Time.mktime(...)` -> time – like `Time.new` with the
-  local zone as the default; an explicit zone argument still overrides it.
-- `Time.utc(...)` / `Time.gm(...)` -> time – like `Time.new` with UTC as the
-  default; an explicit zone argument still overrides it
-  (`Time.utc(2024, 1, 1, 0, 0, 0, "+05:30")` is `+05:30`, not UTC).
+  in: nil) -> time` – build from calendar parts (local zone by default). The
+  seventh positional argument is a zone/offset that overrides `in:`
+  (`Time.new(2024, 1, 1, 0, 0, 0, "+05:30")` is `+05:30`, not local).
+- `Time.local(year, month, day, hour = 0, min = 0, sec = 0, usec = 0) -> time` /
+  `Time.mktime(...)` -> time – build calendar parts anchored to the local zone.
+  The seventh positional argument is microseconds-with-fraction, not a zone.
+- `Time.utc(year, month, day, hour = 0, min = 0, sec = 0, usec = 0) -> time` /
+  `Time.gm(...)` -> time – build calendar parts anchored to UTC. The seventh
+  positional argument is microseconds-with-fraction, not a zone
+  (`Time.utc(2024, 1, 1, 0, 0, 0, 123456).usec` is `123456`). Integer
+  microseconds are exact and floats carry sub-microsecond precision down to the
+  nanosecond; a non-numeric microsecond argument raises a runtime error.
 - `Time.at(epoch_seconds, in: nil) -> time` – build from Unix epoch seconds
   (int or float).
 - `Time.now(in: nil) -> time` – current time (local zone by default).

@@ -193,6 +193,93 @@ func TestTimeFromParts(t *testing.T) {
 	})
 }
 
+func TestTimeFromCalendarParts(t *testing.T) {
+	t.Parallel()
+
+	intArgs := func(vals ...int64) []value.Value {
+		out := make([]value.Value, len(vals))
+		for i, v := range vals {
+			out[i] = value.NewInt(v)
+		}
+		return out
+	}
+
+	t.Run("too_few_args", func(t *testing.T) {
+		t.Parallel()
+		_, err := value.TimeFromCalendarParts(intArgs(2024, 6), time.UTC)
+		want := "Time constructor expects at least year, month, day"
+		if err == nil || err.Error() != want {
+			t.Fatalf("TimeFromCalendarParts error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("too_many_args", func(t *testing.T) {
+		t.Parallel()
+		_, err := value.TimeFromCalendarParts(intArgs(2024, 6, 1, 0, 0, 0, 0, 0), time.UTC)
+		want := "Time constructor expects at most year, month, day, hour, minute, second, microsecond"
+		if err == nil || err.Error() != want {
+			t.Fatalf("TimeFromCalendarParts error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("date_only_keeps_location", func(t *testing.T) {
+		t.Parallel()
+		got, err := value.TimeFromCalendarParts(intArgs(2024, 6, 1), time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+		if !got.Equal(want) || got.Location() != time.UTC {
+			t.Fatalf("TimeFromCalendarParts = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("integer_microseconds", func(t *testing.T) {
+		t.Parallel()
+		args := append(intArgs(2024, 1, 2, 3, 4, 5), value.NewInt(123456))
+		got, err := value.TimeFromCalendarParts(args, time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Nanosecond() != 123_456_000 {
+			t.Fatalf("Nanosecond() = %d, want 123456000", got.Nanosecond())
+		}
+	})
+
+	t.Run("float_microseconds_carry_subusec", func(t *testing.T) {
+		t.Parallel()
+		args := append(intArgs(2024, 1, 2, 3, 4, 5), value.NewFloat(123456.7))
+		got, err := value.TimeFromCalendarParts(args, time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Nanosecond() != 123_456_700 {
+			t.Fatalf("Nanosecond() = %d, want 123456700", got.Nanosecond())
+		}
+	})
+
+	t.Run("seventh_arg_is_not_a_timezone", func(t *testing.T) {
+		t.Parallel()
+		args := append(intArgs(2024, 1, 2, 3, 4, 5), value.NewString("+02:30"))
+		_, err := value.TimeFromCalendarParts(args, time.UTC)
+		want := "Time constructor microsecond argument must be numeric"
+		if err == nil || err.Error() != want {
+			t.Fatalf("TimeFromCalendarParts error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("nil_default_location_uses_local", func(t *testing.T) {
+		t.Parallel()
+		got, err := value.TimeFromCalendarParts(intArgs(2024, 6, 1), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Location() != time.Local {
+			t.Fatalf("Location() = %v, want time.Local", got.Location())
+		}
+	})
+}
+
 func TestTimeFromEpoch(t *testing.T) {
 	t.Parallel()
 
