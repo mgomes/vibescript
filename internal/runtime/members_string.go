@@ -14,7 +14,7 @@ import (
 var stringMemberNames = []string{
 	"size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "match", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
-	"sub", "sub!", "gsub", "gsub!", "split", "template",
+	"sub", "sub!", "gsub", "gsub!", "split", "chars", "lines", "template",
 }
 
 var stringBuiltinMembers = newMemberTable(stringMemberNames)
@@ -32,11 +32,36 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
-	case "sub", "sub!", "gsub", "gsub!", "split", "template":
+	case "sub", "sub!", "gsub", "gsub!", "split", "chars", "lines", "template":
 		return stringMemberTextOps(property)
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
+}
+
+// stringLines splits text into lines using "\n" as the record separator,
+// retaining the trailing "\n" on each line as Ruby's String#lines does. A
+// trailing newline does not produce a final empty line, and an empty string
+// yields no lines. Carriage returns are preserved verbatim, so "a\r\nb" splits
+// into "a\r\n" and "b".
+func stringLines(text string) []string {
+	if text == "" {
+		return nil
+	}
+	var lines []string
+	for {
+		index := strings.IndexByte(text, '\n')
+		if index < 0 {
+			lines = append(lines, text)
+			break
+		}
+		lines = append(lines, text[:index+1])
+		text = text[index+1:]
+		if text == "" {
+			break
+		}
+	}
+	return lines
 }
 
 func chompDefault(text string) string {
@@ -920,6 +945,30 @@ func stringMemberTextOps(property string) (Value, error) {
 			values := make([]Value, len(parts))
 			for i, part := range parts {
 				values[i] = NewString(part)
+			}
+			return NewArray(values), nil
+		}), nil
+	case "chars":
+		return NewAutoBuiltin("string.chars", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.chars does not take arguments")
+			}
+			text := receiver.String()
+			values := make([]Value, 0, stringRuneLen(text))
+			for _, r := range text {
+				values = append(values, NewString(string(r)))
+			}
+			return NewArray(values), nil
+		}), nil
+	case "lines":
+		return NewAutoBuiltin("string.lines", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.lines does not take arguments")
+			}
+			lines := stringLines(receiver.String())
+			values := make([]Value, len(lines))
+			for i, line := range lines {
+				values[i] = NewString(line)
 			}
 			return NewArray(values), nil
 		}), nil

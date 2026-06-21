@@ -147,3 +147,713 @@ end`
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestParserModuloBeforeIndexedOrCalledWIIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name: "indexed_w",
+			source: `def run
+  total%w[0]
+end`,
+			wantExpr: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "total"},
+				Operator: ast.TokenPercent,
+				Right: &ast.IndexExpr{
+					Object: &ast.Identifier{Name: "w"},
+					Index:  &ast.IntegerLiteral{Value: 0},
+				},
+			},
+		},
+		{
+			name: "spaced_operator_indexed_w",
+			source: `def run
+  total % w[0]
+end`,
+			wantExpr: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "total"},
+				Operator: ast.TokenPercent,
+				Right: &ast.IndexExpr{
+					Object: &ast.Identifier{Name: "w"},
+					Index:  &ast.IntegerLiteral{Value: 0},
+				},
+			},
+		},
+		{
+			name: "called_i",
+			source: `def run
+  total%i(0)
+end`,
+			wantExpr: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "total"},
+				Operator: ast.TokenPercent,
+				Right: &ast.CallExpr{
+					Callee: &ast.Identifier{Name: "i"},
+					Args: []ast.Expression{
+						&ast.IntegerLiteral{Value: 0},
+					},
+					KwArgs: []ast.KeywordArg{},
+				},
+			},
+		},
+		{
+			name: "spaced_operator_called_i",
+			source: `def run
+  total % i(0)
+end`,
+			wantExpr: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "total"},
+				Operator: ast.TokenPercent,
+				Right: &ast.CallExpr{
+					Callee: &ast.Identifier{Name: "i"},
+					Args: []ast.Expression{
+						&ast.IntegerLiteral{Value: 0},
+					},
+					KwArgs: []ast.KeywordArg{},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: tc.wantExpr},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestParserLocalModuloBeforeCompactWIIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  w = [3]
+  total %w[0]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "total"},
+			Value:  &ast.IntegerLiteral{Value: 10},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "w"},
+			Value: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.IntegerLiteral{Value: 3},
+			}},
+		},
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "total"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A percent-array argument whose interior looks like a comment must not
+// cause the lexer to swallow the closing delimiter and following lines.
+func TestParserPercentArrayArgumentDoesNotCommentOutFollowingLines(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  collect %w[#]
+  after
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "collect"},
+			Args: []ast.Expression{
+				&ast.ArrayLiteral{Elements: []ast.Expression{
+					&ast.StringLiteral{Value: "#"},
+				}},
+			},
+			KwArgs: []ast.KeywordArg{},
+		}},
+		&ast.ExprStmt{Expr: &ast.Identifier{Name: "after"}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A local declared in an enclosing snippet scope must not leak into a
+// function body: inside the function the name is not local, so the
+// percent literal is a parenless call argument, not modulo.
+func TestParserPercentArrayArgumentIgnoresEnclosingSnippetLocals(t *testing.T) {
+	t.Parallel()
+
+	source := `collect = 1
+def run
+  collect %w[ok]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	if len(got.Statements) != 2 {
+		t.Fatalf("parseSource returned %d statements, want 2", len(got.Statements))
+	}
+	fn, ok := got.Statements[1].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement[1] = %T, want *ast.FunctionStmt", got.Statements[1])
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "collect"},
+			Args: []ast.Expression{
+				&ast.ArrayLiteral{Elements: []ast.Expression{
+					&ast.StringLiteral{Value: "ok"},
+				}},
+			},
+			KwArgs: []ast.KeywordArg{},
+		}},
+	}
+	if diff := cmp.Diff(wantBody, fn.Body, astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Blocks still close over enclosing locals: a name assigned in the
+// surrounding scope remains local inside a block, so the percent literal
+// there is modulo, not a call argument. This guards the function-scope
+// boundary from over-broadening into block scopes.
+func TestParserBlockClosesOverEnclosingLocalForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  w = [3]
+  [1].each do |n|
+    total %w[0]
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 3 {
+		t.Fatalf("function body has %d statements, want 3", len(body))
+	}
+	exprStmt, ok := body[2].(*ast.ExprStmt)
+	if !ok {
+		t.Fatalf("body[2] = %T, want *ast.ExprStmt", body[2])
+	}
+	eachCall, ok := exprStmt.Expr.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("body[2].Expr = %T, want *ast.CallExpr", exprStmt.Expr)
+	}
+	if eachCall.Block == nil {
+		t.Fatalf("each call has no block")
+	}
+
+	wantBlockBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "total"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantBlockBody, eachCall.Block.Body, astCmpOpts); diff != "" {
+		t.Fatalf("block body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A for-loop iterator binds a local in the surrounding scope, so the
+// percent literal in its body is modulo, not a parenless call argument.
+func TestParserForIteratorIsLocalForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  items = [1]
+  for w in items
+    w %w[0]
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 2 {
+		t.Fatalf("function body has %d statements, want 2", len(body))
+	}
+	forStmt, ok := body[1].(*ast.ForStmt)
+	if !ok {
+		t.Fatalf("body[1] = %T, want *ast.ForStmt", body[1])
+	}
+
+	wantForBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "w"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantForBody, forStmt.Body, astCmpOpts); diff != "" {
+		t.Fatalf("for body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A rescue binding introduces a local in the surrounding scope, so the
+// percent literal in the rescue body is modulo, not a call argument.
+func TestParserRescueBindingIsLocalForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  w = [3]
+  begin
+    1
+  rescue => err
+    err %w[0]
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 2 {
+		t.Fatalf("function body has %d statements, want 2", len(body))
+	}
+	tryStmt, ok := body[1].(*ast.TryStmt)
+	if !ok {
+		t.Fatalf("body[1] = %T, want *ast.TryStmt", body[1])
+	}
+
+	wantRescueBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "err"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantRescueBody, tryStmt.Rescue, astCmpOpts); diff != "" {
+		t.Fatalf("rescue body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A function-level rescue tail is still inside the function scope, so it
+// resolves function-body locals and parses the percent literal as modulo.
+func TestParserFunctionRescueTailSeesFunctionLocalsForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  w = [3]
+rescue
+  total %w[0]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 1 {
+		t.Fatalf("function body has %d statements, want 1 try statement", len(body))
+	}
+	tryStmt, ok := body[0].(*ast.TryStmt)
+	if !ok {
+		t.Fatalf("body[0] = %T, want *ast.TryStmt", body[0])
+	}
+
+	wantRescueBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "total"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantRescueBody, tryStmt.Rescue, astCmpOpts); diff != "" {
+		t.Fatalf("rescue body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A rescue binding is scoped to the rescue body only; after the handler the
+// name is no longer local, so a later percent literal is a parenless call.
+func TestParserRescueBindingDoesNotLeakAfterHandler(t *testing.T) {
+	t.Parallel()
+
+	source := `begin
+  1
+rescue => collect
+  2
+end
+collect %w[ok]`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	if len(got.Statements) != 2 {
+		t.Fatalf("parseSource returned %d statements, want 2", len(got.Statements))
+	}
+
+	wantStmt := &ast.ExprStmt{Expr: &ast.CallExpr{
+		Callee: &ast.Identifier{Name: "collect"},
+		Args: []ast.Expression{
+			&ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "ok"},
+			}},
+		},
+		KwArgs: []ast.KeywordArg{},
+	}}
+	if diff := cmp.Diff(wantStmt, got.Statements[1], astCmpOpts); diff != "" {
+		t.Fatalf("post-rescue statement mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A local assigned inside a rescue body belongs to the surrounding scope
+// (only the exception binding is body-local), so a later percent literal
+// that uses it is modulo, not a parenless call.
+func TestParserRescueBodyAssignmentLeaksToOuterScope(t *testing.T) {
+	t.Parallel()
+
+	source := `begin
+  1
+rescue => err
+  total = 10
+  w = [3]
+end
+total %w[0]`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	if len(got.Statements) != 2 {
+		t.Fatalf("parseSource returned %d statements, want 2", len(got.Statements))
+	}
+
+	wantStmt := &ast.ExprStmt{Expr: &ast.BinaryExpr{
+		Left:     &ast.Identifier{Name: "total"},
+		Operator: ast.TokenPercent,
+		Right: &ast.IndexExpr{
+			Object: &ast.Identifier{Name: "w"},
+			Index:  &ast.IntegerLiteral{Value: 0},
+		},
+	}}
+	if diff := cmp.Diff(wantStmt, got.Statements[1], astCmpOpts); diff != "" {
+		t.Fatalf("post-rescue statement mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A string interpolation inherits the enclosing local scope, so a percent
+// literal inside #{...} disambiguates the same way it would inline.
+func TestParserStringInterpolationInheritsLocalsForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  w = [3]
+  "#{total %w[0]}"
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 3 {
+		t.Fatalf("function body has %d statements, want 3", len(body))
+	}
+	interp, ok := body[2].(*ast.ExprStmt).Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("body[2].Expr = %T, want *ast.InterpolatedString", body[2].(*ast.ExprStmt).Expr)
+	}
+	var exprPart *ast.StringExpr
+	for i := range interp.Parts {
+		if part, ok := interp.Parts[i].(ast.StringExpr); ok {
+			exprPart = &part
+			break
+		}
+	}
+	if exprPart == nil {
+		t.Fatalf("interpolation has no embedded expression part")
+	}
+
+	want := &ast.BinaryExpr{
+		Left:     &ast.Identifier{Name: "total"},
+		Operator: ast.TokenPercent,
+		Right: &ast.IndexExpr{
+			Object: &ast.Identifier{Name: "w"},
+			Index:  &ast.IntegerLiteral{Value: 0},
+		},
+	}
+	if diff := cmp.Diff(want, exprPart.Expr, astCmpOpts); diff != "" {
+		t.Fatalf("interpolation expression mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A parameter default may reference an earlier parameter, so the earlier
+// parameter must be a known local when the default is parsed: the percent
+// literal in the default is modulo, not a parenless call.
+func TestParserFunctionParamDefaultSeesEarlierParamsForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(total, w, x = total %w[0])
+  x
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	if len(got.Statements) != 1 {
+		t.Fatalf("parseSource returned %d statements, want 1", len(got.Statements))
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement[0] = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	var xParam *ast.Param
+	for i := range fn.Params {
+		if fn.Params[i].Name == "x" {
+			xParam = &fn.Params[i]
+		}
+	}
+	if xParam == nil {
+		t.Fatalf("parameter x not found")
+	}
+
+	want := &ast.BinaryExpr{
+		Left:     &ast.Identifier{Name: "total"},
+		Operator: ast.TokenPercent,
+		Right: &ast.IndexExpr{
+			Object: &ast.Identifier{Name: "w"},
+			Index:  &ast.IntegerLiteral{Value: 0},
+		},
+	}
+	if diff := cmp.Diff(want, xParam.DefaultVal, astCmpOpts); diff != "" {
+		t.Fatalf("parameter default mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A postfix on a percent-array call argument binds to the literal, not to
+// the whole call: `collect %w[a][0]` is `collect((%w[a])[0])`.
+func TestParserPercentArrayArgumentBindsTrailingPostfix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		wantArg ast.Expression
+	}{
+		{
+			name:   "index",
+			source: "def run\n  collect %w[a][0]\nend",
+			wantArg: &ast.IndexExpr{
+				Object: &ast.ArrayLiteral{Elements: []ast.Expression{&ast.StringLiteral{Value: "a"}}},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		},
+		{
+			name:   "member",
+			source: "def run\n  collect %w[a].size\nend",
+			wantArg: &ast.MemberExpr{
+				Object:   &ast.ArrayLiteral{Elements: []ast.Expression{&ast.StringLiteral{Value: "a"}}},
+				Property: "size",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.CallExpr{
+					Callee: &ast.Identifier{Name: "collect"},
+					Args:   []ast.Expression{tc.wantArg},
+					KwArgs: []ast.KeywordArg{},
+				}},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name: "multi_word_array",
+			source: `def run
+  collect %w[alpha beta]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.StringLiteral{Value: "alpha"},
+						&ast.StringLiteral{Value: "beta"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "single_word_array",
+			source: `def run
+  collect %w[ok]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.StringLiteral{Value: "ok"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "single_numeric_word_array",
+			source: `def run
+  collect %w[123]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.StringLiteral{Value: "123"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "single_symbol_array",
+			source: `def run
+  collect %i[ok]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.SymbolLiteral{Name: "ok"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "single_numeric_symbol_array",
+			source: `def run
+  collect %i[123]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.SymbolLiteral{Name: "123"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "symbol_array_member_call",
+			source: `def run
+  logger.info %i[ok]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.MemberExpr{
+					Object:   &ast.Identifier{Name: "logger"},
+					Property: "info",
+				},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.SymbolLiteral{Name: "ok"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: tc.wantExpr},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

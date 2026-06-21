@@ -69,6 +69,27 @@ func TestCompileWithProgramHonorsMaxSourceBytesBeforeParse(t *testing.T) {
 	}
 }
 
+func TestMaxSourceBytesReportsEffectiveLimit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cfg  Config
+		want int
+	}{
+		{name: "explicit", cfg: Config{MaxSourceBytes: 4}, want: 4},
+		{name: "default", cfg: Config{}, want: defaultMaxSourceBytes},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			engine := MustNewEngine(tc.cfg)
+			if got := engine.MaxSourceBytes(); got != tc.want {
+				t.Fatalf("MaxSourceBytes() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func BenchmarkCombineErrors(b *testing.B) {
 	errs := make([]error, 2048)
 	for i := range errs {

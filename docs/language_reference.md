@@ -105,6 +105,36 @@ def charge(amount: int, currency: string = "USD") -> hash
 end
 ```
 
+### Function values
+
+A function referenced by name (without calling it) is a value that can be
+passed to other functions and invoked. Both direct `fn(...)` invocation and
+Ruby-style `fn.call(...)` are supported and behave identically, forwarding
+positional arguments, keyword arguments, and an optional block:
+
+```vibe
+def inc(n)
+  n + 1
+end
+
+def twice_direct(fn)
+  fn(2)
+end
+
+def twice_call(fn)
+  fn.call(2)
+end
+```
+
+Argument arity and type errors raised by `fn.call(...)` point at the call
+site, the same as direct invocation. The only member exposed on a function
+value is `call`.
+
+A function with at least one parameter becomes a value when referenced by
+name. A zero-arity function is auto-invoked when referenced by name, so it
+cannot yet be passed as a function value (and therefore cannot be reached by
+`fn.call`); passing zero-arity functions as values is tracked separately.
+
 ## Classes
 
 Class declarations are supported for grouping behavior and methods:

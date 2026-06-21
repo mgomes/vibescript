@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/mgomes/vibescript/internal/tools/analyze"
@@ -27,12 +26,12 @@ func analyzeCommand(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve script path: %w", err)
 	}
-	input, err := os.ReadFile(scriptPath)
+	engine := vibes.MustNewEngine(vibes.Config{})
+	input, err := readScriptSource(engine, scriptPath)
 	if err != nil {
 		return fmt.Errorf("read script: %w", err)
 	}
 
-	engine := vibes.MustNewEngine(vibes.Config{})
 	script, err := engine.CompileSnippet(string(input), scriptEntrypointFunction)
 	if err != nil {
 		return fmt.Errorf("analysis compile failed: %w", err)

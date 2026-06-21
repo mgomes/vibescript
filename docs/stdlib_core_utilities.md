@@ -107,6 +107,11 @@ Unicode characters, not bytes, unless noted.
   occurrence of `pattern`.
 - `split(separator = nil) -> array` – split on whitespace (dropping empty
   fields) without arguments, or on `separator` when given.
+- `chars -> array` – array of the string's Unicode characters, one per code
+  point (rune-aware, like `length` and `slice`).
+- `lines -> array` – array of lines split on `"\n"`, retaining the trailing
+  newline on each line; an empty string yields no lines and carriage returns
+  stay attached so `"\r\n"` endings round-trip.
 - `template(context, strict: false) -> string` – interpolate `{{key.path}}`
   placeholders from a hash; `strict: true` errors on missing placeholders.
 
@@ -206,6 +211,12 @@ items.pop(2) # {array: [1], popped: [2, 3]}
   first-seen group order.
 - `tally -> hash` / `tally { |item| } -> hash` – occurrence counts keyed by
   element (or block result); keys must be symbols or strings.
+- `min -> value | nil` / `max -> value | nil` – smallest/largest element using
+  natural ordering; `nil` for an empty array.
+- `minmax -> array` – `[min, max]` in one pass; `[nil, nil]` for an empty array.
+- `min_by { |item| } -> value | nil` / `max_by { |item| } -> value | nil` –
+  element with the smallest/largest block key; `nil` for an empty array. Ties
+  resolve to the first matching element.
 
 String and symbol ordering uses deterministic codepoint comparison (no locale
 collation).
@@ -244,7 +255,10 @@ methods.
 - `empty? -> bool` – true when the hash has no entries.
 - `key?(key) -> bool` – true when `key` is present.
 - `has_key?(key) -> bool` – alias for `key?`.
+- `member?(key) -> bool` – alias for `key?`.
 - `include?(key) -> bool` – alias for `key?`.
+- `value?(value) -> bool` – true when any stored value equals `value` using `==`.
+- `has_value?(value) -> bool` – alias for `value?`.
 
 ### Access
 
@@ -264,6 +278,8 @@ methods.
 ### Transform and Filter
 
 - `merge(other) -> hash` – combined entries; `other` wins on key conflicts.
+- `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
+  receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
 - `slice(*keys) -> hash` – only the listed keys (missing keys are skipped).
 - `except(*keys) -> hash` – all entries except the listed keys.
 - `select { |key, value| } -> hash` – entries for which the block is truthy.

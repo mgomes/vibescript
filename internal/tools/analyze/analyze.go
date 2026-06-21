@@ -99,6 +99,10 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		return false
 	case *ast.TryStmt:
 		bodyTerminated := lintStatements(function, typed.Body, warnings)
+		elseTerminated := false
+		if len(typed.Else) > 0 {
+			elseTerminated = lintStatements(function, typed.Else, warnings)
+		}
 		rescueTerminated := false
 		if len(typed.Rescue) > 0 {
 			rescueTerminated = lintStatements(function, typed.Rescue, warnings)
@@ -110,10 +114,14 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		if ensureTerminated {
 			return true
 		}
-		if len(typed.Rescue) == 0 {
-			return bodyTerminated
+		normalTerminated := bodyTerminated
+		if len(typed.Else) > 0 {
+			normalTerminated = bodyTerminated || elseTerminated
 		}
-		return bodyTerminated && rescueTerminated
+		if len(typed.Rescue) == 0 {
+			return normalTerminated
+		}
+		return normalTerminated && rescueTerminated
 	default:
 		return false
 	}

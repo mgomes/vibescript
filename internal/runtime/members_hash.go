@@ -13,8 +13,8 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var hashMemberNames = []string{
-	"size", "length", "empty?", "key?", "has_key?", "include?", "keys", "values", "fetch", "dig", "each", "each_key", "each_value",
-	"merge", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "fetch", "dig", "each", "each_key", "each_value",
+	"merge", "store", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 }
 
 var hashBuiltinMembers = newMemberTable(hashMemberNames)
@@ -32,9 +32,9 @@ func hashMember(obj Value, property string) (Value, error) {
 
 func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "key?", "has_key?", "include?", "keys", "values", "fetch", "dig", "each", "each_key", "each_value":
+	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "fetch", "dig", "each", "each_key", "each_value":
 		return hashMemberQuery(property)
-	case "merge", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
+	case "merge", "store", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
@@ -144,7 +144,7 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			return NewBool(len(receiver.Hash()) == 0), nil
 		}), nil
-	case "key?", "has_key?", "include?":
+	case "key?", "has_key?", "member?", "include?":
 		name := property
 		return NewAutoBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 {
@@ -160,6 +160,22 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			_, ok := receiver.Hash()[key]
 			return NewBool(ok), nil
+		}), nil
+	case "value?", "has_value?":
+		name := property
+		return NewAutoBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("hash.%s expects exactly one value", name)
+			}
+			// Ruby compares the candidate against each stored value with ==.
+			// Vibescript mirrors this with Value.Equal so deep collection and
+			// scalar equality match Ruby's hash value membership semantics.
+			for _, stored := range receiver.Hash() {
+				if stored.Equal(args[0]) {
+					return NewBool(true), nil
+				}
+			}
+			return NewBool(false), nil
 		}), nil
 	case "keys":
 		return NewAutoBuiltin("hash.keys", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -306,6 +322,24 @@ func hashMemberTransforms(property string) (Value, error) {
 			out := make(map[string]Value, len(base)+len(addition))
 			maps.Copy(out, base)
 			maps.Copy(out, addition)
+			return NewHash(out), nil
+		}), nil
+	case "store":
+		return NewBuiltin("hash.store", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 2 {
+				return NewNil(), fmt.Errorf("hash.store expects a key and a value")
+			}
+			key, err := valueToHashKey(args[0])
+			if err != nil {
+				return NewNil(), fmt.Errorf("hash.store key must be symbol or string")
+			}
+			// Vibescript's method-based hash helpers are immutable-style: store
+			// returns a new hash with the key assigned rather than mutating the
+			// receiver, matching merge and the array collection helpers.
+			base := receiver.Hash()
+			out := make(map[string]Value, len(base)+1)
+			maps.Copy(out, base)
+			out[key] = args[1]
 			return NewHash(out), nil
 		}), nil
 	case "slice":
