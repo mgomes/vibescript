@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -970,12 +971,12 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("array.take expects exactly one count")
 			}
-			n, err := valueToInt(args[0])
+			n, err := valueToCount(args[0])
 			if err != nil {
+				if errors.Is(err, errNegativeCount) {
+					return NewNil(), fmt.Errorf("array.take attempted with negative size")
+				}
 				return NewNil(), fmt.Errorf("array.take count must be integer")
-			}
-			if n < 0 {
-				return NewNil(), fmt.Errorf("array.take attempted with negative size")
 			}
 			arr := receiver.Array()
 			if n > len(arr) {
@@ -990,12 +991,12 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("array.drop expects exactly one count")
 			}
-			n, err := valueToInt(args[0])
+			n, err := valueToCount(args[0])
 			if err != nil {
+				if errors.Is(err, errNegativeCount) {
+					return NewNil(), fmt.Errorf("array.drop attempted with negative size")
+				}
 				return NewNil(), fmt.Errorf("array.drop count must be integer")
-			}
-			if n < 0 {
-				return NewNil(), fmt.Errorf("array.drop attempted with negative size")
 			}
 			arr := receiver.Array()
 			if n > len(arr) {

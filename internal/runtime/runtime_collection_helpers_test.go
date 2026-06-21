@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"math"
 	"testing"
 )
 
@@ -89,6 +90,51 @@ func TestArrayTakeAndDropErrors(t *testing.T) {
 	requireCallErrorContains(t, script, "take_none", base, CallOptions{}, "array.take expects exactly one count")
 	requireCallErrorContains(t, script, "drop_extra", base, CallOptions{}, "array.drop expects exactly one count")
 	requireCallErrorContains(t, script, "take_bad_type", base, CallOptions{}, "array.take count must be integer")
+}
+
+func TestArrayTakeAndDropRejectFractionalNegativeCounts(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def take_n(values, n)
+      values.take(n)
+    end
+
+    def drop_n(values, n)
+      values.drop(n)
+    end
+    `)
+
+	// A count in (-1, 0) truncates toward zero, so it must be rejected by
+	// inspecting the original numeric sign rather than collapsing to take(0).
+	base := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+	requireCallErrorContains(t, script, "take_n", []Value{base, NewFloat(-0.5)}, CallOptions{}, "array.take attempted with negative size")
+	requireCallErrorContains(t, script, "drop_n", []Value{base, NewFloat(-0.5)}, CallOptions{}, "array.drop attempted with negative size")
+	requireCallErrorContains(t, script, "take_n", []Value{base, NewFloat(-2.9)}, CallOptions{}, "array.take attempted with negative size")
+	requireCallErrorContains(t, script, "drop_n", []Value{base, NewFloat(-2.9)}, CallOptions{}, "array.drop attempted with negative size")
+}
+
+func TestArrayTakeAndDropRejectNonFiniteCounts(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def take_n(values, n)
+      values.take(n)
+    end
+
+    def drop_n(values, n)
+      values.drop(n)
+    end
+    `)
+
+	// NaN and infinities cannot truncate to a valid count, so they must be
+	// rejected rather than producing undefined int conversions.
+	base := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+	nan := math.NaN()
+	posInf := math.Inf(1)
+	negInf := math.Inf(-1)
+	requireCallErrorContains(t, script, "take_n", []Value{base, NewFloat(nan)}, CallOptions{}, "array.take count must be integer")
+	requireCallErrorContains(t, script, "drop_n", []Value{base, NewFloat(nan)}, CallOptions{}, "array.drop count must be integer")
+	requireCallErrorContains(t, script, "take_n", []Value{base, NewFloat(posInf)}, CallOptions{}, "array.take count must be integer")
+	requireCallErrorContains(t, script, "drop_n", []Value{base, NewFloat(negInf)}, CallOptions{}, "array.drop count must be integer")
 }
 
 func TestArrayZip(t *testing.T) {
