@@ -56,31 +56,32 @@ func TestStringCasecmp(t *testing.T) {
 			want:   -1,
 		},
 		{
-			// Ruby folds 'A' down to 'a' (97) before comparing, so the
-			// bracket byte (91) sorts below the folded letter.
-			name:   "uppercase letter folds below punctuation bracket",
-			script: `def run() "[".casecmp("A") end`,
+			// Ruby folds 'a' up to 'A' (65) before comparing, so the bracket
+			// byte (91) sorts above the folded letter.
+			name:   "lowercase letter folds below punctuation bracket",
+			script: `def run() "a".casecmp("[") end`,
 			want:   -1,
 		},
 		{
-			// 'z' (122) keeps its value and sorts above the bracket (91).
-			name:   "lowercase letter orders above punctuation bracket",
-			script: `def run() "z".casecmp("[") end`,
-			want:   1,
+			// 'A' stays at 65 and sorts below the bracket (91).
+			name:   "uppercase letter orders below punctuation bracket",
+			script: `def run() "A".casecmp("[") end`,
+			want:   -1,
 		},
 		{
-			// 'A' folds to 'a' (97), which sorts above the underscore byte
-			// (95) sitting between 'Z' and 'a'. Folding upward instead would
-			// have placed 'A' (65) below the underscore and inverted this.
-			name:   "uppercase letter folds above underscore",
-			script: `def run() "A".casecmp("_") end`,
-			want:   1,
+			// 'a' folds to 'A' (65), which sorts below the underscore byte
+			// (95) sitting between 'Z' and 'a'. Folding downward instead would
+			// have placed 'a' (97) above the underscore and inverted this.
+			name:   "lowercase letter folds below underscore",
+			script: `def run() "a".casecmp("_") end`,
+			want:   -1,
 		},
 		{
-			// Backtick (96) sits just below 'a'; the folded letter wins.
-			name:   "uppercase letter folds above backtick",
-			script: `def run() "B".casecmp("` + "`" + `") end`,
-			want:   1,
+			// Backtick (96) sits just below 'a'; the folded letter (A=65)
+			// loses to the punctuation byte.
+			name:   "lowercase letter folds below backtick",
+			script: `def run() "b".casecmp("` + "`" + `") end`,
+			want:   -1,
 		},
 	}
 
@@ -348,10 +349,10 @@ func TestAsciiCaseCompare(t *testing.T) {
 		{name: "prefix_less", a: "abc", b: "abcd", want: -1},
 		{name: "empty_equal", a: "", b: "", want: 0},
 		{name: "empty_less", a: "", b: "a", want: -1},
-		{name: "uppercase_folds_below_bracket", a: "[", b: "A", want: -1},
-		{name: "lowercase_above_bracket", a: "z", b: "[", want: 1},
-		{name: "uppercase_folds_above_underscore", a: "A", b: "_", want: 1},
-		{name: "uppercase_folds_above_backtick", a: "B", b: "`", want: 1},
+		{name: "bracket_above_folded_letter", a: "[", b: "A", want: 1},
+		{name: "folded_letter_below_bracket", a: "z", b: "[", want: -1},
+		{name: "folded_letter_below_underscore", a: "A", b: "_", want: -1},
+		{name: "folded_letter_below_backtick", a: "B", b: "`", want: -1},
 		{name: "non_ascii_ordinal", a: "ä", b: "Ä", want: 1},
 	}
 
