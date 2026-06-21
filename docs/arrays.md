@@ -87,6 +87,31 @@ def summarize(players)
 end
 ```
 
+## Extrema
+
+- `min` / `max` return the smallest/largest element using the same comparison
+  semantics as `sort`. They return `nil` for an empty array.
+- `minmax` returns a `[min, max]` pair in one pass; an empty array yields
+  `[nil, nil]`.
+- `min_by { ... }` / `max_by { ... }` select the element whose block-derived key
+  is smallest/largest, mirroring `sort_by`. They return `nil` for an empty
+  array.
+
+Ties resolve to the first matching element. Mixing incomparable values (for
+example numbers with strings) raises an error, just like `sort`.
+
+```vibe
+def extents(scores, words)
+  {
+    lowest: scores.min,
+    highest: scores.max,
+    bounds: scores.minmax,
+    shortest: words.min_by { |w| w.length },
+    longest: words.max_by { |w| w.length }
+  }
+end
+```
+
 ## Set-like Operations
 
 Use `+` to concatenate and `-` to subtract values:
