@@ -557,6 +557,122 @@ func TestFloatDivByZeroFamilyStillRaises(t *testing.T) {
 	}
 }
 
+// TestNumericDivmodInfiniteDivisor verifies that Float#divmod accepts the
+// +/-Infinity divisors now produced by IEEE float division. The quotient is
+// Ruby's floored sign-aware ratio (0 when the operands share a sign or the
+// receiver is zero, -1 otherwise) and the modulo follows the divisor's sign,
+// matching MRI exactly. Before the fix the quotient recovery degenerated to
+// Inf/Inf = NaN and raised "result out of int64 range".
+func TestNumericDivmodInfiniteDivisor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		expr     string
+		quotient int64
+		modulo   float64 // checked only when modInf == 0
+		modInf   int     // +1, -1, or 0 when the modulo is finite
+	}{
+		{name: "pos receiver pos inf", expr: "1.0.divmod(1.0 / 0)", quotient: 0, modulo: 1.0},
+		{name: "pos receiver neg inf", expr: "1.0.divmod(-1.0 / 0)", quotient: -1, modInf: -1},
+		{name: "neg receiver pos inf", expr: "(-1.0).divmod(1.0 / 0)", quotient: -1, modInf: 1},
+		{name: "neg receiver neg inf", expr: "(-1.0).divmod(-1.0 / 0)", quotient: 0, modulo: -1.0},
+		{name: "zero receiver pos inf", expr: "0.0.divmod(1.0 / 0)", quotient: 0, modulo: 0.0},
+		{name: "zero receiver neg inf", expr: "0.0.divmod(-1.0 / 0)", quotient: 0, modulo: 0.0},
+		{name: "int receiver pos inf", expr: "5.divmod(1.0 / 0)", quotient: 0, modulo: 5.0},
+		{name: "fdiv infinite divisor", expr: "1.0.divmod((-1).fdiv(0))", quotient: -1, modInf: -1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := evalNumericExpr(t, tc.expr)
+			if got.Kind() != KindArray {
+				t.Fatalf("%s kind = %v, want array", tc.expr, got.Kind())
+			}
+			pair := got.Array()
+			if len(pair) != 2 {
+				t.Fatalf("%s length = %d, want 2", tc.expr, len(pair))
+			}
+			if pair[0].Kind() != KindInt || pair[0].Int() != tc.quotient {
+				t.Fatalf("%s quotient = %v, want int %d", tc.expr, pair[0], tc.quotient)
+			}
+			if pair[1].Kind() != KindFloat {
+				t.Fatalf("%s modulo kind = %v, want float", tc.expr, pair[1].Kind())
+			}
+			mod := pair[1].Float()
+			if tc.modInf != 0 {
+				if !math.IsInf(mod, tc.modInf) {
+					t.Fatalf("%s modulo = %v, want infinity with sign %d", tc.expr, mod, tc.modInf)
+				}
+				return
+			}
+			if mod != tc.modulo {
+				t.Fatalf("%s modulo = %v, want %v", tc.expr, mod, tc.modulo)
+			}
+		})
+	}
+}
+
+// TestNumericDivInfiniteDivisor verifies that Float#div returns Ruby's floored
+// integer quotient for an infinite divisor (always 0 for a finite receiver,
+// since the ratio is +/-0.0) rather than raising.
+func TestNumericDivInfiniteDivisor(t *testing.T) {
+	t.Parallel()
+
+	for _, expr := range []string{
+		"1.0.div(1.0 / 0)",
+		"1.0.div(-1.0 / 0)",
+		"(-1.0).div(1.0 / 0)",
+		"5.div(1.0 / 0)",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			got := evalNumericExpr(t, expr)
+			if got.Kind() != KindInt || got.Int() != 0 {
+				t.Fatalf("%s = %v, want int 0", expr, got)
+			}
+		})
+	}
+}
+
+// TestNumericModuloInfiniteDivisor verifies that Float#modulo (and %) follow
+// Ruby for an infinite divisor: the result is the receiver when the operands
+// share a sign and +/-Infinity (the divisor's sign) otherwise.
+func TestNumericModuloInfiniteDivisor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		expr    string
+		value   float64 // checked only when wantInf == 0
+		wantInf int
+	}{
+		{name: "pos receiver pos inf", expr: "1.0.modulo(1.0 / 0)", value: 1.0},
+		{name: "pos receiver neg inf", expr: "1.0.modulo(-1.0 / 0)", wantInf: -1},
+		{name: "neg receiver pos inf", expr: "(-1.0).modulo(1.0 / 0)", wantInf: 1},
+		{name: "neg receiver neg inf", expr: "(-1.0).modulo(-1.0 / 0)", value: -1.0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := evalNumericExpr(t, tc.expr)
+			if got.Kind() != KindFloat {
+				t.Fatalf("%s kind = %v, want float", tc.expr, got.Kind())
+			}
+			f := got.Float()
+			if tc.wantInf != 0 {
+				if !math.IsInf(f, tc.wantInf) {
+					t.Fatalf("%s = %v, want infinity with sign %d", tc.expr, f, tc.wantInf)
+				}
+				return
+			}
+			if f != tc.value {
+				t.Fatalf("%s = %v, want %v", tc.expr, f, tc.value)
+			}
+		})
+	}
+}
+
 // Non-finite floats produced by zero-division must not slip into index
 // coercion, and NaN must make ordering helpers fail rather than compare equal.
 func TestNonFiniteFloatRejectedInIndexAndSort(t *testing.T) {

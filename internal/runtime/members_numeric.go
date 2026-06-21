@@ -473,11 +473,25 @@ func numericDivmod(method string, receiver, divisor Value) (Value, error) {
 	if d == 0 {
 		return NewNil(), fmt.Errorf("%s by zero", method)
 	}
+	r := receiver.Float()
 	// Derive the modulo with the same floored math.Mod path as Numeric#modulo
-	// and %, then recover the quotient from it, so divmod's modulo matches the
-	// standalone modulo even for divisors that are not exactly representable.
-	modulo := flooredFloatMod(receiver.Float(), d)
-	quotient, err := floatToInt64Checked(math.Round((receiver.Float()-modulo)/d), method)
+	// and %, so divmod's modulo matches the standalone modulo even for divisors
+	// that are not exactly representable.
+	modulo := flooredFloatMod(r, d)
+	if math.IsInf(d, 0) && !math.IsInf(r, 0) && !math.IsNaN(r) {
+		// For a finite receiver and an infinite divisor the quotient-recovery
+		// formula below degenerates to Inf/Inf = NaN. Ruby's floored quotient is
+		// 0 when the operands share a sign (or the receiver is zero) and -1 when
+		// they differ, matching floor of the real-valued ratio. The modulo from
+		// flooredFloatMod already follows Ruby (+-Infinity or the receiver).
+		quotient := int64(0)
+		if r != 0 && (r < 0) != (d < 0) {
+			quotient = -1
+		}
+		return NewArray([]Value{NewInt(quotient), NewFloat(modulo)}), nil
+	}
+	// Recover the quotient from the modulo so divmod and modulo stay consistent.
+	quotient, err := floatToInt64Checked(math.Round((r-modulo)/d), method)
 	if err != nil {
 		return NewNil(), err
 	}
