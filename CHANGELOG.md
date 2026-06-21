@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Hardened CLI source-size enforcement.** `vibes run`, `vibes analyze`, and
+  `vibes test` now read each script through a single size-checked descriptor,
+  bounded at the engine's configured source-size limit, so an oversized file
+  (even one swapped or grown after the check) is rejected before it is loaded
+  fully into memory.
 - **Improved: Ruby-style `String#start_with?` and `String#end_with?`.** Both
   predicates now accept one or more string candidates and return true when any
   matches. Candidates are checked left to right and matching short-circuits like
