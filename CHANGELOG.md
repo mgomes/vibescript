@@ -15,7 +15,12 @@ All notable changes to this project will be documented in this file.
   infinite nor `NaN`). Special values print as `Infinity`, `-Infinity`, and
   `NaN`, and `JSON.stringify` continues to reject non-finite floats because JSON
   has no representation for them. `div`, `divmod`, `modulo`, and `remainder` keep
-  raising on a zero divisor, matching Ruby.
+  raising on a zero divisor, matching Ruby. Comparisons follow IEEE 754:
+  comparisons against `NaN` are unordered, so `<`, `<=`, `>`, and `>=` return
+  `false` and the spaceship operator `<=>` returns `nil`. Coercing a non-finite
+  float to an integer now raises rather than silently yielding a garbage value,
+  so a `NaN`/`Infinity` range endpoint, `money_cents` amount, or duration operand
+  reports a clear error.
 - **Added: Ruby-style numeric rounding precision.** `Float#round`, `Float#floor`,
   and `Float#ceil` now accept an optional Integer precision: positive `ndigits`
   keep the value a float rounded to that many fractional digits, while zero or

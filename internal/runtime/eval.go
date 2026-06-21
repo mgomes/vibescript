@@ -352,9 +352,14 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 	case tokenGTE:
 		return compareValues(left, right, func(c int) bool { return c >= 0 })
 	case tokenSpaceship:
-		order, err := compareValueOrder(left, right)
+		order, ordered, err := compareValueOrder(left, right)
 		if err != nil {
 			return NewNil(), exec.wrapError(err, pos)
+		}
+		// Unordered operands (a NaN on either side) make the spaceship operator
+		// return nil, matching Ruby's `(0.0 / 0.0) <=> 1.0`.
+		if !ordered {
+			return NewNil(), nil
 		}
 		return NewInt(int64(order)), nil
 	default:

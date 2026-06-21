@@ -417,6 +417,14 @@ Integer division by zero (`1 / 0`) still raises. Special values print as
 integer-valued results, for which Ruby also raises). `JSON.stringify` rejects
 non-finite floats because JSON has no representation for them.
 
+Comparisons follow IEEE 754 and Ruby. Infinities order as the extreme values
+(`Infinity > 1000000.0`). Any comparison involving `NaN` is unordered: `<`,
+`<=`, `>`, and `>=` all return `false`, equality is `false` (so `NaN == NaN` is
+`false`), and the spaceship operator `<=>` returns `nil`. Coercing a non-finite
+float to an integer raises rather than silently producing a garbage value, so
+a `NaN` or `Infinity` endpoint in a range, a non-finite `money_cents` amount, or
+non-finite duration arithmetic reports a clear error.
+
 `round`, `floor`, and `ceil` accept an optional Integer precision that defaults
 to `0`. As in Ruby, the precision must fit a 32-bit signed integer, so a
 magnitude beyond that range raises rather than acting as a no-op. Whenever the

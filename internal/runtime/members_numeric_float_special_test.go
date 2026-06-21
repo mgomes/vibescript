@@ -281,10 +281,23 @@ func TestFloatSpecialValueComparisons(t *testing.T) {
 		{"(1.0 / 0) > 1000000.0", true},
 		{"(1.0 / 0) > (1.0 / 0)", false},
 		{"(-1.0 / 0) < (-1000000.0)", true},
+		{"(1.0 / 0) <= (1.0 / 0)", true}, // same infinity compares <=
+		{"(1.0 / 0) >= 1000000.0", true}, // +Infinity is the greatest value
+		{"(-1.0 / 0) <= (-1000000.0)", true},
 		{"(1.0 / 0) == (1.0 / 0)", true}, // same infinity compares equal
 		{"(0.0 / 0.0) == (0.0 / 0.0)", false},
 		{"(0.0 / 0.0) < 1.0", false},
 		{"(0.0 / 0.0) > 1.0", false},
+		// Every ordered comparison with NaN is false (IEEE 754 / Ruby), including
+		// the inclusive operators that route through the shared ordering helper.
+		{"(0.0 / 0.0) <= 1.0", false},
+		{"(0.0 / 0.0) >= 1.0", false},
+		{"1.0 <= (0.0 / 0.0)", false},
+		{"1.0 >= (0.0 / 0.0)", false},
+		{"(0.0 / 0.0) <= (0.0 / 0.0)", false},
+		{"(0.0 / 0.0) >= (0.0 / 0.0)", false},
+		{"(0.0.fdiv(0)) <= 1.0", false},
+		{"(0.0.fdiv(0)) >= 1.0", false},
 		{"(0.0 / 0.0) != (0.0 / 0.0)", true},
 	}
 
@@ -300,6 +313,53 @@ func TestFloatSpecialValueComparisons(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFloatSpaceshipUnorderedReturnsNil verifies that `<=>` returns nil whenever
+// a NaN appears on either side, matching Ruby's IEEE-faithful spaceship, while
+// finite and infinite operands still produce -1/0/1.
+func TestFloatSpaceshipUnorderedReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil for nan operands", func(t *testing.T) {
+		t.Parallel()
+		exprs := []string{
+			"(0.0 / 0.0) <=> 1.0",
+			"1.0 <=> (0.0 / 0.0)",
+			"(0.0 / 0.0) <=> (0.0 / 0.0)",
+			"(0.0.fdiv(0)) <=> 1.0",
+		}
+		for _, expr := range exprs {
+			got := evalNumericExpr(t, expr)
+			if got.Kind() != KindNil {
+				t.Fatalf("%s = %v (kind %v), want nil", expr, got, got.Kind())
+			}
+		}
+	})
+
+	t.Run("ordered operands still yield integers", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			expr string
+			want int64
+		}{
+			{"1.0 <=> 2.0", -1},
+			{"2.0 <=> 2.0", 0},
+			{"3.0 <=> 2.0", 1},
+			{"(1.0 / 0) <=> 1000000.0", 1},
+			{"(-1.0 / 0) <=> 1000000.0", -1},
+			{"(1.0 / 0) <=> (1.0 / 0)", 0},
+		}
+		for _, tc := range tests {
+			got := evalNumericExpr(t, tc.expr)
+			if got.Kind() != KindInt {
+				t.Fatalf("%s = %v (kind %v), want int %d", tc.expr, got, got.Kind(), tc.want)
+			}
+			if got.Int() != tc.want {
+				t.Fatalf("%s = %d, want %d", tc.expr, got.Int(), tc.want)
+			}
+		}
+	})
 }
 
 // TestFloatSpecialValueStaysFloat verifies that special values keep the float
@@ -398,6 +458,77 @@ func TestFloatSpecialValueJSONErrorMessageUsesRubySpelling(t *testing.T) {
 		t.Fatal("JSON.stringify(Infinity) succeeded, want error")
 	}
 	requireErrorContains(t, err, "Infinity")
+}
+
+// TestNonFiniteFloatRejectedAtIntegerCoercion guards every site that coerces a
+// float to int64: a NaN or Infinity created by the new IEEE division must error
+// rather than silently flowing in as a garbage int64. This covers range
+// endpoints, money_cents, and duration arithmetic.
+func TestNonFiniteFloatRejectedAtIntegerCoercion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "range start nan", expr: "(0.0 / 0.0)..1", want: "cannot convert NaN to integer"},
+		{name: "range end nan", expr: "1..(0.0 / 0.0)", want: "cannot convert NaN to integer"},
+		{name: "range start infinity", expr: "(1.0 / 0)..1", want: "cannot convert Infinity to integer"},
+		{name: "range end neg infinity", expr: "1..(-1.0 / 0)", want: "cannot convert -Infinity to integer"},
+		{name: "money_cents nan", expr: `money_cents(0.0 / 0.0, "USD")`, want: "money_cents expects integer cents"},
+		{name: "money_cents infinity", expr: `money_cents(1.0 / 0, "USD")`, want: "money_cents expects integer cents"},
+		{name: "duration plus nan", expr: "5.seconds + (0.0 / 0.0)", want: "cannot convert NaN to integer"},
+		{name: "duration plus infinity", expr: "5.seconds + (1.0 / 0)", want: "cannot convert Infinity to integer"},
+		{name: "nan plus duration", expr: "(0.0 / 0.0) + 5.seconds", want: "cannot convert NaN to integer"},
+		{name: "duration times infinity", expr: "5.seconds * (1.0 / 0)", want: "cannot convert Infinity to integer"},
+		{name: "duration over nan", expr: "5.seconds / (0.0 / 0.0)", want: "cannot convert NaN to integer"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+// TestFiniteFloatStillCoercesAtIntegerSites confirms the hardened coercion path
+// keeps truncating ordinary finite floats toward zero rather than rejecting
+// them, so existing programs that pass float endpoints keep working.
+func TestFiniteFloatStillCoercesAtIntegerSites(t *testing.T) {
+	t.Parallel()
+
+	t.Run("range truncates float endpoints", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, "def run()\n  out = []\n  for i in 1.9..4.2\n    out = out.push(i)\n  end\n  out\nend")
+		got := callFunc(t, script, "run", nil)
+		if got.Kind() != KindArray {
+			t.Fatalf("range iteration kind = %v, want array", got.Kind())
+		}
+		arr := got.Array()
+		want := []int64{1, 2, 3, 4}
+		if len(arr) != len(want) {
+			t.Fatalf("range iteration = %v, want %v", arr, want)
+		}
+		for i, w := range want {
+			if arr[i].Kind() != KindInt || arr[i].Int() != w {
+				t.Fatalf("range iteration[%d] = %v, want %d", i, arr[i], w)
+			}
+		}
+	})
+
+	t.Run("money_cents truncates float cents", func(t *testing.T) {
+		t.Parallel()
+		got := evalNumericExpr(t, `money_cents(2550.9, "USD")`)
+		if got.Kind() != KindMoney {
+			t.Fatalf("money_cents kind = %v, want money", got.Kind())
+		}
+		if cents := got.Money().Cents(); cents != 2550 {
+			t.Fatalf("money_cents cents = %d, want 2550", cents)
+		}
+	})
 }
 
 // TestFloatDivByZeroFamilyStillRaises confirms that the floored/integer-valued

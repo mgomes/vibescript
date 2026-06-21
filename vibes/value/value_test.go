@@ -694,6 +694,11 @@ func TestValueToInt64(t *testing.T) {
 		{name: "negative_float_truncates", val: value.NewFloat(-3.9), want: -3},
 		{name: "string", val: value.NewString("42"), wantErr: "expected integer value"},
 		{name: "nil", val: value.NewNil(), wantErr: "expected integer value"},
+		{name: "nan", val: value.NewFloat(math.NaN()), wantErr: "cannot convert NaN to integer"},
+		{name: "positive_infinity", val: value.NewFloat(math.Inf(1)), wantErr: "cannot convert Infinity to integer"},
+		{name: "negative_infinity", val: value.NewFloat(math.Inf(-1)), wantErr: "cannot convert -Infinity to integer"},
+		{name: "overflow_high", val: value.NewFloat(1e19), wantErr: "float 1e+19 is out of integer range"},
+		{name: "overflow_low", val: value.NewFloat(-1e19), wantErr: "float -1e+19 is out of integer range"},
 	}
 
 	for _, tc := range tests {
