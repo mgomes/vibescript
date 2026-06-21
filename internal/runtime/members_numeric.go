@@ -508,10 +508,22 @@ func numericRemainder(method string, receiver, divisor Value) (Value, error) {
 		}
 		return NewInt(receiver.Int() % divisor.Int()), nil
 	}
-	if divisor.Float() == 0 {
+	d := divisor.Float()
+	if d == 0 {
 		return NewNil(), fmt.Errorf("%s by zero", method)
 	}
-	return NewFloat(math.Mod(receiver.Float(), divisor.Float())), nil
+	r := receiver.Float()
+	if math.IsInf(d, 0) && !math.IsInf(r, 0) && !math.IsNaN(r) {
+		// Ruby's remainder follows the dividend's sign (truncated division):
+		// an infinite divisor leaves a finite dividend unchanged when their
+		// signs agree (or the dividend is zero) and yields NaN otherwise.
+		// math.Mod would instead return the dividend regardless of sign.
+		if r == 0 || math.Signbit(r) == math.Signbit(d) {
+			return NewFloat(r), nil
+		}
+		return NewFloat(math.NaN()), nil
+	}
+	return NewFloat(math.Mod(r, d)), nil
 }
 
 // numericModulo implements Ruby's modulo (the % operator): the result takes

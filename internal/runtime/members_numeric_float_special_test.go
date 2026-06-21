@@ -697,3 +697,44 @@ func TestNonFiniteFloatRejectedInIndexAndSort(t *testing.T) {
 		})
 	}
 }
+
+// Numeric#remainder follows the dividend's sign, so an infinite divisor leaves
+// a finite dividend unchanged when signs agree and yields NaN otherwise
+// (matching Ruby, and unlike modulo which yields the signed infinity).
+func TestNumericRemainderInfiniteDivisor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		expr    string
+		value   float64 // checked when !wantNaN
+		wantNaN bool
+	}{
+		{name: "pos receiver pos inf returns receiver", expr: "1.0.remainder(1.0 / 0)", value: 1.0},
+		{name: "pos receiver neg inf is NaN", expr: "1.0.remainder(-1.0 / 0)", wantNaN: true},
+		{name: "neg receiver pos inf is NaN", expr: "(-1.0).remainder(1.0 / 0)", wantNaN: true},
+		{name: "neg receiver neg inf returns receiver", expr: "(-1.0).remainder(-1.0 / 0)", value: -1.0},
+		{name: "fractional receiver pos inf returns receiver", expr: "2.5.remainder(1.0 / 0)", value: 2.5},
+		{name: "zero receiver pos inf is zero", expr: "0.0.remainder(1.0 / 0)", value: 0.0},
+		{name: "infinite receiver finite divisor is NaN", expr: "(1.0 / 0).remainder(2.0)", wantNaN: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := evalNumericExpr(t, tc.expr)
+			if got.Kind() != KindFloat {
+				t.Fatalf("%s kind = %v, want float", tc.expr, got.Kind())
+			}
+			f := got.Float()
+			if tc.wantNaN {
+				if !math.IsNaN(f) {
+					t.Fatalf("%s = %v, want NaN", tc.expr, f)
+				}
+				return
+			}
+			if f != tc.value {
+				t.Fatalf("%s = %v, want %v", tc.expr, f, tc.value)
+			}
+		})
+	}
+}
