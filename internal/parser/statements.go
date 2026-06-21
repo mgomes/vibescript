@@ -337,13 +337,16 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 			return nil
 		}
 		p.nextToken()
-		// The rescue binding introduces a local in the surrounding scope, so
-		// register it before parsing the rescue body for name-sensitive
-		// parsing decisions such as percent-literal vs modulo disambiguation.
+		// The rescue binding is visible only inside the rescue body: at
+		// runtime it lives in a child env and is undefined afterward. Scope it
+		// to a child scope that still sees surrounding locals, so percent vs
+		// modulo disambiguation is correct both inside and after the handler.
+		p.pushLocalScope(nil, false)
 		if rescueBinding != "" {
 			p.declareLocal(rescueBinding)
 		}
 		rescueBody = p.parseBlock(ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+		p.popLocalScope()
 	}
 
 	var elseBody []ast.Statement
@@ -568,8 +571,11 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 		p.nextToken()
 	}
 	p.pushLocalScope(params, true)
+	// Keep the function scope active through any rescue/else/ensure tail so
+	// the tail still resolves function-body locals for name-sensitive
+	// parsing such as percent-literal vs modulo disambiguation.
+	defer p.popLocalScope()
 	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
-	p.popLocalScope()
 	switch p.curToken.Type {
 	case ast.TokenRescue, ast.TokenElse, ast.TokenEnsure:
 		tryStmt := p.parseRescueElseEnsureTail(pos, body, "function")

@@ -484,6 +484,81 @@ end`
 	}
 }
 
+// A function-level rescue tail is still inside the function scope, so it
+// resolves function-body locals and parses the percent literal as modulo.
+func TestParserFunctionRescueTailSeesFunctionLocalsForPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  w = [3]
+rescue
+  total %w[0]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 1 {
+		t.Fatalf("function body has %d statements, want 1 try statement", len(body))
+	}
+	tryStmt, ok := body[0].(*ast.TryStmt)
+	if !ok {
+		t.Fatalf("body[0] = %T, want *ast.TryStmt", body[0])
+	}
+
+	wantRescueBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "total"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantRescueBody, tryStmt.Rescue, astCmpOpts); diff != "" {
+		t.Fatalf("rescue body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A rescue binding is scoped to the rescue body only; after the handler the
+// name is no longer local, so a later percent literal is a parenless call.
+func TestParserRescueBindingDoesNotLeakAfterHandler(t *testing.T) {
+	t.Parallel()
+
+	source := `begin
+  1
+rescue => collect
+  2
+end
+collect %w[ok]`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	if len(got.Statements) != 2 {
+		t.Fatalf("parseSource returned %d statements, want 2", len(got.Statements))
+	}
+
+	wantStmt := &ast.ExprStmt{Expr: &ast.CallExpr{
+		Callee: &ast.Identifier{Name: "collect"},
+		Args: []ast.Expression{
+			&ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "ok"},
+			}},
+		},
+		KwArgs: []ast.KeywordArg{},
+	}}
+	if diff := cmp.Diff(wantStmt, got.Statements[1], astCmpOpts); diff != "" {
+		t.Fatalf("post-rescue statement mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
 	t.Parallel()
 
