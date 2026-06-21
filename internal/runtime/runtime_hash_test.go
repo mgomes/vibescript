@@ -77,6 +77,138 @@ func TestHashMergeAndKeys(t *testing.T) {
 	compareArrays(t, keys, wantKeys)
 }
 
+func TestHashMergeConflictBlock(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def resolve()
+      { a: 1, b: 2 }.merge({ a: 10, c: 3 }) do |key, old, new|
+        old + new
+      end
+    end
+
+    def receives_symbol_key()
+      seen = nil
+      { a: 1 }.merge({ a: 2 }) do |key, old, new|
+        seen = key
+        old
+      end
+      seen
+    end
+
+    def string_keys()
+      { "a" => 1 }.merge({ "a" => 10, "b" => 5 }) do |key, old, new|
+        old + new
+      end
+    end
+
+    def mixed_symbol_string_keys()
+      { a: 1 }.merge({ "a" => 10 }) do |key, old, new|
+        old + new
+      end
+    end
+
+    def arity_one_block()
+      { a: 1, b: 2 }.merge({ a: 9 }) do |key|
+        key
+      end
+    end
+
+    def blockless_incoming_wins()
+      { a: 1, b: 2 }.merge({ a: 10 })
+    end
+
+    def block_left_unchanged_when_no_conflict()
+      { a: 1 }.merge({ b: 2 }) do |key, old, new|
+        99
+      end
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want any
+	}{
+		{
+			name: "conflicting keys call block and non-conflicting keys pass through",
+			fn:   "resolve",
+			want: map[string]Value{"a": NewInt(11), "b": NewInt(2), "c": NewInt(3)},
+		},
+		{
+			name: "block receives the key as a symbol",
+			fn:   "receives_symbol_key",
+			want: NewSymbol("a"),
+		},
+		{
+			name: "string keys collide using their string form",
+			fn:   "string_keys",
+			want: map[string]Value{"a": NewInt(11), "b": NewInt(5)},
+		},
+		{
+			name: "symbol and string keys with the same name collide",
+			fn:   "mixed_symbol_string_keys",
+			want: map[string]Value{"a": NewInt(11)},
+		},
+		{
+			name: "block with fewer params defaults extra args away",
+			fn:   "arity_one_block",
+			want: map[string]Value{"a": NewSymbol("a"), "b": NewInt(2)},
+		},
+		{
+			name: "no block keeps the incoming hash winning",
+			fn:   "blockless_incoming_wins",
+			want: map[string]Value{"a": NewInt(10), "b": NewInt(2)},
+		},
+		{
+			name: "keys present on one side never invoke the block",
+			fn:   "block_left_unchanged_when_no_conflict",
+			want: map[string]Value{"a": NewInt(1), "b": NewInt(2)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tt.fn, nil)
+			switch want := tt.want.(type) {
+			case map[string]Value:
+				if got.Kind() != KindHash {
+					t.Fatalf("expected hash, got %v", got.Kind())
+				}
+				compareHash(t, got.Hash(), want)
+			case Value:
+				if !got.Equal(want) {
+					t.Fatalf("value mismatch: got %v want %v", got, want)
+				}
+			default:
+				t.Fatalf("unhandled want type %T", tt.want)
+			}
+		})
+	}
+}
+
+func TestHashMergeRejectsMisuse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{name: "no arguments", source: "def run() { a: 1 }.merge() end", wantErr: "hash.merge expects a single hash argument"},
+		{name: "too many arguments", source: "def run() { a: 1 }.merge({ b: 2 }, { c: 3 }) end", wantErr: "hash.merge expects a single hash argument"},
+		{name: "non-hash argument", source: "def run() { a: 1 }.merge(5) end", wantErr: "hash.merge expects a single hash argument"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.wantErr)
+		})
+	}
+}
+
 func TestQuotedHashLiteralKeys(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

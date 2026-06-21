@@ -278,6 +278,10 @@ methods.
 ### Transform and Filter
 
 - `merge(other) -> hash` – combined entries; `other` wins on key conflicts.
+- `merge(other) { |key, old_value, new_value| } -> hash` – combined entries; for
+  keys present in both hashes the block resolves the conflict and its result is
+  stored. Keys present on only one side are copied without invoking the block,
+  and the conflict key is yielded as a symbol.
 - `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
   receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
 - `slice(*keys) -> hash` – only the listed keys (missing keys are skipped).
