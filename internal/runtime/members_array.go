@@ -298,6 +298,9 @@ func arrayMemberExtrema(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.minmax does not take arguments")
 			}
+			if valueBlock(block) != nil {
+				return NewNil(), fmt.Errorf("array.minmax does not accept a block")
+			}
 			arr := receiver.Array()
 			if len(arr) == 0 {
 				return NewArray([]Value{NewNil(), NewNil()}), nil
@@ -339,6 +342,9 @@ func arrayMemberMinMax(name string, wantMax bool) Value {
 	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if len(args) > 0 {
 			return NewNil(), fmt.Errorf("%s does not take arguments", name)
+		}
+		if valueBlock(block) != nil {
+			return NewNil(), fmt.Errorf("%s does not accept a block; use min_by or max_by for block-based selection", name)
 		}
 		arr := receiver.Array()
 		if len(arr) == 0 {

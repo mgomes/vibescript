@@ -190,6 +190,29 @@ func TestArrayExtremaRejectArguments(t *testing.T) {
 	requireCallErrorContains(t, script, "max_by_args", nil, CallOptions{}, "array.max_by does not take arguments")
 }
 
+// min/max/minmax use natural ordering only; a comparator block is rejected
+// rather than silently ignored. Block-based selection is min_by/max_by.
+func TestArrayExtremaRejectBlocks(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def min_block()
+      [1, 2].min { |a, b| b - a }
+    end
+
+    def max_block()
+      [1, 2].max { |a, b| b - a }
+    end
+
+    def minmax_block()
+      [1, 2].minmax { |a, b| b - a }
+    end
+    `)
+
+	requireCallErrorContains(t, script, "min_block", nil, CallOptions{}, "array.min does not accept a block")
+	requireCallErrorContains(t, script, "max_block", nil, CallOptions{}, "array.max does not accept a block")
+	requireCallErrorContains(t, script, "minmax_block", nil, CallOptions{}, "array.minmax does not accept a block")
+}
+
 func TestArrayExtremaByRequiresBlock(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
