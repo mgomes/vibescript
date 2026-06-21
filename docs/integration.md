@@ -126,6 +126,14 @@ Adapters receive the invocation `context.Context`, making it straightforward to
 apply deadlines, tracing spans, or other host-specific policy without hand
 wiring builtins.
 
+Embedders that parse enqueue keywords directly should call
+`jobqueue.ParseEnqueueOptions`. It validates `delay`/`key` and rejects any extra
+keyword that is not data-only or that contains cyclic references, then
+deep-clones the survivors into `JobQueueEnqueueOptions.Kwargs`. The runtime
+adapter, which already enforces the data-only contract before parsing, uses the
+`jobqueue.ParseEnqueueOptionsValidated` fast path so the option graph is not
+walked twice; direct callers should prefer the safe `ParseEnqueueOptions`.
+
 ### First-Party Capability Helpers
 
 Vibescript ships capability helpers for common integration points:

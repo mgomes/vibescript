@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Hardened the public jobqueue option parser.** `jobqueue.ParseEnqueueOptions`
+  now rejects extra enqueue keywords that are not data-only or that contain
+  cyclic references instead of cloning them through to the host, closing a
+  contract gap for embedders that call it directly. A new
+  `jobqueue.ParseEnqueueOptionsValidated` fast path lets the runtime adapter skip
+  the redundant walk when it has already enforced the contract, and the carved
+  package gained direct unit tests for constructor validation, retry detection,
+  option parsing, cloning, and invalid/cyclic values.
 - **Added: `Time#round` precision argument.** `Time#round` now accepts an
   optional Ruby-style `ndigits` (defaulting to `0`) so `round(3)` and `round(6)`
   produce millisecond and microsecond precision, with non-negative `Integer`
