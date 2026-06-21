@@ -158,20 +158,26 @@ Reverses characters:
 "héllo".reverse # "olléh"
 ```
 
-### `start_with?(prefix)`
+### `start_with?(*prefixes)`
 
-Returns true if the string starts with `prefix`:
+Returns true if the string starts with any of the given prefixes. Requires at
+least one prefix, and every prefix must be a string:
 
 ```vibe
-"vibescript".start_with?("vibe") # true
+"vibescript".start_with?("vibe")        # true
+"vibescript".start_with?("x", "vibe")   # true
+"vibescript".start_with?("x", "script") # false
 ```
 
-### `end_with?(suffix)`
+### `end_with?(*suffixes)`
 
-Returns true if the string ends with `suffix`:
+Returns true if the string ends with any of the given suffixes. Requires at
+least one suffix, and every suffix must be a string:
 
 ```vibe
-"vibescript".end_with?("script") # true
+"vibescript".end_with?("script")        # true
+"vibescript".end_with?("x", "script")   # true
+"vibescript".end_with?("x", "vibe")     # false
 ```
 
 ### `include?(substring)`
