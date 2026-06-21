@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: Ruby-style float special values and division-by-zero behavior.** Float
+  division by zero with the `/` operator (and `Float#fdiv`/`Integer#fdiv`) now
+  follows IEEE 754 like Ruby instead of raising: a finite nonzero numerator
+  yields `Infinity` or `-Infinity` and a zero numerator yields `NaN`. Integer
+  division by zero (`1 / 0`) still raises, matching Ruby's `ZeroDivisionError`.
+  Floats gained `nan?` (true only for `NaN`), `infinite?` (`1` for `Infinity`,
+  `-1` for `-Infinity`, `nil` otherwise), and `finite?` (true when neither
+  infinite nor `NaN`). Special values print as `Infinity`, `-Infinity`, and
+  `NaN`, and `JSON.stringify` continues to reject non-finite floats because JSON
+  has no representation for them. `div`, `divmod`, `modulo`, and `remainder` keep
+  raising on a zero divisor, matching Ruby.
 - **Added: Ruby-style numeric rounding precision.** `Float#round`, `Float#floor`,
   and `Float#ceil` now accept an optional Integer precision: positive `ndigits`
   keep the value a float rounded to that many fractional digits, while zero or
@@ -18,11 +29,11 @@ All notable changes to this project will be documented in this file.
   `div` (floored division returning an integer), `divmod` (the floored quotient
   paired with the divisor-signed modulo), `fdiv` (floating division), and
   `remainder` (truncated-division remainder whose sign follows the receiver, so
-  it differs from `%` for mixed-sign operands). A zero divisor errors for all
-  four, and quotients outside the 64-bit range error rather than wrapping. Ruby's
-  `fdiv` infinity result is intentionally an error instead, matching the `/`
-  operator, and `quo` is intentionally omitted because Vibescript has no rational
-  number type.
+  it differs from `%` for mixed-sign operands). A zero divisor errors for `div`,
+  `divmod`, and `remainder`, and quotients outside the 64-bit range error rather
+  than wrapping. `fdiv` follows IEEE 754 on a zero divisor like the `/` operator
+  (see the float special-value entry below), and `quo` is intentionally omitted
+  because Vibescript has no rational number type.
 - **Added: Ruby-style `String#casecmp` and `String#casecmp?`.** `casecmp`
   case-insensitively compares two strings (folding only ASCII letters and
   comparing other bytes ordinally) and returns `-1`, `0`, `1`, or `nil` for a

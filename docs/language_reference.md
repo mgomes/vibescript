@@ -234,10 +234,14 @@ Exponentiation with `**` is right-associative and binds more tightly than
 unary `-`, so `-2 ** 2` is parsed as `-(2 ** 2)`. Integer powers stay `int`
 when the exponent is non-negative and the result fits in 64 bits; mixed
 numeric powers and negative integer exponents return `float`. Integer
-overflow and non-finite float powers raise runtime errors. `not` has the same
-prefix precedence as `!`, `and` has the same precedence as `&&`, and `or` has
-the same precedence as `||`. Ternary conditionals have lower precedence than
-`or`, associate to the right, and evaluate only the selected branch.
+overflow and non-finite float powers raise runtime errors. Division follows
+Ruby: integer division by zero (`1 / 0`) raises, while float division by zero
+(`1.0 / 0`) follows IEEE 754 and yields `Infinity`, `-Infinity`, or `NaN`.
+Inspect those special values with `Float#nan?`, `Float#infinite?`, and
+`Float#finite?`. `not` has the same prefix precedence as `!`, `and` has the same
+precedence as `&&`, and `or` has the same precedence as `||`. Ternary
+conditionals have lower precedence than `or`, associate to the right, and
+evaluate only the selected branch.
 
 ## Control Flow
 
