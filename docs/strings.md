@@ -191,19 +191,21 @@ Returns true when `substring` appears in the string:
 ### `casecmp(other)`
 
 Case-insensitively compares two strings, returning `-1`, `0`, or `1`. Each ASCII
-letter `a`-`z` is folded up to its uppercase form before the byte comparison;
+letter `A`-`Z` is folded down to its lowercase form before the byte comparison;
 every other byte (including multibyte UTF-8 sequences) is compared ordinally,
-matching Ruby's `String#casecmp`. Folding upward keeps the punctuation bytes
-between `Z` and `a` (`[`, `\`, `]`, `^`, `_`, and `` ` ``) ordered as Ruby orders
-them, so `"[".casecmp("A")` is `1` rather than `-1`. Returns `nil` when `other`
-is not a string:
+matching Ruby's `String#casecmp` (which applies an ASCII `TOLOWER` to each side
+in Ruby 2.7 and later). Folding downward keeps the punctuation bytes between `Z`
+and `a` (`[`, `\`, `]`, `^`, `_`, and `` ` ``) ordered as Ruby orders them: because
+uppercase letters fold into the `a`-`z` range, those punctuation bytes sort below
+the folded letters, so `"[".casecmp("A")` is `-1` rather than `1`. Returns `nil`
+when `other` is not a string:
 
 ```vibe
 "abc".casecmp("ABC") # 0
 "abc".casecmp("ABD") # -1
 "abd".casecmp("ABC") # 1
-"[".casecmp("A")     # 1
-"z".casecmp("[")     # -1
+"[".casecmp("A")     # -1
+"z".casecmp("[")     # 1
 "abc".casecmp(1)     # nil
 ```
 

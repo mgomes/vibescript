@@ -56,32 +56,41 @@ func TestStringCasecmp(t *testing.T) {
 			want:   -1,
 		},
 		{
-			// Ruby folds 'a' up to 'A' (65) before comparing, so the bracket
-			// byte (91) sorts above the folded letter.
-			name:   "lowercase letter folds below punctuation bracket",
+			// Ruby folds via ASCII TOLOWER, so 'a' stays at 97 and sorts above
+			// the bracket byte (91) sitting between 'Z' and 'a'.
+			name:   "lowercase letter orders above punctuation bracket",
 			script: `def run() "a".casecmp("[") end`,
-			want:   -1,
+			want:   1,
 		},
 		{
-			// 'A' stays at 65 and sorts below the bracket (91).
-			name:   "uppercase letter orders below punctuation bracket",
+			// 'A' folds down to 'a' (97), which sorts above the bracket (91).
+			// Folding upward would have left 'A' at 65 and inverted this.
+			name:   "uppercase letter folds above punctuation bracket",
 			script: `def run() "A".casecmp("[") end`,
+			want:   1,
+		},
+		{
+			// Ruby returns -1 here: the lone bracket (91) folds to itself and
+			// sorts below 'A' folded down to 'a' (97). This is the case the
+			// Codex review flagged.
+			name:   "punctuation bracket orders below folded uppercase letter",
+			script: `def run() "[".casecmp("A") end`,
 			want:   -1,
 		},
 		{
-			// 'a' folds to 'A' (65), which sorts below the underscore byte
-			// (95) sitting between 'Z' and 'a'. Folding downward instead would
-			// have placed 'a' (97) above the underscore and inverted this.
-			name:   "lowercase letter folds below underscore",
+			// 'a' stays at 97 and sorts above the underscore byte (95) sitting
+			// between 'Z' and 'a'. Folding upward to 'A' (65) would have placed
+			// the letter below the underscore and inverted this.
+			name:   "lowercase letter orders above underscore",
 			script: `def run() "a".casecmp("_") end`,
-			want:   -1,
+			want:   1,
 		},
 		{
-			// Backtick (96) sits just below 'a'; the folded letter (A=65)
-			// loses to the punctuation byte.
-			name:   "lowercase letter folds below backtick",
+			// Backtick (96) sits just below 'a'; the letter (97, unchanged by
+			// downward folding) wins against the punctuation byte.
+			name:   "lowercase letter orders above backtick",
 			script: `def run() "b".casecmp("` + "`" + `") end`,
-			want:   -1,
+			want:   1,
 		},
 	}
 
@@ -349,10 +358,11 @@ func TestAsciiCaseCompare(t *testing.T) {
 		{name: "prefix_less", a: "abc", b: "abcd", want: -1},
 		{name: "empty_equal", a: "", b: "", want: 0},
 		{name: "empty_less", a: "", b: "a", want: -1},
-		{name: "bracket_above_folded_letter", a: "[", b: "A", want: 1},
-		{name: "folded_letter_below_bracket", a: "z", b: "[", want: -1},
-		{name: "folded_letter_below_underscore", a: "A", b: "_", want: -1},
-		{name: "folded_letter_below_backtick", a: "B", b: "`", want: -1},
+		{name: "bracket_below_folded_letter", a: "[", b: "A", want: -1},
+		{name: "folded_letter_above_bracket", a: "z", b: "[", want: 1},
+		{name: "folded_letter_above_underscore", a: "A", b: "_", want: 1},
+		{name: "folded_letter_above_backtick", a: "B", b: "`", want: 1},
+		{name: "uppercase_folds_above_bracket", a: "A", b: "[", want: 1},
 		{name: "non_ascii_ordinal", a: "ä", b: "Ä", want: 1},
 	}
 
