@@ -116,7 +116,9 @@ end
   use index assignment (`hash[key] = value`) when you want to mutate in place.
 - `compact` removes `nil` values.
 - `slice(*keys)` keeps only selected keys.
-- `except(*keys)` removes selected keys.
+- `except(*keys)` removes selected keys. Keys whose type cannot be a hash key
+  (anything other than a symbol or string) are treated as misses and ignored, so
+  the surrounding entries are preserved.
 - `select` / `reject` with a block.
 - `transform_keys` / `transform_values` with a block.
 - `deep_transform_keys` for recursive key mapping across nested hashes/arrays.
