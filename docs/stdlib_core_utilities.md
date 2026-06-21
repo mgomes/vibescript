@@ -322,9 +322,11 @@ aliases, so `1.second` reads naturally.
 - `ceil(ndigits = 0) -> int` – like `round`, but negative `ndigits` round
   toward positive infinity (`1234.ceil(-2)` is `1300`).
 
-`round`, `floor`, and `ceil` accept an optional Integer precision. Results that
-leave the 64-bit integer range raise an error rather than widening like Ruby's
-arbitrary-precision integers.
+`round`, `floor`, and `ceil` accept an optional Integer precision. As in Ruby,
+the precision must fit a 32-bit signed integer (Ruby reads it through `NUM2INT`),
+so a magnitude beyond that range raises rather than acting as a no-op. Results
+that leave the 64-bit integer range raise an error rather than widening like
+Ruby's arbitrary-precision integers.
 
 ## Floats
 
@@ -346,8 +348,10 @@ arbitrary-precision integers.
   Ruby (the result is truthy exactly when the number is nonzero).
 
 `round`, `floor`, and `ceil` accept an optional Integer precision that defaults
-to `0`. Whenever the result is converted back to an `int` (zero or negative
-precision), values outside the 64-bit integer range raise an error.
+to `0`. As in Ruby, the precision must fit a 32-bit signed integer, so a
+magnitude beyond that range raises rather than acting as a no-op. Whenever the
+result is converted back to an `int` (zero or negative precision), values outside
+the 64-bit integer range raise an error.
 
 ## Money
 

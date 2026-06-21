@@ -187,12 +187,89 @@ func TestNumericRoundingArgumentRejection(t *testing.T) {
 		{"1234.ceil(1.5)", "int.ceil precision must be an Integer"},
 		{"1.5.round(2, 3)", "float.round expects at most one precision argument"},
 		{"1234.floor(1, 2)", "int.floor expects at most one precision argument"},
+		// Ruby reads ndigits through NUM2INT, so a precision past the 32-bit signed
+		// range raises rather than acting as a no-op. 2147483647 is INT_MAX (still a
+		// no-op, covered by TestNumericRoundingPrecisionBoundary); one past it and
+		// the int64 extremes raise here.
+		{"123.round(2147483648)", "int.round precision 2147483648 too big to convert to int"},
+		{"123.floor(9223372036854775807)", "int.floor precision 9223372036854775807 too big to convert to int"},
+		{"1.5.round(2147483648)", "float.round precision 2147483648 too big to convert to int"},
+		{"123.ceil(-2147483649)", "int.ceil precision -2147483649 too small to convert to int"},
+		{"1.5.floor(-9223372036854775807)", "float.floor precision -9223372036854775807 too small to convert to int"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.expr, func(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
 			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+// TestNumericRoundingPrecisionBoundary covers the largest precision Ruby accepts
+// before NUM2INT raises. INT_MAX (2147483647) and INT_MIN (-2147483648) are valid
+// no-op precisions for an Integer receiver: a non-negative precision returns the
+// receiver unchanged, and a precision so negative that the bucket dwarfs the value
+// collapses it to zero, all without materializing a power of ten. One step past
+// the boundary raises, which TestNumericRoundingArgumentRejection covers.
+func TestNumericRoundingPrecisionBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		expr string
+		want int64
+	}{
+		{"123.round(2147483647)", 123},
+		{"123.floor(2147483647)", 123},
+		{"123.ceil(2147483647)", 123},
+		{"123.round(-2147483648)", 0},
+		{"123.floor(-2147483648)", 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			got := evalNumericExpr(t, tc.expr)
+			if !got.Equal(NewInt(tc.want)) {
+				t.Fatalf("%s = %v, want %d", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFloatFloorCeilHighPrecisionKeepsValue pins the Float#floor/#ceil fix for
+// precisions at and beyond DBL_DIG. Routing floor/ceil through the exact-rational
+// fallback (which round uses) rounds the float's exact binary value and drops a
+// unit, e.g. 1.234567890123455.floor(15) -> 1.234567890123454. Ruby's
+// rb_float_floor/rb_float_ceil instead scale by a faithfully rounded power of ten
+// and keep the receiver's decimal value, which is what these cases assert.
+func TestFloatFloorCeilHighPrecisionKeepsValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		expr string
+		want float64
+	}{
+		{"1.234567890123455.floor(15)", 1.234567890123455},
+		{"1.234567890123455.ceil(15)", 1.234567890123455},
+		{"(-1.234567890123455).floor(15)", -1.234567890123455},
+		{"(-1.234567890123455).ceil(15)", -1.234567890123455},
+		{"1.234567890123455.floor(16)", 1.234567890123455},
+		{"1.234567890123455.ceil(16)", 1.234567890123455},
+		// A value whose 10**ndigits is large but finite must still keep its exact
+		// decimal value; Go's math.Pow(10, 305) drifts a unit, so this also guards
+		// the correctly-rounded pow10Float scaling.
+		{"0.0000001234567.floor(20)", 0.0000001234567},
+	}
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			got := evalNumericExpr(t, tc.expr)
+			if got.Kind() != KindFloat {
+				t.Fatalf("%s kind = %v, want float", tc.expr, got.Kind())
+			}
+			if got.Float() != tc.want {
+				t.Fatalf("%s = %v, want %v", tc.expr, got.Float(), tc.want)
+			}
 		})
 	}
 }
@@ -280,9 +357,11 @@ func TestFloatRoundPositivePrecisionKeepsExtremeValue(t *testing.T) {
 }
 
 // TestFloatRoundTinyValueHugePrecisionStaysFinite covers the rational fallback
-// Ruby uses once 10**ndigits is no longer exactly representable as a double. A
-// naive math.Pow(10, ndigits) overflows to +Inf for these inputs, and the later
-// Inf/Inf division silently produced NaN for valid finite values.
+// Ruby's Float#round uses once 10**ndigits is no longer exactly representable as a
+// double. A naive math.Pow(10, ndigits) overflows to +Inf for these inputs, and
+// the later Inf/Inf division silently produced NaN for valid finite values. Only
+// round takes the rational path; floor/ceil mirror rb_float_floor/rb_float_ceil
+// and stay on the float path (see TestFloatFloorCeilTinyValueHugePrecisionNaN).
 func TestFloatRoundTinyValueHugePrecisionStaysFinite(t *testing.T) {
 	t.Parallel()
 
@@ -292,12 +371,14 @@ func TestFloatRoundTinyValueHugePrecisionStaysFinite(t *testing.T) {
 		want float64
 	}{
 		{"n.round(320)", 1e-308, 1e-308},
-		{"n.ceil(320)", 1e-308, 1e-308},
-		{"n.floor(320)", 1e-308, 9.99999999999e-309},
 		{"n.round(2)", 1e-300, 0},
 		{"n.floor(2)", 1e-300, 0},
 		{"n.ceil(2)", 1e-300, 0.01},
+		// floor/ceil scale by a faithfully rounded 10**ndigits, so a precision
+		// whose power of ten is still finite (305) keeps the value exactly as Ruby
+		// does instead of drifting a unit on Go's less accurate math.Pow.
 		{"n.floor(305)", 1e-300, 1e-300},
+		{"n.ceil(305)", 1e-300, 1e-300},
 	}
 	for _, tc := range tests {
 		t.Run(tc.expr, func(t *testing.T) {
@@ -312,6 +393,31 @@ func TestFloatRoundTinyValueHugePrecisionStaysFinite(t *testing.T) {
 			}
 			if got.Float() != tc.want {
 				t.Fatalf("%s = %v, want %v", tc.expr, got.Float(), tc.want)
+			}
+		})
+	}
+}
+
+// TestFloatFloorCeilTinyValueHugePrecisionNaN documents that Float#floor and
+// Float#ceil match rb_float_floor/rb_float_ceil exactly: they never take the
+// rational fallback that round uses, so when the overflow guard does not fire but
+// 10**ndigits still overflows to +Inf (a tiny float at very high precision), the
+// scaled arithmetic yields NaN. Local Ruby returns NaN for these same inputs, so
+// reproducing it keeps floor/ceil faithful rather than inventing a finite result.
+func TestFloatFloorCeilTinyValueHugePrecisionNaN(t *testing.T) {
+	t.Parallel()
+
+	exprs := []string{"n.floor(320)", "n.ceil(320)", "n.floor(330)", "n.ceil(330)"}
+	for _, expr := range exprs {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run(n)\n  "+expr+"\nend")
+			got := callFunc(t, script, "run", []Value{NewFloat(1e-308)})
+			if got.Kind() != KindFloat {
+				t.Fatalf("%s kind = %v, want float", expr, got.Kind())
+			}
+			if !math.IsNaN(got.Float()) {
+				t.Fatalf("%s = %v, want NaN", expr, got.Float())
 			}
 		})
 	}

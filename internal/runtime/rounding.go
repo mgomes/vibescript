@@ -32,7 +32,11 @@ func roundModeFor(property string) roundMode {
 
 // roundDigitsArg validates the optional precision argument shared by the
 // numeric round/floor/ceil helpers. Ruby accepts a single Integer ndigits that
-// defaults to 0; floats are rejected to match Ruby raising TypeError.
+// defaults to 0; floats are rejected to match Ruby raising TypeError. Ruby reads
+// ndigits through NUM2INT, so a precision outside the 32-bit signed range raises
+// RangeError ("too big/small to convert to int") rather than acting as a no-op;
+// matching that boundary keeps high-precision rounding faithful to Ruby while
+// also keeping the returned int safe on platforms where int is 32 bits.
 func roundDigitsArg(method string, args []Value) (int, error) {
 	switch len(args) {
 	case 0:
@@ -42,8 +46,11 @@ func roundDigitsArg(method string, args []Value) (int, error) {
 			return 0, fmt.Errorf("%s precision must be an Integer", method)
 		}
 		n := args[0].Int()
-		if n < math.MinInt32 || n > math.MaxInt32 {
-			return 0, fmt.Errorf("%s precision out of range", method)
+		if n > math.MaxInt32 {
+			return 0, fmt.Errorf("%s precision %d too big to convert to int", method, n)
+		}
+		if n < math.MinInt32 {
+			return 0, fmt.Errorf("%s precision %d too small to convert to int", method, n)
 		}
 		return int(n), nil
 	default:
@@ -63,10 +70,12 @@ const dblDig = 15
 // cannot change the value.
 const floatRoundDig = dblDig + 2
 
-// accuratePow10 reports whether math.Pow(10, ndigits) is exact enough to scale a
-// double without introducing decimal error. It mirrors Ruby's ACCURATE_POW10:
-// past DBL_DIG digits the power of ten is no longer exactly representable, so
-// the rational fallback must be used instead.
+// accuratePow10 reports whether 10^ndigits is exactly representable as a double,
+// so Float#round can scale and unscale without the multiply injecting decimal
+// error. It mirrors the ndigits > 14 cutoff in Ruby's flo_round: from DBL_DIG
+// digits on, the power of ten is no longer exact and round must use the rational
+// fallback. Float#floor/#ceil never need this because their direction-preserving
+// correction tolerates the scaling, matching rb_float_floor/rb_float_ceil.
 func accuratePow10(ndigits int) bool {
 	return ndigits < dblDig
 }
@@ -185,9 +194,10 @@ func floatRoundDigits(num float64, ndigits int, mode roundMode) float64 {
 		if num > 0 && floatRoundUnderflow(ndigits, binexp) {
 			return math.Copysign(0, num)
 		}
-		if !accuratePow10(ndigits) {
-			return floatRoundByRational(num, ndigits, mode)
-		}
+		// Ruby's rb_float_floor never takes a rational path: it always scales by
+		// the power of ten and corrects with floatFloorDigits, so flooring at high
+		// precision (e.g. ndigits == DBL_DIG) keeps the receiver's decimal value
+		// rather than dropping a unit to the exact-binary rational result.
 		return floatFloorDigits(num, ndigits)
 	case roundCeil:
 		// Ceil of a tiny negative collapses to zero; Ruby yields +0.0, not the
@@ -195,11 +205,9 @@ func floatRoundDigits(num float64, ndigits int, mode roundMode) float64 {
 		if num < 0 && floatRoundUnderflow(ndigits, binexp) {
 			return 0.0
 		}
-		if !accuratePow10(ndigits) {
-			return floatRoundByRational(num, ndigits, mode)
-		}
-		s := math.Pow(10, float64(ndigits))
-		return math.Ceil(num*s) / s
+		// Like rb_float_ceil, ceil also scales by the power of ten directly for
+		// every positive precision instead of falling back to exact rationals.
+		return floatCeilDigits(num, ndigits)
 	default:
 		// A value that underflows to zero rounds to +0.0, matching Ruby, which
 		// does not carry the sign of a tiny negative into the zero result.
@@ -207,9 +215,9 @@ func floatRoundDigits(num float64, ndigits int, mode roundMode) float64 {
 			return 0.0
 		}
 		if !accuratePow10(ndigits) {
-			return floatRoundByRational(num, ndigits, mode)
+			return floatRoundByRational(num, ndigits)
 		}
-		s := math.Pow(10, float64(ndigits))
+		s := pow10Float(ndigits)
 		return roundHalfUp(num, s) / s
 	}
 }
@@ -219,7 +227,7 @@ func floatRoundDigits(num float64, ndigits int, mode roundMode) float64 {
 // unit unless that overshoots the original value. This keeps decimal-looking
 // inputs such as 1.005 from losing an extra unit to binary representation error.
 func floatFloorDigits(num float64, ndigits int) float64 {
-	s := math.Pow(10, float64(ndigits))
+	s := pow10Float(ndigits)
 	mul := math.Floor(num * s)
 	res := (mul + 1) / s
 	if res > num {
@@ -228,15 +236,26 @@ func floatFloorDigits(num float64, ndigits int) float64 {
 	return res
 }
 
+// floatCeilDigits rounds num up to ndigits fractional digits, mirroring Ruby's
+// rb_float_ceil exactly: scale by the power of ten, ceil, then unscale. Unlike
+// rb_float_floor, the ceil path applies no extra unit correction, so this must
+// not add one or it would diverge from Ruby on values such as
+// (-45.0320962888666).ceil(14).
+func floatCeilDigits(num float64, ndigits int) float64 {
+	s := pow10Float(ndigits)
+	return math.Ceil(num*s) / s
+}
+
 // floatRoundByRational rounds a finite float to ndigits fractional digits using
-// exact rational arithmetic, mirroring Ruby's *_by_rational fallbacks. It is the
-// path Ruby takes once 10^ndigits is no longer exactly representable as a double
-// (ndigits >= DBL_DIG); scaling by such a power in binary would inject error and
-// can yield Inf/Inf == NaN, so the result is computed from the float's exact
-// value instead. The caller guarantees ndigits is positive and that the value is
-// neither past the overflow threshold nor collapsed by the underflow guard, so
-// 10^ndigits stays small enough to compute precisely.
-func floatRoundByRational(num float64, ndigits int, mode roundMode) float64 {
+// exact rational arithmetic, mirroring Ruby's rb_flo_round_by_rational. Ruby only
+// takes this fallback for Float#round (never floor/ceil), once 10^ndigits is no
+// longer exactly representable as a double (ndigits >= DBL_DIG); scaling by such a
+// power in binary would inject error and can yield Inf/Inf == NaN, so the result
+// is computed from the float's exact value instead and rounded half away from
+// zero. The caller guarantees ndigits is positive and that the value is neither
+// past the overflow threshold nor collapsed by the underflow guard, so 10^ndigits
+// stays small enough to compute precisely.
+func floatRoundByRational(num float64, ndigits int) float64 {
 	value := new(big.Rat).SetFloat64(num)
 	if value == nil {
 		return num // non-finite values never reach the rational path
@@ -244,46 +263,12 @@ func floatRoundByRational(num float64, ndigits int, mode roundMode) float64 {
 	scale := new(big.Rat).SetInt(pow10BigInt(ndigits))
 	scaled := value.Mul(value, scale)
 
-	rounded := ratToIntForMode(scaled, mode)
+	rounded := ratRoundHalfAwayFromZero(scaled)
 	result := new(big.Rat).SetInt(rounded)
 	result.Quo(result, scale)
 
 	f, _ := result.Float64()
 	return f
-}
-
-// ratToIntForMode rounds a rational to an integer in the requested direction.
-// roundNearest rounds halves away from zero, matching Ruby's default.
-func ratToIntForMode(r *big.Rat, mode roundMode) *big.Int {
-	switch mode {
-	case roundFloor:
-		return ratFloor(r)
-	case roundCeil:
-		return ratCeil(r)
-	default:
-		return ratRoundHalfAwayFromZero(r)
-	}
-}
-
-// ratFloor returns the greatest integer not greater than r.
-func ratFloor(r *big.Rat) *big.Int {
-	q := new(big.Int)
-	m := new(big.Int)
-	// Euclidean division keeps the remainder non-negative, so q is the floor for
-	// the always-positive denominator of a normalized big.Rat.
-	q.DivMod(r.Num(), r.Denom(), m)
-	return q
-}
-
-// ratCeil returns the least integer not less than r.
-func ratCeil(r *big.Rat) *big.Int {
-	q := new(big.Int)
-	m := new(big.Int)
-	q.DivMod(r.Num(), r.Denom(), m)
-	if m.Sign() != 0 {
-		q.Add(q, big.NewInt(1))
-	}
-	return q
 }
 
 // ratRoundHalfAwayFromZero rounds r to the nearest integer, breaking halves away
@@ -419,6 +404,21 @@ func bigToInt64Checked(n *big.Int, method string) (int64, error) {
 // pow10BigInt returns 10^n as a *big.Int for n >= 0.
 func pow10BigInt(n int) *big.Int {
 	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil)
+}
+
+// pow10Float returns the IEEE-754 double nearest to 10^n for n >= 0, returning
+// +Inf once 10^n exceeds the double range. It mirrors the correctly-rounded
+// libm pow(10, n) Ruby relies on, which Go's math.Pow does not match for n >= 23
+// (e.g. math.Pow(10, 305) lands a unit-in-the-last-place high). Using a faithful
+// scale keeps high-precision Float#round/#floor/#ceil aligned with Ruby. The
+// float-rounding overflow guard bounds n well under the magnitude where 10^n
+// would be expensive to build, so the exact big.Int never grows unbounded.
+func pow10Float(n int) float64 {
+	// new(big.Float).SetInt holds 10^n exactly (its precision grows to the
+	// integer's bit length), so Float64 performs a single correct rounding to the
+	// nearest double rather than compounding intermediate error.
+	f, _ := new(big.Float).SetInt(pow10BigInt(n)).Float64()
+	return f
 }
 
 // floatRoundToInt rounds a float to the nearest whole number in the requested
