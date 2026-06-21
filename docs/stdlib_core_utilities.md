@@ -313,24 +313,41 @@ aliases, so `1.second` reads naturally.
   64-bit overflow rather than wrapping.
 - `pred -> int` – the previous integer (`self - 1`); errors on 64-bit
   underflow rather than wrapping.
+- `round(ndigits = 0) -> int` – non-negative `ndigits` return the receiver
+  unchanged; negative `ndigits` round to the matching power of ten (e.g.
+  `1234.round(-2)` is `1200`) half away from zero.
+- `floor(ndigits = 0) -> int` – like `round`, but negative `ndigits` truncate
+  toward negative infinity (`1234.floor(-2)` is `1200`, `-1234.floor(-2)` is
+  `-1300`).
+- `ceil(ndigits = 0) -> int` – like `round`, but negative `ndigits` round
+  toward positive infinity (`1234.ceil(-2)` is `1300`).
+
+`round`, `floor`, and `ceil` accept an optional Integer precision. Results that
+leave the 64-bit integer range raise an error rather than widening like Ruby's
+arbitrary-precision integers.
 
 ## Floats
 
 - `abs -> float` – absolute value.
 - `clamp(min, max) -> float` – receiver bounded to `[min, max]`; bounds may be
   int or float with `min <= max`.
-- `round -> int` – round half away from zero; errors when the result overflows
-  a 64-bit integer.
-- `floor -> int` – round toward negative infinity.
-- `ceil -> int` – round toward positive infinity.
+- `round(ndigits = 0) -> int | float` – round half away from zero. With no
+  argument or `0` it returns an `int`; positive `ndigits` keep the value a
+  `float` rounded to that many fractional digits (`1.234.round(2)` is `1.23`);
+  negative `ndigits` return an `int` bucketed to a power of ten.
+- `floor(ndigits = 0) -> int | float` – round toward negative infinity, with
+  the same `int`/`float` return rules as `round`.
+- `ceil(ndigits = 0) -> int | float` – round toward positive infinity, with the
+  same `int`/`float` return rules as `round`.
 - `zero? -> bool` – true when the value is `0.0`.
 - `positive? -> bool` – true when greater than `0.0`.
 - `negative? -> bool` – true when less than `0.0`.
 - `nonzero? -> float?` – the receiver when nonzero, otherwise `nil`, matching
   Ruby (the result is truthy exactly when the number is nonzero).
 
-`round`, `floor`, and `ceil` take no precision argument and always return an
-`int`.
+`round`, `floor`, and `ceil` accept an optional Integer precision that defaults
+to `0`. Whenever the result is converted back to an `int` (zero or negative
+precision), values outside the 64-bit integer range raise an error.
 
 ## Money
 
