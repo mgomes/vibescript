@@ -30,6 +30,22 @@ func TestFloatRoundingWithPrecision(t *testing.T) {
 		{"0.285.round(2)", NewFloat(0.29)},
 		{"8.005.round(2)", NewFloat(8.01)},
 		{"0.125.round(2)", NewFloat(0.13)},
+		// floor/ceil also resist representation error, matching Ruby. A naive
+		// math.Floor(num*10**ndigits)/10**ndigits would drop an extra unit here
+		// because 1.005 and friends are stored slightly below their decimal form.
+		{"1.005.floor(3)", NewFloat(1.005)},
+		{"1.005.ceil(3)", NewFloat(1.005)},
+		{"1.005.floor(4)", NewFloat(1.005)},
+		{"8.001.floor(3)", NewFloat(8.001)},
+		{"2.675.floor(2)", NewFloat(2.67)},
+		{"2.675.ceil(2)", NewFloat(2.68)},
+		{"0.285.floor(4)", NewFloat(0.285)},
+		{"1.255.floor(4)", NewFloat(1.255)},
+		{"3.14159.floor(3)", NewFloat(3.141)},
+		{"3.14159.ceil(3)", NewFloat(3.142)},
+		{"(-1.005).floor(3)", NewFloat(-1.005)},
+		{"(-1.005).ceil(3)", NewFloat(-1.004)},
+		{"(-2.675).floor(2)", NewFloat(-2.68)},
 		// Negative numbers round away from zero.
 		{"(-1.234).round(2)", NewFloat(-1.23)},
 		{"(-1.234).floor(2)", NewFloat(-1.24)},
@@ -260,5 +276,129 @@ func TestFloatRoundPositivePrecisionKeepsExtremeValue(t *testing.T) {
 	}
 	if got.Float() != 1e300 {
 		t.Fatalf("round(50) = %v, want 1e300", got.Float())
+	}
+}
+
+// TestFloatRoundTinyValueHugePrecisionStaysFinite covers the rational fallback
+// Ruby uses once 10**ndigits is no longer exactly representable as a double. A
+// naive math.Pow(10, ndigits) overflows to +Inf for these inputs, and the later
+// Inf/Inf division silently produced NaN for valid finite values.
+func TestFloatRoundTinyValueHugePrecisionStaysFinite(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		expr string
+		arg  float64
+		want float64
+	}{
+		{"n.round(320)", 1e-308, 1e-308},
+		{"n.ceil(320)", 1e-308, 1e-308},
+		{"n.floor(320)", 1e-308, 9.99999999999e-309},
+		{"n.round(2)", 1e-300, 0},
+		{"n.floor(2)", 1e-300, 0},
+		{"n.ceil(2)", 1e-300, 0.01},
+		{"n.floor(305)", 1e-300, 1e-300},
+	}
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
+			got := callFunc(t, script, "run", []Value{NewFloat(tc.arg)})
+			if got.Kind() != KindFloat {
+				t.Fatalf("%s kind = %v, want float", tc.expr, got.Kind())
+			}
+			if math.IsNaN(got.Float()) || math.IsInf(got.Float(), 0) {
+				t.Fatalf("%s = %v, want finite %v", tc.expr, got.Float(), tc.want)
+			}
+			if got.Float() != tc.want {
+				t.Fatalf("%s = %v, want %v", tc.expr, got.Float(), tc.want)
+			}
+		})
+	}
+}
+
+// TestFloatNegativePrecisionBucketsBeyondInt64 covers floats whose whole value
+// exceeds int64 but whose negative-precision bucket fits. Ruby collapses to an
+// arbitrary-precision integer before bucketing, so 9.3e18 floors to 0 at
+// precision -20 even though 9.3e18 itself does not fit int64; a bucket that does
+// not fit (the ceil reaching 10**20) still reports an overflow.
+func TestFloatNegativePrecisionBucketsBeyondInt64(t *testing.T) {
+	t.Parallel()
+
+	ok := []struct {
+		expr string
+		arg  float64
+		want int64
+	}{
+		// 9.3e18 (> int64) lies below 10**20, so flooring/rounding toward the
+		// nearest multiple of 10**20 collapses it to 0 even though the whole
+		// value cannot be represented as int64.
+		{"n.floor(-20)", 9.3e18, 0},
+		{"n.round(-20)", 9.3e18, 0},
+		{"n.ceil(-20)", -9.3e18, 0},
+		{"n.round(-20)", -9.3e18, 0},
+		{"n.floor(-20)", 9.3e19, 0},
+	}
+	for _, tc := range ok {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
+			got := callFunc(t, script, "run", []Value{NewFloat(tc.arg)})
+			if !got.Equal(NewInt(tc.want)) {
+				t.Fatalf("%s = %v, want %d", tc.expr, got, tc.want)
+			}
+		})
+	}
+
+	overflow := []struct {
+		expr string
+		arg  float64
+		want string
+	}{
+		// 9.3e18 ceils up to 10**20 and -9.3e18 floors down to -10**20, both of
+		// which exceed int64, so they report an overflow rather than widening
+		// like Ruby's bignums.
+		{"n.ceil(-20)", 9.3e18, "float.ceil result out of int64 range"},
+		{"n.floor(-20)", -9.3e18, "float.floor result out of int64 range"},
+	}
+	for _, tc := range overflow {
+		t.Run(tc.expr+" overflow", func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
+			requireCallErrorContains(t, script, "run", []Value{NewFloat(tc.arg)}, CallOptions{}, tc.want)
+		})
+	}
+}
+
+// TestFloatNegativePrecisionExactBucketing covers large floats whose bucket fits
+// int64. Bucketing in binary float space lets scaling error shift the result
+// (e.g. 5e18 * 1e-3 / 1e-3 drifts off the exact multiple), so the integer path
+// collapses to the value's whole part before bucketing, matching Ruby exactly.
+func TestFloatNegativePrecisionExactBucketing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		expr string
+		arg  float64
+		want int64
+	}{
+		{"n.round(-3)", 5e18, 5000000000000000000},
+		{"n.round(-3)", -5e18, -5000000000000000000},
+		{"n.round(-5)", 4.5e18, 4500000000000000000},
+		{"n.round(-5)", 9.2e18, 9200000000000000000},
+		{"n.floor(-5)", 9.2e18, 9200000000000000000},
+		{"n.ceil(-5)", 9.2e18, 9200000000000000000},
+		{"n.round(-18)", 9.2e18, 9000000000000000000},
+		{"n.round(-5)", 999999.5, 1000000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run(n)\n  "+tc.expr+"\nend")
+			got := callFunc(t, script, "run", []Value{NewFloat(tc.arg)})
+			if !got.Equal(NewInt(tc.want)) {
+				t.Fatalf("%s on %v = %v, want %d", tc.expr, tc.arg, got, tc.want)
+			}
+		})
 	}
 }
