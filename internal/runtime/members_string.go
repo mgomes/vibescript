@@ -950,7 +950,7 @@ func stringMemberTextOps(property string) (Value, error) {
 		}), nil
 	case "chars":
 		return NewAutoBuiltin("string.chars", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
+			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.chars does not take arguments")
 			}
 			text := receiver.String()
@@ -962,7 +962,7 @@ func stringMemberTextOps(property string) (Value, error) {
 		}), nil
 	case "lines":
 		return NewAutoBuiltin("string.lines", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
+			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.lines does not take arguments")
 			}
 			lines := stringLines(receiver.String())

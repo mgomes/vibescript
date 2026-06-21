@@ -122,6 +122,16 @@ func TestStringCharsLinesRejectArguments(t *testing.T) {
 			script: `def run() "a\nb".lines("\n") end`,
 			want:   "string.lines does not take arguments",
 		},
+		{
+			name:   "chars rejects keyword arguments",
+			script: `def run() "abc".chars(foo: 1) end`,
+			want:   "string.chars does not take arguments",
+		},
+		{
+			name:   "lines rejects keyword arguments",
+			script: `def run() "a\nb".lines(chomp: true) end`,
+			want:   "string.lines does not take arguments",
+		},
 	}
 
 	for _, tc := range cases {
