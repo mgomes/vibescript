@@ -45,9 +45,33 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		return exec.intMember(obj, property, pos)
 	case KindFloat:
 		return exec.floatMember(obj, property, pos)
+	case KindFunction:
+		return exec.functionMember(obj, property, pos)
 	default:
 		return NewNil(), exec.errorAt(pos, "unsupported member access on %s", obj.Kind())
 	}
+}
+
+// functionMemberNames lists the members exposed on script function
+// values. Keep it in sync with functionMember; it feeds "did you mean"
+// suggestions and editor completion.
+var functionMemberNames = []string{"call"}
+
+// functionMember resolves member access on a script function value. Only
+// `call` is supported: it returns a builtin that invokes the underlying
+// function with the supplied args, kwargs, and block, mirroring direct
+// `fn(...)` invocation (including its nil receiver) for Ruby-style
+// `fn.call(...)` parity.
+func (exec *Execution) functionMember(obj Value, property string, pos Position) (Value, error) {
+	if property != "call" {
+		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, functionMemberNames))
+	}
+	fn := valueFunction(obj)
+	caller := NewAutoBuiltin("function.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
+	})
+	valueBuiltin(caller).BareKeywordHashTarget = fn
+	return caller, nil
 }
 
 func (exec *Execution) classMember(obj Value, property string, pos Position) (Value, error) {
@@ -173,5 +197,6 @@ func MemberCompletionNames() map[string][]string {
 		"money":    slices.Clone(moneyMemberNames),
 		"duration": slices.Clone(durationMemberNames),
 		"time":     slices.Clone(timeMemberNames),
+		"function": slices.Clone(functionMemberNames),
 	}
 }
