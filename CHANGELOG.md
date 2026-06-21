@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 ## Unreleased
 
 - Ongoing work toward the next pre-1.0 release.
+- **Added: `Time#round` precision argument.** `Time#round` now accepts an
+  optional Ruby-style `ndigits` (defaulting to `0`) so `round(3)` and `round(6)`
+  produce millisecond and microsecond precision, with non-negative `Integer`
+  validation and clear errors on misuse.
 
 ## v0.50.0 - 2026-06-11
 

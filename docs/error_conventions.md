@@ -182,8 +182,9 @@ Deliberately left in place to keep the normalization diff reviewable;
 align them opportunistically when touching the surrounding code:
 
 - `internal/runtime/members_temporal.go`: `format expects a Go layout
-  string` and `round`/`ceil`/`floor` `does not accept precision` lack
-  the `time.` receiver prefix required by the subject rule.
+  string` and `ceil`/`floor` `does not accept precision` lack the
+  `time.` receiver prefix required by the subject rule. (`round` now
+  carries the `time.round` prefix on its precision errors.)
 - `internal/runtime/values.go`: `comparator must be numeric` is only
   ever re-wrapped by its caller (`array.sort block must return numeric
   comparator`) and never surfaces as-is.

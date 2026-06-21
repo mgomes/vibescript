@@ -447,7 +447,11 @@ formatting. Times also support `time + duration`, `time - duration`, and
 
 - `<=>(other) -> int` – `-1`, `0`, or `1` ordering against another time.
 - `eql?(other) -> bool` – true when both times are the same instant.
-- `round -> time` – round to the nearest second (no precision argument).
+- `round(ndigits = 0) -> time` – round to the given number of fractional-second
+  digits, half away from zero. No argument or `0` rounds to whole seconds;
+  positive `ndigits` rounds to that many digits (e.g. `3` for milliseconds, `6`
+  for microseconds), capped at nanosecond resolution. `ndigits` must be a
+  non-negative `Integer`; other values raise an error.
 - `floor -> time` – truncate to the whole second.
 - `ceil -> time` – round up to the next whole second.
 
