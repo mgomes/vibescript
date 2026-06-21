@@ -90,6 +90,26 @@ func (p *parser) declareLocal(name string) {
 	p.localScopes[len(p.localScopes)-1].names[name] = struct{}{}
 }
 
+// localDeclaredInTop reports whether name is already declared in the
+// innermost scope (not any enclosing scope).
+func (p *parser) localDeclaredInTop(name string) bool {
+	if len(p.localScopes) == 0 {
+		return false
+	}
+	_, ok := p.localScopes[len(p.localScopes)-1].names[name]
+	return ok
+}
+
+// undeclareLocal removes name from the innermost scope. It is used for
+// names whose visibility is limited to a sub-region of their scope, such
+// as a rescue exception binding.
+func (p *parser) undeclareLocal(name string) {
+	if len(p.localScopes) == 0 {
+		return
+	}
+	delete(p.localScopes[len(p.localScopes)-1].names, name)
+}
+
 func (p *parser) isLocalName(name string) bool {
 	for i := len(p.localScopes) - 1; i >= 0; i-- {
 		if _, ok := p.localScopes[i].names[name]; ok {

@@ -559,6 +559,41 @@ collect %w[ok]`
 	}
 }
 
+// A local assigned inside a rescue body belongs to the surrounding scope
+// (only the exception binding is body-local), so a later percent literal
+// that uses it is modulo, not a parenless call.
+func TestParserRescueBodyAssignmentLeaksToOuterScope(t *testing.T) {
+	t.Parallel()
+
+	source := `begin
+  1
+rescue => err
+  total = 10
+  w = [3]
+end
+total %w[0]`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	if len(got.Statements) != 2 {
+		t.Fatalf("parseSource returned %d statements, want 2", len(got.Statements))
+	}
+
+	wantStmt := &ast.ExprStmt{Expr: &ast.BinaryExpr{
+		Left:     &ast.Identifier{Name: "total"},
+		Operator: ast.TokenPercent,
+		Right: &ast.IndexExpr{
+			Object: &ast.Identifier{Name: "w"},
+			Index:  &ast.IntegerLiteral{Value: 0},
+		},
+	}}
+	if diff := cmp.Diff(wantStmt, got.Statements[1], astCmpOpts); diff != "" {
+		t.Fatalf("post-rescue statement mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserPercentArrayParenlessCallArguments(t *testing.T) {
 	t.Parallel()
 

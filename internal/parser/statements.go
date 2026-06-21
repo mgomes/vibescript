@@ -337,16 +337,19 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 			return nil
 		}
 		p.nextToken()
-		// The rescue binding is visible only inside the rescue body: at
-		// runtime it lives in a child env and is undefined afterward. Scope it
-		// to a child scope that still sees surrounding locals, so percent vs
-		// modulo disambiguation is correct both inside and after the handler.
-		p.pushLocalScope(nil, false)
+		// The rescue binding is local only within the rescue body: at runtime
+		// it lives in a child env and is undefined afterward. Other locals
+		// assigned in the body belong to the surrounding scope, so parse the
+		// body in the current scope and remove only the binding afterward
+		// (unless it was already a local before the handler).
+		bindingWasLocal := rescueBinding != "" && p.localDeclaredInTop(rescueBinding)
 		if rescueBinding != "" {
 			p.declareLocal(rescueBinding)
 		}
 		rescueBody = p.parseBlock(ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
-		p.popLocalScope()
+		if rescueBinding != "" && !bindingWasLocal {
+			p.undeclareLocal(rescueBinding)
+		}
 	}
 
 	var elseBody []ast.Statement
