@@ -87,6 +87,9 @@ content and integers do not match equal-looking floats.
 ## Access helpers
 
 - `fetch(key, default=nil)` to supply defaults for missing keys.
+- `fetch_values(*keys)` returns the values for several keys at once, in the
+  requested order. Unlike `fetch`, it raises when a key is absent. Pass a block
+  to compute a replacement for each missing key instead of raising.
 - `dig(*path)` for nested lookup.
 
 ```vibe
@@ -94,6 +97,12 @@ def display_name_or_default(records, player_id)
   fallback = "unknown"
   records.dig(player_id, :meta, :display_name) || fallback
 end
+```
+
+```vibe
+{ a: 1, b: 2 }.fetch_values(:a, :b)            # [1, 2]
+{ a: 1 }.fetch_values(:a, :missing)            # raises "key not found: :missing"
+{ a: 1 }.fetch_values(:a, :missing) { |k| k }  # [1, :missing]
 ```
 
 ## Transform and filter helpers

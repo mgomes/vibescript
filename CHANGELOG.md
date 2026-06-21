@@ -12,6 +12,17 @@ All notable changes to this project will be documented in this file.
   omitted or `nil`. The offset uses the shared zone-parsing rules, and the
   receiver is never mutated, so `localtime` fits Vibescript's immutable value
   model while matching Ruby's non-mutating `getlocal(offset)` result.
+- **Added: Ruby-style `String#partition` and `String#rpartition`.** Both split a
+  string into a three-element `[head, separator, tail]` triple around the first
+  (`partition`) or last (`rpartition`) occurrence of the separator. A missing
+  separator keeps the whole string on the head (`partition`) or tail
+  (`rpartition`) with empty surrounding segments, and an empty separator matches
+  at the start or end respectively, matching Ruby. The separator must be a
+  string.
+- **Added: Ruby-style `Hash#fetch_values`.** `Hash#fetch_values(*keys)` returns
+  the values for several keys at once, in the requested order. Unlike
+  `values_at`, it raises a `key not found` error for any missing key; pass a
+  block to compute a replacement value for each missing key instead of raising.
 - **Added: Ruby-style `Time#to_a` tuple conversion.** `Time#to_a` returns the
   positional field tuple `[sec, min, hour, mday, month, year, wday, yday, isdst,
   zone]`, matching Ruby for compatibility with positional field processing. Field
@@ -27,6 +38,13 @@ All notable changes to this project will be documented in this file.
   rest of the language, and `Hash#store(key, value)` returns a new hash with the
   key assigned. Like the other method-based hash helpers, `store` is
   immutable-style and leaves the receiver unchanged.
+- **Added: Ruby-style conflict blocks for `Hash#merge`.** `Hash#merge` now
+  honors an optional block to resolve key conflicts: for keys present in both
+  hashes the block is yielded `(key, old_value, new_value)` and its result is
+  stored, while keys present on only one side are copied without invoking the
+  block. Without a block the incoming hash still wins on conflicts. The conflict
+  key is yielded as a symbol, matching the other hash helpers, and the block was
+  previously accepted but silently ignored.
 - **Added: Ruby-style `call` on function values.** A function value now exposes
   a `call` member so `fn.call(...)` mirrors direct `fn(...)` invocation,
   forwarding positional arguments, keyword arguments, and an optional block.
