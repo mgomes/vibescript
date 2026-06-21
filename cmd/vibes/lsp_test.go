@@ -681,6 +681,30 @@ end
 	}
 }
 
+func TestCompletionOffersLocalsFromBeginElse(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/begin-else-locals.vibe"
+	openDoc(t, server, uri, `def run()
+  begin
+    value = 1
+  rescue
+    fallback = 2
+  else
+    from_else = value
+  end
+  from_else
+end
+`)
+
+	labels := completionLabels(t, server, uri, 8, 2)
+	for _, want := range []string{"value", "fallback", "from_else"} {
+		if _, ok := labels[want]; !ok {
+			t.Fatalf("completion missing local %q", want)
+		}
+	}
+}
+
 func TestCompletionOffersRescueBindingOnlyInsideHandler(t *testing.T) {
 	t.Parallel()
 	server := newCompletionTestServer()

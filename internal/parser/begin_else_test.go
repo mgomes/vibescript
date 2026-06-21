@@ -223,6 +223,19 @@ end`,
 			want: "rescue binding must use =>",
 		},
 		{
+			name: "thin_arrow_binding_with_nested_do_block",
+			source: `def run
+  begin
+    raise("boom")
+  rescue RuntimeError -> err
+    values.each do |value|
+      value
+    end
+  end
+end`,
+			want: "rescue binding must use =>",
+		},
+		{
 			name: "bare_thin_arrow_binding",
 			source: `def run
   begin

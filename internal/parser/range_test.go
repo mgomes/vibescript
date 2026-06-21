@@ -104,19 +104,56 @@ end`
 	}
 }
 
-func TestParserRejectsEndlessRangeBeforeNextStatement(t *testing.T) {
+func TestParserAllowsMultilineRangeEndpoint(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
   1..
-  next_value
+    2
 end`
 
-	_, errs := parseSource(t, source)
-	if len(errs) != 1 {
-		t.Fatalf("parseSource(%q) errors = %d, want 1: %v", source, len(errs), errs)
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
 	}
-	if got, want := errs[0].Error(), "range is missing end expression"; !strings.Contains(got, want) {
-		t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.RangeExpr{
+			Start: &ast.IntegerLiteral{Value: 1},
+			End:   &ast.IntegerLiteral{Value: 2},
+		}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserAllowsMultilineRangeEndpointInCallArgument(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  foo(1..
+    2)
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "foo"},
+			Args: []ast.Expression{
+				&ast.RangeExpr{
+					Start: &ast.IntegerLiteral{Value: 1},
+					End:   &ast.IntegerLiteral{Value: 2},
+				},
+			},
+			KwArgs: []ast.KeywordArg{},
+		}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }

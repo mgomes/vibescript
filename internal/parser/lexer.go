@@ -29,7 +29,8 @@ type lexer struct {
 	prevLine   int
 	prevColumn int
 
-	ch rune
+	ch        rune
+	lastToken ast.Token
 }
 
 func newLexer(input string) *lexer {
@@ -89,6 +90,7 @@ func (l *lexer) NextToken() ast.Token {
 	tok := l.scanToken()
 	if tok.Type != ast.TokenEOF {
 		tok.End = ast.Position{Line: l.prevLine, Column: l.prevColumn + 1}
+		l.lastToken = tok
 	}
 	return tok
 }
@@ -164,7 +166,7 @@ func (l *lexer) scanToken() ast.Token {
 	case '%':
 		switch l.peekRune() {
 		case 'w':
-			if isPercentLiteralDelimiter(l.peekRuneN(1)) {
+			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral()
 				if err != "" {
 					tok.Type = ast.TokenIllegal
@@ -178,7 +180,7 @@ func (l *lexer) scanToken() ast.Token {
 				l.readRune()
 			}
 		case 'i':
-			if isPercentLiteralDelimiter(l.peekRuneN(1)) {
+			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral()
 				if err != "" {
 					tok.Type = ast.TokenIllegal
@@ -414,6 +416,27 @@ func (l *lexer) currentOffset() int {
 	return l.offset - l.width
 }
 
+// seek repositions the lexer so the next scanned token begins at or after
+// the given byte offset. Line and column state is rebuilt by replaying
+// readRune from the start of the input, reusing the normal position
+// bookkeeping rather than recomputing it. last becomes lastToken so
+// gating that depends on the preceding token (such as percent-literal and
+// newline handling) behaves as if that token had just been scanned.
+func (l *lexer) seek(offset int, last ast.Token) {
+	l.offset = 0
+	l.width = 0
+	l.line = 1
+	l.column = 0
+	l.prevLine = 0
+	l.prevColumn = 0
+	l.ch = 0
+	l.readRune()
+	for l.currentOffset() < offset && l.ch != 0 {
+		l.readRune()
+	}
+	l.lastToken = last
+}
+
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
 	return ast.Token{Type: tt, Literal: literal, Pos: ast.Position{Line: l.line, Column: l.column}}
 }
@@ -563,9 +586,48 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 	var decoded strings.Builder
 	var raw strings.Builder
 	interpolated := false
+	interpolationDepth := 0
+	var interpolationQuote rune
 
 	for {
 		l.readRune()
+		if interpolationDepth > 0 {
+			if interpolationQuote == 0 && l.ch == '"' && !l.interpolationQuoteHasClose('"') {
+				l.readRune()
+				return raw.String(), true, ""
+			}
+			switch l.ch {
+			case 0:
+				return "", false, "unterminated string"
+			case '\\':
+				raw.WriteRune(l.ch)
+				decoded.WriteRune(l.ch)
+				if interpolationQuote != 0 && l.peekRune() != 0 {
+					l.readRune()
+					raw.WriteRune(l.ch)
+					decoded.WriteRune(l.ch)
+				}
+			default:
+				raw.WriteRune(l.ch)
+				decoded.WriteRune(l.ch)
+				if interpolationQuote != 0 {
+					if l.ch == interpolationQuote {
+						interpolationQuote = 0
+					}
+					continue
+				}
+				switch l.ch {
+				case '\'', '"':
+					interpolationQuote = l.ch
+				case '{':
+					interpolationDepth++
+				case '}':
+					interpolationDepth--
+				}
+			}
+			continue
+		}
+
 		switch l.ch {
 		case 0:
 			return "", false, "unterminated string"
@@ -606,13 +668,36 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 			raw.WriteRune(l.ch)
 			decoded.WriteRune(l.ch)
 			if l.peekRune() == '{' {
+				l.readRune()
+				raw.WriteRune(l.ch)
+				decoded.WriteRune(l.ch)
 				interpolated = true
+				interpolationDepth = 1
 			}
 		default:
 			raw.WriteRune(l.ch)
 			decoded.WriteRune(l.ch)
 		}
 	}
+}
+
+func (l *lexer) interpolationQuoteHasClose(quote rune) bool {
+	idx := l.offset
+	for idx < len(l.input) {
+		r, width := utf8.DecodeRuneInString(l.input[idx:])
+		idx += width
+		if r == '\\' {
+			if idx < len(l.input) {
+				_, escapedWidth := utf8.DecodeRuneInString(l.input[idx:])
+				idx += escapedWidth
+			}
+			continue
+		}
+		if r == quote {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *lexer) readSingleQuotedString() (string, string) {
@@ -681,6 +766,33 @@ func (l *lexer) readPercentArrayLiteral() ([]string, string) {
 
 func isPercentLiteralDelimiter(r rune) bool {
 	return r != 0 && !unicode.IsSpace(r) && !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+}
+
+func (l *lexer) canStartPercentArrayLiteral() bool {
+	start := l.currentOffset()
+	if start == 0 {
+		return true
+	}
+	prev, _ := utf8.DecodeLastRuneInString(l.input[:start])
+	if unicode.IsSpace(prev) {
+		if l.atLineLeadingWhitespace() {
+			return true
+		}
+		return !canEndExpressionToken(l.lastToken.Type)
+	}
+	return !canEndExpressionToken(l.lastToken.Type)
+}
+
+func canEndExpressionToken(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TokenIdent, ast.TokenInt, ast.TokenFloat, ast.TokenString, ast.TokenInterpolatedString,
+		ast.TokenSymbol, ast.TokenWords, ast.TokenSymbols, ast.TokenTrue, ast.TokenFalse, ast.TokenNil,
+		ast.TokenSelf, ast.TokenIvar, ast.TokenClassVar, ast.TokenRParen, ast.TokenRBracket,
+		ast.TokenRBrace, ast.TokenEnd:
+		return true
+	default:
+		return false
+	}
 }
 
 func percentLiteralClose(open rune) (rune, bool) {
