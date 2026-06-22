@@ -90,6 +90,46 @@ count = to_int("42")
 ratio = to_float("1.25")
 ```
 
+## Math
+
+The `Math` namespace mirrors Ruby's `Math` module: transcendental constants and
+pure numeric helpers backed by the host's math library. Constants read with
+either accessor (`Math::PI` or `Math.PI`) and helpers are called like
+`Math.sqrt(9)`. Integer arguments are promoted to floats and every helper
+returns a `float`, just like Ruby where `Math` always yields a `Float`.
+
+### Constants
+
+- `Math::PI` – the ratio of a circle's circumference to its diameter.
+- `Math::E` – the base of the natural logarithm.
+
+### Functions
+
+- `Math.sqrt(x)` / `Math.cbrt(x)` – square and cube roots.
+- `Math.sin(x)`, `Math.cos(x)`, `Math.tan(x)` – trigonometric functions
+  (radians).
+- `Math.asin(x)`, `Math.acos(x)`, `Math.atan(x)` – inverse trigonometric
+  functions; `asin`/`acos` require `-1 <= x <= 1`.
+- `Math.atan2(y, x)` – angle of the point `(x, y)` from the positive x-axis.
+- `Math.exp(x)` – `E` raised to `x`.
+- `Math.log(x)` / `Math.log(x, base)` – natural logarithm, or the logarithm in
+  the given base.
+- `Math.log2(x)` / `Math.log10(x)` – base-2 and base-10 logarithms.
+- `Math.hypot(x, y)` – `sqrt(x**2 + y**2)` without intermediate overflow.
+
+```vibe
+Math.sqrt(9)        # 3.0
+Math::PI            # 3.141592653589793
+Math.hypot(3, 4)    # 5.0
+Math.log(8, 2)      # 3.0
+```
+
+Arguments outside a function's mathematical domain raise a domain error (for
+example `Math.sqrt(-1)`, `Math.asin(2)`, or `Math.asin(Float::INFINITY)`),
+matching Ruby's `Math::DomainError`. In-domain special values follow Ruby and
+IEEE 754: `Math.log(0)` returns `-Infinity`, `Math.sin`/`cos`/`tan` of
+`Infinity` return `NaN`, and a `NaN` argument propagates through unchanged.
+
 ## JSON
 
 ### `JSON.parse(string)`

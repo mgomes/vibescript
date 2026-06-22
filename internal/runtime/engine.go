@@ -113,6 +113,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 
 	registerCoreBuiltins(engine)
 	registerDataBuiltins(engine)
+	registerMathBuiltins(engine)
 	registerDurationBuiltins(engine)
 	registerTimeBuiltins(engine)
 	registerTaskBuiltins(engine)
