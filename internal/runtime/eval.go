@@ -494,6 +494,31 @@ func (runner *blockCallRunner) call(args []Value) (Value, error) {
 	return runner.exec.callBlock(runner.blk, args, runner.env)
 }
 
+// callHashEntry yields a hash key/value entry using Ruby's hash block
+// semantics: a block with a single positional parameter receives the entry as a
+// two-element [key, value] pair, while a block with two or more positional
+// parameters receives the key and value as separate arguments (extra parameters
+// bind to nil through the usual positional rules). Centralizing the rule here
+// keeps every hash iteration and filtering helper consistent.
+func (runner *blockCallRunner) callHashEntry(key, value Value) (Value, error) {
+	if runner.positionalParamCount() == 1 {
+		return runner.call([]Value{NewArray([]Value{key, value})})
+	}
+	return runner.call([]Value{key, value})
+}
+
+// positionalParamCount reports how many normal (positional) parameters the
+// block declares, ignoring keyword, rest, and block parameters.
+func (runner *blockCallRunner) positionalParamCount() int {
+	count := 0
+	for _, param := range runner.blk.Params {
+		if param.Kind == ParamNormal {
+			count++
+		}
+	}
+	return count
+}
+
 // CallBlock invokes a block value with the provided arguments.
 // This is the public entry point for capability adapters that need to
 // call user-supplied blocks (e.g. db.each, db.tx).

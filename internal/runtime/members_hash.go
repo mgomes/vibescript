@@ -574,12 +574,9 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			out := make(map[string]Value, len(entries))
-			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
-				blockArgs[0] = NewSymbol(key)
-				blockArgs[1] = entries[key]
-				include, err := runner.call(blockArgs[:])
+				include, err := runner.callHashEntry(NewSymbol(key), entries[key])
 				if err != nil {
 					return NewNil(), err
 				}
@@ -600,12 +597,9 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			out := make(map[string]Value, len(entries))
-			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
-				blockArgs[0] = NewSymbol(key)
-				blockArgs[1] = entries[key]
-				exclude, err := runner.call(blockArgs[:])
+				exclude, err := runner.callHashEntry(NewSymbol(key), entries[key])
 				if err != nil {
 					return NewNil(), err
 				}

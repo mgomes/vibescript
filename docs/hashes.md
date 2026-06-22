@@ -135,7 +135,10 @@ end
 - `except(*keys)` removes selected keys. Keys whose type cannot be a hash key
   (anything other than a symbol or string) are treated as misses and ignored, so
   the surrounding entries are preserved.
-- `select` / `reject` with a block.
+- `select` / `reject` with a block. The block follows Ruby's hash block
+  semantics: a single block parameter receives each entry as a `[key, value]`
+  pair, two parameters bind the key and value separately, and any extra
+  parameters bind to `nil`.
 - `transform_keys` / `transform_values` with a block.
 - `deep_transform_keys` for recursive key mapping across nested hashes/arrays.
 - `remap_keys(mapping_hash)` for direct key rename maps.
@@ -146,6 +149,9 @@ def public_profile(record)
     .slice(:name, :raised, :goal)
     .reject { |key, value| value == nil }
 end
+
+# A single block parameter receives the [key, value] pair.
+{ a: 1, b: 2 }.select { |pair| pair[1] == 1 } # => { a: 1 }
 ```
 
 ```vibe

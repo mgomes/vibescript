@@ -343,8 +343,11 @@ methods.
 - `except(*keys) -> hash` – all entries except the listed keys. Unsupported key
   types (anything other than a symbol or string) are ignored as Ruby misses, so
   the entry is kept rather than raising.
-- `select { |key, value| } -> hash` – entries for which the block is truthy.
-- `reject { |key, value| } -> hash` – entries for which the block is falsy.
+- `select { |key, value| } -> hash` – entries for which the block is truthy. A
+  single block parameter receives each entry as a `[key, value]` pair, matching
+  Ruby's hash block semantics.
+- `reject { |key, value| } -> hash` – entries for which the block is falsy. As
+  with `select`, a single block parameter receives the `[key, value]` pair.
 - `compact -> hash` – entries with `nil` values removed.
 - `transform_keys { |key| } -> hash` – rename keys via the block (must return
   a symbol or string).
