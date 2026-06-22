@@ -533,15 +533,22 @@ func TestParseTimeString(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Only the negative-zero inputs must be re-anchored to the canonical
+		// "-00:00" zone (so rfc2822 emits the unknown-zone marker). For other
+		// zero-offset inputs we deliberately leave the parsed location alone;
+		// Go names a zero-offset zone based on the host TZ ("", "Local", or
+		// "UTC"), so asserting an exact name here would be environment-dependent.
+		// We therefore only assert whether the zone is the canonical negative
+		// zero, which is the behavior under test.
 		tests := []struct {
-			name     string
-			input    string
-			wantName string
+			name          string
+			input         string
+			wantCanonical bool
 		}{
-			{name: "rfc3339_negative_zero", input: "2024-01-02T03:04:05-00:00", wantName: canonical.String()},
-			{name: "rfc1123z_negative_zero", input: "Tue, 02 Jan 2024 03:04:05 -0000", wantName: canonical.String()},
-			{name: "rfc3339_positive_zero", input: "2024-01-02T03:04:05+00:00", wantName: ""},
-			{name: "rfc3339_zulu", input: "2024-01-02T03:04:05Z", wantName: "UTC"},
+			{name: "rfc3339_negative_zero", input: "2024-01-02T03:04:05-00:00", wantCanonical: true},
+			{name: "rfc1123z_negative_zero", input: "Tue, 02 Jan 2024 03:04:05 -0000", wantCanonical: true},
+			{name: "rfc3339_positive_zero", input: "2024-01-02T03:04:05+00:00", wantCanonical: false},
+			{name: "rfc3339_zulu", input: "2024-01-02T03:04:05Z", wantCanonical: false},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -553,8 +560,10 @@ func TestParseTimeString(t *testing.T) {
 				if _, offset := got.Zone(); offset != 0 {
 					t.Fatalf("ParseTimeString(%q) offset = %d, want 0", tc.input, offset)
 				}
-				if name := got.Location().String(); name != tc.wantName {
-					t.Fatalf("ParseTimeString(%q) zone name = %q, want %q", tc.input, name, tc.wantName)
+				gotCanonical := got.Location().String() == canonical.String()
+				if gotCanonical != tc.wantCanonical {
+					t.Fatalf("ParseTimeString(%q): canonical negative-zero zone = %v, want %v (zone name %q)",
+						tc.input, gotCanonical, tc.wantCanonical, got.Location().String())
 				}
 			})
 		}
