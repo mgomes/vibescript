@@ -110,6 +110,19 @@ Removes a trailing separator (default newline):
 "path///".chomp("/") # "path//"
 ```
 
+### `chop`
+
+Removes the last character. A trailing `"\r\n"` is treated as a single record
+separator and removed together; otherwise one full character (a Unicode code
+point, not a single byte) is removed. An empty string is returned unchanged:
+
+```vibe
+"abc".chop      # "ab"
+"abc\n".chop    # "abc"
+"héllo".chop    # "héll"
+"".chop         # ""
+```
+
 ### `upcase`
 
 Converts the string to uppercase:
@@ -381,7 +394,7 @@ Returns `replacement`:
 The following methods are supported as aliases and return transformed strings.
 When there is no change, bang methods return `nil`.
 
-- `strip!`, `lstrip!`, `rstrip!`, `chomp!`
+- `strip!`, `lstrip!`, `rstrip!`, `chomp!`, `chop!`
 - `squish!`
 - `delete_prefix!`, `delete_suffix!`
 - `upcase!`, `downcase!`, `capitalize!`, `swapcase!`, `reverse!`

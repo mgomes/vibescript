@@ -245,6 +245,146 @@ func TestStringBoundaryHelpers(t *testing.T) {
 	}
 }
 
+// TestChopDefault covers chopDefault directly so that record-separator cases
+// using "\r" can be expressed: the Vibescript lexer recognizes only \n, \t,
+// \" and \\ escapes, so a literal "\r" cannot be written in a script string.
+func TestChopDefault(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "trailing newline", in: "abc\n", want: "abc"},
+		{name: "plain string removes last char", in: "abc", want: "ab"},
+		{name: "crlf removed together", in: "abc\r\n", want: "abc"},
+		{name: "empty string unchanged", in: "", want: ""},
+		{name: "single char to empty", in: "a", want: ""},
+		{name: "lone carriage return removed", in: "abc\r", want: "abc"},
+		{name: "unicode removes one rune", in: "héllo", want: "héll"},
+		{name: "trailing multibyte rune", in: "café", want: "caf"},
+		{name: "single multibyte rune to empty", in: "é", want: ""},
+		{name: "lone newline to empty", in: "\n", want: ""},
+		{name: "lone crlf to empty", in: "\r\n", want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := chopDefault(tc.in); got != tc.want {
+				t.Fatalf("chopDefault(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStringChop(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{name: "trailing newline", script: `def run() "abc\n".chop end`, want: "abc"},
+		{name: "plain string removes last char", script: `def run() "abc".chop end`, want: "ab"},
+		{name: "empty string unchanged", script: `def run() "".chop end`, want: ""},
+		{name: "single char to empty", script: `def run() "a".chop end`, want: ""},
+		{name: "unicode removes one rune", script: `def run() "héllo".chop end`, want: "héll"},
+		{name: "trailing multibyte rune", script: `def run() "café".chop end`, want: "caf"},
+		{name: "single multibyte rune to empty", script: `def run() "é".chop end`, want: ""},
+		{name: "lone newline to empty", script: `def run() "\n".chop end`, want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString {
+				t.Fatalf("expected string, got %v", result.Kind())
+			}
+			if result.String() != tc.want {
+				t.Fatalf("chop mismatch: %q, want %q", result.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestStringChopBang(t *testing.T) {
+	t.Parallel()
+
+	stringCases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{name: "removes last char", script: `def run() "abc".chop! end`, want: "ab"},
+		{name: "trailing newline", script: `def run() "abc\n".chop! end`, want: "abc"},
+		{name: "unicode removes one rune", script: `def run() "héllo".chop! end`, want: "héll"},
+	}
+	for _, tc := range stringCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString {
+				t.Fatalf("expected string, got %v", result.Kind())
+			}
+			if result.String() != tc.want {
+				t.Fatalf("chop! mismatch: %q, want %q", result.String(), tc.want)
+			}
+		})
+	}
+
+	nilCases := []struct {
+		name   string
+		script string
+	}{
+		{name: "empty string returns nil", script: `def run() "".chop! end`},
+	}
+	for _, tc := range nilCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindNil {
+				t.Fatalf("expected nil, got %v", result.Kind())
+			}
+		})
+	}
+}
+
+func TestStringChopErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "chop rejects arguments",
+			script: `def run() "abc".chop("x") end`,
+			want:   "string.chop does not take arguments",
+		},
+		{
+			name:   "chop! rejects arguments",
+			script: `def run() "abc".chop!("x") end`,
+			want:   "string.chop! does not take arguments",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestStringSearchAndSlice(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
