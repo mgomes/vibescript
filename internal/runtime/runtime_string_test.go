@@ -354,6 +354,31 @@ func TestStringChopBang(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("does not mutate the receiver", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, `
+			def run()
+				original = "abc"
+				chopped = original.chop!
+				[original, chopped]
+			end
+		`)
+		result := callFunc(t, script, "run", nil)
+		if result.Kind() != KindArray {
+			t.Fatalf("expected array, got %v", result.Kind())
+		}
+		elements := result.Array()
+		if len(elements) != 2 {
+			t.Fatalf("expected 2 elements, got %d", len(elements))
+		}
+		if got := elements[0].String(); got != "abc" {
+			t.Fatalf("chop! mutated the receiver: %q, want %q", got, "abc")
+		}
+		if got := elements[1].String(); got != "ab" {
+			t.Fatalf("chop! returned %q, want %q", got, "ab")
+		}
+	})
 }
 
 func TestStringChopErrors(t *testing.T) {

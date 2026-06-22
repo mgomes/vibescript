@@ -8,8 +8,9 @@ All notable changes to this project will be documented in this file.
 - **Added: Ruby-style `String#chop` and `String#chop!`.** `chop` removes the
   last character, treating a trailing `"\r\n"` as a single record separator and
   otherwise removing one full Unicode character rather than one byte; an empty
-  string is returned unchanged. `chop!` mutates in the same way and returns
-  `nil` when the string is empty, matching the existing bang helper convention.
+  string is returned unchanged. `chop!` returns the chopped string and returns
+  `nil` when there is nothing to remove (the empty-string case), matching the
+  existing copy-on-transform bang helper convention.
 - **Added: Ruby-style float special values and division-by-zero behavior.** Float
   division by zero with the `/` operator (and `Float#fdiv`/`Integer#fdiv`) now
   follows IEEE 754 like Ruby instead of raising: a finite nonzero numerator
