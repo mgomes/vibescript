@@ -1,7 +1,10 @@
 package value_test
 
 import (
+	"errors"
 	"math"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -465,6 +468,185 @@ func TestValueStringCycleDetection(t *testing.T) {
 		}
 	})
 }
+
+func TestValueStringBounded(t *testing.T) {
+	t.Parallel()
+
+	t.Run("small_value_renders_fully", func(t *testing.T) {
+		t.Parallel()
+		v := value.NewArray([]value.Value{value.NewInt(1), value.NewInt(2), value.NewInt(3)})
+		got, err := v.StringBounded(1024)
+		if err != nil {
+			t.Fatalf("StringBounded() error = %v, want nil", err)
+		}
+		if want := "[1, 2, 3]"; got != want {
+			t.Fatalf("StringBounded() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("matches_String_for_composites_under_limit", func(t *testing.T) {
+		t.Parallel()
+		// A single-entry hash renders deterministically, so the bounded path
+		// can be compared byte-for-byte against the unbounded one. Multi-entry
+		// hashes iterate in Go's randomized map order, so two independent
+		// renderings of the same hash need not match textually.
+		v := value.NewHash(map[string]value.Value{
+			"a": value.NewArray([]value.Value{value.NewInt(1), value.NewString("two")}),
+		})
+		got, err := v.StringBounded(1 << 20)
+		if err != nil {
+			t.Fatalf("StringBounded() error = %v, want nil", err)
+		}
+		if want := "{a: [1, two]}"; got != want {
+			t.Fatalf("StringBounded() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("non_positive_limit_is_unbounded", func(t *testing.T) {
+		t.Parallel()
+		elems := make([]value.Value, 5000)
+		for i := range elems {
+			elems[i] = value.NewString("abcdefghij")
+		}
+		v := value.NewArray(elems)
+		for _, limit := range []int{0, -1} {
+			got, err := v.StringBounded(limit)
+			if err != nil {
+				t.Fatalf("StringBounded(%d) error = %v, want nil", limit, err)
+			}
+			if want := v.String(); got != want {
+				t.Fatalf("StringBounded(%d) did not match String()", limit)
+			}
+		}
+	})
+
+	t.Run("large_array_trips_limit", func(t *testing.T) {
+		t.Parallel()
+		elems := make([]value.Value, 100000)
+		for i := range elems {
+			elems[i] = value.NewString("abcdefghij")
+		}
+		v := value.NewArray(elems)
+
+		const limit = 4096
+		got, err := v.StringBounded(limit)
+		if !errors.Is(err, value.ErrStringRenderTruncated) {
+			t.Fatalf("StringBounded() error = %v, want ErrStringRenderTruncated", err)
+		}
+		// The partial output is bounded to roughly the limit plus one trailing
+		// element, never the full multi-megabyte rendering.
+		if len(got) > limit+64 {
+			t.Fatalf("partial rendering = %d bytes, want <= %d", len(got), limit+64)
+		}
+		if full := v.String(); len(got) >= len(full) {
+			t.Fatalf("partial rendering (%d bytes) was not shorter than full rendering (%d bytes)", len(got), len(full))
+		}
+	})
+
+	t.Run("large_hash_trips_limit", func(t *testing.T) {
+		t.Parallel()
+		entries := make(map[string]value.Value, 100000)
+		for i := range 100000 {
+			entries[strconv.Itoa(i)] = value.NewString("abcdefghij")
+		}
+		v := value.NewHash(entries)
+
+		const limit = 4096
+		got, err := v.StringBounded(limit)
+		if !errors.Is(err, value.ErrStringRenderTruncated) {
+			t.Fatalf("StringBounded() error = %v, want ErrStringRenderTruncated", err)
+		}
+		if len(got) > limit+64 {
+			t.Fatalf("partial rendering = %d bytes, want <= %d", len(got), limit+64)
+		}
+	})
+
+	t.Run("deeply_nested_array_trips_limit", func(t *testing.T) {
+		t.Parallel()
+		v := value.NewArray([]value.Value{value.NewInt(0)})
+		for range 5000 {
+			v = value.NewArray([]value.Value{v})
+		}
+
+		const limit = 1024
+		got, err := v.StringBounded(limit)
+		if !errors.Is(err, value.ErrStringRenderTruncated) {
+			t.Fatalf("StringBounded() error = %v, want ErrStringRenderTruncated", err)
+		}
+		if len(got) > limit+64 {
+			t.Fatalf("partial rendering = %d bytes, want <= %d", len(got), limit+64)
+		}
+	})
+
+	t.Run("oversized_scalar_trips_limit", func(t *testing.T) {
+		t.Parallel()
+		v := value.NewString(strings.Repeat("x", 1<<16))
+		got, err := v.StringBounded(1024)
+		if !errors.Is(err, value.ErrStringRenderTruncated) {
+			t.Fatalf("StringBounded() error = %v, want ErrStringRenderTruncated", err)
+		}
+		if len(got) != 1024 {
+			t.Fatalf("partial scalar rendering = %d bytes, want 1024", len(got))
+		}
+	})
+
+	t.Run("cycle_still_renders", func(t *testing.T) {
+		t.Parallel()
+		elems := make([]value.Value, 1)
+		arr := value.NewArray(elems)
+		elems[0] = arr
+		got, err := arr.StringBounded(1024)
+		if err != nil {
+			t.Fatalf("StringBounded() error = %v, want nil", err)
+		}
+		if want := "[<cycle>]"; got != want {
+			t.Fatalf("StringBounded() = %q, want %q", got, want)
+		}
+	})
+}
+
+func BenchmarkValueStringLargeComposite(b *testing.B) {
+	b.Run("array_100000", func(b *testing.B) {
+		elems := make([]value.Value, 100000)
+		for i := range elems {
+			elems[i] = value.NewString("abcdefghij")
+		}
+		v := value.NewArray(elems)
+
+		b.ReportAllocs()
+		for b.Loop() {
+			benchValueStringSink = v.String()
+		}
+	})
+
+	b.Run("hash_10000", func(b *testing.B) {
+		entries := make(map[string]value.Value, 10000)
+		for i := range 10000 {
+			entries[strconv.Itoa(i)] = value.NewString("abcdefghij")
+		}
+		v := value.NewHash(entries)
+
+		b.ReportAllocs()
+		for b.Loop() {
+			benchValueStringSink = v.String()
+		}
+	})
+
+	b.Run("bounded_array_100000", func(b *testing.B) {
+		elems := make([]value.Value, 100000)
+		for i := range elems {
+			elems[i] = value.NewString("abcdefghij")
+		}
+		v := value.NewArray(elems)
+
+		b.ReportAllocs()
+		for b.Loop() {
+			benchValueStringSink, _ = v.StringBounded(4096)
+		}
+	})
+}
+
+var benchValueStringSink string
 
 func TestValueEqual(t *testing.T) {
 	t.Parallel()

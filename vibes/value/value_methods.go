@@ -1,6 +1,7 @@
 package value
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -94,10 +95,16 @@ func (v Value) String() string {
 		return v.Duration().String()
 	case KindTime:
 		return v.data.(time.Time).Format(time.RFC3339Nano)
-	case KindArray:
-		return v.stringWithState(newValueStringState())
-	case KindHash:
-		return v.stringWithState(newValueStringState())
+	case KindArray, KindHash:
+		var buf strings.Builder
+		state := newValueStringState()
+		// Composite rendering is best-effort and unbounded here; callers that
+		// must guard against hostile inputs (such as the CLI rendering a value
+		// returned from an untrusted script) use StringBounded instead. The
+		// unbounded path never reports the truncation sentinel, so the error is
+		// always nil.
+		_ = v.appendString(&buf, state, 0)
+		return buf.String()
 	case KindRange:
 		r := v.data.(Range)
 		if r.Exclusive {
@@ -131,6 +138,43 @@ func FormatFloat(f float64) string {
 	}
 }
 
+// ErrStringRenderTruncated reports that a bounded rendering (StringBounded)
+// stopped early because the formatted output would have exceeded the caller's
+// byte budget. It lets host-facing rendering refuse to materialize an
+// unbounded string for a large composite result instead of allocating until
+// the process runs out of memory. Callers detect it with errors.Is.
+var ErrStringRenderTruncated = errors.New("value: string rendering exceeded byte limit")
+
+// StringBounded renders v like String but stops once the formatted output
+// would exceed limit bytes, returning the partial output and
+// ErrStringRenderTruncated. A non-positive limit means unbounded and behaves
+// exactly like String. Rendering writes directly into a single growing buffer
+// and checks the budget after each element, so a hostile composite cannot
+// allocate intermediate per-element strings or a final joined buffer larger
+// than roughly limit plus one element before the limit trips. Cycle handling
+// is identical to String.
+func (v Value) StringBounded(limit int) (string, error) {
+	if limit <= 0 {
+		return v.String(), nil
+	}
+
+	switch v.kind {
+	case KindArray, KindHash:
+		var buf strings.Builder
+		state := newValueStringState()
+		if err := v.appendString(&buf, state, limit); err != nil {
+			return buf.String(), err
+		}
+		return buf.String(), nil
+	default:
+		s := v.String()
+		if len(s) > limit {
+			return s[:limit], ErrStringRenderTruncated
+		}
+		return s, nil
+	}
+}
+
 type valueStringState struct {
 	arrays map[SliceIdentity]struct{}
 	maps   map[uintptr]struct{}
@@ -143,7 +187,19 @@ func newValueStringState() *valueStringState {
 	}
 }
 
-func (v Value) stringWithState(state *valueStringState) string {
+// appendString streams v's rendering into buf instead of building intermediate
+// per-element slices and a final joined string. When limit is positive it stops
+// and returns ErrStringRenderTruncated as soon as buf grows past the limit, so
+// large composites trip the budget rather than allocating without bound. A
+// non-positive limit renders the whole value.
+func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit int) error {
+	// Check before descending so a deeply nested composite, whose opening
+	// brackets are written before any element-level check runs, trips the
+	// budget during the descent rather than after writing one delimiter per
+	// level.
+	if exceedsStringLimit(buf, limit) {
+		return ErrStringRenderTruncated
+	}
 	switch v.kind {
 	case KindArray:
 		elems := v.data.([]Value)
@@ -154,37 +210,71 @@ func (v Value) stringWithState(state *valueStringState) string {
 		}
 		if id.Ptr != 0 {
 			if _, seen := state.arrays[id]; seen {
-				return "<cycle>"
+				buf.WriteString("<cycle>")
+				return nil
 			}
 			state.arrays[id] = struct{}{}
 			defer delete(state.arrays, id)
 		}
-		parts := make([]string, len(elems))
+		buf.WriteByte('[')
 		for i, e := range elems {
-			parts[i] = e.stringWithState(state)
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			if err := e.appendString(buf, state, limit); err != nil {
+				return err
+			}
+			if exceedsStringLimit(buf, limit) {
+				return ErrStringRenderTruncated
+			}
 		}
-		return fmt.Sprintf("[%s]", strings.Join(parts, ", "))
+		buf.WriteByte(']')
+		return nil
 	case KindHash:
 		entries := v.data.(map[string]Value)
 		if len(entries) == 0 {
-			return "{}"
+			buf.WriteString("{}")
+			return nil
 		}
 		ptr := reflect.ValueOf(entries).Pointer()
 		if ptr != 0 {
 			if _, seen := state.maps[ptr]; seen {
-				return "<cycle>"
+				buf.WriteString("<cycle>")
+				return nil
 			}
 			state.maps[ptr] = struct{}{}
 			defer delete(state.maps, ptr)
 		}
-		parts := make([]string, 0, len(entries))
+		buf.WriteByte('{')
+		first := true
 		for k, val := range entries {
-			parts = append(parts, fmt.Sprintf("%s: %s", k, val.stringWithState(state)))
+			if !first {
+				buf.WriteString(", ")
+			}
+			first = false
+			buf.WriteString(k)
+			buf.WriteString(": ")
+			if err := val.appendString(buf, state, limit); err != nil {
+				return err
+			}
+			if exceedsStringLimit(buf, limit) {
+				return ErrStringRenderTruncated
+			}
 		}
-		return fmt.Sprintf("{%s}", strings.Join(parts, ", "))
+		buf.WriteByte('}')
+		return nil
 	default:
-		return v.String()
+		s := v.String()
+		buf.WriteString(s)
+		if exceedsStringLimit(buf, limit) {
+			return ErrStringRenderTruncated
+		}
+		return nil
 	}
+}
+
+func exceedsStringLimit(buf *strings.Builder, limit int) bool {
+	return limit > 0 && buf.Len() > limit
 }
 
 // Truthy reports whether v is considered true in a boolean context.
