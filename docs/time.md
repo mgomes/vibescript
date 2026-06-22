@@ -43,9 +43,9 @@ def formatted_timestamp
 end
 ```
 
-`Time#to_s` uses RFC3339Nano. `Time#iso8601` and `Time#rfc3339` return RFC3339, defaulting to whole-second precision.
+`Time#to_s` uses RFC3339Nano. `Time#iso8601`, `Time#xmlschema`, and `Time#rfc3339` return RFC3339, defaulting to whole-second precision. `xmlschema` is an alias for `iso8601`.
 
-Both accept an optional `ndigits` argument (matching Ruby's `Time#iso8601(ndigits = 0)`) to append fractional-second digits. Fractional seconds are truncated toward zero, and requesting more digits than the nanosecond clock can resolve zero-pads the remainder:
+They accept an optional `ndigits` argument (matching Ruby's `Time#iso8601(ndigits = 0)`) to append fractional-second digits. Fractional seconds are truncated toward zero, and requesting more digits than the nanosecond clock can resolve zero-pads the remainder:
 
 ```vibe
 def fractional_timestamps
@@ -61,6 +61,22 @@ end
 
 A negative `ndigits`, a non-integer argument, more than one argument, or a precision above 100 digits raises a runtime error.
 
+`Time#httpdate` renders the HTTP-date / IMF-fixdate form (RFC 7231), always in GMT. `Time#rfc2822` and its alias `Time#rfc822` render the RFC 2822 mail date, preserving the receiver's zone offset; a genuine UTC receiver uses the `-0000` zone Ruby reserves for timestamps without real zone information, while an explicit zero offset uses `+0000`. Both helpers drop sub-second precision because their grammars have whole-second resolution and take no arguments:
+
+```vibe
+def mail_and_http_dates
+  utc = Time.utc(2024, 1, 2, 3, 4, 5)
+  offset = Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "+05:30")
+  {
+    httpdate:     utc.httpdate,     # "Tue, 02 Jan 2024 03:04:05 GMT"
+    rfc2822:      utc.rfc2822,      # "Tue, 02 Jan 2024 03:04:05 -0000"
+    rfc822:       utc.rfc822,       # "Tue, 02 Jan 2024 03:04:05 -0000"
+    http_offset:  offset.httpdate,  # "Mon, 01 Jan 2024 21:34:05 GMT"
+    mail_offset:  offset.rfc2822    # "Tue, 02 Jan 2024 03:04:05 +0530"
+  }
+end
+```
+
 ## Accessors and predicates
 
 - Date/time parts: `year`, `month`/`mon`, `day`/`mday`, `hour`, `min`, `sec`, `usec`/`tv_usec`, `nsec`/`tv_nsec`, `subsec`
@@ -73,7 +89,8 @@ A negative `ndigits`, a non-integer argument, more than one argument, or a preci
 - Epoch: `to_i`/`tv_sec`, `to_f`, `to_r`
 - Zone conversion: `getutc`/`getgm`, `utc`/`gmtime`, and `getlocal(offset = nil)`/`localtime(offset = nil)`. With no argument the latter two convert to the host's local zone; passing a zone such as `"+05:30"`, `"-04:00"`, `"America/New_York"`, or `"UTC"` returns the same instant in that zone. They always return a new `Time` rather than mutating the receiver.
 - String: `to_s` (RFC3339Nano)
-- RFC3339 aliases: `iso8601(ndigits = 0)`, `rfc3339(ndigits = 0)` (optional fractional-second precision)
+- RFC3339 aliases: `iso8601(ndigits = 0)`, `xmlschema(ndigits = 0)`, `rfc3339(ndigits = 0)` (optional fractional-second precision)
+- HTTP/mail dates: `httpdate` (IMF-fixdate, always GMT), `rfc2822`/`rfc822` (RFC 2822 mail date, preserving the receiver's offset)
 - Tuple: `to_a` returns `[sec, min, hour, mday, month, year, wday, yday, isdst, zone]`, matching Ruby's positional field order. Field values reuse the individual accessors, so the result reflects the receiver's UTC/local/offset zone.
 
 ## Comparisons and math

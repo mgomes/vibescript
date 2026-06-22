@@ -428,13 +428,21 @@ func hashMemberTransforms(property string) (Value, error) {
 			return NewHash(out), nil
 		}), nil
 	case "slice":
-		return NewBuiltin("hash.slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		// AutoBuiltin so a parenless `hash.slice` invokes with zero arguments
+		// and returns an empty hash, matching Ruby where the call has no
+		// parentheses distinction. Explicit `slice(...)` calls still pass
+		// their candidate keys through the normal call path.
+		return NewAutoBuiltin("hash.slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			entries := receiver.Hash()
 			out := make(map[string]Value, len(args))
 			for _, arg := range args {
+				// Vibescript hash keys are only symbols or strings, so an
+				// unsupported argument can never match an entry. Ruby's
+				// Hash#slice omits candidate keys that are absent, so we
+				// treat those arguments as misses rather than raising.
 				key, err := valueToHashKey(arg)
 				if err != nil {
-					return NewNil(), fmt.Errorf("hash.slice keys must be symbol or string")
+					continue
 				}
 				if value, ok := entries[key]; ok {
 					out[key] = value
@@ -443,7 +451,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			return NewHash(out), nil
 		}), nil
 	case "except":
-		return NewBuiltin("hash.except", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		// AutoBuiltin so a parenless `hash.except` invokes with zero arguments
+		// and returns a copy of the receiver, matching Ruby where the call has
+		// no parentheses distinction. Explicit `except(...)` calls still pass
+		// their excluded keys through the normal call path.
+		return NewAutoBuiltin("hash.except", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			excluded := make(map[string]struct{}, len(args))
 			for _, arg := range args {
 				// Vibescript hash keys are only symbols or strings, so an
