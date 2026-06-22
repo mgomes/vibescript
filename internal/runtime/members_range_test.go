@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"math"
 	"testing"
 )
 
@@ -273,6 +275,88 @@ end`
 	for i, w := range want {
 		if arr[i].Int() != w {
 			t.Fatalf("last(3)[%d] = %d, want %d", i, arr[i].Int(), w)
+		}
+	}
+}
+
+func TestRangeBoundedOnOverflowingLength(t *testing.T) {
+	t.Parallel()
+
+	// The inclusive full positive span has length MaxInt64+1, which overflows
+	// int64. A bounded first(n)/last(n) only needs to allocate n elements, so it
+	// must succeed instead of being rejected as "result too large". last(n) is
+	// derived arithmetically from the end endpoint and so stays bounded even
+	// though Ruby itself would OOM materializing this range.
+	tests := []struct {
+		name string
+		expr string
+		want []int64
+	}{
+		{"first one", "(0..9223372036854775807).first(1)", []int64{0}},
+		{"first three", "(0..9223372036854775807).first(3)", []int64{0, 1, 2}},
+		{"last one", "(0..9223372036854775807).last(1)", []int64{math.MaxInt64}},
+		{
+			"last three",
+			"(0..9223372036854775807).last(3)",
+			[]int64{math.MaxInt64 - 2, math.MaxInt64 - 1, math.MaxInt64},
+		},
+		{"first zero", "(0..9223372036854775807).first(0)", nil},
+		{"last zero", "(0..9223372036854775807).last(0)", nil},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := "def run()\n  " + tc.expr + "\nend"
+			script := compileScriptWithConfig(t, Config{StepQuota: 100000, MemoryQuotaBytes: 64 << 20}, source)
+			requireRangeInts(t, callFunc(t, script, "run", nil), tc.want)
+		})
+	}
+}
+
+func TestRangeBoundedOnSpanOverflow(t *testing.T) {
+	t.Parallel()
+
+	// MinInt64..MaxInt64 cannot be written as a literal (the parser rejects the
+	// MinInt64 token), but it is a valid range value: high - low overflows int64,
+	// so rangeLength reports overflow. Bounded first(n)/last(n) must still work.
+	// Inject the range as a data-only global and exercise both endpoints.
+	fullSpan := NewRange(Range{Start: math.MinInt64, End: math.MaxInt64})
+	tests := []struct {
+		name string
+		expr string
+		want []int64
+	}{
+		{"first two", "span.first(2)", []int64{math.MinInt64, math.MinInt64 + 1}},
+		{"last two", "span.last(2)", []int64{math.MaxInt64 - 1, math.MaxInt64}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := "def run(span)\n  " + tc.expr + "\nend"
+			script := compileScriptWithConfig(t, Config{StepQuota: 100000, MemoryQuotaBytes: 64 << 20}, source)
+			result, err := script.Call(context.Background(), "run", []Value{fullSpan}, CallOptions{})
+			if err != nil {
+				t.Fatalf("call run: %v", err)
+			}
+			requireRangeInts(t, result, tc.want)
+		})
+	}
+}
+
+func requireRangeInts(t *testing.T, got Value, want []int64) {
+	t.Helper()
+	if got.Kind() != KindArray {
+		t.Fatalf("kind = %v, want array", got.Kind())
+	}
+	arr := got.Array()
+	if len(arr) != len(want) {
+		t.Fatalf("length = %d, want %d (%v)", len(arr), len(want), arr)
+	}
+	for i, w := range want {
+		if arr[i].Kind() != KindInt || arr[i].Int() != w {
+			t.Fatalf("element %d = %v, want %d", i, arr[i], w)
 		}
 	}
 }

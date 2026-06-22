@@ -181,17 +181,42 @@ func rangeLength(rng Range) (int64, bool) {
 	return span + 1, false
 }
 
+// rangeLastElement returns the final value the range iterates over: its end
+// endpoint for inclusive ranges, or the value one step inside the end for
+// exclusive ranges. Callers must only invoke it for non-empty ranges; the
+// trailing-window arithmetic in rangeMaterialize guarantees this because it
+// has already clamped the requested count to a positive number of in-range
+// elements.
+func rangeLastElement(rng Range) int64 {
+	if !rng.Exclusive {
+		return rng.End
+	}
+	if rng.Start <= rng.End {
+		return rng.End - 1
+	}
+	return rng.End + 1
+}
+
 // rangeMaterialize builds up to limit elements of the range's iteration
 // sequence. When fromEnd is true it returns the trailing elements (for
 // last(n)); otherwise the leading elements (for to_a and first(n)). Step
 // and memory quotas are enforced per element so large materializations are
 // bounded by the sandbox.
+//
+// A range whose total element count overflows int64 (the inclusive full
+// 64-bit span) is still valid for a bounded first(n)/last(n): the count is
+// only clamped to the range length when that length is representable, and the
+// window's starting value is derived from the relevant endpoint, so a single
+// trailing or leading element never depends on the unrepresentable total.
 func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (Value, error) {
-	length, overflow := rangeLength(rng)
-	if overflow {
-		return NewNil(), fmt.Errorf("range materialization result too large")
+	if limit <= 0 {
+		return NewArray([]Value{}), nil
 	}
-	if limit > length {
+	// Only clamp to the element count when it fits in int64. An overflowing
+	// length is strictly greater than any limit (limit <= MaxInt < length), so
+	// the requested window always fits without clamping.
+	length, overflow := rangeLength(rng)
+	if !overflow && limit > length {
 		limit = length
 	}
 	if limit <= 0 {
@@ -202,21 +227,20 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 	}
 
 	ascending := rng.Start <= rng.End
-	// skip drops leading elements so last(n) keeps the trailing window.
-	skip := int64(0)
-	if fromEnd {
-		skip = length - limit
-	}
 
-	// Compute the first value of the window arithmetically so last(n) never
-	// iterates the skipped prefix of a huge range (which would otherwise run
-	// unbounded and uncharged in native Go). skip <= length-limit keeps the
-	// start within the range, so the addition cannot overflow int64.
+	// Compute the first value of the window directly from the endpoint nearest
+	// to the start of the window. For last(n) this avoids both materializing
+	// and depending on the (possibly unrepresentable) total element count: the
+	// trailing window's elements are all within the range, so deriving its
+	// first value from the final iterated element cannot overflow int64.
 	current := rng.Start
-	if ascending {
-		current += skip
-	} else {
-		current -= skip
+	if fromEnd {
+		last := rangeLastElement(rng)
+		if ascending {
+			current = last - (limit - 1)
+		} else {
+			current = last + (limit - 1)
+		}
 	}
 
 	// Reject the allocation up front so a near-MaxInt64 range cannot reserve a
