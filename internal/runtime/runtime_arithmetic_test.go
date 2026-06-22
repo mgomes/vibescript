@@ -382,6 +382,265 @@ func TestNumericConversionBuiltins(t *testing.T) {
 	}
 }
 
+func TestTimeNumericSecondArithmetic(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def add(left, right)
+      left + right
+    end
+
+    def subtract(left, right)
+      left - right
+    end
+    `)
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name string
+		fn   string
+		args []Value
+		want Value
+	}{
+		{
+			name: "add_integer_seconds",
+			fn:   "add",
+			args: []Value{NewTime(base), NewInt(60)},
+			want: NewTime(base.Add(time.Minute)),
+		},
+		{
+			name: "add_integer_seconds_commutes",
+			fn:   "add",
+			args: []Value{NewInt(60), NewTime(base)},
+			want: NewTime(base.Add(time.Minute)),
+		},
+		{
+			name: "add_negative_seconds",
+			fn:   "add",
+			args: []Value{NewTime(base), NewInt(-60)},
+			want: NewTime(base.Add(-time.Minute)),
+		},
+		{
+			name: "add_fractional_seconds",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(1.5)},
+			want: NewTime(base.Add(1500 * time.Millisecond)),
+		},
+		{
+			name: "add_fractional_seconds_commutes",
+			fn:   "add",
+			args: []Value{NewFloat(1.5), NewTime(base)},
+			want: NewTime(base.Add(1500 * time.Millisecond)),
+		},
+		{
+			name: "subtract_integer_seconds",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewInt(60)},
+			want: NewTime(base.Add(-time.Minute)),
+		},
+		{
+			name: "subtract_negative_seconds",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewInt(-60)},
+			want: NewTime(base.Add(time.Minute)),
+		},
+		{
+			name: "subtract_fractional_seconds",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(1.5)},
+			want: NewTime(base.Add(-1500 * time.Millisecond)),
+		},
+		{
+			name: "subtract_negative_fractional_seconds_moves_forward",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(-1.5)},
+			want: NewTime(base.Add(1500 * time.Millisecond)),
+		},
+		{
+			// Ruby floors the scaled nanosecond offset: 1.1e-9 s = 1.1 ns
+			// floors to 1 ns forward.
+			name: "add_positive_fractional_nanosecond_floors",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(1.1e-9)},
+			want: NewTime(base.Add(time.Nanosecond)),
+		},
+		{
+			// -1.1e-9 s = -1.1 ns floors to -2 ns, so addition moves back two
+			// nanoseconds rather than truncating toward zero at one.
+			name: "add_negative_fractional_nanosecond_floors_away_from_zero",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(-1.1e-9)},
+			want: NewTime(base.Add(-2 * time.Nanosecond)),
+		},
+		{
+			// t - 1.1e-9 == t + (-1.1 ns); the negated offset floors to -2 ns.
+			name: "subtract_positive_fractional_nanosecond_floors_away_from_zero",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(1.1e-9)},
+			want: NewTime(base.Add(-2 * time.Nanosecond)),
+		},
+		{
+			// t - (-1.1e-9) == t + 1.1 ns, which floors to 1 ns forward.
+			name: "subtract_negative_fractional_nanosecond_floors",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(-1.1e-9)},
+			want: NewTime(base.Add(time.Nanosecond)),
+		},
+		{
+			// 0.123456789's exact double sits just below 123456789 ns; flooring
+			// the float product (0.123456789 * 1e9) rounds up to 123456789, but
+			// flooring the exact value yields 123456788 as MRI does.
+			name: "add_fractional_seconds_floors_exact_value",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(0.123456789)},
+			want: NewTime(base.Add(123456788 * time.Nanosecond)),
+		},
+		{
+			// t + (-0.123456789): negating the exact value before flooring keeps
+			// the offset at -123456789 ns, matching MRI's Time + (-x).
+			name: "add_negative_fractional_seconds_floors_exact_value",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(-0.123456789)},
+			want: NewTime(base.Add(-123456789 * time.Nanosecond)),
+		},
+		{
+			// t - 0.123456789 == t + (-0.123456789); the negated offset floors to
+			// -123456789 ns.
+			name: "subtract_fractional_seconds_floors_exact_value",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(0.123456789)},
+			want: NewTime(base.Add(-123456789 * time.Nanosecond)),
+		},
+		{
+			// t - (-0.123456789) == t + 0.123456789, which floors to 123456788 ns.
+			name: "subtract_negative_fractional_seconds_floors_exact_value",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(-0.123456789)},
+			want: NewTime(base.Add(123456788 * time.Nanosecond)),
+		},
+		{
+			name: "difference_returns_float_seconds",
+			fn:   "subtract",
+			args: []Value{NewTime(base.Add(90 * time.Second)), NewTime(base)},
+			want: NewFloat(90),
+		},
+		{
+			name: "difference_preserves_subsecond_precision",
+			fn:   "subtract",
+			args: []Value{NewTime(base.Add(1500 * time.Millisecond)), NewTime(base)},
+			want: NewFloat(1.5),
+		},
+		{
+			name: "difference_negative",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewTime(base.Add(90 * time.Second))},
+			want: NewFloat(-90),
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, tc.args)
+			if got.Kind() != tc.want.Kind() {
+				t.Fatalf("%s kind = %v, want %v", tc.fn, got.Kind(), tc.want.Kind())
+			}
+			if !got.Equal(tc.want) {
+				t.Fatalf("%s = %v, want %v", tc.fn, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTimeNumericArithmeticErrors(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def add(left, right)
+      left + right
+    end
+
+    def subtract(left, right)
+      left - right
+    end
+    `)
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	posInf := math.Inf(1)
+	nan := math.NaN()
+
+	cases := []struct {
+		name string
+		fn   string
+		args []Value
+		want string
+	}{
+		{
+			name: "add_integer_overflow",
+			fn:   "add",
+			args: []Value{NewTime(base), NewInt(math.MaxInt64)},
+			want: "time addition result out of int64 range",
+		},
+		{
+			name: "add_float_infinity",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(posInf)},
+			want: "time addition result out of int64 range",
+		},
+		{
+			name: "add_float_nan",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(nan)},
+			want: "time addition result out of int64 range",
+		},
+		{
+			name: "subtract_integer_overflow",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewInt(math.MinInt64)},
+			want: "time subtraction result out of int64 range",
+		},
+		{
+			// Negating the most negative representable nanosecond offset must
+			// raise rather than overflow time.Duration(math.MinInt64) back to
+			// itself and move the instant ~292 years backwards.
+			name: "subtract_min_duration_float_overflow",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(-9223372036.854776)},
+			want: "time subtraction result out of int64 range",
+		},
+		{
+			name: "subtract_float_negative_infinity_overflow",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(math.Inf(-1))},
+			want: "time subtraction result out of int64 range",
+		},
+		{
+			name: "subtract_float_nan_overflow",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(math.NaN())},
+			want: "time subtraction result out of int64 range",
+		},
+		{
+			name: "add_unsupported_operand",
+			fn:   "add",
+			args: []Value{NewTime(base), NewNil()},
+			want: "unsupported addition operands",
+		},
+		{
+			name: "subtract_unsupported_operand",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewNil()},
+			want: "unsupported subtraction operands",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, tc.fn, tc.args, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestDurationAndTimeArithmeticOverflowErrors(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

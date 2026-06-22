@@ -97,7 +97,22 @@ end
 
 - Compare: `<=>`, `eql?`
 - Add/sub durations: `time + duration`, `time - duration`
-- Difference of times: `time - time` → `Duration`
+- Add/sub seconds: `time + number`, `time - number`, where the number is interpreted as seconds (matching Ruby). Integers shift by whole seconds; floats carry sub-second precision down to the nanosecond, and negative values shift backward. The result is a new `Time`. Numeric addition commutes (`number + time`), but subtracting a `Time` from a number is undefined, just as in Ruby.
+- Difference of times: `time - time` → a `Float` number of seconds (matching Ruby's `Time#-`), preserving sub-second precision
+
+```vibe
+def time_seconds_math
+  t = Time.utc(2024, 1, 1, 0, 0, 0)
+  {
+    one_minute_later:   (t + 60).iso8601,    # "2024-01-01T00:01:00Z"
+    one_minute_earlier: (t - 60).iso8601,    # "2023-12-31T23:59:00Z"
+    half_second_later:  (t + 0.5).iso8601(3),# "2024-01-01T00:00:00.500Z"
+    span_seconds:       (t + 90) - t         # 90.0
+  }
+end
+```
+
+An out-of-range numeric offset (including a non-finite float such as `Infinity` or `NaN`) raises a runtime error.
 
 ## Duration shortcuts that yield Time
 

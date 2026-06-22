@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"math/bits"
 	"reflect"
 	"time"
@@ -384,6 +385,92 @@ func durationSecondsToTimeDuration(seconds int64, method string) (time.Duration,
 	return time.Duration(seconds) * time.Second, nil
 }
 
+// numericSecondsToTimeDuration converts a numeric value (interpreted as a
+// count of seconds, matching Ruby's Time arithmetic) into a nanosecond
+// time.Duration. Integers shift by whole seconds while floats carry
+// sub-second precision down to the nanosecond. It reports an error when the
+// nanosecond magnitude would overflow int64.
+func numericSecondsToTimeDuration(val Value, method string) (time.Duration, error) {
+	switch val.Kind() {
+	case KindInt:
+		return durationSecondsToTimeDuration(val.Int(), method)
+	case KindFloat:
+		// Ruby floors the scaled nanosecond offset, so negative fractional
+		// nanoseconds move further from zero rather than truncating toward it.
+		ns, err := floatSecondsToFlooredNanos(val.Float(), false, method)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(ns), nil
+	default:
+		return 0, fmt.Errorf("%s expects numeric seconds", method)
+	}
+}
+
+// floatSecondsToFlooredNanos converts a float count of seconds into a floored
+// nanosecond offset, optionally negating the seconds first. Scaling routes
+// through math/big so the multiplication by 10^9 stays exact: floating the
+// product before flooring (math.Floor(f * 1e9)) can round a value whose exact
+// representation sits just below an integer nanosecond up to that integer,
+// flipping the floor and diverging from Ruby (e.g. 0.123456789 floors to
+// 123456788 ns, not 123456789). It reports an error for non-finite inputs or
+// when the floored offset would overflow int64.
+func floatSecondsToFlooredNanos(seconds float64, negate bool, method string) (int64, error) {
+	rat := new(big.Rat).SetFloat64(seconds)
+	if rat == nil {
+		return 0, int64RangeError(method)
+	}
+	if negate {
+		rat.Neg(rat)
+	}
+	rat.Mul(rat, new(big.Rat).SetInt64(nanosecondsPerSecond))
+	floor := new(big.Int)
+	floor.Div(rat.Num(), rat.Denom()) // Div floors because Rat denominators are positive
+	return bigToInt64Checked(floor, method)
+}
+
+// negatedNumericSecondsToTimeDuration converts the negation of a numeric
+// seconds value into a nanosecond time.Duration. Time subtraction is defined
+// as t + (-x), so the negation happens on the numeric value before it becomes
+// a duration. This keeps subtraction symmetric with addition and avoids ever
+// unary-negating a time.Duration, which would overflow for the most negative
+// representable nanosecond offset (time.Duration(math.MinInt64)).
+func negatedNumericSecondsToTimeDuration(val Value, method string) (time.Duration, error) {
+	switch val.Kind() {
+	case KindInt:
+		neg, ok := subInt64Checked(0, val.Int())
+		if !ok {
+			return 0, int64RangeError(method)
+		}
+		return durationSecondsToTimeDuration(neg, method)
+	case KindFloat:
+		// Negate first so the floor matches Ruby's t + (-x): subtracting a
+		// positive fractional offset floors the negated nanoseconds away from
+		// zero, mirroring numericSecondsToTimeDuration's addition path.
+		ns, err := floatSecondsToFlooredNanos(val.Float(), true, method)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(ns), nil
+	default:
+		return 0, fmt.Errorf("%s expects numeric seconds", method)
+	}
+}
+
+// timeDifferenceSeconds returns the difference left - right (both Time
+// values) as a floating-point number of seconds, matching Ruby's Time#-
+// behavior. It computes the whole-second and sub-second parts separately so
+// the nanosecond span between two instants cannot silently overflow the way a
+// raw time.Duration subtraction would for differences beyond ~292 years.
+func timeDifferenceSeconds(left, right time.Time) (float64, error) {
+	secDiff, ok := subInt64Checked(left.Unix(), right.Unix())
+	if !ok {
+		return 0, int64RangeError("time subtraction")
+	}
+	nsecDiff := int64(left.Nanosecond()) - int64(right.Nanosecond())
+	return float64(secDiff) + float64(nsecDiff)/float64(nanosecondsPerSecond), nil
+}
+
 func addValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
@@ -402,6 +489,18 @@ func addValues(left, right Value) (Value, error) {
 		return NewTime(left.Time().Add(delta)), nil
 	case right.Kind() == KindTime && left.Kind() == KindDuration:
 		delta, err := durationSecondsToTimeDuration(left.Duration().Seconds(), "time addition")
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewTime(right.Time().Add(delta)), nil
+	case left.Kind() == KindTime && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		delta, err := numericSecondsToTimeDuration(right, "time addition")
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewTime(left.Time().Add(delta)), nil
+	case right.Kind() == KindTime && (left.Kind() == KindInt || left.Kind() == KindFloat):
+		delta, err := numericSecondsToTimeDuration(left, "time addition")
 		if err != nil {
 			return NewNil(), err
 		}
@@ -468,9 +567,18 @@ func subtractValues(left, right Value) (Value, error) {
 			return NewNil(), err
 		}
 		return NewTime(left.Time().Add(-delta)), nil
+	case left.Kind() == KindTime && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		delta, err := negatedNumericSecondsToTimeDuration(right, "time subtraction")
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewTime(left.Time().Add(delta)), nil
 	case left.Kind() == KindTime && right.Kind() == KindTime:
-		diff := left.Time().Sub(right.Time())
-		return NewDuration(durationFromSeconds(int64(diff / time.Second))), nil
+		diff, err := timeDifferenceSeconds(left.Time(), right.Time())
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewFloat(diff), nil
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
 		diff, ok := subInt64Checked(left.Duration().Seconds(), right.Duration().Seconds())
 		if !ok {
