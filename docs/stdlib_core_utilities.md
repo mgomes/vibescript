@@ -96,6 +96,9 @@ Unicode characters, not bytes, unless noted.
 - `chomp(separator = nil) -> string` – remove one trailing `"\r\n"`, `"\n"`,
   or `"\r"`; with a `separator` remove that suffix once; with `""` remove all
   trailing newlines.
+- `chop -> string` – remove the last character; a trailing `"\r\n"` is removed
+  as a single unit, otherwise one full Unicode character is removed; an empty
+  string is returned unchanged.
 - `delete_prefix(prefix) -> string` – remove `prefix` when present.
 - `delete_suffix(suffix) -> string` – remove `suffix` when present.
 
@@ -135,7 +138,7 @@ style group expansion in `replacement`, and enforce the
 
 Each of the following returns the transformed string, or `nil` when the
 transform changed nothing: `strip!`, `lstrip!`, `rstrip!`, `squish!`,
-`chomp!`, `delete_prefix!`, `delete_suffix!`, `upcase!`, `downcase!`,
+`chomp!`, `chop!`, `delete_prefix!`, `delete_suffix!`, `upcase!`, `downcase!`,
 `capitalize!`, `swapcase!`, `reverse!`, `sub!`, `gsub!`.
 
 ## Arrays
@@ -319,7 +322,10 @@ methods.
   and the conflict key is yielded as a symbol.
 - `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
   receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
-- `slice(*keys) -> hash` – only the listed keys (missing keys are skipped).
+- `slice(*keys) -> hash` – only the listed keys; missing keys are skipped.
+  Unsupported key types (anything other than a symbol or string) are ignored as
+  Ruby misses, so a candidate that cannot match an entry is dropped rather than
+  raising.
 - `except(*keys) -> hash` – all entries except the listed keys. Unsupported key
   types (anything other than a symbol or string) are ignored as Ruby misses, so
   the entry is kept rather than raising.

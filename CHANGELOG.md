@@ -14,6 +14,18 @@ All notable changes to this project will be documented in this file.
   timestamps without real zone information while an explicit zero offset uses
   `+0000`. `httpdate`, `rfc2822`, and `rfc822` drop sub-second precision and take
   no arguments, raising on any positional or keyword argument.
+- **Added: Ruby-style `String#chop` and `String#chop!`.** `chop` removes the
+  last character, treating a trailing `"\r\n"` as a single record separator and
+  otherwise removing one full Unicode character rather than one byte; an empty
+  string is returned unchanged. `chop!` returns the chopped string and returns
+  `nil` when there is nothing to remove (the empty-string case), matching the
+  existing copy-on-transform bang helper convention.
+- **Added: Ruby-style `Array#transpose`.** `transpose` swaps the rows and
+  columns of a matrix made of equal-length array rows, so
+  `[[1, 2], [3, 4]].transpose` returns `[[1, 3], [2, 4]]`. An empty array
+  transposes to `[]`, and rows of zero length collapse to no columns. It
+  rejects extra arguments, raises when any element is not an array, and
+  raises when the rows differ in length, reporting the offending index.
 - **Added: Ruby-style float special values and division-by-zero behavior.** Float
   division by zero with the `/` operator (and `Float#fdiv`/`Integer#fdiv`) now
   follows IEEE 754 like Ruby instead of raising: a finite nonzero numerator
@@ -64,6 +76,13 @@ All notable changes to this project will be documented in this file.
   now treated as a Ruby-style miss and ignored. Mixed argument lists still exclude
   the supported keys, so `{ a: 1 }.except(1)` returns `{ a: 1 }` while
   `{ a: 1 }.except(1, :a)` returns `{}`.
+- **Fixed: `Hash#slice` omits unsupported candidate keys like Ruby misses.**
+  `Hash#slice` no longer raises when given a candidate key whose type cannot be a
+  hash key (anything other than a symbol or string). Such a candidate can never
+  match an entry, so it is treated as a Ruby-style miss and dropped from the
+  result instead of failing. Mixed argument lists still keep the supported keys,
+  so `{ a: 1, b: 2 }.slice(:a, 1)` returns `{ a: 1 }` while
+  `{ a: 1 }.slice(1)` and `{ a: 1 }.slice` both return `{}`.
 - **Added: Ruby-style numeric rounding precision.** `Float#round`, `Float#floor`,
   and `Float#ceil` now accept an optional Integer precision: positive `ndigits`
   keep the value a float rounded to that many fractional digits, while zero or

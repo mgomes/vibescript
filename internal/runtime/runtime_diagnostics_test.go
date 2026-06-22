@@ -451,11 +451,6 @@ end`,
 			errMsg: "hash.select requires a block",
 		},
 		{
-			name:   "hash.slice with unsupported key type",
-			script: `def run() {a: 1}.slice(1) end`,
-			errMsg: "keys must be symbol or string",
-		},
-		{
 			name: "hash.transform_keys invalid return type",
 			script: `def run()
   {a: 1}.transform_keys do |k|

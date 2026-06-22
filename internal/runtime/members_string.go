@@ -15,7 +15,7 @@ import (
 // listed name resolves.
 var stringMemberNames = []string{
 	"size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice",
-	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
+	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "template",
 	"center", "ljust", "rjust",
 }
@@ -33,7 +33,7 @@ func stringMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
-	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
+	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
 	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "template":
 		return stringMemberTextOps(property)
@@ -102,6 +102,22 @@ func chompDefault(text string) string {
 		return text[:len(text)-1]
 	}
 	return text
+}
+
+// chopDefault removes the trailing character from text, mirroring Ruby's
+// String#chop. A "\r\n" pair is treated as a single record separator and both
+// bytes are removed together. Otherwise one logical character (a full UTF-8
+// rune) is removed rather than a single byte, so trailing multibyte characters
+// are handled correctly. An empty string is returned unchanged.
+func chopDefault(text string) string {
+	if strings.HasSuffix(text, "\r\n") {
+		return text[:len(text)-2]
+	}
+	if text == "" {
+		return text
+	}
+	_, size := utf8.DecodeLastRuneInString(text)
+	return text[:len(text)-size]
 }
 
 func stringIsASCII(text string) bool {
@@ -1408,6 +1424,21 @@ func stringMemberTransforms(property string) (Value, error) {
 				return stringBangResult(original, original[:len(original)-len(sep)]), nil
 			}
 			return NewNil(), nil
+		}), nil
+	case "chop":
+		return NewAutoBuiltin("string.chop", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.chop does not take arguments")
+			}
+			return NewString(chopDefault(receiver.String())), nil
+		}), nil
+	case "chop!":
+		return NewAutoBuiltin("string.chop!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.chop! does not take arguments")
+			}
+			original := receiver.String()
+			return stringBangResult(original, chopDefault(original)), nil
 		}), nil
 	case "delete_prefix":
 		return NewAutoBuiltin("string.delete_prefix", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
