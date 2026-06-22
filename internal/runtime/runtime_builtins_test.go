@@ -1394,6 +1394,33 @@ func TestTimeHTTPDateAndRFC2822(t *testing.T) {
 			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "-05:00").rfc2822`,
 			want: "Tue, 02 Jan 2024 03:04:05 -0500",
 		},
+		{
+			// Ruby renders a Time built with an explicit "-00:00" offset as
+			// "+0000": the "-0000" marker is reserved for genuine UTC mode, not
+			// for any zero-offset zone. Captured from MRI Time.new(..., "-00:00").
+			name: "rfc2822 explicit negative zero offset uses plus zero zone",
+			expr: `Time.new(2024, 1, 2, 3, 4, 5, "-00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+		},
+		{
+			name: "rfc2822 explicit positive zero offset uses plus zero zone",
+			expr: `Time.new(2024, 1, 2, 3, 4, 5, "+00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+		},
+		{
+			// getlocal("-00:00") shifts a UTC receiver into an explicit zero
+			// offset zone, which Ruby renders as "+0000" rather than "-0000".
+			name: "rfc2822 getlocal negative zero offset uses plus zero zone",
+			expr: `Time.utc(2024, 1, 2, 3, 4, 5).getlocal("-00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+		},
+		{
+			// A named UTC zone is genuine UTC, so it keeps the "-0000" marker
+			// even though its location is not the time.UTC singleton.
+			name: "rfc2822 named utc zone uses minus zero zone",
+			expr: `Time.new(2024, 1, 2, 3, 4, 5, "UTC").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

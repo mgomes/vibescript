@@ -487,10 +487,28 @@ func callTimeRFC2822(method string, t time.Time, args []Value, kwargs map[string
 		return NewNil(), fmt.Errorf("%s does not accept arguments", method)
 	}
 	zone := t.Format("-0700")
-	if t.Location() == time.UTC {
+	if isUTCZone(t) {
 		zone = "-0000"
 	}
 	return NewString(t.Format(rfc2822Layout) + " " + zone), nil
+}
+
+// isUTCZone reports whether t is anchored to a canonical UTC zone, which is the
+// condition under which Ruby's Time#rfc2822 emits the "-0000" unknown-zone
+// marker instead of a signed numeric offset. A zone qualifies when its offset
+// is zero and it is either the time.UTC singleton or a zone explicitly named
+// "UTC". Explicit numeric zero offsets (named "-00:00"/"+00:00", as produced by
+// Time.new or getlocal) and named zones such as "GMT" do not qualify: Ruby
+// renders those as "+0000", matching its rule that "-0000" is reserved for
+// timestamps created in UTC mode rather than any zero-offset zone. Inspecting
+// the zone name rather than only the location pointer keeps the decision robust
+// against UTC zones that are not the time.UTC singleton.
+func isUTCZone(t time.Time) bool {
+	if t.Location() == time.UTC {
+		return true
+	}
+	name, offset := t.Zone()
+	return offset == 0 && name == "UTC"
 }
 
 // callTimeGetlocal implements Ruby's non-mutating Time#getlocal and
