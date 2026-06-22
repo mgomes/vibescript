@@ -520,4 +520,63 @@ func TestParseTimeString(t *testing.T) {
 			t.Fatalf("ParseTimeString error = %v, want %q", err, "Time.parse could not parse time")
 		}
 	})
+
+	// Go's parser normalizes a trailing negative-zero offset to a nameless
+	// zero-offset zone, dropping the "-" Ruby reads as the RFC 2822 unknown-zone
+	// marker. ParseTimeString re-anchors such inputs to the canonical negative-zero
+	// zone (name "-00:00") so serializers can distinguish them from a genuine
+	// "+00:00" offset, while "Z"/"+00:00" inputs keep their nameless UTC zone and
+	// an explicit location override suppresses the inference.
+	t.Run("negative_zero_offset_zone", func(t *testing.T) {
+		t.Parallel()
+		canonical, err := value.ParseLocationString("-00:00")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tests := []struct {
+			name     string
+			input    string
+			wantName string
+		}{
+			{name: "rfc3339_negative_zero", input: "2024-01-02T03:04:05-00:00", wantName: canonical.String()},
+			{name: "rfc1123z_negative_zero", input: "Tue, 02 Jan 2024 03:04:05 -0000", wantName: canonical.String()},
+			{name: "rfc3339_positive_zero", input: "2024-01-02T03:04:05+00:00", wantName: ""},
+			{name: "rfc3339_zulu", input: "2024-01-02T03:04:05Z", wantName: "UTC"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := value.ParseTimeString(tc.input, "", false, nil)
+				if err != nil {
+					t.Fatalf("ParseTimeString(%q) error: %v", tc.input, err)
+				}
+				if _, offset := got.Zone(); offset != 0 {
+					t.Fatalf("ParseTimeString(%q) offset = %d, want 0", tc.input, offset)
+				}
+				if name := got.Location().String(); name != tc.wantName {
+					t.Fatalf("ParseTimeString(%q) zone name = %q, want %q", tc.input, name, tc.wantName)
+				}
+			})
+		}
+	})
+
+	// An explicit `in:` location override must win over the negative-zero
+	// inference, converting the parsed instant into the requested zone.
+	t.Run("negative_zero_offset_with_location_override", func(t *testing.T) {
+		t.Parallel()
+		loc, err := value.ParseLocationString("+05:30")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := value.ParseTimeString("2024-01-02T03:04:05-00:00", "", false, loc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, offset := got.Zone(); offset != 5*3600+30*60 {
+			t.Fatalf("zone offset = %d, want %d", offset, 5*3600+30*60)
+		}
+		if !got.Equal(time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)) {
+			t.Fatalf("instant changed during conversion: %v", got)
+		}
+	})
 }

@@ -583,7 +583,9 @@ formatting. Times also support `time + duration`, `time - duration`, and
 - `to_s -> string` – RFC3339Nano representation.
 - `to_a -> array` – positional tuple `[sec, min, hour, mday, month, year, wday,
   yday, isdst, zone]`, matching Ruby's field order and the receiver's zone.
-- `iso8601(ndigits = 0)` / `rfc3339(ndigits = 0)` -> string – RFC3339 representation. With no argument it emits whole seconds; a non-negative `ndigits` appends that many fractional-second digits, truncated toward zero (matching Ruby's `Time#iso8601`). Negative, non-integer, or out-of-range (above 100 digits) precision raises a runtime error.
+- `iso8601(ndigits = 0)` / `xmlschema(ndigits = 0)` / `rfc3339(ndigits = 0)` -> string – RFC3339 representation. With no argument it emits whole seconds; a non-negative `ndigits` appends that many fractional-second digits, truncated toward zero (matching Ruby's `Time#iso8601`). `xmlschema` is an alias for `iso8601`. Negative, non-integer, or out-of-range (above 100 digits) precision raises a runtime error.
+- `httpdate -> string` – HTTP-date / IMF-fixdate form (RFC 7231), always rendered in GMT, e.g. `"Tue, 02 Jan 2024 03:04:05 GMT"`. Takes no arguments.
+- `rfc2822 -> string` / `rfc822 -> string` – RFC 2822 mail date preserving the receiver's zone offset, e.g. `"Tue, 02 Jan 2024 03:04:05 -0000"`. A genuine UTC receiver uses the `-0000` zone Ruby reserves for timestamps without real zone information; an explicit zero offset uses `+0000`. Both drop sub-second precision and take no arguments.
 - `hash -> int` – nanoseconds since the Unix epoch (identity value).
 
 ### Zone Conversion

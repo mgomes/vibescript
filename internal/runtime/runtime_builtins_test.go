@@ -1280,6 +1280,9 @@ func TestTimeISO8601Precision(t *testing.T) {
 		{name: "sub-nanosecond digits zero pad", expr: "t.iso8601(12)", want: "1970-01-01T00:00:00.123456000000Z"},
 		{name: "rfc3339 mirrors iso8601 precision", expr: "t.rfc3339(3)", want: "1970-01-01T00:00:00.123Z"},
 		{name: "rfc3339 without argument", expr: "t.rfc3339", want: "1970-01-01T00:00:00Z"},
+		{name: "xmlschema aliases iso8601", expr: "t.xmlschema", want: "1970-01-01T00:00:00Z"},
+		{name: "xmlschema with parentheses", expr: "t.xmlschema()", want: "1970-01-01T00:00:00Z"},
+		{name: "xmlschema mirrors iso8601 precision", expr: "t.xmlschema(6)", want: "1970-01-01T00:00:00.123456Z"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1338,6 +1341,7 @@ func TestTimeISO8601RejectsInvalidPrecision(t *testing.T) {
 		{name: "too many arguments", expr: "t.iso8601(0, 0)", want: "time.iso8601 expects at most one precision argument"},
 		{name: "precision beyond maximum", expr: "t.iso8601(101)", want: "time.iso8601 precision exceeds maximum 100 digits"},
 		{name: "rfc3339 negative precision", expr: "t.rfc3339(-1)", want: "time.rfc3339 precision must be non-negative"},
+		{name: "xmlschema string precision", expr: `t.xmlschema("3")`, want: "time.xmlschema precision must be an Integer"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1345,6 +1349,210 @@ func TestTimeISO8601RejectsInvalidPrecision(t *testing.T) {
 			script := compileScript(t, `
 		    def run()
 		      t = Time.parse("1970-01-01T00:00:00.123456Z")
+		      `+tc.expr+`
+		    end
+		    `)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+// TestTimeHTTPDateAndRFC2822 checks the Ruby-aligned HTTP-date and RFC 2822
+// helpers across UTC, explicit-zero, and offset receivers, including the
+// "-0000" zone Ruby reserves for genuine UTC and the GMT conversion httpdate
+// always performs. Each want value was captured from MRI's `require "time"`.
+func TestTimeHTTPDateAndRFC2822(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "httpdate utc", expr: `Time.utc(2024, 1, 2, 3, 4, 5).httpdate`, want: "Tue, 02 Jan 2024 03:04:05 GMT"},
+		{name: "httpdate with parentheses", expr: `Time.utc(2024, 1, 2, 3, 4, 5).httpdate()`, want: "Tue, 02 Jan 2024 03:04:05 GMT"},
+		{name: "httpdate drops subseconds", expr: `Time.utc(2024, 1, 2, 3, 4, 5, 123456).httpdate`, want: "Tue, 02 Jan 2024 03:04:05 GMT"},
+		{
+			name: "httpdate converts offset to gmt",
+			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "+05:30").httpdate`,
+			want: "Mon, 01 Jan 2024 21:34:05 GMT",
+		},
+		{name: "rfc2822 utc uses minus zero zone", expr: `Time.utc(2024, 1, 2, 3, 4, 5).rfc2822`, want: "Tue, 02 Jan 2024 03:04:05 -0000"},
+		{name: "rfc822 aliases rfc2822", expr: `Time.utc(2024, 1, 2, 3, 4, 5).rfc822`, want: "Tue, 02 Jan 2024 03:04:05 -0000"},
+		{name: "rfc2822 drops subseconds", expr: `Time.utc(2024, 1, 2, 3, 4, 5, 123456).rfc2822`, want: "Tue, 02 Jan 2024 03:04:05 -0000"},
+		{
+			name: "rfc2822 explicit zero offset uses plus zero zone",
+			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "+00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+		},
+		{
+			name: "rfc2822 preserves offset",
+			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "+05:30").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0530",
+		},
+		{
+			name: "rfc2822 negative offset",
+			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "-05:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0500",
+		},
+		{
+			// Ruby treats an explicit negative-zero "-00:00" offset as the RFC
+			// 2822 unknown-zone marker and renders "-0000", distinct from the
+			// positive "+00:00" zone. Captured from MRI Time.new(..., "-00:00").
+			name: "rfc2822 explicit negative zero offset uses minus zero zone",
+			expr: `Time.new(2024, 1, 2, 3, 4, 5, "-00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
+		{
+			name: "rfc2822 explicit positive zero offset uses plus zero zone",
+			expr: `Time.new(2024, 1, 2, 3, 4, 5, "+00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+		},
+		{
+			// getlocal("-00:00") shifts a receiver into the negative-zero zone,
+			// which Ruby renders with the "-0000" unknown-zone marker.
+			name: "rfc2822 getlocal negative zero offset uses minus zero zone",
+			expr: `Time.utc(2024, 1, 2, 3, 4, 5).getlocal("-00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
+		{
+			// A named UTC zone is genuine UTC, so it keeps the "-0000" marker
+			// even though its location is not the time.UTC singleton.
+			name: "rfc2822 named utc zone uses minus zero zone",
+			expr: `Time.new(2024, 1, 2, 3, 4, 5, "UTC").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
+		{
+			// Time.parse of an RFC 3339 input ending in "-00:00" carries the
+			// negative-zero unknown-zone marker. Go's parser drops the leading
+			// "-", so ParseTimeString re-anchors it to the canonical negative-zero
+			// zone. Captured from MRI Time.parse(...).rfc2822.
+			name: "rfc2822 parsed rfc3339 negative zero offset uses minus zero zone",
+			expr: `Time.parse("2024-01-02T03:04:05-00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
+		{
+			// An RFC 1123Z "-0000" input is likewise the unknown-zone marker.
+			name: "rfc2822 parsed rfc1123z negative zero offset uses minus zero zone",
+			expr: `Time.parse("Tue, 02 Jan 2024 03:04:05 -0000").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
+		{
+			// A parsed "+00:00" offset is a genuine zero offset, not the
+			// unknown-zone marker, so it renders "+0000".
+			name: "rfc2822 parsed positive zero offset uses plus zero zone",
+			expr: `Time.parse("2024-01-02T03:04:05+00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+		},
+		{
+			// A trailing "Z" is genuine UTC and keeps the "-0000" marker.
+			name: "rfc2822 parsed zulu uses minus zero zone",
+			expr: `Time.parse("2024-01-02T03:04:05Z").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString || result.String() != tc.want {
+				t.Fatalf("result mismatch: got %v want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsUTCModeMatchesUTCSingletonAndNegativeZero guards the RFC 2822 zone
+// classifier. On UTC-environment hosts time.Local reports the zone name "UTC"
+// with a zero offset, yet Time.local/Time.now/Time.at receivers are still local
+// times that Ruby renders as "+0000". UTC mode (which earns the "-0000" marker)
+// is the canonical time.UTC singleton (Time.utc/getutc and the "UTC"/"GMT"/"Z"
+// specs) plus the negative-zero offset zone "-00:00", whose name preserves the
+// sign Ruby reads as the RFC 2822 unknown-zone marker. The positive "+00:00"
+// zone stays "+0000".
+func TestIsUTCModeMatchesUTCSingletonAndNegativeZero(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	cases := []struct {
+		name string
+		loc  *time.Location
+		want bool
+	}{
+		{name: "utc singleton", loc: time.UTC, want: true},
+		// A distinct location that mimics a UTC container's time.Local: named
+		// "UTC" with a zero offset but not the singleton.
+		{name: "zero offset zone named UTC", loc: time.FixedZone("UTC", 0), want: false},
+		{name: "explicit positive zero offset", loc: time.FixedZone("+00:00", 0), want: false},
+		// The negative-zero offset "-00:00" parses to a zero-offset zone whose
+		// name begins with "-"; Ruby treats it as RFC 2822 UTC mode.
+		{name: "explicit negative zero offset", loc: time.FixedZone("-00:00", 0), want: true},
+		{name: "named gmt zone", loc: time.FixedZone("GMT", 0), want: false},
+		{name: "positive offset", loc: time.FixedZone("+05:30", 5*3600+30*60), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isUTCMode(base.In(tc.loc)); got != tc.want {
+				t.Fatalf("isUTCMode(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTimeRFC2822LocalUTCHostUsesPlusZero exercises the full Time.local/Time.now
+// path on a simulated UTC-environment host, where the host's local zone is named
+// "UTC" with a zero offset. Ruby treats these as local times and emits "+0000",
+// not the "-0000" UTC-mode marker. Overriding time.Local makes this test
+// non-parallel; it restores the original value before returning.
+func TestTimeRFC2822LocalUTCHostUsesPlusZero(t *testing.T) {
+	original := time.Local
+	t.Cleanup(func() { time.Local = original })
+	// Simulate a UTC container: time.Local is a zero-offset zone named "UTC"
+	// that is not the time.UTC singleton.
+	time.Local = time.FixedZone("UTC", 0)
+
+	cases := []struct {
+		name string
+		expr string
+	}{
+		{name: "Time.local", expr: `Time.local(2024, 1, 2, 3, 4, 5).rfc2822`},
+		{name: "Time.mktime", expr: `Time.mktime(2024, 1, 2, 3, 4, 5).rfc2822`},
+		{name: "getlocal default", expr: `Time.utc(2024, 1, 2, 3, 4, 5).getlocal.rfc2822`},
+	}
+	const want = "Tue, 02 Jan 2024 03:04:05 +0000"
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString || result.String() != want {
+				t.Fatalf("result mismatch: got %v want %q", result, want)
+			}
+		})
+	}
+}
+
+// TestTimeHTTPDateAndRFC2822RejectArguments documents that the argument-free
+// mail/HTTP date helpers reject any positional or keyword argument rather than
+// silently ignoring it.
+func TestTimeHTTPDateAndRFC2822RejectArguments(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "httpdate positional", expr: "t.httpdate(0)", want: "time.httpdate does not accept arguments"},
+		{name: "httpdate keyword", expr: "t.httpdate(in: \"UTC\")", want: "time.httpdate does not accept keyword arguments"},
+		{name: "rfc2822 positional", expr: "t.rfc2822(0)", want: "time.rfc2822 does not accept arguments"},
+		{name: "rfc822 positional", expr: "t.rfc822(0)", want: "time.rfc822 does not accept arguments"},
+		{name: "rfc2822 keyword", expr: "t.rfc2822(in: \"UTC\")", want: "time.rfc2822 does not accept keyword arguments"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.utc(2024, 1, 2, 3, 4, 5)
 		      `+tc.expr+`
 		    end
 		    `)
