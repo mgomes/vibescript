@@ -1280,6 +1280,9 @@ func TestTimeISO8601Precision(t *testing.T) {
 		{name: "sub-nanosecond digits zero pad", expr: "t.iso8601(12)", want: "1970-01-01T00:00:00.123456000000Z"},
 		{name: "rfc3339 mirrors iso8601 precision", expr: "t.rfc3339(3)", want: "1970-01-01T00:00:00.123Z"},
 		{name: "rfc3339 without argument", expr: "t.rfc3339", want: "1970-01-01T00:00:00Z"},
+		{name: "xmlschema aliases iso8601", expr: "t.xmlschema", want: "1970-01-01T00:00:00Z"},
+		{name: "xmlschema with parentheses", expr: "t.xmlschema()", want: "1970-01-01T00:00:00Z"},
+		{name: "xmlschema mirrors iso8601 precision", expr: "t.xmlschema(6)", want: "1970-01-01T00:00:00.123456Z"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1338,6 +1341,7 @@ func TestTimeISO8601RejectsInvalidPrecision(t *testing.T) {
 		{name: "too many arguments", expr: "t.iso8601(0, 0)", want: "time.iso8601 expects at most one precision argument"},
 		{name: "precision beyond maximum", expr: "t.iso8601(101)", want: "time.iso8601 precision exceeds maximum 100 digits"},
 		{name: "rfc3339 negative precision", expr: "t.rfc3339(-1)", want: "time.rfc3339 precision must be non-negative"},
+		{name: "xmlschema string precision", expr: `t.xmlschema("3")`, want: "time.xmlschema precision must be an Integer"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1345,6 +1349,86 @@ func TestTimeISO8601RejectsInvalidPrecision(t *testing.T) {
 			script := compileScript(t, `
 		    def run()
 		      t = Time.parse("1970-01-01T00:00:00.123456Z")
+		      `+tc.expr+`
+		    end
+		    `)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+// TestTimeHTTPDateAndRFC2822 checks the Ruby-aligned HTTP-date and RFC 2822
+// helpers across UTC, explicit-zero, and offset receivers, including the
+// "-0000" zone Ruby reserves for genuine UTC and the GMT conversion httpdate
+// always performs. Each want value was captured from MRI's `require "time"`.
+func TestTimeHTTPDateAndRFC2822(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "httpdate utc", expr: `Time.utc(2024, 1, 2, 3, 4, 5).httpdate`, want: "Tue, 02 Jan 2024 03:04:05 GMT"},
+		{name: "httpdate with parentheses", expr: `Time.utc(2024, 1, 2, 3, 4, 5).httpdate()`, want: "Tue, 02 Jan 2024 03:04:05 GMT"},
+		{name: "httpdate drops subseconds", expr: `Time.utc(2024, 1, 2, 3, 4, 5, 123456).httpdate`, want: "Tue, 02 Jan 2024 03:04:05 GMT"},
+		{
+			name: "httpdate converts offset to gmt",
+			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "+05:30").httpdate`,
+			want: "Mon, 01 Jan 2024 21:34:05 GMT",
+		},
+		{name: "rfc2822 utc uses minus zero zone", expr: `Time.utc(2024, 1, 2, 3, 4, 5).rfc2822`, want: "Tue, 02 Jan 2024 03:04:05 -0000"},
+		{name: "rfc822 aliases rfc2822", expr: `Time.utc(2024, 1, 2, 3, 4, 5).rfc822`, want: "Tue, 02 Jan 2024 03:04:05 -0000"},
+		{name: "rfc2822 drops subseconds", expr: `Time.utc(2024, 1, 2, 3, 4, 5, 123456).rfc2822`, want: "Tue, 02 Jan 2024 03:04:05 -0000"},
+		{
+			name: "rfc2822 explicit zero offset uses plus zero zone",
+			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "+00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+		},
+		{
+			name: "rfc2822 preserves offset",
+			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "+05:30").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0530",
+		},
+		{
+			name: "rfc2822 negative offset",
+			expr: `Time.parse("2024-01-02 03:04:05", "2006-01-02 15:04:05", in: "-05:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0500",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString || result.String() != tc.want {
+				t.Fatalf("result mismatch: got %v want %q", result, tc.want)
+			}
+		})
+	}
+}
+
+// TestTimeHTTPDateAndRFC2822RejectArguments documents that the argument-free
+// mail/HTTP date helpers reject any positional or keyword argument rather than
+// silently ignoring it.
+func TestTimeHTTPDateAndRFC2822RejectArguments(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "httpdate positional", expr: "t.httpdate(0)", want: "time.httpdate does not accept arguments"},
+		{name: "httpdate keyword", expr: "t.httpdate(in: \"UTC\")", want: "time.httpdate does not accept keyword arguments"},
+		{name: "rfc2822 positional", expr: "t.rfc2822(0)", want: "time.rfc2822 does not accept arguments"},
+		{name: "rfc822 positional", expr: "t.rfc822(0)", want: "time.rfc822 does not accept arguments"},
+		{name: "rfc2822 keyword", expr: "t.rfc2822(in: \"UTC\")", want: "time.rfc2822 does not accept keyword arguments"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+		    def run()
+		      t = Time.utc(2024, 1, 2, 3, 4, 5)
 		      `+tc.expr+`
 		    end
 		    `)

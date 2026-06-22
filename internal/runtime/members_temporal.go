@@ -24,7 +24,7 @@ var (
 		"wday", "yday", "hash", "utc_offset", "gmt_offset", "gmtoff", "to_f", "to_i", "tv_sec", "to_r", "zone",
 		"utc?", "gmt?", "dst?", "isdst",
 		"sunday?", "monday?", "tuesday?", "wednesday?", "thursday?", "friday?", "saturday?",
-		"<=>", "eql?", "to_s", "to_a", "iso8601", "rfc3339", "format",
+		"<=>", "eql?", "to_s", "to_a", "iso8601", "xmlschema", "rfc3339", "httpdate", "rfc2822", "rfc822", "format",
 		"getutc", "getgm", "getlocal", "utc", "gmtime", "localtime", "round", "ceil", "floor",
 	}
 )
@@ -248,9 +248,17 @@ func timeMember(t time.Time, property string) (Value, error) {
 		return NewString(t.Format(time.RFC3339Nano)), nil
 	case "to_a":
 		return timeToArray(t), nil
-	case "iso8601", "rfc3339":
+	case "iso8601", "xmlschema", "rfc3339":
 		return NewAutoBuiltin("time."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return callTimeISO8601("time."+property, t, args, kwargs)
+		}), nil
+	case "httpdate":
+		return NewAutoBuiltin("time.httpdate", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return callTimeHTTPDate(t, args, kwargs)
+		}), nil
+	case "rfc2822", "rfc822":
+		return NewAutoBuiltin("time."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return callTimeRFC2822("time."+property, t, args, kwargs)
 		}), nil
 	case "format":
 		return NewBuiltin("time.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -285,7 +293,7 @@ func timeMember(t time.Time, property string) (Value, error) {
 
 func canCallTimeMemberDirect(property string) bool {
 	switch property {
-	case "<=>", "eql?", "format", "iso8601", "rfc3339", "round", "ceil", "floor", "getlocal", "localtime":
+	case "<=>", "eql?", "format", "iso8601", "xmlschema", "rfc3339", "httpdate", "rfc2822", "rfc822", "round", "ceil", "floor", "getlocal", "localtime":
 		return true
 	default:
 		return false
@@ -300,8 +308,12 @@ func callTimeMemberDirect(t time.Time, property string, args []Value, kwargs map
 		return callTimeEql(t, args, kwargs)
 	case "format":
 		return callTimeFormat(t, args, kwargs)
-	case "iso8601", "rfc3339":
+	case "iso8601", "xmlschema", "rfc3339":
 		return callTimeISO8601("time."+property, t, args, kwargs)
+	case "httpdate":
+		return callTimeHTTPDate(t, args, kwargs)
+	case "rfc2822", "rfc822":
+		return callTimeRFC2822("time."+property, t, args, kwargs)
 	case "round":
 		return callTimeRound(t, args, kwargs)
 	case "ceil":
@@ -432,6 +444,53 @@ func formatTimeISO8601(t time.Time, ndigits int) string {
 	// pad the sub-nanosecond positions with zeros before the trailing offset.
 	insertAt := strings.IndexByte(out, '.') + 1 + maxTimePrecisionDigits
 	return out[:insertAt] + strings.Repeat("0", ndigits-maxTimePrecisionDigits) + out[insertAt:]
+}
+
+// httpDateLayout is the IMF-fixdate form mandated by RFC 7231 for the
+// HTTP-date production: a fixed-width English weekday and month with a literal
+// GMT zone. callTimeHTTPDate always renders in UTC, matching Ruby's
+// Time#httpdate.
+const httpDateLayout = "Mon, 02 Jan 2006 15:04:05 GMT"
+
+// rfc2822Layout is the RFC 2822 mail-date form Ruby emits for Time#rfc2822 and
+// its Time#rfc822 alias: a fixed-width English weekday and month with a numeric
+// zone offset. The zone is rendered separately so genuine UTC times can use the
+// "-0000" form Ruby reserves for timestamps without real zone information.
+const rfc2822Layout = "Mon, 02 Jan 2006 15:04:05"
+
+// callTimeHTTPDate renders the receiver as an HTTP-date (IMF-fixdate), always
+// in GMT/UTC like Ruby's Time#httpdate. The method takes no arguments, so any
+// positional or keyword argument is rejected. Sub-second precision is dropped
+// because the HTTP-date grammar has whole-second resolution.
+func callTimeHTTPDate(t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs("time.httpdate", kwargs); err != nil {
+		return NewNil(), err
+	}
+	if len(args) != 0 {
+		return NewNil(), fmt.Errorf("time.httpdate does not accept arguments")
+	}
+	return NewString(t.UTC().Format(httpDateLayout)), nil
+}
+
+// callTimeRFC2822 renders the receiver as an RFC 2822 mail date, preserving the
+// receiver's zone offset like Ruby's Time#rfc2822 and Time#rfc822. Genuine UTC
+// receivers use the "-0000" zone Ruby reserves for timestamps without real zone
+// information, while explicit zero offsets and other zones render their signed
+// numeric offset. The method takes no arguments, so any positional or keyword
+// argument is rejected. Sub-second precision is dropped because the RFC 2822
+// date grammar has whole-second resolution.
+func callTimeRFC2822(method string, t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+	if err := rejectTemporalKwargs(method, kwargs); err != nil {
+		return NewNil(), err
+	}
+	if len(args) != 0 {
+		return NewNil(), fmt.Errorf("%s does not accept arguments", method)
+	}
+	zone := t.Format("-0700")
+	if t.Location() == time.UTC {
+		zone = "-0000"
+	}
+	return NewString(t.Format(rfc2822Layout) + " " + zone), nil
 }
 
 // callTimeGetlocal implements Ruby's non-mutating Time#getlocal and
