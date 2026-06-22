@@ -1077,13 +1077,11 @@ func (p *parser) parseHashLiteral() ast.Expression {
 }
 
 func (p *parser) parseHashPair() ast.HashPair {
-	if p.peekToken.Type == ast.TokenColon {
-		return p.parseColonHashPair()
+	if p.peekToken.Type != ast.TokenColon {
+		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
+		return ast.HashPair{}
 	}
-	return p.parseHashRocketPair()
-}
 
-func (p *parser) parseColonHashPair() ast.HashPair {
 	var key ast.Expression
 	switch {
 	case isLabelNameToken(p.curToken):
@@ -1095,26 +1093,6 @@ func (p *parser) parseColonHashPair() ast.HashPair {
 		return ast.HashPair{}
 	}
 	p.nextToken()
-	return p.parseHashPairValue(key)
-}
-
-func (p *parser) parseHashRocketPair() ast.HashPair {
-	key := p.parseExpression(lowestPrec)
-	if key == nil {
-		return ast.HashPair{}
-	}
-	if p.peekToken.Type != ast.TokenArrow {
-		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
-		p.recoverHashPairRemainder()
-		return ast.HashPair{}
-	}
-	p.nextToken()
-	return p.parseHashPairValue(key)
-}
-
-const invalidHashPairMessage = `invalid hash pair: expected key like name:, "name":, :name =>, or expression =>`
-
-func (p *parser) parseHashPairValue(key ast.Expression) ast.HashPair {
 	p.nextToken()
 	if p.curToken.Type == ast.TokenComma || p.curToken.Type == ast.TokenRBrace {
 		p.addParseError(p.curToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
@@ -1128,6 +1106,8 @@ func (p *parser) parseHashPairValue(key ast.Expression) ast.HashPair {
 	return ast.HashPair{Key: key, Value: value}
 }
 
+const invalidHashPairMessage = `invalid hash pair: expected key like name: or "name":`
+
 func hashKeyName(key ast.Expression) string {
 	switch k := key.(type) {
 	case *ast.SymbolLiteral:
@@ -1136,24 +1116,6 @@ func hashKeyName(key ast.Expression) string {
 		return k.Value
 	default:
 		return "unknown"
-	}
-}
-
-func (p *parser) recoverHashPairRemainder() {
-	nesting := 0
-	for p.peekToken.Type != ast.TokenEOF {
-		if nesting == 0 && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRBrace) {
-			return
-		}
-		p.nextToken()
-		switch p.curToken.Type {
-		case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
-			nesting++
-		case ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
-			if nesting > 0 {
-				nesting--
-			}
-		}
 	}
 }
 

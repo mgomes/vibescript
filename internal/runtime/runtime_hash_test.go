@@ -96,13 +96,13 @@ func TestHashMergeConflictBlock(t *testing.T) {
     end
 
     def string_keys()
-      { "a" => 1 }.merge({ "a" => 10, "b" => 5 }) do |key, old, new|
+      { "a": 1 }.merge({ "a": 10, "b": 5 }) do |key, old, new|
         old + new
       end
     end
 
     def mixed_symbol_string_keys()
-      { a: 1 }.merge({ "a" => 10 }) do |key, old, new|
+      { a: 1 }.merge({ "a": 10 }) do |key, old, new|
         old + new
       end
     end
@@ -611,41 +611,45 @@ func TestHashHelpersSupportObjectReceiver(t *testing.T) {
 	}
 }
 
-func TestHashRocketLiteralKeys(t *testing.T) {
+func TestHashLiteralSyntaxRestriction(t *testing.T) {
 	t.Parallel()
-	script := compileScript(t, `
-    def literal_keys()
-      { :name => "Ada", "first-name" => "Lovelace" }
-    end
 
-    def dynamic_keys(symbol_key, string_key)
-      { symbol_key => "symbol", string_key => "string" }
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "symbol rocket key",
+			source: `
+    def broken()
+      { :name => "Ada" }
     end
-
-    def unsupported_key()
-      { ["name"] => "Ada" }
+    `,
+		},
+		{
+			name: "string rocket key",
+			source: `
+    def broken()
+      { "name" => "Ada" }
     end
-    `)
-
-	literalKeys := callFunc(t, script, "literal_keys", nil)
-	if literalKeys.Kind() != KindHash {
-		t.Fatalf("literal_keys() = %s, want hash", literalKeys.Kind())
+    `,
+		},
+		{
+			name: "expression rocket key",
+			source: `
+    def broken(key)
+      { key => "Ada" }
+    end
+    `,
+		},
 	}
-	compareHash(t, literalKeys.Hash(), map[string]Value{
-		"name":       NewString("Ada"),
-		"first-name": NewString("Lovelace"),
-	})
 
-	dynamicKeys := callFunc(t, script, "dynamic_keys", []Value{NewSymbol("status"), NewString("label")})
-	if dynamicKeys.Kind() != KindHash {
-		t.Fatalf("dynamic_keys() = %s, want hash", dynamicKeys.Kind())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requireCompileErrorContainsDefault(t, tt.source, `invalid hash pair: expected key like name: or "name":`)
+		})
 	}
-	compareHash(t, dynamicKeys.Hash(), map[string]Value{
-		"status": NewString("symbol"),
-		"label":  NewString("string"),
-	})
-
-	requireCallErrorContains(t, script, "unsupported_key", nil, CallOptions{}, "unsupported hash key type array")
 }
 
 func TestHashMembershipPredicatesAcceptAnyCandidateKey(t *testing.T) {

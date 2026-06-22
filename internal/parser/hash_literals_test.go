@@ -46,40 +46,29 @@ end`
 	}
 }
 
-func TestParserHashRocketKeys(t *testing.T) {
+func TestParserHashRocketsRejected(t *testing.T) {
 	t.Parallel()
 
-	source := `def run
-  {:name => "Ada", "first-name" => "Lovelace", key => 1}
-end`
-
-	got, errs := parseSource(t, source)
-	if len(errs) > 0 {
-		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	sources := []string{
+		`def run
+  {:name => "Ada"}
+end`,
+		`def run
+  {"first-name" => "Lovelace"}
+end`,
+		`def run
+  {key => 1}
+end`,
 	}
 
-	wantBody := []ast.Statement{
-		&ast.ExprStmt{
-			Expr: &ast.HashLiteral{
-				Pairs: []ast.HashPair{
-					{
-						Key:   &ast.SymbolLiteral{Name: "name"},
-						Value: &ast.StringLiteral{Value: "Ada"},
-					},
-					{
-						Key:   &ast.StringLiteral{Value: "first-name"},
-						Value: &ast.StringLiteral{Value: "Lovelace"},
-					},
-					{
-						Key:   &ast.Identifier{Name: "key"},
-						Value: &ast.IntegerLiteral{Value: 1},
-					},
-				},
-			},
-		},
-	}
-	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
-		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	for _, source := range sources {
+		_, errs := parseSource(t, source)
+		if len(errs) == 0 {
+			t.Fatalf("parseSource(%q) errors = none, want hash rocket rejection", source)
+		}
+		if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
+			t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+		}
 	}
 }
 
@@ -117,21 +106,5 @@ end`
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
-	}
-}
-
-func TestParserHashRocketsRequireFatArrow(t *testing.T) {
-	t.Parallel()
-
-	source := `def run
-  {:name -> "Ada"}
-end`
-
-	_, errs := parseSource(t, source)
-	if len(errs) != 1 {
-		t.Fatalf("parseSource(%q) errors = %d, want 1 hash rocket diagnostic: %v", source, len(errs), errs)
-	}
-	if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
-		t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
 	}
 }

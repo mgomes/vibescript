@@ -433,7 +433,7 @@ func TestFloatSpecialValueJSONRejected(t *testing.T) {
 		`JSON.stringify(1.0 / 0)`,
 		`JSON.stringify(-1.0 / 0)`,
 		`JSON.stringify(0.0 / 0.0)`,
-		`JSON.stringify({"a" => 1.0 / 0})`,
+		`JSON.stringify({"a": 1.0 / 0})`,
 		`JSON.stringify([0.0 / 0.0])`,
 	}
 	for _, expr := range exprs {
