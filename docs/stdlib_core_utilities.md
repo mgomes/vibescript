@@ -96,6 +96,9 @@ Unicode characters, not bytes, unless noted.
 - `chomp(separator = nil) -> string` – remove one trailing `"\r\n"`, `"\n"`,
   or `"\r"`; with a `separator` remove that suffix once; with `""` remove all
   trailing newlines.
+- `chop -> string` – remove the last character; a trailing `"\r\n"` is removed
+  as a single unit, otherwise one full Unicode character is removed; an empty
+  string is returned unchanged.
 - `delete_prefix(prefix) -> string` – remove `prefix` when present.
 - `delete_suffix(suffix) -> string` – remove `suffix` when present.
 
@@ -135,7 +138,7 @@ style group expansion in `replacement`, and enforce the
 
 Each of the following returns the transformed string, or `nil` when the
 transform changed nothing: `strip!`, `lstrip!`, `rstrip!`, `squish!`,
-`chomp!`, `delete_prefix!`, `delete_suffix!`, `upcase!`, `downcase!`,
+`chomp!`, `chop!`, `delete_prefix!`, `delete_suffix!`, `upcase!`, `downcase!`,
 `capitalize!`, `swapcase!`, `reverse!`, `sub!`, `gsub!`.
 
 ## Arrays
