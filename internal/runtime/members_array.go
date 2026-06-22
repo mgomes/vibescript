@@ -16,7 +16,7 @@ var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse",
-	"take", "drop", "zip", "transpose",
+	"take", "drop", "zip", "transpose", "union", "difference",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
 }
@@ -35,7 +35,7 @@ func arrayMemberBuiltin(property string) (Value, error) {
 	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
-	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose":
+	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -493,6 +493,24 @@ func arrayPositiveConsSize(args []Value, method string) (int, error) {
 		return 0, fmt.Errorf("%s invalid size", method)
 	}
 	return int(sizeValue.Int()), nil
+}
+
+// arrayArgsToSlices validates that every argument is an array and returns their
+// element slices. It backs the variadic set helpers (union, difference), which
+// in Ruby raise TypeError when handed a non-array argument and accept no
+// keyword arguments.
+func arrayArgsToSlices(method string, args []Value, kwargs map[string]Value) ([][]Value, error) {
+	if len(kwargs) > 0 {
+		return nil, fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	others := make([][]Value, len(args))
+	for i, arg := range args {
+		if arg.Kind() != KindArray {
+			return nil, fmt.Errorf("%s arguments must be arrays", method)
+		}
+		others[i] = arg.Array()
+	}
+	return others, nil
 }
 
 // arrayCycleCount validates the optional repetition count for cycle. With no
@@ -1205,6 +1223,22 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			return NewArray(uniqueValues(arr)), nil
+		}), nil
+	case "union":
+		return NewAutoBuiltin("array.union", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			others, err := arrayArgsToSlices("array.union", args, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewArray(unionArrayValues(receiver.Array(), others)), nil
+		}), nil
+	case "difference":
+		return NewAutoBuiltin("array.difference", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			others, err := arrayArgsToSlices("array.difference", args, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewArray(differenceArrayValues(receiver.Array(), others)), nil
 		}), nil
 	case "first":
 		return NewAutoBuiltin("array.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
