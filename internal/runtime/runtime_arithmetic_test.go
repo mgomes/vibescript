@@ -457,6 +457,36 @@ func TestTimeNumericSecondArithmetic(t *testing.T) {
 			want: NewTime(base.Add(1500 * time.Millisecond)),
 		},
 		{
+			// Ruby floors the scaled nanosecond offset: 1.1e-9 s = 1.1 ns
+			// floors to 1 ns forward.
+			name: "add_positive_fractional_nanosecond_floors",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(1.1e-9)},
+			want: NewTime(base.Add(time.Nanosecond)),
+		},
+		{
+			// -1.1e-9 s = -1.1 ns floors to -2 ns, so addition moves back two
+			// nanoseconds rather than truncating toward zero at one.
+			name: "add_negative_fractional_nanosecond_floors_away_from_zero",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(-1.1e-9)},
+			want: NewTime(base.Add(-2 * time.Nanosecond)),
+		},
+		{
+			// t - 1.1e-9 == t + (-1.1 ns); the negated offset floors to -2 ns.
+			name: "subtract_positive_fractional_nanosecond_floors_away_from_zero",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(1.1e-9)},
+			want: NewTime(base.Add(-2 * time.Nanosecond)),
+		},
+		{
+			// t - (-1.1e-9) == t + 1.1 ns, which floors to 1 ns forward.
+			name: "subtract_negative_fractional_nanosecond_floors",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(-1.1e-9)},
+			want: NewTime(base.Add(time.Nanosecond)),
+		},
+		{
 			name: "difference_returns_float_seconds",
 			fn:   "subtract",
 			args: []Value{NewTime(base.Add(90 * time.Second)), NewTime(base)},

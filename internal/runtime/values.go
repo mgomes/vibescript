@@ -390,7 +390,9 @@ func numericSecondsToTimeDuration(val Value, method string) (time.Duration, erro
 	case KindInt:
 		return durationSecondsToTimeDuration(val.Int(), method)
 	case KindFloat:
-		nanos := val.Float() * float64(nanosecondsPerSecond)
+		// Ruby floors the scaled nanosecond offset, so negative fractional
+		// nanoseconds move further from zero rather than truncating toward it.
+		nanos := math.Floor(val.Float() * float64(nanosecondsPerSecond))
 		ns, err := floatToInt64Checked(nanos, method)
 		if err != nil {
 			return 0, err
@@ -416,7 +418,10 @@ func negatedNumericSecondsToTimeDuration(val Value, method string) (time.Duratio
 		}
 		return durationSecondsToTimeDuration(neg, method)
 	case KindFloat:
-		nanos := -val.Float() * float64(nanosecondsPerSecond)
+		// Negate first so the floor matches Ruby's t + (-x): subtracting a
+		// positive fractional offset floors the negated nanoseconds away from
+		// zero, mirroring numericSecondsToTimeDuration's addition path.
+		nanos := math.Floor(-val.Float() * float64(nanosecondsPerSecond))
 		ns, err := floatToInt64Checked(nanos, method)
 		if err != nil {
 			return 0, err
