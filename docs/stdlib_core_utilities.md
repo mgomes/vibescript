@@ -700,6 +700,45 @@ Global functions and namespaces available in every script. See
 Both directions enforce a 1 MiB payload limit and reject more than 10,000
 nested arrays/objects.
 
+### Math
+
+The `Math` namespace mirrors Ruby's `Math` module. Constants read with either
+accessor (`Math::PI` or `Math.PI`); helpers are called like `Math.sqrt(9)`.
+Integer arguments are promoted to floats and every helper returns a `float`.
+
+Constants:
+
+- `Math::PI -> float` – circle constant.
+- `Math::E -> float` – natural-logarithm base.
+
+Functions:
+
+- `Math.sqrt(x) -> float` – square root; errors when `x < 0`.
+- `Math.cbrt(x) -> float` – cube root (defined for negative `x`).
+- `Math.sin(x) -> float` / `Math.cos(x) -> float` / `Math.tan(x) -> float` –
+  trigonometric functions in radians.
+- `Math.asin(x) -> float` / `Math.acos(x) -> float` – inverse sine/cosine;
+  error unless `-1 <= x <= 1`.
+- `Math.atan(x) -> float` – inverse tangent.
+- `Math.atan2(y, x) -> float` – angle of `(x, y)` from the positive x-axis.
+- `Math.exp(x) -> float` – `E ** x`.
+- `Math.log(x) -> float` / `Math.log(x, base) -> float` – natural logarithm, or
+  the logarithm in `base`; a negative operand errors and `log(0)` is
+  `-Infinity`.
+- `Math.log2(x) -> float` / `Math.log10(x) -> float` – base-2 and base-10
+  logarithms; a negative argument errors.
+- `Math.hypot(x, y) -> float` – `sqrt(x**2 + y**2)` without overflow.
+
+Arguments outside a function's domain raise a domain error, matching Ruby's
+`Math::DomainError`. Following Ruby and IEEE 754, `log(0)`/`log10(0)` return
+`-Infinity` and a `NaN` or `Infinity` argument propagates through unchanged.
+
+```vibe
+Math.sqrt(9)     # 3.0
+Math::PI         # 3.141592653589793
+Math.hypot(3, 4) # 5.0
+```
+
 ### Regex
 
 Note the argument order: `match` takes the pattern first, while the replace

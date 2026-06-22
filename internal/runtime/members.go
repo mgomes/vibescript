@@ -140,8 +140,18 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position) 
 }
 
 func (exec *Execution) getScopedMember(obj Value, property string, pos Position) (Value, error) {
+	if obj.Kind() == KindObject {
+		// Namespace objects such as Math expose constants and module
+		// functions, so `Math::PI` resolves the same member that `Math.PI`
+		// would, matching Ruby's `::` constant access on a module.
+		if val, ok := obj.Hash()[property]; ok {
+			return val, nil
+		}
+		candidates := slices.Collect(maps.Keys(obj.Hash()))
+		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
+	}
 	if obj.Kind() != KindEnum {
-		return NewNil(), exec.errorAt(pos, "scoped member access is only supported on enums")
+		return NewNil(), exec.errorAt(pos, "scoped member access is only supported on enums and namespaces")
 	}
 	enumDef := valueEnum(obj)
 	if enumDef == nil {
