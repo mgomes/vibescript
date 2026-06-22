@@ -855,6 +855,11 @@ func TestHashExceptIgnoresUnsupportedKeys(t *testing.T) {
 		want   map[string]Value
 	}{
 		{
+			name:   "parenless invocation copies the receiver",
+			source: `def run() ({ a: 1 }).except end`,
+			want:   map[string]Value{"a": NewInt(1)},
+		},
+		{
 			name:   "unsupported only preserves entries",
 			source: `def run() { a: 1 }.except(1) end`,
 			want:   map[string]Value{"a": NewInt(1)},
@@ -900,6 +905,11 @@ func TestHashSliceIgnoresUnsupportedKeys(t *testing.T) {
 		{
 			name:   "no arguments returns empty hash",
 			source: `def run() ({ a: 1 }).slice() end`,
+			want:   map[string]Value{},
+		},
+		{
+			name:   "parenless invocation returns empty hash",
+			source: `def run() ({ a: 1 }).slice end`,
 			want:   map[string]Value{},
 		},
 		{
