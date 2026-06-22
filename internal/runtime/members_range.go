@@ -219,6 +219,13 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 		current -= skip
 	}
 
+	// Reject the allocation up front so a near-MaxInt64 range cannot reserve a
+	// multi-gigabyte backing array before the per-element checkMemoryWith below
+	// would observe it. limit is already clamped to length and <= math.MaxInt.
+	if err := exec.checkProjectedIntArrayBytes(int(limit)); err != nil {
+		return NewNil(), err
+	}
+
 	out := make([]Value, 0, int(limit))
 	for i := int64(0); i < limit; i++ {
 		if err := exec.step(); err != nil {

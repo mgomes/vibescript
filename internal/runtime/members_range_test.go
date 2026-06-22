@@ -210,6 +210,34 @@ end`
 	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
 
+func TestRangeMaterializeRejectsHugePreallocation(t *testing.T) {
+	t.Parallel()
+
+	// A near-MaxInt64 range must trip the memory quota up front rather than
+	// reserving its full backing array. Before the projected-size check the
+	// make([]Value, 0, int(limit)) call would reserve tens of gigabytes for the
+	// capacity (panicking or OOMing the host) before any per-element memory
+	// check observed the allocation. Both to_a and first(n) flow through the
+	// same materializer, so cover both entry points.
+	tests := []struct {
+		name string
+		expr string
+	}{
+		{"to_a", "(0...9223372036854775807).to_a"},
+		{"first", "(0...9223372036854775807).first(9000000000000000000)"},
+		{"last", "(0...9223372036854775807).last(9000000000000000000)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := "def run()\n  " + tc.expr + "\nend"
+			script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 * 1024}, source)
+			requireRunMemoryQuotaError(t, script, nil, CallOptions{})
+		})
+	}
+}
+
 func TestRangeToArrayStepQuota(t *testing.T) {
 	t.Parallel()
 
