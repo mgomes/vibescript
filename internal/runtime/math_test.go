@@ -230,6 +230,21 @@ func TestMathSpecialValues(t *testing.T) {
 			},
 		},
 		{
+			// x == 0 with base 1 is log(0)/log(1) = -Inf/0 = -Infinity. Ruby
+			// (checked with the ruby binary: `Math.log(0, 1)` is -Infinity) does
+			// not raise here, because only a strictly negative x is out of
+			// domain; x == 0 yields -Infinity exactly like the single-argument
+			// `Math.log(0)`. This pins the lower boundary of the base-1 case so a
+			// future "make base 1 return NaN" change cannot silently break it.
+			name: "log_zero_base_one_is_negative_infinity",
+			expr: "Math.log(0, 1)",
+			assert: func(t *testing.T, got float64) {
+				if !math.IsInf(got, -1) {
+					t.Fatalf("got %v, want -Inf", got)
+				}
+			},
+		},
+		{
 			// log(x)/log(0) is finite/-Inf, which is -0.0 in Ruby and IEEE 754.
 			name: "log_base_zero_is_negative_zero",
 			expr: "Math.log(8, 0)",
