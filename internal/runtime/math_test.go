@@ -217,6 +217,19 @@ func TestMathSpecialValues(t *testing.T) {
 			},
 		},
 		{
+			// For 0 <= x < 1 with base 1, log(x) is negative and log(1) is 0,
+			// so log(x)/log(1) is -Infinity. Real Ruby (checked with the ruby
+			// binary) returns -Infinity for `Math.log(0.5, 1)`, not NaN, so we
+			// mirror the IEEE 754 division rather than special-casing base 1.
+			name: "log_below_one_base_one_is_negative_infinity",
+			expr: "Math.log(0.5, 1)",
+			assert: func(t *testing.T, got float64) {
+				if !math.IsInf(got, -1) {
+					t.Fatalf("got %v, want -Inf", got)
+				}
+			},
+		},
+		{
 			// log(x)/log(0) is finite/-Inf, which is -0.0 in Ruby and IEEE 754.
 			name: "log_base_zero_is_negative_zero",
 			expr: "Math.log(8, 0)",

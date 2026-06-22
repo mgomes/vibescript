@@ -108,9 +108,15 @@ func mathBinary(name string, fn func(float64, float64) float64) Value {
 // With one argument it computes the natural logarithm; with a second it
 // computes the logarithm in that base as `log(x) / log(base)`, exactly like
 // Ruby. Ruby restricts both operands to the non-negative reals, so a negative
-// x or base raises a domain error, while every other special value (a base of
-// 1 yielding Infinity, log(0) yielding -Infinity, NaN operands propagating)
-// follows from IEEE 754 division.
+// x or base raises a domain error, while every other special value follows
+// from IEEE 754 division. A base of exactly 1 makes log(base) zero, so the
+// result is whatever dividing by zero yields: +Infinity for x > 1, -Infinity
+// for 0 <= x < 1, and NaN for x == 1 (0/0). This matches Ruby's MRI, which
+// also implements the two-argument form as a plain log(x)/log(base) division
+// with no special case for base 1 (verified against the ruby binary:
+// `Math.log(8, 1)` is Infinity, `Math.log(0.5, 1)` is -Infinity, and
+// `Math.log(1, 1)` is NaN). We deliberately do not special-case base 1 to
+// raise or return NaN, because that would diverge from real Ruby.
 func builtinMathLog(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	const name = "Math.log"
 	if err := rejectMathKwargsBlock(name, kwargs, block); err != nil {
