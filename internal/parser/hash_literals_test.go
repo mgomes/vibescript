@@ -46,40 +46,89 @@ end`
 	}
 }
 
-func TestParserHashRocketKeys(t *testing.T) {
+func TestParserHashRocketsRejected(t *testing.T) {
 	t.Parallel()
 
-	source := `def run
-  {:name => "Ada", "first-name" => "Lovelace", key => 1}
-end`
-
-	got, errs := parseSource(t, source)
-	if len(errs) > 0 {
-		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	sources := []string{
+		`def run
+  {:name => "Ada"}
+end`,
+		`def run
+  {"first-name" => "Lovelace"}
+end`,
+		`def run
+  {key => 1}
+end`,
 	}
 
-	wantBody := []ast.Statement{
-		&ast.ExprStmt{
-			Expr: &ast.HashLiteral{
-				Pairs: []ast.HashPair{
-					{
-						Key:   &ast.SymbolLiteral{Name: "name"},
-						Value: &ast.StringLiteral{Value: "Ada"},
-					},
-					{
-						Key:   &ast.StringLiteral{Value: "first-name"},
-						Value: &ast.StringLiteral{Value: "Lovelace"},
-					},
-					{
-						Key:   &ast.Identifier{Name: "key"},
-						Value: &ast.IntegerLiteral{Value: 1},
-					},
-				},
-			},
-		},
+	for _, source := range sources {
+		_, errs := parseSource(t, source)
+		if len(errs) == 0 {
+			t.Fatalf("parseSource(%q) errors = none, want hash rocket rejection", source)
+		}
+		if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
+			t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+		}
 	}
-	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
-		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+}
+
+// TestParserHashRocketSingleError verifies that rejecting the removed hash
+// rocket syntax recovers to the next comma or closing brace so a single
+// actionable hash-pair error is reported instead of cascading diagnostics
+// (the parser previously left the cursor on the key and produced several
+// unrelated errors for mixed literals such as `{:name => "Ada", good: 1}`).
+func TestParserHashRocketSingleError(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		`{:name => "Ada"}`,
+		`{:name => "Ada", good: 1}`,
+		`{good: 1, :name => "Ada"}`,
+		`{1 => 2}`,
+		`{name: 1, 2 => 3}`,
+		`{name: [1, 2] => 3}`,
+		`{a => {b => c}}`,
+		// Rejected entries whose key candidate itself begins with an opener
+		// delimiter. Recovery must treat the cursor as already inside that
+		// delimiter so its matching closer is not mistaken for the outer hash
+		// boundary, otherwise parsing resumes mid-entry and cascades errors.
+		`{ {a: 1} => v }`,
+		`{ [a, b] => v }`,
+		`{ (a) => v }`,
+		`{ {a: 1} => v, ok: 1 }`,
+		`{ ok: 1, [a, b] => v }`,
+	}
+
+	for _, source := range sources {
+		_, errs := parseSource(t, source)
+		if len(errs) != 1 {
+			t.Fatalf("parseSource(%q) errors = %v, want exactly one", source, errs)
+		}
+		if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
+			t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+		}
+	}
+}
+
+// TestParserHashMissingValueSingleError verifies that a hash entry with a
+// label key but no value recovers cleanly and continues parsing the remaining
+// pairs, yielding only the missing-value diagnostic.
+func TestParserHashMissingValueSingleError(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		`{name:}`,
+		`{name:, other: 1}`,
+	}
+
+	for _, source := range sources {
+		_, errs := parseSource(t, source)
+		if len(errs) != 1 {
+			t.Fatalf("parseSource(%q) errors = %v, want exactly one", source, errs)
+		}
+		if got, want := errs[0].Error(), "missing value for hash key name"; !strings.Contains(got, want) {
+			t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+		}
 	}
 }
 
@@ -117,21 +166,5 @@ end`
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
-	}
-}
-
-func TestParserHashRocketsRequireFatArrow(t *testing.T) {
-	t.Parallel()
-
-	source := `def run
-  {:name -> "Ada"}
-end`
-
-	_, errs := parseSource(t, source)
-	if len(errs) != 1 {
-		t.Fatalf("parseSource(%q) errors = %d, want 1 hash rocket diagnostic: %v", source, len(errs), errs)
-	}
-	if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
-		t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
 	}
 }

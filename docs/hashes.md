@@ -27,20 +27,20 @@ player = {
 player["first-name"] # "Ada"
 ```
 
-Hash rockets are supported for symbol and string keys, and for key expressions
-that evaluate to symbols or strings:
+Hash literals only accept colon-style keys: shorthand labels (`name:`) and
+quoted string keys (`"name":`). Ruby's hash rocket syntax (`=>`) is not
+supported, so write `{ name: "Ada" }` rather than `{ :name => "Ada" }`. To use a
+value computed at runtime as a key, assign into the hash after constructing it:
 
 ```vibe
 current_key = :nickname
-player = {
-  :name => "Ada",
-  "first-name" => "Lovelace",
-  current_key => "dynamic"
-}
+player = { name: "Ada" }
+player[current_key] = "dynamic"
 ```
 
-All hash keys are normalized into the same string lookup space. Other key
-types, such as arrays or numbers, raise `unsupported hash key type ...`.
+Keys assigned through index access are normalized into the same string lookup
+space. Other key types, such as arrays or numbers, raise
+`unsupported hash key type ...`.
 
 Dot access keeps hash method names reserved. If a stored key is named like a
 hash method, use index access for the entry:

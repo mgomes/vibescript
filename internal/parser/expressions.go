@@ -1077,13 +1077,12 @@ func (p *parser) parseHashLiteral() ast.Expression {
 }
 
 func (p *parser) parseHashPair() ast.HashPair {
-	if p.peekToken.Type == ast.TokenColon {
-		return p.parseColonHashPair()
+	if p.peekToken.Type != ast.TokenColon {
+		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
+		p.recoverHashPair()
+		return ast.HashPair{}
 	}
-	return p.parseHashRocketPair()
-}
 
-func (p *parser) parseColonHashPair() ast.HashPair {
 	var key ast.Expression
 	switch {
 	case isLabelNameToken(p.curToken):
@@ -1092,55 +1091,46 @@ func (p *parser) parseColonHashPair() ast.HashPair {
 		key = &ast.StringLiteral{Value: p.curToken.Literal, Position: p.curToken.Pos}
 	default:
 		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
+		p.recoverHashPair()
 		return ast.HashPair{}
 	}
 	p.nextToken()
-	return p.parseHashPairValue(key)
-}
+	if p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRBrace || p.peekToken.Type == ast.TokenEOF {
+		p.addParseError(p.peekToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
+		return ast.HashPair{}
+	}
 
-func (p *parser) parseHashRocketPair() ast.HashPair {
-	key := p.parseExpression(lowestPrec)
-	if key == nil {
-		return ast.HashPair{}
-	}
-	if p.peekToken.Type != ast.TokenArrow {
-		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
-		p.recoverHashPairRemainder()
-		return ast.HashPair{}
-	}
 	p.nextToken()
-	return p.parseHashPairValue(key)
-}
-
-const invalidHashPairMessage = `invalid hash pair: expected key like name:, "name":, :name =>, or expression =>`
-
-func (p *parser) parseHashPairValue(key ast.Expression) ast.HashPair {
-	p.nextToken()
-	if p.curToken.Type == ast.TokenComma || p.curToken.Type == ast.TokenRBrace {
-		p.addParseError(p.curToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
-		return ast.HashPair{}
-	}
-
 	value := p.parseExpression(lowestPrec)
 	if value == nil {
+		p.recoverHashPair()
 		return ast.HashPair{}
 	}
-	return ast.HashPair{Key: key, Value: value}
-}
-
-func hashKeyName(key ast.Expression) string {
-	switch k := key.(type) {
-	case *ast.SymbolLiteral:
-		return k.Name
-	case *ast.StringLiteral:
-		return k.Value
+	switch p.peekToken.Type {
+	case ast.TokenComma, ast.TokenRBrace, ast.TokenEOF:
+		return ast.HashPair{Key: key, Value: value}
 	default:
-		return "unknown"
+		p.addParseError(p.peekToken.Pos, invalidHashPairMessage)
+		p.recoverHashPair()
+		return ast.HashPair{}
 	}
 }
 
-func (p *parser) recoverHashPairRemainder() {
+// recoverHashPair advances the parser past a malformed hash entry so the
+// surrounding hash literal can resume cleanly. It positions peekToken at the
+// next top-level "," or "}" (or EOF), skipping over any balanced parentheses,
+// brackets, or braces so that removed syntax such as a hash rocket yields a
+// single actionable error instead of cascading diagnostics.
+func (p *parser) recoverHashPair() {
 	nesting := 0
+	// curToken can already be an opener when recovery begins (e.g. the rejected
+	// entry starts with "{", "[", or "(" as in `{ {a: 1} => v }`). In that case
+	// the cursor is already inside that delimiter, so seed nesting accordingly to
+	// keep its matching closer from being mistaken for the outer hash boundary.
+	switch p.curToken.Type {
+	case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
+		nesting++
+	}
 	for p.peekToken.Type != ast.TokenEOF {
 		if nesting == 0 && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRBrace) {
 			return
@@ -1154,6 +1144,19 @@ func (p *parser) recoverHashPairRemainder() {
 				nesting--
 			}
 		}
+	}
+}
+
+const invalidHashPairMessage = `invalid hash pair: expected key like name: or "name":`
+
+func hashKeyName(key ast.Expression) string {
+	switch k := key.(type) {
+	case *ast.SymbolLiteral:
+		return k.Name
+	case *ast.StringLiteral:
+		return k.Value
+	default:
+		return "unknown"
 	}
 }
 
