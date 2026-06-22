@@ -208,20 +208,25 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 		skip = length - limit
 	}
 
-	out := make([]Value, 0, int(limit))
+	// Compute the first value of the window arithmetically so last(n) never
+	// iterates the skipped prefix of a huge range (which would otherwise run
+	// unbounded and uncharged in native Go). skip <= length-limit keeps the
+	// start within the range, so the addition cannot overflow int64.
 	current := rng.Start
-	for produced := int64(0); produced < length; produced++ {
-		if int64(len(out)) == limit {
-			break
+	if ascending {
+		current += skip
+	} else {
+		current -= skip
+	}
+
+	out := make([]Value, 0, int(limit))
+	for i := int64(0); i < limit; i++ {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
 		}
-		if produced >= skip {
-			if err := exec.step(); err != nil {
-				return NewNil(), err
-			}
-			out = append(out, NewInt(current))
-			if err := exec.checkMemoryWith(NewArray(out)); err != nil {
-				return NewNil(), err
-			}
+		out = append(out, NewInt(current))
+		if err := exec.checkMemoryWith(NewArray(out)); err != nil {
+			return NewNil(), err
 		}
 		if ascending {
 			current++

@@ -221,3 +221,42 @@ end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: 64 << 20}, source)
 	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
 }
+
+func TestRangeLastBoundedOnHugeRange(t *testing.T) {
+	t.Parallel()
+
+	// last(n) computes the trailing window arithmetically rather than iterating
+	// (and leaving uncharged) the skipped prefix. On a range whose length is
+	// near MaxInt64 this returns instantly; a regression that walked the prefix
+	// would hang or trip the step quota before producing a result.
+	source := `def run()
+  (0...9223372036854775807).last(3)
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 100000, MemoryQuotaBytes: 64 << 20}, source)
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindArray {
+		t.Fatalf("last(3) kind = %v, want array", got.Kind())
+	}
+	want := []int64{9223372036854775804, 9223372036854775805, 9223372036854775806}
+	arr := got.Array()
+	if len(arr) != len(want) {
+		t.Fatalf("last(3) = %v, want length %d", arr, len(want))
+	}
+	for i, w := range want {
+		if arr[i].Int() != w {
+			t.Fatalf("last(3)[%d] = %d, want %d", i, arr[i].Int(), w)
+		}
+	}
+}
+
+func TestRangeLastStepQuota(t *testing.T) {
+	t.Parallel()
+
+	// Each element of the trailing window consumes a step, so last(n) with a
+	// large window stops on the step limit rather than materializing unbounded.
+	source := `def run()
+  (1..100000).last(60000)
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: 64 << 20}, source)
+	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+}
