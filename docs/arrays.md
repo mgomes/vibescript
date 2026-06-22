@@ -97,6 +97,46 @@ element before it is collected.
 Regular-expression patterns are not yet available, so `grep("e")` matches the
 exact string `"e"` rather than any string containing it.
 
+## Block iteration
+
+These helpers yield to a block instead of building a result array. Each yielded
+slice or window is an independent array, so mutating it never touches the
+receiver.
+
+- `each_slice(n)` yields non-overlapping slices of length `n`, including a
+  shorter trailing slice when the length is not a multiple of `n`. `n` must be a
+  positive integer. Returns `nil`.
+- `each_cons(n)` yields every sliding window of length `n`; an array shorter than
+  `n` yields nothing. `n` must be a positive integer. Returns `nil`.
+- `reverse_each` yields values from last to first and returns the receiver.
+- `cycle(n)` yields the whole array `n` times. A non-positive `n` yields nothing.
+  Omitting `n` or passing `nil` cycles forever; the step quota and context
+  cancellation bound the otherwise unbounded loop. Returns `nil`.
+
+```vibe
+def collect_slices(values, size)
+  slices = []
+  values.each_slice(size) do |slice|
+    slices = slices.push(slice)
+  end
+  slices
+end
+
+collect_slices([1, 2, 3, 4, 5], 2)  # [[1, 2], [3, 4], [5]]
+```
+
+```vibe
+[1, 2, 3, 4].each_cons(3) do |window|
+  window.sum
+end                                 # yields [1, 2, 3] then [2, 3, 4]
+[1, 2, 3].reverse_each do |value|
+  value * 10
+end                                 # yields 3, 2, 1
+[1, 2].cycle(2) do |value|
+  value + 1
+end                                 # yields 1, 2, 1, 2
+```
+
 ## Ordering and grouping
 
 - `reverse`, `sort`, and `sort_by`.

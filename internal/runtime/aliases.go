@@ -298,6 +298,10 @@ func timeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	return value.TimeFromParts(args, defaultLoc)
 }
 
+func timeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
+	return value.TimeFromCalendarParts(args, defaultLoc)
+}
+
 func timeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
 	return value.TimeFromEpoch(val, loc)
 }

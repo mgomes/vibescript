@@ -99,6 +99,18 @@ Unicode characters, not bytes, unless noted.
 - `delete_prefix(prefix) -> string` – remove `prefix` when present.
 - `delete_suffix(suffix) -> string` – remove `suffix` when present.
 
+### Padding
+
+`width` counts Unicode characters (like `length`/`slice`); a `Float` width is
+truncated toward zero. A width at or below the receiver's length returns it
+unchanged. The pad string defaults to `" "`, must be non-empty, and is repeated
+then truncated at a character boundary to fill the span.
+
+- `center(width, pad = " ") -> string` – pad both sides, with the extra
+  character on the right when the padding cannot be split evenly.
+- `ljust(width, pad = " ") -> string` – left-justify, padding on the right.
+- `rjust(width, pad = " ") -> string` – right-justify, padding on the left.
+
 ### Replacement, Splitting, and Templating
 
 - `sub(pattern, replacement, regex: false) -> string` – replace the first
@@ -140,6 +152,15 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 ### Iteration
 
 - `each { |item| } -> array` – yield each element; returns the receiver.
+- `each_slice(n) { |slice| } -> nil` – yield non-overlapping slices of length
+  `n` (the trailing slice may be shorter); `n` must be a positive integer.
+- `each_cons(n) { |window| } -> nil` – yield each sliding window of length `n`;
+  arrays shorter than `n` yield nothing and `n` must be a positive integer.
+- `reverse_each { |item| } -> array` – yield elements from last to first;
+  returns the receiver.
+- `cycle(n = nil) { |item| } -> nil` – yield the whole array `n` times; a
+  non-positive `n` yields nothing. Omitting `n` or passing `nil` cycles forever,
+  bounded by the step quota and context cancellation.
 - `map { |item| } -> array` – new array of block results.
 - `select { |item| } -> array` – elements for which the block is truthy.
 - `reject { |item| } -> array` – elements for which the block is falsy (the
@@ -299,7 +320,9 @@ methods.
 - `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
   receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
 - `slice(*keys) -> hash` – only the listed keys (missing keys are skipped).
-- `except(*keys) -> hash` – all entries except the listed keys.
+- `except(*keys) -> hash` – all entries except the listed keys. Unsupported key
+  types (anything other than a symbol or string) are ignored as Ruby misses, so
+  the entry is kept rather than raising.
 - `select { |key, value| } -> hash` – entries for which the block is truthy.
 - `reject { |key, value| } -> hash` – entries for which the block is falsy.
 - `compact -> hash` – entries with `nil` values removed.
@@ -683,12 +706,18 @@ Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
 `"LOCAL"`, or numeric offsets like `"+05:30"`.
 
 - `Time.new(year, month, day, hour = 0, min = 0, sec = 0, zone = nil,
-  in: nil) -> time` – build from calendar parts (local zone by default).
-- `Time.local(...)` / `Time.mktime(...)` -> time – like `Time.new` with the
-  local zone as the default; an explicit zone argument still overrides it.
-- `Time.utc(...)` / `Time.gm(...)` -> time – like `Time.new` with UTC as the
-  default; an explicit zone argument still overrides it
-  (`Time.utc(2024, 1, 1, 0, 0, 0, "+05:30")` is `+05:30`, not UTC).
+  in: nil) -> time` – build from calendar parts (local zone by default). The
+  seventh positional argument is a zone/offset that overrides `in:`
+  (`Time.new(2024, 1, 1, 0, 0, 0, "+05:30")` is `+05:30`, not local).
+- `Time.local(year, month, day, hour = 0, min = 0, sec = 0, usec = 0) -> time` /
+  `Time.mktime(...)` -> time – build calendar parts anchored to the local zone.
+  The seventh positional argument is microseconds-with-fraction, not a zone.
+- `Time.utc(year, month, day, hour = 0, min = 0, sec = 0, usec = 0) -> time` /
+  `Time.gm(...)` -> time – build calendar parts anchored to UTC. The seventh
+  positional argument is microseconds-with-fraction, not a zone
+  (`Time.utc(2024, 1, 1, 0, 0, 0, 123456).usec` is `123456`). Integer
+  microseconds are exact and floats carry sub-microsecond precision down to the
+  nanosecond; a non-numeric microsecond argument raises a runtime error.
 - `Time.at(epoch_seconds, in: nil) -> time` – build from Unix epoch seconds
   (int or float).
 - `Time.now(in: nil) -> time` – current time (local zone by default).

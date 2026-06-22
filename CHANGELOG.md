@@ -21,6 +21,40 @@ All notable changes to this project will be documented in this file.
   float to an integer now raises rather than silently yielding a garbage value,
   so a `NaN`/`Infinity` range endpoint, `money_cents` amount, or duration operand
   reports a clear error.
+- **Added: Ruby-style string padding helpers.** `String#center`, `String#ljust`,
+  and `String#rjust` pad a string to a requested width, defaulting to a single
+  space and accepting a custom pad string that is repeated and truncated to fill
+  the span. Width is measured in characters (Unicode code points) like
+  Vibescript's other string methods, a `Float` width is truncated toward zero as
+  Ruby does, a width at or below the receiver's length returns it unchanged, and
+  an empty pad string is rejected. Oversized widths are checked against the
+  memory quota before any buffer is allocated, so they fail fast instead of
+  materializing a huge string.
+- **Added: Ruby-style subsecond parts for `Time.local`, `mktime`, `utc`, and
+  `gm`.** These calendar constructors now read their seventh positional argument
+  as microseconds-with-fraction instead of routing it through timezone parsing.
+  Integer microseconds are exact and floats carry sub-microsecond precision down
+  to the nanosecond, while a non-numeric microsecond argument raises a runtime
+  error. `Time.new` keeps its Ruby distinction of accepting a zone/offset in the
+  seventh position. Unlike Ruby, a string microsecond argument is rejected rather
+  than coerced via leading-digit parsing.
+- **Added: Ruby-style `Array#each_slice`, `each_cons`, `reverse_each`, and
+  `cycle`.** `each_slice(n)` yields non-overlapping slices (including a shorter
+  trailing slice) and `each_cons(n)` yields sliding windows; both require a
+  positive integer size and yield freshly copied arrays that do not alias the
+  receiver. `reverse_each` yields values in reverse index order and returns the
+  receiver. `cycle(n)` repeats the array `n` times (a non-positive count is a
+  no-op like Ruby), while omitting the count or passing `nil` cycles forever; the
+  cycle charges a step per yield so the step quota and context cancellation bound
+  even an empty block body. The slice/window/cycle forms return `nil` to match
+  Ruby.
+- **Fixed: `Hash#except` ignores unsupported key types like Ruby misses.**
+  `Hash#except` no longer raises when given an argument whose type cannot be a
+  hash key (anything other than a symbol or string). Because Vibescript hash keys
+  are only symbols or strings, such an argument can never match an entry, so it is
+  now treated as a Ruby-style miss and ignored. Mixed argument lists still exclude
+  the supported keys, so `{ a: 1 }.except(1)` returns `{ a: 1 }` while
+  `{ a: 1 }.except(1, :a)` returns `{}`.
 - **Added: Ruby-style numeric rounding precision.** `Float#round`, `Float#floor`,
   and `Float#ceil` now accept an optional Integer precision: positive `ndigits`
   keep the value a float rounded to that many fractional digits, while zero or
@@ -34,11 +68,11 @@ All notable changes to this project will be documented in this file.
   `div` (floored division returning an integer), `divmod` (the floored quotient
   paired with the divisor-signed modulo), `fdiv` (floating division), and
   `remainder` (truncated-division remainder whose sign follows the receiver, so
-  it differs from `%` for mixed-sign operands). A zero divisor errors for `div`,
-  `divmod`, and `remainder`, and quotients outside the 64-bit range error rather
-  than wrapping. `fdiv` follows IEEE 754 on a zero divisor like the `/` operator
-  (see the float special-value entry below), and `quo` is intentionally omitted
-  because Vibescript has no rational number type.
+  it differs from `%` for mixed-sign operands). A zero divisor errors for all
+  four, and quotients outside the 64-bit range error rather than wrapping. Ruby's
+  `fdiv` infinity result is intentionally an error instead, matching the `/`
+  operator, and `quo` is intentionally omitted because Vibescript has no rational
+  number type.
 - **Added: Ruby-style `String#casecmp` and `String#casecmp?`.** `casecmp`
   case-insensitively compares two strings (folding only ASCII letters and
   comparing other bytes ordinally) and returns `-1`, `0`, `1`, or `nil` for a
