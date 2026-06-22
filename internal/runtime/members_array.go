@@ -16,7 +16,7 @@ var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse",
-	"take", "drop", "zip",
+	"take", "drop", "zip", "transpose",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
 }
@@ -35,7 +35,7 @@ func arrayMemberBuiltin(property string) (Value, error) {
 	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
-	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse", "take", "drop", "zip":
+	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -1452,6 +1452,42 @@ func arrayMemberTransforms(property string) (Value, error) {
 				rows[i] = NewArray(row)
 			}
 			return NewArray(rows), nil
+		}), nil
+	case "transpose":
+		return NewAutoBuiltin("array.transpose", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.transpose does not take arguments")
+			}
+			rows := receiver.Array()
+			if len(rows) == 0 {
+				return NewArray([]Value{}), nil
+			}
+			// The first row defines the expected column count; every later row
+			// must be an array of the same length, mirroring Ruby's IndexError
+			// on ragged input.
+			columnCount := -1
+			for i, row := range rows {
+				if row.Kind() != KindArray {
+					return NewNil(), fmt.Errorf("array.transpose requires arrays as elements, but element at index %d is a %s", i, row.Kind())
+				}
+				got := len(row.Array())
+				if columnCount == -1 {
+					columnCount = got
+					continue
+				}
+				if got != columnCount {
+					return NewNil(), fmt.Errorf("array.transpose requires equal-length rows, but element at index %d has length %d (expected %d)", i, got, columnCount)
+				}
+			}
+			columns := make([]Value, columnCount)
+			for col := range columnCount {
+				transposed := make([]Value, len(rows))
+				for rowIndex, row := range rows {
+					transposed[rowIndex] = row.Array()[col]
+				}
+				columns[col] = NewArray(transposed)
+			}
+			return NewArray(columns), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
