@@ -5,6 +5,7 @@ import (
 	"math"
 	goruntime "runtime"
 	"testing"
+	"time"
 )
 
 func evalRangeExpr(t *testing.T, expr string) Value {
@@ -220,6 +221,69 @@ func TestRangeToArrayMemoryQuota(t *testing.T) {
 end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 4096}, source)
 	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
+}
+
+func TestRangeMaterializeLargeIsLinear(t *testing.T) {
+	t.Parallel()
+
+	// Materializing a large range with an ample memory quota must run in linear
+	// time. The per-element memory check charges the backing array's capacity in
+	// O(1); a regression that re-estimated the whole array prefix on each append
+	// would make this O(n^2) and hang well before returning. The deadline turns
+	// that quadratic blow-up into a fast failure instead of a wedged test binary.
+	const count = int64(200_000)
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       int(count) + 1,
+		memoryQuota: 64 << 20,
+	}
+	rng := Range{Start: 1, End: count, Exclusive: false}
+
+	type outcome struct {
+		result Value
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := exec.rangeMaterialize(rng, count, false)
+		done <- outcome{result: result, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("rangeMaterialize: %v", got.err)
+		}
+		arr := got.result.Array()
+		if int64(len(arr)) != count {
+			t.Fatalf("len = %d, want %d", len(arr), count)
+		}
+		if arr[0].Int() != 1 || arr[count-1].Int() != count {
+			t.Fatalf("endpoints = (%d, %d), want (1, %d)", arr[0].Int(), arr[count-1].Int(), count)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("rangeMaterialize(%d) did not finish within the deadline; the per-element memory check is likely O(n^2) again", count)
+	}
+}
+
+func TestRangeMaterializeLargeTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// The same large materialization that runs in linear time under an ample
+	// quota must still trip the memory quota when the projected array exceeds it.
+	// This guards against an O(1) per-element check that under-counts and lets an
+	// over-quota array through. The quota is far below count*sizeof(Value), so the
+	// up-front projected check rejects the call before the loop allocates.
+	const count = int64(200_000)
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       int(count) + 1,
+		memoryQuota: 4096,
+	}
+	rng := Range{Start: 1, End: count, Exclusive: false}
+
+	_, err := exec.rangeMaterialize(rng, count, false)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestRangeMaterializeRejectsHugePreallocation(t *testing.T) {

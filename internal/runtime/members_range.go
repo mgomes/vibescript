@@ -259,8 +259,8 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 	}
 
 	// Reject the allocation up front so a near-MaxInt64 range cannot reserve a
-	// multi-gigabyte backing array before the per-element checkMemoryWith below
-	// would observe it. limit is already clamped to length and <= math.MaxInt.
+	// multi-gigabyte backing array before the per-element check below would
+	// observe it. limit is already clamped to length and <= math.MaxInt.
 	if err := exec.checkProjectedIntArrayBytes(int(limit)); err != nil {
 		return NewNil(), err
 	}
@@ -270,7 +270,7 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 	// for ranges whose full materialization clearly exceeds the memory quota,
 	// but it passes whenever MemoryQuotaBytes is large. Preallocating the full
 	// limit there would reserve the entire backing array before the per-element
-	// step() and checkMemoryWith below could reject the call, so a large
+	// step() and memory check below could reject the call, so a large
 	// MemoryQuotaBytes paired with a small StepQuota could still trigger a huge
 	// up-front allocation. Bounding the initial capacity keeps the actual
 	// allocation proportional to the elements the quotas allow.
@@ -284,7 +284,13 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 			return NewNil(), err
 		}
 		out = append(out, NewInt(current))
-		if err := exec.checkMemoryWith(NewArray(out)); err != nil {
+		// Charge the backing array's current capacity rather than re-estimating
+		// the whole array prefix. checkMemoryWith(NewArray(out)) would walk every
+		// element on each append, making materialization O(n^2); the projected
+		// check is O(1) and keyed on cap so it tracks the actual allocation as
+		// append doubles the backing array. Each element is an inlined int, so it
+		// adds nothing beyond its slot, making the cap-based bound exact.
+		if err := exec.checkProjectedIntArrayBytes(cap(out)); err != nil {
 			return NewNil(), err
 		}
 		if ascending {
