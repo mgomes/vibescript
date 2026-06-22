@@ -110,7 +110,20 @@ end
 
 ## Transform and filter helpers
 
-- `merge` combines two hashes into a new hash.
+- `merge(*others)` combines the receiver with any number of hashes into a new
+  hash. Later hashes win on key conflicts, and an optional block resolves
+  conflicts by yielding `(key, old_value, new_value)`. Called with no arguments
+  it returns a copy of the receiver.
+- `update(*others)` / `merge!(*others)` are aliases of `merge`. Ruby mutates the
+  receiver in place; Vibescript's method-based helpers are immutable-style, so
+  all three return a new merged hash and leave the receiver unchanged.
+- `replace(other)` returns a new hash holding `other`'s entries, discarding the
+  receiver's own. Ruby mutates the receiver in place; this immutable-style
+  version leaves it unchanged.
+- `flatten(depth = 1)` returns a flat array of the entries. At the default depth
+  the result is `[key, value, ...]`; values that are arrays are kept nested
+  unless a deeper `depth` is given. A `depth` of `0` returns the `[key, value]`
+  pairs nested, and a negative `depth` flattens completely.
 - `store(key, value)` returns a new hash with the key assigned, leaving the
   receiver unchanged. Like the other method-based helpers it is immutable-style;
   use index assignment (`hash[key] = value`) when you want to mutate in place.
@@ -155,8 +168,8 @@ end
 - `keys` and `values`
 - `each`, `each_key`, `each_value`
 
-`keys`, `values`, and block-based hash iteration process entries in sorted key
-order for deterministic behavior.
+`keys`, `values`, `flatten`, and block-based hash iteration process entries in
+sorted key order for deterministic behavior.
 
 Example:
 

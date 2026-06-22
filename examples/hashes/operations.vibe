@@ -8,6 +8,22 @@ def merge_with_override(base, override)
   base.merge(override)
 end
 
+def layer_settings(base, environment, request)
+  base.merge(environment, request)
+end
+
+def apply_patch(record, patch)
+  record.update(patch)
+end
+
+def reset_record(record, replacement)
+  record.replace(replacement)
+end
+
+def to_pairs(record)
+  record.flatten
+end
+
 def symbolize_report(records)
   report = {}
   records.each do |record|

@@ -14,7 +14,7 @@ import (
 // listed name resolves.
 var hashMemberNames = []string{
 	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value",
-	"merge", "store", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+	"merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 }
 
 var hashBuiltinMembers = newMemberTable(hashMemberNames)
@@ -34,7 +34,7 @@ func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value":
 		return hashMemberQuery(property)
-	case "merge", "store", "slice", "except", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
+	case "merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
@@ -366,51 +366,136 @@ func hashMemberQuery(property string) (Value, error) {
 
 func hashMemberTransforms(property string) (Value, error) {
 	switch property {
-	case "merge":
-		return NewBuiltin("hash.merge", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
-				return NewNil(), fmt.Errorf("hash.merge expects a single hash argument")
+	case "merge", "update", "merge!":
+		// update and merge! are Ruby aliases of merge. Ruby mutates the receiver
+		// in place and returns it; Vibescript's method-based hash helpers are
+		// immutable-style, so all three return a new merged hash and leave the
+		// receiver unchanged. Index assignment (hash[key] = value) remains the
+		// way to mutate in place.
+		name := property
+		// Kept as a plain builtin (not AutoBuiltin) so a parenless `hash.merge`
+		// yields the receiver-bound method value rather than auto-invoking; the
+		// zero-argument copy behavior is reached through an explicit `merge()`
+		// call. Ruby's no-argument Hash#merge returns a copy of self, which the
+		// len(args) == 0 branch below handles for the explicit-call form.
+		return NewBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			// Reject keyword arguments rather than silently dropping them. Ruby
+			// folds trailing keywords into an implicit hash argument, but
+			// Vibescript's native hash helpers only consume positional hashes, so
+			// keywords must be passed explicitly (e.g. merge({ b: 2 })).
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.%s does not accept keyword arguments", name)
+			}
+			for i, arg := range args {
+				if arg.Kind() != KindHash && arg.Kind() != KindObject {
+					return NewNil(), fmt.Errorf("hash.%s argument %d must be a hash", name, i+1)
+				}
 			}
 			base := receiver.Hash()
-			addition := args[0].Hash()
-			out := make(map[string]Value, len(base)+len(addition))
+			out := make(map[string]Value, len(base))
 			maps.Copy(out, base)
-			// Without a block the incoming hash wins on key conflicts, matching
-			// Ruby's blockless Hash#merge.
-			if valueBlock(block) == nil {
-				maps.Copy(out, addition)
+			if len(args) == 0 {
+				// Ruby's Hash#merge with no arguments returns a copy of self.
 				return NewHash(out), nil
 			}
-			// With a block, Ruby resolves conflicts by yielding
-			// (key, old_value, new_value) and storing the block result; keys
-			// present on only one side are copied without invoking the block.
-			// Conflicting keys are visited in sorted order so block side
-			// effects are deterministic, mirroring the other hash helpers.
-			runner, err := newBlockCallRunner(exec, block, "hash.merge")
-			if err != nil {
-				return NewNil(), err
-			}
-			var blockArgs [3]Value
-			var keyBuf [smallHashKeyBufferSize]string
-			for _, key := range sortedHashKeysInto(addition, keyBuf[:]) {
-				oldValue, conflict := base[key]
-				if !conflict {
-					out[key] = addition[key]
-					continue
-				}
-				blockArgs[0] = NewSymbol(key)
-				blockArgs[1] = oldValue
-				blockArgs[2] = addition[key]
-				resolved, err := runner.call(blockArgs[:])
+			useBlock := valueBlock(block) != nil
+			var runner *blockCallRunner
+			if useBlock {
+				// With a block, Ruby resolves conflicts by yielding
+				// (key, old_value, new_value) and storing the block result; keys
+				// present on only one side are copied without invoking the block.
+				// Conflicting keys are visited in sorted order so block side
+				// effects are deterministic, mirroring the other hash helpers.
+				r, err := newBlockCallRunner(exec, block, "hash."+name)
 				if err != nil {
 					return NewNil(), err
 				}
-				out[key] = resolved
+				runner = r
+			}
+			// Multiple hashes are applied left to right, so later arguments win
+			// on conflicts, matching Ruby's Hash#merge(*others). The conflict
+			// block sees the value accumulated so far as old_value, so a key
+			// repeated across arguments folds through the block on each step.
+			var blockArgs [3]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, arg := range args {
+				addition := arg.Hash()
+				for _, key := range sortedHashKeysInto(addition, keyBuf[:]) {
+					oldValue, conflict := out[key]
+					if !conflict || !useBlock {
+						out[key] = addition[key]
+						continue
+					}
+					blockArgs[0] = NewSymbol(key)
+					blockArgs[1] = oldValue
+					blockArgs[2] = addition[key]
+					resolved, err := runner.call(blockArgs[:])
+					if err != nil {
+						return NewNil(), err
+					}
+					out[key] = resolved
+				}
 			}
 			return NewHash(out), nil
 		}), nil
+	case "replace":
+		return NewBuiltin("hash.replace", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			// Reject keyword arguments rather than silently dropping them; the
+			// replacement hash must be passed positionally (e.g. replace({ b: 2 })).
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.replace does not accept keyword arguments")
+			}
+			if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
+				return NewNil(), fmt.Errorf("hash.replace expects a single hash argument")
+			}
+			// Ruby's Hash#replace discards the receiver's contents and adopts the
+			// argument's entries, mutating in place. Vibescript's hash helpers are
+			// immutable-style, so replace returns a fresh hash holding a copy of
+			// the replacement's entries and leaves the receiver unchanged.
+			replacement := args[0].Hash()
+			out := make(map[string]Value, len(replacement))
+			maps.Copy(out, replacement)
+			return NewHash(out), nil
+		}), nil
+	case "flatten":
+		return NewAutoBuiltin("hash.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.flatten does not accept keyword arguments")
+			}
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("hash.flatten accepts at most one depth argument")
+			}
+			// Ruby's Hash#flatten builds the [[key, value], ...] pairs and then
+			// flattens that array to the given depth (default 1, so the pairs are
+			// spread into a flat [key, value, ...] list). A depth of 0 keeps the
+			// pairs nested, and a negative depth flattens completely. valueToInt
+			// truncates a Float depth, matching Ruby.
+			depth := 1
+			if len(args) == 1 {
+				n, err := valueToInt(args[0])
+				if err != nil {
+					return NewNil(), fmt.Errorf("hash.flatten depth must be integer")
+				}
+				depth = n
+			}
+			entries := receiver.Hash()
+			var keyBuf [smallHashKeyBufferSize]string
+			keys := sortedHashKeysInto(entries, keyBuf[:])
+			pairs := make([]Value, len(keys))
+			for i, key := range keys {
+				pairs[i] = NewArray([]Value{NewSymbol(key), entries[key]})
+			}
+			out, err := flattenValues(pairs, depth, "hash.flatten")
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewArray(out), nil
+		}), nil
 	case "store":
 		return NewBuiltin("hash.store", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.store does not accept keyword arguments")
+			}
 			if len(args) != 2 {
 				return NewNil(), fmt.Errorf("hash.store expects a key and a value")
 			}

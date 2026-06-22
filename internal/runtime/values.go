@@ -242,20 +242,24 @@ func arraySortCompareValues(left, right Value) (int, error) {
 // depth=-1 means flatten completely (no limit).
 // depth=0 means don't flatten at all.
 // depth=1 means flatten one level, etc.
+// method names the caller (e.g. "array.flatten" or "hash.flatten") so the depth
+// and cycle errors read in terms of the method the script invoked.
 type flattenState struct {
 	arrays map[sliceIdentity]struct{}
 	depth  int
+	method string
 }
 
-func flattenValues(values []Value, depth int) ([]Value, error) {
+func flattenValues(values []Value, depth int, method string) ([]Value, error) {
 	return flattenValuesWithState(values, depth, &flattenState{
 		arrays: make(map[sliceIdentity]struct{}),
+		method: method,
 	})
 }
 
 func flattenValuesWithState(values []Value, depth int, state *flattenState) ([]Value, error) {
 	if state.depth >= maxFlattenDepth {
-		return nil, fmt.Errorf("array.flatten exceeded maximum depth")
+		return nil, fmt.Errorf("%s exceeded maximum depth", state.method)
 	}
 
 	id := sliceIdentity{
@@ -265,7 +269,7 @@ func flattenValuesWithState(values []Value, depth int, state *flattenState) ([]V
 	}
 	if id.Ptr != 0 {
 		if _, visiting := state.arrays[id]; visiting {
-			return nil, fmt.Errorf("array.flatten does not support cyclic structures")
+			return nil, fmt.Errorf("%s does not support cyclic structures", state.method)
 		}
 		state.arrays[id] = struct{}{}
 		defer delete(state.arrays, id)

@@ -1213,6 +1213,76 @@ func TestExamples(t *testing.T) {
 			}),
 		},
 		{
+			name:     "hashes/layer_settings",
+			file:     "hashes/operations.vibe",
+			function: "layer_settings",
+			args: []Value{
+				hashVal(map[string]Value{
+					"timeout": intVal(30),
+					"retries": intVal(1),
+				}),
+				hashVal(map[string]Value{
+					"retries": intVal(3),
+					"region":  strVal("us"),
+				}),
+				hashVal(map[string]Value{
+					"region": strVal("eu"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"timeout": intVal(30),
+				"retries": intVal(3),
+				"region":  strVal("eu"),
+			}),
+		},
+		{
+			name:     "hashes/apply_patch",
+			file:     "hashes/operations.vibe",
+			function: "apply_patch",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name":   strVal("Alex"),
+					"raised": mustMoney("25.00 USD"),
+				}),
+				hashVal(map[string]Value{
+					"raised": mustMoney("40.00 USD"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"name":   strVal("Alex"),
+				"raised": mustMoney("40.00 USD"),
+			}),
+		},
+		{
+			name:     "hashes/reset_record",
+			file:     "hashes/operations.vibe",
+			function: "reset_record",
+			args: []Value{
+				hashVal(map[string]Value{
+					"name": strVal("Alex"),
+					"goal": intVal(1000),
+				}),
+				hashVal(map[string]Value{
+					"name": strVal("Robin"),
+				}),
+			},
+			want: hashVal(map[string]Value{
+				"name": strVal("Robin"),
+			}),
+		},
+		{
+			name:     "hashes/to_pairs",
+			file:     "hashes/operations.vibe",
+			function: "to_pairs",
+			args: []Value{
+				hashVal(map[string]Value{
+					"goal":   intVal(1000),
+					"raised": intVal(250),
+				}),
+			},
+			want: arrayVal(symbolVal("goal"), intVal(1000), symbolVal("raised"), intVal(250)),
+		},
+		{
 			name:     "hashes/symbolize_report",
 			file:     "hashes/operations.vibe",
 			function: "symbolize_report",
