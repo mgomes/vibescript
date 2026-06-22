@@ -154,6 +154,109 @@ func TestMathSpecialValues(t *testing.T) {
 				}
 			},
 		},
+		{
+			// Ruby's Math.sin/cos/tan have no domain restriction, so an
+			// infinite argument yields NaN (per IEEE 754) instead of raising.
+			name: "sin_infinity_is_nan",
+			expr: "Math.sin(1.0 / 0)",
+			assert: func(t *testing.T, got float64) {
+				if !math.IsNaN(got) {
+					t.Fatalf("got %v, want NaN", got)
+				}
+			},
+		},
+		{
+			name: "cos_infinity_is_nan",
+			expr: "Math.cos(1.0 / 0)",
+			assert: func(t *testing.T, got float64) {
+				if !math.IsNaN(got) {
+					t.Fatalf("got %v, want NaN", got)
+				}
+			},
+		},
+		{
+			name: "tan_negative_infinity_is_nan",
+			expr: "Math.tan(-1.0 / 0)",
+			assert: func(t *testing.T, got float64) {
+				if !math.IsNaN(got) {
+					t.Fatalf("got %v, want NaN", got)
+				}
+			},
+		},
+		{
+			// Ruby's atan accepts the full real line including infinities,
+			// returning the finite limit PI/2 rather than NaN.
+			name: "atan_infinity_is_half_pi",
+			expr: "Math.atan(1.0 / 0)",
+			assert: func(t *testing.T, got float64) {
+				if got != math.Pi/2 {
+					t.Fatalf("got %v, want %v", got, math.Pi/2)
+				}
+			},
+		},
+		{
+			// Ruby computes Math.log(x, base) as log(x)/log(base); a base of
+			// exactly 1 makes log(base) zero, so the result is +Infinity rather
+			// than a spurious domain error or corrupted finite value.
+			name: "log_base_one_is_infinity",
+			expr: "Math.log(8, 1)",
+			assert: func(t *testing.T, got float64) {
+				if !math.IsInf(got, 1) {
+					t.Fatalf("got %v, want +Inf", got)
+				}
+			},
+		},
+		{
+			// log(1)/log(1) is 0/0, which is NaN under IEEE 754, matching Ruby.
+			name: "log_one_base_one_is_nan",
+			expr: "Math.log(1, 1)",
+			assert: func(t *testing.T, got float64) {
+				if !math.IsNaN(got) {
+					t.Fatalf("got %v, want NaN", got)
+				}
+			},
+		},
+		{
+			// log(x)/log(0) is finite/-Inf, which is -0.0 in Ruby and IEEE 754.
+			name: "log_base_zero_is_negative_zero",
+			expr: "Math.log(8, 0)",
+			assert: func(t *testing.T, got float64) {
+				if got != 0 || !math.Signbit(got) {
+					t.Fatalf("got %v, want -0.0", got)
+				}
+			},
+		},
+		{
+			// log(x)/log(Infinity) is finite/+Inf, which is 0.0.
+			name: "log_base_infinity_is_zero",
+			expr: "Math.log(8, 1.0 / 0)",
+			assert: func(t *testing.T, got float64) {
+				if got != 0 || math.Signbit(got) {
+					t.Fatalf("got %v, want 0.0", got)
+				}
+			},
+		},
+		{
+			// A NaN argument is never below or above the [-1, 1] domain bounds
+			// (every comparison with NaN is false), so it propagates through
+			// asin/acos instead of raising, matching Ruby.
+			name: "asin_nan_propagates",
+			expr: "Math.asin(0.0 / 0)",
+			assert: func(t *testing.T, got float64) {
+				if !math.IsNaN(got) {
+					t.Fatalf("got %v, want NaN", got)
+				}
+			},
+		},
+		{
+			name: "acos_nan_propagates",
+			expr: "Math.acos(0.0 / 0)",
+			assert: func(t *testing.T, got float64) {
+				if !math.IsNaN(got) {
+					t.Fatalf("got %v, want NaN", got)
+				}
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,6 +285,17 @@ func TestMathDomainErrors(t *testing.T) {
 		{name: "asin_above_one", expr: "Math.asin(2)", want: "Math.asin out of domain"},
 		{name: "asin_below_minus_one", expr: "Math.asin(-2)", want: "Math.asin out of domain"},
 		{name: "acos_above_one", expr: "Math.acos(2)", want: "Math.acos out of domain"},
+		// Infinity lies outside the [-1, 1] domain of asin/acos, so Ruby raises
+		// rather than returning NaN.
+		{name: "asin_infinity", expr: "Math.asin(1.0 / 0)", want: "Math.asin out of domain"},
+		{name: "acos_infinity", expr: "Math.acos(1.0 / 0)", want: "Math.acos out of domain"},
+		// Negative infinity is below the non-negative domain of sqrt and the
+		// logarithms, so it raises instead of propagating as a float.
+		{name: "sqrt_negative_infinity", expr: "Math.sqrt(-1.0 / 0)", want: "Math.sqrt out of domain"},
+		{name: "log_negative_infinity", expr: "Math.log(-1.0 / 0)", want: "Math.log out of domain"},
+		{name: "log2_negative_infinity", expr: "Math.log2(-1.0 / 0)", want: "Math.log2 out of domain"},
+		{name: "log10_negative_infinity", expr: "Math.log10(-1.0 / 0)", want: "Math.log10 out of domain"},
+		{name: "log_base_negative_infinity", expr: "Math.log(8, -1.0 / 0)", want: "Math.log out of domain"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -125,9 +125,10 @@ Math.log(8, 2)      # 3.0
 ```
 
 Arguments outside a function's mathematical domain raise a domain error (for
-example `Math.sqrt(-1)` or `Math.asin(2)`), matching Ruby's `Math::DomainError`.
-Following Ruby and IEEE 754, `Math.log(0)` returns `-Infinity` rather than
-raising, and a `NaN` or `Infinity` argument propagates through unchanged.
+example `Math.sqrt(-1)`, `Math.asin(2)`, or `Math.asin(Float::INFINITY)`),
+matching Ruby's `Math::DomainError`. In-domain special values follow Ruby and
+IEEE 754: `Math.log(0)` returns `-Infinity`, `Math.sin`/`cos`/`tan` of
+`Infinity` return `NaN`, and a `NaN` argument propagates through unchanged.
 
 ## JSON
 

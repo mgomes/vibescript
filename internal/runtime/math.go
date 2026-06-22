@@ -20,27 +20,50 @@ func registerMathBuiltins(engine *Engine) {
 	engine.builtins["Math"] = NewObject(map[string]Value{
 		"PI":    NewFloat(math.Pi),
 		"E":     NewFloat(math.E),
-		"sqrt":  mathUnary("Math.sqrt", math.Sqrt),
-		"cbrt":  mathUnary("Math.cbrt", math.Cbrt),
-		"sin":   mathUnary("Math.sin", math.Sin),
-		"cos":   mathUnary("Math.cos", math.Cos),
-		"tan":   mathUnary("Math.tan", math.Tan),
-		"asin":  mathUnary("Math.asin", math.Asin),
-		"acos":  mathUnary("Math.acos", math.Acos),
-		"atan":  mathUnary("Math.atan", math.Atan),
-		"exp":   mathUnary("Math.exp", math.Exp),
-		"log2":  mathUnary("Math.log2", math.Log2),
-		"log10": mathUnary("Math.log10", math.Log10),
+		"sqrt":  mathUnary("Math.sqrt", math.Sqrt, domainAtLeast(0)),
+		"cbrt":  mathUnary("Math.cbrt", math.Cbrt, nil),
+		"sin":   mathUnary("Math.sin", math.Sin, nil),
+		"cos":   mathUnary("Math.cos", math.Cos, nil),
+		"tan":   mathUnary("Math.tan", math.Tan, nil),
+		"asin":  mathUnary("Math.asin", math.Asin, domainBetween(-1, 1)),
+		"acos":  mathUnary("Math.acos", math.Acos, domainBetween(-1, 1)),
+		"atan":  mathUnary("Math.atan", math.Atan, nil),
+		"exp":   mathUnary("Math.exp", math.Exp, nil),
+		"log2":  mathUnary("Math.log2", math.Log2, domainAtLeast(0)),
+		"log10": mathUnary("Math.log10", math.Log10, domainAtLeast(0)),
 		"atan2": mathBinary("Math.atan2", math.Atan2),
 		"hypot": mathBinary("Math.hypot", math.Hypot),
 		"log":   NewBuiltin("Math.log", builtinMathLog),
 	})
 }
 
-// mathUnary builds a single-argument Math helper from a Go math function. Go's
-// math package already returns NaN for arguments outside a function's domain
-// (e.g. sqrt(-1), asin(2)), which mathResult reports as a domain error.
-func mathUnary(name string, fn func(float64) float64) Value {
+// mathDomain reports whether an input is outside a helper's mathematical
+// domain. It mirrors Ruby's domain checks, which compare the raw argument
+// against fixed bounds: because every comparison with NaN is false, a NaN
+// argument is never rejected and instead propagates through as a NaN result,
+// exactly as Ruby and IEEE 754 prescribe.
+type mathDomain func(float64) bool
+
+// domainAtLeast rejects inputs below min, matching Ruby's domain_check_min
+// (used by sqrt, log, log2, and log10). A negative argument raises while
+// +Infinity, which is in-domain, flows through to the Go math function.
+func domainAtLeast(min float64) mathDomain {
+	return func(x float64) bool { return x < min }
+}
+
+// domainBetween rejects inputs outside [min, max], matching Ruby's
+// domain_check_range (used by asin and acos). An infinite argument falls
+// outside the range and therefore raises, matching Ruby's Math::DomainError.
+func domainBetween(min, max float64) mathDomain {
+	return func(x float64) bool { return x < min || x > max }
+}
+
+// mathUnary builds a single-argument Math helper from a Go math function. The
+// optional domain predicate is checked against the raw argument before the
+// function runs, so inputs outside the helper's mathematical domain raise a
+// domain error (e.g. sqrt(-1), asin(2)) while in-domain inputs, including the
+// infinities and NaNs that trig functions accept, produce their IEEE result.
+func mathUnary(name string, fn func(float64) float64, outOfDomain mathDomain) Value {
 	return NewBuiltin(name, func(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if err := rejectMathKwargsBlock(name, kwargs, block); err != nil {
 			return NewNil(), err
@@ -52,7 +75,10 @@ func mathUnary(name string, fn func(float64) float64) Value {
 		if err != nil {
 			return NewNil(), err
 		}
-		return mathResult(name, fn(x), x)
+		if outOfDomain != nil && outOfDomain(x) {
+			return NewNil(), fmt.Errorf("%s out of domain", name)
+		}
+		return NewFloat(fn(x)), nil
 	})
 }
 
@@ -80,8 +106,11 @@ func mathBinary(name string, fn func(float64, float64) float64) Value {
 
 // builtinMathLog implements Ruby's `Math.log(x)` and `Math.log(x, base)`.
 // With one argument it computes the natural logarithm; with a second it
-// computes the logarithm in that base. A negative operand is a domain error,
-// while `log(0)` follows Ruby and IEEE 754 by returning -Infinity.
+// computes the logarithm in that base as `log(x) / log(base)`, exactly like
+// Ruby. Ruby restricts both operands to the non-negative reals, so a negative
+// x or base raises a domain error, while every other special value (a base of
+// 1 yielding Infinity, log(0) yielding -Infinity, NaN operands propagating)
+// follows from IEEE 754 division.
 func builtinMathLog(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	const name = "Math.log"
 	if err := rejectMathKwargsBlock(name, kwargs, block); err != nil {
@@ -94,33 +123,20 @@ func builtinMathLog(_ *Execution, _ Value, args []Value, kwargs map[string]Value
 	if err != nil {
 		return NewNil(), err
 	}
+	if x < 0 {
+		return NewNil(), fmt.Errorf("%s out of domain", name)
+	}
 	if len(args) == 1 {
-		return mathResult(name, math.Log(x), x)
+		return NewFloat(math.Log(x)), nil
 	}
 	base, err := mathFloatArg(name, args[1])
 	if err != nil {
 		return NewNil(), err
 	}
-	// Ruby computes log(x)/log(base); a negative operand on either side has no
-	// real logarithm and yields NaN, which mathResult reports as a domain
-	// error. The "input" guard combines both operands so a NaN that originates
-	// from a NaN argument still propagates unchanged.
-	input := x
-	if math.IsNaN(base) {
-		input = base
-	}
-	return mathResult(name, math.Log(x)/math.Log(base), input)
-}
-
-// mathResult turns a helper's raw output into a value, raising a domain error
-// when a finite input produced a NaN (e.g. sqrt(-1) or log(-1)). A NaN that
-// originates from a NaN input is passed through unchanged so propagation
-// matches Ruby and IEEE 754.
-func mathResult(name string, out, input float64) (Value, error) {
-	if math.IsNaN(out) && !math.IsNaN(input) {
+	if base < 0 {
 		return NewNil(), fmt.Errorf("%s out of domain", name)
 	}
-	return NewFloat(out), nil
+	return NewFloat(math.Log(x) / math.Log(base)), nil
 }
 
 // mathFloatArg coerces a Math argument to a float. Integers are promoted and
