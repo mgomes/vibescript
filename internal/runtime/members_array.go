@@ -1293,7 +1293,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 				depth = n
 			}
 			arr := receiver.Array()
-			out, err := flattenValues(arr, depth)
+			out, err := flattenValues(arr, depth, "array.flatten")
 			if err != nil {
 				return NewNil(), err
 			}

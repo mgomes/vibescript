@@ -195,9 +195,294 @@ func TestHashMergeRejectsMisuse(t *testing.T) {
 		source  string
 		wantErr string
 	}{
-		{name: "no arguments", source: "def run() { a: 1 }.merge() end", wantErr: "hash.merge expects a single hash argument"},
-		{name: "too many arguments", source: "def run() { a: 1 }.merge({ b: 2 }, { c: 3 }) end", wantErr: "hash.merge expects a single hash argument"},
-		{name: "non-hash argument", source: "def run() { a: 1 }.merge(5) end", wantErr: "hash.merge expects a single hash argument"},
+		{name: "non-hash argument", source: "def run() { a: 1 }.merge(5) end", wantErr: "hash.merge argument 1 must be a hash"},
+		{name: "non-hash second argument", source: "def run() { a: 1 }.merge({ b: 2 }, 5) end", wantErr: "hash.merge argument 2 must be a hash"},
+		{name: "update non-hash argument", source: "def run() { a: 1 }.update(5) end", wantErr: "hash.update argument 1 must be a hash"},
+		{name: "merge! non-hash argument", source: "def run() { a: 1 }.merge!(5) end", wantErr: "hash.merge! argument 1 must be a hash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.wantErr)
+		})
+	}
+}
+
+func TestHashMergeMultipleHashes(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def three_hashes()
+      { a: 1 }.merge({ b: 2 }, { c: 3 })
+    end
+
+    def later_wins()
+      { a: 1 }.merge({ a: 2 }, { a: 3 })
+    end
+
+    def block_folds_each_step()
+      { a: 1 }.merge({ a: 2 }, { a: 3 }) do |key, old, new|
+        old + new
+      end
+    end
+
+    def no_arguments_copies()
+      { a: 1, b: 2 }.merge()
+    end
+
+    def receiver_unchanged()
+      original = { a: 1 }
+      merged = original.merge({ b: 2 }, { c: 3 })
+      { original: original, merged: merged }
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want any
+	}{
+		{
+			name: "later hashes add their entries",
+			fn:   "three_hashes",
+			want: map[string]Value{"a": NewInt(1), "b": NewInt(2), "c": NewInt(3)},
+		},
+		{
+			name: "later hashes win on conflicts without a block",
+			fn:   "later_wins",
+			want: map[string]Value{"a": NewInt(3)},
+		},
+		{
+			name: "block folds the accumulated value across each hash",
+			fn:   "block_folds_each_step",
+			want: map[string]Value{"a": NewInt(6)},
+		},
+		{
+			name: "no arguments returns a copy of the receiver",
+			fn:   "no_arguments_copies",
+			want: map[string]Value{"a": NewInt(1), "b": NewInt(2)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tt.fn, nil)
+			if got.Kind() != KindHash {
+				t.Fatalf("expected hash, got %v", got.Kind())
+			}
+			compareHash(t, got.Hash(), tt.want.(map[string]Value))
+		})
+	}
+
+	t.Run("receiver is not mutated", func(t *testing.T) {
+		t.Parallel()
+		result := callFunc(t, script, "receiver_unchanged", nil).Hash()
+		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1)})
+		compareHash(t, result["merged"].Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2), "c": NewInt(3)})
+	})
+}
+
+func TestHashUpdateAndMergeBangAliases(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def update_returns_new_hash()
+      original = { a: 1 }
+      updated = original.update({ b: 2 })
+      { original: original, updated: updated }
+    end
+
+    def update_multiple()
+      { a: 1 }.update({ b: 2 }, { c: 3 })
+    end
+
+    def update_conflict_block()
+      { a: 1 }.update({ a: 2 }) do |key, old, new|
+        old + new
+      end
+    end
+
+    def merge_bang_returns_new_hash()
+      original = { a: 1 }
+      merged = original.merge!({ a: 5 })
+      { original: original, merged: merged }
+    end
+    `)
+
+	t.Run("update returns a new hash and leaves the receiver unchanged", func(t *testing.T) {
+		t.Parallel()
+		result := callFunc(t, script, "update_returns_new_hash", nil).Hash()
+		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1)})
+		compareHash(t, result["updated"].Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+	})
+
+	t.Run("update accepts multiple hashes", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "update_multiple", nil)
+		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2), "c": NewInt(3)})
+	})
+
+	t.Run("update honors the conflict block", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "update_conflict_block", nil)
+		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(3)})
+	})
+
+	t.Run("merge! returns a new hash and leaves the receiver unchanged", func(t *testing.T) {
+		t.Parallel()
+		result := callFunc(t, script, "merge_bang_returns_new_hash", nil).Hash()
+		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1)})
+		compareHash(t, result["merged"].Hash(), map[string]Value{"a": NewInt(5)})
+	})
+}
+
+func TestHashReplace(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def replace_returns_replacement()
+      original = { a: 1 }
+      replaced = original.replace({ b: 2 })
+      { original: original, replaced: replaced }
+    end
+
+    def replace_with_empty()
+      { a: 1, b: 2 }.replace({})
+    end
+    `)
+
+	t.Run("replace adopts the argument and leaves the receiver unchanged", func(t *testing.T) {
+		t.Parallel()
+		result := callFunc(t, script, "replace_returns_replacement", nil).Hash()
+		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1)})
+		compareHash(t, result["replaced"].Hash(), map[string]Value{"b": NewInt(2)})
+	})
+
+	t.Run("replace with an empty hash clears the contents", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "replace_with_empty", nil)
+		compareHash(t, got.Hash(), map[string]Value{})
+	})
+}
+
+func TestHashReplaceRejectsMisuse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{name: "no arguments", source: "def run() { a: 1 }.replace() end", wantErr: "hash.replace expects a single hash argument"},
+		{name: "too many arguments", source: "def run() { a: 1 }.replace({ b: 2 }, { c: 3 }) end", wantErr: "hash.replace expects a single hash argument"},
+		{name: "non-hash argument", source: "def run() { a: 1 }.replace([1, 2]) end", wantErr: "hash.replace expects a single hash argument"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.wantErr)
+		})
+	}
+}
+
+func TestHashFlatten(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def default_depth()
+      { a: 1, b: 2 }.flatten
+    end
+
+    def nested_value_kept_at_default_depth()
+      { a: 1, b: [2, 3] }.flatten
+    end
+
+    def depth_two_flattens_value_arrays()
+      { a: 1, b: [2, 3] }.flatten(2)
+    end
+
+    def depth_zero_keeps_pairs()
+      { a: 1, b: [2, 3] }.flatten(0)
+    end
+
+    def negative_depth_flattens_fully()
+      { a: 1, b: [2, [3, 4]] }.flatten(-1)
+    end
+
+    def float_depth_truncates()
+      { a: 1, b: [2, 3] }.flatten(1.9)
+    end
+
+    def empty_hash()
+      {}.flatten
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want []Value
+	}{
+		{
+			name: "default depth spreads pairs",
+			fn:   "default_depth",
+			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewInt(2)},
+		},
+		{
+			name: "default depth keeps nested value arrays",
+			fn:   "nested_value_kept_at_default_depth",
+			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewArray([]Value{NewInt(2), NewInt(3)})},
+		},
+		{
+			name: "depth two flattens value arrays one more level",
+			fn:   "depth_two_flattens_value_arrays",
+			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewInt(2), NewInt(3)},
+		},
+		{
+			name: "depth zero keeps key-value pairs nested",
+			fn:   "depth_zero_keeps_pairs",
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewArray([]Value{NewInt(2), NewInt(3)})}),
+			},
+		},
+		{
+			name: "negative depth flattens completely",
+			fn:   "negative_depth_flattens_fully",
+			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewInt(2), NewInt(3), NewInt(4)},
+		},
+		{
+			name: "float depth is truncated like Ruby",
+			fn:   "float_depth_truncates",
+			want: []Value{NewSymbol("a"), NewInt(1), NewSymbol("b"), NewArray([]Value{NewInt(2), NewInt(3)})},
+		},
+		{
+			name: "empty hash flattens to an empty array",
+			fn:   "empty_hash",
+			want: []Value{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tt.fn, nil)
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
+func TestHashFlattenRejectsMisuse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{name: "too many arguments", source: "def run() { a: 1 }.flatten(1, 2) end", wantErr: "hash.flatten accepts at most one depth argument"},
+		{name: "non-integer depth", source: `def run() { a: 1 }.flatten("deep") end`, wantErr: "hash.flatten depth must be integer"},
 	}
 
 	for _, tt := range tests {

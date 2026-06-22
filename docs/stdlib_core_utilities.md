@@ -315,11 +315,25 @@ methods.
 
 ### Transform and Filter
 
-- `merge(other) -> hash` – combined entries; `other` wins on key conflicts.
-- `merge(other) { |key, old_value, new_value| } -> hash` – combined entries; for
+- `merge(*others) -> hash` – combined entries from the receiver and every
+  argument hash. Arguments are applied left to right, so later hashes win on key
+  conflicts. With no arguments it returns a copy of the receiver.
+- `merge(*others) { |key, old_value, new_value| } -> hash` – combined entries; for
   keys present in both hashes the block resolves the conflict and its result is
-  stored. Keys present on only one side are copied without invoking the block,
-  and the conflict key is yielded as a symbol.
+  stored, folding through each argument in turn. Keys present on only one side are
+  copied without invoking the block, and the conflict key is yielded as a symbol.
+- `update(*others) -> hash` / `merge!(*others) -> hash` – aliases of `merge`. Ruby
+  mutates the receiver in place; Vibescript returns a new merged hash and leaves
+  the receiver unchanged (immutable-style). Both accept the same optional conflict
+  block.
+- `replace(other) -> hash` – new hash holding `other`'s entries, discarding the
+  receiver's own. Ruby mutates the receiver in place; this immutable-style version
+  leaves it unchanged.
+- `flatten(depth = 1) -> array` – flat array built from the `[key, value]` pairs,
+  flattened to `depth`. The default depth produces `[key, value, ...]`; array
+  values stay nested unless a deeper `depth` is given. A `depth` of `0` keeps the
+  pairs nested, a negative `depth` flattens completely, and a `Float` depth is
+  truncated. Entries are emitted in sorted key order.
 - `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
   receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
 - `slice(*keys) -> hash` – only the listed keys; missing keys are skipped.
