@@ -30,7 +30,7 @@ Common enumerable helpers include:
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays (defaults to fully flattening).
-- `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }` computes each replacement from its index instead of taking a value.
+- `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
 - `chunk(size)` to split into fixed-size slices.
 - `window(size)` to build overlapping windows.
 - `join(sep = "")` to produce a string.
@@ -57,14 +57,19 @@ end
 [1, 2, 3].fill(0)           # [0, 0, 0]
 [1, 2, 3].fill(0, 1, 2)     # [1, 0, 0]
 [1, 2, 3].fill("x", 1..2)   # [1, "x", "x"]
-[1, 2, 3].fill { |i| i * 10 } # [0, 10, 20]
+[1, 2, 3].fill { |i| i * 10 }    # [0, 10, 20]
+[1, 2, 3].fill(0) { |i| i * 10 } # [0, 10, 20] (0 is the start index, not a value)
 ```
 
 `fill` follows Ruby's indexing rules: a negative `start` counts back from the
 end, a `length` that runs past the end grows the result (padding any gap with
 `nil`), and a range selects the indices to replace. The value form and the block
-form are mutually exclusive. Like the other array helpers, `fill` returns a new
-array and leaves the receiver untouched.
+form are mutually exclusive: a block is never consulted when an explicit fill
+value is given, and when a block is given there is no fill-value argument at all.
+Every positional argument passed alongside a block selects the window, so
+`fill(0) { |i| ... }` fills from index `0` to the end with block results rather
+than filling with `0`. Like the other array helpers, `fill` returns a new array
+and leaves the receiver untouched.
 
 ## Search and predicates
 

@@ -278,6 +278,28 @@ func TestArrayFillBlockForms(t *testing.T) {
 	}
 }
 
+// TestArrayFillStartArgWithBlockIsStartNotValue pins the counterintuitive
+// value+block case: when a block is given, a positional argument is the start
+// index, never a fill value. A reader of fill(0) { |i| ... } might expect 0 to
+// be the fill value with the block ignored, but Ruby (and Vibescript) treats 0
+// as the start and fills from there to the end using the block results, so the
+// matching value-form result [0, 0, 0] differs from the block-form result
+// [0, 10, 20].
+func TestArrayFillStartArgWithBlockIsStartNotValue(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def fill_start_block(values, start)
+      values.fill(start) do |i|
+        i * 10
+      end
+    end
+    `)
+
+	arr := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+	got := callFunc(t, script, "fill_start_block", []Value{arr, NewInt(0)})
+	compareArrays(t, got, []Value{NewInt(0), NewInt(10), NewInt(20)})
+}
+
 // TestArrayFillDoesNotMutateReceiver confirms fill returns a new array and
 // leaves the receiver untouched, consistent with the immutable collection
 // helpers it sits beside.
