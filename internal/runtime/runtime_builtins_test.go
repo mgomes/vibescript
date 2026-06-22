@@ -429,6 +429,18 @@ func TestTimeAtSubsecondConstructor(t *testing.T) {
 	    def unit_without_subsec()
 	      Time.at(0, nil, :nsec)
 	    end
+
+	    def subsec_carries_into_seconds()
+	      Time.at(5, 1_500_000).utc.to_i
+	    end
+
+	    def subsec_scaling_overflows()
+	      Time.at(0, 9_223_372_036_854_776, :microsecond)
+	    end
+
+	    def float_subsec_overflows()
+	      Time.at(0, 99999999999999999999.0, :nsec)
+	    end
 	    `)
 
 	result := callFunc(t, script, "subsecond", nil)
@@ -463,6 +475,19 @@ func TestTimeAtSubsecondConstructor(t *testing.T) {
 		"unexpected unit: picosecond")
 	requireCallErrorContains(t, script, "unit_without_subsec", nil, CallOptions{},
 		"Time.at expects a subsecond value before a unit")
+
+	// A subsecond value that exceeds one second still carries into the seconds,
+	// matching Ruby, as long as the scaled nanosecond count fits in an int64.
+	if carried := callFunc(t, script, "subsec_carries_into_seconds", nil); !carried.Equal(NewInt(6)) {
+		t.Fatalf("subsec_carries_into_seconds = %v, want 6", carried)
+	}
+
+	// A subsecond magnitude whose scaled nanosecond count overflows int64 is
+	// rejected rather than silently wrapped into a bogus instant.
+	requireCallErrorContains(t, script, "subsec_scaling_overflows", nil, CallOptions{},
+		"Time.at subsecond value out of range")
+	requireCallErrorContains(t, script, "float_subsec_overflows", nil, CallOptions{},
+		"Time.at subsecond value out of range")
 }
 
 func TestTimeSpaceshipComparison(t *testing.T) {

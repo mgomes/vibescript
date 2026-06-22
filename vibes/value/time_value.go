@@ -267,7 +267,11 @@ func TimeFromEpochParts(secVal, subsecVal, unitVal Value, loc *time.Location) (t
 		if err != nil {
 			return time.Time{}, err
 		}
-		nanos += subNanos
+		total, ok := addInt64Checked(nanos, subNanos)
+		if !ok {
+			return time.Time{}, subsecondOverflowError()
+		}
+		nanos = total
 	} else if unitVal.Kind() != KindNil {
 		return time.Time{}, fmt.Errorf("Time.at expects a subsecond value before a unit")
 	}
@@ -302,19 +306,43 @@ func epochSecondsToParts(val Value) (seconds, nanos int64, err error) {
 // subsecToNanos converts a subsecond value expressed in units of unitNanos
 // nanoseconds into a nanosecond count. Float subsecond values truncate any
 // fractional nanoseconds toward zero, matching time.Time's resolution.
+//
+// Unlike Ruby's Time.at, which carries an arbitrarily large subsecond argument
+// into the seconds via arbitrary-precision arithmetic, the result here is bound
+// by time.Time's int64 nanosecond resolution. A subsecond magnitude whose scaled
+// nanosecond count would not fit in an int64 is rejected rather than silently
+// wrapped into a bogus instant.
 func subsecToNanos(val Value, unitNanos int64) (int64, error) {
 	switch val.Kind() {
 	case KindInt:
-		return val.Int() * unitNanos, nil
+		nanos, ok := mulInt64Checked(val.Int(), unitNanos)
+		if !ok {
+			return 0, subsecondOverflowError()
+		}
+		return nanos, nil
 	case KindFloat:
 		f := val.Float()
 		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return 0, fmt.Errorf("Time.at expects a finite subsecond value")
 		}
-		return int64(f * float64(unitNanos)), nil
+		scaled := f * float64(unitNanos)
+		// int64() of a float outside the int64 range is implementation-specific
+		// and would silently fabricate a nanosecond count. float64(math.MaxInt64)
+		// rounds up to 2^63, so use 2^63 as the exclusive upper bound. The bounds
+		// also reject a product that overflowed to +/-Inf.
+		if scaled < float64(math.MinInt64) || scaled >= math.Exp2(63) {
+			return 0, subsecondOverflowError()
+		}
+		return int64(scaled), nil
 	default:
 		return 0, fmt.Errorf("Time.at subsecond value must be numeric")
 	}
+}
+
+// subsecondOverflowError is returned when a Time.at subsecond argument is too
+// large (in magnitude) to express within time.Time's int64 nanosecond range.
+func subsecondOverflowError() error {
+	return fmt.Errorf("Time.at subsecond value out of range")
 }
 
 // ParseTimeString parses a time string, optionally using a caller-supplied

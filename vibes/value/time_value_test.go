@@ -536,6 +536,34 @@ func TestTimeFromEpochParts(t *testing.T) {
 			unit:        value.NewSymbol("nsec"),
 			wantErrText: "Time.at expects a subsecond value before a unit",
 		},
+		{
+			name:        "integer subsecond scaling overflows int64",
+			sec:         value.NewInt(0),
+			subsec:      value.NewInt(9_223_372_036_854_776),
+			unit:        value.NewSymbol("microsecond"),
+			wantErrText: "Time.at subsecond value out of range",
+		},
+		{
+			name:        "negative integer subsecond scaling overflows int64",
+			sec:         value.NewInt(0),
+			subsec:      value.NewInt(-9_223_372_036_854_776),
+			unit:        value.NewSymbol("microsecond"),
+			wantErrText: "Time.at subsecond value out of range",
+		},
+		{
+			name:        "subsecond addition overflows int64",
+			sec:         value.NewFloat(0.5),
+			subsec:      value.NewInt(math.MaxInt64),
+			unit:        value.NewSymbol("nsec"),
+			wantErrText: "Time.at subsecond value out of range",
+		},
+		{
+			name:        "float subsecond magnitude out of int64 range",
+			sec:         value.NewInt(0),
+			subsec:      value.NewFloat(1e20),
+			unit:        value.NewSymbol("nsec"),
+			wantErrText: "Time.at subsecond value out of range",
+		},
 	}
 
 	for _, tc := range cases {

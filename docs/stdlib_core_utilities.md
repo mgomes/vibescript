@@ -815,7 +815,9 @@ Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
   `:millisecond`, or `:nanosecond`/`:nsec`) selects the unit. A unit without a
   subsecond value or an unknown unit symbol raises a runtime error. Subsecond
   values truncate toward zero at nanosecond resolution
-  (`Time.at(0, 123456789, :nsec).nsec` is `123456789`).
+  (`Time.at(0, 123456789, :nsec).nsec` is `123456789`) and carry into the
+  seconds when they exceed one second; a magnitude too large for the nanosecond
+  range raises `Time.at subsecond value out of range`.
 - `Time.now(in: nil) -> time` – current time (local zone by default).
 - `Time.parse(string, layout = nil, in: nil) -> time` – parse a time string;
   without a layout it tries RFC3339/RFC3339Nano, RFC1123/RFC1123Z,

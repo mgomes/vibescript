@@ -7,4 +7,6 @@
   form. A unit symbol without a subsecond value, an unknown unit, or a
   non-numeric subsecond value raises a runtime error. Subsecond values truncate
   toward zero at nanosecond resolution rather than retaining Ruby's
-  arbitrary-precision rationals.
+  arbitrary-precision rationals. A subsecond magnitude too large to express
+  within that nanosecond range is rejected with `Time.at subsecond value out of
+  range` instead of silently wrapping into a bogus instant.

@@ -27,7 +27,7 @@ def with_microseconds
 end
 ```
 
-`Time.at` accepts Ruby-style subsecond arguments. The first argument is epoch seconds (integer or float, with floats carrying their fraction). An optional second positional argument adds a subsecond offset that defaults to microseconds, and an optional third positional symbol selects the unit: `:microsecond`/`:usec`, `:millisecond`, or `:nanosecond`/`:nsec`. A unit without a subsecond value, or an unknown unit symbol, raises a runtime error. The `in:` zone keyword composes with every form. Subsecond values are backed by nanosecond-resolution timestamps, so fractional nanoseconds truncate toward zero.
+`Time.at` accepts Ruby-style subsecond arguments. The first argument is epoch seconds (integer or float, with floats carrying their fraction). An optional second positional argument adds a subsecond offset that defaults to microseconds, and an optional third positional symbol selects the unit: `:microsecond`/`:usec`, `:millisecond`, or `:nanosecond`/`:nsec`. A unit without a subsecond value, or an unknown unit symbol, raises a runtime error. The `in:` zone keyword composes with every form. Subsecond values are backed by nanosecond-resolution timestamps, so fractional nanoseconds truncate toward zero. A subsecond value larger than one second carries into the seconds (and a negative value borrows from them), matching Ruby; a magnitude too large to express within the nanosecond range raises `Time.at subsecond value out of range` rather than wrapping into a bogus instant.
 
 ```vibe
 def from_epoch
