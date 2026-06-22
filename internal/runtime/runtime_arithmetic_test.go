@@ -382,6 +382,176 @@ func TestNumericConversionBuiltins(t *testing.T) {
 	}
 }
 
+func TestTimeNumericSecondArithmetic(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def add(left, right)
+      left + right
+    end
+
+    def subtract(left, right)
+      left - right
+    end
+    `)
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name string
+		fn   string
+		args []Value
+		want Value
+	}{
+		{
+			name: "add_integer_seconds",
+			fn:   "add",
+			args: []Value{NewTime(base), NewInt(60)},
+			want: NewTime(base.Add(time.Minute)),
+		},
+		{
+			name: "add_integer_seconds_commutes",
+			fn:   "add",
+			args: []Value{NewInt(60), NewTime(base)},
+			want: NewTime(base.Add(time.Minute)),
+		},
+		{
+			name: "add_negative_seconds",
+			fn:   "add",
+			args: []Value{NewTime(base), NewInt(-60)},
+			want: NewTime(base.Add(-time.Minute)),
+		},
+		{
+			name: "add_fractional_seconds",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(1.5)},
+			want: NewTime(base.Add(1500 * time.Millisecond)),
+		},
+		{
+			name: "add_fractional_seconds_commutes",
+			fn:   "add",
+			args: []Value{NewFloat(1.5), NewTime(base)},
+			want: NewTime(base.Add(1500 * time.Millisecond)),
+		},
+		{
+			name: "subtract_integer_seconds",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewInt(60)},
+			want: NewTime(base.Add(-time.Minute)),
+		},
+		{
+			name: "subtract_negative_seconds",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewInt(-60)},
+			want: NewTime(base.Add(time.Minute)),
+		},
+		{
+			name: "subtract_fractional_seconds",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(1.5)},
+			want: NewTime(base.Add(-1500 * time.Millisecond)),
+		},
+		{
+			name: "difference_returns_float_seconds",
+			fn:   "subtract",
+			args: []Value{NewTime(base.Add(90 * time.Second)), NewTime(base)},
+			want: NewFloat(90),
+		},
+		{
+			name: "difference_preserves_subsecond_precision",
+			fn:   "subtract",
+			args: []Value{NewTime(base.Add(1500 * time.Millisecond)), NewTime(base)},
+			want: NewFloat(1.5),
+		},
+		{
+			name: "difference_negative",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewTime(base.Add(90 * time.Second))},
+			want: NewFloat(-90),
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, tc.args)
+			if got.Kind() != tc.want.Kind() {
+				t.Fatalf("%s kind = %v, want %v", tc.fn, got.Kind(), tc.want.Kind())
+			}
+			if !got.Equal(tc.want) {
+				t.Fatalf("%s = %v, want %v", tc.fn, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTimeNumericArithmeticErrors(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def add(left, right)
+      left + right
+    end
+
+    def subtract(left, right)
+      left - right
+    end
+    `)
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	posInf := math.Inf(1)
+	nan := math.NaN()
+
+	cases := []struct {
+		name string
+		fn   string
+		args []Value
+		want string
+	}{
+		{
+			name: "add_integer_overflow",
+			fn:   "add",
+			args: []Value{NewTime(base), NewInt(math.MaxInt64)},
+			want: "time addition result out of int64 range",
+		},
+		{
+			name: "add_float_infinity",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(posInf)},
+			want: "time addition result out of int64 range",
+		},
+		{
+			name: "add_float_nan",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(nan)},
+			want: "time addition result out of int64 range",
+		},
+		{
+			name: "subtract_integer_overflow",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewInt(math.MinInt64)},
+			want: "time subtraction result out of int64 range",
+		},
+		{
+			name: "add_unsupported_operand",
+			fn:   "add",
+			args: []Value{NewTime(base), NewNil()},
+			want: "unsupported addition operands",
+		},
+		{
+			name: "subtract_unsupported_operand",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewNil()},
+			want: "unsupported subtraction operands",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, tc.fn, tc.args, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestDurationAndTimeArithmeticOverflowErrors(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

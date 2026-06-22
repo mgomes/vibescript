@@ -380,6 +380,41 @@ func durationSecondsToTimeDuration(seconds int64, method string) (time.Duration,
 	return time.Duration(seconds) * time.Second, nil
 }
 
+// numericSecondsToTimeDuration converts a numeric value (interpreted as a
+// count of seconds, matching Ruby's Time arithmetic) into a nanosecond
+// time.Duration. Integers shift by whole seconds while floats carry
+// sub-second precision down to the nanosecond. It reports an error when the
+// nanosecond magnitude would overflow int64.
+func numericSecondsToTimeDuration(val Value, method string) (time.Duration, error) {
+	switch val.Kind() {
+	case KindInt:
+		return durationSecondsToTimeDuration(val.Int(), method)
+	case KindFloat:
+		nanos := val.Float() * float64(nanosecondsPerSecond)
+		ns, err := floatToInt64Checked(nanos, method)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(ns), nil
+	default:
+		return 0, fmt.Errorf("%s expects numeric seconds", method)
+	}
+}
+
+// timeDifferenceSeconds returns the difference left - right (both Time
+// values) as a floating-point number of seconds, matching Ruby's Time#-
+// behavior. It computes the whole-second and sub-second parts separately so
+// the nanosecond span between two instants cannot silently overflow the way a
+// raw time.Duration subtraction would for differences beyond ~292 years.
+func timeDifferenceSeconds(left, right time.Time) (float64, error) {
+	secDiff, ok := subInt64Checked(left.Unix(), right.Unix())
+	if !ok {
+		return 0, int64RangeError("time subtraction")
+	}
+	nsecDiff := int64(left.Nanosecond()) - int64(right.Nanosecond())
+	return float64(secDiff) + float64(nsecDiff)/float64(nanosecondsPerSecond), nil
+}
+
 func addValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
@@ -398,6 +433,18 @@ func addValues(left, right Value) (Value, error) {
 		return NewTime(left.Time().Add(delta)), nil
 	case right.Kind() == KindTime && left.Kind() == KindDuration:
 		delta, err := durationSecondsToTimeDuration(left.Duration().Seconds(), "time addition")
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewTime(right.Time().Add(delta)), nil
+	case left.Kind() == KindTime && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		delta, err := numericSecondsToTimeDuration(right, "time addition")
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewTime(left.Time().Add(delta)), nil
+	case right.Kind() == KindTime && (left.Kind() == KindInt || left.Kind() == KindFloat):
+		delta, err := numericSecondsToTimeDuration(left, "time addition")
 		if err != nil {
 			return NewNil(), err
 		}
@@ -464,9 +511,18 @@ func subtractValues(left, right Value) (Value, error) {
 			return NewNil(), err
 		}
 		return NewTime(left.Time().Add(-delta)), nil
+	case left.Kind() == KindTime && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		delta, err := numericSecondsToTimeDuration(right, "time subtraction")
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewTime(left.Time().Add(-delta)), nil
 	case left.Kind() == KindTime && right.Kind() == KindTime:
-		diff := left.Time().Sub(right.Time())
-		return NewDuration(durationFromSeconds(int64(diff / time.Second))), nil
+		diff, err := timeDifferenceSeconds(left.Time(), right.Time())
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewFloat(diff), nil
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
 		diff, ok := subInt64Checked(left.Duration().Seconds(), right.Duration().Seconds())
 		if !ok {

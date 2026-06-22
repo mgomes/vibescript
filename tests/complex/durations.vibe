@@ -9,7 +9,7 @@ def window_end(hours_forward)
 end
 
 def span_seconds(start, finish)
-  (finish - start).to_i
+  (finish - start).floor
 end
 
 def readable_window(days_back, hours_forward)
@@ -29,7 +29,7 @@ end
 def run
   start = Time.at(0)
   finish = 90.minutes.after(start)
-  delta = finish - start
+  delta = Duration.build(finish - start)
   {
     shifted: shift_series([0, 1800], 1800.seconds),
     span: span_seconds(start, finish),

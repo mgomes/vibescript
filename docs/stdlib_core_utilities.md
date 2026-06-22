@@ -546,8 +546,9 @@ current time; the result is a UTC `Time`.
 ## Times
 
 See [time.md](time.md) for construction, zone handling, and layout-based
-formatting. Times also support `time + duration`, `time - duration`, and
-`time - time -> duration` arithmetic.
+formatting. Times also support `time + duration`, `time - duration`,
+`time + number` / `time - number` (the number is seconds, matching Ruby), and
+`time - time -> float` (seconds) arithmetic.
 
 ### Components
 
