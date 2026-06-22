@@ -473,12 +473,13 @@ func callTimeHTTPDate(t time.Time, args []Value, kwargs map[string]Value) (Value
 }
 
 // callTimeRFC2822 renders the receiver as an RFC 2822 mail date, preserving the
-// receiver's zone offset like Ruby's Time#rfc2822 and Time#rfc822. Genuine UTC
-// receivers use the "-0000" zone Ruby reserves for timestamps without real zone
-// information, while explicit zero offsets and other zones render their signed
-// numeric offset. The method takes no arguments, so any positional or keyword
-// argument is rejected. Sub-second precision is dropped because the RFC 2822
-// date grammar has whole-second resolution.
+// receiver's zone offset like Ruby's Time#rfc2822 and Time#rfc822. UTC-mode
+// receivers -- genuine UTC and the negative-zero "-00:00" offset -- use the
+// "-0000" zone Ruby reserves for timestamps without real zone information, while
+// the positive "+00:00" offset and every other zone render their signed numeric
+// offset. The method takes no arguments, so any positional or keyword argument
+// is rejected. Sub-second precision is dropped because the RFC 2822 date grammar
+// has whole-second resolution.
 func callTimeRFC2822(method string, t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
 	if err := rejectTemporalKwargs(method, kwargs); err != nil {
 		return NewNil(), err
@@ -495,17 +496,29 @@ func callTimeRFC2822(method string, t time.Time, args []Value, kwargs map[string
 
 // isUTCMode reports whether t was created in Ruby's "UTC mode" -- the condition
 // under which Time#rfc2822 emits the "-0000" unknown-zone marker instead of a
-// signed numeric offset. In Vibescript UTC mode is represented exactly by the
-// time.UTC singleton, which Time.utc/Time.gm, the getutc/getgm/utc/gmtime
-// conversions, and the "UTC"/"GMT"/"Z" timezone specs all produce. Every other
-// zero-offset zone is a local or explicit-offset time that Ruby renders as
-// "+0000": explicit numeric offsets ("+00:00"/"-00:00" from Time.new or
-// getlocal) build a time.FixedZone, and Time.local/Time.now/Time.at carry
-// time.Local even when the host's local zone happens to be named "UTC" (as in
-// UTC containers). Keying solely off the singleton therefore preserves the
+// signed numeric offset. Two zero-offset cases qualify, matching MRI:
+//
+//   - The time.UTC singleton, which Time.utc/Time.gm, the getutc/getgm/utc/gmtime
+//     conversions, and the "UTC"/"GMT"/"Z" timezone specs all produce.
+//   - A fixed zero-offset zone whose name begins with "-", which is how the
+//     negative-zero offsets "-00:00"/"-0000" from Time.new or getlocal are
+//     parsed: ParseLocationString builds time.FixedZone("-00:00", 0), preserving
+//     the sign in the zone name even though the numeric offset is zero. Ruby
+//     reads that negative sign as the RFC 2822 unknown-zone marker and emits
+//     "-0000", whereas "+00:00" emits "+0000".
+//
+// Every other zero-offset zone is a local or explicit-positive-offset time that
+// Ruby renders as "+0000": the positive "+00:00" offset builds a time.FixedZone
+// named "+00:00", and Time.local/Time.now/Time.at carry time.Local even when the
+// host's local zone happens to be named "UTC" (as in UTC containers). Keying off
+// the singleton and the negative-zero zone name therefore preserves the
 // receiver's offset semantics rather than reclassifying local UTC times.
 func isUTCMode(t time.Time) bool {
-	return t.Location() == time.UTC
+	if t.Location() == time.UTC {
+		return true
+	}
+	name, offset := t.Zone()
+	return offset == 0 && strings.HasPrefix(name, "-")
 }
 
 // callTimeGetlocal implements Ruby's non-mutating Time#getlocal and

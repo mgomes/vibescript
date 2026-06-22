@@ -1395,12 +1395,12 @@ func TestTimeHTTPDateAndRFC2822(t *testing.T) {
 			want: "Tue, 02 Jan 2024 03:04:05 -0500",
 		},
 		{
-			// Ruby renders a Time built with an explicit "-00:00" offset as
-			// "+0000": the "-0000" marker is reserved for genuine UTC mode, not
-			// for any zero-offset zone. Captured from MRI Time.new(..., "-00:00").
-			name: "rfc2822 explicit negative zero offset uses plus zero zone",
+			// Ruby treats an explicit negative-zero "-00:00" offset as the RFC
+			// 2822 unknown-zone marker and renders "-0000", distinct from the
+			// positive "+00:00" zone. Captured from MRI Time.new(..., "-00:00").
+			name: "rfc2822 explicit negative zero offset uses minus zero zone",
 			expr: `Time.new(2024, 1, 2, 3, 4, 5, "-00:00").rfc2822`,
-			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
 		},
 		{
 			name: "rfc2822 explicit positive zero offset uses plus zero zone",
@@ -1408,11 +1408,11 @@ func TestTimeHTTPDateAndRFC2822(t *testing.T) {
 			want: "Tue, 02 Jan 2024 03:04:05 +0000",
 		},
 		{
-			// getlocal("-00:00") shifts a UTC receiver into an explicit zero
-			// offset zone, which Ruby renders as "+0000" rather than "-0000".
-			name: "rfc2822 getlocal negative zero offset uses plus zero zone",
+			// getlocal("-00:00") shifts a receiver into the negative-zero zone,
+			// which Ruby renders with the "-0000" unknown-zone marker.
+			name: "rfc2822 getlocal negative zero offset uses minus zero zone",
 			expr: `Time.utc(2024, 1, 2, 3, 4, 5).getlocal("-00:00").rfc2822`,
-			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
 		},
 		{
 			// A named UTC zone is genuine UTC, so it keeps the "-0000" marker
@@ -1434,13 +1434,15 @@ func TestTimeHTTPDateAndRFC2822(t *testing.T) {
 	}
 }
 
-// TestIsUTCModeOnlyMatchesUTCSingleton guards the RFC 2822 zone classifier
-// against UTC-environment hosts. On such hosts time.Local reports the zone name
-// "UTC" with a zero offset, yet Time.local/Time.now/Time.at receivers are still
-// local times that Ruby renders as "+0000". Only the canonical time.UTC
-// singleton (produced by Time.utc/getutc and the "UTC"/"GMT"/"Z" specs) is
-// genuine UTC mode and earns the "-0000" marker.
-func TestIsUTCModeOnlyMatchesUTCSingleton(t *testing.T) {
+// TestIsUTCModeMatchesUTCSingletonAndNegativeZero guards the RFC 2822 zone
+// classifier. On UTC-environment hosts time.Local reports the zone name "UTC"
+// with a zero offset, yet Time.local/Time.now/Time.at receivers are still local
+// times that Ruby renders as "+0000". UTC mode (which earns the "-0000" marker)
+// is the canonical time.UTC singleton (Time.utc/getutc and the "UTC"/"GMT"/"Z"
+// specs) plus the negative-zero offset zone "-00:00", whose name preserves the
+// sign Ruby reads as the RFC 2822 unknown-zone marker. The positive "+00:00"
+// zone stays "+0000".
+func TestIsUTCModeMatchesUTCSingletonAndNegativeZero(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	cases := []struct {
@@ -1453,6 +1455,9 @@ func TestIsUTCModeOnlyMatchesUTCSingleton(t *testing.T) {
 		// "UTC" with a zero offset but not the singleton.
 		{name: "zero offset zone named UTC", loc: time.FixedZone("UTC", 0), want: false},
 		{name: "explicit positive zero offset", loc: time.FixedZone("+00:00", 0), want: false},
+		// The negative-zero offset "-00:00" parses to a zero-offset zone whose
+		// name begins with "-"; Ruby treats it as RFC 2822 UTC mode.
+		{name: "explicit negative zero offset", loc: time.FixedZone("-00:00", 0), want: true},
 		{name: "named gmt zone", loc: time.FixedZone("GMT", 0), want: false},
 		{name: "positive offset", loc: time.FixedZone("+05:30", 5*3600+30*60), want: false},
 	}
