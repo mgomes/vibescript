@@ -407,6 +407,172 @@ func TestTimeFromEpoch(t *testing.T) {
 	})
 }
 
+func TestTimeFromEpochParts(t *testing.T) {
+	t.Parallel()
+
+	nilVal := value.NewNil()
+
+	cases := []struct {
+		name        string
+		sec         value.Value
+		subsec      value.Value
+		unit        value.Value
+		wantUnix    int64
+		wantNanos   int
+		wantErrText string
+	}{
+		{
+			name:      "float seconds carry fraction",
+			sec:       value.NewFloat(0.123456),
+			subsec:    nilVal,
+			unit:      nilVal,
+			wantUnix:  0,
+			wantNanos: 123456000,
+		},
+		{
+			name:      "microsecond positional defaults to usec",
+			sec:       value.NewInt(0),
+			subsec:    value.NewInt(123456),
+			unit:      nilVal,
+			wantUnix:  0,
+			wantNanos: 123456000,
+		},
+		{
+			name:      "explicit usec unit",
+			sec:       value.NewInt(0),
+			subsec:    value.NewInt(123456),
+			unit:      value.NewSymbol("usec"),
+			wantUnix:  0,
+			wantNanos: 123456000,
+		},
+		{
+			name:      "microsecond unit alias",
+			sec:       value.NewInt(0),
+			subsec:    value.NewInt(123456),
+			unit:      value.NewSymbol("microsecond"),
+			wantUnix:  0,
+			wantNanos: 123456000,
+		},
+		{
+			name:      "millisecond unit",
+			sec:       value.NewInt(0),
+			subsec:    value.NewInt(123),
+			unit:      value.NewSymbol("millisecond"),
+			wantUnix:  0,
+			wantNanos: 123000000,
+		},
+		{
+			name:      "nanosecond positional",
+			sec:       value.NewInt(0),
+			subsec:    value.NewInt(123456789),
+			unit:      value.NewSymbol("nsec"),
+			wantUnix:  0,
+			wantNanos: 123456789,
+		},
+		{
+			name:      "nanosecond unit alias",
+			sec:       value.NewInt(0),
+			subsec:    value.NewInt(123456789),
+			unit:      value.NewSymbol("nanosecond"),
+			wantUnix:  0,
+			wantNanos: 123456789,
+		},
+		{
+			name:      "subsecond overflows into seconds",
+			sec:       value.NewInt(5),
+			subsec:    value.NewInt(1_500_000),
+			unit:      nilVal,
+			wantUnix:  6,
+			wantNanos: 500000000,
+		},
+		{
+			name:      "negative subsecond borrows from seconds",
+			sec:       value.NewInt(0),
+			subsec:    value.NewInt(-123456),
+			unit:      nilVal,
+			wantUnix:  -1,
+			wantNanos: 876544000,
+		},
+		{
+			name:      "float subsecond truncates toward zero",
+			sec:       value.NewInt(0),
+			subsec:    value.NewFloat(1.9),
+			unit:      value.NewSymbol("nsec"),
+			wantUnix:  0,
+			wantNanos: 1,
+		},
+		{
+			name:        "non numeric seconds",
+			sec:         value.NewString("soon"),
+			subsec:      nilVal,
+			unit:        nilVal,
+			wantErrText: "Time.at expects numeric seconds",
+		},
+		{
+			name:        "non numeric subsecond",
+			sec:         value.NewInt(0),
+			subsec:      value.NewString("1"),
+			unit:        nilVal,
+			wantErrText: "Time.at subsecond value must be numeric",
+		},
+		{
+			name:        "unknown unit symbol",
+			sec:         value.NewInt(0),
+			subsec:      value.NewInt(1),
+			unit:        value.NewSymbol("bogus"),
+			wantErrText: "unexpected unit: bogus",
+		},
+		{
+			name:        "non symbol unit",
+			sec:         value.NewInt(0),
+			subsec:      value.NewInt(1),
+			unit:        value.NewString("nsec"),
+			wantErrText: "Time.at unit must be a symbol",
+		},
+		{
+			name:        "unit without subsecond",
+			sec:         value.NewInt(0),
+			subsec:      nilVal,
+			unit:        value.NewSymbol("nsec"),
+			wantErrText: "Time.at expects a subsecond value before a unit",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := value.TimeFromEpochParts(tc.sec, tc.subsec, tc.unit, time.UTC)
+			if tc.wantErrText != "" {
+				if err == nil || err.Error() != tc.wantErrText {
+					t.Fatalf("TimeFromEpochParts error = %v, want %q", err, tc.wantErrText)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Unix() != tc.wantUnix || got.Nanosecond() != tc.wantNanos {
+				t.Fatalf("TimeFromEpochParts = unix %d nanos %d, want unix %d nanos %d",
+					got.Unix(), got.Nanosecond(), tc.wantUnix, tc.wantNanos)
+			}
+			if got.Location() != time.UTC {
+				t.Fatalf("Location() = %v, want UTC", got.Location())
+			}
+		})
+	}
+
+	t.Run("nil_location_uses_local", func(t *testing.T) {
+		t.Parallel()
+		got, err := value.TimeFromEpochParts(value.NewInt(0), value.NewInt(1), value.NewSymbol("nsec"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Location() != time.Local {
+			t.Fatalf("Location() = %v, want time.Local", got.Location())
+		}
+	})
+}
+
 func TestParseTimeString(t *testing.T) {
 	t.Parallel()
 

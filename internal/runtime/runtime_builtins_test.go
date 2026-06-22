@@ -397,6 +397,74 @@ func TestTimeParseAndAliases(t *testing.T) {
 	requireErrorContains(t, err, "could not parse time")
 }
 
+func TestTimeAtSubsecondConstructor(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+	    def subsecond()
+	      {
+	        float_nsec: Time.at(0.123456).utc.nsec,
+	        usec_positional: Time.at(0, 123456).utc.nsec,
+	        usec_unit: Time.at(0, 123456, :microsecond).utc.nsec,
+	        usec_alias: Time.at(0, 123456, :usec).utc.nsec,
+	        msec_unit: Time.at(0, 123, :millisecond).utc.nsec,
+	        nsec_unit: Time.at(0, 123456789, :nanosecond).utc.nsec,
+	        nsec_alias: Time.at(0, 123456789, :nsec).utc.nsec,
+	        zone_offset: Time.at(0, 123456, in: "+05:30").utc_offset,
+	        zone_nsec: Time.at(0, 123456, in: "+05:30").nsec
+	      }
+	    end
+
+	    def too_many()
+	      Time.at(0, 1, :nsec, 2)
+	    end
+
+	    def unknown_kwarg()
+	      Time.at(0, bogus: 1)
+	    end
+
+	    def bad_unit()
+	      Time.at(0, 1, :picosecond)
+	    end
+
+	    def unit_without_subsec()
+	      Time.at(0, nil, :nsec)
+	    end
+	    `)
+
+	result := callFunc(t, script, "subsecond", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	want := map[string]Value{
+		"float_nsec":      NewInt(123456000),
+		"usec_positional": NewInt(123456000),
+		"usec_unit":       NewInt(123456000),
+		"usec_alias":      NewInt(123456000),
+		"msec_unit":       NewInt(123000000),
+		"nsec_unit":       NewInt(123456789),
+		"nsec_alias":      NewInt(123456789),
+		// in: composes with the subsecond forms: the offset is applied while
+		// the subsecond component is preserved.
+		"zone_offset": NewInt(19800),
+		"zone_nsec":   NewInt(123456000),
+	}
+	got := result.Hash()
+	for key, expected := range want {
+		if val, ok := got[key]; !ok || !val.Equal(expected) {
+			t.Fatalf("subsecond[%s] = %v, want %v", key, val, expected)
+		}
+	}
+
+	requireCallErrorContains(t, script, "too_many", nil, CallOptions{},
+		"Time.at expects seconds since epoch with optional subsecond value and unit")
+	requireCallErrorContains(t, script, "unknown_kwarg", nil, CallOptions{},
+		"Time.at unknown keyword argument bogus")
+	requireCallErrorContains(t, script, "bad_unit", nil, CallOptions{},
+		"unexpected unit: picosecond")
+	requireCallErrorContains(t, script, "unit_without_subsec", nil, CallOptions{},
+		"Time.at expects a subsecond value before a unit")
+}
+
 func TestTimeSpaceshipComparison(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

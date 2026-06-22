@@ -13,7 +13,7 @@ end
 - `Time.new(year, month, day, hour=0, min=0, sec=0, zone=nil, in: zone)`
 - `Time.local(year, month, day, hour=0, min=0, sec=0, usec=0)` / `Time.mktime(...)`
 - `Time.utc(year, month, day, hour=0, min=0, sec=0, usec=0)` / `Time.gm(...)`
-- `Time.at(seconds_since_epoch, in: zone)`
+- `Time.at(seconds_since_epoch, subsec=nil, unit=nil, in: zone)`
 - `Time.now(in: zone)`
 - `Time.parse(string, layout=nil, in: zone)`
 
@@ -26,6 +26,22 @@ def with_microseconds
   Time.utc(2024, 1, 2, 3, 4, 5, 123456).nsec # 123456000
 end
 ```
+
+`Time.at` accepts Ruby-style subsecond arguments. The first argument is epoch seconds (integer or float, with floats carrying their fraction). An optional second positional argument adds a subsecond offset that defaults to microseconds, and an optional third positional symbol selects the unit: `:microsecond`/`:usec`, `:millisecond`, or `:nanosecond`/`:nsec`. A unit without a subsecond value, or an unknown unit symbol, raises a runtime error. The `in:` zone keyword composes with every form. Subsecond values are backed by nanosecond-resolution timestamps, so fractional nanoseconds truncate toward zero.
+
+```vibe
+def from_epoch
+  {
+    float:       Time.at(0.123456).utc.nsec,                  # 123456000
+    micro:       Time.at(0, 123456).utc.nsec,                 # 123456000
+    micro_unit:  Time.at(0, 123456, :microsecond).utc.nsec,  # 123456000
+    milli:       Time.at(0, 123, :millisecond).utc.nsec,      # 123000000
+    nano:        Time.at(0, 123456789, :nsec).utc.nsec,       # 123456789
+    zoned:       Time.at(0, 123456, in: "+05:30").utc_offset  # 19800
+  }
+end
+```
+
 Without an explicit `layout`, `Time.parse` accepts common formats such as RFC3339/RFC1123, `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYY-MM-DD HH:MM:SS`, and `MM/DD/YYYY` (with optional time).
 
 ## Formatting

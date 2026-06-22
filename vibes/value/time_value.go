@@ -219,27 +219,102 @@ func microsecondRangeError() error {
 // TimeFromEpoch converts a numeric epoch value into a time.Time anchored
 // to the supplied (or local) location.
 func TimeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
-	var seconds int64
-	var nanos int64
+	return TimeFromEpochParts(val, NewNil(), NewNil(), loc)
+}
+
+// subsecUnitNanos maps the unit symbols accepted by Time.at's three-argument
+// form to the number of nanoseconds each subsecond unit represents. Ruby spells
+// these as the symbols :microsecond/:usec, :millisecond, and :nanosecond/:nsec.
+var subsecUnitNanos = map[string]int64{
+	"microsecond": 1_000,
+	"usec":        1_000,
+	"millisecond": 1_000_000,
+	"nanosecond":  1,
+	"nsec":        1,
+}
+
+// TimeFromEpochParts converts Ruby-style Time.at arguments into a time.Time
+// anchored to the supplied (or local) location.
+//
+// The seconds argument may be an integer or float. The optional subsec argument
+// adds a subsecond offset whose unit defaults to microseconds and may be
+// overridden by the optional unit symbol (:microsecond/:usec, :millisecond, or
+// :nanosecond/:nsec). Pass NewNil() for subsec and unit when they are absent.
+//
+// The result is backed by time.Time, which has nanosecond resolution, so
+// fractional nanoseconds (for example a float subsecond value) are truncated
+// toward zero rather than retained as Ruby's arbitrary-precision rationals do.
+func TimeFromEpochParts(secVal, subsecVal, unitVal Value, loc *time.Location) (time.Time, error) {
+	seconds, nanos, err := epochSecondsToParts(secVal)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if subsecVal.Kind() != KindNil {
+		unitNanos := int64(1_000)
+		if unitVal.Kind() != KindNil {
+			if unitVal.Kind() != KindSymbol {
+				return time.Time{}, fmt.Errorf("Time.at unit must be a symbol")
+			}
+			factor, ok := subsecUnitNanos[unitVal.String()]
+			if !ok {
+				return time.Time{}, fmt.Errorf("unexpected unit: %s", unitVal.String())
+			}
+			unitNanos = factor
+		}
+
+		subNanos, err := subsecToNanos(subsecVal, unitNanos)
+		if err != nil {
+			return time.Time{}, err
+		}
+		nanos += subNanos
+	} else if unitVal.Kind() != KindNil {
+		return time.Time{}, fmt.Errorf("Time.at expects a subsecond value before a unit")
+	}
+
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.Unix(seconds, nanos).In(loc), nil
+}
+
+// epochSecondsToParts decomposes the seconds argument of Time.at into whole
+// seconds and a nanosecond remainder. Float seconds carry their fractional part
+// into the nanosecond component.
+func epochSecondsToParts(val Value) (seconds, nanos int64, err error) {
 	switch val.Kind() {
 	case KindInt:
-		seconds = val.Int()
+		return val.Int(), 0, nil
 	case KindFloat:
 		f := val.Float()
 		// Reject non-finite epochs: int64() of Infinity/NaN is
 		// implementation-specific and would silently create a bogus time.
 		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return time.Time{}, fmt.Errorf("Time.at expects a finite numeric epoch")
+			return 0, 0, fmt.Errorf("Time.at expects a finite numeric epoch")
 		}
-		seconds = int64(f)
-		nanos = int64((f - float64(seconds)) * 1e9)
+		whole := int64(f)
+		return whole, int64((f - float64(whole)) * 1e9), nil
 	default:
-		return time.Time{}, fmt.Errorf("Time.at expects numeric seconds")
+		return 0, 0, fmt.Errorf("Time.at expects numeric seconds")
 	}
-	if loc == nil {
-		loc = time.Local
+}
+
+// subsecToNanos converts a subsecond value expressed in units of unitNanos
+// nanoseconds into a nanosecond count. Float subsecond values truncate any
+// fractional nanoseconds toward zero, matching time.Time's resolution.
+func subsecToNanos(val Value, unitNanos int64) (int64, error) {
+	switch val.Kind() {
+	case KindInt:
+		return val.Int() * unitNanos, nil
+	case KindFloat:
+		f := val.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, fmt.Errorf("Time.at expects a finite subsecond value")
+		}
+		return int64(f * float64(unitNanos)), nil
+	default:
+		return 0, fmt.Errorf("Time.at subsecond value must be numeric")
 	}
-	return time.Unix(seconds, nanos).In(loc), nil
 }
 
 // ParseTimeString parses a time string, optionally using a caller-supplied

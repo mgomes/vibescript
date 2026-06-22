@@ -809,8 +809,13 @@ Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
   (`Time.utc(2024, 1, 1, 0, 0, 0, 123456).usec` is `123456`). Integer
   microseconds are exact and floats carry sub-microsecond precision down to the
   nanosecond; a non-numeric microsecond argument raises a runtime error.
-- `Time.at(epoch_seconds, in: nil) -> time` – build from Unix epoch seconds
-  (int or float).
+- `Time.at(epoch_seconds, subsec = nil, unit = nil, in: nil) -> time` – build
+  from Unix epoch seconds (int or float). An optional subsecond value defaults to
+  microseconds; an optional unit symbol (`:microsecond`/`:usec`,
+  `:millisecond`, or `:nanosecond`/`:nsec`) selects the unit. A unit without a
+  subsecond value or an unknown unit symbol raises a runtime error. Subsecond
+  values truncate toward zero at nanosecond resolution
+  (`Time.at(0, 123456789, :nsec).nsec` is `123456789`).
 - `Time.now(in: nil) -> time` – current time (local zone by default).
 - `Time.parse(string, layout = nil, in: nil) -> time` – parse a time string;
   without a layout it tries RFC3339/RFC3339Nano, RFC1123/RFC1123Z,

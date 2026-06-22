@@ -302,8 +302,8 @@ func timeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, 
 	return value.TimeFromCalendarParts(args, defaultLoc)
 }
 
-func timeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
-	return value.TimeFromEpoch(val, loc)
+func timeFromEpochParts(secVal, subsecVal, unitVal Value, loc *time.Location) (time.Time, error) {
+	return value.TimeFromEpochParts(secVal, subsecVal, unitVal, loc)
 }
 
 func parseTimeString(input, layout string, hasLayout bool, loc *time.Location) (time.Time, error) {
