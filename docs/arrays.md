@@ -201,4 +201,33 @@ def without_dropouts(participants, dropouts)
 end
 ```
 
+The method forms `union(*others)` and `difference(*others)` accept any number of
+array arguments:
+
+- `union` concatenates the receiver with every argument array and removes
+  duplicates, keeping the first occurrence of each value. Calling it with no
+  arguments deduplicates the receiver. Equality follows the same value semantics
+  as `uniq`, so nested arrays and hashes compare by content.
+- `difference` returns the receiver's elements that do not appear in any
+  argument array. Unlike `union`, it preserves duplicates within the receiver;
+  only values found in the arguments are dropped.
+
+```vibe
+def attendees(core, late, extra)
+  core.union(late, extra)
+end
+
+def remaining(roster, departed)
+  roster.difference(departed)
+end
+```
+
+```vibe
+[1, 2].union([2, 3], [3, 4]) # => [1, 2, 3, 4]
+[1, 1, 2, 3].difference([2])  # => [1, 1, 3]
+```
+
+Both methods return a new array and leave the receiver unchanged. A non-array
+argument raises an error.
+
 See `examples/arrays/` for concrete scripts exercised by the test suite.

@@ -63,6 +63,44 @@ func uniqueValues(values []Value) []Value {
 	return unique
 }
 
+// unionArrayValues concatenates left with every array in others and removes
+// duplicates while preserving first-seen order, mirroring Ruby's
+// Array#union(*others). The receiver's own duplicates are collapsed too, so the
+// result is always free of repeats.
+func unionArrayValues(left []Value, others [][]Value) []Value {
+	total := len(left)
+	for _, other := range others {
+		total += len(other)
+	}
+	combined := make([]Value, 0, total)
+	combined = append(combined, left...)
+	for _, other := range others {
+		combined = append(combined, other...)
+	}
+	return uniqueValues(combined)
+}
+
+// differenceArrayValues returns the elements of left that do not appear in any
+// of the others, mirroring Ruby's Array#difference(*others). Unlike union it
+// preserves the receiver's own duplicates: only elements equal to something in
+// the others are dropped.
+func differenceArrayValues(left []Value, others [][]Value) []Value {
+	if len(others) == 0 {
+		out := make([]Value, len(left))
+		copy(out, left)
+		return out
+	}
+	removalTotal := 0
+	for _, other := range others {
+		removalTotal += len(other)
+	}
+	removal := make([]Value, 0, removalTotal)
+	for _, other := range others {
+		removal = append(removal, other...)
+	}
+	return subtractArrayValues(left, removal)
+}
+
 func subtractArrayValues(left, right []Value) []Value {
 	var rightScalars map[scalarValueSetKey]struct{}
 	rightComposite := make([]Value, 0)
