@@ -478,6 +478,60 @@ func TestDifferenceArrayValuesAvoidsTransientFlattening(t *testing.T) {
 	}
 }
 
+// compositeRepeatingInput returns a slice of length setOpInputLen filled with a
+// single composite (single-element array) value. Every element is a composite,
+// so the removal side cannot index any of it in the scalar map: the old code
+// copied all of it into a flat membership slice, while the fix retains a
+// reference to this slice. The repetition keeps it cheap to construct.
+func compositeRepeatingInput() []Value {
+	one := NewArray([]Value{NewInt(0)})
+	values := make([]Value, setOpInputLen)
+	for i := range values {
+		values[i] = one
+	}
+	return values
+}
+
+func TestDifferenceArrayValuesRetainsCompositeSources(t *testing.T) {
+	// Not parallel: this test reads process-wide allocation counters and must
+	// not race other goroutines' allocations.
+
+	// Copying every composite removal value into a fresh flat slice peaks at
+	// sum(others) Values. Retaining a reference to each source slice instead
+	// keeps the removal side's extra memory proportional to the number of
+	// argument slices. The receiver is a single scalar absent from the removal
+	// side, so contains answers from the (empty) scalar map without scanning the
+	// retained composites; that isolates the removal-side construction as the
+	// only allocation that could scale with the composite arguments.
+	arg := compositeRepeatingInput()
+	others := make([][]Value, setOpInputArgs)
+	for i := range others {
+		others[i] = arg
+	}
+	left := []Value{NewInt(1)}
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	got := differenceArrayValues(left, others)
+	goruntime.ReadMemStats(&after)
+
+	want := NewArray([]Value{NewInt(1)})
+	if diff := valueDiff(want, NewArray(got)); diff != "" {
+		t.Fatalf("difference mismatch (-want +got):\n%s", diff)
+	}
+
+	// Flattening the composite arguments would reserve sum(others) Values. Bound
+	// the allocation well under that so reintroducing the flattening copy fails
+	// loudly while tolerating ordinary allocation noise.
+	flattenedBytes := uint64(setOpInputLen) * uint64(setOpInputArgs) * uint64(estimatedValueBytes)
+	ceiling := flattenedBytes / 4
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("difference allocated %d bytes for composite arguments, want <= %d (flattening transient would be %d)",
+			allocated, ceiling, flattenedBytes)
+	}
+}
+
 // distinctCompositeValues returns n single-element arrays, each holding a
 // different integer, so every value is a distinct composite that must be
 // compared with Value.Equal rather than indexed as a scalar.

@@ -91,15 +91,22 @@ func (s *valueSet) add(v Value, hint int) bool {
 }
 
 // membershipSet answers contains queries with value equality but, unlike
-// valueSet, never deduplicates on insertion. Scalars still go in a map for O(1)
-// membership, while composites are simply appended; the linear Value.Equal scan
-// happens only when contains is called. difference and subtract use it because
+// valueSet, never deduplicates on insertion. Scalars are indexed in a map for
+// O(1) membership. Composites are not copied at all: the set retains references
+// to the caller's own source slices and scans them with Value.Equal only when
+// contains is asked about a composite. difference and subtract use it because
 // they only need to know whether the removal side holds a value, never how many
-// times. Skipping the scan-on-insert keeps building the removal side linear in
-// the argument length even when those arguments are full of distinct composites.
+// times. Retaining the source slices rather than flattening their composites
+// into a fresh slice keeps the removal side's extra memory proportional to the
+// number of source slices, not to the total number of composite elements, while
+// still avoiding any scan on insertion.
 type membershipSet struct {
-	scalars   map[scalarValueSetKey]struct{}
-	composite []Value
+	scalars map[scalarValueSetKey]struct{}
+	// composite holds references to the source slices that contain at least one
+	// composite value. contains scans these directly; scalar elements within
+	// them are skipped cheaply because Value.Equal short-circuits on a kind
+	// mismatch with the composite being looked up.
+	composite [][]Value
 }
 
 // contains reports whether the set holds a value equal to v.
@@ -108,21 +115,36 @@ func (s *membershipSet) contains(v Value) bool {
 		_, found := s.scalars[key]
 		return found
 	}
-	return containsEqualValue(s.composite, v)
+	for _, source := range s.composite {
+		if containsEqualValue(source, v) {
+			return true
+		}
+	}
+	return false
 }
 
-// add records v for later membership tests. hint sizes the scalar map on first
-// use, capped by boundedSetCap. Scalars are deduplicated by the map key for
-// free; composites are appended without scanning, so insertion stays O(1).
-func (s *membershipSet) add(v Value, hint int) {
-	if key, ok := scalarValueKey(v); ok {
+// addSource records every value in values for later membership tests. hint sizes
+// the scalar map on first use, capped by boundedSetCap. Scalars are deduplicated
+// by the map key for free. Composites are not copied: if values holds any
+// composite, the set retains a reference to values itself and scans it in
+// contains. Insertion therefore stays linear in len(values) and allocates no
+// per-composite storage.
+func (s *membershipSet) addSource(values []Value, hint int) {
+	retained := false
+	for _, v := range values {
+		key, ok := scalarValueKey(v)
+		if !ok {
+			if !retained {
+				s.composite = append(s.composite, values)
+				retained = true
+			}
+			continue
+		}
 		if s.scalars == nil {
 			s.scalars = make(map[scalarValueSetKey]struct{}, boundedSetCap(hint))
 		}
 		s.scalars[key] = struct{}{}
-		return
 	}
-	s.composite = append(s.composite, v)
 }
 
 func uniqueValues(values []Value) []Value {
@@ -166,9 +188,10 @@ func unionArrayValues(left []Value, others [][]Value) []Value {
 // differenceArrayValues returns the elements of left that do not appear in any
 // of the others, mirroring Ruby's Array#difference(*others). Unlike union it
 // preserves the receiver's own duplicates: only elements equal to something in
-// the others are dropped. The removal side is built incrementally into a
-// membershipSet so no intermediate flattened slice is materialized and building
-// it stays linear in the argument length.
+// the others are dropped. The removal side indexes the others' scalars in a map
+// and retains references to their composite-bearing slices, so no flattened copy
+// of the arguments is materialized and the extra memory stays proportional to
+// the number of argument slices rather than their total length.
 func differenceArrayValues(left []Value, others [][]Value) []Value {
 	if len(others) == 0 {
 		out := make([]Value, len(left))
@@ -181,9 +204,7 @@ func differenceArrayValues(left []Value, others [][]Value) []Value {
 	}
 	var removal membershipSet
 	for _, other := range others {
-		for _, item := range other {
-			removal.add(item, removalTotal)
-		}
+		removal.addSource(other, removalTotal)
 	}
 	out := make([]Value, 0, boundedSetCap(len(left)))
 	for _, item := range left {
@@ -197,9 +218,7 @@ func differenceArrayValues(left []Value, others [][]Value) []Value {
 
 func subtractArrayValues(left, right []Value) []Value {
 	var removal membershipSet
-	for _, item := range right {
-		removal.add(item, len(right))
-	}
+	removal.addSource(right, len(right))
 	out := make([]Value, 0, boundedSetCap(len(left)))
 	for _, item := range left {
 		if removal.contains(item) {
