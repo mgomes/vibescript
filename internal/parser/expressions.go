@@ -1123,6 +1123,14 @@ func (p *parser) parseHashPair() ast.HashPair {
 // single actionable error instead of cascading diagnostics.
 func (p *parser) recoverHashPair() {
 	nesting := 0
+	// curToken can already be an opener when recovery begins (e.g. the rejected
+	// entry starts with "{", "[", or "(" as in `{ {a: 1} => v }`). In that case
+	// the cursor is already inside that delimiter, so seed nesting accordingly to
+	// keep its matching closer from being mistaken for the outer hash boundary.
+	switch p.curToken.Type {
+	case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
+		nesting++
+	}
 	for p.peekToken.Type != ast.TokenEOF {
 		if nesting == 0 && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRBrace) {
 			return

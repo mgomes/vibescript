@@ -88,6 +88,15 @@ func TestParserHashRocketSingleError(t *testing.T) {
 		`{name: 1, 2 => 3}`,
 		`{name: [1, 2] => 3}`,
 		`{a => {b => c}}`,
+		// Rejected entries whose key candidate itself begins with an opener
+		// delimiter. Recovery must treat the cursor as already inside that
+		// delimiter so its matching closer is not mistaken for the outer hash
+		// boundary, otherwise parsing resumes mid-entry and cascades errors.
+		`{ {a: 1} => v }`,
+		`{ [a, b] => v }`,
+		`{ (a) => v }`,
+		`{ {a: 1} => v, ok: 1 }`,
+		`{ ok: 1, [a, b] => v }`,
 	}
 
 	for _, source := range sources {
