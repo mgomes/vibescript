@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"math"
+	goruntime "runtime"
 	"testing"
 )
 
@@ -259,6 +260,96 @@ func TestRangeToArrayStepQuota(t *testing.T) {
 end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: 64 << 20}, source)
 	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+func TestRangeToArrayStepQuotaWithoutPreallocation(t *testing.T) {
+	t.Parallel()
+
+	// A small StepQuota must trip the step limit even when MemoryQuotaBytes is
+	// large enough that the projected up-front check passes. Reserving capacity
+	// for every requested element here would allocate ~1.6 GiB for the backing
+	// array before the per-element step() could reject the call. The materializer
+	// instead grows the backing array via append, so the actual allocation stays
+	// proportional to the few elements the step quota allows and the call fails
+	// with the step limit rather than an out-of-memory condition.
+	source := `def run()
+  (1..100000000).to_a
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: 8 << 30}, source)
+	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+func TestRangeMaterializeBoundsInitialCapacity(t *testing.T) {
+	// Not parallel: this test reads process-wide allocation counters and must
+	// not race other goroutines' allocations.
+
+	// A large requested limit must not reserve its full capacity up front: the
+	// materializer caps the initial allocation and lets append grow the backing
+	// array as elements are produced. The limit here passes the projected memory
+	// check (so execution reaches the loop) but is far larger than the step
+	// quota, so the call trips the step limit after materializing only a handful
+	// of elements. Reserving capacity for the full limit beforehand would
+	// allocate limit*sizeof(Value) bytes regardless of how few steps the quota
+	// permits; the bounded growth path keeps the allocation proportional to the
+	// elements actually produced.
+	const limit = int64(100_000_000)
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       50,
+		memoryQuota: 8 << 30,
+	}
+	rng := Range{Start: 0, End: math.MaxInt64, Exclusive: true}
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	_, err := exec.rangeMaterialize(rng, limit, false)
+	goruntime.ReadMemStats(&after)
+
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps > exec.quota+1 {
+		t.Fatalf("steps = %d, want the loop to stop near the step quota %d", exec.steps, exec.quota)
+	}
+
+	// The full preallocation would have reserved limit*sizeof(Value) bytes. The
+	// bounded path materializes only ~quota elements before failing, so its
+	// allocation is many orders of magnitude smaller. Use a generous ceiling to
+	// stay robust against unrelated allocation noise while still failing loudly
+	// if the full capacity is ever reserved again.
+	const fullPreallocBytes = uint64(limit) * uint64(estimatedValueBytes)
+	const ceiling = fullPreallocBytes / 1000
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("materialize allocated %d bytes, want <= %d (full preallocation would be %d)",
+			allocated, ceiling, fullPreallocBytes)
+	}
+}
+
+func TestRangeMaterializeGrowsPastInitialCapacity(t *testing.T) {
+	t.Parallel()
+
+	// Materializing more elements than the bounded initial capacity must grow the
+	// backing array correctly, proving the append-driven growth path produces the
+	// full, correct sequence rather than truncating at the initial capacity.
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: 1 << 30,
+	}
+	count := int64(rangeMaterializeInitialCap) + 1000
+	rng := Range{Start: 1, End: count, Exclusive: false}
+	result, err := exec.rangeMaterialize(rng, count, false)
+	if err != nil {
+		t.Fatalf("rangeMaterialize: %v", err)
+	}
+	arr := result.Array()
+	if int64(len(arr)) != count {
+		t.Fatalf("len = %d, want %d", len(arr), count)
+	}
+	for i := range arr {
+		if want := int64(i) + 1; arr[i].Int() != want {
+			t.Fatalf("element %d = %d, want %d", i, arr[i].Int(), want)
+		}
+	}
 }
 
 func TestRangeLastBoundedOnHugeRange(t *testing.T) {

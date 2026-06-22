@@ -5,6 +5,12 @@ import (
 	"math"
 )
 
+// rangeMaterializeInitialCap bounds the capacity reserved up front when
+// materializing a range. Larger materializations grow the backing array via
+// append so the per-element step() and checkMemoryWith calls bound the actual
+// allocation, rather than reserving the full requested count immediately.
+const rangeMaterializeInitialCap = 4096
+
 // rangeMemberNames mirrors the names dispatched by rangeMember and feeds
 // "did you mean" suggestions on the error path. Keep it in sync with the
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
@@ -259,7 +265,20 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 		return NewNil(), err
 	}
 
-	out := make([]Value, 0, int(limit))
+	// Only reserve a modest initial capacity and let append grow the backing
+	// array as elements are produced. The projected check above is an early-out
+	// for ranges whose full materialization clearly exceeds the memory quota,
+	// but it passes whenever MemoryQuotaBytes is large. Preallocating the full
+	// limit there would reserve the entire backing array before the per-element
+	// step() and checkMemoryWith below could reject the call, so a large
+	// MemoryQuotaBytes paired with a small StepQuota could still trigger a huge
+	// up-front allocation. Bounding the initial capacity keeps the actual
+	// allocation proportional to the elements the quotas allow.
+	initialCap := limit
+	if initialCap > rangeMaterializeInitialCap {
+		initialCap = rangeMaterializeInitialCap
+	}
+	out := make([]Value, 0, int(initialCap))
 	for i := int64(0); i < limit; i++ {
 		if err := exec.step(); err != nil {
 			return NewNil(), err
