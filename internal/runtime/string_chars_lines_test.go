@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestStringChars(t *testing.T) {
 	t.Parallel()
@@ -232,6 +235,97 @@ func TestStringEachLine(t *testing.T) {
 			result := callFunc(t, script, "run", nil)
 			compareArrays(t, result, tc.want)
 		})
+	}
+}
+
+func TestStringEachLineShortCircuitsOnBlockError(t *testing.T) {
+	t.Parallel()
+
+	// each_line streams line by line, so a block error must stop the scan
+	// immediately rather than after every line has been split. Collecting the
+	// lines seen before the failure proves only the lines up to the raise were
+	// yielded.
+	script := compileScript(t, `
+def run()
+  seen = []
+  begin
+    "a\nb\nc".each_line do |l|
+      seen = seen + [l]
+      if l == "b\n"
+        raise "boom"
+      end
+    end
+  rescue
+    nil
+  end
+  seen
+end
+`)
+	result := callFunc(t, script, "run", nil)
+	compareArrays(t, result, []Value{NewString("a\n"), NewString("b\n")})
+}
+
+func TestForEachLine(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{name: "empty string yields nothing", text: "", want: nil},
+		{name: "retains trailing newline", text: "a\nb", want: []string{"a\n", "b"}},
+		{name: "trailing newline adds no empty line", text: "a\nb\n", want: []string{"a\n", "b\n"}},
+		{name: "consecutive newlines yield blank lines", text: "\n\n", want: []string{"\n", "\n"}},
+		{name: "crlf stays together", text: "a\r\nb", want: []string{"a\r\n", "b"}},
+		{name: "bare carriage return is not a separator", text: "a\rb", want: []string{"a\rb"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var got []string
+			if err := forEachLine(tc.text, func(line string) error {
+				got = append(got, line)
+				return nil
+			}); err != nil {
+				t.Fatalf("forEachLine returned unexpected error: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("forEachLine(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("forEachLine(%q)[%d] = %q, want %q", tc.text, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestForEachLineStopsOnError(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("stop")
+	var got []string
+	err := forEachLine("a\nb\nc", func(line string) error {
+		got = append(got, line)
+		if line == "b\n" {
+			return sentinel
+		}
+		return nil
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("forEachLine error = %v, want %v", err, sentinel)
+	}
+	want := []string{"a\n", "b\n"}
+	if len(got) != len(want) {
+		t.Fatalf("forEachLine yielded %q before stopping, want %q", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("forEachLine yielded %q before stopping, want %q", got, want)
+		}
 	}
 }
 

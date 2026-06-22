@@ -44,28 +44,35 @@ func stringMemberBuiltin(property string) (Value, error) {
 	}
 }
 
-// stringLines splits text into lines using "\n" as the record separator,
-// retaining the trailing "\n" on each line as Ruby's String#lines does. A
-// trailing newline does not produce a final empty line, and an empty string
-// yields no lines. Carriage returns are preserved verbatim, so "a\r\nb" splits
-// into "a\r\n" and "b".
-func stringLines(text string) []string {
-	if text == "" {
-		return nil
-	}
-	var lines []string
-	for {
+// forEachLine invokes yield for each line in text using "\n" as the record
+// separator, retaining the trailing "\n" on each line as Ruby's String#lines
+// does. A trailing newline does not produce a final empty line, and an empty
+// string yields nothing. Carriage returns are preserved verbatim, so "a\r\nb"
+// yields "a\r\n" then "b". Lines are located one at a time via IndexByte so
+// callers can stream without materializing every line, and an error returned by
+// yield stops the scan immediately.
+func forEachLine(text string, yield func(line string) error) error {
+	for text != "" {
 		index := strings.IndexByte(text, '\n')
 		if index < 0 {
-			lines = append(lines, text)
-			break
+			return yield(text)
 		}
-		lines = append(lines, text[:index+1])
+		if err := yield(text[:index+1]); err != nil {
+			return err
+		}
 		text = text[index+1:]
-		if text == "" {
-			break
-		}
 	}
+	return nil
+}
+
+// stringLines splits text into lines following the same rules as forEachLine,
+// matching Ruby's String#lines.
+func stringLines(text string) []string {
+	var lines []string
+	_ = forEachLine(text, func(line string) error {
+		lines = append(lines, line)
+		return nil
+	})
 	return lines
 }
 
@@ -1157,11 +1164,12 @@ func stringMemberTextOps(property string) (Value, error) {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
-			for _, line := range stringLines(receiver.String()) {
+			if err := forEachLine(receiver.String(), func(line string) error {
 				blockArg[0] = NewString(line)
-				if _, err := runner.call(blockArg[:]); err != nil {
-					return NewNil(), err
-				}
+				_, err := runner.call(blockArg[:])
+				return err
+			}); err != nil {
+				return NewNil(), err
 			}
 			return receiver, nil
 		}), nil
