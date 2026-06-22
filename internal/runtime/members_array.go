@@ -15,7 +15,7 @@ import (
 var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 	"take_while", "drop_while", "grep", "grep_v",
-	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse",
+	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
@@ -35,7 +35,7 @@ func arrayMemberBuiltin(property string) (Value, error) {
 	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
-	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
+	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -1156,6 +1156,233 @@ func arrayMemberGrep(property string) (Value, error) {
 	}), nil
 }
 
+// arrayFillSpan describes the half-open destination window [begin, end) that a
+// fill writes to, together with finalLength, the length the result array needs
+// so the window fits. When the window extends past the receiver, finalLength is
+// larger than the receiver and the gap before begin is padded with nil, matching
+// Ruby's Array#fill growth behavior.
+type arrayFillSpan struct {
+	begin       int
+	end         int
+	finalLength int
+}
+
+// arrayFill implements Ruby's Array#fill, returning a new array rather than
+// mutating the receiver, consistent with the immutable collection helpers
+// alongside it (push, pop, compact, flatten). It accepts the value and block
+// forms:
+//
+//	fill(value)                fill(start) { |i| ... }
+//	fill(value, start)         fill(start, length) { |i| ... }
+//	fill(value, start, length) fill(range) { |i| ... }
+//	fill(value, range)         fill { |i| ... }
+//
+// The value and block forms are mutually exclusive: supplying both is rejected,
+// matching Ruby, which never consults a block when an explicit fill value is
+// given.
+func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.fill does not take keyword arguments")
+	}
+	arr := receiver.Array()
+	hasBlock := valueBlock(block) != nil
+
+	// selectors are the positional arguments that choose the fill window. In the
+	// value form the first argument is the fill value, so the selectors follow
+	// it; in the block form every argument is a selector.
+	var selectors []Value
+	if hasBlock {
+		selectors = args
+	} else {
+		if len(args) == 0 {
+			return NewNil(), fmt.Errorf("array.fill requires a value or a block")
+		}
+		selectors = args[1:]
+	}
+
+	span, err := arrayFillResolveSpan(selectors, len(arr))
+	if err != nil {
+		return NewNil(), err
+	}
+
+	// Reject an oversized result up front so a window far past the receiver
+	// cannot reserve a huge backing array before the per-element checks below
+	// observe it, mirroring the range materialization guard.
+	if err := exec.checkProjectedIntArrayBytes(span.finalLength); err != nil {
+		return NewNil(), err
+	}
+
+	out := make([]Value, span.finalLength)
+	copy(out, arr)
+	// Pad the gap between the receiver's end and the fill window with nil, the
+	// same value Ruby inserts when fill grows the array past its old length. The
+	// gap only exists when the window actually extends the array, so it is
+	// bounded by the result length to skip an empty window whose start sits past
+	// the receiver without growing it.
+	for i := len(arr); i < span.begin && i < span.finalLength; i++ {
+		out[i] = NewNil()
+	}
+
+	if hasBlock {
+		runner, err := newBlockCallRunner(exec, block, "array.fill")
+		if err != nil {
+			return NewNil(), err
+		}
+		var blockArg [1]Value
+		for i := span.begin; i < span.end; i++ {
+			// Charge a step per produced element so a large window cannot starve
+			// the quota or cancellation checks while the block runs.
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			blockArg[0] = NewInt(int64(i))
+			val, err := runner.call(blockArg[:])
+			if err != nil {
+				return NewNil(), err
+			}
+			out[i] = val
+		}
+		return NewArray(out), nil
+	}
+
+	value := args[0]
+	for i := span.begin; i < span.end; i++ {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		out[i] = value
+	}
+	return NewArray(out), nil
+}
+
+// arrayFillResolveSpan parses the window selectors shared by both fill forms and
+// returns the destination span. length is the receiver's current length. It
+// accepts an empty selector list (whole array), an integer start with optional
+// length, or a single range, matching Ruby's Array#fill.
+func arrayFillResolveSpan(selectors []Value, length int) (arrayFillSpan, error) {
+	switch len(selectors) {
+	case 0:
+		return arrayFillSpan{begin: 0, end: length, finalLength: length}, nil
+	case 1:
+		if selectors[0].Kind() == KindRange {
+			return arrayFillRangeSpan(selectors[0].Range(), length)
+		}
+		begin, err := arrayFillStartIndex(selectors[0], length)
+		if err != nil {
+			return arrayFillSpan{}, err
+		}
+		return arrayFillSpanFromStart(begin, length, length-begin)
+	case 2:
+		if selectors[0].Kind() == KindRange {
+			return arrayFillSpan{}, fmt.Errorf("array.fill does not accept a length with a range")
+		}
+		begin, err := arrayFillStartIndex(selectors[0], length)
+		if err != nil {
+			return arrayFillSpan{}, err
+		}
+		count, err := arrayFillLength(selectors[1])
+		if err != nil {
+			return arrayFillSpan{}, err
+		}
+		return arrayFillSpanFromStart(begin, length, count)
+	default:
+		return arrayFillSpan{}, fmt.Errorf("array.fill accepts at most a start and length")
+	}
+}
+
+// arrayFillStartIndex resolves a start argument to a non-negative index.
+// Fractional floats truncate toward zero like Ruby's to_int. A negative start
+// counts back from the end like Ruby; a start more negative than the receiver
+// length clamps to 0 (Ruby's Array#fill does not raise for an out-of-range
+// negative integer start, unlike a range bound).
+func arrayFillStartIndex(value Value, length int) (int, error) {
+	start, err := valueToInt(value)
+	if err != nil {
+		return 0, fmt.Errorf("array.fill start must be integer")
+	}
+	if start < 0 {
+		start += length
+		if start < 0 {
+			start = 0
+		}
+	}
+	return start, nil
+}
+
+// arrayFillLength resolves an explicit length argument to a non-negative count,
+// truncating fractional floats toward zero like Ruby's to_int. A negative or
+// zero length yields an empty window, matching Ruby.
+func arrayFillLength(value Value) (int, error) {
+	count, err := valueToInt(value)
+	if err != nil {
+		return 0, fmt.Errorf("array.fill length must be integer")
+	}
+	if count < 0 {
+		count = 0
+	}
+	return count, nil
+}
+
+// arrayFillSpanFromStart builds a span for the integer start/length forms,
+// growing finalLength when the window extends past the receiver.
+func arrayFillSpanFromStart(begin, length, count int) (arrayFillSpan, error) {
+	if count <= 0 {
+		return arrayFillSpan{begin: begin, end: begin, finalLength: length}, nil
+	}
+	end := begin + count
+	if end < begin {
+		// begin + count overflowed int; such a window cannot be materialized.
+		return arrayFillSpan{}, fmt.Errorf("array.fill window is too large")
+	}
+	finalLength := length
+	if end > finalLength {
+		finalLength = end
+	}
+	return arrayFillSpan{begin: begin, end: end, finalLength: finalLength}, nil
+}
+
+// arrayFillRangeSpan resolves a range selector to a span. Negative bounds count
+// back from the end; a bound more negative than the receiver length is rejected
+// with an out-of-range error, matching Ruby's Array#fill (which raises a
+// RangeError for such ranges rather than clamping as it does for integer
+// starts). The window grows the result when the range end extends past the
+// receiver. Bound arithmetic stays in int64 and an exclusive end beyond the
+// native int range is rejected so a near-MaxInt64 inclusive range cannot
+// silently overflow into a no-op.
+func arrayFillRangeSpan(rng Range, length int) (arrayFillSpan, error) {
+	length64 := int64(length)
+	begin := rng.Start
+	if begin < 0 {
+		begin += length64
+		if begin < 0 {
+			return arrayFillSpan{}, fmt.Errorf("array.fill range %s out of range", NewRange(rng).String())
+		}
+	}
+	end := rng.End
+	if end < 0 {
+		end += length64
+	}
+	if !rng.Exclusive {
+		// An inclusive range's exclusive end is one past End; guard the increment
+		// so End == math.MaxInt64 reports the oversized window rather than wrapping.
+		if end == math.MaxInt64 {
+			return arrayFillSpan{}, fmt.Errorf("array.fill window is too large")
+		}
+		end++
+	}
+	if end < begin {
+		end = begin
+	}
+	if begin > math.MaxInt || end > math.MaxInt {
+		return arrayFillSpan{}, fmt.Errorf("array.fill window is too large")
+	}
+	finalLength := length
+	if int(end) > finalLength {
+		finalLength = int(end)
+	}
+	return arrayFillSpan{begin: int(begin), end: int(end), finalLength: finalLength}, nil
+}
+
 func arrayMemberTransforms(property string) (Value, error) {
 	switch property {
 	case "push":
@@ -1333,6 +1560,8 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			return NewArray(out), nil
 		}), nil
+	case "fill":
+		return NewAutoBuiltin("array.fill", arrayFill), nil
 	case "chunk":
 		return NewAutoBuiltin("array.chunk", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 {

@@ -30,6 +30,7 @@ Common enumerable helpers include:
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays (defaults to fully flattening).
+- `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }` computes each replacement from its index instead of taking a value.
 - `chunk(size)` to split into fixed-size slices.
 - `window(size)` to build overlapping windows.
 - `join(sep = "")` to produce a string.
@@ -53,7 +54,17 @@ end
 [1, 2, 3].drop(1)           # [2, 3]
 [1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 [[1, 2], [3, 4]].transpose  # [[1, 3], [2, 4]]
+[1, 2, 3].fill(0)           # [0, 0, 0]
+[1, 2, 3].fill(0, 1, 2)     # [1, 0, 0]
+[1, 2, 3].fill("x", 1..2)   # [1, "x", "x"]
+[1, 2, 3].fill { |i| i * 10 } # [0, 10, 20]
 ```
+
+`fill` follows Ruby's indexing rules: a negative `start` counts back from the
+end, a `length` that runs past the end grows the result (padding any gap with
+`nil`), and a range selects the indices to replace. The value form and the block
+form are mutually exclusive. Like the other array helpers, `fill` returns a new
+array and leaves the receiver untouched.
 
 ## Search and predicates
 
