@@ -497,8 +497,12 @@ func arrayPositiveConsSize(args []Value, method string) (int, error) {
 
 // arrayArgsToSlices validates that every argument is an array and returns their
 // element slices. It backs the variadic set helpers (union, difference), which
-// in Ruby raise TypeError when handed a non-array argument.
-func arrayArgsToSlices(method string, args []Value) ([][]Value, error) {
+// in Ruby raise TypeError when handed a non-array argument and accept no
+// keyword arguments.
+func arrayArgsToSlices(method string, args []Value, kwargs map[string]Value) ([][]Value, error) {
+	if len(kwargs) > 0 {
+		return nil, fmt.Errorf("%s does not take keyword arguments", method)
+	}
 	others := make([][]Value, len(args))
 	for i, arg := range args {
 		if arg.Kind() != KindArray {
@@ -1222,7 +1226,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "union":
 		return NewAutoBuiltin("array.union", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			others, err := arrayArgsToSlices("array.union", args)
+			others, err := arrayArgsToSlices("array.union", args, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -1230,7 +1234,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "difference":
 		return NewAutoBuiltin("array.difference", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			others, err := arrayArgsToSlices("array.difference", args)
+			others, err := arrayArgsToSlices("array.difference", args, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}

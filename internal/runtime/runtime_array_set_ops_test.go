@@ -268,6 +268,62 @@ func TestArraySetOpsRejectNonArrayArguments(t *testing.T) {
 	}
 }
 
+func TestArraySetOpsRejectKeywordArguments(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def union_keyword()
+      [1, 2].union(other: [2, 3])
+    end
+
+    def union_keyword_with_array()
+      [1, 2].union([2, 3], other: [4])
+    end
+
+    def difference_keyword()
+      [1, 2].difference(other: [2])
+    end
+
+    def difference_keyword_with_array()
+      [1, 2].difference([2], other: [1])
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want string
+	}{
+		{
+			name: "union rejects a keyword argument",
+			fn:   "union_keyword",
+			want: "array.union does not take keyword arguments",
+		},
+		{
+			name: "union rejects a keyword alongside an array",
+			fn:   "union_keyword_with_array",
+			want: "array.union does not take keyword arguments",
+		},
+		{
+			name: "difference rejects a keyword argument",
+			fn:   "difference_keyword",
+			want: "array.difference does not take keyword arguments",
+		},
+		{
+			name: "difference rejects a keyword alongside an array",
+			fn:   "difference_keyword_with_array",
+			want: "array.difference does not take keyword arguments",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, tc.fn, nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestArrayUnionHonorsMemoryQuota(t *testing.T) {
 	t.Parallel()
 
