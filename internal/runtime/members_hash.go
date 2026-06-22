@@ -379,6 +379,13 @@ func hashMemberTransforms(property string) (Value, error) {
 		// call. Ruby's no-argument Hash#merge returns a copy of self, which the
 		// len(args) == 0 branch below handles for the explicit-call form.
 		return NewBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			// Reject keyword arguments rather than silently dropping them. Ruby
+			// folds trailing keywords into an implicit hash argument, but
+			// Vibescript's native hash helpers only consume positional hashes, so
+			// keywords must be passed explicitly (e.g. merge({ b: 2 })).
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.%s does not accept keyword arguments", name)
+			}
 			for i, arg := range args {
 				if arg.Kind() != KindHash && arg.Kind() != KindObject {
 					return NewNil(), fmt.Errorf("hash.%s argument %d must be a hash", name, i+1)
@@ -433,6 +440,11 @@ func hashMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "replace":
 		return NewBuiltin("hash.replace", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			// Reject keyword arguments rather than silently dropping them; the
+			// replacement hash must be passed positionally (e.g. replace({ b: 2 })).
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.replace does not accept keyword arguments")
+			}
 			if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
 				return NewNil(), fmt.Errorf("hash.replace expects a single hash argument")
 			}
@@ -447,6 +459,9 @@ func hashMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "flatten":
 		return NewAutoBuiltin("hash.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.flatten does not accept keyword arguments")
+			}
 			if len(args) > 1 {
 				return NewNil(), fmt.Errorf("hash.flatten accepts at most one depth argument")
 			}
@@ -478,6 +493,9 @@ func hashMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "store":
 		return NewBuiltin("hash.store", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.store does not accept keyword arguments")
+			}
 			if len(args) != 2 {
 				return NewNil(), fmt.Errorf("hash.store expects a key and a value")
 			}

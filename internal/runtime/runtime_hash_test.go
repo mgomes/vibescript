@@ -199,6 +199,11 @@ func TestHashMergeRejectsMisuse(t *testing.T) {
 		{name: "non-hash second argument", source: "def run() { a: 1 }.merge({ b: 2 }, 5) end", wantErr: "hash.merge argument 2 must be a hash"},
 		{name: "update non-hash argument", source: "def run() { a: 1 }.update(5) end", wantErr: "hash.update argument 1 must be a hash"},
 		{name: "merge! non-hash argument", source: "def run() { a: 1 }.merge!(5) end", wantErr: "hash.merge! argument 1 must be a hash"},
+		{name: "merge keyword argument", source: "def run() { a: 1 }.merge(b: 2) end", wantErr: "hash.merge does not accept keyword arguments"},
+		{name: "merge parenless keyword argument", source: "def run() { a: 1 }.merge b: 2 end", wantErr: "hash.merge does not accept keyword arguments"},
+		{name: "update keyword argument", source: "def run() { a: 1 }.update(b: 2) end", wantErr: "hash.update does not accept keyword arguments"},
+		{name: "merge! keyword argument", source: "def run() { a: 1 }.merge!(b: 2) end", wantErr: "hash.merge! does not accept keyword arguments"},
+		{name: "merge keyword with positional hash", source: "def run() { a: 1 }.merge({ b: 2 }, c: 3) end", wantErr: "hash.merge does not accept keyword arguments"},
 	}
 
 	for _, tt := range tests {
@@ -376,6 +381,7 @@ func TestHashReplaceRejectsMisuse(t *testing.T) {
 		{name: "no arguments", source: "def run() { a: 1 }.replace() end", wantErr: "hash.replace expects a single hash argument"},
 		{name: "too many arguments", source: "def run() { a: 1 }.replace({ b: 2 }, { c: 3 }) end", wantErr: "hash.replace expects a single hash argument"},
 		{name: "non-hash argument", source: "def run() { a: 1 }.replace([1, 2]) end", wantErr: "hash.replace expects a single hash argument"},
+		{name: "keyword argument", source: "def run() { a: 1 }.replace(b: 2) end", wantErr: "hash.replace does not accept keyword arguments"},
 	}
 
 	for _, tt := range tests {
@@ -483,6 +489,7 @@ func TestHashFlattenRejectsMisuse(t *testing.T) {
 	}{
 		{name: "too many arguments", source: "def run() { a: 1 }.flatten(1, 2) end", wantErr: "hash.flatten accepts at most one depth argument"},
 		{name: "non-integer depth", source: `def run() { a: 1 }.flatten("deep") end`, wantErr: "hash.flatten depth must be integer"},
+		{name: "keyword argument", source: "def run() { a: 1 }.flatten(depth: 2) end", wantErr: "hash.flatten does not accept keyword arguments"},
 	}
 
 	for _, tt := range tests {
@@ -1120,6 +1127,7 @@ func TestHashStoreRejectsMisuse(t *testing.T) {
 		{name: "no arguments", source: "def run() { a: 1 }.store() end", wantErr: "hash.store expects a key and a value"},
 		{name: "too many arguments", source: "def run() { a: 1 }.store(:b, 2, 3) end", wantErr: "hash.store expects a key and a value"},
 		{name: "unsupported key", source: "def run() { a: 1 }.store([1], 2) end", wantErr: "hash.store key must be symbol or string"},
+		{name: "keyword argument", source: "def run() { a: 1 }.store(b: 2) end", wantErr: "hash.store does not accept keyword arguments"},
 	}
 
 	for _, tt := range tests {
