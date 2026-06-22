@@ -54,29 +54,24 @@ func scalarValueKey(v Value) (scalarValueSetKey, bool) {
 	return key, true
 }
 
-// valueSet tracks membership of Values using value equality. Scalar values are
-// indexed in a map keyed by their content, while composite values (arrays,
-// hashes, and other non-scalar kinds) fall back to a linear scan with
-// Value.Equal. Both union and difference build on it so neither needs to
-// materialize an intermediate concatenated slice.
+// valueSet tracks membership of Values using value equality, collapsing
+// duplicates as values are added. Scalar values are indexed in a map keyed by
+// their content, while composite values (arrays, hashes, and other non-scalar
+// kinds) fall back to a linear scan with Value.Equal. union and uniq build on it
+// because they need duplicate collapsing; difference and subtract use the
+// non-deduping membershipSet instead.
 type valueSet struct {
 	scalars   map[scalarValueSetKey]struct{}
 	composite []Value
 }
 
-// contains reports whether the set already holds a value equal to v.
-func (s *valueSet) contains(v Value) bool {
-	if key, ok := scalarValueKey(v); ok {
-		_, found := s.scalars[key]
-		return found
-	}
-	return containsEqualValue(s.composite, v)
-}
-
 // add inserts v into the set if absent and reports whether it was newly added.
 // hint sizes the scalar map on first use; it is capped by boundedSetCap so a
 // huge input length never drives an oversized map allocation, letting the map
-// grow to the number of distinct scalars actually inserted.
+// grow to the number of distinct scalars actually inserted. Composite values are
+// deduplicated via a linear Value.Equal scan, so add is suited to the
+// duplicate-collapsing helpers (union, uniq) but not to membership-only callers
+// where that scan would make insertion quadratic.
 func (s *valueSet) add(v Value, hint int) bool {
 	if key, ok := scalarValueKey(v); ok {
 		if s.scalars == nil {
@@ -93,6 +88,41 @@ func (s *valueSet) add(v Value, hint int) bool {
 	}
 	s.composite = append(s.composite, v)
 	return true
+}
+
+// membershipSet answers contains queries with value equality but, unlike
+// valueSet, never deduplicates on insertion. Scalars still go in a map for O(1)
+// membership, while composites are simply appended; the linear Value.Equal scan
+// happens only when contains is called. difference and subtract use it because
+// they only need to know whether the removal side holds a value, never how many
+// times. Skipping the scan-on-insert keeps building the removal side linear in
+// the argument length even when those arguments are full of distinct composites.
+type membershipSet struct {
+	scalars   map[scalarValueSetKey]struct{}
+	composite []Value
+}
+
+// contains reports whether the set holds a value equal to v.
+func (s *membershipSet) contains(v Value) bool {
+	if key, ok := scalarValueKey(v); ok {
+		_, found := s.scalars[key]
+		return found
+	}
+	return containsEqualValue(s.composite, v)
+}
+
+// add records v for later membership tests. hint sizes the scalar map on first
+// use, capped by boundedSetCap. Scalars are deduplicated by the map key for
+// free; composites are appended without scanning, so insertion stays O(1).
+func (s *membershipSet) add(v Value, hint int) {
+	if key, ok := scalarValueKey(v); ok {
+		if s.scalars == nil {
+			s.scalars = make(map[scalarValueSetKey]struct{}, boundedSetCap(hint))
+		}
+		s.scalars[key] = struct{}{}
+		return
+	}
+	s.composite = append(s.composite, v)
 }
 
 func uniqueValues(values []Value) []Value {
@@ -136,8 +166,9 @@ func unionArrayValues(left []Value, others [][]Value) []Value {
 // differenceArrayValues returns the elements of left that do not appear in any
 // of the others, mirroring Ruby's Array#difference(*others). Unlike union it
 // preserves the receiver's own duplicates: only elements equal to something in
-// the others are dropped. The removal set is built incrementally from others so
-// no intermediate flattened slice is materialized.
+// the others are dropped. The removal side is built incrementally into a
+// membershipSet so no intermediate flattened slice is materialized and building
+// it stays linear in the argument length.
 func differenceArrayValues(left []Value, others [][]Value) []Value {
 	if len(others) == 0 {
 		out := make([]Value, len(left))
@@ -148,7 +179,7 @@ func differenceArrayValues(left []Value, others [][]Value) []Value {
 	for _, other := range others {
 		removalTotal += len(other)
 	}
-	var removal valueSet
+	var removal membershipSet
 	for _, other := range others {
 		for _, item := range other {
 			removal.add(item, removalTotal)
@@ -165,7 +196,7 @@ func differenceArrayValues(left []Value, others [][]Value) []Value {
 }
 
 func subtractArrayValues(left, right []Value) []Value {
-	var removal valueSet
+	var removal membershipSet
 	for _, item := range right {
 		removal.add(item, len(right))
 	}

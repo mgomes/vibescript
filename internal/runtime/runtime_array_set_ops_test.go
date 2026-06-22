@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"context"
+	"math"
 	goruntime "runtime"
 	"testing"
+	"time"
 )
 
 func TestArrayUnion(t *testing.T) {
@@ -473,5 +475,67 @@ func TestDifferenceArrayValuesAvoidsTransientFlattening(t *testing.T) {
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
 		t.Fatalf("difference allocated %d bytes, want <= %d (flattening transient would be %d)",
 			allocated, ceiling, flattenedBytes)
+	}
+}
+
+// distinctCompositeValues returns n single-element arrays, each holding a
+// different integer, so every value is a distinct composite that must be
+// compared with Value.Equal rather than indexed as a scalar.
+func distinctCompositeValues(n int) []Value {
+	values := make([]Value, n)
+	for i := range values {
+		values[i] = NewArray([]Value{NewInt(int64(i))})
+	}
+	return values
+}
+
+// measureDifferenceRemoval times differenceArrayValues against a removal side of
+// n distinct composites, taking the fastest of a few runs so transient
+// scheduler noise cannot inflate the reading. The receiver is a single value
+// absent from the removal side, isolating the cost of building the removal
+// membership structure.
+func measureDifferenceRemoval(n int) time.Duration {
+	left := []Value{NewArray([]Value{NewInt(-1)})}
+	others := [][]Value{distinctCompositeValues(n)}
+	best := time.Duration(math.MaxInt64)
+	for range 5 {
+		start := time.Now()
+		_ = differenceArrayValues(left, others)
+		if elapsed := time.Since(start); elapsed < best {
+			best = elapsed
+		}
+	}
+	return best
+}
+
+// TestDifferenceArrayValuesRemovalIsNotQuadratic guards against deduplicating
+// the difference removal side. A deduping set scans every previously inserted
+// composite via Value.Equal on each insert, so building the removal structure
+// from m distinct composites costs O(m^2); a membership-only structure that
+// appends composites without scanning keeps it O(m). Doubling the removal side
+// must therefore roughly double the work, not quadruple it.
+func TestDifferenceArrayValuesRemovalIsNotQuadratic(t *testing.T) {
+	// Not parallel: timing measurements must not contend with other tests.
+
+	const base = 20_000
+
+	// Warm up so first-touch allocation and code caching do not skew the first
+	// measured size.
+	measureDifferenceRemoval(base)
+
+	single := measureDifferenceRemoval(base)
+	double := measureDifferenceRemoval(2 * base)
+
+	// Linear scaling lands near 2x; quadratic scaling lands near 4x. A ceiling of
+	// 3x sits clearly between the two, failing loudly on a quadratic regression
+	// while tolerating ordinary timing noise. Guard against a degenerate
+	// near-zero baseline that would make the ratio meaningless.
+	const maxRatio = 3.0
+	if single <= 0 {
+		t.Fatalf("baseline measurement was non-positive: %v", single)
+	}
+	if ratio := float64(double) / float64(single); ratio > maxRatio {
+		t.Fatalf("difference removal scaled %.2fx from %d to %d composites (single=%v double=%v); want <= %.1fx, quadratic insertion is ~4x",
+			ratio, base, 2*base, single, double, maxRatio)
 	}
 }
