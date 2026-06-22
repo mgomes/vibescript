@@ -494,6 +494,41 @@ carriage-return bytes):
 "a\rb".lines   # ["a\rb"]
 ```
 
+### `each_char`
+
+Yields each Unicode character to a block without first materializing an array,
+the streaming counterpart to [`chars`](#chars). Characters are whole code points,
+matching the rune-aware behavior of `length`, `slice`, and `chars`. The block's
+return value is ignored, and `each_char` returns the receiver string:
+
+```vibe
+out = []
+"héllo".each_char { |c| out = out + [c] }
+out # ["h", "é", "l", "l", "o"]
+```
+
+A block is required. Vibescript has no `Enumerator`, so calling `each_char`
+without a block reports `string.each_char requires a block` rather than returning
+an enumerator.
+
+### `each_line`
+
+Yields each line to a block without first materializing an array, the streaming
+counterpart to [`lines`](#lines). Lines retain their trailing `\n` and follow the
+same separator rules as `lines`: only `\n` ends a line, a trailing newline does
+not produce a final empty line, and a Windows-style `\r\n` keeps the `\r`
+attached. The block's return value is ignored, and `each_line` returns the
+receiver string:
+
+```vibe
+out = []
+"a\nb\n".each_line { |l| out = out + [l] }
+out # ["a\n", "b\n"]
+```
+
+As with `each_char`, a block is required; calling `each_line` without a block
+reports `string.each_line requires a block`.
+
 ## Templating
 
 ### `template(context, strict: false)`

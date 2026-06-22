@@ -16,7 +16,7 @@ import (
 var stringMemberNames = []string{
 	"size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
-	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "template",
+	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "each_char", "each_line", "template",
 	"center", "ljust", "rjust",
 }
 
@@ -35,7 +35,7 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
-	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "template":
+	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "each_char", "each_line", "template":
 		return stringMemberTextOps(property)
 	case "center", "ljust", "rjust":
 		return stringMemberPadding(property)
@@ -44,28 +44,35 @@ func stringMemberBuiltin(property string) (Value, error) {
 	}
 }
 
-// stringLines splits text into lines using "\n" as the record separator,
-// retaining the trailing "\n" on each line as Ruby's String#lines does. A
-// trailing newline does not produce a final empty line, and an empty string
-// yields no lines. Carriage returns are preserved verbatim, so "a\r\nb" splits
-// into "a\r\n" and "b".
-func stringLines(text string) []string {
-	if text == "" {
-		return nil
-	}
-	var lines []string
-	for {
+// forEachLine invokes yield for each line in text using "\n" as the record
+// separator, retaining the trailing "\n" on each line as Ruby's String#lines
+// does. A trailing newline does not produce a final empty line, and an empty
+// string yields nothing. Carriage returns are preserved verbatim, so "a\r\nb"
+// yields "a\r\n" then "b". Lines are located one at a time via IndexByte so
+// callers can stream without materializing every line, and an error returned by
+// yield stops the scan immediately.
+func forEachLine(text string, yield func(line string) error) error {
+	for text != "" {
 		index := strings.IndexByte(text, '\n')
 		if index < 0 {
-			lines = append(lines, text)
-			break
+			return yield(text)
 		}
-		lines = append(lines, text[:index+1])
+		if err := yield(text[:index+1]); err != nil {
+			return err
+		}
 		text = text[index+1:]
-		if text == "" {
-			break
-		}
 	}
+	return nil
+}
+
+// stringLines splits text into lines following the same rules as forEachLine,
+// matching Ruby's String#lines.
+func stringLines(text string) []string {
+	var lines []string
+	_ = forEachLine(text, func(line string) error {
+		lines = append(lines, line)
+		return nil
+	})
 	return lines
 }
 
@@ -1128,6 +1135,43 @@ func stringMemberTextOps(property string) (Value, error) {
 				values[i] = NewString(line)
 			}
 			return NewArray(values), nil
+		}), nil
+	case "each_char":
+		return NewAutoBuiltin("string.each_char", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.each_char does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "string.each_char")
+			if err != nil {
+				return NewNil(), err
+			}
+			var blockArg [1]Value
+			for _, r := range receiver.String() {
+				blockArg[0] = NewString(string(r))
+				if _, err := runner.call(blockArg[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
+	case "each_line":
+		return NewAutoBuiltin("string.each_line", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.each_line does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "string.each_line")
+			if err != nil {
+				return NewNil(), err
+			}
+			var blockArg [1]Value
+			if err := forEachLine(receiver.String(), func(line string) error {
+				blockArg[0] = NewString(line)
+				_, err := runner.call(blockArg[:])
+				return err
+			}); err != nil {
+				return NewNil(), err
+			}
+			return receiver, nil
 		}), nil
 	case "template":
 		return NewAutoBuiltin("string.template", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
