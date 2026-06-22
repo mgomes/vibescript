@@ -1421,6 +1421,34 @@ func TestTimeHTTPDateAndRFC2822(t *testing.T) {
 			expr: `Time.new(2024, 1, 2, 3, 4, 5, "UTC").rfc2822`,
 			want: "Tue, 02 Jan 2024 03:04:05 -0000",
 		},
+		{
+			// Time.parse of an RFC 3339 input ending in "-00:00" carries the
+			// negative-zero unknown-zone marker. Go's parser drops the leading
+			// "-", so ParseTimeString re-anchors it to the canonical negative-zero
+			// zone. Captured from MRI Time.parse(...).rfc2822.
+			name: "rfc2822 parsed rfc3339 negative zero offset uses minus zero zone",
+			expr: `Time.parse("2024-01-02T03:04:05-00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
+		{
+			// An RFC 1123Z "-0000" input is likewise the unknown-zone marker.
+			name: "rfc2822 parsed rfc1123z negative zero offset uses minus zero zone",
+			expr: `Time.parse("Tue, 02 Jan 2024 03:04:05 -0000").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
+		{
+			// A parsed "+00:00" offset is a genuine zero offset, not the
+			// unknown-zone marker, so it renders "+0000".
+			name: "rfc2822 parsed positive zero offset uses plus zero zone",
+			expr: `Time.parse("2024-01-02T03:04:05+00:00").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 +0000",
+		},
+		{
+			// A trailing "Z" is genuine UTC and keeps the "-0000" marker.
+			name: "rfc2822 parsed zulu uses minus zero zone",
+			expr: `Time.parse("2024-01-02T03:04:05Z").rfc2822`,
+			want: "Tue, 02 Jan 2024 03:04:05 -0000",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

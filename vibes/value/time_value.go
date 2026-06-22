@@ -255,10 +255,7 @@ func ParseTimeString(input, layout string, hasLayout bool, loc *time.Location) (
 		if err != nil {
 			return time.Time{}, fmt.Errorf("Time.parse could not parse time: %w", err)
 		}
-		if loc != nil {
-			return parsed.In(loc), nil
-		}
-		return parsed, nil
+		return resolveParsedTime(parsed, input, loc), nil
 	}
 
 	for _, candidate := range DefaultTimeParseLayouts {
@@ -273,12 +270,47 @@ func ParseTimeString(input, layout string, hasLayout bool, loc *time.Location) (
 			parsed, err = time.ParseInLocation(candidate, input, parseLoc)
 		}
 		if err == nil {
-			if loc != nil {
-				return parsed.In(loc), nil
-			}
-			return parsed, nil
+			return resolveParsedTime(parsed, input, loc), nil
 		}
 	}
 
 	return time.Time{}, fmt.Errorf("Time.parse could not parse time")
+}
+
+// resolveParsedTime applies the caller's requested location override and, when
+// none is given, preserves a negative-zero zone read from the input. Go's
+// time.Parse normalizes a trailing "-00:00"/"-0000" offset to a nameless
+// zero-offset zone, dropping the leading "-" that Ruby reads as the RFC 2822
+// unknown-zone marker. When the input carries that token, the result is anchored
+// to the canonical FixedZone("-00:00", 0) ParseLocationString produces so
+// serializers like Time#rfc2822 emit "-0000" rather than "+0000". An explicit
+// `in:` location override takes precedence and suppresses this inference.
+func resolveParsedTime(parsed time.Time, input string, loc *time.Location) time.Time {
+	if loc != nil {
+		return parsed.In(loc)
+	}
+	if _, offset := parsed.Zone(); offset == 0 && hasNegativeZeroOffsetToken(input) {
+		return parsed.In(negativeZeroZone)
+	}
+	return parsed
+}
+
+// negativeZeroZone is the canonical zero-offset location whose name preserves
+// the negative sign, matching ParseLocationString("-00:00"). Its name lets the
+// RFC 2822 serializer recognize the unknown-zone marker.
+var negativeZeroZone = time.FixedZone("-00:00", 0)
+
+// hasNegativeZeroOffsetToken reports whether input ends with an RFC 3339
+// "-00:00" or RFC 1123Z "-0000" zone offset: a minus sign followed by all-zero
+// hour and minute digits. A trailing "Z" or "+00:00" is the genuine-UTC case
+// and is intentionally excluded.
+func hasNegativeZeroOffsetToken(input string) bool {
+	switch {
+	case strings.HasSuffix(input, "-00:00"):
+		return true
+	case strings.HasSuffix(input, "-0000"):
+		return true
+	default:
+		return false
+	}
 }

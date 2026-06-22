@@ -501,11 +501,12 @@ func callTimeRFC2822(method string, t time.Time, args []Value, kwargs map[string
 //   - The time.UTC singleton, which Time.utc/Time.gm, the getutc/getgm/utc/gmtime
 //     conversions, and the "UTC"/"GMT"/"Z" timezone specs all produce.
 //   - A fixed zero-offset zone whose name begins with "-", which is how the
-//     negative-zero offsets "-00:00"/"-0000" from Time.new or getlocal are
-//     parsed: ParseLocationString builds time.FixedZone("-00:00", 0), preserving
-//     the sign in the zone name even though the numeric offset is zero. Ruby
-//     reads that negative sign as the RFC 2822 unknown-zone marker and emits
-//     "-0000", whereas "+00:00" emits "+0000".
+//     negative-zero offsets "-00:00"/"-0000" from Time.new, getlocal, or
+//     Time.parse are carried: ParseLocationString builds time.FixedZone("-00:00",
+//     0), and ParseTimeString anchors parsed inputs ending in "-00:00"/"-0000" to
+//     that same zone, preserving the sign in the zone name even though the numeric
+//     offset is zero. Ruby reads that negative sign as the RFC 2822 unknown-zone
+//     marker and emits "-0000", whereas "+00:00" emits "+0000".
 //
 // Every other zero-offset zone is a local or explicit-positive-offset time that
 // Ruby renders as "+0000": the positive "+00:00" offset builds a time.FixedZone
