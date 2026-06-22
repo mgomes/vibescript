@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"math/bits"
 	"reflect"
 	"time"
@@ -392,8 +393,7 @@ func numericSecondsToTimeDuration(val Value, method string) (time.Duration, erro
 	case KindFloat:
 		// Ruby floors the scaled nanosecond offset, so negative fractional
 		// nanoseconds move further from zero rather than truncating toward it.
-		nanos := math.Floor(val.Float() * float64(nanosecondsPerSecond))
-		ns, err := floatToInt64Checked(nanos, method)
+		ns, err := floatSecondsToFlooredNanos(val.Float(), false, method)
 		if err != nil {
 			return 0, err
 		}
@@ -401,6 +401,28 @@ func numericSecondsToTimeDuration(val Value, method string) (time.Duration, erro
 	default:
 		return 0, fmt.Errorf("%s expects numeric seconds", method)
 	}
+}
+
+// floatSecondsToFlooredNanos converts a float count of seconds into a floored
+// nanosecond offset, optionally negating the seconds first. Scaling routes
+// through math/big so the multiplication by 10^9 stays exact: floating the
+// product before flooring (math.Floor(f * 1e9)) can round a value whose exact
+// representation sits just below an integer nanosecond up to that integer,
+// flipping the floor and diverging from Ruby (e.g. 0.123456789 floors to
+// 123456788 ns, not 123456789). It reports an error for non-finite inputs or
+// when the floored offset would overflow int64.
+func floatSecondsToFlooredNanos(seconds float64, negate bool, method string) (int64, error) {
+	rat := new(big.Rat).SetFloat64(seconds)
+	if rat == nil {
+		return 0, int64RangeError(method)
+	}
+	if negate {
+		rat.Neg(rat)
+	}
+	rat.Mul(rat, new(big.Rat).SetInt64(nanosecondsPerSecond))
+	floor := new(big.Int)
+	floor.Div(rat.Num(), rat.Denom()) // Div floors because Rat denominators are positive
+	return bigToInt64Checked(floor, method)
 }
 
 // negatedNumericSecondsToTimeDuration converts the negation of a numeric
@@ -421,8 +443,7 @@ func negatedNumericSecondsToTimeDuration(val Value, method string) (time.Duratio
 		// Negate first so the floor matches Ruby's t + (-x): subtracting a
 		// positive fractional offset floors the negated nanoseconds away from
 		// zero, mirroring numericSecondsToTimeDuration's addition path.
-		nanos := math.Floor(-val.Float() * float64(nanosecondsPerSecond))
-		ns, err := floatToInt64Checked(nanos, method)
+		ns, err := floatSecondsToFlooredNanos(val.Float(), true, method)
 		if err != nil {
 			return 0, err
 		}

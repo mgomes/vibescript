@@ -487,6 +487,38 @@ func TestTimeNumericSecondArithmetic(t *testing.T) {
 			want: NewTime(base.Add(time.Nanosecond)),
 		},
 		{
+			// 0.123456789's exact double sits just below 123456789 ns; flooring
+			// the float product (0.123456789 * 1e9) rounds up to 123456789, but
+			// flooring the exact value yields 123456788 as MRI does.
+			name: "add_fractional_seconds_floors_exact_value",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(0.123456789)},
+			want: NewTime(base.Add(123456788 * time.Nanosecond)),
+		},
+		{
+			// t + (-0.123456789): negating the exact value before flooring keeps
+			// the offset at -123456789 ns, matching MRI's Time + (-x).
+			name: "add_negative_fractional_seconds_floors_exact_value",
+			fn:   "add",
+			args: []Value{NewTime(base), NewFloat(-0.123456789)},
+			want: NewTime(base.Add(-123456789 * time.Nanosecond)),
+		},
+		{
+			// t - 0.123456789 == t + (-0.123456789); the negated offset floors to
+			// -123456789 ns.
+			name: "subtract_fractional_seconds_floors_exact_value",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(0.123456789)},
+			want: NewTime(base.Add(-123456789 * time.Nanosecond)),
+		},
+		{
+			// t - (-0.123456789) == t + 0.123456789, which floors to 123456788 ns.
+			name: "subtract_negative_fractional_seconds_floors_exact_value",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(-0.123456789)},
+			want: NewTime(base.Add(123456788 * time.Nanosecond)),
+		},
+		{
 			name: "difference_returns_float_seconds",
 			fn:   "subtract",
 			args: []Value{NewTime(base.Add(90 * time.Second)), NewTime(base)},
