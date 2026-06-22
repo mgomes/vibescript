@@ -401,6 +401,32 @@ func numericSecondsToTimeDuration(val Value, method string) (time.Duration, erro
 	}
 }
 
+// negatedNumericSecondsToTimeDuration converts the negation of a numeric
+// seconds value into a nanosecond time.Duration. Time subtraction is defined
+// as t + (-x), so the negation happens on the numeric value before it becomes
+// a duration. This keeps subtraction symmetric with addition and avoids ever
+// unary-negating a time.Duration, which would overflow for the most negative
+// representable nanosecond offset (time.Duration(math.MinInt64)).
+func negatedNumericSecondsToTimeDuration(val Value, method string) (time.Duration, error) {
+	switch val.Kind() {
+	case KindInt:
+		neg, ok := subInt64Checked(0, val.Int())
+		if !ok {
+			return 0, int64RangeError(method)
+		}
+		return durationSecondsToTimeDuration(neg, method)
+	case KindFloat:
+		nanos := -val.Float() * float64(nanosecondsPerSecond)
+		ns, err := floatToInt64Checked(nanos, method)
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(ns), nil
+	default:
+		return 0, fmt.Errorf("%s expects numeric seconds", method)
+	}
+}
+
 // timeDifferenceSeconds returns the difference left - right (both Time
 // values) as a floating-point number of seconds, matching Ruby's Time#-
 // behavior. It computes the whole-second and sub-second parts separately so
@@ -512,11 +538,11 @@ func subtractValues(left, right Value) (Value, error) {
 		}
 		return NewTime(left.Time().Add(-delta)), nil
 	case left.Kind() == KindTime && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		delta, err := numericSecondsToTimeDuration(right, "time subtraction")
+		delta, err := negatedNumericSecondsToTimeDuration(right, "time subtraction")
 		if err != nil {
 			return NewNil(), err
 		}
-		return NewTime(left.Time().Add(-delta)), nil
+		return NewTime(left.Time().Add(delta)), nil
 	case left.Kind() == KindTime && right.Kind() == KindTime:
 		diff, err := timeDifferenceSeconds(left.Time(), right.Time())
 		if err != nil {

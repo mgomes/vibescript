@@ -451,6 +451,12 @@ func TestTimeNumericSecondArithmetic(t *testing.T) {
 			want: NewTime(base.Add(-1500 * time.Millisecond)),
 		},
 		{
+			name: "subtract_negative_fractional_seconds_moves_forward",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(-1.5)},
+			want: NewTime(base.Add(1500 * time.Millisecond)),
+		},
+		{
 			name: "difference_returns_float_seconds",
 			fn:   "subtract",
 			args: []Value{NewTime(base.Add(90 * time.Second)), NewTime(base)},
@@ -528,6 +534,27 @@ func TestTimeNumericArithmeticErrors(t *testing.T) {
 			name: "subtract_integer_overflow",
 			fn:   "subtract",
 			args: []Value{NewTime(base), NewInt(math.MinInt64)},
+			want: "time subtraction result out of int64 range",
+		},
+		{
+			// Negating the most negative representable nanosecond offset must
+			// raise rather than overflow time.Duration(math.MinInt64) back to
+			// itself and move the instant ~292 years backwards.
+			name: "subtract_min_duration_float_overflow",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(-9223372036.854776)},
+			want: "time subtraction result out of int64 range",
+		},
+		{
+			name: "subtract_float_negative_infinity_overflow",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(math.Inf(-1))},
+			want: "time subtraction result out of int64 range",
+		},
+		{
+			name: "subtract_float_nan_overflow",
+			fn:   "subtract",
+			args: []Value{NewTime(base), NewFloat(math.NaN())},
 			want: "time subtraction result out of int64 range",
 		},
 		{
