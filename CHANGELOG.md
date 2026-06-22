@@ -55,6 +55,13 @@ All notable changes to this project will be documented in this file.
   now treated as a Ruby-style miss and ignored. Mixed argument lists still exclude
   the supported keys, so `{ a: 1 }.except(1)` returns `{ a: 1 }` while
   `{ a: 1 }.except(1, :a)` returns `{}`.
+- **Fixed: `Hash#slice` omits unsupported candidate keys like Ruby misses.**
+  `Hash#slice` no longer raises when given a candidate key whose type cannot be a
+  hash key (anything other than a symbol or string). Such a candidate can never
+  match an entry, so it is treated as a Ruby-style miss and dropped from the
+  result instead of failing. Mixed argument lists still keep the supported keys,
+  so `{ a: 1, b: 2 }.slice(:a, 1)` returns `{ a: 1 }` while
+  `{ a: 1 }.slice(1)` and `{ a: 1 }.slice` both return `{}`.
 - **Added: Ruby-style numeric rounding precision.** `Float#round`, `Float#floor`,
   and `Float#ceil` now accept an optional Integer precision: positive `ndigits`
   keep the value a float rounded to that many fractional digits, while zero or

@@ -889,6 +889,59 @@ func TestHashExceptIgnoresUnsupportedKeys(t *testing.T) {
 	}
 }
 
+func TestHashSliceIgnoresUnsupportedKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   map[string]Value
+	}{
+		{
+			name:   "no arguments returns empty hash",
+			source: `def run() ({ a: 1 }).slice() end`,
+			want:   map[string]Value{},
+		},
+		{
+			name:   "unsupported only returns empty hash",
+			source: `def run() { a: 1 }.slice(1) end`,
+			want:   map[string]Value{},
+		},
+		{
+			name:   "mixed unsupported and supported keeps supported",
+			source: `def run() { a: 1, b: 2 }.slice(:a, 1) end`,
+			want:   map[string]Value{"a": NewInt(1)},
+		},
+		{
+			name:   "multiple unsupported keys are all ignored",
+			source: `def run() { a: 1, b: 2 }.slice([3], { c: 4 }) end`,
+			want:   map[string]Value{},
+		},
+		{
+			name:   "string and symbol keys selected alongside unsupported",
+			source: `def run() { a: 1, b: 2, c: 3 }.slice("a", 5, :c) end`,
+			want:   map[string]Value{"a": NewInt(1), "c": NewInt(3)},
+		},
+		{
+			name:   "absent supported key is omitted",
+			source: `def run() { a: 1 }.slice(:a, :missing) end`,
+			want:   map[string]Value{"a": NewInt(1)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindHash {
+				t.Fatalf("slice expected hash, got %v", result.Kind())
+			}
+			compareHash(t, result.Hash(), tt.want)
+		})
+	}
+}
+
 func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

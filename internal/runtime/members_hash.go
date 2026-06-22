@@ -432,9 +432,13 @@ func hashMemberTransforms(property string) (Value, error) {
 			entries := receiver.Hash()
 			out := make(map[string]Value, len(args))
 			for _, arg := range args {
+				// Vibescript hash keys are only symbols or strings, so an
+				// unsupported argument can never match an entry. Ruby's
+				// Hash#slice omits candidate keys that are absent, so we
+				// treat those arguments as misses rather than raising.
 				key, err := valueToHashKey(arg)
 				if err != nil {
-					return NewNil(), fmt.Errorf("hash.slice keys must be symbol or string")
+					continue
 				}
 				if value, ok := entries[key]; ok {
 					out[key] = value
