@@ -1455,7 +1455,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "transpose":
 		return NewAutoBuiltin("array.transpose", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
+			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("array.transpose does not take arguments")
 			}
 			rows := receiver.Array()

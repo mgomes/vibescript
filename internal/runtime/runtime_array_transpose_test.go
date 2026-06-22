@@ -102,6 +102,10 @@ func TestArrayTransposeRejectsMisuse(t *testing.T) {
       [[1]].transpose(2)
     end
 
+    def with_keyword_argument()
+      [[1]].transpose(foo: 1)
+    end
+
     def ragged()
       [[1, 2], [3]].transpose
     end
@@ -123,6 +127,11 @@ func TestArrayTransposeRejectsMisuse(t *testing.T) {
 		{
 			name: "arguments are rejected",
 			fn:   "with_argument",
+			want: "array.transpose does not take arguments",
+		},
+		{
+			name: "keyword arguments are rejected",
+			fn:   "with_keyword_argument",
 			want: "array.transpose does not take arguments",
 		},
 		{
