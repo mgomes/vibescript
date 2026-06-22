@@ -57,9 +57,12 @@ func builtinMoneyCents(exec *Execution, receiver Value, args []Value, kwargs map
 	centsVal := args[0]
 	currencyVal := args[1]
 
+	if !isNumericValue(centsVal) {
+		return NewNil(), fmt.Errorf("money_cents expects integer cents")
+	}
 	cents, err := valueToInt64(centsVal)
 	if err != nil {
-		return NewNil(), fmt.Errorf("money_cents expects integer cents")
+		return NewNil(), fmt.Errorf("money_cents expects integer cents: %w", err)
 	}
 	if currencyVal.Kind() != KindString {
 		return NewNil(), fmt.Errorf("money_cents expects currency string")

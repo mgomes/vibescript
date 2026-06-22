@@ -270,6 +270,8 @@ func NewRange(r Range) Value { return value.NewRange(r) }
 
 func valueToInt64(val Value) (int64, error) { return value.ValueToInt64(val) }
 
+func formatFloat(f float64) string { return value.FormatFloat(f) }
+
 func parseMoneyLiteral(input string) (Money, error) { return value.ParseMoneyLiteral(input) }
 
 func newMoneyFromCents(cents int64, currency string) (Money, error) {

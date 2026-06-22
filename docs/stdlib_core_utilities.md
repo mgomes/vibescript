@@ -380,8 +380,9 @@ aliases, so `1.second` reads naturally.
 - `divmod(n) -> [quotient, modulo]` – the floored quotient and the modulo whose
   sign follows the divisor. With integer arguments both elements are integers;
   a float argument makes the modulo a float.
-- `fdiv(n) -> float` – floating division. Unlike Ruby, a zero divisor errors
-  rather than yielding infinity, matching the `/` operator.
+- `fdiv(n) -> float` – floating division. As in Ruby, a zero divisor follows
+  IEEE 754: a finite nonzero receiver yields `Infinity`/`-Infinity` and a zero
+  receiver yields `NaN`, matching the `/` operator (integer `/` still errors).
 - `remainder(n) -> int|float` – remainder whose sign follows the receiver
   (truncated division), which differs from `%` for operands of opposite sign;
   a zero divisor errors.
@@ -413,16 +414,39 @@ Ruby's arbitrary-precision integers.
 - `negative? -> bool` – true when less than `0.0`.
 - `nonzero? -> float?` – the receiver when nonzero, otherwise `nil`, matching
   Ruby (the result is truthy exactly when the number is nonzero).
+- `nan? -> bool` – true when the value is the IEEE `NaN` (for example
+  `(0.0 / 0.0).nan?`).
+- `infinite? -> int?` – `1` for `Infinity`, `-1` for `-Infinity`, and `nil` for
+  every finite value and `NaN`, matching Ruby. The result is truthy exactly when
+  the value is infinite.
+- `finite? -> bool` – true when the value is neither infinite nor `NaN`.
 - `div(n) -> int` – floored division returning an integer; a zero divisor
   errors, as does a quotient outside the 64-bit range.
 - `divmod(n) -> [int, float]` – the floored quotient (an integer) and the
-  float modulo whose sign follows the divisor.
-- `fdiv(n) -> float` – floating division; a zero divisor errors rather than
-  yielding infinity, matching the `/` operator.
+  float modulo whose sign follows the divisor. A zero divisor errors.
+- `fdiv(n) -> float` – floating division. As in Ruby, a zero divisor follows
+  IEEE 754: a finite nonzero receiver yields `Infinity`/`-Infinity` and a zero
+  receiver yields `NaN`, matching the `/` operator.
 - `remainder(n) -> float` – remainder whose sign follows the receiver
   (truncated division); a zero divisor errors.
 - `modulo(n) -> float` – the `%` operator as a method: the result's sign
   follows the divisor (floored division); a zero divisor errors.
+
+Float division by zero with the `/` operator follows IEEE 754 like Ruby:
+`1.0 / 0` is `Infinity`, `-1.0 / 0` is `-Infinity`, and `0.0 / 0.0` is `NaN`.
+Integer division by zero (`1 / 0`) still raises. Special values print as
+`Infinity`, `-Infinity`, and `NaN`, and `div`, `divmod`, `modulo`, and
+`remainder` keep raising on a zero divisor (they return floored or
+integer-valued results, for which Ruby also raises). `JSON.stringify` rejects
+non-finite floats because JSON has no representation for them.
+
+Comparisons follow IEEE 754 and Ruby. Infinities order as the extreme values
+(`Infinity > 1000000.0`). Any comparison involving `NaN` is unordered: `<`,
+`<=`, `>`, and `>=` all return `false`, equality is `false` (so `NaN == NaN` is
+`false`), and the spaceship operator `<=>` returns `nil`. Coercing a non-finite
+float to an integer raises rather than silently producing a garbage value, so
+a `NaN` or `Infinity` endpoint in a range, a non-finite `money_cents` amount, or
+non-finite duration arithmetic reports a clear error.
 
 `round`, `floor`, and `ceil` accept an optional Integer precision that defaults
 to `0`. As in Ruby, the precision must fit a 32-bit signed integer, so a

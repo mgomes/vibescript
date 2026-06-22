@@ -30,7 +30,15 @@ func valueToInt(val Value) (int, error) {
 	case KindInt:
 		return int(val.Int()), nil
 	case KindFloat:
-		return int(val.Float()), nil
+		f := val.Float()
+		// Reject non-finite and out-of-range floats so the new Infinity/NaN
+		// values cannot reach int() (which is implementation-specific for them)
+		// and slip into index/count helpers. float64(math.MaxInt) rounds up to
+		// 2^63, so reject `>=` it; float64(math.MinInt) is exactly -2^63.
+		if math.IsNaN(f) || math.IsInf(f, 0) || f >= float64(math.MaxInt) || f < float64(math.MinInt) {
+			return 0, fmt.Errorf("index must be integer")
+		}
+		return int(f), nil
 	default:
 		return 0, fmt.Errorf("index must be integer")
 	}
@@ -151,10 +159,17 @@ func arraySortCompareValues(left, right Value) (int, error) {
 			return 0, nil
 		}
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
+		lf, rf := left.Float(), right.Float()
+		// NaN is unordered: returning 0 (equal) here would let sort/min/max
+		// treat NaN as equal to every element. Report it as incomparable so
+		// callers fail consistently with the <=> operator (which yields nil).
+		if math.IsNaN(lf) || math.IsNaN(rf) {
+			return 0, fmt.Errorf("cannot compare NaN")
+		}
 		switch {
-		case left.Float() < right.Float():
+		case lf < rf:
 			return -1, nil
-		case left.Float() > right.Float():
+		case lf > rf:
 			return 1, nil
 		default:
 			return 0, nil
@@ -396,7 +411,7 @@ func addValues(left, right Value) (Value, error) {
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		secs, err := valueToInt64(right)
 		if err != nil {
-			return NewNil(), fmt.Errorf("unsupported addition operands")
+			return NewNil(), err
 		}
 		sum, ok := addInt64Checked(left.Duration().Seconds(), secs)
 		if !ok {
@@ -406,7 +421,7 @@ func addValues(left, right Value) (Value, error) {
 	case right.Kind() == KindDuration && (left.Kind() == KindInt || left.Kind() == KindFloat):
 		secs, err := valueToInt64(left)
 		if err != nil {
-			return NewNil(), fmt.Errorf("unsupported addition operands")
+			return NewNil(), err
 		}
 		sum, ok := addInt64Checked(right.Duration().Seconds(), secs)
 		if !ok {
@@ -461,7 +476,7 @@ func subtractValues(left, right Value) (Value, error) {
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		secs, err := valueToInt64(right)
 		if err != nil {
-			return NewNil(), fmt.Errorf("unsupported subtraction operands")
+			return NewNil(), err
 		}
 		diff, ok := subInt64Checked(left.Duration().Seconds(), secs)
 		if !ok {
@@ -496,7 +511,7 @@ func multiplyValues(left, right Value) (Value, error) {
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		secs, err := valueToInt64(right)
 		if err != nil {
-			return NewNil(), fmt.Errorf("unsupported multiplication operands")
+			return NewNil(), err
 		}
 		product, ok := mulInt64Checked(left.Duration().Seconds(), secs)
 		if !ok {
@@ -506,7 +521,7 @@ func multiplyValues(left, right Value) (Value, error) {
 	case right.Kind() == KindDuration && (left.Kind() == KindInt || left.Kind() == KindFloat):
 		secs, err := valueToInt64(left)
 		if err != nil {
-			return NewNil(), fmt.Errorf("unsupported multiplication operands")
+			return NewNil(), err
 		}
 		product, ok := mulInt64Checked(right.Duration().Seconds(), secs)
 		if !ok {
@@ -589,9 +604,10 @@ func divideValues(left, right Value) (Value, error) {
 		}
 		return NewInt(quotient), nil
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
-		if right.Float() == 0 {
-			return NewNil(), errors.New("division by zero")
-		}
+		// Float division by zero follows IEEE 754 and Ruby: a finite nonzero
+		// numerator yields +/-Infinity and a zero numerator yields NaN, rather
+		// than raising. Integer division by zero is handled by the int/int case
+		// above and still errors, matching Ruby's ZeroDivisionError.
 		return NewFloat(left.Float() / right.Float()), nil
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
 		if right.Duration().Seconds() == 0 {
@@ -601,7 +617,7 @@ func divideValues(left, right Value) (Value, error) {
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		secs, err := valueToInt64(right)
 		if err != nil {
-			return NewNil(), fmt.Errorf("unsupported division operands")
+			return NewNil(), err
 		}
 		if secs == 0 {
 			return NewNil(), errors.New("division by zero")
@@ -656,75 +672,87 @@ func floorModInt(left, right int64) int64 {
 }
 
 func compareValues(left, right Value, cmp func(int) bool) (Value, error) {
-	order, err := compareValueOrder(left, right)
+	order, ordered, err := compareValueOrder(left, right)
 	if err != nil {
 		return NewNil(), err
+	}
+	// Unordered operands (a NaN on either side) make every ordered comparison
+	// false, matching IEEE 754 and Ruby's `<`, `<=`, `>`, `>=`.
+	if !ordered {
+		return NewBool(false), nil
 	}
 	return NewBool(cmp(order)), nil
 }
 
-func compareValueOrder(left, right Value) (int, error) {
+// compareValueOrder reports the relative order of two values as -1, 0, or 1.
+// The ordered result is false when the operands are numeric but unordered (a
+// NaN on either side); callers translate that into false comparisons and a nil
+// spaceship result, matching IEEE 754 and Ruby. A non-nil error means the
+// operand kinds are not comparable at all.
+func compareValueOrder(left, right Value) (order int, ordered bool, err error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
 		switch {
 		case left.Int() < right.Int():
-			return -1, nil
+			return -1, true, nil
 		case left.Int() > right.Int():
-			return 1, nil
+			return 1, true, nil
 		default:
-			return 0, nil
+			return 0, true, nil
 		}
 	case (left.Kind() == KindInt || left.Kind() == KindFloat) && (right.Kind() == KindInt || right.Kind() == KindFloat):
 		lf, rf := left.Float(), right.Float()
 		switch {
+		case math.IsNaN(lf) || math.IsNaN(rf):
+			return 0, false, nil
 		case lf < rf:
-			return -1, nil
+			return -1, true, nil
 		case lf > rf:
-			return 1, nil
+			return 1, true, nil
 		default:
-			return 0, nil
+			return 0, true, nil
 		}
 	case left.Kind() == KindString && right.Kind() == KindString:
 		switch {
 		case left.String() < right.String():
-			return -1, nil
+			return -1, true, nil
 		case left.String() > right.String():
-			return 1, nil
+			return 1, true, nil
 		default:
-			return 0, nil
+			return 0, true, nil
 		}
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		if left.Money().Currency() != right.Money().Currency() {
-			return 0, fmt.Errorf("money currency mismatch for comparison")
+			return 0, false, fmt.Errorf("money currency mismatch for comparison")
 		}
 		switch {
 		case left.Money().Cents() < right.Money().Cents():
-			return -1, nil
+			return -1, true, nil
 		case left.Money().Cents() > right.Money().Cents():
-			return 1, nil
+			return 1, true, nil
 		default:
-			return 0, nil
+			return 0, true, nil
 		}
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
 		diff := left.Duration().Seconds() - right.Duration().Seconds()
 		switch {
 		case diff < 0:
-			return -1, nil
+			return -1, true, nil
 		case diff > 0:
-			return 1, nil
+			return 1, true, nil
 		default:
-			return 0, nil
+			return 0, true, nil
 		}
 	case left.Kind() == KindTime && right.Kind() == KindTime:
 		switch {
 		case left.Time().Before(right.Time()):
-			return -1, nil
+			return -1, true, nil
 		case left.Time().After(right.Time()):
-			return 1, nil
+			return 1, true, nil
 		default:
-			return 0, nil
+			return 0, true, nil
 		}
 	default:
-		return 0, fmt.Errorf("unsupported comparison operands")
+		return 0, false, fmt.Errorf("unsupported comparison operands")
 	}
 }
