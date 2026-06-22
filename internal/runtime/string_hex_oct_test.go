@@ -108,6 +108,43 @@ func TestStringHexOctOverflow(t *testing.T) {
 			script: `def run() "0x10000000000000000".oct end`,
 			want:   "string.oct integer out of range",
 		},
+		{
+			// 17 hex digits exceed uint64; the multiplication wraps past
+			// uint64 yet stays above the prior magnitude, so the naive
+			// wraparound check missed it and returned wrapped garbage.
+			name:   "hex seventeen digits wraps uint64",
+			script: `def run() "36d87a1cbe50f2943".hex end`,
+			want:   "string.hex integer out of range",
+		},
+		{
+			name:   "hex seventeen digits negative wraps uint64",
+			script: `def run() "-36d87a1cbe50f2943".hex end`,
+			want:   "string.hex integer out of range",
+		},
+		{
+			// Long 0d-prefixed decimal whose magnitude overflows uint64
+			// mid-multiplication; the wraparound check failed to catch it.
+			name:   "oct long decimal prefix wraps uint64",
+			script: `def run() "0d43276105896905232345".oct end`,
+			want:   "string.oct integer out of range",
+		},
+		{
+			name:   "oct long decimal prefix negative wraps uint64",
+			script: `def run() "-0d43276105896905232345".oct end`,
+			want:   "string.oct integer out of range",
+		},
+		{
+			// Exactly 2^64 (all uint64 bits then one more) must overflow.
+			name:   "hex two to the sixty-four",
+			script: `def run() "10000000000000000".hex end`,
+			want:   "string.hex integer out of range",
+		},
+		{
+			// Max uint64 still exceeds int64 max, so it must overflow too.
+			name:   "hex max uint64 exceeds int64",
+			script: `def run() "ffffffffffffffff".hex end`,
+			want:   "string.hex integer out of range",
+		},
 	}
 
 	for _, tc := range cases {

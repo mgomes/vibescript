@@ -801,11 +801,14 @@ func parseRubyInum(text string, defaultBase int, detectBase bool) (int64, error)
 		if !ok {
 			break
 		}
-		next := magnitude*uint64(base) + uint64(d)
-		if next < magnitude {
+		// Detect overflow before accumulating: magnitude*base+d must fit in
+		// uint64. The wraparound idiom (next < magnitude) is unsound for
+		// multiplication because magnitude*base can wrap to a value still
+		// >= magnitude, so check each factor exactly instead.
+		if magnitude > (math.MaxUint64-uint64(d))/uint64(base) {
 			return 0, errInumOverflow
 		}
-		magnitude = next
+		magnitude = magnitude*uint64(base) + uint64(d)
 		parsedDigit = true
 		lastWasUnderscore = false
 		i++
