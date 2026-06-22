@@ -183,6 +183,15 @@ func TestRangeHelperArgumentRejection(t *testing.T) {
 		{"size with arg", "(1..3).size(1)", "does not take arguments"},
 		{"exclude_end with arg", "(1..3).exclude_end?(1)", "does not take arguments"},
 		{"to_a with arg", "(1..3).to_a(1)", "does not take arguments"},
+		// Zero-arg helpers must reject stray keyword arguments before doing any
+		// work, matching the predicate and first/last helpers. Without this guard
+		// (1..N).to_a(limit: 10) would materialize the whole range.
+		{"size with kwarg", "(1..3).size(limit: 10)", "does not take keyword arguments"},
+		{"exclude_end with kwarg", "(1..3).exclude_end?(limit: 10)", "does not take keyword arguments"},
+		{"to_a with kwarg", "(1..1000000).to_a(limit: 10)", "does not take keyword arguments"},
+		{"cover with kwarg", "(1..3).cover?(2, limit: 10)", "does not take keyword arguments"},
+		{"first with kwarg", "(1..5).first(2, limit: 10)", "does not take keyword arguments"},
+		{"last with kwarg", "(1..5).last(2, limit: 10)", "does not take keyword arguments"},
 		{"first negative", "(1..5).first(-1)", "non-negative"},
 		{"last negative", "(1..5).last(-1)", "non-negative"},
 		{"first non-int", "(1..5).first(\"2\")", "integer count"},

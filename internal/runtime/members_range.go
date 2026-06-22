@@ -112,6 +112,9 @@ func rangeMemberSize() Value {
 		if len(args) > 0 {
 			return NewNil(), fmt.Errorf("range.size does not take arguments")
 		}
+		if len(kwargs) > 0 {
+			return NewNil(), fmt.Errorf("range.size does not take keyword arguments")
+		}
 		length, overflow := rangeLength(receiver.Range())
 		if overflow {
 			return NewNil(), fmt.Errorf("range.size overflow")
@@ -127,6 +130,9 @@ func rangeMemberExcludeEnd() Value {
 		if len(args) > 0 {
 			return NewNil(), fmt.Errorf("range.exclude_end? does not take arguments")
 		}
+		if len(kwargs) > 0 {
+			return NewNil(), fmt.Errorf("range.exclude_end? does not take keyword arguments")
+		}
 		return NewBool(receiver.Range().Exclusive), nil
 	})
 }
@@ -137,6 +143,9 @@ func rangeMemberToArray() Value {
 	return NewAutoBuiltin("range.to_a", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if len(args) > 0 {
 			return NewNil(), fmt.Errorf("range.to_a does not take arguments")
+		}
+		if len(kwargs) > 0 {
+			return NewNil(), fmt.Errorf("range.to_a does not take keyword arguments")
 		}
 		rng := receiver.Range()
 		length, overflow := rangeLength(rng)
