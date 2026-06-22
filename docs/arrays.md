@@ -25,6 +25,7 @@ Common enumerable helpers include:
 - `first(n)` / `last(n)` to slice without mutating.
 - `take(n)` / `drop(n)` to keep or skip a prefix; both reject negative counts.
 - `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.
+- `transpose` to swap the rows and columns of a matrix of equal-length array rows; it raises when a row is not an array or the rows differ in length.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
@@ -51,6 +52,7 @@ end
 [1, 2, 3].take(2)           # [1, 2]
 [1, 2, 3].drop(1)           # [2, 3]
 [1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
+[[1, 2], [3, 4]].transpose  # [[1, 3], [2, 4]]
 ```
 
 ## Search and predicates
