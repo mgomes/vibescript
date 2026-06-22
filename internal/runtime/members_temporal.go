@@ -487,28 +487,25 @@ func callTimeRFC2822(method string, t time.Time, args []Value, kwargs map[string
 		return NewNil(), fmt.Errorf("%s does not accept arguments", method)
 	}
 	zone := t.Format("-0700")
-	if isUTCZone(t) {
+	if isUTCMode(t) {
 		zone = "-0000"
 	}
 	return NewString(t.Format(rfc2822Layout) + " " + zone), nil
 }
 
-// isUTCZone reports whether t is anchored to a canonical UTC zone, which is the
-// condition under which Ruby's Time#rfc2822 emits the "-0000" unknown-zone
-// marker instead of a signed numeric offset. A zone qualifies when its offset
-// is zero and it is either the time.UTC singleton or a zone explicitly named
-// "UTC". Explicit numeric zero offsets (named "-00:00"/"+00:00", as produced by
-// Time.new or getlocal) and named zones such as "GMT" do not qualify: Ruby
-// renders those as "+0000", matching its rule that "-0000" is reserved for
-// timestamps created in UTC mode rather than any zero-offset zone. Inspecting
-// the zone name rather than only the location pointer keeps the decision robust
-// against UTC zones that are not the time.UTC singleton.
-func isUTCZone(t time.Time) bool {
-	if t.Location() == time.UTC {
-		return true
-	}
-	name, offset := t.Zone()
-	return offset == 0 && name == "UTC"
+// isUTCMode reports whether t was created in Ruby's "UTC mode" -- the condition
+// under which Time#rfc2822 emits the "-0000" unknown-zone marker instead of a
+// signed numeric offset. In Vibescript UTC mode is represented exactly by the
+// time.UTC singleton, which Time.utc/Time.gm, the getutc/getgm/utc/gmtime
+// conversions, and the "UTC"/"GMT"/"Z" timezone specs all produce. Every other
+// zero-offset zone is a local or explicit-offset time that Ruby renders as
+// "+0000": explicit numeric offsets ("+00:00"/"-00:00" from Time.new or
+// getlocal) build a time.FixedZone, and Time.local/Time.now/Time.at carry
+// time.Local even when the host's local zone happens to be named "UTC" (as in
+// UTC containers). Keying solely off the singleton therefore preserves the
+// receiver's offset semantics rather than reclassifying local UTC times.
+func isUTCMode(t time.Time) bool {
+	return t.Location() == time.UTC
 }
 
 // callTimeGetlocal implements Ruby's non-mutating Time#getlocal and

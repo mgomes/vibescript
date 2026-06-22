@@ -1434,6 +1434,70 @@ func TestTimeHTTPDateAndRFC2822(t *testing.T) {
 	}
 }
 
+// TestIsUTCModeOnlyMatchesUTCSingleton guards the RFC 2822 zone classifier
+// against UTC-environment hosts. On such hosts time.Local reports the zone name
+// "UTC" with a zero offset, yet Time.local/Time.now/Time.at receivers are still
+// local times that Ruby renders as "+0000". Only the canonical time.UTC
+// singleton (produced by Time.utc/getutc and the "UTC"/"GMT"/"Z" specs) is
+// genuine UTC mode and earns the "-0000" marker.
+func TestIsUTCModeOnlyMatchesUTCSingleton(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	cases := []struct {
+		name string
+		loc  *time.Location
+		want bool
+	}{
+		{name: "utc singleton", loc: time.UTC, want: true},
+		// A distinct location that mimics a UTC container's time.Local: named
+		// "UTC" with a zero offset but not the singleton.
+		{name: "zero offset zone named UTC", loc: time.FixedZone("UTC", 0), want: false},
+		{name: "explicit positive zero offset", loc: time.FixedZone("+00:00", 0), want: false},
+		{name: "named gmt zone", loc: time.FixedZone("GMT", 0), want: false},
+		{name: "positive offset", loc: time.FixedZone("+05:30", 5*3600+30*60), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isUTCMode(base.In(tc.loc)); got != tc.want {
+				t.Fatalf("isUTCMode(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTimeRFC2822LocalUTCHostUsesPlusZero exercises the full Time.local/Time.now
+// path on a simulated UTC-environment host, where the host's local zone is named
+// "UTC" with a zero offset. Ruby treats these as local times and emits "+0000",
+// not the "-0000" UTC-mode marker. Overriding time.Local makes this test
+// non-parallel; it restores the original value before returning.
+func TestTimeRFC2822LocalUTCHostUsesPlusZero(t *testing.T) {
+	original := time.Local
+	t.Cleanup(func() { time.Local = original })
+	// Simulate a UTC container: time.Local is a zero-offset zone named "UTC"
+	// that is not the time.UTC singleton.
+	time.Local = time.FixedZone("UTC", 0)
+
+	cases := []struct {
+		name string
+		expr string
+	}{
+		{name: "Time.local", expr: `Time.local(2024, 1, 2, 3, 4, 5).rfc2822`},
+		{name: "Time.mktime", expr: `Time.mktime(2024, 1, 2, 3, 4, 5).rfc2822`},
+		{name: "getlocal default", expr: `Time.utc(2024, 1, 2, 3, 4, 5).getlocal.rfc2822`},
+	}
+	const want = "Tue, 02 Jan 2024 03:04:05 +0000"
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString || result.String() != want {
+				t.Fatalf("result mismatch: got %v want %q", result, want)
+			}
+		})
+	}
+}
+
 // TestTimeHTTPDateAndRFC2822RejectArguments documents that the argument-free
 // mail/HTTP date helpers reject any positional or keyword argument rather than
 // silently ignoring it.
