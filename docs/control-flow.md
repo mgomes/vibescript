@@ -71,6 +71,14 @@ Non-range candidates still use value equality.
 
 Targetless `case` evaluates each `when` expression as a predicate in order.
 
+## Range methods
+
+Ranges also answer query and conversion helpers such as `cover?`, `include?`,
+`first`, `last`, `size`, `exclude_end?`, and `to_a`. Because Vibescript iterates
+descending ranges, `size` and `to_a` report that descending sequence rather than
+the empty result Ruby produces. See the
+[Ranges reference](stdlib_core_utilities.md#ranges).
+
 ```vibe
 def label(score)
   case

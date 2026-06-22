@@ -107,6 +107,30 @@ func (exec *Execution) checkProjectedStringBytes(payloadBytes int) error {
 	return nil
 }
 
+// checkProjectedIntArrayBytes rejects allocations that would exceed the memory
+// quota before the array is built. Builtins that preallocate an array of int
+// values sized by a user-controlled count (such as the range materialization
+// helpers) use it to fail fast instead of reserving a huge backing array that
+// the per-element check would only catch after the allocation already happened.
+// count is the number of int values the array would hold; each int value
+// contributes only the base Value size.
+func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	est.reset()
+
+	used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
+	used = saturatingAdd(used, saturatingMul(count, estimatedValueBytes))
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	est := exec.memoryEstimatorForCheck()
 

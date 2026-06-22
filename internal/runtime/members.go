@@ -45,6 +45,8 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 		return exec.intMember(obj, property, pos)
 	case KindFloat:
 		return exec.floatMember(obj, property, pos)
+	case KindRange:
+		return exec.rangeMember(obj, property, pos)
 	case KindFunction:
 		return exec.functionMember(obj, property, pos)
 	default:
@@ -197,6 +199,7 @@ func MemberCompletionNames() map[string][]string {
 		"money":    slices.Clone(moneyMemberNames),
 		"duration": slices.Clone(durationMemberNames),
 		"time":     slices.Clone(timeMemberNames),
+		"range":    slices.Clone(rangeMemberNames),
 		"function": slices.Clone(functionMemberNames),
 	}
 }

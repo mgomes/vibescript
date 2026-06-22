@@ -266,6 +266,14 @@ func TestMemberSuggestionCandidatesResolve(t *testing.T) {
 				return err
 			},
 		},
+		{
+			kind:  "range",
+			names: rangeMemberNames,
+			resolve: func(name string) error {
+				_, err := (&Execution{}).rangeMember(NewRange(Range{Start: 1, End: 3}), name, Position{})
+				return err
+			},
+		},
 	}
 
 	for _, table := range tables {
