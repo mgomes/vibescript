@@ -72,6 +72,57 @@ end`,
 	}
 }
 
+// TestParserHashRocketSingleError verifies that rejecting the removed hash
+// rocket syntax recovers to the next comma or closing brace so a single
+// actionable hash-pair error is reported instead of cascading diagnostics
+// (the parser previously left the cursor on the key and produced several
+// unrelated errors for mixed literals such as `{:name => "Ada", good: 1}`).
+func TestParserHashRocketSingleError(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		`{:name => "Ada"}`,
+		`{:name => "Ada", good: 1}`,
+		`{good: 1, :name => "Ada"}`,
+		`{1 => 2}`,
+		`{name: 1, 2 => 3}`,
+		`{name: [1, 2] => 3}`,
+		`{a => {b => c}}`,
+	}
+
+	for _, source := range sources {
+		_, errs := parseSource(t, source)
+		if len(errs) != 1 {
+			t.Fatalf("parseSource(%q) errors = %v, want exactly one", source, errs)
+		}
+		if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
+			t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+		}
+	}
+}
+
+// TestParserHashMissingValueSingleError verifies that a hash entry with a
+// label key but no value recovers cleanly and continues parsing the remaining
+// pairs, yielding only the missing-value diagnostic.
+func TestParserHashMissingValueSingleError(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		`{name:}`,
+		`{name:, other: 1}`,
+	}
+
+	for _, source := range sources {
+		_, errs := parseSource(t, source)
+		if len(errs) != 1 {
+			t.Fatalf("parseSource(%q) errors = %v, want exactly one", source, errs)
+		}
+		if got, want := errs[0].Error(), "missing value for hash key name"; !strings.Contains(got, want) {
+			t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+		}
+	}
+}
+
 func TestParserWordBooleanHashKeys(t *testing.T) {
 	t.Parallel()
 

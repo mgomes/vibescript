@@ -1079,6 +1079,7 @@ func (p *parser) parseHashLiteral() ast.Expression {
 func (p *parser) parseHashPair() ast.HashPair {
 	if p.peekToken.Type != ast.TokenColon {
 		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
+		p.recoverHashPair()
 		return ast.HashPair{}
 	}
 
@@ -1090,20 +1091,52 @@ func (p *parser) parseHashPair() ast.HashPair {
 		key = &ast.StringLiteral{Value: p.curToken.Literal, Position: p.curToken.Pos}
 	default:
 		p.addParseError(p.curToken.Pos, invalidHashPairMessage)
+		p.recoverHashPair()
 		return ast.HashPair{}
 	}
 	p.nextToken()
-	p.nextToken()
-	if p.curToken.Type == ast.TokenComma || p.curToken.Type == ast.TokenRBrace {
-		p.addParseError(p.curToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
+	if p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRBrace || p.peekToken.Type == ast.TokenEOF {
+		p.addParseError(p.peekToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
 		return ast.HashPair{}
 	}
 
+	p.nextToken()
 	value := p.parseExpression(lowestPrec)
 	if value == nil {
+		p.recoverHashPair()
 		return ast.HashPair{}
 	}
-	return ast.HashPair{Key: key, Value: value}
+	switch p.peekToken.Type {
+	case ast.TokenComma, ast.TokenRBrace, ast.TokenEOF:
+		return ast.HashPair{Key: key, Value: value}
+	default:
+		p.addParseError(p.peekToken.Pos, invalidHashPairMessage)
+		p.recoverHashPair()
+		return ast.HashPair{}
+	}
+}
+
+// recoverHashPair advances the parser past a malformed hash entry so the
+// surrounding hash literal can resume cleanly. It positions peekToken at the
+// next top-level "," or "}" (or EOF), skipping over any balanced parentheses,
+// brackets, or braces so that removed syntax such as a hash rocket yields a
+// single actionable error instead of cascading diagnostics.
+func (p *parser) recoverHashPair() {
+	nesting := 0
+	for p.peekToken.Type != ast.TokenEOF {
+		if nesting == 0 && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRBrace) {
+			return
+		}
+		p.nextToken()
+		switch p.curToken.Type {
+		case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
+			nesting++
+		case ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
+			if nesting > 0 {
+				nesting--
+			}
+		}
+	}
 }
 
 const invalidHashPairMessage = `invalid hash pair: expected key like name: or "name":`
