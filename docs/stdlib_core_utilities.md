@@ -620,9 +620,38 @@ Enum members obtained via `EnumName::member` expose three properties (see
 
 ## Ranges
 
-Ranges (`1..5`, `1...5`) have no methods; they are consumed by `for ... in`
-loops. `case`/`when` uses range candidates as numeric membership tests. See
-[control-flow.md](control-flow.md).
+Ranges (`1..5`, `1...5`) are consumed by `for ... in` loops, and `case`/`when`
+uses range candidates as numeric membership tests (see
+[control-flow.md](control-flow.md)). They also expose query and conversion
+helpers.
+
+Vibescript iterates descending ranges such as `5..1` (yielding `5, 4, 3, 2, 1`),
+so `size`, `to_a`, `first(n)`, and `last(n)` report that descending sequence
+rather than the empty result Ruby produces. The other helpers match Ruby's
+`Range` semantics.
+
+### Membership
+
+- `cover?(value)` / `include?(value)` / `member?(value)` -> bool – true when
+  `value` falls within the range, honoring exclusive ends and range direction.
+  Integer and float arguments are tested numerically; any other type is never a
+  member and returns `false` rather than raising.
+
+### Metadata
+
+- `first -> int` – the start endpoint.
+- `last -> int` – the end endpoint, ignoring exclusivity (matching Ruby).
+- `size -> int` – the number of integers the range iterates over.
+- `exclude_end? -> bool` – true for `...` ranges, false for `..` ranges.
+
+### Conversion
+
+- `first(n) -> array` – the first `n` iterated elements, clamped to the range.
+- `last(n) -> array` – the last `n` iterated elements, clamped to the range.
+  A negative `n` raises; a non-integer `n` raises.
+- `to_a -> array` – every element the range iterates over, bounded by the
+  sandbox step and memory quotas so large ranges fail safely instead of
+  exhausting memory.
 
 ## Builtin Functions
 
