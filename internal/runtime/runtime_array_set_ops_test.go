@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	goruntime "runtime"
 	"testing"
 )
 
@@ -381,4 +382,96 @@ func TestArrayDifferenceHonorsMemoryQuota(t *testing.T) {
 
 	differences := compileScriptWithConfig(t, cfg, `def run(a, b); a.difference(b); end`)
 	requireCallRuntimeErrorType(t, differences, "run", []Value{leftArr, empty}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// The set helpers must build their result while iterating the inputs rather
+// than first materializing a concatenated or flattened intermediate slice. Such
+// a transient escapes the post-call memory check, so a quota sized for the
+// receiver plus the result could still be exceeded mid-call. The two tests
+// below feed inputs whose distinct elements (and thus the result and membership
+// set) are tiny while the total input length is large, isolating the transient
+// slice as the only allocation that would scale with the inputs.
+const (
+	setOpDistinct  = 64
+	setOpInputLen  = 600_000
+	setOpInputArgs = 2
+)
+
+func setOpRepeatingInput() []Value {
+	values := make([]Value, setOpInputLen)
+	for i := range values {
+		values[i] = NewInt(int64(i % setOpDistinct))
+	}
+	return values
+}
+
+func TestUnionArrayValuesAvoidsTransientConcatenation(t *testing.T) {
+	// Not parallel: this test reads process-wide allocation counters and must
+	// not race other goroutines' allocations.
+
+	// Concatenating left with every other before deduping peaks at
+	// len(left)+sum(others) Values. With heavily repeating inputs the result and
+	// membership set stay tiny, so that temporary slice dominates allocation.
+	input := setOpRepeatingInput()
+	others := make([][]Value, setOpInputArgs)
+	for i := range others {
+		others[i] = input
+	}
+
+	want := uniqueValues(input)
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	got := unionArrayValues(input, others)
+	goruntime.ReadMemStats(&after)
+
+	if diff := valueDiff(NewArray(want), NewArray(got)); diff != "" {
+		t.Fatalf("union mismatch (-want +got):\n%s", diff)
+	}
+
+	// The concatenation transient would reserve (1+args) copies of the input.
+	// Bound the allocation well under that so reintroducing it fails loudly while
+	// staying robust against unrelated allocation noise.
+	transientBytes := uint64(setOpInputLen) * uint64(1+setOpInputArgs) * uint64(estimatedValueBytes)
+	ceiling := transientBytes / 4
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("union allocated %d bytes, want <= %d (concatenation transient would be %d)",
+			allocated, ceiling, transientBytes)
+	}
+}
+
+func TestDifferenceArrayValuesAvoidsTransientFlattening(t *testing.T) {
+	// Not parallel: this test reads process-wide allocation counters and must
+	// not race other goroutines' allocations.
+
+	// Flattening every other into a single removal slice peaks at sum(others)
+	// Values. With a small receiver and heavily repeating arguments the result
+	// and membership set stay tiny, so that flattened copy dominates allocation.
+	arg := setOpRepeatingInput()
+	others := make([][]Value, setOpInputArgs)
+	for i := range others {
+		others[i] = arg
+	}
+	left := []Value{NewInt(int64(setOpDistinct))}
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	got := differenceArrayValues(left, others)
+	goruntime.ReadMemStats(&after)
+
+	want := NewArray([]Value{NewInt(int64(setOpDistinct))})
+	if diff := valueDiff(want, NewArray(got)); diff != "" {
+		t.Fatalf("difference mismatch (-want +got):\n%s", diff)
+	}
+
+	// The flattening transient would reserve sum(others) Values. Bound the
+	// allocation well under that so reintroducing it fails loudly.
+	flattenedBytes := uint64(setOpInputLen) * uint64(setOpInputArgs) * uint64(estimatedValueBytes)
+	ceiling := flattenedBytes / 4
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("difference allocated %d bytes, want <= %d (flattening transient would be %d)",
+			allocated, ceiling, flattenedBytes)
+	}
 }

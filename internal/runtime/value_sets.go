@@ -1,5 +1,24 @@
 package runtime
 
+// setOpInitialCap bounds the capacity reserved up front by the array set
+// helpers (union, difference, and uniq). The result and the membership set are
+// at most as large as the inputs, but for heavily overlapping inputs they can
+// be far smaller. Reserving the full input length would peak at roughly the same
+// memory as the temporary slices these helpers were written to avoid, and that
+// allocation escapes the post-call memory check. Capping the reservation and
+// letting append and map growth take over keeps the peak proportional to the
+// data actually retained.
+const setOpInitialCap = 4096
+
+// boundedSetCap caps a desired capacity at setOpInitialCap so a huge input
+// length never drives an oversized up-front allocation.
+func boundedSetCap(n int) int {
+	if n > setOpInitialCap {
+		return setOpInitialCap
+	}
+	return n
+}
+
 type scalarValueSetKey struct {
 	kind     ValueKind
 	boolVal  bool
@@ -35,55 +54,90 @@ func scalarValueKey(v Value) (scalarValueSetKey, bool) {
 	return key, true
 }
 
-func uniqueValues(values []Value) []Value {
-	var seenScalars map[scalarValueSetKey]struct{}
-	seenComposite := make([]Value, 0)
-	unique := make([]Value, 0, len(values))
+// valueSet tracks membership of Values using value equality. Scalar values are
+// indexed in a map keyed by their content, while composite values (arrays,
+// hashes, and other non-scalar kinds) fall back to a linear scan with
+// Value.Equal. Both union and difference build on it so neither needs to
+// materialize an intermediate concatenated slice.
+type valueSet struct {
+	scalars   map[scalarValueSetKey]struct{}
+	composite []Value
+}
 
-	for _, item := range values {
-		if key, ok := scalarValueKey(item); ok {
-			if seenScalars == nil {
-				seenScalars = make(map[scalarValueSetKey]struct{}, len(values))
-			}
-			if _, found := seenScalars[key]; found {
-				continue
-			}
-			seenScalars[key] = struct{}{}
-			unique = append(unique, item)
-			continue
-		}
-
-		if containsEqualValue(seenComposite, item) {
-			continue
-		}
-		seenComposite = append(seenComposite, item)
-		unique = append(unique, item)
+// contains reports whether the set already holds a value equal to v.
+func (s *valueSet) contains(v Value) bool {
+	if key, ok := scalarValueKey(v); ok {
+		_, found := s.scalars[key]
+		return found
 	}
+	return containsEqualValue(s.composite, v)
+}
 
+// add inserts v into the set if absent and reports whether it was newly added.
+// hint sizes the scalar map on first use; it is capped by boundedSetCap so a
+// huge input length never drives an oversized map allocation, letting the map
+// grow to the number of distinct scalars actually inserted.
+func (s *valueSet) add(v Value, hint int) bool {
+	if key, ok := scalarValueKey(v); ok {
+		if s.scalars == nil {
+			s.scalars = make(map[scalarValueSetKey]struct{}, boundedSetCap(hint))
+		}
+		if _, found := s.scalars[key]; found {
+			return false
+		}
+		s.scalars[key] = struct{}{}
+		return true
+	}
+	if containsEqualValue(s.composite, v) {
+		return false
+	}
+	s.composite = append(s.composite, v)
+	return true
+}
+
+func uniqueValues(values []Value) []Value {
+	var seen valueSet
+	unique := make([]Value, 0, boundedSetCap(len(values)))
+	for _, item := range values {
+		if seen.add(item, len(values)) {
+			unique = append(unique, item)
+		}
+	}
 	return unique
 }
 
-// unionArrayValues concatenates left with every array in others and removes
-// duplicates while preserving first-seen order, mirroring Ruby's
+// unionArrayValues returns the receiver concatenated with every array in others,
+// duplicates removed while preserving first-seen order, mirroring Ruby's
 // Array#union(*others). The receiver's own duplicates are collapsed too, so the
-// result is always free of repeats.
+// result is always free of repeats. The unique result is built directly while
+// iterating the inputs, so no intermediate concatenated slice is materialized.
 func unionArrayValues(left []Value, others [][]Value) []Value {
 	total := len(left)
 	for _, other := range others {
 		total += len(other)
 	}
-	combined := make([]Value, 0, total)
-	combined = append(combined, left...)
-	for _, other := range others {
-		combined = append(combined, other...)
+	var seen valueSet
+	unique := make([]Value, 0, boundedSetCap(total))
+	for _, item := range left {
+		if seen.add(item, total) {
+			unique = append(unique, item)
+		}
 	}
-	return uniqueValues(combined)
+	for _, other := range others {
+		for _, item := range other {
+			if seen.add(item, total) {
+				unique = append(unique, item)
+			}
+		}
+	}
+	return unique
 }
 
 // differenceArrayValues returns the elements of left that do not appear in any
 // of the others, mirroring Ruby's Array#difference(*others). Unlike union it
 // preserves the receiver's own duplicates: only elements equal to something in
-// the others are dropped.
+// the others are dropped. The removal set is built incrementally from others so
+// no intermediate flattened slice is materialized.
 func differenceArrayValues(left []Value, others [][]Value) []Value {
 	if len(others) == 0 {
 		out := make([]Value, len(left))
@@ -94,37 +148,30 @@ func differenceArrayValues(left []Value, others [][]Value) []Value {
 	for _, other := range others {
 		removalTotal += len(other)
 	}
-	removal := make([]Value, 0, removalTotal)
+	var removal valueSet
 	for _, other := range others {
-		removal = append(removal, other...)
+		for _, item := range other {
+			removal.add(item, removalTotal)
+		}
 	}
-	return subtractArrayValues(left, removal)
+	out := make([]Value, 0, boundedSetCap(len(left)))
+	for _, item := range left {
+		if removal.contains(item) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func subtractArrayValues(left, right []Value) []Value {
-	var rightScalars map[scalarValueSetKey]struct{}
-	rightComposite := make([]Value, 0)
+	var removal valueSet
 	for _, item := range right {
-		if key, ok := scalarValueKey(item); ok {
-			if rightScalars == nil {
-				rightScalars = make(map[scalarValueSetKey]struct{}, len(right))
-			}
-			rightScalars[key] = struct{}{}
-			continue
-		}
-		rightComposite = append(rightComposite, item)
+		removal.add(item, len(right))
 	}
-
-	out := make([]Value, 0, len(left))
+	out := make([]Value, 0, boundedSetCap(len(left)))
 	for _, item := range left {
-		if key, ok := scalarValueKey(item); ok {
-			if _, found := rightScalars[key]; found {
-				continue
-			}
-			out = append(out, item)
-			continue
-		}
-		if containsEqualValue(rightComposite, item) {
+		if removal.contains(item) {
 			continue
 		}
 		out = append(out, item)
