@@ -425,6 +425,26 @@ func arrayPartitionInitialCapacity(length int) int {
 	return (length + 1) / 2
 }
 
+// filterMapInitialCap is the modest capacity filter_map reserves up front. The
+// kept count can range from zero (every block result falsy) to the full
+// receiver length, so unlike map there is no useful size hint. The local result
+// slice is not reachable from the execution's memory roots while it is built, so
+// reserving len(receiver) would let a sparse result allocate and then drop large
+// transient backing storage that the post-call memory check never charges.
+// Seeding a small fixed capacity and letting append grow keeps the peak backing
+// allocation proportional to the elements actually kept (at most append's
+// doubling factor) rather than to the receiver length.
+const filterMapInitialCap = 16
+
+// boundedFilterCap caps a desired capacity at filterMapInitialCap so the
+// up-front reservation never scales with the receiver length.
+func boundedFilterCap(n int) int {
+	if n > filterMapInitialCap {
+		return filterMapInitialCap
+	}
+	return n
+}
+
 func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
 	length := len(arr)
 	if length <= 256 {
@@ -699,9 +719,25 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
-			out := make([]Value, 0, len(arr))
+			// Only reserve a modest initial capacity and let append grow the
+			// backing array as truthy results accumulate. Reserving len(arr) up
+			// front would charge no quota (the local slice is not reachable from
+			// exec's roots) yet could exceed MemoryQuotaBytes in transient
+			// backing storage before the post-call check runs, and a sparse
+			// result would trim that storage away before it could ever be
+			// charged. Bounding the reservation keeps the peak allocation
+			// proportional to the elements actually kept.
+			out := make([]Value, 0, boundedFilterCap(len(arr)))
 			var blockArg [1]Value
 			for _, item := range arr {
+				// Charge a step per yield so an empty or trivial block body
+				// cannot starve the step quota or cancellation checks while
+				// traversing a large receiver; runner.call only charges steps
+				// for the statements it evaluates, and an empty block evaluates
+				// none.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = item
 				val, err := runner.call(blockArg[:])
 				if err != nil {
@@ -714,13 +750,6 @@ func arrayMemberQuery(property string) (Value, error) {
 				if val.Truthy() {
 					out = append(out, val)
 				}
-			}
-			// A sparse result should not retain a backing array sized to the
-			// whole receiver, so right-size the result.
-			if len(out) < cap(out) {
-				trimmed := make([]Value, len(out))
-				copy(trimmed, out)
-				out = trimmed
 			}
 			return NewArray(out), nil
 		}), nil

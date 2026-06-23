@@ -138,6 +138,59 @@ func TestArrayFilterMapDropsVibescriptFalsy(t *testing.T) {
 	compareArrays(t, result, []Value{NewInt(1), NewString("x"), NewArray([]Value{NewInt(9)}), NewInt(2)})
 }
 
+// TestArrayFilterMapEmptyBlockParticipatesInStepQuota guards against an empty
+// block body letting filter_map traverse the whole receiver without charging
+// the step quota. runner.call only charges steps for the statements it
+// evaluates, and an empty block evaluates none, so filter_map must charge a step
+// per element itself. A non-empty block would mask the bug because evaluating
+// its body already steps.
+func TestArrayFilterMapEmptyBlockParticipatesInStepQuota(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 40}, `def run(values); values.filter_map do |v| end; end`)
+	requireCallRuntimeErrorType(t, script, "run", []Value{largeIntArray(1000)}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// TestArrayFilterMapEmptyBlockHonorsCancellation guards against an empty block
+// body letting filter_map ignore context cancellation. The per-element step also
+// observes the canceled context, so the call must abort rather than run to
+// completion.
+func TestArrayFilterMapEmptyBlockHonorsCancellation(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `def run(); [3, 1, 2].filter_map do |v| end; end`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := script.Call(ctx, "run", nil, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("filter_map with empty block under canceled context = %v, want context.Canceled", err)
+	}
+}
+
+// TestArrayFilterMapDoesNotPreallocateReceiverSize guards against filter_map
+// reserving a backing array sized to the whole receiver before any memory-quota
+// check can see it. The result slice is not reachable from the execution's
+// memory roots while it is built, so reserving len(receiver) would let a sparse
+// result allocate and then drop transient storage that the post-call check never
+// charges. The receiver here is well above the small fixed seed capacity, yet a
+// sparse result must keep its backing array proportional to the elements kept,
+// not to the receiver length.
+func TestArrayFilterMapDoesNotPreallocateReceiverSize(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 1000
+	cfg := Config{MemoryQuotaBytes: 8 * 1024 * 1024}
+	script := compileScriptWithConfig(t, cfg, `def run(values); values.filter_map do |v| nil end; end`)
+	result := callFunc(t, script, "run", []Value{largeIntArray(receiverSize)})
+	if result.Kind() != KindArray {
+		t.Fatalf("expected array, got %v", result.Kind())
+	}
+	arr := result.Array()
+	if len(arr) != 0 {
+		t.Fatalf("expected empty result, got %d elements", len(arr))
+	}
+	if cap(arr) >= receiverSize {
+		t.Fatalf("sparse result reserved oversized backing array: cap=%d, want well below %d", cap(arr), receiverSize)
+	}
+}
+
 // TestArrayEnumerableSparseResultsAreRightSized guards against the filtering
 // helpers retaining a backing array sized to the whole receiver when the result
 // is sparse. reject/take_while/grep all preallocate capacity equal to the
