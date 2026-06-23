@@ -1226,6 +1226,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 	case KindArray:
 		arr := iterable.Array()
 		for _, item := range arr {
+			if err := exec.step(); err != nil {
+				return NewNil(), false, exec.wrapError(err, stmt.Pos())
+			}
 			env.Assign(stmt.Iterator, item)
 			val, returned, err := exec.evalStatements(stmt.Body, env)
 			if err != nil {
@@ -1246,6 +1249,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 		r := iterable.Range()
 		if r.Start <= r.End {
 			for i := r.Start; rangeLoopAscendingContinues(i, r); i++ {
+				if err := exec.step(); err != nil {
+					return NewNil(), false, exec.wrapError(err, stmt.Pos())
+				}
 				env.Assign(stmt.Iterator, NewInt(i))
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
@@ -1264,6 +1270,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			}
 		} else {
 			for i := r.Start; rangeLoopDescendingContinues(i, r); i-- {
+				if err := exec.step(); err != nil {
+					return NewNil(), false, exec.wrapError(err, stmt.Pos())
+				}
 				env.Assign(stmt.Iterator, NewInt(i))
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {

@@ -176,4 +176,6 @@ Semantics:
 
 Loop execution participates in step and memory quotas. Infinite loops will terminate with quota errors when limits are exceeded.
 
+Every loop iteration consumes a step, including `for` iterations over arrays and ranges. This holds even when the loop body is empty, so a large `for` loop with no body still terminates once the step quota is reached and still observes a context that was canceled by the host before iteration completes.
+
 See `examples/control_flow/`, `examples/loops/`, and `examples/ranges/` for runnable scripts.

@@ -248,6 +248,102 @@ func TestForRangeLoops(t *testing.T) {
 	}
 }
 
+func TestForLoopConsumesStepQuota(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "range_empty_body",
+			body: `def run()
+  for i in 1..1000
+  end
+end`,
+		},
+		{
+			name: "descending_range_empty_body",
+			body: `def run()
+  for i in 1000..1
+  end
+end`,
+		},
+		{
+			name: "array_empty_body",
+			body: `def run()
+  for i in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  end
+end`,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: 10}, tc.body)
+			requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+		})
+	}
+}
+
+func TestForLoopChecksCancellationAfterHostCancel(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "range_empty_body",
+			body: `def run()
+  cancel_now()
+  for i in 1..1000
+  end
+end`,
+		},
+		{
+			name: "descending_range_empty_body",
+			body: `def run()
+  cancel_now()
+  for i in 1000..1
+  end
+end`,
+		},
+		{
+			name: "array_empty_body",
+			body: `def run()
+  cancel_now()
+  for i in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  end
+end`,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var cancel context.CancelFunc
+			engine := MustNewEngine(Config{StepQuota: 10_000_000})
+			engine.builtins["cancel_now"] = NewBuiltin("cancel_now", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				cancel()
+				return NewNil(), nil
+			})
+			script := compileScriptWithEngine(t, engine, tc.body)
+
+			ctx, cancelFunc := context.WithCancel(context.Background())
+			cancel = cancelFunc
+			_, err := script.Call(ctx, "run", nil, CallOptions{})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Script.Call(empty for body after cancel) error = %v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
 func TestUnlessConditionals(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
