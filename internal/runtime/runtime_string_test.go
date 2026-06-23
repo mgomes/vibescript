@@ -3,6 +3,8 @@ package runtime
 import (
 	"testing"
 	"unicode/utf8"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestStringHelpers(t *testing.T) {
@@ -38,6 +40,80 @@ func TestStringHelpers(t *testing.T) {
 
 	customSplit := callFunc(t, script, "split_custom", nil)
 	compareArrays(t, customSplit, []Value{NewString("a"), NewString("b"), NewString("c")})
+}
+
+func TestSplitOnASCIIWhitespace(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{name: "empty", in: "", want: nil},
+		{name: "blank ascii", in: " \t\n ", want: nil},
+		{name: "single field", in: "hello", want: []string{"hello"}},
+		{name: "ascii spaces", in: "a b c", want: []string{"a", "b", "c"}},
+		{name: "mixed ascii whitespace", in: "a b\t c", want: []string{"a", "b", "c"}},
+		{name: "leading trailing collapse", in: " a  b ", want: []string{"a", "b"}},
+		{name: "tab", in: "a\tb", want: []string{"a", "b"}},
+		{name: "newline", in: "a\nb", want: []string{"a", "b"}},
+		{name: "vertical tab", in: "a\vb", want: []string{"a", "b"}},
+		{name: "form feed", in: "a\fb", want: []string{"a", "b"}},
+		{name: "carriage return", in: "a\rb", want: []string{"a", "b"}},
+		{name: "crlf collapses", in: "a\r\nb", want: []string{"a", "b"}},
+		// Wider Unicode whitespace stays inside the field, matching Ruby
+		// rather than Go's strings.Fields Unicode table.
+		{name: "nbsp kept", in: "a b", want: []string{"a b"}},
+		{name: "em space kept", in: "a b", want: []string{"a b"}},
+		{name: "en space kept", in: "a b", want: []string{"a b"}},
+		{name: "thin space kept", in: "a b", want: []string{"a b"}},
+		{name: "ideographic space kept", in: "a　b", want: []string{"a　b"}},
+		{name: "ogham space kept", in: "a b", want: []string{"a b"}},
+		{name: "zero width space kept", in: "a\u200bb", want: []string{"a\u200bb"}},
+		{name: "next line kept", in: "a\u0085b", want: []string{"a\u0085b"}},
+		{name: "line separator kept", in: "a b", want: []string{"a b"}},
+		{name: "nbsp surrounded by ascii", in: " a b ", want: []string{"a b"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := splitOnASCIIWhitespace(tt.in)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Fatalf("splitOnASCIIWhitespace(%q) mismatch (-want +got):\n%s", tt.in, diff)
+			}
+		})
+	}
+}
+
+func TestStringSplitDefaultWhitespace(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// literal is spliced directly into the Vibescript double-quoted
+		// string, so it must contain real bytes; the lexer only decodes
+		// \n, \t, \", and \\ escapes.
+		literal string
+		want    []Value
+	}{
+		{name: "ascii", literal: "a b\t c", want: []Value{NewString("a"), NewString("b"), NewString("c")}},
+		{name: "edges", literal: " a  b ", want: []Value{NewString("a"), NewString("b")}},
+		{name: "nbsp kept", literal: "a b", want: []Value{NewString("a b")}},
+		{name: "em space kept", literal: "a b", want: []Value{NewString("a b")}},
+		{name: "blank yields empty", literal: "   ", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def go()\n  \""+tt.literal+"\".split()\nend\n")
+			got := callFunc(t, script, "go", nil)
+			if got.Kind() != KindArray {
+				t.Fatalf("expected array, got %v", got.Kind())
+			}
+			if diff := valuesDiff(tt.want, got.Array()); diff != "" {
+				t.Fatalf("split mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
 }
 
 func TestStringPredicatesAndLength(t *testing.T) {

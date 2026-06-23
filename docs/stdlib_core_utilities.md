@@ -130,8 +130,11 @@ then truncated at a character boundary to fill the span.
   occurrence of `pattern`.
 - `gsub(pattern, replacement, regex: false) -> string` – replace every
   occurrence of `pattern`.
-- `split(separator = nil) -> array` – split on whitespace (dropping empty
-  fields) without arguments, or on `separator` when given.
+- `split(separator = nil) -> array` – split on runs of ASCII whitespace
+  (space, tab, newline, vertical tab, form feed, carriage return; dropping empty
+  fields) without arguments, or on `separator` when given. Like Ruby, the
+  no-argument form keeps wider Unicode whitespace such as the non-breaking space
+  inside the field rather than splitting on it.
 - `chars -> array` – array of the string's Unicode characters, one per code
   point (rune-aware, like `length` and `slice`).
 - `lines -> array` – array of lines split on `"\n"`, retaining the trailing
