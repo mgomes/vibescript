@@ -590,6 +590,58 @@ func TestValueStringBounded(t *testing.T) {
 		}
 	})
 
+	t.Run("oversized_hash_key_trips_limit", func(t *testing.T) {
+		t.Parallel()
+		// A single key larger than the limit must trip the budget while it is
+		// being written rather than copying the whole key into the buffer first.
+		key := strings.Repeat("k", 1<<20)
+		v := value.NewHash(map[string]value.Value{key: value.NewInt(1)})
+
+		const limit = 1024
+		got, err := v.StringBounded(limit)
+		if !errors.Is(err, value.ErrStringRenderTruncated) {
+			t.Fatalf("StringBounded() error = %v, want ErrStringRenderTruncated", err)
+		}
+		// The partial output never contains the full multi-megabyte key.
+		if len(got) > limit+8 {
+			t.Fatalf("partial rendering = %d bytes, want <= %d", len(got), limit+8)
+		}
+	})
+
+	t.Run("oversized_nested_scalar_trips_limit", func(t *testing.T) {
+		t.Parallel()
+		// A huge scalar buried inside a composite must be capped to the budget;
+		// the renderer must not materialize the whole element before checking.
+		huge := value.NewString(strings.Repeat("x", 1<<20))
+		v := value.NewArray([]value.Value{huge})
+
+		const limit = 1024
+		got, err := v.StringBounded(limit)
+		if !errors.Is(err, value.ErrStringRenderTruncated) {
+			t.Fatalf("StringBounded() error = %v, want ErrStringRenderTruncated", err)
+		}
+		if len(got) > limit+8 {
+			t.Fatalf("partial rendering = %d bytes, want <= %d", len(got), limit+8)
+		}
+	})
+
+	t.Run("oversized_nested_hash_value_trips_limit", func(t *testing.T) {
+		t.Parallel()
+		// A huge scalar value (rather than key) inside a hash must also be
+		// capped to the remaining budget as it is written.
+		huge := value.NewString(strings.Repeat("y", 1<<20))
+		v := value.NewHash(map[string]value.Value{"k": huge})
+
+		const limit = 1024
+		got, err := v.StringBounded(limit)
+		if !errors.Is(err, value.ErrStringRenderTruncated) {
+			t.Fatalf("StringBounded() error = %v, want ErrStringRenderTruncated", err)
+		}
+		if len(got) > limit+8 {
+			t.Fatalf("partial rendering = %d bytes, want <= %d", len(got), limit+8)
+		}
+	})
+
 	t.Run("cycle_still_renders", func(t *testing.T) {
 		t.Parallel()
 		elems := make([]value.Value, 1)

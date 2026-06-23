@@ -252,7 +252,13 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 				buf.WriteString(", ")
 			}
 			first = false
-			buf.WriteString(k)
+			// A hash key is an arbitrary string that may itself exceed the
+			// budget (host-provided or generated under a raised memory quota),
+			// so cap the key write to the remaining budget rather than copying
+			// it whole before the value-level check runs.
+			if err := appendBounded(buf, k, limit); err != nil {
+				return err
+			}
 			buf.WriteString(": ")
 			if err := val.appendString(buf, state, limit); err != nil {
 				return err
@@ -264,17 +270,37 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		buf.WriteByte('}')
 		return nil
 	default:
-		s := v.String()
-		buf.WriteString(s)
-		if exceedsStringLimit(buf, limit) {
-			return ErrStringRenderTruncated
-		}
-		return nil
+		// A scalar element may be an arbitrarily large string, so cap its write
+		// to the remaining budget instead of materializing the whole value in
+		// the buffer before checking the limit.
+		return appendBounded(buf, v.String(), limit)
 	}
 }
 
 func exceedsStringLimit(buf *strings.Builder, limit int) bool {
 	return limit > 0 && buf.Len() > limit
+}
+
+// appendBounded writes s into buf, but when limit is positive it copies only as
+// many bytes as fit within the remaining budget and reports
+// ErrStringRenderTruncated instead of materializing an arbitrarily large scalar
+// (a long hash key or string element) in the buffer. A non-positive limit
+// writes s in full and never reports truncation.
+func appendBounded(buf *strings.Builder, s string, limit int) error {
+	if limit <= 0 {
+		buf.WriteString(s)
+		return nil
+	}
+	remaining := limit - buf.Len()
+	if remaining < 0 {
+		remaining = 0
+	}
+	if len(s) > remaining {
+		buf.WriteString(s[:remaining])
+		return ErrStringRenderTruncated
+	}
+	buf.WriteString(s)
+	return nil
 }
 
 // Truthy reports whether v is considered true in a boolean context.
