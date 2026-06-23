@@ -140,6 +140,12 @@ end
 - `deep_transform_keys` for recursive key mapping across nested hashes/arrays.
 - `remap_keys(mapping_hash)` for direct key rename maps.
 
+These transforms run inside the sandbox. Before building a derived map they
+project its size against the memory quota, so a transform over a large hash is
+rejected up front rather than after the backing map is allocated. While walking
+the receiver they charge the step quota per entry and honor context
+cancellation, so large materializations stay bounded.
+
 ```vibe
 def public_profile(record)
   record

@@ -131,6 +131,33 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 	return nil
 }
 
+// checkProjectedHashBytes rejects allocations that would exceed the memory quota
+// before a derived map is built. Hash transform helpers (such as merge, except,
+// compact, and remap_keys) materialize an output map sized to their inputs; for
+// large receivers that backing map can dwarf the quota, and the statement-level
+// check would only observe it after the allocation already happened. count is the
+// number of entries the output map would hold. Each entry contributes the map's
+// per-entry overhead plus a key header and a value slot; the keys and values are
+// references shared with the receiver, whose payloads are already counted in the
+// base usage, so only the new map's structural footprint is projected here.
+func (exec *Execution) checkProjectedHashBytes(count int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	est.reset()
+
+	used = saturatingAdd(used, estimatedValueBytes+estimatedMapBaseBytes)
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	used = saturatingAdd(used, saturatingMul(count, perEntry))
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	est := exec.memoryEstimatorForCheck()
 

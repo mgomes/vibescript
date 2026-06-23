@@ -392,6 +392,18 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 			}
 			base := receiver.Hash()
+			// Preflight the largest map this merge could materialize before
+			// allocating it. The output starts as a copy of the receiver and can
+			// grow by every key in each argument, so projecting that worst case
+			// rejects an over-quota merge up front instead of after the backing
+			// map is already reserved.
+			projected := len(base)
+			for _, arg := range args {
+				projected = saturatingAdd(projected, len(arg.Hash()))
+			}
+			if err := exec.checkProjectedHashBytes(projected); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(base))
 			maps.Copy(out, base)
 			if len(args) == 0 {
@@ -421,6 +433,12 @@ func hashMemberTransforms(property string) (Value, error) {
 			for _, arg := range args {
 				addition := arg.Hash()
 				for _, key := range sortedHashKeysInto(addition, keyBuf[:]) {
+					// Charge a step per merged key so a large merge participates in
+					// the step quota and honors cancellation; the block conflict
+					// path also steps through runner.call below.
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
 					oldValue, conflict := out[key]
 					if !conflict || !useBlock {
 						out[key] = addition[key]
@@ -453,6 +471,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			// immutable-style, so replace returns a fresh hash holding a copy of
 			// the replacement's entries and leaves the receiver unchanged.
 			replacement := args[0].Hash()
+			// Preflight the copied map before reserving it so a large replacement
+			// cannot allocate past the quota ahead of the statement-level check.
+			if err := exec.checkProjectedHashBytes(len(replacement)); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(replacement))
 			maps.Copy(out, replacement)
 			return NewHash(out), nil
@@ -507,6 +530,12 @@ func hashMemberTransforms(property string) (Value, error) {
 			// returns a new hash with the key assigned rather than mutating the
 			// receiver, matching merge and the array collection helpers.
 			base := receiver.Hash()
+			// Preflight the copied map (plus the stored entry) before reserving it
+			// so storing into a large hash cannot allocate past the quota ahead of
+			// the statement-level check.
+			if err := exec.checkProjectedHashBytes(saturatingAdd(len(base), 1)); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(base)+1)
 			maps.Copy(out, base)
 			out[key] = args[1]
@@ -521,6 +550,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			entries := receiver.Hash()
 			out := make(map[string]Value, len(args))
 			for _, arg := range args {
+				// Charge a step per requested key so slicing with many candidate
+				// keys participates in the step quota and honors cancellation.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				// Vibescript hash keys are only symbols or strings, so an
 				// unsupported argument can never match an entry. Ruby's
 				// Hash#slice omits candidate keys that are absent, so we
@@ -554,8 +588,19 @@ func hashMemberTransforms(property string) (Value, error) {
 				excluded[key] = struct{}{}
 			}
 			entries := receiver.Hash()
+			// Preflight the largest map except could materialize before reserving
+			// it. Excluded keys absent from the receiver leave the full input in
+			// place, so the worst case is a copy of every entry.
+			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			for key, value := range entries {
+				// Charge a step per surviving-candidate entry so excepting a large
+				// hash participates in the step quota and honors cancellation.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				if _, skip := excluded[key]; skip {
 					continue
 				}
@@ -573,6 +618,12 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Preflight the largest map select could keep before reserving it; the
+			// block may keep every entry, so project the full input. Per-entry
+			// step accounting and the periodic memory check come from runner.call.
+			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -599,6 +650,12 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Preflight the largest map reject could keep before reserving it; the
+			// block may keep every entry, so project the full input. Per-entry
+			// step accounting and the periodic memory check come from runner.call.
+			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -625,6 +682,12 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Preflight the output map before reserving it; transform_keys produces
+			// at most one entry per input key. Per-entry step accounting and the
+			// periodic memory check come from runner.call.
+			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -659,9 +722,19 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			mapping := args[0].Hash()
+			// Preflight the output map before reserving it; remap_keys produces one
+			// entry per input key (renamed or kept), so project the full input.
+			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per remapped key so remapping a large hash
+				// participates in the step quota and honors cancellation.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				value := entries[key]
 				if mapped, ok := mapping[key]; ok {
 					nextKey, err := valueToHashKey(mapped)
@@ -685,6 +758,12 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Preflight the output map before reserving it; transform_values keeps
+			// every key. Per-entry step accounting and the periodic memory check
+			// come from runner.call.
+			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -704,8 +783,18 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.compact does not take arguments")
 			}
 			entries := receiver.Hash()
+			// Preflight the largest map compact could keep before reserving it; a
+			// hash with no nil values keeps every entry, so project the full input.
+			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			for k, v := range entries {
+				// Charge a step per inspected entry so compacting a large hash
+				// participates in the step quota and honors cancellation.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				if v.Kind() != KindNil {
 					out[k] = v
 				}
