@@ -282,6 +282,14 @@ type hashBuildAccumulator struct {
 	// running byte total charged for the output as it is assembled.
 	base  int
 	built int
+	// keyValueBytes records, per key currently present in the output map, the value
+	// bytes charged for that key's stored value. add consults it so a key written
+	// more than once (a merge conflict block, or a transform_keys block that maps
+	// several input keys onto the same output key) charges a replacement as the net
+	// swap of the new value for the old, not as a fresh entry. Without this, built
+	// would grow monotonically by a full entry per write and over-count values that
+	// the map no longer holds, falsely tripping the quota on valid colliding builds.
+	keyValueBytes map[string]int
 }
 
 // newHashBuildAccumulator snapshots the execution's current live memory plus the
@@ -330,19 +338,39 @@ func newRootSeededHashBuildAccumulator(exec *Execution, receiver Value, args []V
 	return acc
 }
 
-// add charges a newly inserted entry and rejects the build if the projected map
-// memory exceeds the quota. The bucket overhead, key header, and value are
-// charged exactly as the estimator counts them for a finished map, with the
-// estimator deduplicating keys and values already reachable from the baseline or
-// an earlier entry so shared backings are counted once.
+// add charges a key write to the output map and rejects the build if the
+// projected map memory exceeds the quota.
+//
+// A first write for a key charges a full entry: the bucket overhead, the key
+// header and payload, and the value, exactly as the estimator counts them for a
+// finished map. The estimator deduplicates keys and values already reachable
+// from the baseline or an earlier entry so shared backings are counted once.
+//
+// A repeated write for a key (the output map already holds it) is a replacement:
+// the bucket, key header, and key payload already exist, so re-charging them
+// would over-count. The map only swaps the stored value, so add charges just the
+// net change between the new value's bytes and the old value's recorded bytes,
+// keeping built a measure of the map's live footprint rather than a monotonic sum
+// of every value ever written. This matters for merge conflict blocks and for
+// transform_keys blocks that collapse many input keys onto one output key, where
+// monotonic accumulation would falsely trip the quota on valid builds.
 func (acc *hashBuildAccumulator) add(key string, val Value) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
 
+	valueBytes := acc.est.value(val)
+	if prevBytes, replaced := acc.keyValueBytes[key]; replaced {
+		acc.keyValueBytes[key] = valueBytes
+		return acc.chargeDelta(valueBytes - prevBytes)
+	}
+
+	if acc.keyValueBytes == nil {
+		acc.keyValueBytes = make(map[string]int)
+	}
+	acc.keyValueBytes[key] = valueBytes
 	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + acc.est.stringPayloadSize(key)
-	entry = saturatingAdd(entry, acc.est.value(val))
-	return acc.charge(entry)
+	return acc.charge(saturatingAdd(entry, valueBytes))
 }
 
 // The per-node charges below decompose the memory estimator's recursive
@@ -402,6 +430,21 @@ func (acc *hashBuildAccumulator) charge(delta int) error {
 	used := saturatingAdd(acc.base, acc.built)
 	if used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
+// chargeDelta adjusts built by a signed delta, used when a key replacement swaps
+// a stored value for a different-sized one. A negative delta shrinks built toward
+// zero (the output map never holds fewer than zero bytes); a positive delta is
+// charged like any other growth so a larger replacement can still trip the quota.
+func (acc *hashBuildAccumulator) chargeDelta(delta int) error {
+	if delta >= 0 {
+		return acc.charge(delta)
+	}
+	acc.built += delta
+	if acc.built < 0 {
+		acc.built = 0
 	}
 	return nil
 }

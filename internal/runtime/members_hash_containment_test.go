@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -703,6 +704,144 @@ func TestHashBuildAccumulatorChargesIncrementally(t *testing.T) {
 	if tripped > 5 {
 		t.Fatalf("accumulator tripped after %d inserts, want it to fail fast within a few", tripped)
 	}
+}
+
+// TestHashBuildAccumulatorChargesReplacementsAsNetSwap pins the replacement-aware
+// accounting that the merge conflict block relies on. Writing the same key many
+// times (as a merge with many colliding one-key hashes does) overwrites a single
+// slot, so the accumulator must charge each rewrite as the net change between the
+// new value and the old, not as a fresh entry. A monotonic full-entry charge per
+// write would over-count the dropped values and falsely trip a quota that
+// comfortably holds the receiver and the single final entry.
+func TestHashBuildAccumulatorChargesReplacementsAsNetSwap(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	exec.root = newEnv(nil)
+
+	const payloadBytes = 4 * 1024
+	const rewrites = 1_000
+	base := exec.estimateMemoryUsageBase(newMemoryEstimator())
+	// Headroom for the empty output map plus a handful of full entries -- far less
+	// than the rewrites count, so a monotonic per-write charge would trip well
+	// before the loop ends while the net-swap charge stays at a single slot.
+	exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + 4*(payloadBytes+128)
+
+	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+
+	// Seed the slot once, then overwrite it repeatedly with fresh, equal-sized heap
+	// values, mirroring a merge conflict block that returns a new value per colliding
+	// argument.
+	if err := acc.add("k", NewString(strings.Repeat("x", payloadBytes))); err != nil {
+		t.Fatalf("seeding the slot tripped the quota: %v", err)
+	}
+	afterSeed := acc.built
+	for i := range rewrites {
+		fresh := NewString(strings.Repeat("y", payloadBytes))
+		if err := acc.add("k", fresh); err != nil {
+			t.Fatalf("rewrite %d falsely tripped the quota: %v", i, err)
+		}
+	}
+
+	// Net-swap accounting keeps built at one entry's worth: the seed entry plus a
+	// single value swap, never growing with the rewrite count.
+	if acc.built > afterSeed+payloadBytes {
+		t.Fatalf("built grew to %d after %d same-key rewrites, want it to stay near one entry (%d)",
+			acc.built, rewrites, afterSeed)
+	}
+
+	// A genuinely oversized replacement still trips: swapping in a value far larger
+	// than the headroom must be rejected, proving the net-swap path still enforces
+	// the quota on growth rather than ignoring it.
+	huge := NewString(strings.Repeat("z", payloadBytes*1_000))
+	err := acc.add("k", huge)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// mergeManyCollidingArgsSource generates a script whose run() merges the receiver
+// with collisions one-key hashes that all share key :x, in a single merge call, so
+// every argument folds through one accumulator and overwrites the same slot. The
+// conflict block returns a fresh ljust string of payloadBytes per collision, so
+// each result is a distinct heap value the estimator cannot dedup to zero.
+func mergeManyCollidingArgsSource(collisions, payloadBytes int) string {
+	var b strings.Builder
+	b.WriteString("def run(a)\n  a.merge(")
+	for i := range collisions {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "{ x: %d }", i+1)
+	}
+	fmt.Fprintf(&b, ") { |k, old, new| \"\".ljust(%d, \"z\") }\nend", payloadBytes)
+	return b.String()
+}
+
+// TestHashMergeManyCollidingOneKeyHashesWithBlockSucceeds drives the replacement
+// fix end to end: a single merge call folds many one-key hashes that all collide
+// on the same key through a conflict block. The block returns a fresh value per
+// collision, but each overwrites the same slot, so the final result holds one
+// entry. A quota that comfortably fits the receiver and that single result must
+// admit the merge; the pre-fix accumulator charged a full entry per collision and
+// would falsely reject it.
+func TestHashMergeManyCollidingOneKeyHashesWithBlockSucceeds(t *testing.T) {
+	t.Parallel()
+
+	const collisions = 400
+	const payloadBytes = 4 * 1024
+	receiver := NewHash(map[string]Value{"x": NewInt(0)})
+
+	// The legitimate live footprint is the receiver, the colliding argument hashes
+	// (each a one-key map of a small int), and the single final entry holding one
+	// fresh payload. Estimate the arguments the script holds live and budget a quota
+	// that comfortably exceeds that real footprint.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveArgs := make([]Value, collisions)
+	for i := range liveArgs {
+		liveArgs[i] = NewHash(map[string]Value{"x": NewInt(int64(i + 1))})
+	}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, liveArgs, nil, NewNil())
+	entryBytes := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	// Generous headroom over the live footprint: the empty output map, one full
+	// payload entry, and slack for the script's AST and environment.
+	quota := liveWithRoots + estimatedValueBytes + estimatedMapBaseBytes + payloadBytes + 64*entryBytes + 64*1024
+
+	// Sanity: the pre-fix monotonic charge (a full payload entry per collision) far
+	// exceeds this quota, confirming the test exercises the replacement fix rather
+	// than passing trivially.
+	monotonic := (collisions + 1) * (entryBytes + payloadBytes)
+	if monotonic <= quota {
+		t.Fatalf("test setup expects the monotonic projection (%d) to exceed the quota (%d)", monotonic, quota)
+	}
+
+	source := mergeManyCollidingArgsSource(collisions, payloadBytes)
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+	got, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
+	if err != nil {
+		t.Fatalf("merge of %d colliding one-key hashes under a fitting quota = %v, want success", collisions, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 1 {
+		t.Fatalf("merge produced %v with %d entries, want a hash with 1 entry", got.Kind(), len(got.Hash()))
+	}
+}
+
+// TestHashMergeManyCollidingOneKeyHashesOversizedBlockTrips is the safety twin of
+// the success case: when the conflict block returns a value far larger than the
+// quota's headroom, the net-swap accounting must still reject the merge. This
+// guards against the replacement path silently dropping the quota on growth.
+func TestHashMergeManyCollidingOneKeyHashesOversizedBlockTrips(t *testing.T) {
+	t.Parallel()
+
+	const collisions = 50
+	const payloadBytes = 1 << 20
+	receiver := NewHash(map[string]Value{"x": NewInt(0)})
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, NewNil())
+	quota := liveWithRoots + 8*1024
+
+	source := mergeManyCollidingArgsSource(collisions, payloadBytes)
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
 // TestHashTransformValuesIncrementalBlockCharging drives the P1 transform_values

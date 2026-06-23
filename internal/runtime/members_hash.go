@@ -575,7 +575,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				// accumulator seeded with the live call roots; the copied base
 				// values dedup against the receiver root and cost only their new
 				// structural slot, while block-resolved values add their fresh
-				// payload as the loop proceeds.
+				// payload as the loop proceeds. The accumulator is replacement-aware:
+				// a conflict block overwrites an existing slot, so the second write
+				// for a key charges only the net value change, never a second entry.
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				var baseKeyBuf [smallHashKeyBufferSize]string
 				for _, key := range sortedHashKeysInto(base, baseKeyBuf[:]) {
@@ -893,8 +895,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			// structural projection cannot bound them. Charge each entry
 			// incrementally through a build accumulator seeded with the live call
 			// roots so accumulated key payloads count toward the quota during the
-			// loop, not only at the post-call check. Per-entry step accounting comes
-			// from runner.call.
+			// loop, not only at the post-call check. A block that maps several
+			// input keys onto the same output key overwrites a slot rather than
+			// growing the map, and the accumulator charges that as a net value
+			// swap, not a second entry. Per-entry step accounting comes from
+			// runner.call.
 			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
