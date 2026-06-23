@@ -16,7 +16,7 @@ import (
 var stringMemberNames = []string{
 	"size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
-	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "each_char", "each_line", "template",
+	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "each_char", "each_line", "each_byte", "template",
 	"center", "ljust", "rjust",
 }
 
@@ -35,7 +35,7 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
-	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "each_char", "each_line", "template":
+	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "each_char", "each_line", "each_byte", "template":
 		return stringMemberTextOps(property)
 	case "center", "ljust", "rjust":
 		return stringMemberPadding(property)
@@ -1377,6 +1377,25 @@ func stringMemberTextOps(property string) (Value, error) {
 			}
 			return NewArray(values), nil
 		}), nil
+	case "bytes":
+		return NewAutoBuiltin("string.bytes", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.bytes does not take arguments")
+			}
+			text := receiver.String()
+			// Reject the allocation up front so a string that fits the memory
+			// quota cannot reserve a result array of one Value per byte that
+			// does not. make([]Value, len(text)) would reserve the entire
+			// backing array before the post-call check could observe it.
+			if err := exec.checkProjectedIntArrayBytes(len(text)); err != nil {
+				return NewNil(), err
+			}
+			values := make([]Value, len(text))
+			for i := range len(text) {
+				values[i] = NewInt(int64(text[i]))
+			}
+			return NewArray(values), nil
+		}), nil
 	case "each_char":
 		return NewAutoBuiltin("string.each_char", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
@@ -1389,6 +1408,25 @@ func stringMemberTextOps(property string) (Value, error) {
 			var blockArg [1]Value
 			for _, r := range receiver.String() {
 				blockArg[0] = NewString(string(r))
+				if _, err := runner.call(blockArg[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
+	case "each_byte":
+		return NewAutoBuiltin("string.each_byte", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.each_byte does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "string.each_byte")
+			if err != nil {
+				return NewNil(), err
+			}
+			var blockArg [1]Value
+			text := receiver.String()
+			for i := range len(text) {
+				blockArg[0] = NewInt(int64(text[i]))
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
 				}
