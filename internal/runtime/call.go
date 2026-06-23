@@ -625,12 +625,17 @@ func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Valu
 	return kwargs, nil
 }
 
-func resolveBareKeywordArgs(call *CallExpr, callee Value, args []Value, kwargs map[string]Value) ([]Value, map[string]Value) {
-	if !call.BareKeywordArgs || len(kwargs) == 0 {
+// resolveKeywordOptionsHash collapses a call's keyword arguments into a trailing
+// positional options hash when the callee has no matching keyword parameter and
+// exposes a positional parameter to receive it. This mirrors Ruby's options-hash
+// binding and applies identically to parenless calls and parenthesized plain
+// function calls.
+func resolveKeywordOptionsHash(call *CallExpr, callee Value, args []Value, kwargs map[string]Value) ([]Value, map[string]Value) {
+	if !call.KeywordOptionsHash || len(kwargs) == 0 {
 		return args, kwargs
 	}
-	fn := bareKeywordHashTarget(callee)
-	if fn == nil || !functionCanReceiveBareKeywordHash(fn, len(args), kwargs) {
+	fn := optionsHashTarget(callee)
+	if fn == nil || !functionCanReceiveOptionsHash(fn, len(args), kwargs) {
 		return args, kwargs
 	}
 	hash := make(map[string]Value, len(kwargs))
@@ -640,7 +645,7 @@ func resolveBareKeywordArgs(call *CallExpr, callee Value, args []Value, kwargs m
 	return append(args, NewHash(hash)), nil
 }
 
-func bareKeywordHashTarget(callee Value) *ScriptFunction {
+func optionsHashTarget(callee Value) *ScriptFunction {
 	switch callee.Kind() {
 	case KindFunction:
 		return valueFunction(callee)
@@ -649,13 +654,13 @@ func bareKeywordHashTarget(callee Value) *ScriptFunction {
 		if builtin == nil {
 			return nil
 		}
-		return builtin.BareKeywordHashTarget
+		return builtin.OptionsHashTarget
 	default:
 		return nil
 	}
 }
 
-func functionCanReceiveBareKeywordHash(fn *ScriptFunction, positionalCount int, kwargs map[string]Value) bool {
+func functionCanReceiveOptionsHash(fn *ScriptFunction, positionalCount int, kwargs map[string]Value) bool {
 	for _, param := range fn.Params {
 		if param.Kind == ParamKeyword || param.Kind == ParamKeywordRest {
 			return false
@@ -718,7 +723,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	args, kwargs = resolveBareKeywordArgs(call, callee, args, kwargs)
+	args, kwargs = resolveKeywordOptionsHash(call, callee, args, kwargs)
 	block, err := exec.evalCallBlock(call, env)
 	if err != nil {
 		return NewNil(), err
@@ -772,7 +777,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
-	args, kwargs = resolveBareKeywordArgs(call, callee, args, kwargs)
+	args, kwargs = resolveKeywordOptionsHash(call, callee, args, kwargs)
 	block, err := exec.evalCallBlock(call, env)
 	if err != nil {
 		return NewNil(), err

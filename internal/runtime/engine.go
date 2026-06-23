@@ -313,7 +313,7 @@ func cloneBuiltinValue(val Value) Value {
 			return val
 		}
 		cloned := newBuiltin(builtin.Name, builtin.Fn, builtin.AutoInvoke)
-		valueBuiltin(cloned).BareKeywordHashTarget = builtin.BareKeywordHashTarget
+		valueBuiltin(cloned).OptionsHashTarget = builtin.OptionsHashTarget
 		return cloned
 	case KindArray:
 		arr := val.Array()

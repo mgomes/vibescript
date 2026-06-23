@@ -72,7 +72,7 @@ func (exec *Execution) functionMember(obj Value, property string, pos Position) 
 	caller := NewAutoBuiltin("function.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
 	})
-	valueBuiltin(caller).BareKeywordHashTarget = fn
+	valueBuiltin(caller).OptionsHashTarget = fn
 	return caller, nil
 }
 
@@ -90,7 +90,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position) (Va
 			return instVal, nil
 		})
 		if initFn, ok := cl.Methods["initialize"]; ok {
-			valueBuiltin(constructor).BareKeywordHashTarget = initFn
+			valueBuiltin(constructor).OptionsHashTarget = initFn
 		}
 		return constructor, nil
 	}
@@ -101,7 +101,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position) (Va
 		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
 		})
-		valueBuiltin(method).BareKeywordHashTarget = fn
+		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
 	if val, ok := cl.ClassVars[property]; ok {
@@ -126,7 +126,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position) 
 		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
 		})
-		valueBuiltin(method).BareKeywordHashTarget = fn
+		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
 	if val, ok := inst.Ivars[property]; ok {

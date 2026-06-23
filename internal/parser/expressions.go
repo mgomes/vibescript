@@ -1375,11 +1375,26 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	expr.Args = args
 	expr.KwArgs = kwargs
+	// A parenthesized plain function call (identifier callee) collapses its
+	// keyword arguments into a positional options hash on the same terms as a
+	// parenless call. Method and constructor calls keep parenthesized keywords
+	// strict, so their callee is a member expression and is excluded here.
+	if len(kwargs) > 0 && isIdentifierCallee(function) {
+		expr.KeywordOptionsHash = true
+	}
 	if p.canAttachPeekBlock() {
 		p.nextToken()
 		expr.Block = p.parseBlockLiteral()
 	}
 	return expr
+}
+
+// isIdentifierCallee reports whether a call target is a bare identifier, which
+// distinguishes plain function calls from member-access method and constructor
+// calls.
+func isIdentifierCallee(callee ast.Expression) bool {
+	_, ok := callee.(*ast.Identifier)
+	return ok
 }
 
 func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expression {
@@ -1389,10 +1404,10 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 	expr := &ast.CallExpr{Callee: function, Position: function.Pos()}
 	args := []ast.Expression{}
 	kwargs := []ast.KeywordArg{}
-	bareKeywordArgs := false
+	keywordOptionsHash := false
 
 	p.nextToken()
-	p.parseParenlessCallArgument(&args, &kwargs, &bareKeywordArgs)
+	p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash)
 
 	for p.peekToken.Type == ast.TokenComma &&
 		p.peekToken.Pos.Line == p.curToken.Pos.Line &&
@@ -1400,15 +1415,15 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 		(isParenlessArgumentStart(p.peekPeek.Type) || isLabelNameToken(p.peekPeek)) {
 		p.nextToken()
 		p.nextToken()
-		if bareKeywordArgs && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
+		if keywordOptionsHash && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
 			p.addParseError(p.curToken.Pos, "positional arguments cannot follow bare keyword arguments in parenless calls")
 		}
-		p.parseParenlessCallArgument(&args, &kwargs, &bareKeywordArgs)
+		p.parseParenlessCallArgument(&args, &kwargs, &keywordOptionsHash)
 	}
 
 	expr.Args = args
 	expr.KwArgs = kwargs
-	expr.BareKeywordArgs = bareKeywordArgs
+	expr.KeywordOptionsHash = keywordOptionsHash
 	return expr
 }
 
@@ -1478,7 +1493,7 @@ func (p *parser) parseCallArgument(args *[]ast.Expression, kwargs *[]ast.Keyword
 	}
 }
 
-func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, bareKeywordArgs *bool) {
+func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]ast.KeywordArg, keywordOptionsHash *bool) {
 	if p.curToken.Type == ast.TokenPercent {
 		expr := p.parsePercentArrayLiteralArgument()
 		if expr != nil {
@@ -1505,7 +1520,7 @@ func (p *parser) parseParenlessCallArgument(args *[]ast.Expression, kwargs *[]as
 		name := p.curToken.Literal
 		pos := p.curToken.Pos
 		p.nextToken()
-		*bareKeywordArgs = true
+		*keywordOptionsHash = true
 		if p.parenlessKeywordArgumentCanUseShorthand() {
 			*kwargs = append(*kwargs, ast.KeywordArg{Name: name, Value: &ast.Identifier{Name: name, Position: pos}})
 			return

@@ -28,6 +28,7 @@ end`
 				{Name: "name", Value: &ast.Identifier{Name: "name"}},
 				{Name: "age", Value: &ast.IntegerLiteral{Value: 42}},
 			},
+			KeywordOptionsHash: true,
 		}},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
@@ -61,7 +62,7 @@ end`
 			KwArgs: []ast.KeywordArg{
 				{Name: "rescue", Value: &ast.StringLiteral{Value: "retry"}},
 			},
-			BareKeywordArgs: true,
+			KeywordOptionsHash: true,
 		}},
 		&ast.ExprStmt{Expr: &ast.CallExpr{
 			Callee: &ast.Identifier{Name: "configure"},
@@ -71,7 +72,7 @@ end`
 				{Name: "rescue", Value: &ast.IntegerLiteral{Value: 2}},
 				{Name: "ensure", Value: &ast.IntegerLiteral{Value: 3}},
 			},
-			BareKeywordArgs: true,
+			KeywordOptionsHash: true,
 		}},
 		&ast.ExprStmt{Expr: &ast.CallExpr{
 			Callee: &ast.Identifier{Name: "begin_with"},
@@ -79,7 +80,7 @@ end`
 			KwArgs: []ast.KeywordArg{
 				{Name: "begin", Value: &ast.IntegerLiteral{Value: 1}},
 			},
-			BareKeywordArgs: true,
+			KeywordOptionsHash: true,
 		}},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
@@ -125,6 +126,61 @@ end`
 				{Name: "and", Value: &ast.IntegerLiteral{Value: 1}},
 				{Name: "or", Value: &ast.IntegerLiteral{Value: 2}},
 				{Name: "not", Value: &ast.IntegerLiteral{Value: 3}},
+			},
+			KeywordOptionsHash: true,
+		}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserParenthesizedKeywordOptionsHashScope verifies that the
+// KeywordOptionsHash flag is set only for parenthesized plain function calls.
+// Method and constructor calls (member callees) keep strict parenthesized
+// keyword binding, so they leave the flag unset to preserve the boundary with
+// issue #576.
+func TestParserParenthesizedKeywordOptionsHashScope(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  configure(retries: 3)
+  obj.configure(retries: 3)
+  Server.new(retries: 3)
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "configure"},
+			Args:   []ast.Expression{},
+			KwArgs: []ast.KeywordArg{
+				{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
+			},
+			KeywordOptionsHash: true,
+		}},
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.MemberExpr{
+				Object:   &ast.Identifier{Name: "obj"},
+				Property: "configure",
+			},
+			Args: []ast.Expression{},
+			KwArgs: []ast.KeywordArg{
+				{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
+			},
+		}},
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.MemberExpr{
+				Object:   &ast.Identifier{Name: "Server"},
+				Property: "new",
+			},
+			Args: []ast.Expression{},
+			KwArgs: []ast.KeywordArg{
+				{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
 			},
 		}},
 	}

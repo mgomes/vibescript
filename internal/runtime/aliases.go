@@ -619,8 +619,9 @@ type Builtin struct {
 	Name       string
 	Fn         BuiltinFunc
 	AutoInvoke bool
-	// BareKeywordHashTarget receives parenless bare keyword hashes for builtin wrappers around script functions.
-	BareKeywordHashTarget *ScriptFunction
+	// OptionsHashTarget receives a collapsed keyword options hash for builtin
+	// wrappers around script functions (method and constructor callers).
+	OptionsHashTarget *ScriptFunction
 }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.

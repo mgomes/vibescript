@@ -88,12 +88,17 @@ func (e *HashLiteral) Pos() Position { return e.Position }
 
 // CallExpr represents a function or method call.
 type CallExpr struct {
-	Callee          Expression
-	Args            []Expression
-	KwArgs          []KeywordArg
-	BareKeywordArgs bool
-	Block           *BlockLiteral
-	Position        Position
+	Callee Expression
+	Args   []Expression
+	KwArgs []KeywordArg
+	// KeywordOptionsHash marks calls whose keyword arguments may collapse into a
+	// trailing positional options hash when the callee has no matching keyword
+	// parameter. It is set for parenless calls and for parenthesized plain
+	// function calls, mirroring how Ruby binds an options hash to a positional
+	// parameter.
+	KeywordOptionsHash bool
+	Block              *BlockLiteral
+	Position           Position
 }
 
 func (e *CallExpr) exprNode()     {}

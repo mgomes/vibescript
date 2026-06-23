@@ -128,7 +128,7 @@ func TestParenlessArgumentListCalls(t *testing.T) {
       mixed "pre", suffix: "fix"
     end
 
-    def strict_parenthesized_options
+    def parenthesized_options
       accept(a: 1, b: 2)
     end
 
@@ -151,7 +151,9 @@ func TestParenlessArgumentListCalls(t *testing.T) {
 	if got := callFunc(t, script, "call_mixed", nil); !got.Equal(NewString("prefix")) {
 		t.Fatalf("call_mixed() = %v, want prefix", got)
 	}
-	requireCallErrorContains(t, script, "strict_parenthesized_options", nil, CallOptions{}, "missing argument opts")
+	if got := callFunc(t, script, "parenthesized_options", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("parenthesized_options() = %v, want 3", got)
+	}
 	requireCallErrorContains(t, script, "strict_keyword_signature", nil, CallOptions{}, "missing argument opts")
 }
 
