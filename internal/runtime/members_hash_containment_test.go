@@ -1188,3 +1188,100 @@ func TestHashSelectSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 	_, err := callHashMember(t, exec, receiver, "select", nil, block)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
+
+// identityKeyBlock returns a block that yields its single argument unchanged,
+// modeling `{ |k| k }`. deep_transform_keys passes each key as a symbol and
+// expects a symbol or string back, so an identity block rebuilds the structure
+// with identical keys, isolating the test's memory pressure to the recursion's own
+// accounting rather than block-synthesized payloads.
+func identityKeyBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	body := []Statement{&ExprStmt{Expr: &Identifier{Name: "k", Position: pos}, Position: pos}}
+	return NewBlock([]Param{{Name: "k"}}, body, newEnv(nil))
+}
+
+// nestedKeyBufferHash builds a chain of depth nested hashes, each holding width
+// entries: width-1 integer leaves plus one link to the next level (the deepest
+// level is all leaves). The leaf keys sort before the link key, so the recursion
+// rebuilds every level's leaves before descending, leaving the upper levels fully
+// rebuilt by the time it reaches the deepest leaves. At that point one sorted-key
+// scratch buffer per level is live simultaneously, exposing the per-frame scratch
+// the recursion must charge.
+func nestedKeyBufferHash(depth, width int) Value {
+	level := func(includeLink bool) map[string]Value {
+		entries := make(map[string]Value, width)
+		leaves := width
+		if includeLink {
+			leaves = width - 1
+		}
+		for i := range leaves {
+			entries["a"+strconv.Itoa(i)] = NewInt(int64(i))
+		}
+		return entries
+	}
+	current := NewHash(level(false))
+	for range depth - 1 {
+		entries := level(true)
+		entries["z_child"] = current
+		current = NewHash(entries)
+	}
+	return current
+}
+
+// TestHashDeepTransformKeysSortedKeyBufferTripsMemoryQuota pins the scratch-buffer
+// accounting for the recursive transform. deep_transform_keys materializes a
+// sorted-key []string per nested hash level, and those buffers are live
+// simultaneously down the active recursion path. A quota that fits the live
+// receiver plus the entire rebuilt output -- which the recursion charges
+// incrementally -- but not the additional per-level key buffers must reject the
+// call mid-recursion. Before the fix the recursion charged nothing for these
+// buffers, so a deep or wide hash could allocate one uncharged key list per frame
+// past the sandbox limit.
+func TestHashDeepTransformKeysSortedKeyBufferTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const depth = 6
+	const width = 64
+	receiver := nestedKeyBufferHash(depth, width)
+	block := identityKeyBlock()
+
+	// The accumulator's baseline is the live execution plus the receiver; the block
+	// is not seeded as a call root (deepTransformKeys passes nil), matching the
+	// builtin exactly. The identity block rebuilds an identical structure, so the
+	// fully assembled output charges newMemoryEstimator().value(receiver) through the
+	// recursion's per-node decomposition.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 40}
+	base := newRootSeededHashBuildAccumulator(probe, receiver, nil, nil, NewNil()).base
+	fullOutput := newMemoryEstimator().value(receiver)
+
+	// Every level holds one live scratch buffer while the deepest level is walked.
+	perLevel := sortedKeyBufferBytes(width)
+	if perLevel <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for width %d", width)
+	}
+	peakScratch := depth * perLevel
+
+	// A quota above the live baseline plus the entire rebuilt output (so the old
+	// accounting that ignored the scratch buffers would admit the call) but below
+	// that plus the peak per-level scratch (so the buffers must trip it). Half the
+	// peak scratch sits well inside that window: the buffers add nearly peakScratch
+	// at the deepest leaves while only one leaf's value header is still unbuilt.
+	withOutput := base + fullOutput
+	quota := withOutput + peakScratch/2
+	if quota <= withOutput || quota >= withOutput+peakScratch {
+		t.Fatalf("test setup expects withOutput (%d) < quota (%d) < withOutput+peakScratch (%d)", withOutput, quota, withOutput+peakScratch)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	// Sanity: a quota that also fits the peak scratch admits the transform, proving
+	// the rejection above comes from the per-level buffer accounting and not an
+	// over-tight baseline or the output projection.
+	roomy := withOutput + peakScratch + 64*1024
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roomy}
+	if _, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block); err != nil {
+		t.Fatalf("deep_transform_keys under a quota that fits the key buffers = %v, want success", err)
+	}
+}

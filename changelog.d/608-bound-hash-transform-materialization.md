@@ -21,3 +21,9 @@
   receiver unbounded. The sorted key scratch buffer these transforms allocate to
   iterate deterministically is now charged against the memory quota before it is
   reserved, so it cannot escape the sandbox limit on a large receiver.
+  `Hash#deep_transform_keys` charges the same scratch buffer at every nested hash
+  level it visits: the per-level buffers are live simultaneously down the active
+  recursion path, so each level reserves its buffer against the quota before
+  sorting and releases it once its walk finishes, ensuring a deep or wide nested
+  hash cannot allocate an uncharged key list per recursion frame past the sandbox
+  limit.

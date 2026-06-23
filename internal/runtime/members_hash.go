@@ -131,6 +131,18 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 		if err := state.acc.addMapBase(); err != nil {
 			return NewNil(), err
 		}
+		// Reserve the sorted-key scratch buffer this level allocates before sorting
+		// so it counts against the quota for the whole subtree it spans. The buffers
+		// down the active recursion path are live simultaneously, so each level
+		// charges its own and releases it once its walk finishes, keeping completed
+		// siblings from leaving phantom scratch charged. Without this a deep or wide
+		// hash could allocate an uncharged key list per recursion frame past the
+		// sandbox limit.
+		scratch := sortedKeyBufferBytes(len(entries))
+		if err := state.acc.reserveScratch(scratch); err != nil {
+			return NewNil(), err
+		}
+		defer state.acc.releaseScratch(scratch)
 		out := make(map[string]Value, len(entries))
 		var blockArg [1]Value
 		var keyBuf [smallHashKeyBufferSize]string

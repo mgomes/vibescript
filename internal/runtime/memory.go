@@ -302,6 +302,15 @@ type hashBuildAccumulator struct {
 	// running byte total charged for the output as it is assembled.
 	base  int
 	built int
+	// scratch is the transient heap a recursive build holds alongside the output as
+	// it descends -- the sorted-key scratch buffers (see sortedKeyBufferBytes) live
+	// simultaneously down the active recursion path while each level walks its
+	// entries. Unlike built, which only grows because the rebuilt structure stays
+	// live, scratch is a stack: a level reserves its buffer before sorting and
+	// releases it when its loop finishes, so completed sibling subtrees do not leave
+	// phantom scratch charged. Every charge checks base+built+scratch, so a level's
+	// buffer counts against the quota for the whole subtree it spans.
+	scratch int
 	// keyValueBytes records, per key currently present in the output map, the value
 	// bytes charged for that key's stored value. add consults it so a key written
 	// more than once (a merge conflict block, or a transform_keys block that maps
@@ -447,11 +456,44 @@ func (acc *hashBuildAccumulator) addArrayBase(slots int) error {
 
 func (acc *hashBuildAccumulator) charge(delta int) error {
 	acc.built = saturatingAdd(acc.built, delta)
-	used := saturatingAdd(acc.base, acc.built)
+	return acc.checkQuota()
+}
+
+// checkQuota rejects the build when the live baseline plus the rebuilt output plus
+// the transient scratch held on the active recursion path exceeds the quota.
+func (acc *hashBuildAccumulator) checkQuota() error {
+	used := saturatingAdd(saturatingAdd(acc.base, acc.built), acc.scratch)
 	if used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
+}
+
+// reserveScratch charges a transient scratch buffer (such as a sorted-key list)
+// the build holds while it walks one structure level. The bytes count against the
+// quota for the whole subtree the level spans -- every nested charge sees them via
+// checkQuota -- and must be released with releaseScratch once the level's walk
+// finishes so completed siblings do not leave the buffer charged. A reservation
+// that already exceeds the quota is rejected before the buffer is allocated.
+func (acc *hashBuildAccumulator) reserveScratch(bytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.scratch = saturatingAdd(acc.scratch, bytes)
+	return acc.checkQuota()
+}
+
+// releaseScratch returns scratch bytes reserved by reserveScratch once the level
+// that held them has finished walking, never letting the running total fall below
+// zero.
+func (acc *hashBuildAccumulator) releaseScratch(bytes int) {
+	if acc.exec.memoryQuota <= 0 {
+		return
+	}
+	acc.scratch -= bytes
+	if acc.scratch < 0 {
+		acc.scratch = 0
+	}
 }
 
 // chargeDelta adjusts built by a signed delta, used when a key replacement swaps
