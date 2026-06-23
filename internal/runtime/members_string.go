@@ -563,6 +563,54 @@ func stringBangResult(original, updated string) Value {
 	return NewString(updated)
 }
 
+// isRubyStripSpace reports whether b is one of the ASCII whitespace bytes that
+// Ruby's strip family removes from the leading edge: horizontal tab, newline,
+// vertical tab, form feed, carriage return, and space. Unlike Go's
+// unicode.IsSpace it never matches multibyte Unicode spaces (NBSP, Ogham space
+// mark, em space, BOM, ...), which Ruby intentionally preserves.
+func isRubyStripSpace(b byte) bool {
+	switch b {
+	case '\t', '\n', '\v', '\f', '\r', ' ':
+		return true
+	default:
+		return false
+	}
+}
+
+// isRubyRstripSpace reports whether b is whitespace that Ruby removes from the
+// trailing edge. It matches the leading set plus the NUL byte: Ruby's rstrip
+// (and the trailing pass of strip) drops trailing NUL bytes while lstrip (and
+// the leading pass of strip) leaves a leading NUL in place.
+func isRubyRstripSpace(b byte) bool {
+	return b == 0x00 || isRubyStripSpace(b)
+}
+
+// rubyLstrip trims leading Ruby strip-family whitespace from text.
+func rubyLstrip(text string) string {
+	start := 0
+	for start < len(text) && isRubyStripSpace(text[start]) {
+		start++
+	}
+	return text[start:]
+}
+
+// rubyRstrip trims trailing Ruby strip-family whitespace (including NUL) from
+// text.
+func rubyRstrip(text string) string {
+	end := len(text)
+	for end > 0 && isRubyRstripSpace(text[end-1]) {
+		end--
+	}
+	return text[:end]
+}
+
+// rubyStrip trims whitespace from both ends of text using Ruby's asymmetric
+// rules: the leading edge follows lstrip (no NUL) and the trailing edge follows
+// rstrip (NUL included).
+func rubyStrip(text string) string {
+	return rubyLstrip(rubyRstrip(text))
+}
+
 func stringSquish(text string) string {
 	if stringIsSquished(text) {
 		return text
@@ -1651,14 +1699,14 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.strip does not take arguments")
 			}
-			return NewString(strings.TrimSpace(receiver.String())), nil
+			return NewString(rubyStrip(receiver.String())), nil
 		}), nil
 	case "strip!":
 		return NewAutoBuiltin("string.strip!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.strip! does not take arguments")
 			}
-			updated := strings.TrimSpace(receiver.String())
+			updated := rubyStrip(receiver.String())
 			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "squish":
@@ -1681,14 +1729,14 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.lstrip does not take arguments")
 			}
-			return NewString(strings.TrimLeftFunc(receiver.String(), unicode.IsSpace)), nil
+			return NewString(rubyLstrip(receiver.String())), nil
 		}), nil
 	case "lstrip!":
 		return NewAutoBuiltin("string.lstrip!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.lstrip! does not take arguments")
 			}
-			updated := strings.TrimLeftFunc(receiver.String(), unicode.IsSpace)
+			updated := rubyLstrip(receiver.String())
 			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "rstrip":
@@ -1696,14 +1744,14 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.rstrip does not take arguments")
 			}
-			return NewString(strings.TrimRightFunc(receiver.String(), unicode.IsSpace)), nil
+			return NewString(rubyRstrip(receiver.String())), nil
 		}), nil
 	case "rstrip!":
 		return NewAutoBuiltin("string.rstrip!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.rstrip! does not take arguments")
 			}
-			updated := strings.TrimRightFunc(receiver.String(), unicode.IsSpace)
+			updated := rubyRstrip(receiver.String())
 			return stringBangResult(receiver.String(), updated), nil
 		}), nil
 	case "chomp":
