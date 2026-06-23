@@ -373,12 +373,13 @@ func hashMemberTransforms(property string) (Value, error) {
 		// receiver unchanged. Index assignment (hash[key] = value) remains the
 		// way to mutate in place.
 		name := property
-		// Kept as a plain builtin (not AutoBuiltin) so a parenless `hash.merge`
-		// yields the receiver-bound method value rather than auto-invoking; the
-		// zero-argument copy behavior is reached through an explicit `merge()`
-		// call. Ruby's no-argument Hash#merge returns a copy of self, which the
-		// len(args) == 0 branch below handles for the explicit-call form.
-		return NewBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		// AutoBuiltin so a parenless `hash.merge` invokes with zero arguments and
+		// returns a copy of the receiver, matching Ruby where the call has no
+		// parentheses distinction. Ruby's no-argument Hash#merge returns a copy of
+		// self, which the len(args) == 0 branch below handles for both the bare and
+		// explicit `merge()` forms. Explicit `merge(...)` calls still pass their
+		// hash arguments through the normal call path.
+		return NewAutoBuiltin("hash."+name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			// Reject keyword arguments rather than silently dropping them. Ruby
 			// folds trailing keywords into an implicit hash argument, but
 			// Vibescript's native hash helpers only consume positional hashes, so
