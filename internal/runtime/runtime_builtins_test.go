@@ -426,8 +426,16 @@ func TestTimeAtSubsecondConstructor(t *testing.T) {
 	      Time.at(0, 1, :picosecond)
 	    end
 
-	    def unit_without_subsec()
+	    def nil_subsec_with_unit()
 	      Time.at(0, nil, :nsec)
+	    end
+
+	    def nil_subsec()
+	      Time.at(0, nil)
+	    end
+
+	    def nil_unit()
+	      Time.at(0, 500, nil)
 	    end
 
 	    def subsec_carries_into_seconds()
@@ -473,8 +481,18 @@ func TestTimeAtSubsecondConstructor(t *testing.T) {
 		"Time.at unknown keyword argument bogus")
 	requireCallErrorContains(t, script, "bad_unit", nil, CallOptions{},
 		"unexpected unit: picosecond")
-	requireCallErrorContains(t, script, "unit_without_subsec", nil, CallOptions{},
-		"Time.at expects a subsecond value before a unit")
+	// An explicitly-supplied nil subsecond is non-numeric and rejected, matching
+	// Ruby's Time.at(0, nil) and Time.at(0, nil, :nsec) TypeError. Unlike the
+	// calendar constructors (Time.utc/local), Time.at does not treat an explicit
+	// nil subsecond as omitted.
+	requireCallErrorContains(t, script, "nil_subsec_with_unit", nil, CallOptions{},
+		"Time.at subsecond value must be numeric")
+	requireCallErrorContains(t, script, "nil_subsec", nil, CallOptions{},
+		"Time.at subsecond value must be numeric")
+	// An explicit nil unit is an unrecognized unit, matching Ruby's
+	// Time.at(0, 500, nil) ArgumentError ("unexpected unit: ").
+	requireCallErrorContains(t, script, "nil_unit", nil, CallOptions{},
+		"unexpected unit: ")
 
 	// A subsecond value that exceeds one second still carries into the seconds,
 	// matching Ruby, as long as the scaled nanosecond count fits in an int64.

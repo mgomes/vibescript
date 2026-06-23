@@ -219,7 +219,7 @@ func microsecondRangeError() error {
 // TimeFromEpoch converts a numeric epoch value into a time.Time anchored
 // to the supplied (or local) location.
 func TimeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
-	return TimeFromEpochParts(val, NewNil(), NewNil(), loc)
+	return TimeFromEpochParts(val, nil, nil, loc)
 }
 
 // subsecUnitNanos maps the unit symbols accepted by Time.at's three-argument
@@ -239,22 +239,25 @@ var subsecUnitNanos = map[string]int64{
 // The seconds argument may be an integer or float. The optional subsec argument
 // adds a subsecond offset whose unit defaults to microseconds and may be
 // overridden by the optional unit symbol (:microsecond/:usec, :millisecond, or
-// :nanosecond/:nsec). Pass NewNil() for subsec and unit when they are absent.
+// :nanosecond/:nsec). Pass a nil pointer for subsec and/or unit when they are
+// absent. A non-nil pointer to a nil Value represents a subsecond or unit that
+// was explicitly supplied as nil, which Ruby rejects (Time.at does not treat an
+// explicit nil subsecond as omitted the way the calendar constructors do).
 //
 // The result is backed by time.Time, which has nanosecond resolution, so
 // fractional nanoseconds (for example a float subsecond value) are truncated
 // toward zero rather than retained as Ruby's arbitrary-precision rationals do.
-func TimeFromEpochParts(secVal, subsecVal, unitVal Value, loc *time.Location) (time.Time, error) {
+func TimeFromEpochParts(secVal Value, subsecVal, unitVal *Value, loc *time.Location) (time.Time, error) {
 	seconds, nanos, err := epochSecondsToParts(secVal)
 	if err != nil {
 		return time.Time{}, err
 	}
 
-	if subsecVal.Kind() != KindNil {
+	if subsecVal != nil {
 		unitNanos := int64(1_000)
-		if unitVal.Kind() != KindNil {
+		if unitVal != nil {
 			if unitVal.Kind() != KindSymbol {
-				return time.Time{}, fmt.Errorf("Time.at unit must be a symbol")
+				return time.Time{}, fmt.Errorf("unexpected unit: %s", unitVal.String())
 			}
 			factor, ok := subsecUnitNanos[unitVal.String()]
 			if !ok {
@@ -263,7 +266,7 @@ func TimeFromEpochParts(secVal, subsecVal, unitVal Value, loc *time.Location) (t
 			unitNanos = factor
 		}
 
-		subNanos, err := subsecToNanos(subsecVal, unitNanos)
+		subNanos, err := subsecToNanos(*subsecVal, unitNanos)
 		if err != nil {
 			return time.Time{}, err
 		}
@@ -272,7 +275,7 @@ func TimeFromEpochParts(secVal, subsecVal, unitVal Value, loc *time.Location) (t
 			return time.Time{}, subsecondOverflowError()
 		}
 		nanos = total
-	} else if unitVal.Kind() != KindNil {
+	} else if unitVal != nil {
 		return time.Time{}, fmt.Errorf("Time.at expects a subsecond value before a unit")
 	}
 

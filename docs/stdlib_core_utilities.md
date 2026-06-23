@@ -822,7 +822,9 @@ Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
   from Unix epoch seconds (int or float). An optional subsecond value defaults to
   microseconds; an optional unit symbol (`:microsecond`/`:usec`,
   `:millisecond`, or `:nanosecond`/`:nsec`) selects the unit. A unit without a
-  subsecond value or an unknown unit symbol raises a runtime error. Subsecond
+  subsecond value, an unknown unit symbol, or a non-numeric subsecond value
+  raises a runtime error; unlike `Time.utc`/`Time.local`, an explicit `nil`
+  subsecond is rejected rather than treated as omitted. Subsecond
   values truncate toward zero at nanosecond resolution
   (`Time.at(0, 123456789, :nsec).nsec` is `123456789`) and carry into the
   seconds when they exceed one second; a magnitude too large for the nanosecond

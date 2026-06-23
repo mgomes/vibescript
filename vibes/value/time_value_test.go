@@ -410,13 +410,21 @@ func TestTimeFromEpoch(t *testing.T) {
 func TestTimeFromEpochParts(t *testing.T) {
 	t.Parallel()
 
-	nilVal := value.NewNil()
+	subsec := func(v value.Value) *value.Value { return &v }
+	unitSym := func(name string) *value.Value {
+		v := value.NewSymbol(name)
+		return &v
+	}
+	nilArg := func() *value.Value {
+		v := value.NewNil()
+		return &v
+	}
 
 	cases := []struct {
 		name        string
 		sec         value.Value
-		subsec      value.Value
-		unit        value.Value
+		subsec      *value.Value
+		unit        *value.Value
 		wantUnix    int64
 		wantNanos   int
 		wantErrText string
@@ -424,144 +432,175 @@ func TestTimeFromEpochParts(t *testing.T) {
 		{
 			name:      "float seconds carry fraction",
 			sec:       value.NewFloat(0.123456),
-			subsec:    nilVal,
-			unit:      nilVal,
+			subsec:    nil,
+			unit:      nil,
 			wantUnix:  0,
 			wantNanos: 123456000,
 		},
 		{
 			name:      "microsecond positional defaults to usec",
 			sec:       value.NewInt(0),
-			subsec:    value.NewInt(123456),
-			unit:      nilVal,
+			subsec:    subsec(value.NewInt(123456)),
+			unit:      nil,
 			wantUnix:  0,
 			wantNanos: 123456000,
 		},
 		{
 			name:      "explicit usec unit",
 			sec:       value.NewInt(0),
-			subsec:    value.NewInt(123456),
-			unit:      value.NewSymbol("usec"),
+			subsec:    subsec(value.NewInt(123456)),
+			unit:      unitSym("usec"),
 			wantUnix:  0,
 			wantNanos: 123456000,
 		},
 		{
 			name:      "microsecond unit alias",
 			sec:       value.NewInt(0),
-			subsec:    value.NewInt(123456),
-			unit:      value.NewSymbol("microsecond"),
+			subsec:    subsec(value.NewInt(123456)),
+			unit:      unitSym("microsecond"),
 			wantUnix:  0,
 			wantNanos: 123456000,
 		},
 		{
 			name:      "millisecond unit",
 			sec:       value.NewInt(0),
-			subsec:    value.NewInt(123),
-			unit:      value.NewSymbol("millisecond"),
+			subsec:    subsec(value.NewInt(123)),
+			unit:      unitSym("millisecond"),
 			wantUnix:  0,
 			wantNanos: 123000000,
 		},
 		{
 			name:      "nanosecond positional",
 			sec:       value.NewInt(0),
-			subsec:    value.NewInt(123456789),
-			unit:      value.NewSymbol("nsec"),
+			subsec:    subsec(value.NewInt(123456789)),
+			unit:      unitSym("nsec"),
 			wantUnix:  0,
 			wantNanos: 123456789,
 		},
 		{
 			name:      "nanosecond unit alias",
 			sec:       value.NewInt(0),
-			subsec:    value.NewInt(123456789),
-			unit:      value.NewSymbol("nanosecond"),
+			subsec:    subsec(value.NewInt(123456789)),
+			unit:      unitSym("nanosecond"),
 			wantUnix:  0,
 			wantNanos: 123456789,
 		},
 		{
 			name:      "subsecond overflows into seconds",
 			sec:       value.NewInt(5),
-			subsec:    value.NewInt(1_500_000),
-			unit:      nilVal,
+			subsec:    subsec(value.NewInt(1_500_000)),
+			unit:      nil,
 			wantUnix:  6,
 			wantNanos: 500000000,
 		},
 		{
 			name:      "negative subsecond borrows from seconds",
 			sec:       value.NewInt(0),
-			subsec:    value.NewInt(-123456),
-			unit:      nilVal,
+			subsec:    subsec(value.NewInt(-123456)),
+			unit:      nil,
 			wantUnix:  -1,
 			wantNanos: 876544000,
 		},
 		{
 			name:      "float subsecond truncates toward zero",
 			sec:       value.NewInt(0),
-			subsec:    value.NewFloat(1.9),
-			unit:      value.NewSymbol("nsec"),
+			subsec:    subsec(value.NewFloat(1.9)),
+			unit:      unitSym("nsec"),
 			wantUnix:  0,
 			wantNanos: 1,
 		},
 		{
 			name:        "non numeric seconds",
 			sec:         value.NewString("soon"),
-			subsec:      nilVal,
-			unit:        nilVal,
+			subsec:      nil,
+			unit:        nil,
 			wantErrText: "Time.at expects numeric seconds",
 		},
 		{
 			name:        "non numeric subsecond",
 			sec:         value.NewInt(0),
-			subsec:      value.NewString("1"),
-			unit:        nilVal,
+			subsec:      subsec(value.NewString("1")),
+			unit:        nil,
 			wantErrText: "Time.at subsecond value must be numeric",
+		},
+		{
+			// An explicitly-supplied nil subsecond is non-numeric and must be
+			// rejected, matching Ruby's Time.at(0, nil) TypeError. Unlike the
+			// calendar constructors (Time.utc/local) which treat an explicit nil
+			// subsecond as omitted, Time.at surfaces it as an error.
+			name:        "explicit nil subsecond rejected",
+			sec:         value.NewInt(0),
+			subsec:      nilArg(),
+			unit:        nil,
+			wantErrText: "Time.at subsecond value must be numeric",
+		},
+		{
+			// Even paired with a valid unit, an explicit nil subsecond is still
+			// non-numeric and rejected, matching Ruby's Time.at(0, nil, :usec).
+			name:        "explicit nil subsecond rejected with unit",
+			sec:         value.NewInt(0),
+			subsec:      nilArg(),
+			unit:        unitSym("usec"),
+			wantErrText: "Time.at subsecond value must be numeric",
+		},
+		{
+			// An explicit nil unit is an unrecognized unit, matching Ruby's
+			// Time.at(0, 500, nil) ArgumentError ("unexpected unit: ").
+			name:        "explicit nil unit rejected",
+			sec:         value.NewInt(0),
+			subsec:      subsec(value.NewInt(500)),
+			unit:        nilArg(),
+			wantErrText: "unexpected unit: ",
 		},
 		{
 			name:        "unknown unit symbol",
 			sec:         value.NewInt(0),
-			subsec:      value.NewInt(1),
-			unit:        value.NewSymbol("bogus"),
+			subsec:      subsec(value.NewInt(1)),
+			unit:        unitSym("bogus"),
 			wantErrText: "unexpected unit: bogus",
 		},
 		{
+			// A non-symbol unit (here a string) is an unrecognized unit, matching
+			// Ruby's Time.at(0, 500, "usec") ArgumentError ("unexpected unit: usec").
 			name:        "non symbol unit",
 			sec:         value.NewInt(0),
-			subsec:      value.NewInt(1),
-			unit:        value.NewString("nsec"),
-			wantErrText: "Time.at unit must be a symbol",
+			subsec:      subsec(value.NewInt(1)),
+			unit:        subsec(value.NewString("nsec")),
+			wantErrText: "unexpected unit: nsec",
 		},
 		{
 			name:        "unit without subsecond",
 			sec:         value.NewInt(0),
-			subsec:      nilVal,
-			unit:        value.NewSymbol("nsec"),
+			subsec:      nil,
+			unit:        unitSym("nsec"),
 			wantErrText: "Time.at expects a subsecond value before a unit",
 		},
 		{
 			name:        "integer subsecond scaling overflows int64",
 			sec:         value.NewInt(0),
-			subsec:      value.NewInt(9_223_372_036_854_776),
-			unit:        value.NewSymbol("microsecond"),
+			subsec:      subsec(value.NewInt(9_223_372_036_854_776)),
+			unit:        unitSym("microsecond"),
 			wantErrText: "Time.at subsecond value out of range",
 		},
 		{
 			name:        "negative integer subsecond scaling overflows int64",
 			sec:         value.NewInt(0),
-			subsec:      value.NewInt(-9_223_372_036_854_776),
-			unit:        value.NewSymbol("microsecond"),
+			subsec:      subsec(value.NewInt(-9_223_372_036_854_776)),
+			unit:        unitSym("microsecond"),
 			wantErrText: "Time.at subsecond value out of range",
 		},
 		{
 			name:        "subsecond addition overflows int64",
 			sec:         value.NewFloat(0.5),
-			subsec:      value.NewInt(math.MaxInt64),
-			unit:        value.NewSymbol("nsec"),
+			subsec:      subsec(value.NewInt(math.MaxInt64)),
+			unit:        unitSym("nsec"),
 			wantErrText: "Time.at subsecond value out of range",
 		},
 		{
 			name:        "float subsecond magnitude out of int64 range",
 			sec:         value.NewInt(0),
-			subsec:      value.NewFloat(1e20),
-			unit:        value.NewSymbol("nsec"),
+			subsec:      subsec(value.NewFloat(1e20)),
+			unit:        unitSym("nsec"),
 			wantErrText: "Time.at subsecond value out of range",
 		},
 		{
@@ -571,8 +610,8 @@ func TestTimeFromEpochParts(t *testing.T) {
 			// yields 289 ns, so representation error must not flip the result.
 			name:      "float microsecond truncates exact value not rounded product",
 			sec:       value.NewInt(0),
-			subsec:    value.NewFloat(0.29),
-			unit:      value.NewSymbol("usec"),
+			subsec:    subsec(value.NewFloat(0.29)),
+			unit:      unitSym("usec"),
 			wantUnix:  0,
 			wantNanos: 289,
 		},
@@ -582,8 +621,8 @@ func TestTimeFromEpochParts(t *testing.T) {
 			// truncating yields 1004999 rather than 1005000.
 			name:      "float millisecond truncates exact value not rounded product",
 			sec:       value.NewInt(0),
-			subsec:    value.NewFloat(1.005),
-			unit:      value.NewSymbol("millisecond"),
+			subsec:    subsec(value.NewFloat(1.005)),
+			unit:      unitSym("millisecond"),
 			wantUnix:  0,
 			wantNanos: 1004999,
 		},
@@ -594,8 +633,8 @@ func TestTimeFromEpochParts(t *testing.T) {
 			// represent Ruby's arbitrary-precision result of MaxInt64 + 1 second.
 			name:        "subsecond carry overflows epoch seconds",
 			sec:         value.NewInt(math.MaxInt64),
-			subsec:      value.NewInt(1_000_000),
-			unit:        nilVal,
+			subsec:      subsec(value.NewInt(1_000_000)),
+			unit:        nil,
 			wantErrText: "Time.at subsecond value out of range",
 		},
 		{
@@ -603,8 +642,8 @@ func TestTimeFromEpochParts(t *testing.T) {
 			// epoch seconds below math.MinInt64 must raise rather than wrap.
 			name:        "subsecond borrow underflows epoch seconds",
 			sec:         value.NewInt(math.MinInt64),
-			subsec:      value.NewInt(-1_000_000),
-			unit:        nilVal,
+			subsec:      subsec(value.NewInt(-1_000_000)),
+			unit:        nil,
 			wantErrText: "Time.at subsecond value out of range",
 		},
 	}
@@ -634,7 +673,7 @@ func TestTimeFromEpochParts(t *testing.T) {
 
 	t.Run("nil_location_uses_local", func(t *testing.T) {
 		t.Parallel()
-		got, err := value.TimeFromEpochParts(value.NewInt(0), value.NewInt(1), value.NewSymbol("nsec"), nil)
+		got, err := value.TimeFromEpochParts(value.NewInt(0), subsec(value.NewInt(1)), unitSym("nsec"), nil)
 		if err != nil {
 			t.Fatal(err)
 		}

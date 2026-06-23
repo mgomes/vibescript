@@ -537,13 +537,12 @@ func registerTimeBuiltins(engine *Engine) {
 				}
 				loc = parsed
 			}
-			subsec := NewNil()
+			var subsec, unit *Value
 			if len(args) >= 2 {
-				subsec = args[1]
+				subsec = &args[1]
 			}
-			unit := NewNil()
 			if len(args) == 3 {
-				unit = args[2]
+				unit = &args[2]
 			}
 			t, err := timeFromEpochParts(args[0], subsec, unit, loc)
 			if err != nil {

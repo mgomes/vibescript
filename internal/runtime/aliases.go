@@ -302,7 +302,7 @@ func timeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, 
 	return value.TimeFromCalendarParts(args, defaultLoc)
 }
 
-func timeFromEpochParts(secVal, subsecVal, unitVal Value, loc *time.Location) (time.Time, error) {
+func timeFromEpochParts(secVal Value, subsecVal, unitVal *Value, loc *time.Location) (time.Time, error) {
 	return value.TimeFromEpochParts(secVal, subsecVal, unitVal, loc)
 }
 
