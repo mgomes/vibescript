@@ -356,6 +356,11 @@ func TestArrayEnumerableHelperErrors(t *testing.T) {
 			want:   "array.filter_map does not take arguments",
 		},
 		{
+			name:   "filter_map with keyword arguments",
+			source: `def run(); [1, 2].filter_map(extra: true) do |n| n end; end`,
+			want:   "array.filter_map does not take keyword arguments",
+		},
+		{
 			name:   "grep without pattern",
 			source: `def run(); [1, 2].grep; end`,
 			want:   "array.grep expects exactly one pattern argument",

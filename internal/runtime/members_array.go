@@ -714,6 +714,9 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.filter_map does not take arguments")
 			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.filter_map does not take keyword arguments")
+			}
 			runner, err := newBlockCallRunner(exec, block, "array.filter_map")
 			if err != nil {
 				return NewNil(), err
