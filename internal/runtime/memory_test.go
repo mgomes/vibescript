@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 	"unsafe"
@@ -19,13 +20,22 @@ func TestMemoryEstimatorLayoutConstantsMatchRuntimeTypes(t *testing.T) {
 
 func TestMemoryEstimatorDeduplicatesAliasedEmptySlices(t *testing.T) {
 	t.Parallel()
-	backing := make([]Value, 0, 8)
-	aliasA := backing
-	aliasB := backing
+	// Back the zero-length slice with a live, fully-sized array and re-slice it
+	// to length zero. A bare `make([]Value, 0, 8)` leaves the backing array
+	// referenced only by zero-length headers, which produced an unstable
+	// reflect.Pointer in some CI environments and intermittently defeated the
+	// alias dedup (the second estimate occasionally counted the full size
+	// instead of 0). Holding a full-length reference keeps the data pointer
+	// stable so the dedup is deterministic.
+	backing := make([]Value, 8)
+	empty := backing[:0]
+	aliasA := empty
+	aliasB := empty
 
 	est := newMemoryEstimator()
 	first := est.slice(aliasA)
 	second := est.slice(aliasB)
+	runtime.KeepAlive(backing)
 
 	if first == 0 {
 		t.Fatalf("expected first alias to contribute memory")

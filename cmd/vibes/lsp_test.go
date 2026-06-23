@@ -583,6 +583,27 @@ func newCompletionTestServer() *lspServer {
 	}
 }
 
+func TestCompletionIndexBuiltLazily(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/lazy.vibe"
+	openDoc(t, server, uri, "def helper(value)\n  value\nend\n\ndef run()\n  helper(1)\nend\n")
+
+	// The didOpen publish compiles the document but must not eagerly
+	// build the completion index, which is the editor hot path.
+	if _, ok := server.completions[uri]; ok {
+		t.Fatal("didOpen eagerly built the completion index")
+	}
+
+	labels := completionLabels(t, server, uri, 5, 2)
+	if _, ok := labels["helper"]; !ok {
+		t.Fatalf("lazy completion index missing user-defined function helper: %d items", len(labels))
+	}
+	if _, ok := server.completions[uri]; !ok {
+		t.Fatal("completion request did not cache the lazily built index")
+	}
+}
+
 func TestCompletionAfterDotOffersMemberMethods(t *testing.T) {
 	t.Parallel()
 	server := newCompletionTestServer()
@@ -1124,38 +1145,68 @@ func TestDocumentSymbolsOutline(t *testing.T) {
 		Method:  "textDocument/documentSymbol",
 		Params:  payload,
 	})
-	symbols, ok := messages[0].Result.([]map[string]any)
+	symbols, ok := messages[0].Result.([]lspDocumentSymbol)
 	if !ok {
 		t.Fatalf("expected symbol list, got %#v", messages[0].Result)
 	}
-	byName := map[string]map[string]any{}
+	byName := map[string]lspDocumentSymbol{}
 	for _, symbol := range symbols {
-		byName[symbol["name"].(string)] = symbol
+		byName[symbol.Name] = symbol
 	}
 	if len(symbols) != 4 {
 		t.Fatalf("expected 4 top-level symbols, got %d", len(symbols))
 	}
-	if byName["helper"]["kind"] != 12 || byName["run"]["kind"] != 12 {
+	if byName["helper"].Kind != 12 || byName["run"].Kind != 12 {
 		t.Fatal("functions should have kind 12")
 	}
 	wallet := byName["Wallet"]
-	if wallet["kind"] != 5 {
-		t.Fatalf("Wallet kind = %#v, want class kind 5", wallet["kind"])
+	if wallet.Kind != 5 {
+		t.Fatalf("Wallet kind = %d, want class kind 5", wallet.Kind)
 	}
-	walletChildren := wallet["children"].([]map[string]any)
-	childNames := make([]string, 0, len(walletChildren))
-	for _, child := range walletChildren {
-		childNames = append(childNames, child["name"].(string))
+	childNames := make([]string, 0, len(wallet.Children))
+	for _, child := range wallet.Children {
+		childNames = append(childNames, child.Name)
 	}
 	if !slices.Contains(childNames, "balance") || !slices.Contains(childNames, "self.empty") {
 		t.Fatalf("Wallet children = %v, want balance and self.empty", childNames)
 	}
 	status := byName["Status"]
-	if status["kind"] != 10 {
-		t.Fatalf("Status kind = %#v, want enum kind 10", status["kind"])
+	if status.Kind != 10 {
+		t.Fatalf("Status kind = %d, want enum kind 10", status.Kind)
 	}
-	if members := status["children"].([]map[string]any); len(members) != 2 {
+	if members := status.Children; len(members) != 2 {
 		t.Fatalf("Status members = %d, want 2", len(members))
+	}
+}
+
+func TestDocumentSymbolsWireShape(t *testing.T) {
+	t.Parallel()
+	lines := splitLSPLines("class Wallet\n  def balance()\n    1\n  end\nend\n")
+	child := symbolFor("balance", 6, 1, lines, nil)
+	parent := symbolFor("Wallet", 5, 0, lines, []lspDocumentSymbol{child})
+
+	leafJSON, err := json.Marshal(child)
+	if err != nil {
+		t.Fatalf("marshal leaf symbol: %v", err)
+	}
+	// A leaf symbol omits the optional children field, matching the LSP
+	// DocumentSymbol shape clients expect for a method or member.
+	if strings.Contains(string(leafJSON), "children") {
+		t.Fatalf("leaf symbol JSON = %s, want no children field", leafJSON)
+	}
+
+	parentJSON, err := json.Marshal(parent)
+	if err != nil {
+		t.Fatalf("marshal parent symbol: %v", err)
+	}
+	want := `{"name":"Wallet","kind":5,` +
+		`"range":{"start":{"line":0,"character":0},"end":{"line":1,"character":15}},` +
+		`"selectionRange":{"start":{"line":0,"character":0},"end":{"line":0,"character":12}},` +
+		`"children":[{"name":"balance","kind":6,` +
+		`"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":15}},` +
+		`"selectionRange":{"start":{"line":1,"character":0},"end":{"line":1,"character":15}}}]}`
+	if string(parentJSON) != want {
+		t.Fatalf("parent symbol JSON =\n%s\nwant\n%s", parentJSON, want)
 	}
 }
 
@@ -1202,8 +1253,16 @@ func TestPublishDiagnosticsClearsNavigationWhenParsingIsSkipped(t *testing.T) {
 	if server.compiled[uri] == nil {
 		t.Fatal("initial publish did not cache compiled script")
 	}
-	if server.completions[uri] == nil {
-		t.Fatal("initial publish did not cache completion index")
+	// The completion index is built lazily, so the diagnostics-only
+	// publish must not eagerly populate it.
+	if _, ok := server.completions[uri]; ok {
+		t.Fatal("diagnostics publish eagerly built the completion index")
+	}
+	if server.completionIndex(uri) == nil {
+		t.Fatal("completionIndex did not build from the compiled script")
+	}
+	if _, ok := server.completions[uri]; !ok {
+		t.Fatal("completionIndex did not cache the built index")
 	}
 
 	oversized := strings.Repeat(source, 8)
@@ -1220,6 +1279,9 @@ func TestPublishDiagnosticsClearsNavigationWhenParsingIsSkipped(t *testing.T) {
 	}
 	if _, ok := server.completions[uri]; ok {
 		t.Fatal("oversized publish kept stale completion index")
+	}
+	if server.completionIndex(uri) != nil {
+		t.Fatal("completionIndex returned a stale index after the compiled script was dropped")
 	}
 }
 
@@ -1449,16 +1511,15 @@ func TestDocumentSymbolParentRangesEncloseChildren(t *testing.T) {
 
 	symbols := documentSymbols(server.programs[uri], server.documentLines(uri))
 	for _, symbol := range symbols {
-		children, ok := symbol["children"].([]map[string]any)
-		if !ok {
+		if len(symbol.Children) == 0 {
 			continue
 		}
-		parentEnd := symbol["range"].(map[string]any)["end"].(map[string]any)["line"].(int)
-		for _, child := range children {
-			childEnd := child["range"].(map[string]any)["end"].(map[string]any)["line"].(int)
+		parentEnd := symbol.Range.End.Line
+		for _, child := range symbol.Children {
+			childEnd := child.Range.End.Line
 			if childEnd > parentEnd {
 				t.Fatalf("%s child %s ends at line %d outside parent end %d",
-					symbol["name"], child["name"], childEnd, parentEnd)
+					symbol.Name, child.Name, childEnd, parentEnd)
 			}
 		}
 	}
@@ -1606,7 +1667,7 @@ func BenchmarkLSPDocumentSymbolLargeDocument(b *testing.B) {
 		if len(messages) != 1 {
 			b.Fatalf("documentSymbol responses = %d, want 1", len(messages))
 		}
-		symbols, ok := messages[0].Result.([]map[string]any)
+		symbols, ok := messages[0].Result.([]lspDocumentSymbol)
 		if !ok || len(symbols) != 2_001 {
 			b.Fatalf("documentSymbol result = %#v, want 2001 symbols", messages[0].Result)
 		}
