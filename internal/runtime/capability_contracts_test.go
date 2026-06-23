@@ -455,9 +455,9 @@ func (argPassThroughContractCapability) CapabilityContracts() map[string]Capabil
 	}
 }
 
-type hashMergeContractLeakProbeCapability struct{}
+type hashStoreContractLeakProbeCapability struct{}
 
-func (hashMergeContractLeakProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
+func (hashStoreContractLeakProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
 	return map[string]Value{
 		"cap": NewObject(map[string]Value{
 			"touch": NewBuiltin("cap.touch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -467,11 +467,11 @@ func (hashMergeContractLeakProbeCapability) Bind(binding CapabilityBinding) (map
 	}, nil
 }
 
-func (hashMergeContractLeakProbeCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+func (hashStoreContractLeakProbeCapability) CapabilityContracts() map[string]CapabilityMethodContract {
 	return map[string]CapabilityMethodContract{
-		"hash.merge": {
+		"hash.store": {
 			ValidateArgs: func(args []Value, kwargs map[string]Value, block Value) error {
-				return fmt.Errorf("hash.merge contract should not bind to foreign builtin")
+				return fmt.Errorf("hash.store contract should not bind to foreign builtin")
 			},
 		},
 	}
@@ -841,16 +841,20 @@ end`)
 
 func TestCapabilityContractsDoNotHijackReceiverStoredForeignBuiltins(t *testing.T) {
 	t.Parallel()
+	// hash.store stays a non-auto-invoked builtin (it requires a key and value),
+	// so a bare `{ a: 1 }.store` yields the unbound method value rather than
+	// auto-invoking. The test stores that foreign builtin on a capability slot and
+	// confirms the capability's hash.store contract does not bind to it.
 	script := compileScriptDefault(t, `def run()
-  cap.foreign = { a: 1 }.merge
+  cap.foreign = { a: 1 }.store
   cap.touch()
-  cap.foreign({ b: 2 })
+  cap.foreign(:b, 2)
 end`)
 	var err error
 
 	result, err := script.Call(context.Background(), "run", nil, CallOptions{
 		Capabilities: []CapabilityAdapter{
-			hashMergeContractLeakProbeCapability{},
+			hashStoreContractLeakProbeCapability{},
 		},
 	})
 	if err != nil {
@@ -860,7 +864,7 @@ end`)
 		t.Fatalf("expected hash result, got %v", result.Kind())
 	}
 	if got, ok := result.Hash()["b"]; !ok || got.Kind() != KindInt || got.Int() != 2 {
-		t.Fatalf("unexpected merge result: %#v", result.Hash())
+		t.Fatalf("unexpected store result: %#v", result.Hash())
 	}
 }
 

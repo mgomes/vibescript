@@ -236,6 +236,10 @@ func TestHashMergeMultipleHashes(t *testing.T) {
       { a: 1, b: 2 }.merge()
     end
 
+    def parenless_copies()
+      ({ a: 1, b: 2 }).merge
+    end
+
     def receiver_unchanged()
       original = { a: 1 }
       merged = original.merge({ b: 2 }, { c: 3 })
@@ -266,6 +270,11 @@ func TestHashMergeMultipleHashes(t *testing.T) {
 		{
 			name: "no arguments returns a copy of the receiver",
 			fn:   "no_arguments_copies",
+			want: map[string]Value{"a": NewInt(1), "b": NewInt(2)},
+		},
+		{
+			name: "parenless invocation returns a copy of the receiver",
+			fn:   "parenless_copies",
 			want: map[string]Value{"a": NewInt(1), "b": NewInt(2)},
 		},
 	}
@@ -313,6 +322,14 @@ func TestHashUpdateAndMergeBangAliases(t *testing.T) {
       merged = original.merge!({ a: 5 })
       { original: original, merged: merged }
     end
+
+    def update_parenless_copies()
+      ({ a: 1, b: 2 }).update
+    end
+
+    def merge_bang_parenless_copies()
+      ({ a: 1, b: 2 }).merge!
+    end
     `)
 
 	t.Run("update returns a new hash and leaves the receiver unchanged", func(t *testing.T) {
@@ -339,6 +356,18 @@ func TestHashUpdateAndMergeBangAliases(t *testing.T) {
 		result := callFunc(t, script, "merge_bang_returns_new_hash", nil).Hash()
 		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1)})
 		compareHash(t, result["merged"].Hash(), map[string]Value{"a": NewInt(5)})
+	})
+
+	t.Run("parenless update returns a copy of the receiver", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "update_parenless_copies", nil)
+		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+	})
+
+	t.Run("parenless merge! returns a copy of the receiver", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "merge_bang_parenless_copies", nil)
+		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
 	})
 }
 
