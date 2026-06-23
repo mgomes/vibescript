@@ -48,11 +48,12 @@ Returns the codepoint of the first character:
 
 ### `chr`
 
-Returns the first character (or `nil` for empty strings):
+Returns the first character, mirroring Ruby's `String#chr`. An empty string
+returns an empty string:
 
 ```vibe
 "hé".chr  # "h"
-"".chr    # nil
+"".chr    # ""
 ```
 
 ### `hex`
