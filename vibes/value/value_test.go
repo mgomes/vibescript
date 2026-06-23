@@ -612,6 +612,150 @@ func allocBytes(t *testing.T, fn func()) uint64 {
 	return after.TotalAlloc - before.TotalAlloc
 }
 
+func TestValueWriteStringTo(t *testing.T) {
+	t.Parallel()
+
+	big := value.NewString(strings.Repeat("x", 1024))
+
+	tests := []struct {
+		name string
+		val  value.Value
+	}{
+		{"nil", value.NewNil()},
+		{"bool", value.NewBool(true)},
+		{"int", value.NewInt(-42)},
+		{"float", value.NewFloat(2.5)},
+		{"float_infinity", value.NewFloat(math.Inf(1))},
+		{"string", value.NewString("hello")},
+		{"symbol", value.NewSymbol("status")},
+		{"money", value.NewMoney(mustMoney(t, 1999, "usd"))},
+		{"duration", value.NewDuration(value.DurationFromSeconds(90))},
+		{"time", value.NewTime(time.Date(2024, 6, 1, 12, 30, 0, 500_000_000, time.UTC))},
+		{"range", value.NewRange(value.Range{Start: 1, End: 5})},
+		{"empty_array", value.NewArray(nil)},
+		{"single_array", value.NewArray([]value.Value{value.NewInt(1)})},
+		{
+			"nested_array",
+			value.NewArray([]value.Value{
+				value.NewInt(1),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+		},
+		{"empty_hash", value.NewHash(nil)},
+		{
+			"single_hash",
+			value.NewHash(map[string]value.Value{"name": value.NewString("acme")}),
+		},
+		{"runtime_kind_fallback", value.NewValue(value.KindBlock, fakeBlock{})},
+		{
+			"array_of_repeated_large_string",
+			value.NewArray([]value.Value{big, big, big, big, big}),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var sb strings.Builder
+			if err := tc.val.WriteStringTo(&sb); err != nil {
+				t.Fatalf("WriteStringTo: %v", err)
+			}
+			if got, want := sb.String(), tc.val.String(); got != want {
+				t.Fatalf("WriteStringTo wrote %q, want String() %q", got, want)
+			}
+		})
+	}
+}
+
+func TestValueWriteStringToCycleDetection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("self_referential_array", func(t *testing.T) {
+		t.Parallel()
+		elems := make([]value.Value, 1)
+		arr := value.NewArray(elems)
+		elems[0] = arr
+		var sb strings.Builder
+		if err := arr.WriteStringTo(&sb); err != nil {
+			t.Fatalf("WriteStringTo: %v", err)
+		}
+		if got, want := sb.String(), arr.String(); got != want {
+			t.Fatalf("WriteStringTo wrote %q, want String() %q", got, want)
+		}
+	})
+
+	t.Run("self_referential_hash", func(t *testing.T) {
+		t.Parallel()
+		entries := make(map[string]value.Value)
+		hash := value.NewHash(entries)
+		entries["self"] = hash
+		var sb strings.Builder
+		if err := hash.WriteStringTo(&sb); err != nil {
+			t.Fatalf("WriteStringTo: %v", err)
+		}
+		if got, want := sb.String(), hash.String(); got != want {
+			t.Fatalf("WriteStringTo wrote %q, want String() %q", got, want)
+		}
+	})
+
+	t.Run("shared_subtree_is_not_a_cycle", func(t *testing.T) {
+		t.Parallel()
+		shared := value.NewArray([]value.Value{value.NewInt(1)})
+		outer := value.NewArray([]value.Value{shared, shared})
+		var sb strings.Builder
+		if err := outer.WriteStringTo(&sb); err != nil {
+			t.Fatalf("WriteStringTo: %v", err)
+		}
+		if got, want := sb.String(), "[[1], [1]]"; got != want {
+			t.Fatalf("WriteStringTo wrote %q, want %q", got, want)
+		}
+	})
+}
+
+func TestValueWriteStringToDoesNotMaterializeRendering(t *testing.T) {
+	// Deliberately not parallel: this measures heap bytes via runtime.MemStats,
+	// which observes the whole process. A non-parallel top-level test runs while
+	// every parallel sibling is paused, so the only allocations during the
+	// measured window are this test's own.
+
+	// An aggregate whose rendering expands far beyond its footprint: a short
+	// array holding many references to one large string. An implementation that
+	// rendered the value to a temporary string and then copied it into the
+	// destination would transiently hold both the temporary and the destination
+	// copy. WriteStringTo must stream straight into the builder, so writing into a
+	// builder already grown to the rendered size allocates nothing close to that
+	// rendering. The sandbox relies on this so a quota that passed the projected
+	// length is not blown by a second full copy.
+	const elementBytes = 8192
+	const elementCount = 64
+
+	large := value.NewString(strings.Repeat("x", elementBytes))
+	elems := make([]value.Value, elementCount)
+	for i := range elems {
+		elems[i] = large
+	}
+	arr := value.NewArray(elems)
+
+	rendered := len(arr.String())
+
+	var sb strings.Builder
+	sb.Grow(rendered)
+	writeBytes := allocBytes(t, func() {
+		if err := arr.WriteStringTo(&sb); err != nil {
+			t.Fatalf("WriteStringTo: %v", err)
+		}
+	})
+
+	// With the builder pre-grown to hold the result, a streaming writer copies
+	// each chunk in place and allocates nothing close to the rendered size. An
+	// implementation that built the full string first (WriteString(val.String()))
+	// would allocate at least the rendered bytes for that temporary.
+	if writeBytes >= uint64(rendered) {
+		t.Fatalf("WriteStringTo allocated %d bytes, want well below the rendered %d", writeBytes, rendered)
+	}
+}
+
 func TestValueEqual(t *testing.T) {
 	t.Parallel()
 

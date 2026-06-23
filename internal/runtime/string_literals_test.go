@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"errors"
+	goruntime "runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -199,6 +201,66 @@ func TestEvalInterpolatedStringLiteralAggregateRendersUnderAmpleQuota(t *testing
 	}
 	if want := "values: " + arr.String(); got.String() != want {
 		t.Fatalf("result = %q, want %q", got.String(), want)
+	}
+}
+
+func TestEvalInterpolatedStringLiteralStreamsValueWithoutSecondCopy(t *testing.T) {
+	// Not parallel: this reads process-wide allocation counters and must not race
+	// other goroutines' allocations.
+
+	// An aggregate whose rendering expands far beyond its own footprint: a short
+	// array holding many references to one large string. The value fits the memory
+	// quota and its projected rendering (sb.Len + StringByteLen) passes, so
+	// execution reaches the materialization. A renderer that first built the full
+	// string and then copied it into the builder would transiently hold both the
+	// temporary rendering and the builder copy, peaking near twice the rendered
+	// size and defeating a quota set close to the final output. Streaming the
+	// value directly into the builder keeps the peak to a single rendering.
+	const elementBytes = 8192
+	const elementCount = 64
+
+	large := NewString(strings.Repeat("x", elementBytes))
+	elems := make([]Value, elementCount)
+	for i := range elems {
+		elems[i] = large
+	}
+	arr := NewArray(elems)
+
+	lit := &InterpolatedString{Parts: []StringPart{StringExpr{Expr: &Identifier{Name: "arr"}}}}
+
+	rendered := len(arr.String())
+
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 20,
+		memoryQuota: rendered + (rendered / 4),
+	}
+	env := newEnv(nil)
+	env.Define("arr", arr)
+	exec.pushEnv(env)
+
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	var before, after goruntime.MemStats
+	goruntime.ReadMemStats(&before)
+	got, err := exec.evalInterpolatedStringLiteral(lit, env)
+	goruntime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("evalInterpolatedStringLiteral: %v", err)
+	}
+	if want := arr.String(); got.String() != want {
+		t.Fatalf("result = %q, want %q", got.String(), want)
+	}
+
+	// Streaming allocates roughly one rendering (the builder's backing buffer).
+	// A second full copy (val.String() then WriteString) would allocate at least
+	// the rendered bytes again on top, pushing the total past ~2x. A ceiling of
+	// 1.6x rejects the double-copy path while tolerating builder growth slack and
+	// small bookkeeping allocations.
+	allocated := after.TotalAlloc - before.TotalAlloc
+	ceiling := uint64(rendered) + uint64(rendered)*6/10
+	if allocated > ceiling {
+		t.Fatalf("interpolation allocated %d bytes, want <= %d (rendered %d); a second full copy would roughly double this",
+			allocated, ceiling, rendered)
 	}
 }
 

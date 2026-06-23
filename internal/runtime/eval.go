@@ -200,6 +200,11 @@ func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, en
 // the surrounding evaluator would only observe after it already exists. Small
 // interpolations stay on the fast path: with no quotas the checks are O(1)
 // no-ops.
+//
+// The builder is grown by exactly the chunk length once the projection passes,
+// so the write reserves only the quota-checked payload rather than relying on the
+// append-based doubling Builder.WriteString uses, which can round the backing
+// array up past the projected size.
 func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string) error {
 	if err := exec.step(); err != nil {
 		return err
@@ -207,6 +212,7 @@ func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string
 	if err := exec.checkProjectedStringBytes(saturatingAdd(sb.Len(), len(chunk))); err != nil {
 		return err
 	}
+	sb.Grow(len(chunk))
 	sb.WriteString(chunk)
 	return nil
 }
@@ -220,15 +226,34 @@ func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string
 // failing the post-build check. Value.StringByteLen walks the aggregate without
 // allocating the joined result, so the projection is the only work done for a
 // value that overruns the quota.
+//
+// Once the projection passes, the builder is grown by exactly the projected
+// payload and Value.WriteStringTo streams the rendering straight into sb rather
+// than building a temporary string and copying it in. A second full copy would
+// transiently hold both the temporary rendering and the builder copy, so a quota
+// close to the final output size could be exceeded even though the single-payload
+// projection passed. Reserving the payload up front also keeps WriteStringTo's
+// per-element writes from triggering the builder's doubling growth, which would
+// overshoot the quota-checked size; the peak allocation stays a single rendering,
+// matching what the projection accounted for.
 func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) error {
 	if err := exec.step(); err != nil {
 		return err
 	}
-	if err := exec.checkProjectedStringBytes(saturatingAdd(sb.Len(), val.StringByteLen())); err != nil {
+	payload := val.StringByteLen()
+	if err := exec.checkProjectedStringBytes(saturatingAdd(sb.Len(), payload)); err != nil {
 		return err
 	}
-	sb.WriteString(val.String())
-	return nil
+	// Grow only on a positive payload: StringByteLen sums byte counts without
+	// saturating, so a rendering larger than the int range (physically
+	// unreachable but not statically excluded) could wrap negative, and Grow
+	// panics on a negative count.
+	if payload > 0 {
+		sb.Grow(payload)
+	}
+	// strings.Builder.WriteString never returns an error, so WriteStringTo
+	// cannot fail here; the error return exists for the io.StringWriter contract.
+	return val.WriteStringTo(sb)
 }
 
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {

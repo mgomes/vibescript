@@ -2,6 +2,7 @@ package value
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"reflect"
 	"strconv"
@@ -94,10 +95,12 @@ func (v Value) String() string {
 		return v.Duration().String()
 	case KindTime:
 		return v.data.(time.Time).Format(time.RFC3339Nano)
-	case KindArray:
-		return v.stringWithState(newValueStringState())
-	case KindHash:
-		return v.stringWithState(newValueStringState())
+	case KindArray, KindHash:
+		var sb strings.Builder
+		// strings.Builder.WriteString never returns an error, so streaming the
+		// aggregate into it cannot fail.
+		_ = v.writeStringWithState(&sb, newValueStringState())
+		return sb.String()
 	case KindRange:
 		r := v.data.(Range)
 		if r.Exclusive {
@@ -143,7 +146,25 @@ func newValueStringState() *valueStringState {
 	}
 }
 
-func (v Value) stringWithState(state *valueStringState) string {
+// WriteStringTo writes the same bytes String would return for v directly into w,
+// without first materializing the rendered representation as a separate string.
+// Callers that have already bounded the rendering against a quota (such as the
+// sandbox's interpolation memory guard) use it to stream an aggregate straight
+// into their builder instead of allocating the full rendering and then copying
+// it, which would transiently hold both the temporary and the destination copy
+// and could exceed a memory limit the projected length passed. It returns the
+// first write error encountered, matching io.StringWriter semantics.
+func (v Value) WriteStringTo(w io.StringWriter) error {
+	switch v.kind {
+	case KindArray, KindHash:
+		return v.writeStringWithState(w, newValueStringState())
+	default:
+		_, err := w.WriteString(v.String())
+		return err
+	}
+}
+
+func (v Value) writeStringWithState(w io.StringWriter, state *valueStringState) error {
 	switch v.kind {
 	case KindArray:
 		elems := v.data.([]Value)
@@ -154,36 +175,65 @@ func (v Value) stringWithState(state *valueStringState) string {
 		}
 		if id.Ptr != 0 {
 			if _, seen := state.arrays[id]; seen {
-				return cycleMarker
+				_, err := w.WriteString(cycleMarker)
+				return err
 			}
 			state.arrays[id] = struct{}{}
 			defer delete(state.arrays, id)
 		}
-		parts := make([]string, len(elems))
-		for i, e := range elems {
-			parts[i] = e.stringWithState(state)
+		if _, err := w.WriteString(arrayOpen); err != nil {
+			return err
 		}
-		return arrayOpen + strings.Join(parts, elementSeparator) + arrayClose
+		for i, e := range elems {
+			if i > 0 {
+				if _, err := w.WriteString(elementSeparator); err != nil {
+					return err
+				}
+			}
+			if err := e.writeStringWithState(w, state); err != nil {
+				return err
+			}
+		}
+		_, err := w.WriteString(arrayClose)
+		return err
 	case KindHash:
 		entries := v.data.(map[string]Value)
 		if len(entries) == 0 {
-			return hashOpen + hashClose
+			_, err := w.WriteString(hashOpen + hashClose)
+			return err
 		}
 		ptr := reflect.ValueOf(entries).Pointer()
 		if ptr != 0 {
 			if _, seen := state.maps[ptr]; seen {
-				return cycleMarker
+				_, err := w.WriteString(cycleMarker)
+				return err
 			}
 			state.maps[ptr] = struct{}{}
 			defer delete(state.maps, ptr)
 		}
-		parts := make([]string, 0, len(entries))
-		for k, val := range entries {
-			parts = append(parts, k+keyValueSeparator+val.stringWithState(state))
+		if _, err := w.WriteString(hashOpen); err != nil {
+			return err
 		}
-		return hashOpen + strings.Join(parts, elementSeparator) + hashClose
+		first := true
+		for k, val := range entries {
+			if !first {
+				if _, err := w.WriteString(elementSeparator); err != nil {
+					return err
+				}
+			}
+			first = false
+			if _, err := w.WriteString(k + keyValueSeparator); err != nil {
+				return err
+			}
+			if err := val.writeStringWithState(w, state); err != nil {
+				return err
+			}
+		}
+		_, err := w.WriteString(hashClose)
+		return err
 	default:
-		return v.String()
+		_, err := w.WriteString(v.String())
+		return err
 	}
 }
 
