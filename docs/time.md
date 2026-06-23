@@ -13,7 +13,7 @@ end
 - `Time.new(year, month, day, hour=0, min=0, sec=0, zone=nil, in: zone)`
 - `Time.local(year, month, day, hour=0, min=0, sec=0, usec=0)` / `Time.mktime(...)`
 - `Time.utc(year, month, day, hour=0, min=0, sec=0, usec=0)` / `Time.gm(...)`
-- `Time.at(seconds_since_epoch, in: zone)`
+- `Time.at(seconds_since_epoch, subsec=nil, unit=nil, in: zone)`
 - `Time.now(in: zone)`
 - `Time.parse(string, layout=nil, in: zone)`
 
@@ -26,6 +26,22 @@ def with_microseconds
   Time.utc(2024, 1, 2, 3, 4, 5, 123456).nsec # 123456000
 end
 ```
+
+`Time.at` accepts Ruby-style subsecond arguments. The first argument is epoch seconds (integer or float, with floats carrying their fraction). An optional second positional argument adds a subsecond offset that defaults to microseconds, and an optional third positional symbol selects the unit: `:microsecond`/`:usec`, `:millisecond`, or `:nanosecond`/`:nsec`. A unit without a subsecond value, an unknown unit symbol, or a non-numeric subsecond value raises a runtime error. Unlike the calendar constructors (`Time.utc`/`Time.local`), `Time.at` does not treat an explicit `nil` subsecond as omitted: `Time.at(0, nil)` raises just as Ruby does. The `in:` zone keyword composes with every form. Subsecond values are backed by nanosecond-resolution timestamps, so a fractional nanosecond is floored toward negative infinity the way Ruby exposes it: `Time.at(0, -1.9, :nsec).nsec == 999999998`. A subsecond value larger than one second carries into the seconds (and a negative value borrows from them), matching Ruby; a magnitude too large to express within the nanosecond range raises `Time.at subsecond value out of range` rather than wrapping into a bogus instant.
+
+```vibe
+def from_epoch
+  {
+    float:       Time.at(0.123456).utc.nsec,                  # 123456000
+    micro:       Time.at(0, 123456).utc.nsec,                 # 123456000
+    micro_unit:  Time.at(0, 123456, :microsecond).utc.nsec,  # 123456000
+    milli:       Time.at(0, 123, :millisecond).utc.nsec,      # 123000000
+    nano:        Time.at(0, 123456789, :nsec).utc.nsec,       # 123456789
+    zoned:       Time.at(0, 123456, in: "+05:30").utc_offset  # 19800
+  }
+end
+```
+
 Without an explicit `layout`, `Time.parse` accepts common formats such as RFC3339/RFC1123, `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYY-MM-DD HH:MM:SS`, and `MM/DD/YYYY` (with optional time).
 
 ## Formatting
@@ -95,7 +111,7 @@ end
 
 ## Comparisons and math
 
-- Compare: `<=>`, `eql?`
+- Compare: `<=>`, `eql?`. `eql?` is a predicate: it returns `true` only when both operands are equal `Time` values, returns `false` for an unequal `Time` or a non-`Time` operand (matching Ruby's `Time#eql?`), and raises only when given the wrong number of arguments.
 - Add/sub durations: `time + duration`, `time - duration`
 - Add/sub seconds: `time + number`, `time - number`, where the number is interpreted as seconds (matching Ruby). Integers shift by whole seconds; floats carry sub-second precision down to the nanosecond, and negative values shift backward. The result is a new `Time`. Numeric addition commutes (`number + time`), but subtracting a `Time` from a number is undefined, just as in Ruby.
 - Difference of times: `time - time` → a `Float` number of seconds (matching Ruby's `Time#-`), preserving sub-second precision
