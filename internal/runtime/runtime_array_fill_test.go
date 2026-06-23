@@ -566,6 +566,21 @@ end`
 	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+// TestArrayFillPaddedGapStepQuota confirms a fill whose window is empty but whose
+// start sits far past the end still consumes a step for each padded nil slot. The
+// fill window here is empty (zero length), so without charging steps for the gap a
+// growth this large would materialize a million-element array under a small step
+// quota without ever hitting the step limit or polling cancellation. The padded
+// slots must be bounded by the step quota just like filled slots.
+func TestArrayFillPaddedGapStepQuota(t *testing.T) {
+	t.Parallel()
+	source := `def run()
+  [].fill(0, 1000000, 0)
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: 64 << 20}, source)
+	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+}
+
 // TestArrayFillBoundsInitialCapacity confirms a large requested fill window does
 // not reserve its full backing array up front. With a generous memory quota but
 // a tiny step quota, the projected memory check passes (so execution reaches the

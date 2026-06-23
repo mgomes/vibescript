@@ -1253,14 +1253,20 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 
 	var blockArg [1]Value
 	for i := range span.finalLength {
+		// Charge a step for every position written, not just the ones inside the
+		// fill window. A fill that grows the array past its old length pads the
+		// nil gap (and copies the existing prefix) one slot at a time, so without
+		// a step per slot a window far past the end (e.g. fill(0, 1_000_000, 0))
+		// could materialize a huge array under a small step quota without ever
+		// polling cancellation. Stepping every iteration keeps total growth
+		// bounded by the step quota regardless of where the window sits.
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
 		switch {
 		case i >= span.begin && i < span.end:
-			// Within the fill window. Charge a step per produced element so a
-			// large window cannot starve the quota or cancellation checks, then
-			// resolve the element from the block or the explicit fill value.
-			if err := exec.step(); err != nil {
-				return NewNil(), err
-			}
+			// Within the fill window: resolve the element from the block or the
+			// explicit fill value.
 			var val Value
 			if runner != nil {
 				blockArg[0] = NewInt(int64(i))
