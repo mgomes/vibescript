@@ -65,6 +65,21 @@ func sortedHashKeysInto(entries map[string]Value, buf []string) []string {
 	return keys
 }
 
+// sortedKeyBufferBytes returns the heap bytes sortedHashKeysInto allocates to
+// hold a sorted key list for keyCount keys. A count that fits the inline stack
+// buffer reuses it and allocates nothing; a larger count heaps a fresh []string
+// of one header per key plus the slice base. The key strings alias the map's
+// own keys (already resident), so only the scratch slice's backing is new and
+// the payload bytes are not counted here. Hash transforms charge this against
+// the quota before sorting so the scratch list itself cannot escape the sandbox
+// on a large receiver.
+func sortedKeyBufferBytes(keyCount int) int {
+	if keyCount <= smallHashKeyBufferSize {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(keyCount, estimatedStringHeaderBytes))
+}
+
 func deepTransformKeys(exec *Execution, receiver, block Value) (Value, error) {
 	state := &deepTransformState{
 		seenHashes: make(map[uintptr]struct{}),
@@ -347,9 +362,22 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// each builds no output map, but it materializes a sorted key list to
+			// walk entries deterministically. Charge that scratch buffer before
+			// allocating it so a large receiver cannot escape the memory quota.
+			if err := exec.checkProjectedHashTransformBytes(0, sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call only charges a step
+				// per statement it runs, so a blockless body would otherwise iterate
+				// the whole hash uncharged.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
 				if _, err := runner.call(blockArgs[:]); err != nil {
@@ -368,9 +396,19 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Charge the sorted key scratch buffer before allocating it; each_key
+			// builds no output map but walks a materialized key list.
+			if err := exec.checkProjectedHashTransformBytes(0, sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per key so an empty block still consumes the step
+				// quota and observes cancellation rather than relying on runner.call.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = NewSymbol(key)
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
@@ -388,9 +426,19 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Charge the sorted key scratch buffer before allocating it; each_value
+			// builds no output map but walks a materialized key list.
+			if err := exec.checkProjectedHashTransformBytes(0, sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per value so an empty block still consumes the step
+				// quota and observes cancellation rather than relying on runner.call.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = entries[key]
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
@@ -414,6 +462,28 @@ func looseMergedKeyUpperBound(base map[string]Value, args []Value) int {
 		count = saturatingAdd(count, len(arg.Hash()))
 	}
 	return count
+}
+
+// mergeSortScratchBytes returns the peak heap footprint of merge's sorted scratch
+// buffers. The per-argument buffer is reused across arguments, so it only ever
+// sizes to the largest single argument; a conflict block adds a second buffer
+// over the base, sorted alongside. Each buffer's bytes are computed independently
+// (so each gets its own inline-stack-buffer threshold) and summed. The result
+// feeds the merge projection so the scratch lists cannot allocate past the quota
+// even when the merged union itself is small (a huge argument that fully overlaps
+// the base).
+func mergeSortScratchBytes(base map[string]Value, args []Value, useBlock bool) int {
+	maxArg := 0
+	for _, arg := range args {
+		if n := len(arg.Hash()); n > maxArg {
+			maxArg = n
+		}
+	}
+	scratch := sortedKeyBufferBytes(maxArg)
+	if useBlock {
+		scratch = saturatingAdd(scratch, sortedKeyBufferBytes(len(base)))
+	}
+	return scratch
 }
 
 // mergedKeyCount returns the number of distinct keys a merge of base and args
@@ -537,14 +607,21 @@ func hashMemberTransforms(property string) (Value, error) {
 			// then taken with mergedKeyCount, which caps its deduplication set at
 			// the quota's entry budget so a doomed merge cannot allocate a large
 			// tracking table before being rejected here.
+			//
+			// The merge also materializes sorted key scratch buffers: one sized to
+			// the largest single argument (reused across arguments) and, when a
+			// conflict block runs, one sized to the base. Charge that scratch in the
+			// projection so a merge whose union fits but whose largest input dwarfs
+			// the quota cannot allocate the key list past the sandbox limit.
+			scratchBytes := mergeSortScratchBytes(base, args, valueBlock(block) != nil)
 			upperBound := looseMergedKeyUpperBound(base, args)
-			if exec.checkProjectedHashBytes(upperBound, receiver, args, kwargs, block) != nil {
+			if exec.checkProjectedHashTransformBytes(upperBound, scratchBytes, receiver, args, kwargs, block) != nil {
 				limit := exec.maxProjectedHashEntries(receiver, args, kwargs, block)
 				projected, err := mergedKeyCount(exec, base, args, limit)
 				if err != nil {
 					return NewNil(), err
 				}
-				if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
+				if err := exec.checkProjectedHashTransformBytes(projected, scratchBytes, receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -581,6 +658,12 @@ func hashMemberTransforms(property string) (Value, error) {
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				var baseKeyBuf [smallHashKeyBufferSize]string
 				for _, key := range sortedHashKeysInto(base, baseKeyBuf[:]) {
+					// Charge a step per base entry so seeding the accumulator over a
+					// large base participates in the step quota and honors cancellation,
+					// matching the additions loop below.
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
 					if err := acc.add(key, base[key]); err != nil {
 						return NewNil(), err
 					}
@@ -824,16 +907,24 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// Preflight the largest map select could keep before reserving it; the
-			// block may keep every entry, so project the full input. Per-entry
-			// step accounting and the periodic memory check come from runner.call.
-			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
+			// Preflight the largest map select could keep plus the sorted key scratch
+			// buffer before reserving either; the block may keep every entry, so
+			// project the full input. The scratch list of all keys is live alongside
+			// the output map, so both are charged together here.
+			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body, so without this an empty select would scan the whole
+				// hash uncharged.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
 				include, err := runner.call(blockArgs[:])
@@ -856,16 +947,24 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// Preflight the largest map reject could keep before reserving it; the
-			// block may keep every entry, so project the full input. Per-entry
-			// step accounting and the periodic memory check come from runner.call.
-			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
+			// Preflight the largest map reject could keep plus the sorted key scratch
+			// buffer before reserving either; the block may keep every entry, so
+			// project the full input. The scratch list of all keys is live alongside
+			// the output map, so both are charged together here.
+			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body, so without this an empty reject would scan the whole
+				// hash uncharged.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
 				exclude, err := runner.call(blockArgs[:])
@@ -898,9 +997,9 @@ func hashMemberTransforms(property string) (Value, error) {
 			// loop, not only at the post-call check. A block that maps several
 			// input keys onto the same output key overwrites a slot rather than
 			// growing the map, and the accumulator charges that as a net value
-			// swap, not a second entry. Per-entry step accounting comes from
-			// runner.call.
-			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
+			// swap, not a second entry. The sorted key scratch buffer is charged
+			// alongside the structural projection here.
+			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -908,6 +1007,12 @@ func hashMemberTransforms(property string) (Value, error) {
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = NewSymbol(key)
 				nextKey, err := runner.call(blockArg[:])
 				if err != nil {
@@ -941,9 +1046,10 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			mapping := args[0].Hash()
-			// Preflight the output map before reserving it; remap_keys produces one
-			// entry per input key (renamed or kept), so project the full input.
-			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
+			// Preflight the output map plus the sorted key scratch buffer before
+			// reserving either; remap_keys produces one entry per input key (renamed
+			// or kept), so project the full input.
+			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
@@ -983,9 +1089,9 @@ func hashMemberTransforms(property string) (Value, error) {
 			// until the builtin returns, so the structural projection cannot bound
 			// them. Charge each result incrementally through a build accumulator
 			// seeded with the live call roots so accumulated payloads count toward
-			// the quota during the loop, not only at the post-call check. Per-entry
-			// step accounting comes from runner.call.
-			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
+			// the quota during the loop, not only at the post-call check. The sorted
+			// key scratch buffer is charged alongside the structural projection here.
+			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -993,6 +1099,12 @@ func hashMemberTransforms(property string) (Value, error) {
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = entries[key]
 				nextValue, err := runner.call(blockArg[:])
 				if err != nil {

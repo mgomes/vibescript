@@ -153,13 +153,33 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 // The estimator de-duplicates by backing pointer, so a root that overlaps the
 // base (a named local) or another root (`h.merge(h)`) is counted once.
 func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	return exec.checkProjectedHashTransformBytes(count, 0, receiver, args, kwargs, block)
+}
+
+// checkProjectedHashTransformBytes rejects a hash transform before it allocates
+// either its output map or the sorted-key scratch buffer(s) that drive an
+// ordered walk. outputEntries is the number of entries the result map would hold
+// (zero for a walk that builds no map, such as each); scratchBytes is the heap
+// footprint of the scratch key slices (see sortedKeyBufferBytes), which the
+// caller sums per-buffer so the inline-stack-buffer threshold is applied to each
+// independently.
+//
+// Both allocations coexist at peak: the scratch list of every key is live while
+// the output map fills, so they are charged together against the same call-root
+// baseline. The buffered keys alias the receiver's map keys, already counted in
+// the call-root usage, so only the scratch slices' headers (not the key bytes)
+// are added here. Without this the scratch list -- one header per entry, outside
+// the output-map projection -- could allocate past the quota on a large receiver
+// before any later check observed it.
+func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
 	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	used = saturatingAdd(used, saturatingMul(count, perEntry))
+	used = saturatingAdd(used, saturatingMul(outputEntries, perEntry))
+	used = saturatingAdd(used, scratchBytes)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}

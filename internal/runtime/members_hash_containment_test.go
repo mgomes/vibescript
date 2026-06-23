@@ -241,13 +241,15 @@ func TestHashMergeProjectionCountsUnionNotSum(t *testing.T) {
 	receiver := largeHashReceiver(count)
 
 	// The union of receiver.merge(receiver) is exactly the receiver's keys, so the
-	// real output is count entries. Set the quota to fit the live receiver plus an
-	// output map of count entries, which is what the operation actually needs.
+	// real output is count entries. Set the quota to fit the live receiver, an
+	// output map of count entries, and the sorted key scratch buffer merge sorts
+	// the argument into -- all of what the operation actually needs.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, []Value{receiver}, nil, NewNil())
 	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
 		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
-	quota := liveWithRoots + outputStructure
+	scratch := sortedKeyBufferBytes(count)
+	quota := liveWithRoots + outputStructure + scratch
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	got, err := callHashMember(t, exec, receiver, "merge", []Value{receiver}, NewNil())
@@ -288,7 +290,11 @@ func TestHashMergeMultiArgOverlapStaysWithinQuota(t *testing.T) {
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, args, nil, NewNil())
 	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
 		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
-	quota := liveWithRoots + outputStructure
+	// The per-argument sorted key scratch buffer is reused across arguments, so it
+	// only sizes to the largest single argument (count keys here). Fold it into the
+	// quota alongside the union-sized output map.
+	scratch := sortedKeyBufferBytes(count)
+	quota := liveWithRoots + outputStructure + scratch
 
 	// Sanity: the loose upper bound sums every argument length, so it exceeds the
 	// union-sized quota and the exact count path must run for this merge to pass.
@@ -1030,4 +1036,155 @@ end`
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("deep_transform_keys under canceled context = %v, want context.Canceled", err)
 	}
+}
+
+// emptyHashBlock returns a block value whose body has no statements, mirroring an
+// `h.select { }` call. callBlock charges a step only per statement it runs, so an
+// empty body charges none through runner.call; the transforms must charge their
+// own per-iteration step or a large receiver would walk uncharged.
+func emptyHashBlock() Value {
+	return NewBlock(nil, nil, newEnv(nil))
+}
+
+// TestHashEmptyBlockTransformHonorsStepQuota pins the P2 finding on PR #776: a
+// block-driven hash transform invoked with an empty block must still charge a
+// step per entry, so a large receiver trips the step quota even though the block
+// body runs no statements. runner.call charges no step for an empty body, so each
+// transform charges exec.step() itself before invoking the block. Without that an
+// empty-block transform would scan the whole hash unbounded by the step quota and
+// blind to cancellation.
+func TestHashEmptyBlockTransformHonorsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 5_000
+	const stepQuota = 100
+
+	// Block-driven hash members whose result accepts an empty block's nil return:
+	// the three each* walkers (results are discarded), select and reject (nil is
+	// falsy), and transform_values (any value is a valid result). transform_keys is
+	// excluded because an empty block returns nil, which fails its symbol/string key
+	// validation on the first entry before the quota can trip; its per-iteration step
+	// charge is covered instead by the cancellation test below, where step() fails on
+	// entry one before the block runs.
+	for _, name := range []string{
+		"each", "each_key", "each_value",
+		"select", "reject", "transform_values",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			receiver := largeHashReceiver(count)
+			exec := &Execution{ctx: context.Background(), quota: stepQuota, memoryQuota: 64 << 20}
+			_, err := callHashMember(t, exec, receiver, name, nil, emptyHashBlock())
+			requireErrorIs(t, err, errStepQuotaExceeded)
+			if exec.steps > stepQuota+1 {
+				t.Fatalf("%s with an empty block took %d steps, want it to stop near the quota %d", name, exec.steps, stepQuota)
+			}
+		})
+	}
+}
+
+// TestHashEmptyBlockTransformHonorsCancellation pins the cancellation half of the
+// same finding: step polls the context on its first call, so an empty-block
+// transform over even a tiny receiver aborts on a canceled context rather than
+// completing the walk uncharged.
+func TestHashEmptyBlockTransformHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"each", "each_key", "each_value",
+		"select", "reject", "transform_keys", "transform_values",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			receiver := largeHashReceiver(8)
+			exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
+			_, err := callHashMember(t, exec, receiver, name, nil, emptyHashBlock())
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s with an empty block under a canceled context = %v, want context.Canceled", name, err)
+			}
+		})
+	}
+}
+
+// TestHashSortedKeyBufferTripsMemoryQuota pins the P2 finding on PR #776: a sorted
+// hash transform materializes a []string scratch buffer of every key (one header
+// per entry) outside the output-map projection. each builds no output map, so the
+// scratch list is its only allocation; a quota sized to fit the live receiver and
+// the empty walk but not that key buffer must reject the call up front. Before the
+// fix the buffer was charged by nothing until a later check observed it, so a large
+// receiver could allocate it past the sandbox limit.
+func TestHashSortedKeyBufferTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+
+	// The live baseline a walk holds: the call roots (receiver plus the block)
+	// and the empty output-map overhead projectedHashBaseBytes folds in. each
+	// builds no map, so its only extra allocation is the sorted key scratch buffer.
+	block := emptyHashBlock()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	base := probe.projectedHashBaseBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	// A quota above the live baseline (so the walk's roots fit) but below the
+	// baseline plus the scratch buffer (so the buffer must be rejected). Sit the
+	// quota midway so neither bound is grazed.
+	quota := base + scratch/2
+	if quota <= base || quota >= base+scratch {
+		t.Fatalf("test setup expects base (%d) < quota (%d) < base+scratch (%d)", base, quota, base+scratch)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "each", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	// Sanity: a quota that also fits the scratch buffer admits the walk, proving
+	// the rejection above comes from the buffer accounting and not an over-tight
+	// baseline. A non-empty block would charge steps; the empty block keeps the
+	// walk's only cost the scratch buffer the quota now covers.
+	roomy := base + scratch + 4*1024
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roomy}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); err != nil {
+		t.Fatalf("each under a quota that fits the key buffer = %v, want success", err)
+	}
+}
+
+// TestHashSelectSortedKeyBufferTripsMemoryQuota pins the same scratch-buffer
+// accounting for a map-producing transform. select projects the full output map
+// plus the sorted key buffer; a quota sized to fit the live receiver and the
+// output map but not the additional key buffer must reject the call before
+// sorting. The block is empty so its step charge cannot mask the memory failure.
+func TestHashSelectSortedKeyBufferTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+	block := emptyHashBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	base := probe.projectedHashBaseBytes(receiver, nil, nil, block)
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	outputStructure := count * perEntry
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	// Above the live baseline plus the full output map (so the old projection that
+	// ignored the scratch buffer would pass) but below that plus the key buffer.
+	withOutput := base + outputStructure
+	quota := withOutput + scratch/2
+	if quota <= withOutput || quota >= withOutput+scratch {
+		t.Fatalf("test setup expects withOutput (%d) < quota (%d) < withOutput+scratch (%d)", withOutput, quota, withOutput+scratch)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "select", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }

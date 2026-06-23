@@ -13,4 +13,11 @@
   quota before the build completes. `Hash#store` sizes its projection by the
   existing-key case, so replacing a key no longer over-reports the result size, and
   `Hash#except` projects against the receiver before building its exclusion set so
-  a huge candidate-key list against a tiny receiver fails fast.
+  a huge candidate-key list against a tiny receiver fails fast. Block-driven hash
+  methods (`Hash#each`, `Hash#each_key`, `Hash#each_value`, `Hash#select`,
+  `Hash#reject`, `Hash#transform_keys`, and `Hash#transform_values`) now charge the
+  step quota per entry directly rather than relying on the block body, so an empty
+  block still consumes steps and observes cancellation instead of walking the
+  receiver unbounded. The sorted key scratch buffer these transforms allocate to
+  iterate deterministically is now charged against the memory quota before it is
+  reserved, so it cannot escape the sandbox limit on a large receiver.
