@@ -469,10 +469,23 @@ When there is no change, bang methods return `nil`.
 
 Splits a string into an array of strings.
 
-**Without arguments:** Splits on whitespace and removes empty entries:
+**Without arguments:** Splits on runs of ASCII whitespace and removes empty
+entries, mirroring Ruby's default `String#split`. Leading and trailing
+whitespace is discarded and a blank string yields an empty array:
 
 ```vibe
 "one two  three".split  # ["one", "two", "three"]
+"  a  b  ".split        # ["a", "b"]
+```
+
+Only the ASCII whitespace bytes split fields: space, tab, newline, vertical
+tab, form feed, and carriage return. Wider Unicode whitespace such as the
+non-breaking space (`U+00A0`) or the em space (`U+2003`) is kept inside the
+field rather than acting as a separator, matching Ruby instead of treating the
+full Unicode whitespace table as delimiters:
+
+```vibe
+"a b".split  # ["a b"] (non-breaking space is preserved)
 ```
 
 **With separator:** Splits on the specified string:
