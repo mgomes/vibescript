@@ -182,6 +182,16 @@ func TestStringMatchPredicateErrors(t *testing.T) {
 			want:   "string.match? invalid regex",
 		},
 		{
+			name:   "invalid regex pattern with out-of-range offset",
+			script: `def run() "abc".match?("(", 99) end`,
+			want:   "string.match? invalid regex",
+		},
+		{
+			name:   "invalid regex pattern at end-of-string offset",
+			script: `def run() "abc".match?("(", 3) end`,
+			want:   "string.match? invalid regex",
+		},
+		{
 			name:   "keyword argument",
 			script: `def run() "abc".match?("a", foo: true) end`,
 			want:   "string.match? does not accept keyword arguments",
@@ -269,6 +279,25 @@ func TestRegexMatchFromRuneOffsetDoesNotEmbedSubjectPrefix(t *testing.T) {
 	for pattern := range cache.entries {
 		if len(pattern) > maxRegexPatternSize {
 			t.Fatalf("cached compiled pattern of %d bytes exceeds guard %d; subject prefix leaked into the regex", len(pattern), maxRegexPatternSize)
+		}
+	}
+}
+
+func TestRegexMatchFromRuneOffsetValidatesPatternRegardlessOfOffset(t *testing.T) {
+	t.Parallel()
+
+	// An out-of-range offset must still report an invalid pattern: the offset only
+	// decides the match result, never whether a bad regex is accepted. The bad
+	// pattern is also never rewritten into the offset wrapper, so nothing oversized
+	// is compiled or cached. Use fresh caches so the assertions are parallel-safe.
+	for _, offset := range []int{3, 99} {
+		cache := newRegexCache(compiledRegexCacheCapacity)
+		matched, err := regexMatchFromRuneOffsetWithCache(cache, "string.match?", "abc", "(", offset)
+		if err == nil {
+			t.Fatalf("offset %d: expected invalid regex error, got match=%v", offset, matched)
+		}
+		if !strings.Contains(err.Error(), "string.match? invalid regex") {
+			t.Fatalf("offset %d: error = %q, want it to contain %q", offset, err.Error(), "string.match? invalid regex")
 		}
 	}
 }

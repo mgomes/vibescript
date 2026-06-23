@@ -463,7 +463,9 @@ func validateRegexTextPattern(method, text, pattern string) error {
 // fixed size regardless of the offset: it never embeds the subject prefix into
 // the pattern, keeping the compiled regex small and within the pattern-size
 // guard. An offset past the end of text yields no match rather than an error,
-// matching Ruby. The pattern is compiled with the same guards and cache as
+// matching Ruby; an invalid pattern is still reported regardless of the offset,
+// since the offset only decides the match result, never whether a bad regex is
+// accepted. The pattern is compiled with the same guards and cache as
 // String#match.
 func regexMatchFromRuneOffset(method, text, pattern string, offset int) (bool, error) {
 	return regexMatchFromRuneOffsetWithCache(compiledRegexps, method, text, pattern, offset)
@@ -473,22 +475,20 @@ func regexMatchFromRuneOffset(method, text, pattern string, offset int) (bool, e
 // an explicit regex cache so tests can assert that the offset wrapper never
 // stores an oversized, prefix-bearing pattern.
 func regexMatchFromRuneOffsetWithCache(cache *regexCache, method, text, pattern string, offset int) (bool, error) {
+	// Compile (and validate) the user pattern first so an invalid regex is always
+	// reported, even when the offset lands past the end of the string. The offset
+	// must only decide the match result, never whether a bad pattern is accepted.
+	re, err := cache.compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("%s invalid regex: %w", method, err)
+	}
 	if offset == 0 {
-		re, err := cache.compile(pattern)
-		if err != nil {
-			return false, fmt.Errorf("%s invalid regex: %w", method, err)
-		}
 		return re.MatchString(text), nil
 	}
 	byteOffset, ok := stringByteIndexForRuneOffset(text, offset)
 	if !ok {
 		// The offset lands past the final rune, so no match can begin there.
 		return false, nil
-	}
-	// Verify the user pattern compiles before building the offset wrapper so the
-	// reported error names the original pattern, not the rewritten one.
-	if _, err := cache.compile(pattern); err != nil {
-		return false, fmt.Errorf("%s invalid regex: %w", method, err)
 	}
 	// Search a view that begins one rune before the offset. The leading [\s\S]
 	// consumes that real preceding rune so \b, \B, and ^ evaluate against it,
@@ -499,7 +499,7 @@ func regexMatchFromRuneOffsetWithCache(cache *regexCache, method, text, pattern 
 	_, ctxSize := utf8.DecodeLastRuneInString(text[:byteOffset])
 	ctxStart := byteOffset - ctxSize
 	wrapped := `\A[\s\S][\s\S]*?(?:` + pattern + `)`
-	re, err := cache.compile(wrapped)
+	re, err = cache.compile(wrapped)
 	if err != nil {
 		return false, fmt.Errorf("%s invalid regex: %w", method, err)
 	}
