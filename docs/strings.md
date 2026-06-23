@@ -119,6 +119,12 @@ end
 clean_input("  hello  ")  # "hello"
 ```
 
+Like Ruby, `strip` only removes the ASCII whitespace bytes NUL (`\0`), tab
+(`\t`), newline (`\n`), vertical tab (`\v`), form feed (`\f`), carriage return
+(`\r`), and space (`" "`). NUL is removed from both edges. Unicode spaces such as
+NBSP (`U+00A0`), the Ogham space mark (`U+1680`), em space (`U+2003`), and the
+byte order mark (`U+FEFF`) are preserved.
+
 ### `squish`
 
 Trims leading/trailing whitespace and collapses internal whitespace runs to a
@@ -136,6 +142,9 @@ Removes leading whitespace:
 "  hello  ".lstrip  # "hello  "
 ```
 
+Removes the same ASCII whitespace set as `strip` from the start of the string,
+including a leading NUL. Unicode spaces are preserved.
+
 ### `rstrip`
 
 Removes trailing whitespace:
@@ -143,6 +152,9 @@ Removes trailing whitespace:
 ```vibe
 "  hello  ".rstrip  # "  hello"
 ```
+
+Removes the same ASCII whitespace set as `strip` from the end of the string,
+including a trailing NUL. Unicode spaces are preserved.
 
 ### `chomp(separator = "\n")`
 
