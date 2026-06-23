@@ -926,7 +926,7 @@ func stringMemberQuery(property string) (Value, error) {
 			}
 			r, size := utf8.DecodeRuneInString(receiver.String())
 			if size == 0 {
-				return NewNil(), nil
+				return NewString(""), nil
 			}
 			return NewString(string(r)), nil
 		}), nil

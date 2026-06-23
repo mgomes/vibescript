@@ -41,7 +41,7 @@ Unicode characters, not bytes, unless noted.
 - `bytesize -> int` – number of UTF-8 bytes.
 - `empty? -> bool` – true when the string has no characters.
 - `ord -> int` – codepoint of the first character; errors on an empty string.
-- `chr -> string | nil` – first character, or `nil` for an empty string.
+- `chr -> string` – first character, or an empty string for an empty receiver.
 - `hex -> int` – leading characters parsed as a hexadecimal integer (optional
   whitespace, sign, `0x` prefix, and underscore separators); `0` when no hex
   digit leads, and an `integer out of range` error past the `int64` bounds.

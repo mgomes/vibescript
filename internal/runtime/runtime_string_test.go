@@ -410,6 +410,41 @@ func TestStringChopErrors(t *testing.T) {
 	}
 }
 
+func TestStringChr(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{name: "first ascii char", script: `def run() "abc".chr end`, want: "a"},
+		{name: "single char", script: `def run() "a".chr end`, want: "a"},
+		{name: "leading multibyte rune", script: `def run() "éxy".chr end`, want: "é"},
+		{name: "empty string returns empty string", script: `def run() "".chr end`, want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString {
+				t.Fatalf("expected string, got %v", result.Kind())
+			}
+			if result.String() != tc.want {
+				t.Fatalf("chr mismatch: %q, want %q", result.String(), tc.want)
+			}
+		})
+	}
+
+	t.Run("rejects arguments", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, `def run() "abc".chr("x") end`)
+		requireCallErrorContains(t, script, "run", nil, CallOptions{}, "string.chr does not take arguments")
+	})
+}
+
 func TestStringSearchAndSlice(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -591,8 +626,8 @@ func TestStringTransforms(t *testing.T) {
 	if got["chr"].String() != "h" {
 		t.Fatalf("chr mismatch: %q", got["chr"].String())
 	}
-	if got["chr_empty"].Kind() != KindNil {
-		t.Fatalf("chr_empty expected nil, got %v", got["chr_empty"])
+	if got["chr_empty"].Kind() != KindString || got["chr_empty"].String() != "" {
+		t.Fatalf("chr_empty expected empty string, got %v", got["chr_empty"])
 	}
 
 	stringChecks := map[string]string{
