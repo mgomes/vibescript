@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -14,7 +15,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var stringMemberNames = []string{
-	"size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice",
+	"size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "each_char", "each_line", "template",
 	"center", "ljust", "rjust",
@@ -31,7 +32,7 @@ func stringMember(str Value, property string) (Value, error) {
 
 func stringMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice":
+	case "size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
@@ -449,6 +450,42 @@ func validateRegexTextPattern(method, text, pattern string) error {
 		return fmt.Errorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	return nil
+}
+
+// regexMatchFromRuneOffset reports whether pattern has a match in text that
+// starts at or after the given rune offset, mirroring Ruby's
+// Regexp#match?(str, pos). The offset is a rune (codepoint) position; a match
+// may begin anywhere from that position onward. Anchors such as \A, ^, and \b
+// keep the full-string context: rather than searching a detached suffix (which
+// would let \A or \b match at the slice boundary), the prefix preceding the
+// offset is consumed as a literal so the engine still sees the real characters
+// around every candidate start. An offset past the end of text yields no match
+// rather than an error, matching Ruby. The pattern is compiled with the same
+// guards and cache as String#match.
+func regexMatchFromRuneOffset(method, text, pattern string, offset int) (bool, error) {
+	if offset == 0 {
+		re, err := compileCachedRegex(pattern)
+		if err != nil {
+			return false, fmt.Errorf("%s invalid regex: %w", method, err)
+		}
+		return re.MatchString(text), nil
+	}
+	byteOffset, ok := stringByteIndexForRuneOffset(text, offset)
+	if !ok {
+		// The offset lands past the final rune, so no match can begin there.
+		return false, nil
+	}
+	// Verify the user pattern compiles before building the offset wrapper so the
+	// reported error names the original pattern, not the rewritten one.
+	if _, err := compileCachedRegex(pattern); err != nil {
+		return false, fmt.Errorf("%s invalid regex: %w", method, err)
+	}
+	wrapped := `\A` + regexp.QuoteMeta(text[:byteOffset]) + `(?:.|\n)*?(?:` + pattern + `)`
+	re, err := compileCachedRegex(wrapped)
+	if err != nil {
+		return false, fmt.Errorf("%s invalid regex: %w", method, err)
+	}
+	return re.MatchString(text), nil
 }
 
 func validateRegexReplacement(method, replacement string) error {
@@ -1036,6 +1073,36 @@ func stringMemberQuery(property string) (Value, error) {
 				values[i] = NewString(text[start:end])
 			}
 			return NewArray(values), nil
+		}), nil
+	case "match?":
+		return NewAutoBuiltin("string.match?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.match? does not accept keyword arguments")
+			}
+			if len(args) < 1 || len(args) > 2 {
+				return NewNil(), fmt.Errorf("string.match? expects a pattern and optional offset")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.match? pattern must be string")
+			}
+			offset := 0
+			if len(args) == 2 {
+				i, err := valueToInt(args[1])
+				if err != nil || i < 0 {
+					return NewNil(), fmt.Errorf("string.match? offset must be non-negative integer")
+				}
+				offset = i
+			}
+			pattern := args[0].String()
+			text := receiver.String()
+			if err := validateRegexTextPattern("string.match?", text, pattern); err != nil {
+				return NewNil(), err
+			}
+			matched, err := regexMatchFromRuneOffset("string.match?", text, pattern, offset)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewBool(matched), nil
 		}), nil
 	case "scan":
 		return NewAutoBuiltin("string.scan", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
