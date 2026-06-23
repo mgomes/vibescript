@@ -554,6 +554,93 @@ end`
 	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 }
 
+// TestArrayFillBlockResultsCountTowardMemoryQuota confirms the block form charges
+// each block result toward the memory quota during construction rather than only
+// after fill returns. The window (1024 slots * 32 bytes = 32 KiB) keeps the slot
+// array well under the 64 KiB quota, so the slot-only backing check never trips;
+// only by counting the appended payloads (each block call allocates a fresh
+// ~16 KiB string) does the accumulated growth exceed the quota mid-loop.
+func TestArrayFillBlockResultsCountTowardMemoryQuota(t *testing.T) {
+	t.Parallel()
+	source := `def run()
+  [].fill(0, 1024) do |i|
+    "".ljust(16384)
+  end
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 * 1024}, source)
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
+}
+
+// TestArrayFillBlockResultsRejectedDuringConstruction confirms the block form
+// stops building as soon as accumulated payloads exceed the memory quota instead
+// of materializing the full result and only failing on the post-call check. With
+// the quota counted incrementally the fill aborts after a handful of elements, so
+// total allocation stays far below the full result; the earlier slot-only check
+// would let the entire window of ~16 KiB strings allocate first. The allocation
+// ceiling fails loudly if that unbounded-growth path ever returns.
+func TestArrayFillBlockResultsRejectedDuringConstruction(t *testing.T) {
+	// Not parallel: this test reads process-wide allocation counters and must not
+	// race other goroutines' allocations.
+	const (
+		elements    = 1024
+		elementSize = 16384
+	)
+	source := `def run()
+  [].fill(0, 1024) do |i|
+    "".ljust(16384)
+  end
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 * 1024}, source)
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	_, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	goruntime.ReadMemStats(&after)
+
+	if got := classifyRuntimeErrorType(err); got != runtimeErrorTypeLimit {
+		t.Fatalf("fill block over quota classified as %q (%v), want %q", got, err, runtimeErrorTypeLimit)
+	}
+
+	// The incremental check aborts after only the handful of ~16 KiB strings that
+	// fit under the 64 KiB quota, so total allocation is a tiny fraction of the
+	// full window. The earlier slot-only check counted just the 32-byte slots, so
+	// it allowed roughly quota/slotSize elements (~2K) to allocate first, retaining
+	// tens of MiB of string payload before tripping. TotalAlloc is monotonic and
+	// GC-immune, so the gap between the two paths is unambiguous. Use a generous
+	// ceiling that clears interpreter overhead yet sits far below the slot-only
+	// path's allocation, failing loudly if unbounded growth ever returns.
+	const fullWindowBytes = uint64(elements) * uint64(elementSize)
+	const ceiling = fullWindowBytes / 8
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("fill allocated %d bytes, want <= %d (full window would be %d)",
+			allocated, ceiling, fullWindowBytes)
+	}
+}
+
+// TestArrayFillSharedBackingCountedOnce confirms the incremental quota accounting
+// charges a value's payload once even when it is filled into many slots. The
+// value form stores the same string backing in every slot, so the real added
+// memory is one ~16 KiB payload plus the slots, not one payload per slot. A naive
+// per-element re-walk that re-counted the shared backing each time would
+// false-positive here; filling 512 slots from one ~16 KiB string must fit under a
+// quota that comfortably holds a single copy plus the slot array.
+func TestArrayFillSharedBackingCountedOnce(t *testing.T) {
+	t.Parallel()
+	source := `def run(s)
+  [].fill(s, 0, 512)
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 128 * 1024}, source)
+	big := NewString(string(make([]byte, 16384)))
+	result, err := script.Call(context.Background(), "run", []Value{big}, CallOptions{})
+	if err != nil {
+		t.Fatalf("fill with shared backing = %v, want success (backing counted once)", err)
+	}
+	if got := len(result.Array()); got != 512 {
+		t.Fatalf("len = %d, want 512", got)
+	}
+}
+
 // TestArrayFillStepQuota confirms each filled element consumes a step, so a
 // growth larger than the step quota stops on the step limit even when the
 // memory quota is generous.

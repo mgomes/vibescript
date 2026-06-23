@@ -1158,8 +1158,8 @@ func arrayMemberGrep(property string) (Value, error) {
 
 // arrayFillInitialCap bounds the capacity reserved up front when building a
 // fill result. Larger fills grow the backing array via append so the per-element
-// step() and checkProjectedIntArrayBytes calls bound the actual allocation,
-// rather than reserving the full requested length immediately. It mirrors
+// step() and arrayBuildAccumulator checks bound the actual allocation, rather
+// than reserving the full requested length immediately. It mirrors
 // rangeMaterializeInitialCap.
 const arrayFillInitialCap = 4096
 
@@ -1242,13 +1242,17 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	}
 	out := make([]Value, 0, initialCap)
 
+	// Track accumulated payloads incrementally rather than re-estimating the whole
+	// prefix on each append: checkMemoryWith(NewArray(out)) would walk every element
+	// per append and make the fill O(n^2). The accumulator snapshots the live base
+	// once, then per kept element walks only that element (O(element size)), so a
+	// block returning quota-sized values is charged during the loop instead of
+	// slipping past the slot-only backing check until fill returns.
+	acc := newArrayBuildAccumulator(exec)
+
 	appendValue := func(val Value) error {
 		out = append(out, val)
-		// Charge the backing array's current capacity rather than re-estimating
-		// the whole prefix on each append; checkMemoryWith would walk every
-		// element and make the fill O(n^2), while this O(1) check tracks the
-		// actual allocation as append grows the backing array.
-		return exec.checkProjectedIntArrayBytes(cap(out))
+		return acc.add(val, cap(out))
 	}
 
 	var blockArg [1]Value
