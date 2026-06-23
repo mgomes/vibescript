@@ -1309,24 +1309,28 @@ func arrayFillStartIndex(value Value, length int) (int, error) {
 	return start, nil
 }
 
-// arrayFillLength resolves an explicit length argument to a non-negative count,
-// truncating fractional floats toward zero like Ruby's to_int. A negative or
-// zero length yields an empty window, matching Ruby.
+// arrayFillLength resolves an explicit length argument to a count, truncating
+// fractional floats toward zero like Ruby's to_int. The sign is preserved: a
+// negative count signals an empty window that leaves the array untouched, while
+// a zero count still grows the array up to the start (see
+// arrayFillSpanFromStart).
 func arrayFillLength(value Value) (int, error) {
 	count, err := valueToInt(value)
 	if err != nil {
 		return 0, fmt.Errorf("array.fill length must be integer")
 	}
-	if count < 0 {
-		count = 0
-	}
 	return count, nil
 }
 
-// arrayFillSpanFromStart builds a span for the integer start/length forms,
-// growing finalLength when the window extends past the receiver.
+// arrayFillSpanFromStart builds a span for the integer start/length forms. A
+// negative count yields an empty window that never grows the array, matching
+// Ruby's no-op for fill(value, start, -n) and for a bare start past the end
+// (whose computed count is length-begin < 0). A zero or positive count grows
+// finalLength up to begin+count, so an explicit zero length whose start sits
+// past the receiver still pads the gap with nil up to the start, exactly as
+// Ruby's Array#fill does ([1,2,3].fill(0, 5, 0) => [1,2,3,nil,nil]).
 func arrayFillSpanFromStart(begin, length, count int) (arrayFillSpan, error) {
-	if count <= 0 {
+	if count < 0 {
 		return arrayFillSpan{begin: begin, end: begin, finalLength: length}, nil
 	}
 	end := begin + count

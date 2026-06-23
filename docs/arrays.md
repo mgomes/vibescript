@@ -63,7 +63,11 @@ end
 
 `fill` follows Ruby's indexing rules: a negative `start` counts back from the
 end, a `length` that runs past the end grows the result (padding any gap with
-`nil`), and a range selects the indices to replace. The value form and the block
+`nil`), and a range selects the indices to replace. An explicit `length` of `0`
+whose `start` is past the end still grows the array up to that start, padding the
+gap with `nil` even though nothing is filled (`[1, 2, 3].fill(0, 5, 0)` is
+`[1, 2, 3, nil, nil]`); a negative `length`, by contrast, is a pure no-op that
+never grows the array. The value form and the block
 form are mutually exclusive: a block is never consulted when an explicit fill
 value is given, and when a block is given there is no fill-value argument at all.
 Every positional argument passed alongside a block selects the window, so

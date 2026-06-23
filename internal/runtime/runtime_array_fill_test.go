@@ -81,6 +81,32 @@ func TestArrayFillValueForms(t *testing.T) {
 			want: []Value{NewInt(1), NewInt(2), NewInt(3)},
 		},
 		{
+			// Ruby: [1, 2, 3].fill(0, 5, 0) => [1, 2, 3, nil, nil]. An explicit
+			// zero length still grows the array up to the start, padding the gap
+			// with nil even though the fill window itself is empty.
+			name: "zero length past end grows and pads with nil",
+			fn:   "fill_start_length",
+			args: []Value{makeArr(1, 2, 3), NewInt(0), NewInt(5), NewInt(0)},
+			want: []Value{NewInt(1), NewInt(2), NewInt(3), NewNil(), NewNil()},
+		},
+		{
+			// Ruby: [1, 2, 3].fill(0, 5, -3) => [1, 2, 3]. A negative length is a
+			// pure no-op and never grows the array, even when the start is past
+			// the end, distinguishing it from the zero-length case above.
+			name: "negative length past end is a no-op",
+			fn:   "fill_start_length",
+			args: []Value{makeArr(1, 2, 3), NewInt(0), NewInt(5), NewInt(-3)},
+			want: []Value{NewInt(1), NewInt(2), NewInt(3)},
+		},
+		{
+			// Ruby: [1, 2, 3].fill(0, 3, 0) => [1, 2, 3]. A zero length whose
+			// start sits exactly at the end neither grows nor changes the array.
+			name: "zero length at end is a no-op",
+			fn:   "fill_start_length",
+			args: []Value{makeArr(1, 2, 3), NewInt(0), NewInt(3), NewInt(0)},
+			want: []Value{NewInt(1), NewInt(2), NewInt(3)},
+		},
+		{
 			name: "negative start counts from end",
 			fn:   "fill_start",
 			args: []Value{makeArr(1, 2, 3), NewInt(0), NewInt(-1)},
@@ -267,6 +293,22 @@ func TestArrayFillBlockForms(t *testing.T) {
 			fn:   "fill_start_length",
 			args: []Value{makeArr(1, 2, 3), NewInt(5), NewInt(2)},
 			want: []Value{NewInt(1), NewInt(2), NewInt(3), NewNil(), NewNil(), NewInt(50), NewInt(60)},
+		},
+		{
+			// Block form mirrors the value form: an explicit zero length past the
+			// end grows the array up to the start and pads the gap with nil,
+			// while the empty window never invokes the block.
+			name: "zero length past end grows and pads with nil",
+			fn:   "fill_start_length",
+			args: []Value{makeArr(1, 2, 3), NewInt(5), NewInt(0)},
+			want: []Value{NewInt(1), NewInt(2), NewInt(3), NewNil(), NewNil()},
+		},
+		{
+			// A negative length is a pure no-op for the block form too.
+			name: "negative length past end is a no-op",
+			fn:   "fill_start_length",
+			args: []Value{makeArr(1, 2, 3), NewInt(5), NewInt(-3)},
+			want: []Value{NewInt(1), NewInt(2), NewInt(3)},
 		},
 	}
 
