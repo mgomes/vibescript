@@ -293,6 +293,27 @@ Regex match returning `[full, capture1, ...]` or `nil`:
 "ID-12 ID-34".match("ID-([0-9]+)") # ["ID-12", "12"]
 ```
 
+### `match?(pattern, offset = 0)`
+
+Allocation-light boolean predicate counterpart to `match`. Returns `true` when
+`pattern` has a match at or after the given character offset, otherwise `false`,
+without materializing match arrays:
+
+```vibe
+"abc".match?("b")           # true
+"abc".match?("z")           # false
+"abc".match?("ID-[0-9]+")   # false
+"abc".match?("b", 1)        # true
+"abc".match?("b", 2)        # false
+```
+
+The pattern uses the same regex engine and size guards as `match`, so anchors
+such as `\A`, `^`, and `\b` keep the full-string context even when an offset is
+supplied: the characters preceding the offset still count toward boundary and
+anchor checks. The offset is a character (codepoint) position; an offset past
+the end of the string yields `false` rather than an error. Unlike Ruby,
+negative offsets are rejected, matching `index` and `rindex`.
+
 ### `scan(pattern)`
 
 Regex scan returning all full matches:
