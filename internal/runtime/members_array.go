@@ -752,6 +752,24 @@ func arrayMemberQuery(property string) (Value, error) {
 				// empty collections are dropped alongside nil and false.
 				if val.Truthy() {
 					out = append(out, val)
+					// Charge the accumulating result against the quota on every
+					// kept element. out is a local slice, so it is invisible to
+					// the step() slow-path checkMemory() and to the post-call
+					// checkMemoryWith(result); without this a block returning an
+					// individually quota-sized value per element could pile up far
+					// beyond MemoryQuotaBytes before the post-call check ever ran.
+					// Unlike range materialization (whose elements are inlined ints
+					// with no payload beyond their slot, letting it use the O(1)
+					// cap-based projection), filter_map keeps arbitrary block
+					// results, so we must walk the whole array to account for string
+					// and collection payloads. checkMemoryWith dedups shared
+					// backings exactly like the post-call check, so this never
+					// rejects a result the post-call check would have accepted; the
+					// quota itself bounds how large out can grow and therefore the
+					// total walk cost.
+					if err := exec.checkMemoryWith(NewArray(out)); err != nil {
+						return NewNil(), err
+					}
 				}
 			}
 			return NewArray(out), nil

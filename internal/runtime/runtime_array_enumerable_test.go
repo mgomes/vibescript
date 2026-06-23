@@ -251,6 +251,69 @@ func TestArrayFilterMapDoesNotPreallocateReceiverSize(t *testing.T) {
 	}
 }
 
+// freshArrayBlockValue builds a block whose body is a single array literal of
+// `width` integer elements. Each invocation evaluates the literal anew, so every
+// call allocates a fresh slice backing (a distinct pointer the memory estimator
+// counts separately) rather than reusing one shared backing. The result is a
+// non-empty array, which is truthy, so filter_map keeps every one.
+func freshArrayBlockValue(width int) Value {
+	pos := Position{Line: 1, Column: 1}
+	elements := make([]Expression, width)
+	for i := range elements {
+		elements[i] = &IntegerLiteral{Value: int64(i), Position: pos}
+	}
+	body := []Statement{&ExprStmt{Expr: &ArrayLiteral{Elements: elements, Position: pos}, Position: pos}}
+	return NewBlock(nil, body, newEnv(nil))
+}
+
+// TestArrayFilterMapChargesAccumulatedResultsDuringIteration guards against the
+// accumulating result array escaping the memory quota while the loop runs. The
+// out slice is local, so it is invisible to step()'s slow-path checkMemory() and
+// to the post-call checkMemoryWith(result); a block that allocates a fresh large
+// value per element could therefore pile up far beyond MemoryQuotaBytes before
+// the post-call check ever observed the returned array. filter_map must charge
+// the accumulating result on every kept element so the limit trips mid-loop.
+//
+// The builtin is driven directly against a small Go-level receiver so the
+// receiver itself costs no steps and no call-binding memory: the receiver fits
+// comfortably under the quota, and the only thing that can trip the limit is the
+// results the block produces. Asserting the loop aborts early (steps well below
+// the receiver length) proves the per-element check caught the growth rather than
+// the post-call check, which would only fire after the whole receiver had been
+// traversed.
+func TestArrayFilterMapChargesAccumulatedResultsDuringIteration(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 4096
+	const resultWidth = 256
+	fn := arrayFilterMapBuiltin(t)
+
+	// Size the quota so a handful of kept results fit but accumulating all of
+	// them does not. One kept result is an array of resultWidth ints, so cap the
+	// quota at a small multiple of that single result's footprint.
+	oneResult := newMemoryEstimator().value(freshIntArrayValue(resultWidth))
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: oneResult * 8,
+	}
+	_, err := fn(exec, largeIntArray(receiverSize), nil, nil, freshArrayBlockValue(resultWidth))
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps >= receiverSize {
+		t.Fatalf("steps = %d, want the loop to trip the memory quota before traversing the whole receiver (%d)", exec.steps, receiverSize)
+	}
+}
+
+// freshIntArrayValue returns an array Value of `width` integer elements, matching
+// the runtime value a freshArrayBlockValue invocation produces so a test can size
+// the memory quota against one kept result.
+func freshIntArrayValue(width int) Value {
+	values := make([]Value, width)
+	for i := range width {
+		values[i] = NewInt(int64(i))
+	}
+	return NewArray(values)
+}
+
 // TestArrayEnumerableSparseResultsAreRightSized guards against the filtering
 // helpers retaining a backing array sized to the whole receiver when the result
 // is sparse. reject/take_while/grep all preallocate capacity equal to the
