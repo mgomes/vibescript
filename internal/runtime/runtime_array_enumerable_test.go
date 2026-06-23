@@ -138,30 +138,90 @@ func TestArrayFilterMapDropsVibescriptFalsy(t *testing.T) {
 	compareArrays(t, result, []Value{NewInt(1), NewString("x"), NewArray([]Value{NewInt(9)}), NewInt(2)})
 }
 
+// arrayFilterMapBuiltin returns the array.filter_map builtin's Go function so a
+// test can invoke filter_map directly against a pre-built receiver. Driving the
+// builtin this way isolates filter_map's own per-element accounting: a Go-level
+// []Value receiver costs no steps and no call-binding memory, so the only quota
+// pressure during the call comes from the loop itself rather than from
+// materializing the receiver or binding it into a call frame.
+func arrayFilterMapBuiltin(t *testing.T) BuiltinFunc {
+	t.Helper()
+	member, err := arrayMember(NewArray(nil), "filter_map")
+	if err != nil {
+		t.Fatalf("arrayMember(filter_map): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("filter_map member is not a builtin: %v", member.Kind())
+	}
+	return builtin.Fn
+}
+
+// emptyBlockValue builds a block with no parameters and an empty body, the
+// degenerate case (`do |v| end`) that evaluates no statements and therefore
+// charges no steps through runner.call.
+func emptyBlockValue() Value {
+	return NewBlock(nil, nil, newEnv(nil))
+}
+
 // TestArrayFilterMapEmptyBlockParticipatesInStepQuota guards against an empty
-// block body letting filter_map traverse the whole receiver without charging
-// the step quota. runner.call only charges steps for the statements it
-// evaluates, and an empty block evaluates none, so filter_map must charge a step
-// per element itself. A non-empty block would mask the bug because evaluating
-// its body already steps.
+// block body letting filter_map traverse the whole receiver without charging the
+// step quota. runner.call only charges steps for the statements it evaluates,
+// and an empty block evaluates none, so filter_map must charge a step per
+// element itself.
+//
+// The builtin is driven directly against a pre-built Go-level receiver under a
+// generous memory quota so the only thing that can trip the limit is the
+// per-element step. A script-level test cannot isolate this: passing a large
+// receiver trips the memory quota while binding the call frame (which also
+// surfaces as runtimeErrorTypeLimit), masking a missing per-element step. The
+// assertion below targets errStepQuotaExceeded specifically so a memory-quota
+// trip cannot satisfy it.
 func TestArrayFilterMapEmptyBlockParticipatesInStepQuota(t *testing.T) {
 	t.Parallel()
-	script := compileScriptWithConfig(t, Config{StepQuota: 40}, `def run(values); values.filter_map do |v| end; end`)
-	requireCallRuntimeErrorType(t, script, "run", []Value{largeIntArray(1000)}, CallOptions{}, runtimeErrorTypeLimit)
+	const receiverSize = 1000
+	const stepQuota = 40
+	fn := arrayFilterMapBuiltin(t)
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       stepQuota,
+		memoryQuota: 8 << 30,
+	}
+	_, err := fn(exec, largeIntArray(receiverSize), nil, nil, emptyBlockValue())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps > stepQuota+1 {
+		t.Fatalf("steps = %d, want the loop to stop near the step quota %d", exec.steps, stepQuota)
+	}
 }
 
 // TestArrayFilterMapEmptyBlockHonorsCancellation guards against an empty block
 // body letting filter_map ignore context cancellation. The per-element step also
 // observes the canceled context, so the call must abort rather than run to
 // completion.
+//
+// As with the step-quota test, the builtin is driven directly: a script-level
+// canceled-context test trips on the very first step charged while evaluating
+// the function body, before filter_map's loop runs, so it would still pass even
+// if filter_map never checked cancellation. Driving the builtin against a
+// pre-built receiver makes the loop the only place a cancellation can be
+// observed.
 func TestArrayFilterMapEmptyBlockHonorsCancellation(t *testing.T) {
 	t.Parallel()
-	script := compileScript(t, `def run(); [3, 1, 2].filter_map do |v| end; end`)
+	const receiverSize = 1000
+	fn := arrayFilterMapBuiltin(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := script.Call(ctx, "run", nil, CallOptions{})
+	exec := &Execution{
+		ctx:         ctx,
+		quota:       1 << 30,
+		memoryQuota: 8 << 30,
+	}
+	_, err := fn(exec, largeIntArray(receiverSize), nil, nil, emptyBlockValue())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("filter_map with empty block under canceled context = %v, want context.Canceled", err)
+	}
+	if exec.steps >= receiverSize {
+		t.Fatalf("steps = %d, want the loop to abort early on cancellation", exec.steps)
 	}
 }
 
