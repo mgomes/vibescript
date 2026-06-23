@@ -50,7 +50,7 @@ end
 ```
 
 ```vibe
-[1, 2, 3, 4].filter_map { |n| n * 10 if n % 2 == 0 }   # [20, 40]
+[1, 2, 3, 4].filter_map { |n| if n % 2 == 0 then n * 10 end }   # [20, 40]
 ```
 
 `filter_map` requires a block and takes no arguments. It calls the block once
