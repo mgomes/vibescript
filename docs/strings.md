@@ -536,6 +536,23 @@ carriage-return bytes):
 "a\rb".lines   # ["a\rb"]
 ```
 
+### `bytes`
+
+Returns an array of the string's bytes as integers in the range `0..255`. This
+is byte-level, not rune-aware: a multibyte character expands to one entry per
+UTF-8 byte, so `bytes.size` equals [`bytesize`](#bytesize), not
+[`length`](#length):
+
+```vibe
+"abc".bytes   # [97, 98, 99]
+"héllo".bytes # [104, 195, 169, 108, 108, 111]
+"".bytes      # []
+```
+
+The raw bytes are returned verbatim. Strings carrying invalid UTF-8 (only
+reachable through host-provided values, since Vibescript literals cannot encode
+them) are not normalized, matching Ruby's `String#bytes`.
+
 ### `each_char`
 
 Yields each Unicode character to a block without first materializing an array,
@@ -552,6 +569,22 @@ out # ["h", "é", "l", "l", "o"]
 A block is required. Vibescript has no `Enumerator`, so calling `each_char`
 without a block reports `string.each_char requires a block` rather than returning
 an enumerator.
+
+### `each_byte`
+
+Yields each byte as an integer in the range `0..255` without first materializing
+an array, the streaming counterpart to [`bytes`](#bytes). Iteration is
+byte-level, so a multibyte character is yielded one UTF-8 byte at a time. The
+block's return value is ignored, and `each_byte` returns the receiver string:
+
+```vibe
+out = []
+"é".each_byte { |b| out = out + [b] }
+out # [195, 169]
+```
+
+As with `each_char`, a block is required; calling `each_byte` without a block
+reports `string.each_byte requires a block`.
 
 ### `each_line`
 
