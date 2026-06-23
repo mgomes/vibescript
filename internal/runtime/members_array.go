@@ -1156,6 +1156,13 @@ func arrayMemberGrep(property string) (Value, error) {
 	}), nil
 }
 
+// arrayFillInitialCap bounds the capacity reserved up front when building a
+// fill result. Larger fills grow the backing array via append so the per-element
+// step() and checkProjectedIntArrayBytes calls bound the actual allocation,
+// rather than reserving the full requested length immediately. It mirrors
+// rangeMaterializeInitialCap.
+const arrayFillInitialCap = 4096
+
 // arrayFillSpan describes the half-open destination window [begin, end) that a
 // fill writes to, together with finalLength, the length the result array needs
 // so the window fits. When the window extends past the receiver, finalLength is
@@ -1212,46 +1219,78 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		return NewNil(), err
 	}
 
-	out := make([]Value, span.finalLength)
-	copy(out, arr)
-	// Pad the gap between the receiver's end and the fill window with nil, the
-	// same value Ruby inserts when fill grows the array past its old length. The
-	// gap only exists when the window actually extends the array, so it is
-	// bounded by the result length to skip an empty window whose start sits past
-	// the receiver without growing it.
-	for i := len(arr); i < span.begin && i < span.finalLength; i++ {
-		out[i] = NewNil()
-	}
-
+	var runner *blockCallRunner
 	if hasBlock {
-		runner, err := newBlockCallRunner(exec, block, "array.fill")
+		runner, err = newBlockCallRunner(exec, block, "array.fill")
 		if err != nil {
 			return NewNil(), err
 		}
-		var blockArg [1]Value
-		for i := span.begin; i < span.end; i++ {
-			// Charge a step per produced element so a large window cannot starve
-			// the quota or cancellation checks while the block runs.
+	}
+
+	// Grow the result with append from a bounded initial capacity rather than
+	// reserving the full finalLength up front. The projected check above only
+	// fails fast when the requested window clearly exceeds the memory quota; it
+	// passes whenever MemoryQuotaBytes is large, so preallocating finalLength
+	// there would let a small StepQuota paired with a generous memory quota
+	// still trigger a huge up-front allocation before the per-element step()
+	// loop could abort. Bounding the initial capacity and re-checking the
+	// backing array's growth per element keeps the actual allocation
+	// proportional to what the quotas allow, mirroring rangeMaterialize.
+	initialCap := span.finalLength
+	if initialCap > arrayFillInitialCap {
+		initialCap = arrayFillInitialCap
+	}
+	out := make([]Value, 0, initialCap)
+
+	appendValue := func(val Value) error {
+		out = append(out, val)
+		// Charge the backing array's current capacity rather than re-estimating
+		// the whole prefix on each append; checkMemoryWith would walk every
+		// element and make the fill O(n^2), while this O(1) check tracks the
+		// actual allocation as append grows the backing array.
+		return exec.checkProjectedIntArrayBytes(cap(out))
+	}
+
+	var blockArg [1]Value
+	for i := range span.finalLength {
+		switch {
+		case i >= span.begin && i < span.end:
+			// Within the fill window. Charge a step per produced element so a
+			// large window cannot starve the quota or cancellation checks, then
+			// resolve the element from the block or the explicit fill value.
 			if err := exec.step(); err != nil {
 				return NewNil(), err
 			}
-			blockArg[0] = NewInt(int64(i))
-			val, err := runner.call(blockArg[:])
-			if err != nil {
+			var val Value
+			if runner != nil {
+				blockArg[0] = NewInt(int64(i))
+				val, err = runner.call(blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+			} else {
+				val = args[0]
+			}
+			if err := appendValue(val); err != nil {
 				return NewNil(), err
 			}
-			out[i] = val
+		case i < len(arr):
+			// Outside the window but within the receiver: copy the original
+			// element unchanged (the prefix before the window or the tail after
+			// it).
+			if err := appendValue(arr[i]); err != nil {
+				return NewNil(), err
+			}
+		default:
+			// Past the receiver's end but before the window: pad the gap with
+			// nil, the value Ruby inserts when fill grows the array past its old
+			// length.
+			if err := appendValue(NewNil()); err != nil {
+				return NewNil(), err
+			}
 		}
-		return NewArray(out), nil
 	}
 
-	value := args[0]
-	for i := span.begin; i < span.end; i++ {
-		if err := exec.step(); err != nil {
-			return NewNil(), err
-		}
-		out[i] = value
-	}
 	return NewArray(out), nil
 }
 

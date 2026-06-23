@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	goruntime "runtime"
 	"testing"
 )
 
@@ -563,6 +564,75 @@ func TestArrayFillStepQuota(t *testing.T) {
 end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: 64 << 20}, source)
 	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// TestArrayFillBoundsInitialCapacity confirms a large requested fill window does
+// not reserve its full backing array up front. With a generous memory quota but
+// a tiny step quota, the projected memory check passes (so execution reaches the
+// loop) yet the fill must stop on the step limit after producing only a handful
+// of elements. Reserving the full window beforehand would allocate
+// finalLength*sizeof(Value) bytes regardless of how few steps the quota permits;
+// the bounded growth path keeps the allocation proportional to the elements
+// actually produced.
+func TestArrayFillBoundsInitialCapacity(t *testing.T) {
+	// Not parallel: this test reads process-wide allocation counters and must
+	// not race other goroutines' allocations.
+	const length = 100_000_000
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       50,
+		memoryQuota: 8 << 30,
+	}
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	_, err := arrayFill(exec, NewArray(nil), []Value{NewInt(0), NewInt(0), NewInt(length)}, nil, NewNil())
+	goruntime.ReadMemStats(&after)
+
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps > exec.quota+1 {
+		t.Fatalf("steps = %d, want the loop to stop near the step quota %d", exec.steps, exec.quota)
+	}
+
+	// The full preallocation would have reserved length*sizeof(Value) bytes. The
+	// bounded path produces only ~quota elements before failing, so its
+	// allocation is many orders of magnitude smaller. Use a generous ceiling to
+	// stay robust against unrelated allocation noise while still failing loudly
+	// if the full capacity is ever reserved again.
+	const fullPreallocBytes = uint64(length) * uint64(estimatedValueBytes)
+	const ceiling = fullPreallocBytes / 1000
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("fill allocated %d bytes, want <= %d (full preallocation would be %d)",
+			allocated, ceiling, fullPreallocBytes)
+	}
+}
+
+// TestArrayFillGrowsPastInitialCapacity confirms a fill larger than the bounded
+// initial capacity grows the backing array correctly, proving the append-driven
+// path produces the full, correct result rather than truncating at the initial
+// capacity.
+func TestArrayFillGrowsPastInitialCapacity(t *testing.T) {
+	t.Parallel()
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: 1 << 30,
+	}
+	const length = arrayFillInitialCap + 1000
+	result, err := arrayFill(exec, NewArray(nil), []Value{NewInt(7), NewInt(0), NewInt(length)}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("arrayFill: %v", err)
+	}
+	arr := result.Array()
+	if len(arr) != length {
+		t.Fatalf("len = %d, want %d", len(arr), length)
+	}
+	for i, val := range arr {
+		if val.Kind() != KindInt || val.Int() != 7 {
+			t.Fatalf("arr[%d] = %v, want int 7", i, val)
+		}
+	}
 }
 
 // TestArrayFillContextCancellation confirms a canceled context aborts the fill:
