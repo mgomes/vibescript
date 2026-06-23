@@ -1299,3 +1299,49 @@ func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
 		"break": NewInt(8),
 	})
 }
+
+// TestKeywordHashLabelsRoundTrip verifies that reserved-word tokens that the
+// parser previously rejected as hash labels (begin, rescue, ensure, raise,
+// export) now build hashes whose keys are read back as symbols, mirroring
+// Ruby's uniform treatment of keyword-shaped labels.
+func TestKeywordHashLabelsRoundTrip(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def payload()
+      { begin: 1, rescue: 2, ensure: 3, raise: 4, export: 5 }
+    end
+
+    def read(key)
+      payload()[key]
+    end
+    `)
+
+	payload := callFunc(t, script, "payload", nil)
+	if payload.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", payload.Kind())
+	}
+	compareHash(t, payload.Hash(), map[string]Value{
+		"begin":  NewInt(1),
+		"rescue": NewInt(2),
+		"ensure": NewInt(3),
+		"raise":  NewInt(4),
+		"export": NewInt(5),
+	})
+
+	wantByKey := map[string]Value{
+		"begin":  NewInt(1),
+		"rescue": NewInt(2),
+		"ensure": NewInt(3),
+		"raise":  NewInt(4),
+		"export": NewInt(5),
+	}
+	for key, want := range wantByKey {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, "read", []Value{NewSymbol(key)})
+			if !got.Equal(want) {
+				t.Fatalf("read(:%s) = %v, want %v", key, got, want)
+			}
+		})
+	}
+}

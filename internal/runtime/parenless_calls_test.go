@@ -42,6 +42,38 @@ func TestParenlessSingleArgumentCalls(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "push_arg", nil), []Value{NewInt(1), NewInt(2)})
 }
 
+// TestParenlessReservedWordKeywordLabels verifies that reserved keywords that
+// are not prefix expressions (such as `rescue`, `ensure`, and `begin`) are
+// accepted as keyword-argument labels in parenless calls and flow through to
+// the receiving function, mirroring Ruby's parenless keyword-argument syntax.
+func TestParenlessReservedWordKeywordLabels(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def accept(opts)
+      opts
+    end
+
+    def single_label
+      accept rescue: "retry"
+    end
+
+    def multiple_labels
+      accept begin: 1, rescue: 2, ensure: 3
+    end
+    `)
+
+	single := callFunc(t, script, "single_label", nil)
+	compareHash(t, single.Hash(), map[string]Value{"rescue": NewString("retry")})
+
+	multiple := callFunc(t, script, "multiple_labels", nil)
+	compareHash(t, multiple.Hash(), map[string]Value{
+		"begin":  NewInt(1),
+		"rescue": NewInt(2),
+		"ensure": NewInt(3),
+	})
+}
+
 func TestParenlessArgumentListCalls(t *testing.T) {
 	t.Parallel()
 
