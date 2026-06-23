@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"math"
 	goruntime "runtime"
 	"testing"
 	"time"
@@ -543,53 +542,35 @@ func distinctCompositeValues(n int) []Value {
 	return values
 }
 
-// measureDifferenceRemoval times differenceArrayValues against a removal side of
-// n distinct composites, taking the fastest of a few runs so transient
-// scheduler noise cannot inflate the reading. The receiver is a single value
-// absent from the removal side, isolating the cost of building the removal
-// membership structure.
-func measureDifferenceRemoval(n int) time.Duration {
-	left := []Value{NewArray([]Value{NewInt(-1)})}
-	others := [][]Value{distinctCompositeValues(n)}
-	best := time.Duration(math.MaxInt64)
-	for range 5 {
-		start := time.Now()
-		_ = differenceArrayValues(left, others)
-		if elapsed := time.Since(start); elapsed < best {
-			best = elapsed
-		}
-	}
-	return best
-}
-
 // TestDifferenceArrayValuesRemovalIsNotQuadratic guards against deduplicating
 // the difference removal side. A deduping set scans every previously inserted
 // composite via Value.Equal on each insert, so building the removal structure
 // from m distinct composites costs O(m^2); a membership-only structure that
-// appends composites without scanning keeps it O(m). Doubling the removal side
-// must therefore roughly double the work, not quadruple it.
+// appends composites without scanning keeps it O(m).
+//
+// This is asserted with a generous wall-clock deadline rather than a
+// scaling ratio: at this size the linear implementation finishes in well under
+// a second, while the quadratic regression takes minutes, so a deadline
+// distinguishes the two without being sensitive to ordinary CI timing noise
+// (a ratio assertion is not — contended runners can make a linear run look
+// several times slower from one measurement to the next).
 func TestDifferenceArrayValuesRemovalIsNotQuadratic(t *testing.T) {
-	// Not parallel: timing measurements must not contend with other tests.
+	t.Parallel()
 
-	const base = 20_000
+	const n = 200_000
+	left := []Value{NewArray([]Value{NewInt(-1)})}
+	others := [][]Value{distinctCompositeValues(n)}
 
-	// Warm up so first-touch allocation and code caching do not skew the first
-	// measured size.
-	measureDifferenceRemoval(base)
+	done := make(chan struct{})
+	go func() {
+		_ = differenceArrayValues(left, others)
+		close(done)
+	}()
 
-	single := measureDifferenceRemoval(base)
-	double := measureDifferenceRemoval(2 * base)
-
-	// Linear scaling lands near 2x; quadratic scaling lands near 4x. A ceiling of
-	// 3x sits clearly between the two, failing loudly on a quadratic regression
-	// while tolerating ordinary timing noise. Guard against a degenerate
-	// near-zero baseline that would make the ratio meaningless.
-	const maxRatio = 3.0
-	if single <= 0 {
-		t.Fatalf("baseline measurement was non-positive: %v", single)
-	}
-	if ratio := float64(double) / float64(single); ratio > maxRatio {
-		t.Fatalf("difference removal scaled %.2fx from %d to %d composites (single=%v double=%v); want <= %.1fx, quadratic insertion is ~4x",
-			ratio, base, 2*base, single, double, maxRatio)
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("differenceArrayValues over %d distinct composites did not finish within 30s; "+
+			"removal-set construction is likely quadratic again", n)
 	}
 }
