@@ -138,15 +138,38 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 // check would only observe it after the allocation already happened. count is the
 // number of entries the output map would hold. Each entry contributes the map's
 // per-entry overhead plus a key header and a value slot; the keys and values are
-// references shared with the receiver, whose payloads are already counted in the
-// base usage, so only the new map's structural footprint is projected here.
-func (exec *Execution) checkProjectedHashBytes(count int) error {
+// references shared with the receiver and arguments, whose payloads are already
+// counted in the call-root usage below, so only the new map's structural
+// footprint is projected here.
+//
+// The receiver, arguments, and block are the call roots that hold the transform's
+// inputs alive while the output map is built. When the transform runs on an
+// ephemeral receiver or argument (for example a hash literal or capability return
+// invoked immediately, `{ ... }.compact` or `h.merge(load_defaults)`), those
+// inputs are reachable only through these roots and are not part of
+// estimateMemoryUsageBase, so the projection must count them or it would
+// under-report the peak and admit a transform that doubles the live footprint.
+// The estimator de-duplicates by backing pointer, so a root that overlaps the
+// base (a named local) or another root (`h.merge(h)`) is counted once.
+func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
 	est := exec.memoryEstimatorForCheck()
 	used := exec.estimateMemoryUsageBase(est)
+	if receiver.Kind() != KindNil {
+		used = saturatingAdd(used, est.value(receiver))
+	}
+	for _, arg := range args {
+		used = saturatingAdd(used, est.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		used = saturatingAdd(used, est.value(kwarg))
+	}
+	if !block.IsNil() {
+		used = saturatingAdd(used, est.value(block))
+	}
 	est.reset()
 
 	used = saturatingAdd(used, estimatedValueBytes+estimatedMapBaseBytes)

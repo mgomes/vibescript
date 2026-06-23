@@ -364,6 +364,39 @@ func hashMemberQuery(property string) (Value, error) {
 	}
 }
 
+// mergedKeyCount returns the number of distinct keys a merge of base and args
+// would hold. The merged hash is the union of the receiver's keys and every
+// argument's keys, so overlapping keys (h.merge(h), or the same defaults applied
+// repeatedly) collapse to one entry. Counting the union lets the projected memory
+// check size the real output map instead of summing every input length, which
+// would over-count an overlapping merge and reject one that fits the quota.
+//
+// When no argument adds a key beyond the receiver, the union is just len(base);
+// the helper short-circuits that case so the common single-overlay merge avoids
+// allocating a tracking set. Otherwise it counts the receiver's keys plus each
+// argument key not already seen, walking maps that are inputs already resident in
+// memory.
+func mergedKeyCount(base map[string]Value, args []Value) int {
+	count := len(base)
+	var seen map[string]struct{}
+	for _, arg := range args {
+		for key := range arg.Hash() {
+			if _, inBase := base[key]; inBase {
+				continue
+			}
+			if seen == nil {
+				seen = make(map[string]struct{})
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			count++
+		}
+	}
+	return count
+}
+
 func hashMemberTransforms(property string) (Value, error) {
 	switch property {
 	case "merge", "update", "merge!":
@@ -393,16 +426,16 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 			}
 			base := receiver.Hash()
-			// Preflight the largest map this merge could materialize before
-			// allocating it. The output starts as a copy of the receiver and can
-			// grow by every key in each argument, so projecting that worst case
-			// rejects an over-quota merge up front instead of after the backing
-			// map is already reserved.
-			projected := len(base)
-			for _, arg := range args {
-				projected = saturatingAdd(projected, len(arg.Hash()))
-			}
-			if err := exec.checkProjectedHashBytes(projected); err != nil {
+			// Preflight the map this merge could materialize before allocating it.
+			// The output holds the union of the receiver's keys and every
+			// argument's keys, so its size is the count of distinct keys, not the
+			// sum of every input length: when arguments overlap the receiver or
+			// each other (h.merge(h), or repeatedly overlaying the same defaults)
+			// the duplicates collapse and only the unique final keys are reserved.
+			// Projecting the union rejects an over-quota merge up front without
+			// over-counting a merge that stays within the sandbox limit.
+			projected := mergedKeyCount(base, args)
+			if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(base))
@@ -474,7 +507,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			replacement := args[0].Hash()
 			// Preflight the copied map before reserving it so a large replacement
 			// cannot allocate past the quota ahead of the statement-level check.
-			if err := exec.checkProjectedHashBytes(len(replacement)); err != nil {
+			if err := exec.checkProjectedHashBytes(len(replacement), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(replacement))
@@ -534,7 +567,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Preflight the copied map (plus the stored entry) before reserving it
 			// so storing into a large hash cannot allocate past the quota ahead of
 			// the statement-level check.
-			if err := exec.checkProjectedHashBytes(saturatingAdd(len(base), 1)); err != nil {
+			if err := exec.checkProjectedHashBytes(saturatingAdd(len(base), 1), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(base)+1)
@@ -592,7 +625,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Preflight the largest map except could materialize before reserving
 			// it. Excluded keys absent from the receiver leave the full input in
 			// place, so the worst case is a copy of every entry.
-			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
@@ -622,7 +655,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Preflight the largest map select could keep before reserving it; the
 			// block may keep every entry, so project the full input. Per-entry
 			// step accounting and the periodic memory check come from runner.call.
-			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
@@ -654,7 +687,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Preflight the largest map reject could keep before reserving it; the
 			// block may keep every entry, so project the full input. Per-entry
 			// step accounting and the periodic memory check come from runner.call.
-			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
@@ -686,7 +719,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Preflight the output map before reserving it; transform_keys produces
 			// at most one entry per input key. Per-entry step accounting and the
 			// periodic memory check come from runner.call.
-			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
@@ -725,7 +758,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			mapping := args[0].Hash()
 			// Preflight the output map before reserving it; remap_keys produces one
 			// entry per input key (renamed or kept), so project the full input.
-			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
@@ -762,7 +795,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Preflight the output map before reserving it; transform_values keeps
 			// every key. Per-entry step accounting and the periodic memory check
 			// come from runner.call.
-			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
@@ -786,7 +819,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			entries := receiver.Hash()
 			// Preflight the largest map compact could keep before reserving it; a
 			// hash with no nil values keeps every entry, so project the full input.
-			if err := exec.checkProjectedHashBytes(len(entries)); err != nil {
+			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))

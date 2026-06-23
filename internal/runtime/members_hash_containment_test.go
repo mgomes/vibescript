@@ -142,6 +142,116 @@ func hashSymbolKeys(count int) []Value {
 	return keys
 }
 
+func TestHashTransformProjectionCountsLiveCallRoots(t *testing.T) {
+	t.Parallel()
+
+	// A transform invoked on an ephemeral receiver holds the input hash alive as a
+	// call root while it builds the output map, so peak memory is the input plus
+	// the new map. The projected check must count the receiver root or it
+	// under-reports the peak and admits a transform that doubles the live
+	// footprint. Here the quota fits a single materialized copy of the receiver
+	// but not the input held live alongside the output, so compact (which keeps
+	// every non-nil entry) must be rejected up front.
+	const count = 20_000
+	receiver := largeHashReceiver(count)
+
+	// Measure the live footprint of the receiver as a call root and the structural
+	// footprint of the output map compact would build, then set the quota so the
+	// output alone fits but the input held live alongside it does not. The
+	// pre-fix projection counted only the output structure and would have passed.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoot := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, NewNil())
+	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+	if liveWithRoot <= outputStructure {
+		t.Fatalf("test setup expects the live input (%d) to exceed the output structure (%d)", liveWithRoot, outputStructure)
+	}
+
+	// Above the output structure (old projection passes) but below input+output
+	// (new projection rejects).
+	quota := outputStructure + (liveWithRoot-outputStructure)/2
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "compact", nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestHashMergeProjectionCountsUnionNotSum(t *testing.T) {
+	t.Parallel()
+
+	// When a merge argument overlaps the receiver, the output map only needs space
+	// for the distinct union of keys, not the sum of every input length. Merging a
+	// hash with itself produces a result the same size as the receiver, so a quota
+	// that fits the receiver plus its copied result must let the merge proceed.
+	// The pre-fix projection summed len(base)+len(arg) and would have rejected
+	// this self-overlay even though it stays within the sandbox limit.
+	const count = 10_000
+	receiver := largeHashReceiver(count)
+
+	// The union of receiver.merge(receiver) is exactly the receiver's keys, so the
+	// real output is count entries. Set the quota to fit the live receiver plus an
+	// output map of count entries, which is what the operation actually needs.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, []Value{receiver}, nil, NewNil())
+	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+	quota := liveWithRoots + outputStructure
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "merge", []Value{receiver}, NewNil())
+	if err != nil {
+		t.Fatalf("merge(self) under union-sized quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("merge returned %v, want hash", got.Kind())
+	}
+	if len(got.Hash()) != count {
+		t.Fatalf("merge(self) produced %d entries, want %d", len(got.Hash()), count)
+	}
+
+	// Sanity: the discarded sum-based projection (len(base)+len(arg) = 2*count)
+	// would not fit this quota, confirming the test exercises the union fix.
+	sumProjection := estimatedValueBytes + estimatedMapBaseBytes +
+		2*count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+	if liveWithRoots+sumProjection <= quota {
+		t.Fatalf("test setup expects the sum-based projection (%d) to exceed the quota (%d)", liveWithRoots+sumProjection, quota)
+	}
+}
+
+func TestMergedKeyCount(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]Value{"a": NewInt(1), "b": NewInt(2)}
+
+	tests := []struct {
+		name string
+		args []Value
+		want int
+	}{
+		{name: "no args", want: 2},
+		{name: "self overlay", args: []Value{NewHash(base)}, want: 2},
+		{name: "all new keys", args: []Value{NewHash(map[string]Value{"c": NewInt(3), "d": NewInt(4)})}, want: 4},
+		{name: "partial overlap", args: []Value{NewHash(map[string]Value{"b": NewInt(9), "c": NewInt(3)})}, want: 3},
+		{
+			name: "duplicate new key across args",
+			args: []Value{
+				NewHash(map[string]Value{"c": NewInt(3)}),
+				NewHash(map[string]Value{"c": NewInt(4)}),
+			},
+			want: 3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := mergedKeyCount(base, tc.args); got != tc.want {
+				t.Fatalf("mergedKeyCount(%s) = %d, want %d", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHashBlockTransformTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 
