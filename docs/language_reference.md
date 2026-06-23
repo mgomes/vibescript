@@ -217,6 +217,11 @@ This includes an instance method named `call`, which stays distinct from a
 function value's `call` alias. Their parenless forms still pass the options
 hash, mirroring the historical behavior.
 
+Positional arguments must come before keyword labels. A positional argument that
+follows a keyword label, such as `collect(first: 1, "tail")`, is a parse error in
+both the parenthesized and parenless forms, matching Ruby. Keyword labels after a
+positional argument are fine, so `collect("head", first: 1)` is accepted.
+
 Blocks can be passed with `do ... end`:
 
 ```vibe

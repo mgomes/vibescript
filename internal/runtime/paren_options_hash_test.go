@@ -86,6 +86,56 @@ func TestParenthesizedFunctionOptionsHash(t *testing.T) {
 	requireCallErrorContains(t, script, "parenthesized_keyword_signature", nil, CallOptions{}, "missing argument opts")
 }
 
+// TestParenthesizedPositionalAfterKeywordRejected verifies that a parenthesized
+// call rejects a positional argument that follows a keyword argument for both
+// the direct-call and function-value (`call` alias) forms, matching Ruby (which
+// treats `f(a: 1, 2)` as a syntax error) and the parenless form. Without the
+// rejection the synthesized options hash would be appended after the trailing
+// positional, silently mis-binding `opts = "tail"` and `value = {first: 1}`.
+func TestParenthesizedPositionalAfterKeywordRejected(t *testing.T) {
+	t.Parallel()
+
+	const want = "positional arguments cannot follow keyword arguments"
+
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "direct call",
+			source: `
+    def collect(opts, value)
+      [opts, value]
+    end
+
+    def run
+      collect(first: 1, "tail")
+    end
+    `,
+		},
+		{
+			name: "function value call alias",
+			source: `
+    def collect(opts, value)
+      [opts, value]
+    end
+
+    def run
+      collect.call(first: 1, "tail")
+    end
+    `,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			requireCompileErrorContainsDefault(t, tc.source, want)
+		})
+	}
+}
+
 // TestParenthesizedFunctionOptionsHashTypeMismatch verifies that type
 // validation runs against the synthesized options hash, so a shape mismatch is
 // rejected with the type error rather than a missing-argument error.

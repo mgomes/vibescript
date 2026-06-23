@@ -1366,6 +1366,9 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 			break
 		}
 		p.nextToken()
+		if len(kwargs) > 0 && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
+			p.addParseError(p.curToken.Pos, "positional arguments cannot follow keyword arguments")
+		}
 		p.parseCallArgument(&args, &kwargs)
 	}
 

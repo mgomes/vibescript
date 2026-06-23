@@ -10,4 +10,8 @@
   and when calling a function value held in a member such as a module function,
   so `helpers.configure(retries: 3)` matches `configure(retries: 3)` too.
   Constructor and method calls keep strict parenthesized keyword binding,
-  including an instance method named `call`.
+  including an instance method named `call`. A positional argument that follows a
+  keyword label inside parentheses, such as `collect(first: 1, "tail")`, is now
+  rejected with a parse error matching Ruby (which treats it as a syntax error)
+  and the parenless form, rather than silently appending the synthesized options
+  hash after the trailing positional.

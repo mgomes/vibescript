@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -210,6 +211,83 @@ end`
 	// the structural shape.
 	strictCmpOpts := cmp.Options{cmpopts.IgnoreFields(ast.Position{}, "Line", "Column")}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), strictCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserParenthesizedPositionalAfterKeywordRejected verifies that a
+// parenthesized call rejects a positional argument that follows a keyword
+// argument, matching Ruby (which treats `f(a: 1, 2)` as a syntax error) and the
+// parenless form. Without this check the synthesized options hash would be
+// appended after the trailing positional, silently mis-binding the arguments.
+func TestParserParenthesizedPositionalAfterKeywordRejected(t *testing.T) {
+	t.Parallel()
+
+	sources := []string{
+		`def run
+  collect(first: 1, "tail")
+end`,
+		`def run
+  collect(x: 1, y: 2, 3)
+end`,
+		`def run
+  collect(first:, "tail")
+end`,
+		`def run
+  handler.call(first: 1, "tail")
+end`,
+	}
+
+	for _, source := range sources {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+
+			_, errs := parseSource(t, source)
+			if len(errs) == 0 {
+				t.Fatalf("parseSource(%q) errors = nil, want diagnostic for positional after keyword", source)
+			}
+
+			found := false
+			for _, err := range errs {
+				if strings.Contains(err.Error(), "positional arguments cannot follow keyword arguments") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("parseSource(%q) errors = %v, want one mentioning positional after keyword", source, errs)
+			}
+		})
+	}
+}
+
+// TestParserParenthesizedKeywordAfterPositionalAllowed verifies that the
+// ordering check only rejects positionals that follow keywords: a keyword
+// argument after a positional one is valid in Ruby (`f(1, a: 2)`) and must keep
+// parsing without error.
+func TestParserParenthesizedKeywordAfterPositionalAllowed(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  collect("head", first: 1)
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "collect"},
+			Args:   []ast.Expression{&ast.StringLiteral{Value: "head"}},
+			KwArgs: []ast.KeywordArg{
+				{Name: "first", Value: &ast.IntegerLiteral{Value: 1}},
+			},
+			KeywordOptionsHash: true,
+		}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }
