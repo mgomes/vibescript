@@ -42,6 +42,12 @@ Unicode characters, not bytes, unless noted.
 - `empty? -> bool` – true when the string has no characters.
 - `ord -> int` – codepoint of the first character; errors on an empty string.
 - `chr -> string | nil` – first character, or `nil` for an empty string.
+- `hex -> int` – leading characters parsed as a hexadecimal integer (optional
+  whitespace, sign, `0x` prefix, and underscore separators); `0` when no hex
+  digit leads, and an `integer out of range` error past the `int64` bounds.
+- `oct -> int` – leading characters parsed using a base inferred from a
+  `0x`/`0b`/`0o`/`0d` prefix (octal by default); same lenient parsing,
+  zero-on-failure, and `int64` overflow behavior as `hex`.
 
 ### Search and Matching
 
