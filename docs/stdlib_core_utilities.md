@@ -41,7 +41,7 @@ Unicode characters, not bytes, unless noted.
 - `bytesize -> int` – number of UTF-8 bytes.
 - `empty? -> bool` – true when the string has no characters.
 - `ord -> int` – codepoint of the first character; errors on an empty string.
-- `chr -> string | nil` – first character, or `nil` for an empty string.
+- `chr -> string` – first character, or an empty string for an empty receiver.
 - `hex -> int` – leading characters parsed as a hexadecimal integer (optional
   whitespace, sign, `0x` prefix, and underscore separators); `0` when no hex
   digit leads, and an `integer out of range` error past the `int64` bounds.
@@ -135,8 +135,11 @@ then truncated at a character boundary to fill the span.
   occurrence of `pattern`.
 - `gsub(pattern, replacement, regex: false) -> string` – replace every
   occurrence of `pattern`.
-- `split(separator = nil) -> array` – split on whitespace (dropping empty
-  fields) without arguments, or on `separator` when given.
+- `split(separator = nil) -> array` – split on runs of ASCII whitespace
+  (space, tab, newline, vertical tab, form feed, carriage return; dropping empty
+  fields) without arguments, or on `separator` when given. Like Ruby, the
+  no-argument form keeps wider Unicode whitespace such as the non-breaking space
+  inside the field rather than splitting on it.
 - `chars -> array` – array of the string's Unicode characters, one per code
   point (rune-aware, like `length` and `slice`).
 - `lines -> array` – array of lines split on `"\n"`, retaining the trailing
@@ -827,8 +830,17 @@ Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
   (`Time.utc(2024, 1, 1, 0, 0, 0, 123456).usec` is `123456`). Integer
   microseconds are exact and floats carry sub-microsecond precision down to the
   nanosecond; a non-numeric microsecond argument raises a runtime error.
-- `Time.at(epoch_seconds, in: nil) -> time` – build from Unix epoch seconds
-  (int or float).
+- `Time.at(epoch_seconds, subsec = nil, unit = nil, in: nil) -> time` – build
+  from Unix epoch seconds (int or float). An optional subsecond value defaults to
+  microseconds; an optional unit symbol (`:microsecond`/`:usec`,
+  `:millisecond`, or `:nanosecond`/`:nsec`) selects the unit. A unit without a
+  subsecond value, an unknown unit symbol, or a non-numeric subsecond value
+  raises a runtime error; unlike `Time.utc`/`Time.local`, an explicit `nil`
+  subsecond is rejected rather than treated as omitted. A fractional subsecond
+  is floored toward negative infinity at nanosecond resolution, the way Ruby
+  exposes it (`Time.at(0, -1.9, :nsec).nsec` is `999999998`), and subsecond
+  values carry into the seconds when they exceed one second; a magnitude too
+  large for the nanosecond range raises `Time.at subsecond value out of range`.
 - `Time.now(in: nil) -> time` – current time (local zone by default).
 - `Time.parse(string, layout = nil, in: nil) -> time` – parse a time string;
   without a layout it tries RFC3339/RFC3339Nano, RFC1123/RFC1123Z,

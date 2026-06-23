@@ -101,6 +101,48 @@ func stringRPartition(text, sep string) (head, separator, tail string) {
 	return text[:index], sep, text[index+len(sep):]
 }
 
+// isRubyASCIISpace reports whether b is one of the six ASCII whitespace bytes
+// Ruby's ISSPACE macro recognizes: space, horizontal tab, newline, vertical
+// tab, form feed, and carriage return. Ruby uses this classification for the
+// default no-separator String#split, so wider Unicode whitespace such as NBSP
+// (U+00A0) or the em space (U+2003) is intentionally excluded.
+func isRubyASCIISpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\v', '\f', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+// splitOnASCIIWhitespace splits text on runs of ASCII whitespace, mirroring
+// Ruby's default (AWK-style) String#split. Leading and trailing whitespace is
+// discarded and consecutive whitespace collapses, so " a  b " yields ["a",
+// "b"] and a blank string yields no fields. Only the bytes recognized by
+// isRubyASCIISpace separate fields; wider Unicode whitespace is preserved
+// inside the surrounding field rather than acting as a delimiter, matching Ruby
+// instead of Go's strings.Fields Unicode whitespace table.
+func splitOnASCIIWhitespace(text string) []string {
+	var fields []string
+	start := -1
+	for i := range len(text) {
+		if isRubyASCIISpace(text[i]) {
+			if start >= 0 {
+				fields = append(fields, text[start:i])
+				start = -1
+			}
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
+	}
+	if start >= 0 {
+		fields = append(fields, text[start:])
+	}
+	return fields
+}
+
 func chompDefault(text string) string {
 	if strings.HasSuffix(text, "\r\n") {
 		return text[:len(text)-2]
@@ -805,18 +847,6 @@ func isTemplateKeyRune(b byte) bool {
 // the other integer operations do (see Integer#abs, Integer#succ).
 var errInumOverflow = errors.New("integer out of range")
 
-// isInumSpace reports whether b is whitespace skipped before the sign of a
-// leniently parsed integer, matching Ruby's ISSPACE classification used by
-// rb_str_to_inum.
-func isInumSpace(b byte) bool {
-	switch b {
-	case ' ', '\t', '\n', '\v', '\f', '\r':
-		return true
-	default:
-		return false
-	}
-}
-
 // inumDigit returns the numeric value of a base digit byte and whether it is a
 // valid digit for the given base. Letters are case-insensitive, so 'a'/'A' both
 // map to 10.
@@ -849,7 +879,9 @@ func inumDigit(b byte, base int) (int, bool) {
 // Bignum to promote to.
 func parseRubyInum(text string, defaultBase int, detectBase bool) (int64, error) {
 	i := 0
-	for i < len(text) && isInumSpace(text[i]) {
+	// Skip leading whitespace using Ruby's ISSPACE classification, matching
+	// rb_str_to_inum.
+	for i < len(text) && isRubyASCIISpace(text[i]) {
 		i++
 	}
 
@@ -974,7 +1006,7 @@ func stringMemberQuery(property string) (Value, error) {
 			}
 			r, size := utf8.DecodeRuneInString(receiver.String())
 			if size == 0 {
-				return NewNil(), nil
+				return NewString(""), nil
 			}
 			return NewString(string(r)), nil
 		}), nil
@@ -1366,7 +1398,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			text := receiver.String()
 			var parts []string
 			if len(args) == 0 {
-				parts = strings.Fields(text)
+				parts = splitOnASCIIWhitespace(text)
 			} else {
 				if args[0].Kind() != KindString {
 					return NewNil(), fmt.Errorf("string.split separator must be string")
