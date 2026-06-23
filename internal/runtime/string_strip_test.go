@@ -4,8 +4,8 @@ import "testing"
 
 // TestRubyStripHelpers exercises the strip-family trimming helpers directly so
 // byte-level cases that the lexer cannot express in a string literal (NUL,
-// invalid UTF-8) are covered. The expected outputs mirror Ruby 2.6's
-// String#strip / #lstrip / #rstrip.
+// invalid UTF-8) are covered. The expected outputs mirror Ruby 3.x's
+// String#strip / #lstrip / #rstrip, where NUL is whitespace at both edges.
 func TestRubyStripHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -81,12 +81,12 @@ func TestRubyStripHelpers(t *testing.T) {
 			wantRstrip: " \u00a0 hello \u00a0",
 		},
 		{
-			name: "leading_nul_kept_trailing_nul_stripped",
+			name: "nul_both_ends_stripped",
 			text: "\x00hello\x00",
-			// Ruby's lstrip leaves a leading NUL but rstrip drops trailing NUL,
-			// so strip keeps the leading NUL only.
-			wantStrip:  "\x00hello",
-			wantLstrip: "\x00hello\x00",
+			// Ruby treats NUL as whitespace at both edges, so lstrip, rstrip,
+			// and strip all drop it.
+			wantStrip:  "hello",
+			wantLstrip: "hello\x00",
 			wantRstrip: "\x00hello",
 		},
 		{
@@ -100,9 +100,10 @@ func TestRubyStripHelpers(t *testing.T) {
 		{
 			name: "leading_nul_then_spaces",
 			text: "\x00 \thello",
-			// lstrip stops at the leading NUL because NUL is not in its set.
-			wantStrip:  "\x00 \thello",
-			wantLstrip: "\x00 \thello",
+			// lstrip treats the leading NUL like whitespace and continues past
+			// it, trimming the run of NUL and ASCII spaces.
+			wantStrip:  "hello",
+			wantLstrip: "hello",
 			wantRstrip: "\x00 \thello",
 		},
 		{

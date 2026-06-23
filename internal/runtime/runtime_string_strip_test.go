@@ -3,10 +3,10 @@ package runtime
 import "testing"
 
 // TestStringStripRubyAlignment drives the strip-family methods through the
-// interpreter to confirm Ruby-aligned whitespace semantics: ASCII whitespace is
-// trimmed while Unicode spaces (NBSP, em space, BOM) are preserved, and the NUL
-// asymmetry between lstrip and rstrip holds. Inputs are passed as arguments
-// because the lexer cannot express NUL or \u escapes in a string literal.
+// interpreter to confirm Ruby-aligned whitespace semantics: ASCII whitespace
+// (including NUL) is trimmed from both edges while Unicode spaces (NBSP, em
+// space, BOM) are preserved. Inputs are passed as arguments because the lexer
+// cannot express NUL or \u escapes in a string literal.
 func TestStringStripRubyAlignment(t *testing.T) {
 	t.Parallel()
 
@@ -47,10 +47,10 @@ func TestStringStripRubyAlignment(t *testing.T) {
 			want:   "\ufeffhello\ufeff",
 		},
 		{
-			name:   "strip_nul_asymmetry",
+			name:   "strip_nul_both_ends",
 			method: "do_strip",
 			input:  "\x00hello\x00",
-			want:   "\x00hello",
+			want:   "hello",
 		},
 		{
 			name:   "lstrip_ascii",
@@ -65,10 +65,10 @@ func TestStringStripRubyAlignment(t *testing.T) {
 			want:   "\u00a0hello",
 		},
 		{
-			name:   "lstrip_keeps_leading_nul",
+			name:   "lstrip_drops_leading_nul",
 			method: "do_lstrip",
 			input:  "\x00hello",
-			want:   "\x00hello",
+			want:   "hello",
 		},
 		{
 			name:   "rstrip_ascii",
@@ -191,6 +191,18 @@ func TestStringStripBangReturnsNil(t *testing.T) {
 			name:   "rstrip_trims_trailing_nul",
 			method: "do_rstrip",
 			input:  "hello\x00",
+			want:   "hello",
+		},
+		{
+			name:   "lstrip_trims_leading_nul",
+			method: "do_lstrip",
+			input:  "\x00hello",
+			want:   "hello",
+		},
+		{
+			name:   "strip_trims_leading_nul",
+			method: "do_strip",
+			input:  "\x00hello",
 			want:   "hello",
 		},
 	}

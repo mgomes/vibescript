@@ -606,28 +606,22 @@ func stringBangResult(original, updated string) Value {
 }
 
 // isRubyStripSpace reports whether b is one of the ASCII whitespace bytes that
-// Ruby's strip family removes from the leading edge: horizontal tab, newline,
-// vertical tab, form feed, carriage return, and space. Unlike Go's
+// Ruby's strip family removes from either edge: the NUL byte, horizontal tab,
+// newline, vertical tab, form feed, carriage return, and space. Ruby's String
+// docs define this same set for strip, lstrip, and rstrip alike. Unlike Go's
 // unicode.IsSpace it never matches multibyte Unicode spaces (NBSP, Ogham space
 // mark, em space, BOM, ...), which Ruby intentionally preserves.
 func isRubyStripSpace(b byte) bool {
 	switch b {
-	case '\t', '\n', '\v', '\f', '\r', ' ':
+	case 0x00, '\t', '\n', '\v', '\f', '\r', ' ':
 		return true
 	default:
 		return false
 	}
 }
 
-// isRubyRstripSpace reports whether b is whitespace that Ruby removes from the
-// trailing edge. It matches the leading set plus the NUL byte: Ruby's rstrip
-// (and the trailing pass of strip) drops trailing NUL bytes while lstrip (and
-// the leading pass of strip) leaves a leading NUL in place.
-func isRubyRstripSpace(b byte) bool {
-	return b == 0x00 || isRubyStripSpace(b)
-}
-
-// rubyLstrip trims leading Ruby strip-family whitespace from text.
+// rubyLstrip trims leading Ruby strip-family whitespace (including NUL) from
+// text.
 func rubyLstrip(text string) string {
 	start := 0
 	for start < len(text) && isRubyStripSpace(text[start]) {
@@ -640,15 +634,14 @@ func rubyLstrip(text string) string {
 // text.
 func rubyRstrip(text string) string {
 	end := len(text)
-	for end > 0 && isRubyRstripSpace(text[end-1]) {
+	for end > 0 && isRubyStripSpace(text[end-1]) {
 		end--
 	}
 	return text[:end]
 }
 
-// rubyStrip trims whitespace from both ends of text using Ruby's asymmetric
-// rules: the leading edge follows lstrip (no NUL) and the trailing edge follows
-// rstrip (NUL included).
+// rubyStrip trims Ruby strip-family whitespace (including NUL) from both ends of
+// text.
 func rubyStrip(text string) string {
 	return rubyLstrip(rubyRstrip(text))
 }
