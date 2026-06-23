@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
@@ -32,7 +32,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
@@ -688,6 +688,41 @@ func arrayMemberQuery(property string) (Value, error) {
 				result[i] = val
 			}
 			return NewArray(result), nil
+		}), nil
+	case "filter_map":
+		return NewAutoBuiltin("array.filter_map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.filter_map does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.filter_map")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			out := make([]Value, 0, len(arr))
+			var blockArg [1]Value
+			for _, item := range arr {
+				blockArg[0] = item
+				val, err := runner.call(blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				// filter_map fuses map followed by a truthiness filter: keep each
+				// truthy block result and drop falsy ones. This uses Vibescript's
+				// Truthy model (matching select/reject/take_while), so 0, "", and
+				// empty collections are dropped alongside nil and false.
+				if val.Truthy() {
+					out = append(out, val)
+				}
+			}
+			// A sparse result should not retain a backing array sized to the
+			// whole receiver, so right-size the result.
+			if len(out) < cap(out) {
+				trimmed := make([]Value, len(out))
+				copy(trimmed, out)
+				out = trimmed
+			}
+			return NewArray(out), nil
 		}), nil
 	case "select":
 		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

@@ -75,6 +75,69 @@ func TestArrayRejectTakeDropGrep(t *testing.T) {
 	compareArrays(t, got["original"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
 }
 
+func TestArrayFilterMap(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def helpers()
+      values = [1, 2, 3, 4]
+      {
+        even_times_ten: values.filter_map do |n|
+          if n % 2 == 0 then n * 10 end
+        end,
+        all_kept: values.filter_map do |n|
+          n * 2
+        end,
+        none_kept: values.filter_map do |n|
+          nil
+        end,
+        empty: [].filter_map do |n|
+          n
+        end,
+        drops_false: [1, 2, 3].filter_map do |n|
+          n == 2
+        end,
+        original: values
+      }
+    end
+    `)
+
+	result := callFunc(t, script, "helpers", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	got := result.Hash()
+
+	// Ruby's canonical filter_map example: keep even values, multiplied.
+	compareArrays(t, got["even_times_ten"], []Value{NewInt(20), NewInt(40)})
+	compareArrays(t, got["all_kept"], []Value{NewInt(2), NewInt(4), NewInt(6), NewInt(8)})
+	// A block that always returns nil drops every element.
+	compareArrays(t, got["none_kept"], []Value{})
+	compareArrays(t, got["empty"], []Value{})
+	// false predicates are dropped; only the truthy (true) result remains, and
+	// filter_map keeps the block's return value, not the original element.
+	compareArrays(t, got["drops_false"], []Value{NewBool(true)})
+	// filter_map does not mutate the receiver.
+	compareArrays(t, got["original"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
+}
+
+// TestArrayFilterMapDropsVibescriptFalsy documents that filter_map uses
+// Vibescript's truthiness model (matching select/reject), so 0, "", and empty
+// collections are dropped alongside nil and false. This diverges from Ruby,
+// where only nil and false are falsy, but stays internally consistent with the
+// other predicate-driven enumerable helpers.
+func TestArrayFilterMapDropsVibescriptFalsy(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def run()
+      [0, 1, "", "x", [], [9], 2].filter_map do |v|
+        v
+      end
+    end
+    `)
+	result := callFunc(t, script, "run", nil)
+	compareArrays(t, result, []Value{NewInt(1), NewString("x"), NewArray([]Value{NewInt(9)}), NewInt(2)})
+}
+
 // TestArrayEnumerableSparseResultsAreRightSized guards against the filtering
 // helpers retaining a backing array sized to the whole receiver when the result
 // is sparse. reject/take_while/grep all preallocate capacity equal to the
@@ -93,6 +156,10 @@ func TestArrayEnumerableSparseResultsAreRightSized(t *testing.T) {
 		{
 			name:   "take_while",
 			source: `def run(values); values.take_while do |v| false end; end`,
+		},
+		{
+			name:   "filter_map",
+			source: `def run(values); values.filter_map do |v| nil end; end`,
 		},
 		{
 			name:   "grep",
@@ -166,6 +233,16 @@ func TestArrayEnumerableHelperErrors(t *testing.T) {
 			want:   "array.drop_while does not take arguments",
 		},
 		{
+			name:   "filter_map without block",
+			source: `def run(); [1, 2].filter_map; end`,
+			want:   "array.filter_map requires a block",
+		},
+		{
+			name:   "filter_map with arguments",
+			source: `def run(); [1, 2].filter_map(1) do |n| n end; end`,
+			want:   "array.filter_map does not take arguments",
+		},
+		{
 			name:   "grep without pattern",
 			source: `def run(); [1, 2].grep; end`,
 			want:   "array.grep expects exactly one pattern argument",
@@ -210,6 +287,10 @@ func TestArrayEnumerableHelperBlockErrorsPropagate(t *testing.T) {
 			source: `def run(); [1, 2].drop_while do |n| n.frobnicate end; end`,
 		},
 		{
+			name:   "filter_map block error",
+			source: `def run(); [1, 2].filter_map do |n| n.frobnicate end; end`,
+		},
+		{
 			name:   "grep transform block error",
 			source: `def run(); [1, 2].grep(1..2) do |n| n.frobnicate end; end`,
 		},
@@ -246,6 +327,10 @@ func TestArrayEnumerableHelpersParticipateInStepQuota(t *testing.T) {
 			source: `def run(values); values.drop_while do |v| v >= 0 end; end`,
 		},
 		{
+			name:   "filter_map",
+			source: `def run(values); values.filter_map do |v| v end; end`,
+		},
+		{
 			name:   "grep transform block",
 			source: `def run(values); values.grep(0..100000) do |v| v end; end`,
 		},
@@ -277,6 +362,10 @@ func TestArrayEnumerableHelpersHonorCancellation(t *testing.T) {
 		{
 			name:   "drop_while",
 			source: `def run(); [3, 1, 2].drop_while do |v| v < 0 end; end`,
+		},
+		{
+			name:   "filter_map",
+			source: `def run(); [3, 1, 2].filter_map do |v| v end; end`,
 		},
 		{
 			name:   "grep transform block",

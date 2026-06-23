@@ -18,6 +18,9 @@ statuses = %i[draft published archived]
 Common enumerable helpers include:
 
 - `map` to transform elements.
+- `filter_map` to transform elements and keep only the truthy results in one
+  pass, dropping falsy block returns (the fused equivalent of `map` then a
+  truthiness filter).
 - `select` to keep items the block accepts.
 - `reject` to keep items the block rejects (the inverse of `select`).
 - `find` / `find_index` to locate the first matching item.
@@ -45,6 +48,16 @@ def total_by_multiplier(values, multiplier)
     .sum
 end
 ```
+
+```vibe
+[1, 2, 3, 4].filter_map { |n| n * 10 if n % 2 == 0 }   # [20, 40]
+```
+
+`filter_map` requires a block and takes no arguments. It calls the block once
+per element and collects each result the block returns, dropping any falsy
+result. Like `select` and `reject`, it uses Vibescript's truthiness, so `nil`,
+`false`, `0`, `""`, and empty collections are all dropped; only truthy results
+survive.
 
 ```vibe
 [1, 2, 3, 4, 5].chunk(2)   # [[1,2], [3,4], [5]]
