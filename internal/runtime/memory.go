@@ -131,71 +131,61 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 	return nil
 }
 
-// incrementalArrayCharger charges the elements of a locally accumulating result
-// array against the memory quota one element at a time, in O(sum of element
-// sizes) total rather than re-walking the whole accumulated array on every
-// append (which is O(n^2) over the loop). Builtins like array.filter_map build a
-// result slice that is unreachable from exec's roots while the loop runs, so it
-// is invisible to step()'s slow-path checkMemory() and is only walked by the
-// post-call check after the whole receiver has been traversed; without an
-// incremental charge a block returning an individually quota-sized value per
-// element could pile up far beyond the quota before that check ever ran.
+// arrayBuildAccumulator charges the memory of an array assembled element by
+// element against the quota without re-walking the whole prefix on each append.
+// Builtins that grow a Go-local result slice from values they cannot bound up
+// front (such as Array#fill's block form, where each block call can return an
+// arbitrarily large value) use it so accumulated payloads count toward the quota
+// during construction, not only after the builtin returns.
 //
-// The charger walks the base roots once into a persistent estimator (so each
-// element is deduplicated against the base and against earlier elements exactly
-// as the single-pass post-call check would), then per element walks only that
-// element and adds its size to a running total. Reusing one estimator means the
-// charger never charges for backing storage the post-call check would have
-// deduplicated, so it never rejects a result the post-call check would accept,
-// and counting every element's payload means it never under-counts.
-type incrementalArrayCharger struct {
-	exec      *Execution
-	est       *memoryEstimator
-	baseBytes int
-	itemBytes int
+// checkProjectedIntArrayBytes is enough for results whose every element is an
+// inlined scalar, because there the slot array is the entire allocation. It does
+// not account for the payloads reachable from each element (string bytes, nested
+// collections), so a fill block returning many quota-sized strings would slip
+// past it until the post-call check. This accumulator closes that gap: it keeps
+// a baseline of everything live at the start of the build plus a running total of
+// each kept element's payload, walking only the new element on each append.
+type arrayBuildAccumulator struct {
+	exec    *Execution
+	est     *memoryEstimator
+	base    int
+	payload int
 }
 
-// newIncrementalArrayCharger returns a charger seeded with the current base
-// memory usage, or nil when the memory quota is disabled (in which case callers
-// skip charging entirely). The returned charger owns its estimator; the caller
-// must call release when finished so the estimator's seen-sets are cleared.
-func (exec *Execution) newIncrementalArrayCharger() *incrementalArrayCharger {
+// newArrayBuildAccumulator snapshots the execution's current live memory as the
+// baseline for an incremental array build. It uses its own estimator rather than
+// the execution's shared one so nested evaluation (a fill block, say) cannot
+// reset the seen-set mid-build; that estimator persists across add calls so a
+// value aliased by an earlier element or already reachable from the baseline is
+// counted once, matching the real shared backing.
+func newArrayBuildAccumulator(exec *Execution) *arrayBuildAccumulator {
+	acc := &arrayBuildAccumulator{exec: exec}
 	if exec.memoryQuota <= 0 {
-		return nil
+		return acc
 	}
-	est := newMemoryEstimator()
-	return &incrementalArrayCharger{
-		exec:      exec,
-		est:       est,
-		baseBytes: exec.estimateMemoryUsageBase(est),
-	}
+	acc.est = newMemoryEstimator()
+	acc.base = exec.estimateMemoryUsageBase(acc.est)
+	return acc
 }
 
-// add charges one element appended to a result array of the given backing
-// capacity and reports an error when the projected total exceeds the quota. cap
-// is the capacity of the result slice after the append so the array's backing
-// overhead is accounted for as it grows, matching the post-call slice estimate.
-func (c *incrementalArrayCharger) add(item Value, capacity int) error {
-	if c == nil {
+// add charges a newly appended element and rejects the build if the result's
+// projected memory exceeds the quota. backingCap is the capacity of the result's
+// backing slice after the append; its slot array is charged from that capacity
+// while only the element's payload beyond its slot is added to the running total,
+// so the slot is never double counted.
+func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
+	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
-	c.itemBytes = saturatingAdd(c.itemBytes, c.est.value(item))
-	used := saturatingAdd(c.baseBytes, estimatedValueBytes+estimatedSliceBaseBytes)
-	used = saturatingAdd(used, saturatingMul(capacity, estimatedValueBytes))
-	used = saturatingAdd(used, c.itemBytes)
-	if used > c.exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+
+	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
+
+	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(backingCap, estimatedValueBytes))
+	used := saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
-}
-
-// release clears the estimator's seen-sets so its backing maps can be reused or
-// garbage collected. It is safe to call on a nil charger.
-func (c *incrementalArrayCharger) release() {
-	if c == nil {
-		return
-	}
-	c.est.reset()
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {

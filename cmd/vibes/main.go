@@ -137,9 +137,34 @@ func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error 
 	if err != nil {
 		return fmt.Errorf("execution failed: %w", err)
 	}
-	if !result.IsNil() {
-		fmt.Fprintln(out, result.String())
+	return printResult(out, result)
+}
+
+// maxResultRenderBytes caps how large a result rendering the CLI will
+// materialize. The runtime call returns before the result is formatted, so the
+// rendering path has no step or memory quota to charge against; without a cap a
+// script that returns a huge nested array or hash could make the CLI allocate
+// the whole formatted string in host memory. The cap matches the 1 MiB stdlib
+// output guards (see internal/runtime/limits.go); keep README and
+// docs/tooling.md in sync when changing it.
+const maxResultRenderBytes = 1 << 20
+
+// printResult writes a non-nil result to out using a bounded rendering so a
+// large composite cannot allocate the formatted string without bound. When the
+// rendering trips the byte cap it reports an error instead of printing
+// truncated output, so the CLI never silently drops part of a result.
+func printResult(out io.Writer, result value.Value) error {
+	if result.IsNil() {
+		return nil
 	}
+	rendered, err := result.StringBounded(maxResultRenderBytes)
+	if err != nil {
+		if errors.Is(err, value.ErrStringRenderTruncated) {
+			return fmt.Errorf("result rendering exceeds %d bytes; reduce the returned value or stream it from the script", maxResultRenderBytes)
+		}
+		return fmt.Errorf("render result: %w", err)
+	}
+	fmt.Fprintln(out, rendered)
 	return nil
 }
 
@@ -187,10 +212,7 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 	if err != nil {
 		return fmt.Errorf("execution failed: %w", remapSnippetRuntimeError(err, snippet, evalSnippetSourceMap))
 	}
-	if !result.IsNil() {
-		fmt.Fprintln(out, result.String())
-	}
-	return nil
+	return printResult(out, result)
 }
 
 func stringArgs(raw []string) []value.Value {

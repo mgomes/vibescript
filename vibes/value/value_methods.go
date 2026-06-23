@@ -1,6 +1,7 @@
 package value
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -94,10 +95,16 @@ func (v Value) String() string {
 		return v.Duration().String()
 	case KindTime:
 		return v.data.(time.Time).Format(time.RFC3339Nano)
-	case KindArray:
-		return v.stringWithState(newValueStringState())
-	case KindHash:
-		return v.stringWithState(newValueStringState())
+	case KindArray, KindHash:
+		var buf strings.Builder
+		state := newValueStringState()
+		// Composite rendering is best-effort and unbounded here; callers that
+		// must guard against hostile inputs (such as the CLI rendering a value
+		// returned from an untrusted script) use StringBounded instead. The
+		// unbounded path never reports the truncation sentinel, so the error is
+		// always nil.
+		_ = v.appendString(&buf, state, 0)
+		return buf.String()
 	case KindRange:
 		r := v.data.(Range)
 		if r.Exclusive {
@@ -131,6 +138,43 @@ func FormatFloat(f float64) string {
 	}
 }
 
+// ErrStringRenderTruncated reports that a bounded rendering (StringBounded)
+// stopped early because the formatted output would have exceeded the caller's
+// byte budget. It lets host-facing rendering refuse to materialize an
+// unbounded string for a large composite result instead of allocating until
+// the process runs out of memory. Callers detect it with errors.Is.
+var ErrStringRenderTruncated = errors.New("value: string rendering exceeded byte limit")
+
+// StringBounded renders v like String but stops once the formatted output
+// would exceed limit bytes, returning the partial output and
+// ErrStringRenderTruncated. A non-positive limit means unbounded and behaves
+// exactly like String. Rendering writes directly into a single growing buffer
+// and checks the budget after each element, so a hostile composite cannot
+// allocate intermediate per-element strings or a final joined buffer larger
+// than roughly limit plus one element before the limit trips. Cycle handling
+// is identical to String.
+func (v Value) StringBounded(limit int) (string, error) {
+	if limit <= 0 {
+		return v.String(), nil
+	}
+
+	switch v.kind {
+	case KindArray, KindHash:
+		var buf strings.Builder
+		state := newValueStringState()
+		if err := v.appendString(&buf, state, limit); err != nil {
+			return buf.String(), err
+		}
+		return buf.String(), nil
+	default:
+		s := v.String()
+		if len(s) > limit {
+			return s[:limit], ErrStringRenderTruncated
+		}
+		return s, nil
+	}
+}
+
 type valueStringState struct {
 	arrays map[SliceIdentity]struct{}
 	maps   map[uintptr]struct{}
@@ -143,7 +187,16 @@ func newValueStringState() *valueStringState {
 	}
 }
 
-func (v Value) stringWithState(state *valueStringState) string {
+// appendString streams v's rendering into buf instead of building intermediate
+// per-element slices and a final joined string. When limit is positive, every
+// write site routes through a bounded helper (appendBounded for strings,
+// appendByteBounded for single delimiters), so the buffer never grows past the
+// limit: the first write that would exceed the budget stops and returns
+// ErrStringRenderTruncated. This keeps the StringBounded byte-budget contract
+// intact for callers that consume the returned partial output, and large
+// composites trip the budget rather than allocating without bound. A
+// non-positive limit renders the whole value.
+func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit int) error {
 	switch v.kind {
 	case KindArray:
 		elems := v.data.([]Value)
@@ -154,37 +207,124 @@ func (v Value) stringWithState(state *valueStringState) string {
 		}
 		if id.Ptr != 0 {
 			if _, seen := state.arrays[id]; seen {
-				return "<cycle>"
+				return appendBounded(buf, "<cycle>", limit)
 			}
 			state.arrays[id] = struct{}{}
 			defer delete(state.arrays, id)
 		}
-		parts := make([]string, len(elems))
-		for i, e := range elems {
-			parts[i] = e.stringWithState(state)
+		// The opening delimiter counts against the budget like any other byte, so
+		// a nested composite whose parent already filled the cap trips the limit
+		// here rather than emitting a result one or more bytes over the cap.
+		if err := appendByteBounded(buf, '[', limit); err != nil {
+			return err
 		}
-		return fmt.Sprintf("[%s]", strings.Join(parts, ", "))
+		for i, e := range elems {
+			if i > 0 {
+				// The element separator counts against the budget like any other
+				// byte, so a packed array trips the limit on the separator rather
+				// than emitting a result over the cap.
+				if err := appendBounded(buf, ", ", limit); err != nil {
+					return err
+				}
+			}
+			if err := e.appendString(buf, state, limit); err != nil {
+				return err
+			}
+		}
+		// The closing delimiter still counts against the budget: an array that
+		// fills the budget exactly with its elements must trip the limit rather
+		// than emit a result one byte over the cap.
+		return appendByteBounded(buf, ']', limit)
 	case KindHash:
 		entries := v.data.(map[string]Value)
 		if len(entries) == 0 {
-			return "{}"
+			return appendBounded(buf, "{}", limit)
 		}
 		ptr := reflect.ValueOf(entries).Pointer()
 		if ptr != 0 {
 			if _, seen := state.maps[ptr]; seen {
-				return "<cycle>"
+				return appendBounded(buf, "<cycle>", limit)
 			}
 			state.maps[ptr] = struct{}{}
 			defer delete(state.maps, ptr)
 		}
-		parts := make([]string, 0, len(entries))
-		for k, val := range entries {
-			parts = append(parts, fmt.Sprintf("%s: %s", k, val.stringWithState(state)))
+		// The opening delimiter counts against the budget like any other byte; see
+		// the array opening delimiter above.
+		if err := appendByteBounded(buf, '{', limit); err != nil {
+			return err
 		}
-		return fmt.Sprintf("{%s}", strings.Join(parts, ", "))
+		first := true
+		for k, val := range entries {
+			if !first {
+				// The entry separator counts against the budget like any other
+				// byte, so a packed hash trips the limit on the separator rather
+				// than emitting a result over the cap.
+				if err := appendBounded(buf, ", ", limit); err != nil {
+					return err
+				}
+			}
+			first = false
+			// A hash key is an arbitrary string that may itself exceed the
+			// budget (host-provided or generated under a raised memory quota),
+			// so cap the key write to the remaining budget rather than copying
+			// it whole before the value-level check runs.
+			if err := appendBounded(buf, k, limit); err != nil {
+				return err
+			}
+			// The key/value separator counts against the budget too: a key that
+			// fills the budget exactly must trip the limit here rather than let
+			// ": " push the result past the cap.
+			if err := appendBounded(buf, ": ", limit); err != nil {
+				return err
+			}
+			if err := val.appendString(buf, state, limit); err != nil {
+				return err
+			}
+		}
+		// See the array closing delimiter above: the trailing brace counts
+		// against the budget too.
+		return appendByteBounded(buf, '}', limit)
 	default:
-		return v.String()
+		// A scalar element may be an arbitrarily large string, so cap its write
+		// to the remaining budget instead of materializing the whole value in
+		// the buffer before checking the limit.
+		return appendBounded(buf, v.String(), limit)
 	}
+}
+
+// appendByteBounded writes a single delimiter byte into buf, but when limit is
+// positive it refuses to write past the budget and reports
+// ErrStringRenderTruncated instead. Delimiters count against the cap like any
+// other byte, so a composite that fills its budget exactly with its contents
+// must trip the limit rather than emit a result one byte over the cap.
+func appendByteBounded(buf *strings.Builder, b byte, limit int) error {
+	if limit > 0 && buf.Len() >= limit {
+		return ErrStringRenderTruncated
+	}
+	buf.WriteByte(b)
+	return nil
+}
+
+// appendBounded writes s into buf, but when limit is positive it copies only as
+// many bytes as fit within the remaining budget and reports
+// ErrStringRenderTruncated instead of materializing an arbitrarily large scalar
+// (a long hash key or string element) in the buffer. A non-positive limit
+// writes s in full and never reports truncation.
+func appendBounded(buf *strings.Builder, s string, limit int) error {
+	if limit <= 0 {
+		buf.WriteString(s)
+		return nil
+	}
+	remaining := limit - buf.Len()
+	if remaining < 0 {
+		remaining = 0
+	}
+	if len(s) > remaining {
+		buf.WriteString(s[:remaining])
+		return ErrStringRenderTruncated
+	}
+	buf.WriteString(s)
+	return nil
 }
 
 // Truthy reports whether v is considered true in a boolean context.
