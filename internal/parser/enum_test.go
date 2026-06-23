@@ -10,9 +10,13 @@ import (
 	"github.com/mgomes/vibescript/internal/ast"
 )
 
-// astCmpOpts ignores source positions so tests focus on structural shape.
+// astCmpOpts ignores source positions and the call-form marker so tests focus
+// on structural shape. CallExpr.Parenthesized is a low-level syntactic detail
+// consulted only by the runtime options-hash policy; tests that exercise that
+// policy assert the field directly.
 var astCmpOpts = cmp.Options{
 	cmpopts.IgnoreFields(ast.Position{}, "Line", "Column"),
+	cmpopts.IgnoreFields(ast.CallExpr{}, "Parenthesized"),
 }
 
 func TestParserEnumSyntax(t *testing.T) {

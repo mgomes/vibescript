@@ -44,6 +44,19 @@ paths like `require "billing/fees"` are watched too). Compile and runtime
 errors are printed without ending the watch, so you can fix the file and
 save again. Press `ctrl-c` to stop.
 
+### Result rendering limit
+
+A script's non-nil return value is rendered and printed after the run
+finishes. Because the runtime call has already returned by then, the
+rendering path is outside the interpreter's step and memory quotas. To keep
+a script that returns a huge nested array or hash from forcing the CLI to
+allocate the whole formatted string in host memory, rendering stops once the
+output would exceed 1 MiB and the command fails with
+`result rendering exceeds 1048576 bytes` instead of printing a truncated
+value. Reduce the returned value or have the script stream output itself.
+The cap matches the other stdlib output guards (see
+[Runtime Sandbox & Limits](../README.md#runtime-sandbox--limits)).
+
 ## `vibes fmt <path>`
 
 Applies canonical formatting for `.vibe` files.

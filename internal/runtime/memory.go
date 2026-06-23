@@ -135,8 +135,9 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 // element against the quota without re-walking the whole prefix on each append.
 // Builtins that grow a Go-local result slice from values they cannot bound up
 // front (such as Array#fill's block form, where each block call can return an
-// arbitrarily large value) use it so accumulated payloads count toward the quota
-// during construction, not only after the builtin returns.
+// arbitrarily large value, or Array#filter_map, which keeps arbitrary truthy
+// block results) use it so accumulated payloads count toward the quota during
+// construction, not only after the builtin returns.
 //
 // checkProjectedIntArrayBytes is enough for results whose every element is an
 // inlined scalar, because there the slot array is the entire allocation. It does
@@ -145,6 +146,15 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 // past it until the post-call check. This accumulator closes that gap: it keeps
 // a baseline of everything live at the start of the build plus a running total of
 // each kept element's payload, walking only the new element on each append.
+//
+// The baseline includes the builtin's live call roots (receiver, args, kwargs,
+// block), not just exec's reachable roots. While a builtin runs, those roots are
+// held on the Go call stack and are invisible to estimateMemoryUsageBase, yet
+// they are still live memory the result accumulates on top of — exactly what the
+// pre-call checkCallMemoryRoots charges. Seeding them here keeps the incremental
+// check consistent with that pre-call check, so a transform whose receiver or
+// captured block already nears the quota cannot accumulate an unbounded result
+// that only the post-call check would catch.
 type arrayBuildAccumulator struct {
 	exec    *Execution
 	est     *memoryEstimator
@@ -152,19 +162,37 @@ type arrayBuildAccumulator struct {
 	payload int
 }
 
-// newArrayBuildAccumulator snapshots the execution's current live memory as the
-// baseline for an incremental array build. It uses its own estimator rather than
-// the execution's shared one so nested evaluation (a fill block, say) cannot
-// reset the seen-set mid-build; that estimator persists across add calls so a
-// value aliased by an earlier element or already reachable from the baseline is
-// counted once, matching the real shared backing.
-func newArrayBuildAccumulator(exec *Execution) *arrayBuildAccumulator {
+// newArrayBuildAccumulator snapshots the execution's current live memory —
+// exec's reachable roots plus the builtin's live call roots (receiver, args,
+// kwargs, block) — as the baseline for an incremental array build. It uses its
+// own estimator rather than the execution's shared one so nested evaluation (a
+// block call, say) cannot reset the seen-set mid-build; that estimator persists
+// across add calls so a value aliased by an earlier element or already reachable
+// from the baseline is counted once, matching the real shared backing.
+//
+// Pass the same receiver/args/kwargs/block the builtin received so the baseline
+// reflects what checkCallMemoryRoots charged before the call: a nil receiver,
+// nil kwargs, and nil block are skipped, mirroring estimateMemoryUsageForCallRoots.
+func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *arrayBuildAccumulator {
 	acc := &arrayBuildAccumulator{exec: exec}
 	if exec.memoryQuota <= 0 {
 		return acc
 	}
 	acc.est = newMemoryEstimator()
 	acc.base = exec.estimateMemoryUsageBase(acc.est)
+
+	if receiver.Kind() != KindNil {
+		acc.base = saturatingAdd(acc.base, acc.est.value(receiver))
+	}
+	for _, arg := range args {
+		acc.base = saturatingAdd(acc.base, acc.est.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		acc.base = saturatingAdd(acc.base, acc.est.value(kwarg))
+	}
+	if !block.IsNil() {
+		acc.base = saturatingAdd(acc.base, acc.est.value(block))
+	}
 	return acc
 }
 
@@ -173,6 +201,11 @@ func newArrayBuildAccumulator(exec *Execution) *arrayBuildAccumulator {
 // backing slice after the append; its slot array is charged from that capacity
 // while only the element's payload beyond its slot is added to the running total,
 // so the slot is never double counted.
+//
+// Elements aliased by a baseline root (for example filter_map returning an
+// element of its receiver unchanged) are deduplicated by the persistent
+// estimator, so their backing is charged once, exactly as the post-call check
+// would.
 func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil

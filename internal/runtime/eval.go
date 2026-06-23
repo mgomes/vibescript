@@ -251,9 +251,12 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	if payload > 0 {
 		sb.Grow(payload)
 	}
-	// strings.Builder.WriteString never returns an error, so WriteStringTo
-	// cannot fail here; the error return exists for the io.StringWriter contract.
-	return val.WriteStringTo(sb)
+	// WriteStringTo streams the rendering straight into sb without materializing a
+	// separate string, so the peak allocation stays the single reservation made
+	// above. Writing into a strings.Builder never fails, so there is no error to
+	// surface here.
+	val.WriteStringTo(sb)
+	return nil
 }
 
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {

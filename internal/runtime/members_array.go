@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
@@ -32,7 +32,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
@@ -425,6 +425,26 @@ func arrayPartitionInitialCapacity(length int) int {
 	return (length + 1) / 2
 }
 
+// filterMapInitialCap is the modest capacity filter_map reserves up front. The
+// kept count can range from zero (every block result falsy) to the full
+// receiver length, so unlike map there is no useful size hint. The local result
+// slice is not reachable from the execution's memory roots while it is built, so
+// reserving len(receiver) would let a sparse result allocate and then drop large
+// transient backing storage that the post-call memory check never charges.
+// Seeding a small fixed capacity and letting append grow keeps the peak backing
+// allocation proportional to the elements actually kept (at most append's
+// doubling factor) rather than to the receiver length.
+const filterMapInitialCap = 16
+
+// boundedFilterCap caps a desired capacity at filterMapInitialCap so the
+// up-front reservation never scales with the receiver length.
+func boundedFilterCap(n int) int {
+	if n > filterMapInitialCap {
+		return filterMapInitialCap
+	}
+	return n
+}
+
 func arrayTallyInitialCapacity(arr []Value, hasBlock bool) (int, error) {
 	length := len(arr)
 	if length <= 256 {
@@ -688,6 +708,76 @@ func arrayMemberQuery(property string) (Value, error) {
 				result[i] = val
 			}
 			return NewArray(result), nil
+		}), nil
+	case "filter_map":
+		return NewAutoBuiltin("array.filter_map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.filter_map does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.filter_map does not take keyword arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.filter_map")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			// Only reserve a modest initial capacity and let append grow the
+			// backing array as truthy results accumulate. Reserving len(arr) up
+			// front would charge no quota (the local slice is not reachable from
+			// exec's roots) yet could exceed MemoryQuotaBytes in transient
+			// backing storage before the post-call check runs, and a sparse
+			// result would trim that storage away before it could ever be
+			// charged. Bounding the reservation keeps the peak allocation
+			// proportional to the elements actually kept.
+			out := make([]Value, 0, boundedFilterCap(len(arr)))
+			// Charge the accumulating result against the quota on every kept
+			// element. out is a local slice, so it is invisible to the step()
+			// slow-path checkMemory() and to the post-call checkMemoryWith(result);
+			// without this a block returning an individually quota-sized value per
+			// element could pile up far beyond MemoryQuotaBytes before the
+			// post-call check ever ran. The accumulator walks each kept element
+			// once and keeps a running total, so the whole loop costs O(sum of
+			// result sizes) rather than re-walking the entire accumulated array per
+			// append. Unlike range materialization (whose elements are inlined ints
+			// with no payload beyond their slot, letting it use the O(1) cap-based
+			// projection), filter_map keeps arbitrary block results, so the
+			// accumulator walks each element to account for string and collection
+			// payloads. Its baseline includes the live receiver and block (held on
+			// the Go stack during the call, so invisible to estimateMemoryUsageBase
+			// but charged by the pre-call checkCallMemoryRoots), so a transform
+			// whose receiver or captured block already nears the quota cannot
+			// accumulate an unbounded result. It dedups shared backings exactly
+			// like the post-call check, so it never rejects a result the post-call
+			// check would have accepted.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			var blockArg [1]Value
+			for _, item := range arr {
+				// Charge a step per yield so an empty or trivial block body
+				// cannot starve the step quota or cancellation checks while
+				// traversing a large receiver; runner.call only charges steps
+				// for the statements it evaluates, and an empty block evaluates
+				// none.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				blockArg[0] = item
+				val, err := runner.call(blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				// filter_map fuses map followed by a truthiness filter: keep each
+				// truthy block result and drop falsy ones. This uses Vibescript's
+				// Truthy model (matching select/reject/take_while), so 0, "", and
+				// empty collections are dropped alongside nil and false.
+				if val.Truthy() {
+					out = append(out, val)
+					if err := acc.add(val, cap(out)); err != nil {
+						return NewNil(), err
+					}
+				}
+			}
+			return NewArray(out), nil
 		}), nil
 	case "select":
 		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1245,10 +1335,11 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	// Track accumulated payloads incrementally rather than re-estimating the whole
 	// prefix on each append: checkMemoryWith(NewArray(out)) would walk every element
 	// per append and make the fill O(n^2). The accumulator snapshots the live base
-	// once, then per kept element walks only that element (O(element size)), so a
-	// block returning quota-sized values is charged during the loop instead of
-	// slipping past the slot-only backing check until fill returns.
-	acc := newArrayBuildAccumulator(exec)
+	// (including this call's receiver/args/block, still live on the Go stack) once,
+	// then per kept element walks only that element (O(element size)), so a block
+	// returning quota-sized values is charged during the loop instead of slipping
+	// past the slot-only backing check until fill returns.
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 
 	appendValue := func(val Value) error {
 		out = append(out, val)
