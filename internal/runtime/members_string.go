@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -457,14 +456,25 @@ func validateRegexTextPattern(method, text, pattern string) error {
 // Regexp#match?(str, pos). The offset is a rune (codepoint) position; a match
 // may begin anywhere from that position onward. Anchors such as \A, ^, and \b
 // keep the full-string context: rather than searching a detached suffix (which
-// would let \A or \b match at the slice boundary), the prefix preceding the
-// offset is consumed as a literal so the engine still sees the real characters
-// around every candidate start. An offset past the end of text yields no match
-// rather than an error, matching Ruby. The pattern is compiled with the same
-// guards and cache as String#match.
+// would let \A or \b match at the slice boundary), the search begins one rune
+// before the offset so the engine still sees the real character preceding every
+// candidate start. Because Go's RE2 has no lookbehind, that single preceding
+// rune is the only left context any anchor can observe, so the wrapper stays a
+// fixed size regardless of the offset: it never embeds the subject prefix into
+// the pattern, keeping the compiled regex small and within the pattern-size
+// guard. An offset past the end of text yields no match rather than an error,
+// matching Ruby. The pattern is compiled with the same guards and cache as
+// String#match.
 func regexMatchFromRuneOffset(method, text, pattern string, offset int) (bool, error) {
+	return regexMatchFromRuneOffsetWithCache(compiledRegexps, method, text, pattern, offset)
+}
+
+// regexMatchFromRuneOffsetWithCache implements regexMatchFromRuneOffset against
+// an explicit regex cache so tests can assert that the offset wrapper never
+// stores an oversized, prefix-bearing pattern.
+func regexMatchFromRuneOffsetWithCache(cache *regexCache, method, text, pattern string, offset int) (bool, error) {
 	if offset == 0 {
-		re, err := compileCachedRegex(pattern)
+		re, err := cache.compile(pattern)
 		if err != nil {
 			return false, fmt.Errorf("%s invalid regex: %w", method, err)
 		}
@@ -477,15 +487,23 @@ func regexMatchFromRuneOffset(method, text, pattern string, offset int) (bool, e
 	}
 	// Verify the user pattern compiles before building the offset wrapper so the
 	// reported error names the original pattern, not the rewritten one.
-	if _, err := compileCachedRegex(pattern); err != nil {
+	if _, err := cache.compile(pattern); err != nil {
 		return false, fmt.Errorf("%s invalid regex: %w", method, err)
 	}
-	wrapped := `\A` + regexp.QuoteMeta(text[:byteOffset]) + `(?:.|\n)*?(?:` + pattern + `)`
-	re, err := compileCachedRegex(wrapped)
+	// Search a view that begins one rune before the offset. The leading [\s\S]
+	// consumes that real preceding rune so \b, \B, and ^ evaluate against it,
+	// while \A correctly fails (the view does not start at the absolute string
+	// start). The lazy [\s\S]*? then advances to the first candidate start at or
+	// after the offset. The wrapper is independent of the prefix length, so it
+	// stays small even for offsets deep into a megabyte subject.
+	_, ctxSize := utf8.DecodeLastRuneInString(text[:byteOffset])
+	ctxStart := byteOffset - ctxSize
+	wrapped := `\A[\s\S][\s\S]*?(?:` + pattern + `)`
+	re, err := cache.compile(wrapped)
 	if err != nil {
 		return false, fmt.Errorf("%s invalid regex: %w", method, err)
 	}
-	return re.MatchString(text), nil
+	return re.MatchString(text[ctxStart:]), nil
 }
 
 func validateRegexReplacement(method, replacement string) error {

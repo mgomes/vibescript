@@ -3,6 +3,7 @@ package runtime
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -221,8 +222,9 @@ func TestStringMatchPredicateLargeOffsetCrossesRepeatLimit(t *testing.T) {
 	t.Parallel()
 
 	// Go's regexp rejects counted repetitions above 1000, so the offset wrapper
-	// must consume the prefix as a literal rather than via {N,}. Exercise an
-	// offset well beyond that bound to lock the behavior in.
+	// must not skip the prefix with a {N} repetition. The fixed-size wrapper
+	// handles arbitrary offsets; exercise one well beyond that bound to lock the
+	// behavior in.
 	text := strings.Repeat("x", 2000) + "needle"
 
 	got, err := regexMatchFromRuneOffset("string.match?", text, "needle", 1500)
@@ -239,6 +241,35 @@ func TestStringMatchPredicateLargeOffsetCrossesRepeatLimit(t *testing.T) {
 	}
 	if want := false; got != want {
 		t.Fatalf("match at offset 2001 = %v, want %v", got, want)
+	}
+}
+
+func TestRegexMatchFromRuneOffsetDoesNotEmbedSubjectPrefix(t *testing.T) {
+	t.Parallel()
+
+	// A near-end offset on a large subject must not compile a pattern that grows
+	// with the prefix: doing so would blow past the pattern-size guard, spend
+	// seconds compiling, and retain megabytes per distinct text/offset in the
+	// regex cache. Use a fresh cache so the assertion is parallel-safe.
+	cache := newRegexCache(compiledRegexCacheCapacity)
+	prefix := strings.Repeat("x", maxRegexPatternSize*4)
+	text := prefix + "needle"
+	offset := utf8.RuneCountInString(prefix)
+
+	matched, err := regexMatchFromRuneOffsetWithCache(cache, "string.match?", text, "needle", offset)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !matched {
+		t.Fatalf("match at offset %d = false, want true", offset)
+	}
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	for pattern := range cache.entries {
+		if len(pattern) > maxRegexPatternSize {
+			t.Fatalf("cached compiled pattern of %d bytes exceeds guard %d; subject prefix leaked into the regex", len(pattern), maxRegexPatternSize)
+		}
 	}
 }
 
