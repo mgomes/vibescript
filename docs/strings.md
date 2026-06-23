@@ -55,6 +55,48 @@ Returns the first character (or `nil` for empty strings):
 "".chr    # nil
 ```
 
+### `hex`
+
+Interprets the leading characters as a hexadecimal integer, mirroring Ruby's
+`String#hex`. Leading whitespace and a single optional `+`/`-` sign are skipped,
+an optional `0x`/`0X` prefix is consumed, and single underscores between digits
+are treated as separators. Parsing stops at the first byte that is not a hex
+digit, and a string with no leading hex digit returns `0`:
+
+```vibe
+"ff".hex      # 255
+"0xff".hex    # 255
+"-1A".hex     # -26
+"ff zoo".hex  # 255
+"garbage".hex # 0
+```
+
+Unlike Ruby, which promotes to an arbitrary-precision `Bignum`, Vibescript only
+has 64-bit integers, so a value outside the `int64` range raises an
+`integer out of range` error rather than silently growing.
+
+### `oct`
+
+Interprets the leading characters as an integer using a base inferred from its
+prefix, mirroring Ruby's `String#oct`. The default base is octal, but a
+`0x`/`0X`, `0b`/`0B`, `0o`/`0O`, or `0d`/`0D` prefix selects hexadecimal,
+binary, octal, or decimal respectively. Leading whitespace, a single optional
+sign, and underscore separators are handled like `hex`, parsing stops at the
+first byte invalid for the chosen base, and an unparseable string returns `0`:
+
+```vibe
+"17".oct     # 15
+"0b101".oct  # 5
+"0o17".oct   # 15
+"0xff".oct   # 255
+"0d99".oct   # 99
+"-17".oct    # -15
+"garbage".oct # 0
+```
+
+Like `hex`, a value outside the `int64` range raises an `integer out of range`
+error instead of promoting to a `Bignum`.
+
 ### `empty?`
 
 Returns true when the string has no characters:
