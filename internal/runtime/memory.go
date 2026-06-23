@@ -419,18 +419,13 @@ func (est *memoryEstimator) slice(values []Value) int {
 		return size
 	}
 
-	// A zero-length slice has no elements to recurse into, so the only thing
-	// alias dedup could save for it is the (tiny) backing estimate. Skip the
-	// pointer-based dedup entirely for empty slices: the backing identity of a
-	// zero-length slice is unreliable under coverage instrumentation (it can
-	// report a zero or shifting pointer), which made aliased empty slices
-	// intermittently fail to dedup in the coverage CI job. Counting each empty
-	// alias is deterministic and conservative — it never under-counts, so the
-	// sandbox memory bound stays safe.
-	if len(values) == 0 {
-		return size
-	}
-
+	// Deduplicate aliased backings — including empty slices that retained
+	// capacity, whose cap*estimatedValueBytes backing is real memory and must
+	// be counted only once across aliases (e.g. a partition's empty result side
+	// shared with another binding). sliceBackingIdentity reads the data pointer
+	// directly via unsafe.SliceData, so the identity is stable even under
+	// coverage instrumentation; the earlier re-slice form &values[:1][0]
+	// intermittently failed to dedup empty slices in the coverage CI job.
 	id := sliceBackingIdentity(values)
 	if id != 0 {
 		if _, seen := est.seenSlices[id]; seen {
@@ -440,6 +435,10 @@ func (est *memoryEstimator) slice(values []Value) int {
 			est.seenSlices = make(map[uintptr]struct{})
 		}
 		est.seenSlices[id] = struct{}{}
+	}
+
+	if len(values) == 0 {
+		return size
 	}
 
 	for _, val := range values {
@@ -452,7 +451,7 @@ func sliceBackingIdentity(values []Value) uintptr {
 	if cap(values) == 0 {
 		return 0
 	}
-	return uintptr(unsafe.Pointer(&values[:1][0]))
+	return uintptr(unsafe.Pointer(unsafe.SliceData(values)))
 }
 
 func (est *memoryEstimator) hash(values map[string]Value) int {

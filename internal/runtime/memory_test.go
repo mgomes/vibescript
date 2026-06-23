@@ -18,26 +18,26 @@ func TestMemoryEstimatorLayoutConstantsMatchRuntimeTypes(t *testing.T) {
 	}
 }
 
-func TestMemoryEstimatorCountsEmptySlicesDeterministically(t *testing.T) {
+func TestMemoryEstimatorDeduplicatesAliasedEmptySlices(t *testing.T) {
 	t.Parallel()
-	// Zero-length slices are not pointer-deduplicated: their backing identity is
-	// unreliable under coverage instrumentation, and an empty slice has no
-	// elements to recurse into, so the only thing dedup could save is the tiny
-	// backing estimate. Each empty alias is therefore counted identically and
-	// deterministically (conservative — never under-counts).
+	// An empty slice that retained capacity still owns a real cap-sized backing,
+	// so aliases sharing it must be deduplicated (counted once). The identity is
+	// read via unsafe.SliceData so it stays stable under coverage instrumentation.
 	backing := make([]Value, 8)
 	empty := backing[:0]
+	aliasA := empty
+	aliasB := empty
 
 	est := newMemoryEstimator()
-	first := est.slice(empty)
-	second := est.slice(empty)
+	first := est.slice(aliasA)
+	second := est.slice(aliasB)
 	runtime.KeepAlive(backing)
 
 	if first == 0 {
-		t.Fatalf("expected empty slice to contribute memory")
+		t.Fatalf("expected first alias to contribute memory")
 	}
-	if second != first {
-		t.Fatalf("expected empty slice estimate to be deterministic, got first=%d second=%d", first, second)
+	if second != 0 {
+		t.Fatalf("expected aliased empty slice to be deduplicated, got %d", second)
 	}
 }
 
