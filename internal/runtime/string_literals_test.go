@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +68,162 @@ end`)
 	singleQuoted := callScript(t, context.Background(), script, "single_quoted_marker", nil, CallOptions{})
 	if singleQuoted.String() != "hi #{name}" {
 		t.Fatalf("Call(single_quoted_marker) = %q, want %q", singleQuoted.String(), "hi #{name}")
+	}
+}
+
+// newInterpolatedTextLiteral builds an InterpolatedString made entirely of
+// literal text parts. Splitting one large string across many parts lets a test
+// observe the per-chunk containment checks without depending on parser
+// chunking.
+func newInterpolatedTextLiteral(parts ...string) *InterpolatedString {
+	lit := &InterpolatedString{Parts: make([]StringPart, len(parts))}
+	for i, part := range parts {
+		lit.Parts[i] = StringText{Text: part}
+	}
+	return lit
+}
+
+func TestEvalInterpolatedStringLiteralBoundsMaterialization(t *testing.T) {
+	t.Parallel()
+
+	const chunk = "0123456789abcdef" // 16 bytes
+	const chunkCount = 64            // 1 KiB of literal text if fully built
+
+	t.Run("rejects growth past memory quota mid build", func(t *testing.T) {
+		t.Parallel()
+
+		parts := make([]string, chunkCount)
+		for i := range parts {
+			parts[i] = chunk
+		}
+		lit := newInterpolatedTextLiteral(parts...)
+
+		// A quota far below the fully built result must reject the
+		// materialization. With ample steps the failure can only be the
+		// projected memory check tripping while the builder grows, not the step
+		// quota.
+		exec := &Execution{
+			ctx:         context.Background(),
+			quota:       1 << 20,
+			memoryQuota: 256,
+		}
+		env := newEnv(nil)
+		exec.pushEnv(env)
+
+		_, err := exec.evalInterpolatedStringLiteral(lit, env)
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	})
+
+	t.Run("small interpolation stays under an ample quota", func(t *testing.T) {
+		t.Parallel()
+
+		lit := newInterpolatedTextLiteral("hi ", chunk)
+		exec := &Execution{
+			ctx:         context.Background(),
+			quota:       1 << 20,
+			memoryQuota: 1 << 20,
+		}
+		env := newEnv(nil)
+		exec.pushEnv(env)
+
+		got, err := exec.evalInterpolatedStringLiteral(lit, env)
+		if err != nil {
+			t.Fatalf("evalInterpolatedStringLiteral: %v", err)
+		}
+		if want := "hi " + chunk; got.String() != want {
+			t.Fatalf("result = %q, want %q", got.String(), want)
+		}
+	})
+}
+
+func TestEvalInterpolatedStringLiteralCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	parts := make([]string, 8)
+	for i := range parts {
+		parts[i] = "chunk"
+	}
+	lit := newInterpolatedTextLiteral(parts...)
+
+	exec := &Execution{
+		ctx:         ctx,
+		quota:       1 << 20,
+		memoryQuota: 1 << 20,
+	}
+	env := newEnv(nil)
+	exec.pushEnv(env)
+
+	_, err := exec.evalInterpolatedStringLiteral(lit, env)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("evalInterpolatedStringLiteral under canceled context = %v, want context.Canceled", err)
+	}
+}
+
+func TestInterpolatedStringGrowthTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// A doubling interpolation builds an exponentially larger string inside a
+	// single literal expression. The materialization must trip the memory quota
+	// rather than allocating the oversized result that the surrounding evaluator
+	// would only observe after it already exists.
+	source := `def run(n)
+  text = "x"
+  i = 0
+  while i < n
+    text = "#{text}#{text}"
+    i = i + 1
+  end
+  text.length
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: 64 * 1024}, source)
+	requireRunMemoryQuotaError(t, script, []Value{NewInt(20)}, CallOptions{})
+}
+
+func TestInterpolatedStringCanceledContextStops(t *testing.T) {
+	t.Parallel()
+
+	// Repeated interpolation must observe a canceled context through the
+	// per-chunk step check.
+	source := `def run(n)
+  text = "x"
+  i = 0
+  while i < n
+    text = "#{text}!"
+    i = i + 1
+  end
+  text.length
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: 64 << 20}, source)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := script.Call(ctx, "run", []Value{NewInt(100)}, CallOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call under canceled context = %v, want context.Canceled", err)
+	}
+}
+
+func TestInterpolatedStringLargeValueRendersUnderAmpleQuota(t *testing.T) {
+	t.Parallel()
+
+	// A doubling interpolation builds a moderately large string when the quota
+	// is ample; the containment checks must not corrupt or truncate the result.
+	const doublings = 8
+	source := `def run(n)
+  text = "ab"
+  i = 0
+  while i < n
+    text = "#{text}#{text}"
+    i = i + 1
+  end
+  text
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: 64 << 20}, source)
+	got := callScript(t, context.Background(), script, "run", []Value{NewInt(doublings)}, CallOptions{})
+	if want := strings.Repeat("ab", 1<<doublings); got.String() != want {
+		t.Fatalf("Call(run) length = %d, want %d", len(got.String()), len(want))
 	}
 }

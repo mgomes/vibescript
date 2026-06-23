@@ -174,16 +174,40 @@ func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, en
 	for _, part := range lit.Parts {
 		switch p := part.(type) {
 		case StringText:
-			sb.WriteString(p.Text)
+			if err := exec.appendInterpolatedChunk(&sb, p.Text); err != nil {
+				return NewNil(), err
+			}
 		case StringExpr:
 			val, err := exec.evalExpressionWithAuto(p.Expr, env, true)
 			if err != nil {
 				return NewNil(), err
 			}
-			sb.WriteString(val.String())
+			if err := exec.appendInterpolatedChunk(&sb, val.String()); err != nil {
+				return NewNil(), err
+			}
 		}
 	}
 	return NewString(sb.String()), nil
+}
+
+// appendInterpolatedChunk writes chunk to the interpolation builder while
+// keeping the partially built result inside the sandbox limits. step() honors a
+// canceled context and the step quota during repeated or large interpolation,
+// and checkProjectedStringBytes rejects the materialization before the builder
+// grows past the memory quota. The projected check is keyed on the running
+// builder length so a doubling interpolation such as "#{text}#{text}" fails
+// fast instead of allocating the oversized result that the surrounding
+// evaluator would only observe after it already exists. Small interpolations
+// stay on the fast path: with no quotas the checks are O(1) no-ops.
+func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string) error {
+	if err := exec.step(); err != nil {
+		return err
+	}
+	if err := exec.checkProjectedStringBytes(saturatingAdd(sb.Len(), len(chunk))); err != nil {
+		return err
+	}
+	sb.WriteString(chunk)
+	return nil
 }
 
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
