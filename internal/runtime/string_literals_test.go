@@ -136,6 +136,72 @@ func TestEvalInterpolatedStringLiteralBoundsMaterialization(t *testing.T) {
 	})
 }
 
+func TestEvalInterpolatedStringLiteralBoundsAggregateRendering(t *testing.T) {
+	t.Parallel()
+
+	// An aggregate whose String rendering expands far beyond its own footprint:
+	// a short array holding many references to one large string. The array fits
+	// the memory quota, but rendering it repeats the large string once per
+	// element, materializing a representation many times the quota. The
+	// projected check must reject the interpolation from Value.StringByteLen
+	// without first allocating the oversized rendering.
+	const elementBytes = 4096
+	const elementCount = 64
+
+	large := NewString(strings.Repeat("x", elementBytes))
+	elems := make([]Value, elementCount)
+	for i := range elems {
+		elems[i] = large
+	}
+	arr := NewArray(elems)
+
+	lit := &InterpolatedString{Parts: []StringPart{StringExpr{Expr: &Identifier{Name: "arr"}}}}
+
+	// The quota comfortably holds the array (one large string plus element
+	// headers) but is far below the rendered representation, which repeats the
+	// large string in every element.
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 20,
+		memoryQuota: elementBytes * 8,
+	}
+	env := newEnv(nil)
+	env.Define("arr", arr)
+	exec.pushEnv(env)
+
+	_, err := exec.evalInterpolatedStringLiteral(lit, env)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestEvalInterpolatedStringLiteralAggregateRendersUnderAmpleQuota(t *testing.T) {
+	t.Parallel()
+
+	// The projection must not reject a rendering that fits the quota, and the
+	// materialized result must match Value.String exactly.
+	arr := NewArray([]Value{NewInt(1), NewString("two"), NewArray([]Value{NewBool(true)})})
+	lit := &InterpolatedString{Parts: []StringPart{
+		StringText{Text: "values: "},
+		StringExpr{Expr: &Identifier{Name: "arr"}},
+	}}
+
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 20,
+		memoryQuota: 1 << 20,
+	}
+	env := newEnv(nil)
+	env.Define("arr", arr)
+	exec.pushEnv(env)
+
+	got, err := exec.evalInterpolatedStringLiteral(lit, env)
+	if err != nil {
+		t.Fatalf("evalInterpolatedStringLiteral: %v", err)
+	}
+	if want := "values: " + arr.String(); got.String() != want {
+		t.Fatalf("result = %q, want %q", got.String(), want)
+	}
+}
+
 func TestEvalInterpolatedStringLiteralCanceledContext(t *testing.T) {
 	t.Parallel()
 

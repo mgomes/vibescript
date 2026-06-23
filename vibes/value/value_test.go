@@ -2,6 +2,9 @@ package value_test
 
 import (
 	"math"
+	"runtime"
+	"runtime/debug"
+	"strings"
 	"testing"
 	"time"
 
@@ -464,6 +467,149 @@ func TestValueStringCycleDetection(t *testing.T) {
 			t.Fatalf("String() = %q, want %q", got, "[[1], [1]]")
 		}
 	})
+}
+
+func TestValueStringByteLen(t *testing.T) {
+	t.Parallel()
+
+	big := value.NewString(strings.Repeat("x", 1024))
+
+	tests := []struct {
+		name string
+		val  value.Value
+	}{
+		{"nil", value.NewNil()},
+		{"bool", value.NewBool(true)},
+		{"int", value.NewInt(-42)},
+		{"float", value.NewFloat(2.5)},
+		{"float_infinity", value.NewFloat(math.Inf(1))},
+		{"string", value.NewString("hello")},
+		{"symbol", value.NewSymbol("status")},
+		{"money", value.NewMoney(mustMoney(t, 1999, "usd"))},
+		{"duration", value.NewDuration(value.DurationFromSeconds(90))},
+		{"time", value.NewTime(time.Date(2024, 6, 1, 12, 30, 0, 500_000_000, time.UTC))},
+		{"range", value.NewRange(value.Range{Start: 1, End: 5})},
+		{"empty_array", value.NewArray(nil)},
+		{"single_array", value.NewArray([]value.Value{value.NewInt(1)})},
+		{
+			"nested_array",
+			value.NewArray([]value.Value{
+				value.NewInt(1),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+		},
+		{"empty_hash", value.NewHash(nil)},
+		{
+			"single_hash",
+			value.NewHash(map[string]value.Value{"name": value.NewString("acme")}),
+		},
+		{"runtime_kind_fallback", value.NewValue(value.KindBlock, fakeBlock{})},
+		// An aggregate whose rendering expands far beyond its own footprint: a
+		// short array holding many references to one large string materializes a
+		// representation many times the value's memory. The projection must still
+		// equal the eventual byte count exactly.
+		{
+			"array_of_repeated_large_string",
+			value.NewArray([]value.Value{big, big, big, big, big}),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got, want := tc.val.StringByteLen(), len(tc.val.String()); got != want {
+				t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+			}
+		})
+	}
+}
+
+func TestValueStringByteLenCycleDetection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("self_referential_array", func(t *testing.T) {
+		t.Parallel()
+		elems := make([]value.Value, 1)
+		arr := value.NewArray(elems)
+		elems[0] = arr
+		if got, want := arr.StringByteLen(), len(arr.String()); got != want {
+			t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+		}
+	})
+
+	t.Run("self_referential_hash", func(t *testing.T) {
+		t.Parallel()
+		entries := make(map[string]value.Value)
+		hash := value.NewHash(entries)
+		entries["self"] = hash
+		if got, want := hash.StringByteLen(), len(hash.String()); got != want {
+			t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+		}
+	})
+
+	t.Run("shared_subtree_is_counted_each_appearance", func(t *testing.T) {
+		t.Parallel()
+		shared := value.NewArray([]value.Value{value.NewInt(1)})
+		outer := value.NewArray([]value.Value{shared, shared})
+		if got, want := outer.StringByteLen(), len(outer.String()); got != want {
+			t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+		}
+	})
+}
+
+func TestValueStringByteLenDoesNotMaterializeRendering(t *testing.T) {
+	// Deliberately not parallel: this measures heap bytes via runtime.MemStats,
+	// which observes the whole process. A non-parallel top-level test runs while
+	// every parallel sibling is paused, so the only allocations during the
+	// measured window are this test's own.
+
+	// An aggregate whose rendering expands far beyond its footprint: a short
+	// array holding many references to one large string. String joins the large
+	// string once per element, allocating a representation many times the value's
+	// memory. StringByteLen must report the same byte length without allocating
+	// that rendering, so a sandbox can reject an oversized interpolation before
+	// the join happens rather than after.
+	const elementBytes = 8192
+	const elementCount = 64
+
+	large := value.NewString(strings.Repeat("x", elementBytes))
+	elems := make([]value.Value, elementCount)
+	for i := range elems {
+		elems[i] = large
+	}
+	arr := value.NewArray(elems)
+
+	stringBytes := allocBytes(t, func() { _ = arr.String() })
+	byteLenBytes := allocBytes(t, func() { _ = arr.StringByteLen() })
+
+	rendered := uint64(elementBytes * elementCount)
+	if stringBytes < rendered {
+		t.Fatalf("String allocated %d bytes, want at least the rendered %d", stringBytes, rendered)
+	}
+	// StringByteLen walks the structure with only small bookkeeping allocations;
+	// it must not allocate anything close to the rendered representation. A guard
+	// that projected the size by calling String first would allocate as String
+	// does.
+	if byteLenBytes >= rendered {
+		t.Fatalf("StringByteLen allocated %d bytes, want well below the rendered %d", byteLenBytes, rendered)
+	}
+}
+
+// allocBytes reports the heap bytes fn allocates. It disables the garbage
+// collector for the measurement window and reads the cumulative allocation
+// counter before and after, so a sweep cannot reclaim memory mid-measurement
+// and skew the delta. Callers must invoke it from a non-parallel test so no
+// sibling goroutine allocates concurrently.
+func allocBytes(t *testing.T, fn func()) uint64 {
+	t.Helper()
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
 }
 
 func TestValueEqual(t *testing.T) {

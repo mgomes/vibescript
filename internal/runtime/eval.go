@@ -182,7 +182,7 @@ func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, en
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := exec.appendInterpolatedChunk(&sb, val.String()); err != nil {
+			if err := exec.appendInterpolatedValue(&sb, val); err != nil {
 				return NewNil(), err
 			}
 		}
@@ -190,15 +190,16 @@ func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, en
 	return NewString(sb.String()), nil
 }
 
-// appendInterpolatedChunk writes chunk to the interpolation builder while
-// keeping the partially built result inside the sandbox limits. step() honors a
-// canceled context and the step quota during repeated or large interpolation,
-// and checkProjectedStringBytes rejects the materialization before the builder
-// grows past the memory quota. The projected check is keyed on the running
-// builder length so a doubling interpolation such as "#{text}#{text}" fails
-// fast instead of allocating the oversized result that the surrounding
-// evaluator would only observe after it already exists. Small interpolations
-// stay on the fast path: with no quotas the checks are O(1) no-ops.
+// appendInterpolatedChunk writes a literal text chunk to the interpolation
+// builder while keeping the partially built result inside the sandbox limits.
+// step() honors a canceled context and the step quota during repeated or large
+// interpolation, and checkProjectedStringBytes rejects the materialization
+// before the builder grows past the memory quota. The projected check is keyed
+// on the running builder length so a doubling interpolation such as
+// "#{text}#{text}" fails fast instead of allocating the oversized result that
+// the surrounding evaluator would only observe after it already exists. Small
+// interpolations stay on the fast path: with no quotas the checks are O(1)
+// no-ops.
 func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string) error {
 	if err := exec.step(); err != nil {
 		return err
@@ -207,6 +208,26 @@ func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string
 		return err
 	}
 	sb.WriteString(chunk)
+	return nil
+}
+
+// appendInterpolatedValue renders val into the interpolation builder under the
+// same sandbox limits as appendInterpolatedChunk. It projects the rendered byte
+// length with Value.StringByteLen before materializing, so an aggregate whose
+// String representation expands far beyond its own footprint (for example an
+// array holding many references to one large string) is rejected by the memory
+// quota instead of allocating the oversized rendering first and only then
+// failing the post-build check. Value.StringByteLen walks the aggregate without
+// allocating the joined result, so the projection is the only work done for a
+// value that overruns the quota.
+func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) error {
+	if err := exec.step(); err != nil {
+		return err
+	}
+	if err := exec.checkProjectedStringBytes(saturatingAdd(sb.Len(), val.StringByteLen())); err != nil {
+		return err
+	}
+	sb.WriteString(val.String())
 	return nil
 }
 

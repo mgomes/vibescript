@@ -154,7 +154,7 @@ func (v Value) stringWithState(state *valueStringState) string {
 		}
 		if id.Ptr != 0 {
 			if _, seen := state.arrays[id]; seen {
-				return "<cycle>"
+				return cycleMarker
 			}
 			state.arrays[id] = struct{}{}
 			defer delete(state.arrays, id)
@@ -163,29 +163,113 @@ func (v Value) stringWithState(state *valueStringState) string {
 		for i, e := range elems {
 			parts[i] = e.stringWithState(state)
 		}
-		return fmt.Sprintf("[%s]", strings.Join(parts, ", "))
+		return arrayOpen + strings.Join(parts, elementSeparator) + arrayClose
 	case KindHash:
 		entries := v.data.(map[string]Value)
 		if len(entries) == 0 {
-			return "{}"
+			return hashOpen + hashClose
 		}
 		ptr := reflect.ValueOf(entries).Pointer()
 		if ptr != 0 {
 			if _, seen := state.maps[ptr]; seen {
-				return "<cycle>"
+				return cycleMarker
 			}
 			state.maps[ptr] = struct{}{}
 			defer delete(state.maps, ptr)
 		}
 		parts := make([]string, 0, len(entries))
 		for k, val := range entries {
-			parts = append(parts, fmt.Sprintf("%s: %s", k, val.stringWithState(state)))
+			parts = append(parts, k+keyValueSeparator+val.stringWithState(state))
 		}
-		return fmt.Sprintf("{%s}", strings.Join(parts, ", "))
+		return hashOpen + strings.Join(parts, elementSeparator) + hashClose
 	default:
 		return v.String()
 	}
 }
+
+// StringByteLen returns the number of bytes String would produce for v without
+// materializing the rendered representation. Callers that must bound an
+// allocation before it happens (such as the sandbox's interpolation memory
+// guard) use it to reject an oversized rendering instead of building the string
+// first and only then observing that it exceeded a quota. The byte count walks
+// arrays and hashes with the same cycle detection String uses, so the projection
+// matches the eventual output exactly.
+func (v Value) StringByteLen() int {
+	switch v.kind {
+	case KindArray, KindHash:
+		return v.stringByteLenWithState(newValueStringState())
+	default:
+		return len(v.String())
+	}
+}
+
+func (v Value) stringByteLenWithState(state *valueStringState) int {
+	switch v.kind {
+	case KindArray:
+		elems := v.data.([]Value)
+		id := SliceIdentity{
+			Ptr: reflect.ValueOf(elems).Pointer(),
+			Len: len(elems),
+			Cap: cap(elems),
+		}
+		if id.Ptr != 0 {
+			if _, seen := state.arrays[id]; seen {
+				return len(cycleMarker)
+			}
+			state.arrays[id] = struct{}{}
+			defer delete(state.arrays, id)
+		}
+		// "[" + elements joined by ", " + "]".
+		total := len(arrayOpen) + len(arrayClose)
+		total += separatorBytes(len(elems))
+		for _, e := range elems {
+			total += e.stringByteLenWithState(state)
+		}
+		return total
+	case KindHash:
+		entries := v.data.(map[string]Value)
+		if len(entries) == 0 {
+			return len(hashOpen) + len(hashClose)
+		}
+		ptr := reflect.ValueOf(entries).Pointer()
+		if ptr != 0 {
+			if _, seen := state.maps[ptr]; seen {
+				return len(cycleMarker)
+			}
+			state.maps[ptr] = struct{}{}
+			defer delete(state.maps, ptr)
+		}
+		// "{" + entries joined by ", " + "}"; each entry is key + ": " + value.
+		total := len(hashOpen) + len(hashClose)
+		total += separatorBytes(len(entries))
+		for k, val := range entries {
+			total += len(k) + len(keyValueSeparator)
+			total += val.stringByteLenWithState(state)
+		}
+		return total
+	default:
+		return len(v.String())
+	}
+}
+
+// separatorBytes returns the bytes the ", " separators contribute when joining
+// count elements: zero for fewer than two elements, otherwise two bytes per gap.
+func separatorBytes(count int) int {
+	if count < 2 {
+		return 0
+	}
+	return (count - 1) * len(elementSeparator)
+}
+
+const (
+	arrayOpen         = "["
+	arrayClose        = "]"
+	hashOpen          = "{"
+	hashClose         = "}"
+	elementSeparator  = ", "
+	keyValueSeparator = ": "
+	cycleMarker       = "<cycle>"
+)
 
 // Truthy reports whether v is considered true in a boolean context.
 func (v Value) Truthy() bool {
