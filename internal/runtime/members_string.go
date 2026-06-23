@@ -14,7 +14,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var stringMemberNames = []string{
-	"size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice",
+	"size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "each_char", "each_line", "template",
 	"center", "ljust", "rjust",
@@ -31,7 +31,7 @@ func stringMember(str Value, property string) (Value, error) {
 
 func stringMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "bytesize", "ord", "chr", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice":
+	case "size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
@@ -696,6 +696,140 @@ func isTemplateKeyRune(b byte) bool {
 	return isTemplateKeyStart(b) || ('0' <= b && b <= '9') || b == '.' || b == '-'
 }
 
+// errInumOverflow signals that a leniently parsed integer magnitude does not
+// fit in the int64 range. Ruby promotes such values to an arbitrary-precision
+// Bignum, but Vibescript only has int64, so the runtime reports overflow the way
+// the other integer operations do (see Integer#abs, Integer#succ).
+var errInumOverflow = errors.New("integer out of range")
+
+// isInumSpace reports whether b is whitespace skipped before the sign of a
+// leniently parsed integer, matching Ruby's ISSPACE classification used by
+// rb_str_to_inum.
+func isInumSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\v', '\f', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+// inumDigit returns the numeric value of a base digit byte and whether it is a
+// valid digit for the given base. Letters are case-insensitive, so 'a'/'A' both
+// map to 10.
+func inumDigit(b byte, base int) (int, bool) {
+	var d int
+	switch {
+	case '0' <= b && b <= '9':
+		d = int(b - '0')
+	case 'a' <= b && b <= 'z':
+		d = int(b-'a') + 10
+	case 'A' <= b && b <= 'Z':
+		d = int(b-'A') + 10
+	default:
+		return 0, false
+	}
+	if d >= base {
+		return 0, false
+	}
+	return d, true
+}
+
+// parseRubyInum implements Ruby's lenient String#hex / String#oct conversion.
+// It skips leading whitespace, accepts a single optional sign, consumes a
+// base prefix (0x/0b/0o/0d, case-insensitive) when detectBase is set, honors a
+// 0x/0X prefix for the fixed hexadecimal base otherwise, allows single
+// underscores between digits as separators, and stops at the first byte that is
+// not a valid digit. A string with no leading digit yields 0, mirroring Ruby's
+// badcheck=false behavior. The magnitude is accumulated in int64; a value that
+// would exceed the int64 range returns errInumOverflow because Vibescript has no
+// Bignum to promote to.
+func parseRubyInum(text string, defaultBase int, detectBase bool) (int64, error) {
+	i := 0
+	for i < len(text) && isInumSpace(text[i]) {
+		i++
+	}
+
+	negative := false
+	if i < len(text) && (text[i] == '+' || text[i] == '-') {
+		negative = text[i] == '-'
+		i++
+	}
+
+	base := defaultBase
+	if i+1 < len(text) && text[i] == '0' {
+		switch text[i+1] {
+		case 'x', 'X':
+			if base == 16 || detectBase {
+				base = 16
+				i += 2
+			}
+		case 'b', 'B':
+			if detectBase {
+				base = 2
+				i += 2
+			}
+		case 'o', 'O':
+			if detectBase {
+				base = 8
+				i += 2
+			}
+		case 'd', 'D':
+			if detectBase {
+				base = 10
+				i += 2
+			}
+		}
+	}
+
+	var magnitude uint64
+	parsedDigit := false
+	lastWasUnderscore := false
+	for i < len(text) {
+		b := text[i]
+		if b == '_' {
+			// Underscores are separators only between two digits, so a leading,
+			// trailing, or doubled underscore terminates the run like Ruby does.
+			if !parsedDigit || lastWasUnderscore {
+				break
+			}
+			lastWasUnderscore = true
+			i++
+			continue
+		}
+		d, ok := inumDigit(b, base)
+		if !ok {
+			break
+		}
+		// Detect overflow before accumulating: magnitude*base+d must fit in
+		// uint64. The wraparound idiom (next < magnitude) is unsound for
+		// multiplication because magnitude*base can wrap to a value still
+		// >= magnitude, so check each factor exactly instead.
+		if magnitude > (math.MaxUint64-uint64(d))/uint64(base) {
+			return 0, errInumOverflow
+		}
+		magnitude = magnitude*uint64(base) + uint64(d)
+		parsedDigit = true
+		lastWasUnderscore = false
+		i++
+	}
+
+	if !parsedDigit {
+		return 0, nil
+	}
+	if negative {
+		// MinInt64 is -(1<<63), so the negative magnitude may reach 1<<63 exactly.
+		if magnitude > uint64(math.MaxInt64)+1 {
+			return 0, errInumOverflow
+		}
+		return -int64(magnitude), nil
+	}
+	if magnitude > uint64(math.MaxInt64) {
+		return 0, errInumOverflow
+	}
+	return int64(magnitude), nil
+}
+
 func stringMemberQuery(property string) (Value, error) {
 	switch property {
 	case "size":
@@ -740,6 +874,28 @@ func stringMemberQuery(property string) (Value, error) {
 				return NewNil(), nil
 			}
 			return NewString(string(r)), nil
+		}), nil
+	case "hex":
+		return NewAutoBuiltin("string.hex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.hex does not take arguments")
+			}
+			n, err := parseRubyInum(receiver.String(), 16, false)
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.hex %w", err)
+			}
+			return NewInt(n), nil
+		}), nil
+	case "oct":
+		return NewAutoBuiltin("string.oct", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("string.oct does not take arguments")
+			}
+			n, err := parseRubyInum(receiver.String(), 8, true)
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.oct %w", err)
+			}
+			return NewInt(n), nil
 		}), nil
 	case "empty?":
 		return NewAutoBuiltin("string.empty?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
