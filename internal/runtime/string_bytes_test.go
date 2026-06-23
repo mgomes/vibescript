@@ -1,6 +1,11 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	goruntime "runtime"
+	"strings"
+	"testing"
+)
 
 func TestStringBytes(t *testing.T) {
 	t.Parallel()
@@ -148,6 +153,97 @@ end
 `)
 	result := callFunc(t, script, "run", nil)
 	compareArrays(t, result, []Value{NewInt(97), NewInt(98)})
+}
+
+// TestStringBytesEnforcesMemoryQuota proves bytes rejects the call when the
+// receiver string fits the memory quota but the resulting array of one Value
+// per byte does not. Each byte expands to a full Value (far larger than a
+// byte), so a 4KB string materializes well over 100KB; a 64KB quota admits the
+// receiver yet must reject the result. The string is passed as an argument so
+// the literal does not dominate the script's base memory and the quota can sit
+// between the receiver and its expansion.
+func TestStringBytesEnforcesMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// 4096 ASCII bytes cost ~4KB in the estimate but expand to 4096 Values
+	// (~128KB) once materialized, so a 64KB quota admits the receiver yet must
+	// reject the result.
+	text := strings.Repeat("vibescript", 410)[:4096]
+	script := compileScriptWithConfig(t, Config{StepQuota: 20000, MemoryQuotaBytes: 64 * 1024}, `
+def run(text)
+  text.bytes
+end
+`)
+	requireRunMemoryQuotaError(t, script, []Value{NewString(text)}, CallOptions{})
+}
+
+// TestStringBytesFitsAmpleMemoryQuota proves the same receiver that trips a
+// tight quota in TestStringBytesEnforcesMemoryQuota succeeds under an ample
+// one. This confirms it is the materialized byte array, not the receiver
+// string, that the tight quota rejects, so the projected check guards the right
+// allocation rather than rejecting strings that genuinely fit.
+func TestStringBytesFitsAmpleMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Repeat("vibescript", 410)[:4096]
+	script := compileScriptWithConfig(t, Config{StepQuota: 20000, MemoryQuotaBytes: 64 << 20}, `
+def run(text)
+  text.bytes
+end
+`)
+	result := callFunc(t, script, "run", []Value{NewString(text)})
+	if result.Kind() != KindArray {
+		t.Fatalf("expected array result, got %v", result.Kind())
+	}
+	if got := len(result.Array()); got != len(text) {
+		t.Fatalf("len = %d, want %d", got, len(text))
+	}
+}
+
+// TestStringBytesRejectsOverQuotaWithoutAllocating proves bytes rejects an
+// over-quota result before reserving its backing array, not just after. The
+// receiver string fits the quota but its expansion to one Value per byte does
+// not; without the projected check the make([]Value, len(text)) call would
+// reserve the full array (here ~10MB) and only then would the post-call memory
+// check reject it, letting the call transiently exceed the sandbox limit by
+// orders of magnitude. Measuring the process-wide allocation counter proves the
+// rejected call never reserves that array.
+func TestStringBytesRejectsOverQuotaWithoutAllocating(t *testing.T) {
+	// Not parallel: this test reads process-wide allocation counters and must
+	// not race other goroutines' allocations.
+
+	const byteCount = 320 * 1024
+	builtin, err := stringMember(NewString(""), "bytes")
+	if err != nil {
+		t.Fatalf("stringMember(bytes): %v", err)
+	}
+	fn := BuiltinOf(builtin).Fn
+
+	// The receiver string costs ~byteCount bytes in the estimate, so a quota an
+	// order of magnitude above it admits the receiver while the result array of
+	// byteCount Values (~10MB) far exceeds it.
+	exec := &Execution{ctx: context.Background(), memoryQuota: 4 << 20}
+	receiver := NewString(strings.Repeat("x", byteCount))
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	_, callErr := fn(exec, receiver, nil, nil, NewNil())
+	goruntime.ReadMemStats(&after)
+
+	requireErrorIs(t, callErr, errMemoryQuotaExceeded)
+
+	// The full backing array would reserve byteCount*sizeof(Value) bytes. The
+	// projected check rejects the call before make runs, so the allocation is
+	// many orders of magnitude smaller. Use a generous ceiling to stay robust
+	// against unrelated allocation noise while still failing loudly if the full
+	// array is ever reserved again.
+	const fullArrayBytes = uint64(byteCount) * uint64(estimatedValueBytes)
+	const ceiling = fullArrayBytes / 100
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("bytes allocated %d bytes, want <= %d (full array would be %d)",
+			allocated, ceiling, fullArrayBytes)
+	}
 }
 
 func TestStringBytesEachByteRejectMisuse(t *testing.T) {

@@ -1298,6 +1298,13 @@ func stringMemberTextOps(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("string.bytes does not take arguments")
 			}
 			text := receiver.String()
+			// Reject the allocation up front so a string that fits the memory
+			// quota cannot reserve a result array of one Value per byte that
+			// does not. make([]Value, len(text)) would reserve the entire
+			// backing array before the post-call check could observe it.
+			if err := exec.checkProjectedIntArrayBytes(len(text)); err != nil {
+				return NewNil(), err
+			}
 			values := make([]Value, len(text))
 			for i := range len(text) {
 				values[i] = NewInt(int64(text[i]))
