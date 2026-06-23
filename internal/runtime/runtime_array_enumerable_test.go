@@ -303,6 +303,130 @@ func TestArrayFilterMapChargesAccumulatedResultsDuringIteration(t *testing.T) {
 	}
 }
 
+// sharedArrayBlockValue builds a block that returns the same array value on every
+// invocation. Because each call yields a value backed by the identical slice, the
+// memory estimator must deduplicate the shared backing across kept elements; the
+// post-call check counts that backing once, so the incremental per-element charge
+// must too or it would reject a result the post-call check would have accepted.
+func sharedArrayBlockValue(shared Value) Value {
+	pos := Position{Line: 1, Column: 1}
+	env := newEnv(nil)
+	env.Define("shared", shared)
+	body := []Statement{&ExprStmt{Expr: &Identifier{Name: "shared", Position: pos}, Position: pos}}
+	return NewBlock(nil, body, env)
+}
+
+// TestArrayFilterMapDoesNotOverchargeAliasedResults guards the incremental
+// per-element memory charge against double-counting a backing that every kept
+// element shares. The block returns the same array on every call, so the
+// post-call checkMemoryWith(result) counts that single backing once. Sizing the
+// quota just above the post-call estimate proves the incremental charge
+// deduplicates the shared backing exactly as the post-call check does: if it
+// re-counted the backing per element it would trip the quota and reject a result
+// the post-call check accepts.
+func TestArrayFilterMapDoesNotOverchargeAliasedResults(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 64
+	const sharedWidth = 32
+	fn := arrayFilterMapBuiltin(t)
+
+	shared := freshIntArrayValue(sharedWidth)
+	sharedPayload := newMemoryEstimator().value(shared)
+	// The correct charge counts the shared backing once plus the result array's
+	// per-element slots; an over-counting charge would count the shared backing
+	// once per kept element. Size the quota generously above the correct total but
+	// far below the over-counted total so only a deduplicating charge fits.
+	arrayOverhead := estimatedValueBytes + estimatedSliceBaseBytes + receiverSize*estimatedValueBytes
+	correctTotal := arrayOverhead + sharedPayload
+	overCountedTotal := arrayOverhead + receiverSize*sharedPayload
+	memoryQuota := correctTotal * 4
+	if memoryQuota >= overCountedTotal {
+		t.Fatalf("test quota %d does not distinguish correct (%d) from over-counted (%d)", memoryQuota, correctTotal, overCountedTotal)
+	}
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: memoryQuota,
+	}
+	got, err := fn(exec, largeIntArray(receiverSize), nil, nil, sharedArrayBlockValue(shared))
+	if err != nil {
+		t.Fatalf("filter_map over aliased results = %v, want success (incremental charge must dedup the shared backing)", err)
+	}
+	if got.Kind() != KindArray || len(got.Array()) != receiverSize {
+		t.Fatalf("filter_map kept %v, want %d aliased elements", got, receiverSize)
+	}
+}
+
+// TestArrayFilterMapCountsDistinctBackings guards the incremental per-element
+// memory charge against under-counting. Every kept element is a freshly allocated
+// array with its own backing, so the charger must accumulate each element's
+// payload; if it walked only the first element (or otherwise dropped later
+// payloads) a dense result of distinct large values would slip past the quota.
+// The quota is sized to admit a few kept results but not all of them, so the loop
+// must trip before traversing the whole receiver.
+func TestArrayFilterMapCountsDistinctBackings(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 4096
+	const resultWidth = 256
+	fn := arrayFilterMapBuiltin(t)
+
+	oneResult := newMemoryEstimator().value(freshIntArrayValue(resultWidth))
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: oneResult * 8,
+	}
+	_, err := fn(exec, largeIntArray(receiverSize), nil, nil, freshArrayBlockValue(resultWidth))
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps >= receiverSize {
+		t.Fatalf("steps = %d, want the loop to trip the memory quota before traversing the whole receiver (%d)", exec.steps, receiverSize)
+	}
+}
+
+// constantTruthyBlockValue builds a block whose body is a single truthy integer
+// literal, so every invocation keeps its element while allocating nothing. Driving
+// filter_map with it isolates the per-element memory charge: the only per-element
+// work is the charger walking the kept result.
+func constantTruthyBlockValue() Value {
+	pos := Position{Line: 1, Column: 1}
+	body := []Statement{&ExprStmt{Expr: &IntegerLiteral{Value: 1, Position: pos}, Position: pos}}
+	return NewBlock(nil, body, newEnv(nil))
+}
+
+// TestArrayFilterMapDenseResultStaysLinear guards against the per-element memory
+// charge re-walking the whole accumulated result on every append, which made a
+// dense filter_map quadratic in the number of kept elements. The block keeps
+// every element, so the old per-element checkMemoryWith(NewArray(out)) walked all
+// of out on each append for O(n^2) element walks; the incremental charge walks
+// each kept element exactly once for O(n) total. At this receiver size the
+// quadratic walk would take on the order of n^2/2 ~= 1.1e10 element visits
+// (measured at ~19s before this fix) while the linear charge completes in
+// milliseconds.
+//
+// The builtin is driven directly against a Go-level receiver under generous step
+// and memory quotas so the only per-element cost measured is the charger itself,
+// not interpreter steps or call-binding memory.
+func TestArrayFilterMapDenseResultStaysLinear(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 150000
+	fn := arrayFilterMapBuiltin(t)
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: 256 * 1024 * 1024,
+	}
+	got, err := fn(exec, largeIntArray(receiverSize), nil, nil, constantTruthyBlockValue())
+	if err != nil {
+		t.Fatalf("dense filter_map = %v, want success", err)
+	}
+	if got.Kind() != KindArray {
+		t.Fatalf("expected array, got %v", got.Kind())
+	}
+	if n := len(got.Array()); n != receiverSize {
+		t.Fatalf("filter_map kept %d elements, want %d", n, receiverSize)
+	}
+}
+
 // freshIntArrayValue returns an array Value of `width` integer elements, matching
 // the runtime value a freshArrayBlockValue invocation produces so a test can size
 // the memory quota against one kept result.

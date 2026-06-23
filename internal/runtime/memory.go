@@ -131,6 +131,73 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 	return nil
 }
 
+// incrementalArrayCharger charges the elements of a locally accumulating result
+// array against the memory quota one element at a time, in O(sum of element
+// sizes) total rather than re-walking the whole accumulated array on every
+// append (which is O(n^2) over the loop). Builtins like array.filter_map build a
+// result slice that is unreachable from exec's roots while the loop runs, so it
+// is invisible to step()'s slow-path checkMemory() and is only walked by the
+// post-call check after the whole receiver has been traversed; without an
+// incremental charge a block returning an individually quota-sized value per
+// element could pile up far beyond the quota before that check ever ran.
+//
+// The charger walks the base roots once into a persistent estimator (so each
+// element is deduplicated against the base and against earlier elements exactly
+// as the single-pass post-call check would), then per element walks only that
+// element and adds its size to a running total. Reusing one estimator means the
+// charger never charges for backing storage the post-call check would have
+// deduplicated, so it never rejects a result the post-call check would accept,
+// and counting every element's payload means it never under-counts.
+type incrementalArrayCharger struct {
+	exec      *Execution
+	est       *memoryEstimator
+	baseBytes int
+	itemBytes int
+}
+
+// newIncrementalArrayCharger returns a charger seeded with the current base
+// memory usage, or nil when the memory quota is disabled (in which case callers
+// skip charging entirely). The returned charger owns its estimator; the caller
+// must call release when finished so the estimator's seen-sets are cleared.
+func (exec *Execution) newIncrementalArrayCharger() *incrementalArrayCharger {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	est := newMemoryEstimator()
+	return &incrementalArrayCharger{
+		exec:      exec,
+		est:       est,
+		baseBytes: exec.estimateMemoryUsageBase(est),
+	}
+}
+
+// add charges one element appended to a result array of the given backing
+// capacity and reports an error when the projected total exceeds the quota. cap
+// is the capacity of the result slice after the append so the array's backing
+// overhead is accounted for as it grows, matching the post-call slice estimate.
+func (c *incrementalArrayCharger) add(item Value, capacity int) error {
+	if c == nil {
+		return nil
+	}
+	c.itemBytes = saturatingAdd(c.itemBytes, c.est.value(item))
+	used := saturatingAdd(c.baseBytes, estimatedValueBytes+estimatedSliceBaseBytes)
+	used = saturatingAdd(used, saturatingMul(capacity, estimatedValueBytes))
+	used = saturatingAdd(used, c.itemBytes)
+	if used > c.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+	}
+	return nil
+}
+
+// release clears the estimator's seen-sets so its backing maps can be reused or
+// garbage collected. It is safe to call on a nil charger.
+func (c *incrementalArrayCharger) release() {
+	if c == nil {
+		return
+	}
+	c.est.reset()
+}
+
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	est := exec.memoryEstimatorForCheck()
 

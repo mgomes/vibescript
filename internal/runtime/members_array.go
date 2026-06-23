@@ -731,6 +731,22 @@ func arrayMemberQuery(property string) (Value, error) {
 			// charged. Bounding the reservation keeps the peak allocation
 			// proportional to the elements actually kept.
 			out := make([]Value, 0, boundedFilterCap(len(arr)))
+			// Charge the accumulating result against the quota on every kept
+			// element. out is a local slice, so it is invisible to the step()
+			// slow-path checkMemory() and to the post-call checkMemoryWith(result);
+			// without this a block returning an individually quota-sized value per
+			// element could pile up far beyond MemoryQuotaBytes before the
+			// post-call check ever ran. The charger walks each kept element once
+			// and keeps a running total, so the whole loop costs O(sum of result
+			// sizes) rather than re-walking the entire accumulated array per
+			// append. Unlike range materialization (whose elements are inlined ints
+			// with no payload beyond their slot, letting it use the O(1) cap-based
+			// projection), filter_map keeps arbitrary block results, so the charger
+			// walks each element to account for string and collection payloads. It
+			// dedups shared backings exactly like the post-call check, so it never
+			// rejects a result the post-call check would have accepted.
+			charger := exec.newIncrementalArrayCharger()
+			defer charger.release()
 			var blockArg [1]Value
 			for _, item := range arr {
 				// Charge a step per yield so an empty or trivial block body
@@ -752,22 +768,7 @@ func arrayMemberQuery(property string) (Value, error) {
 				// empty collections are dropped alongside nil and false.
 				if val.Truthy() {
 					out = append(out, val)
-					// Charge the accumulating result against the quota on every
-					// kept element. out is a local slice, so it is invisible to
-					// the step() slow-path checkMemory() and to the post-call
-					// checkMemoryWith(result); without this a block returning an
-					// individually quota-sized value per element could pile up far
-					// beyond MemoryQuotaBytes before the post-call check ever ran.
-					// Unlike range materialization (whose elements are inlined ints
-					// with no payload beyond their slot, letting it use the O(1)
-					// cap-based projection), filter_map keeps arbitrary block
-					// results, so we must walk the whole array to account for string
-					// and collection payloads. checkMemoryWith dedups shared
-					// backings exactly like the post-call check, so this never
-					// rejects a result the post-call check would have accepted; the
-					// quota itself bounds how large out can grow and therefore the
-					// total walk cost.
-					if err := exec.checkMemoryWith(NewArray(out)); err != nil {
+					if err := charger.add(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
 				}
