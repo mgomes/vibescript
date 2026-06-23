@@ -6,6 +6,8 @@
   validated against the synthesized hash so `configure(retries: "slow")` is
   rejected with the shape mismatch instead of `missing argument`. The same
   binding now applies when invoking a function value through its `call` alias, so
-  `configure.call(retries: 3)` matches the direct `configure(retries: 3)` form.
+  `configure.call(retries: 3)` matches the direct `configure(retries: 3)` form,
+  and when calling a function value held in a member such as a module function,
+  so `helpers.configure(retries: 3)` matches `configure(retries: 3)` too.
   Constructor and method calls keep strict parenthesized keyword binding,
   including an instance method named `call`.

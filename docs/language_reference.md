@@ -202,7 +202,9 @@ accept_options(retry: true, limit: 3)
 
 Invoking a function value through its `call` alias follows the same rule, so
 `accept_options.call(retry: true, limit: 3)` binds the options hash exactly like
-the direct `accept_options(retry: true, limit: 3)` form.
+the direct `accept_options(retry: true, limit: 3)` form. A function value reached
+through member access binds the same way, so calling a module function such as
+`rules.accept_options(retry: true, limit: 3)` matches the direct form too.
 
 The synthesized hash is type-checked against a typed options parameter, so
 `accept_options(retry: "soon")` is rejected with the shape mismatch when the

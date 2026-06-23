@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestParenthesizedFunctionOptionsHash verifies that a parenthesized plain
 // function call collapses its keyword arguments into a trailing positional
@@ -252,5 +255,103 @@ func TestParenthesizedMethodNamedCallStaysStrict(t *testing.T) {
 
 	if got := callFunc(t, script, "parenless_method_call", nil); !got.Equal(NewInt(3)) {
 		t.Fatalf("parenless_method_call() = %v, want %v", got, NewInt(3))
+	}
+}
+
+// TestMemberHeldFunctionOptionsHashParity verifies that a plain function value
+// reached through member access (such as a module function exported on a
+// namespace object) collapses parenthesized keyword arguments into a positional
+// options hash, matching both the direct call form and the parenless member
+// form. The member access surfaces a bare function value, not a genuine method,
+// so it must behave like any other plain function call. This guards issue #589's
+// member-held function path.
+func TestMemberHeldFunctionOptionsHashParity(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+    def direct
+      helpers = require("options_helper")
+      helpers.configure(retries: 3)
+    end
+
+    def parenless
+      helpers = require("options_helper")
+      helpers.configure retries: 3
+    end
+
+    def typed_member
+      helpers = require("options_helper")
+      helpers.typed_configure(retries: 7)
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{name: "parenthesized member call", fn: "direct", want: NewInt(3)},
+		{name: "parenless member call", fn: "parenless", want: NewInt(3)},
+		{name: "typed member call", fn: "typed_member", want: NewInt(7)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := callScript(t, context.Background(), script, tc.fn, nil, CallOptions{}); !got.Equal(tc.want) {
+				t.Fatalf("%s() = %v, want %v", tc.fn, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMemberHeldFunctionOptionsHashTypeMismatch verifies that type validation
+// runs against the synthesized options hash when collapsing keyword arguments
+// for a member-held function value, rejecting a shape mismatch with the type
+// error rather than a missing-argument error.
+func TestMemberHeldFunctionOptionsHashTypeMismatch(t *testing.T) {
+	t.Parallel()
+
+	engine := moduleTestEngine(t)
+	script := compileScriptWithEngine(t, engine, `
+    def bad_shape
+      helpers = require("options_helper")
+      helpers.typed_configure(retries: "slow")
+    end
+    `)
+
+	requireCallErrorContains(t, script, "bad_shape", nil, CallOptions{}, "expected { retries: int }")
+}
+
+// TestParenthesizedGenuineMethodStaysStrictWhenNamedLikeMember guards the other
+// side of the member-held function distinction: a genuine instance method must
+// keep strict keyword binding for a parenthesized call even though the member
+// path surfaces methods as bare function values, while the parenless form still
+// collapses into an options hash like any method call.
+func TestParenthesizedGenuineMethodStaysStrictWhenNamedLikeMember(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class Server
+      def configure(opts)
+        opts[:retries]
+      end
+    end
+
+    def parenthesized_method
+      Server.new.configure(retries: 3)
+    end
+
+    def parenless_method
+      Server.new.configure retries: 3
+    end
+    `)
+
+	requireCallErrorContains(t, script, "parenthesized_method", nil, CallOptions{}, "missing argument opts")
+
+	if got := callFunc(t, script, "parenless_method", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("parenless_method() = %v, want %v", got, NewInt(3))
 	}
 }
