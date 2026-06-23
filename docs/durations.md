@@ -90,6 +90,20 @@ ratio = 10.seconds / 4.seconds   # 2.5
 mod = 10.seconds % 4.seconds     # 2 seconds
 ```
 
+## Comparison
+
+`eql?` is a predicate that compares two durations for exact equality. It returns
+`true` only when both operands are equal `Duration` values, `false` for an
+unequal `Duration` or a non-`Duration` operand, and raises only when given the
+wrong number of arguments.
+
+```vibe
+1.hour.eql?(60.minutes)            # true
+1.hour.eql?(2.hours)               # false
+1.hour.eql?(1)                     # false (wrong type)
+1.hour.eql?(Time.utc(2024, 1, 1))  # false (wrong type)
+```
+
 ## Example: Scheduling
 
 ```vibe
