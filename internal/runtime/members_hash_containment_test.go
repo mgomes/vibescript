@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -558,5 +559,336 @@ end`
 	_, err := script.Call(ctx, "run", []Value{receiver}, CallOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("select under canceled context = %v, want context.Canceled", err)
+	}
+}
+
+// hashStoreProjectionPerEntry mirrors the per-entry footprint the store
+// projection charges, for sizing quotas in the store tests below.
+func hashStoreProjectionBytes(t *testing.T, receiver Value, args []Value, entries int) int {
+	t.Helper()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	live := probe.estimateMemoryUsageForCallRoots(receiver, args, nil, NewNil())
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	return live + estimatedValueBytes + estimatedMapBaseBytes + entries*perEntry
+}
+
+// TestHashStoreExistingKeyFitsReceiverQuota pins the P2 finding on PR #776: when
+// store replaces an existing key, the result keeps len(base) entries, so a quota
+// sized to a copy of the receiver must admit the update. The pre-fix projection
+// always charged len(base)+1 and would reject this in-place-style replacement
+// even though the output stays within the limit.
+func TestHashStoreExistingKeyFitsReceiverQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 5_000
+	receiver := largeHashReceiver(count)
+	args := []Value{NewSymbol("k0"), NewInt(999)}
+
+	// Size the quota to exactly a copy of the receiver (len(base) entries). Storing
+	// an existing key must fit; the discarded len(base)+1 projection would not.
+	quota := hashStoreProjectionBytes(t, receiver, args, count)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "store", args, NewNil())
+	if err != nil {
+		t.Fatalf("store(existing key) under receiver-sized quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("store produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	}
+	if got.Hash()["k0"].String() != NewInt(999).String() {
+		t.Fatalf("store did not replace k0: got %v", got.Hash()["k0"])
+	}
+
+	// Sanity: a new key grows the map to len(base)+1, which this quota cannot hold,
+	// confirming the quota is tight enough to exercise the existing-key case.
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err = callHashMember(t, exec, receiver, "store", []Value{NewSymbol("brand_new"), NewInt(1)}, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashExceptFailsFastOnTinyReceiver pins the P1 finding on PR #776: a tiny
+// receiver paired with a huge candidate-key list must be rejected on the output
+// bound (len(entries)) before allocating or scanning a set proportional to the
+// argument count. Here the receiver's output fits, but the call roots (the huge
+// candidate list) blow the quota, so the projected check rejects up front.
+func TestHashExceptFailsFastOnTinyReceiver(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeHashReceiver(2)
+	const argCount = 200_000
+	args := hashSymbolKeys(argCount)
+
+	// A quota that fits the receiver and its output but not the candidate list held
+	// alive as call roots: the projected check counts the roots and must reject.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	receiverLive := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, NewNil())
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	quota := receiverLive + estimatedValueBytes + estimatedMapBaseBytes + len(receiver.Hash())*perEntry + 4*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "except", args, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashExceptHonorsStepQuotaOnCandidateScan pins the other half of the P1
+// except finding: building the exclusion set charges a step per candidate, so a
+// huge candidate list against a tiny receiver stops on the step limit even when
+// memory is ample. Before the fix the entire argument scan ran before any step or
+// cancellation poll.
+func TestHashExceptHonorsStepQuotaOnCandidateScan(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeHashReceiver(2)
+	args := hashSymbolKeys(50_000)
+
+	const stepQuota = 100
+	exec := &Execution{ctx: context.Background(), quota: stepQuota, memoryQuota: 64 << 20}
+	_, err := callHashMember(t, exec, receiver, "except", args, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps > stepQuota+1 {
+		t.Fatalf("except scanned %d steps, want it to stop near the quota %d", exec.steps, stepQuota)
+	}
+}
+
+// TestHashExceptHonorsCancellationOnCandidateScan verifies the candidate scan
+// observes a canceled context. step polls cancellation on its first call, so the
+// scan aborts before populating the exclusion set even with a huge argument list.
+func TestHashExceptHonorsCancellationOnCandidateScan(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeHashReceiver(2)
+	args := hashSymbolKeys(50_000)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
+	_, err := callHashMember(t, exec, receiver, "except", args, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+}
+
+// TestHashBuildAccumulatorChargesIncrementally exercises the accumulator that
+// charges block-returned values during a hash build. Feeding values whose
+// cumulative payload crosses the quota must trip on the insertion that crosses
+// it, not after the whole map is assembled, proving the P1 transform_values
+// finding is bounded incrementally rather than only by the post-call check.
+func TestHashBuildAccumulatorChargesIncrementally(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	exec.root = newEnv(nil)
+	// Headroom for several large values but not many: each payload is 4 KiB and the
+	// quota above the live baseline admits roughly three before tripping.
+	const payloadBytes = 4 * 1024
+	base := exec.estimateMemoryUsageBase(newMemoryEstimator())
+	exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + 3*(payloadBytes+128)
+
+	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+
+	var tripped int
+	for i := range 100 {
+		// Distinct keys and distinct value backings so nothing dedups to zero: each
+		// add charges a fresh payload, mirroring a block that returns new heap
+		// values per entry.
+		key := "k" + strconv.Itoa(i)
+		fresh := NewString(strings.Repeat("x", payloadBytes))
+		if err := acc.add(key, fresh); err != nil {
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			tripped = i
+			break
+		}
+	}
+	if tripped == 0 {
+		t.Fatalf("accumulator never tripped the quota, want it to reject mid-build")
+	}
+	if tripped > 5 {
+		t.Fatalf("accumulator tripped after %d inserts, want it to fail fast within a few", tripped)
+	}
+}
+
+// TestHashTransformValuesIncrementalBlockCharging drives the P1 transform_values
+// finding end to end: a block that returns a fresh large string per entry
+// accumulates payloads only reachable through the Go-local output map, so without
+// incremental charging they would slip past the structural projection until the
+// post-call check. The memory quota is sized so the accumulated results exceed it
+// while each individual result fits, and the step quota is ample, so the failure
+// must come from the per-entry memory accounting.
+func TestHashTransformValuesIncrementalBlockCharging(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(values)
+  values.transform_values { |v| "".ljust(4096, "x") }
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 512 * 1024}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{largeHashReceiver(2_000)}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// TestHashMergeConflictBlockIncrementalCharging verifies merge's conflict block
+// path is bounded incrementally too: when every key collides, the block returns a
+// fresh large value per key, and those results live only in the Go-local output
+// map. The union is the receiver's size (so the structural projection passes), but
+// the accumulated block results exceed the quota while each fits; an ample step
+// quota means the failure comes from the per-entry memory accounting.
+func TestHashMergeConflictBlockIncrementalCharging(t *testing.T) {
+	t.Parallel()
+
+	const count = 2_000
+	receiver := largeHashReceiver(count)
+	other := largeHashReceiver(count)
+
+	source := `def run(a, b)
+  a.merge(b) { |k, old, new| "".ljust(2048, "z") }
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 1024 * 1024}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{receiver, other}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// TestHashBuildAccumulatorRecursiveChargeMatchesEstimator pins the recursive
+// decomposition used by deep_transform_keys to the estimator's own measurement.
+// Charging a nested structure through the per-node/per-entry accumulator methods
+// (as the recursion does, in pre-order with the result slot last) must total
+// exactly what newMemoryEstimator().value reports for the same structure, so the
+// incremental accounting neither under- nor over-counts the rebuilt footprint.
+func TestHashBuildAccumulatorRecursiveChargeMatchesEstimator(t *testing.T) {
+	t.Parallel()
+
+	// A structure exercising every node shape: a top map with a leaf, a nested
+	// map, and a nested array containing a leaf and a nested map. Leaves are ints
+	// so they carry no payload -- in a real deep transform the leaves are shared
+	// with the input and contribute nothing new, which int leaves model exactly,
+	// letting the per-node decomposition match the estimator's full measurement.
+	innerMap := NewHash(map[string]Value{"inner": NewInt(2)})
+	arrayInnerMap := NewHash(map[string]Value{"deep": NewInt(3)})
+	arr := NewArray([]Value{NewInt(4), arrayInnerMap})
+	top := NewHash(map[string]Value{
+		"leaf":  NewInt(1),
+		"child": innerMap,
+		"list":  arr,
+	})
+
+	want := newMemoryEstimator().value(top)
+
+	// Drive the accumulator with an empty baseline so the charged total is the
+	// structure's own footprint, comparable to the estimator's value().
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 40}
+	acc := newRootSeededHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+
+	var charge func(Value)
+	charge = func(v Value) {
+		// Mirror deepTransformKeysWithState: every value charges its header, each
+		// map node its base plus a shell per entry, each array node its backing.
+		if err := acc.addValueBase(); err != nil {
+			t.Fatalf("addValueBase: %v", err)
+		}
+		switch v.Kind() {
+		case KindHash, KindObject:
+			if err := acc.addMapBase(); err != nil {
+				t.Fatalf("addMapBase: %v", err)
+			}
+			m := v.Hash()
+			keys := make([]string, 0, len(m))
+			for k := range m {
+				keys = append(keys, k)
+			}
+			for _, k := range keys {
+				if err := acc.addMapEntryShell(k); err != nil {
+					t.Fatalf("addMapEntryShell: %v", err)
+				}
+				charge(m[k])
+			}
+		case KindArray:
+			if err := acc.addArrayBase(len(v.Array())); err != nil {
+				t.Fatalf("addArrayBase: %v", err)
+			}
+			for _, item := range v.Array() {
+				charge(item)
+			}
+		default:
+			// Leaf values are shared with the input; only the header (charged
+			// above) is new, so their payload adds nothing here.
+		}
+	}
+	charge(top)
+
+	// built holds exactly the charged structure, separate from the live baseline.
+	if acc.built != want {
+		t.Fatalf("recursive accumulator charged %d bytes, want estimator total %d", acc.built, want)
+	}
+}
+
+// TestHashTransformKeysIncrementalBlockCharging drives the same P1 finding for
+// transform_keys: the block synthesizes a fresh large key per entry, and those
+// keys live only in the Go-local output map, so the structural projection cannot
+// bound them. Distinct keys keep every entry, so the accumulated key payloads
+// exceed the quota while each individual key fits; an ample step quota means the
+// failure must come from the per-entry memory accounting.
+func TestHashTransformKeysIncrementalBlockCharging(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(values)
+  values.transform_keys { |k| ("p" + k).ljust(2048, "z") }
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 512 * 1024}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{largeHashReceiver(2_000)}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// TestHashDeepTransformKeysTripsMemoryQuota verifies the recursive transform
+// charges the rebuilt structure incrementally: rebuilding a wide hash duplicates
+// the top map and synthesizes every key, so a quota that fits the live input but
+// not the input held alongside its rebuild is rejected during construction. The
+// receiver is passed in so building the input is not what trips the quota. Before
+// adding accounting, deep_transform_keys built the entire result with no memory
+// or step bound before the post-call check.
+func TestHashDeepTransformKeysTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 10_000
+	receiver := largeHashReceiver(count)
+
+	// The rebuild duplicates the top map's structure (a fresh entry slot per key).
+	// Size the quota to comfortably hold the live receiver but not the receiver plus
+	// a full duplicate of its entries, so the rebuild trips part way through.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	receiverLive := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, NewNil())
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	rebuildStructure := estimatedValueBytes + estimatedMapBaseBytes + count*perEntry
+	// Headroom above the live input for only a fraction of the rebuild.
+	quota := receiverLive + rebuildStructure/2
+
+	source := `def run(values)
+  values.deep_transform_keys { |k| k }
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// TestHashDeepTransformKeysHonorsStepQuota verifies the recursion charges a step
+// per visited key and array element, so a large nested structure stops on the
+// step limit even with ample memory.
+func TestHashDeepTransformKeysHonorsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(values)
+  values.deep_transform_keys { |k| k }
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 40, MemoryQuotaBytes: 64 << 20}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{largeHashReceiver(2_000)}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// TestHashDeepTransformKeysHonorsCancellation verifies the recursion observes a
+// canceled context: step polls cancellation on its first call, so even a tiny
+// nested structure aborts before rebuilding it.
+func TestHashDeepTransformKeysHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(values)
+  values.deep_transform_keys { |k| k }
+end`
+	script := compileScript(t, source)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	receiver := NewHash(map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+	_, err := script.Call(ctx, "run", []Value{receiver}, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("deep_transform_keys under canceled context = %v, want context.Canceled", err)
 	}
 }

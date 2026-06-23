@@ -223,6 +223,156 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	return nil
 }
 
+// hashBuildAccumulator charges the memory of an output map assembled entry by
+// entry against the quota without re-walking the whole map on each insertion.
+// Hash transforms whose block returns fresh heap values (transform_values and
+// transform_keys, where each block call can yield an arbitrarily large string
+// or nested collection) use it so accumulated payloads count toward the quota
+// during construction, not only after the builtin returns.
+//
+// checkProjectedHashBytes alone is enough for blockless transforms whose values
+// are references shared with the receiver, because there the output map's
+// payloads are already resident and the projection only needs the new map's
+// structural slots. It cannot bound a block that synthesizes new values: those
+// live solely in the Go-local result map, unreachable from any execution root
+// until the builtin returns, so many individually-under-quota results could
+// accumulate well past the quota before the post-call check observes them. This
+// accumulator closes that gap: it snapshots everything live when the build
+// starts (including the call roots, so an ephemeral receiver is counted) and
+// then per inserted entry walks only that entry, charging the map bucket, the
+// key, and the value's payload the same way the estimator would for the
+// finished map.
+type hashBuildAccumulator struct {
+	exec *Execution
+	est  *memoryEstimator
+	// base is the live footprint snapshotted when the build started; built is the
+	// running byte total charged for the output as it is assembled.
+	base  int
+	built int
+}
+
+// newHashBuildAccumulator snapshots the execution's current live memory plus the
+// transform's call roots as the baseline for an incremental hash build. It uses
+// its own estimator rather than the execution's shared one so nested evaluation
+// (a transform block, say) cannot reset the seen-set mid-build; that estimator
+// persists across add calls so a value aliased by an earlier entry, a call root,
+// or the baseline is counted once, matching the real shared backing. The empty
+// map's structural overhead is folded into the baseline so add only charges the
+// per-entry growth.
+func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *hashBuildAccumulator {
+	acc := newRootSeededHashBuildAccumulator(exec, receiver, args, kwargs, block)
+	if acc.exec.memoryQuota > 0 {
+		// The output is a single map, so fold its empty-map overhead into the
+		// baseline; add then charges only the per-entry growth.
+		acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes)
+	}
+	return acc
+}
+
+// newRootSeededHashBuildAccumulator seeds an accumulator with the live execution
+// memory plus the call roots, but without any output-map overhead. Recursive
+// builders that materialize many nested containers use it and charge each
+// container's base explicitly through addMapBase/addArrayBase, so the top-level
+// node is not special-cased and no container's fixed cost is double counted.
+func newRootSeededHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *hashBuildAccumulator {
+	acc := &hashBuildAccumulator{exec: exec}
+	if exec.memoryQuota <= 0 {
+		return acc
+	}
+	acc.est = newMemoryEstimator()
+	base := exec.estimateMemoryUsageBase(acc.est)
+	if receiver.Kind() != KindNil {
+		base = saturatingAdd(base, acc.est.value(receiver))
+	}
+	for _, arg := range args {
+		base = saturatingAdd(base, acc.est.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		base = saturatingAdd(base, acc.est.value(kwarg))
+	}
+	if !block.IsNil() {
+		base = saturatingAdd(base, acc.est.value(block))
+	}
+	acc.base = base
+	return acc
+}
+
+// add charges a newly inserted entry and rejects the build if the projected map
+// memory exceeds the quota. The bucket overhead, key header, and value are
+// charged exactly as the estimator counts them for a finished map, with the
+// estimator deduplicating keys and values already reachable from the baseline or
+// an earlier entry so shared backings are counted once.
+func (acc *hashBuildAccumulator) add(key string, val Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + acc.est.stringPayloadSize(key)
+	entry = saturatingAdd(entry, acc.est.value(val))
+	return acc.charge(entry)
+}
+
+// The per-node charges below decompose the memory estimator's recursive
+// accounting so a transform that rebuilds a structure can charge each node
+// against the quota as it is created, without re-walking the parts already built.
+// They mirror estimateMemoryUsage exactly: addValueBase is the per-value header
+// the estimator adds for every value; addMapBase and addMapEntryShell together
+// reproduce est.hash; addArrayBase reproduces the est.slice backing. Recursive
+// builders charge addValueBase once per produced value (leaf or container),
+// addMapBase plus an addMapEntryShell per entry for each map node, and addArrayBase
+// per array node, so every byte the estimator would count for the finished value
+// is charged incrementally and exactly once.
+
+// addValueBase charges the value header the estimator counts for every value.
+func (acc *hashBuildAccumulator) addValueBase() error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	return acc.charge(estimatedValueBytes)
+}
+
+// addMapBase charges a freshly built map node's bucket table overhead.
+func (acc *hashBuildAccumulator) addMapBase() error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	return acc.charge(estimatedMapBaseBytes)
+}
+
+// addMapEntryShell charges the bucket overhead and the synthesized key (header
+// plus bytes) one map entry adds. The stored value's header and payload are
+// charged separately at the value's own node, so the entry shell never re-walks
+// it. The key's bytes dedup against keys already seen, matching the shared string
+// backing the real map would hold.
+func (acc *hashBuildAccumulator) addMapEntryShell(key string) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	shell := estimatedMapEntryBytes + estimatedStringHeaderBytes
+	return acc.charge(saturatingAdd(shell, acc.est.stringPayloadSize(key)))
+}
+
+// addArrayBase charges a freshly built array node's base overhead and slot array.
+// Each element's value header and payload are charged separately at the element's
+// own node, matching how the estimator counts both the backing slot and the
+// element value.
+func (acc *hashBuildAccumulator) addArrayBase(slots int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	backing := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(slots, estimatedValueBytes))
+	return acc.charge(backing)
+}
+
+func (acc *hashBuildAccumulator) charge(delta int) error {
+	acc.built = saturatingAdd(acc.built, delta)
+	used := saturatingAdd(acc.base, acc.built)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // projectedHashBaseBytes estimates the live footprint a hash transform holds
 // before it reserves its output map: the call-root usage plus the empty map's
 // structural overhead. checkProjectedHashBytes and maxProjectedHashEntries both

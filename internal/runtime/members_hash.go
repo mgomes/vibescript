@@ -65,19 +65,43 @@ func sortedHashKeysInto(entries map[string]Value, buf []string) []string {
 	return keys
 }
 
-func deepTransformKeys(exec *Execution, value, block Value) (Value, error) {
-	return deepTransformKeysWithState(exec, value, block, &deepTransformState{
+func deepTransformKeys(exec *Execution, receiver, block Value) (Value, error) {
+	state := &deepTransformState{
 		seenHashes: make(map[uintptr]struct{}),
 		seenArrays: make(map[uintptr]struct{}),
-	})
+		// Seed the accumulator with the receiver as a live call root so the
+		// rebuilt structure is charged against everything already resident, not
+		// against an empty baseline. Leaf values are shared with the input and so
+		// add no new bytes; only the rebuilt containers and the block's
+		// synthesized keys are charged as the recursion materializes them.
+		acc: newRootSeededHashBuildAccumulator(exec, receiver, nil, nil, NewNil()),
+	}
+	return deepTransformKeysWithState(exec, receiver, block, state)
 }
 
 type deepTransformState struct {
 	seenHashes map[uintptr]struct{}
 	seenArrays map[uintptr]struct{}
+	acc        *hashBuildAccumulator
 }
 
+// deepTransformKeysWithState rebuilds value with every hash key passed through
+// block, recursing into nested hashes and arrays. Each visited key and array
+// element charges a step so a deep or wide structure participates in the step
+// quota and honors cancellation. Every produced value charges its header through
+// the build accumulator, each map node charges its base plus a shell per entry,
+// and each array node charges its backing, so every byte the estimator would
+// count for the rebuilt structure is charged incrementally as the result
+// materializes rather than only at the post-call check. Leaf values are shared
+// with the input, so only their new slot (the header) is charged, not their
+// payload.
 func deepTransformKeysWithState(exec *Execution, value, block Value, state *deepTransformState) (Value, error) {
+	// Every value the recursion produces occupies a fresh slot in the rebuilt
+	// structure (a map value, an array element, or the top-level result), so
+	// charge its header up front regardless of kind.
+	if err := state.acc.addValueBase(); err != nil {
+		return NewNil(), err
+	}
 	switch value.Kind() {
 	case KindHash, KindObject:
 		entries := value.Hash()
@@ -89,10 +113,16 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 			state.seenHashes[id] = struct{}{}
 			defer delete(state.seenHashes, id)
 		}
+		if err := state.acc.addMapBase(); err != nil {
+			return NewNil(), err
+		}
 		out := make(map[string]Value, len(entries))
 		var blockArg [1]Value
 		var keyBuf [smallHashKeyBufferSize]string
 		for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
 			blockArg[0] = NewSymbol(key)
 			nextKeyValue, err := exec.CallBlock(block, blockArg[:])
 			if err != nil {
@@ -101,6 +131,9 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 			nextKey, err := valueToHashKey(nextKeyValue)
 			if err != nil {
 				return NewNil(), fmt.Errorf("hash.deep_transform_keys block must return symbol or string")
+			}
+			if err := state.acc.addMapEntryShell(nextKey); err != nil {
+				return NewNil(), err
 			}
 			nextValue, err := deepTransformKeysWithState(exec, entries[key], block, state)
 			if err != nil {
@@ -119,8 +152,14 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 			state.seenArrays[id] = struct{}{}
 			defer delete(state.seenArrays, id)
 		}
+		if err := state.acc.addArrayBase(len(items)); err != nil {
+			return NewNil(), err
+		}
 		out := make([]Value, len(items))
 		for i, item := range items {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
 			nextValue, err := deepTransformKeysWithState(exec, item, block, state)
 			if err != nil {
 				return NewNil(), err
@@ -517,6 +556,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			useBlock := valueBlock(block) != nil
 			var runner *blockCallRunner
+			var acc *hashBuildAccumulator
 			if useBlock {
 				// With a block, Ruby resolves conflicts by yielding
 				// (key, old_value, new_value) and storing the block result; keys
@@ -528,6 +568,21 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				runner = r
+				// The conflict block can return a fresh heap value per collision,
+				// and those results live only in the Go-local out map until merge
+				// returns, so the structural projection above cannot bound them.
+				// Charge every stored entry incrementally through a build
+				// accumulator seeded with the live call roots; the copied base
+				// values dedup against the receiver root and cost only their new
+				// structural slot, while block-resolved values add their fresh
+				// payload as the loop proceeds.
+				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+				var baseKeyBuf [smallHashKeyBufferSize]string
+				for _, key := range sortedHashKeysInto(base, baseKeyBuf[:]) {
+					if err := acc.add(key, base[key]); err != nil {
+						return NewNil(), err
+					}
+				}
 			}
 			// Multiple hashes are applied left to right, so later arguments win
 			// on conflicts, matching Ruby's Hash#merge(*others). The conflict
@@ -547,6 +602,11 @@ func hashMemberTransforms(property string) (Value, error) {
 					oldValue, conflict := out[key]
 					if !conflict || !useBlock {
 						out[key] = addition[key]
+						if useBlock {
+							if err := acc.add(key, addition[key]); err != nil {
+								return NewNil(), err
+							}
+						}
 						continue
 					}
 					blockArgs[0] = NewSymbol(key)
@@ -557,6 +617,9 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					out[key] = resolved
+					if err := acc.add(key, resolved); err != nil {
+						return NewNil(), err
+					}
 				}
 			}
 			return NewHash(out), nil
@@ -635,13 +698,20 @@ func hashMemberTransforms(property string) (Value, error) {
 			// returns a new hash with the key assigned rather than mutating the
 			// receiver, matching merge and the array collection helpers.
 			base := receiver.Hash()
-			// Preflight the copied map (plus the stored entry) before reserving it
-			// so storing into a large hash cannot allocate past the quota ahead of
-			// the statement-level check.
-			if err := exec.checkProjectedHashBytes(saturatingAdd(len(base), 1), receiver, args, kwargs, block); err != nil {
+			// Preflight the copied map before reserving it so storing into a large
+			// hash cannot allocate past the quota ahead of the statement-level
+			// check. Storing an existing key replaces its value, so the result keeps
+			// len(base) entries; only a new key grows the map to len(base)+1.
+			// Sizing the projection by the existing-key case avoids rejecting an
+			// in-place-style update that fits a quota tuned to the receiver's size.
+			projected := len(base)
+			if _, exists := base[key]; !exists {
+				projected = saturatingAdd(projected, 1)
+			}
+			if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			out := make(map[string]Value, len(base)+1)
+			out := make(map[string]Value, projected)
 			maps.Copy(out, base)
 			out[key] = args[1]
 			return NewHash(out), nil
@@ -691,8 +761,27 @@ func hashMemberTransforms(property string) (Value, error) {
 		// no parentheses distinction. Explicit `except(...)` calls still pass
 		// their excluded keys through the normal call path.
 		return NewAutoBuiltin("hash.except", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			excluded := make(map[string]struct{}, len(args))
+			entries := receiver.Hash()
+			// Preflight the largest map except could materialize before reserving
+			// anything. Excluded keys absent from the receiver leave the full input
+			// in place, so the worst case is a copy of every entry. Checking this
+			// first means a tiny receiver paired with a huge candidate-key list
+			// fails fast on the output bound rather than after allocating and
+			// scanning a set proportional to the argument count.
+			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			// Build the exclusion set from candidate keys that actually appear in
+			// the receiver. Only present keys affect the result, so the set is
+			// bounded by the receiver's size, never the argument count: a huge
+			// candidate list against a tiny receiver cannot grow a set past the
+			// output the projection already admitted. A step per candidate keeps
+			// the scan CPU-bounded and observing cancellation before the copy loop.
+			var excluded map[string]struct{}
 			for _, arg := range args {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				// Vibescript hash keys are only symbols or strings, so an
 				// unsupported argument can never match an entry. Ruby's
 				// Hash#except ignores keys that are not present, so we treat
@@ -701,14 +790,13 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err != nil {
 					continue
 				}
+				if _, present := entries[key]; !present {
+					continue
+				}
+				if excluded == nil {
+					excluded = make(map[string]struct{})
+				}
 				excluded[key] = struct{}{}
-			}
-			entries := receiver.Hash()
-			// Preflight the largest map except could materialize before reserving
-			// it. Excluded keys absent from the receiver leave the full input in
-			// place, so the worst case is a copy of every entry.
-			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
-				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
 			for key, value := range entries {
@@ -798,12 +886,19 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// Preflight the output map before reserving it; transform_keys produces
-			// at most one entry per input key. Per-entry step accounting and the
-			// periodic memory check come from runner.call.
+			// Preflight the output map's structural slots before reserving it;
+			// transform_keys produces at most one entry per input key. The block can
+			// return a fresh key string per entry, and those synthesized keys live
+			// only in the Go-local out map until the builtin returns, so the
+			// structural projection cannot bound them. Charge each entry
+			// incrementally through a build accumulator seeded with the live call
+			// roots so accumulated key payloads count toward the quota during the
+			// loop, not only at the post-call check. Per-entry step accounting comes
+			// from runner.call.
 			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -818,6 +913,9 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.transform_keys block must return symbol or string")
 				}
 				out[resolved] = entries[key]
+				if err := acc.add(resolved, entries[key]); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewHash(out), nil
 		}), nil
@@ -874,12 +972,18 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// Preflight the output map before reserving it; transform_values keeps
-			// every key. Per-entry step accounting and the periodic memory check
-			// come from runner.call.
+			// Preflight the output map's structural slots before reserving it;
+			// transform_values keeps every key. The block can return a fresh heap
+			// value per entry, and those results live only in the Go-local out map
+			// until the builtin returns, so the structural projection cannot bound
+			// them. Charge each result incrementally through a build accumulator
+			// seeded with the live call roots so accumulated payloads count toward
+			// the quota during the loop, not only at the post-call check. Per-entry
+			// step accounting comes from runner.call.
 			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -890,6 +994,9 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[key] = nextValue
+				if err := acc.add(key, nextValue); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewHash(out), nil
 		}), nil
