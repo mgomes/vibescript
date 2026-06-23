@@ -236,6 +236,10 @@ func TestHashMergeMultipleHashes(t *testing.T) {
       { a: 1, b: 2 }.merge()
     end
 
+    def parenless_copies()
+      ({ a: 1, b: 2 }).merge
+    end
+
     def receiver_unchanged()
       original = { a: 1 }
       merged = original.merge({ b: 2 }, { c: 3 })
@@ -266,6 +270,11 @@ func TestHashMergeMultipleHashes(t *testing.T) {
 		{
 			name: "no arguments returns a copy of the receiver",
 			fn:   "no_arguments_copies",
+			want: map[string]Value{"a": NewInt(1), "b": NewInt(2)},
+		},
+		{
+			name: "parenless invocation returns a copy of the receiver",
+			fn:   "parenless_copies",
 			want: map[string]Value{"a": NewInt(1), "b": NewInt(2)},
 		},
 	}
@@ -313,6 +322,14 @@ func TestHashUpdateAndMergeBangAliases(t *testing.T) {
       merged = original.merge!({ a: 5 })
       { original: original, merged: merged }
     end
+
+    def update_parenless_copies()
+      ({ a: 1, b: 2 }).update
+    end
+
+    def merge_bang_parenless_copies()
+      ({ a: 1, b: 2 }).merge!
+    end
     `)
 
 	t.Run("update returns a new hash and leaves the receiver unchanged", func(t *testing.T) {
@@ -339,6 +356,18 @@ func TestHashUpdateAndMergeBangAliases(t *testing.T) {
 		result := callFunc(t, script, "merge_bang_returns_new_hash", nil).Hash()
 		compareHash(t, result["original"].Hash(), map[string]Value{"a": NewInt(1)})
 		compareHash(t, result["merged"].Hash(), map[string]Value{"a": NewInt(5)})
+	})
+
+	t.Run("parenless update returns a copy of the receiver", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "update_parenless_copies", nil)
+		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+	})
+
+	t.Run("parenless merge! returns a copy of the receiver", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "merge_bang_parenless_copies", nil)
+		compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
 	})
 }
 
@@ -1269,4 +1298,50 @@ func TestReservedWordLabelsInHashesAndCallKwargs(t *testing.T) {
 		"next":  NewInt(7),
 		"break": NewInt(8),
 	})
+}
+
+// TestKeywordHashLabelsRoundTrip verifies that reserved-word tokens that the
+// parser previously rejected as hash labels (begin, rescue, ensure, raise,
+// export) now build hashes whose keys are read back as symbols, mirroring
+// Ruby's uniform treatment of keyword-shaped labels.
+func TestKeywordHashLabelsRoundTrip(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def payload()
+      { begin: 1, rescue: 2, ensure: 3, raise: 4, export: 5 }
+    end
+
+    def read(key)
+      payload()[key]
+    end
+    `)
+
+	payload := callFunc(t, script, "payload", nil)
+	if payload.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", payload.Kind())
+	}
+	compareHash(t, payload.Hash(), map[string]Value{
+		"begin":  NewInt(1),
+		"rescue": NewInt(2),
+		"ensure": NewInt(3),
+		"raise":  NewInt(4),
+		"export": NewInt(5),
+	})
+
+	wantByKey := map[string]Value{
+		"begin":  NewInt(1),
+		"rescue": NewInt(2),
+		"ensure": NewInt(3),
+		"raise":  NewInt(4),
+		"export": NewInt(5),
+	}
+	for key, want := range wantByKey {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, "read", []Value{NewSymbol(key)})
+			if !got.Equal(want) {
+				t.Fatalf("read(:%s) = %v, want %v", key, got, want)
+			}
+		})
+	}
 }

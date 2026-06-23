@@ -41,7 +41,11 @@ trigger it. Elsewhere it offers keywords, builtins, the script's
 user-defined functions, and the parameters and locals of the function
 enclosing the cursor. Symbols come from the most recent successfully
 compiled version of the document, so they keep working while the buffer
-is mid-edit and temporarily unparsable.
+is mid-edit and temporarily unparsable. The script-local index of
+functions, parameters, and locals is built on the first completion
+request for a given document version and reused until the next edit, so
+the diagnostics-only path that runs on every keystroke does not pay to
+build it.
 
 ## Protocol details
 

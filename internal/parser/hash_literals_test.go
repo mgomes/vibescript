@@ -132,6 +132,48 @@ func TestParserHashMissingValueSingleError(t *testing.T) {
 	}
 }
 
+// TestParserKeywordHashLabels verifies that reserved-word tokens are accepted
+// as hash labels when followed by an explicit value, matching Ruby's uniform
+// treatment of keyword-shaped labels (e.g. `{rescue: 1}`).
+func TestParserKeywordHashLabels(t *testing.T) {
+	t.Parallel()
+
+	keywords := []string{
+		"begin", "rescue", "ensure", "raise", "export",
+		"return", "class", "def", "enum", "end", "yield",
+		"if", "unless", "while", "until", "case", "when",
+		"true", "false", "nil", "self",
+	}
+
+	for _, keyword := range keywords {
+		t.Run(keyword, func(t *testing.T) {
+			t.Parallel()
+
+			source := "def run\n  {" + keyword + ": 1}\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{
+					Expr: &ast.HashLiteral{
+						Pairs: []ast.HashPair{
+							{
+								Key:   &ast.SymbolLiteral{Name: keyword},
+								Value: &ast.IntegerLiteral{Value: 1},
+							},
+						},
+					},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestParserWordBooleanHashKeys(t *testing.T) {
 	t.Parallel()
 

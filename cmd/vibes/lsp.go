@@ -109,6 +109,11 @@ type lspServer struct {
 	compiled map[string]*vibes.Script
 	// completions holds the per-document script-local completion index
 	// derived from compiled and re-anchored to the current buffer lines.
+	// It is built lazily on the first completion request for a document
+	// version and invalidated on every edit, so the diagnostics-only
+	// publish path (the editor hot path) does not pay for cloning the
+	// compiled functions and rescanning the buffer when no completion is
+	// requested.
 	completions map[string]*lspCompletionIndex
 	// programs holds the most recent parse that produced any top-level
 	// statements per document. Unlike compiled it tolerates partial
@@ -421,14 +426,16 @@ func (s *lspServer) documentLines(uri string) []string {
 
 func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
 	script, program, parseErrs, diagnostics := compileForDiagnostics(s.engine, source)
+	// The completion index is derived from the compiled script and the
+	// current buffer lines. setDocument already invalidated any cached
+	// index for this edit, so the diagnostics path only needs to update
+	// the compiled-script cache; the index is rebuilt lazily on the next
+	// completion request. This keeps the hot didChange path from cloning
+	// every function and rescanning the buffer on each keystroke.
 	if script != nil && s.compiled != nil {
 		s.compiled[uri] = script
-		s.setCompletionIndex(uri, script)
 	} else if program == nil && len(parseErrs) == 0 && s.compiled != nil {
 		delete(s.compiled, uri)
-		s.clearCompletionIndex(uri)
-	} else if cached := s.compiled[uri]; cached != nil {
-		s.setCompletionIndex(uri, cached)
 	}
 	if program != nil && s.programs != nil {
 		// A clean parse is authoritative even when empty (the symbols
@@ -450,17 +457,25 @@ func (s *lspServer) publishDiagnostics(uri, source string) lspOutboundMessage {
 	}
 }
 
-func (s *lspServer) setCompletionIndex(uri string, script *vibes.Script) {
-	if s.completions == nil {
-		return
+// completionIndex returns the script-local completion index for uri,
+// building it on demand from the most recently compiled script and the
+// current buffer lines and caching the result. It returns nil when no
+// compiled script is available (for example, a never-parsed or
+// size-limited document). The cache is invalidated by setDocument on
+// every edit, so a cached index always matches the live buffer.
+func (s *lspServer) completionIndex(uri string) *lspCompletionIndex {
+	if index, ok := s.completions[uri]; ok {
+		return index
 	}
-	s.completions[uri] = newLSPCompletionIndex(script, s.documentLines(uri))
-}
-
-func (s *lspServer) clearCompletionIndex(uri string) {
+	script := s.compiled[uri]
+	if script == nil {
+		return nil
+	}
+	index := newLSPCompletionIndex(script, s.documentLines(uri))
 	if s.completions != nil {
-		delete(s.completions, uri)
+		s.completions[uri] = index
 	}
+	return index
 }
 
 func diagnosticsForSource(engine *vibes.Engine, source string) []map[string]any {
@@ -811,7 +826,7 @@ func (s *lspServer) completionItemsAt(uri string, lines []string, line, characte
 		return memberCompletionItems()
 	}
 	items := completionItems()
-	if index := s.completions[uri]; index != nil {
+	if index := s.completionIndex(uri); index != nil {
 		items = append(items, index.itemsAt(line)...)
 	}
 	return items
@@ -1605,14 +1620,43 @@ func findWordColumn(lineText, name string, fromRune int) int {
 	return -1
 }
 
+// lspPosition is an LSP position in 0-indexed line / UTF-16 character
+// offsets. It marshals to the protocol's {"line","character"} object.
+type lspPosition struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
+// lspRange is an LSP range over two positions.
+type lspRange struct {
+	Start lspPosition `json:"start"`
+	End   lspPosition `json:"end"`
+}
+
+// lspDocumentSymbol is one entry in a textDocument/documentSymbol
+// outline. The selection range covers the declaration line, while the
+// full range extends to the last child so LSP clients can nest
+// breadcrumbs and match the cursor to the enclosing symbol. Children is
+// optional in the protocol and omitted when empty, so a leaf symbol
+// (function, method, or enum member) carries no children field. A typed
+// struct avoids the per-symbol nested map[string]any allocations that
+// dominated large-document outlines.
+type lspDocumentSymbol struct {
+	Name           string              `json:"name"`
+	Kind           int                 `json:"kind"`
+	Range          lspRange            `json:"range"`
+	SelectionRange lspRange            `json:"selectionRange"`
+	Children       []lspDocumentSymbol `json:"children,omitempty"`
+}
+
 // documentSymbols renders the document outline: top-level functions,
 // classes with their methods, and enums with their members.
-func documentSymbols(program *ast.Program, sourceLines []string) []map[string]any {
+func documentSymbols(program *ast.Program, sourceLines []string) []lspDocumentSymbol {
 	if program == nil {
-		return []map[string]any{}
+		return []lspDocumentSymbol{}
 	}
-	symbols := make([]map[string]any, 0, len(program.Statements))
-	appendSymbol := func(dst []map[string]any, name string, kind int, pos ast.Position, anchorName string, children []map[string]any) []map[string]any {
+	symbols := make([]lspDocumentSymbol, 0, len(program.Statements))
+	appendSymbol := func(dst []lspDocumentSymbol, name string, kind int, pos ast.Position, anchorName string, children []lspDocumentSymbol) []lspDocumentSymbol {
 		line := anchorDeclLine(sourceLines, pos, anchorName)
 		if line < 0 {
 			// The declaration is gone from the live buffer; a stale
@@ -1626,7 +1670,7 @@ func documentSymbols(program *ast.Program, sourceLines []string) []map[string]an
 		case *ast.FunctionStmt:
 			symbols = appendSymbol(symbols, st.Name, 12, st.Position, st.Name, nil)
 		case *ast.ClassStmt:
-			children := make([]map[string]any, 0, len(st.Methods)+len(st.ClassMethods))
+			children := make([]lspDocumentSymbol, 0, len(st.Methods)+len(st.ClassMethods))
 			for _, method := range st.Methods {
 				children = appendSymbol(children, method.Name, 6, method.Position, method.Name, nil)
 			}
@@ -1635,7 +1679,7 @@ func documentSymbols(program *ast.Program, sourceLines []string) []map[string]an
 			}
 			symbols = appendSymbol(symbols, st.Name, 5, st.Position, st.Name, children)
 		case *ast.EnumStmt:
-			children := make([]map[string]any, 0, len(st.Members))
+			children := make([]lspDocumentSymbol, 0, len(st.Members))
 			for _, member := range st.Members {
 				children = appendSymbol(children, member.Name, 22, member.Position, member.Name, nil)
 			}
@@ -1649,36 +1693,29 @@ func documentSymbols(program *ast.Program, sourceLines []string) []map[string]an
 // declaration line, while the full range extends to the last child so
 // LSP clients can nest breadcrumbs and match the cursor to the
 // enclosing symbol.
-func symbolFor(name string, kind, line int, sourceLines []string, children []map[string]any) map[string]any {
+func symbolFor(name string, kind, line int, sourceLines []string, children []lspDocumentSymbol) lspDocumentSymbol {
 	lineText := ""
 	if line < len(sourceLines) {
 		lineText = sourceLines[line]
 	}
-	selection := map[string]any{
-		"start": map[string]any{"line": line, "character": 0},
-		"end":   map[string]any{"line": line, "character": utf16Character(lineText, len([]rune(lineText)))},
+	endChar := utf16Character(lineText, len([]rune(lineText)))
+	selection := lspRange{
+		Start: lspPosition{Line: line, Character: 0},
+		End:   lspPosition{Line: line, Character: endChar},
 	}
 
 	endLine := line
-	endChar := selection["end"].(map[string]any)["character"].(int)
 	for _, child := range children {
-		childEnd := child["range"].(map[string]any)["end"].(map[string]any)
-		if childLine := childEnd["line"].(int); childLine > endLine {
-			endLine = childLine
-			endChar = childEnd["character"].(int)
+		if child.Range.End.Line > endLine {
+			endLine = child.Range.End.Line
+			endChar = child.Range.End.Character
 		}
 	}
-	symbol := map[string]any{
-		"name": name,
-		"kind": kind,
-		"range": map[string]any{
-			"start": map[string]any{"line": line, "character": 0},
-			"end":   map[string]any{"line": endLine, "character": endChar},
-		},
-		"selectionRange": selection,
+	return lspDocumentSymbol{
+		Name:           name,
+		Kind:           kind,
+		Range:          lspRange{Start: lspPosition{Line: line, Character: 0}, End: lspPosition{Line: endLine, Character: endChar}},
+		SelectionRange: selection,
+		Children:       children,
 	}
-	if children != nil {
-		symbol["children"] = children
-	}
-	return symbol
 }
