@@ -95,7 +95,7 @@ end
 
 ## Comparisons and math
 
-- Compare: `<=>`, `eql?`
+- Compare: `<=>`, `eql?`. `eql?` is a predicate: it returns `true` only when both operands are equal `Time` values, returns `false` for an unequal `Time` or a non-`Time` operand (matching Ruby's `Time#eql?`), and raises only when given the wrong number of arguments.
 - Add/sub durations: `time + duration`, `time - duration`
 - Add/sub seconds: `time + number`, `time - number`, where the number is interpreted as seconds (matching Ruby). Integers shift by whole seconds; floats carry sub-second precision down to the nanosecond, and negative values shift backward. The result is a new `Time`. Numeric addition commutes (`number + time`), but subtracting a `Time` from a number is undefined, just as in Ruby.
 - Difference of times: `time - time` → a `Float` number of seconds (matching Ruby's `Time#-`), preserving sub-second precision
