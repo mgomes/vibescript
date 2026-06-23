@@ -185,6 +185,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   non-positive `n` yields nothing. Omitting `n` or passing `nil` cycles forever,
   bounded by the step quota and context cancellation.
 - `map { |item| } -> array` – new array of block results.
+- `filter_map { |item| } -> array` – block results that are truthy; fuses `map`
+  with a truthiness filter, dropping falsy returns.
 - `select { |item| } -> array` – elements for which the block is truthy.
 - `reject { |item| } -> array` – elements for which the block is falsy (the
   inverse of `select`).

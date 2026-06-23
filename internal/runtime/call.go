@@ -625,12 +625,43 @@ func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Valu
 	return kwargs, nil
 }
 
-func resolveBareKeywordArgs(call *CallExpr, callee Value, args []Value, kwargs map[string]Value) ([]Value, map[string]Value) {
-	if !call.BareKeywordArgs || len(kwargs) == 0 {
+// calleeResolution records how a call's callee was resolved, which decides
+// whether a parenthesized call may collapse its keyword arguments into a
+// positional options hash. The distinction matters only for member calls: a
+// function value surfaced as a genuine method must stay strict, while a plain
+// function value merely stored in a member collapses like any direct call.
+type calleeResolution int
+
+const (
+	// calleeDirect marks a callee resolved from a non-member expression, such
+	// as a local function or a function-valued variable.
+	calleeDirect calleeResolution = iota
+	// calleeMemberMethod marks a callee surfaced through the direct
+	// member-method path: a genuine instance, class, or constructor method.
+	calleeMemberMethod
+	// calleeMemberValue marks a callee fetched as a stored member value, such
+	// as a module function exposed on a namespace object.
+	calleeMemberValue
+)
+
+// resolveKeywordOptionsHash collapses a call's keyword arguments into a trailing
+// positional options hash when the callee has no matching keyword parameter and
+// exposes a positional parameter to receive it. This mirrors Ruby's options-hash
+// binding. Parenless calls collapse for any options-hash target. Parenthesized
+// calls collapse only for plain function calls (a function value, its `call`
+// alias, or a function value held in a member); parenthesized method and
+// constructor calls stay strict. resolution reports how the callee was resolved,
+// which the member paths use to tell genuine methods apart from stored function
+// values that happen to surface as bare function values too.
+func resolveKeywordOptionsHash(call *CallExpr, callee Value, resolution calleeResolution, args []Value, kwargs map[string]Value) ([]Value, map[string]Value) {
+	if !call.KeywordOptionsHash || len(kwargs) == 0 {
 		return args, kwargs
 	}
-	fn := bareKeywordHashTarget(callee)
-	if fn == nil || !functionCanReceiveBareKeywordHash(fn, len(args), kwargs) {
+	if !calleeCollapsesOptionsHash(call, callee, resolution) {
+		return args, kwargs
+	}
+	fn := optionsHashTarget(callee)
+	if fn == nil || !functionCanReceiveOptionsHash(fn, len(args), kwargs) {
 		return args, kwargs
 	}
 	hash := make(map[string]Value, len(kwargs))
@@ -640,7 +671,34 @@ func resolveBareKeywordArgs(call *CallExpr, callee Value, args []Value, kwargs m
 	return append(args, NewHash(hash)), nil
 }
 
-func bareKeywordHashTarget(callee Value) *ScriptFunction {
+// calleeCollapsesOptionsHash reports whether the resolved callee permits keyword
+// arguments to collapse into a positional options hash for the given call form.
+// The parenless form collapses for any options-hash target. Parenthesized calls
+// keep method and constructor binding strict: a call to a plain function value
+// collapses like a plain function call, whether that value was resolved directly
+// or fetched from a member, and a member call collapses through a function
+// value's direct-call alias as well; a callee surfaced through the direct
+// member-method path stays strict, since that path surfaces methods as bare
+// function values too.
+func calleeCollapsesOptionsHash(call *CallExpr, callee Value, resolution calleeResolution) bool {
+	if !call.Parenthesized {
+		return true
+	}
+	switch resolution {
+	case calleeMemberMethod:
+		return false
+	case calleeMemberValue:
+		if callee.Kind() == KindFunction {
+			return true
+		}
+		builtin := valueBuiltin(callee)
+		return builtin != nil && builtin.DirectCallAlias
+	default:
+		return callee.Kind() == KindFunction
+	}
+}
+
+func optionsHashTarget(callee Value) *ScriptFunction {
 	switch callee.Kind() {
 	case KindFunction:
 		return valueFunction(callee)
@@ -649,13 +707,13 @@ func bareKeywordHashTarget(callee Value) *ScriptFunction {
 		if builtin == nil {
 			return nil
 		}
-		return builtin.BareKeywordHashTarget
+		return builtin.OptionsHashTarget
 	default:
 		return nil
 	}
 }
 
-func functionCanReceiveBareKeywordHash(fn *ScriptFunction, positionalCount int, kwargs map[string]Value) bool {
+func functionCanReceiveOptionsHash(fn *ScriptFunction, positionalCount int, kwargs map[string]Value) bool {
 	for _, param := range fn.Params {
 		if param.Kind == ParamKeyword || param.Kind == ParamKeywordRest {
 			return false
@@ -718,7 +776,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	args, kwargs = resolveBareKeywordArgs(call, callee, args, kwargs)
+	args, kwargs = resolveKeywordOptionsHash(call, callee, calleeDirect, args, kwargs)
 	block, err := exec.evalCallBlock(call, env)
 	if err != nil {
 		return NewNil(), err
@@ -751,11 +809,13 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	}
 
 	var callee Value
+	resolution := calleeMemberValue
 	if directCallee, handled, err := exec.evalDirectMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
 		if err != nil {
 			return NewNil(), err
 		}
 		callee = directCallee
+		resolution = calleeMemberMethod
 	} else {
 		var err error
 		callee, err = exec.getMember(receiver, member.Property, member.Pos())
@@ -772,7 +832,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
-	args, kwargs = resolveBareKeywordArgs(call, callee, args, kwargs)
+	args, kwargs = resolveKeywordOptionsHash(call, callee, resolution, args, kwargs)
 	block, err := exec.evalCallBlock(call, env)
 	if err != nil {
 		return NewNil(), err

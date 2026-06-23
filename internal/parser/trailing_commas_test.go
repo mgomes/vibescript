@@ -66,6 +66,7 @@ end`,
 			KwArgs: []ast.KeywordArg{
 				{Name: "c", Value: &ast.IntegerLiteral{Value: 3}},
 			},
+			KeywordOptionsHash: true,
 		}},
 	}
 

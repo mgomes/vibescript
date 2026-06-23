@@ -173,7 +173,7 @@ end`
 					{Name: "name", Value: &ast.StringLiteral{Value: "Ada"}},
 					{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
 				},
-				BareKeywordArgs: true,
+				KeywordOptionsHash: true,
 			},
 		},
 		&ast.ExprStmt{
@@ -184,7 +184,7 @@ end`
 					{Name: "name", Value: &ast.Identifier{Name: "name"}},
 					{Name: "retries", Value: &ast.Identifier{Name: "retries"}},
 				},
-				BareKeywordArgs: true,
+				KeywordOptionsHash: true,
 			},
 		},
 		&ast.ExprStmt{
@@ -195,7 +195,7 @@ end`
 					{Name: "a", Value: &ast.IntegerLiteral{Value: 1}},
 					{Name: "b", Value: &ast.IntegerLiteral{Value: 2}},
 				},
-				BareKeywordArgs: true,
+				KeywordOptionsHash: true,
 			},
 		},
 	}

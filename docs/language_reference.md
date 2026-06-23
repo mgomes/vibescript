@@ -189,13 +189,38 @@ require "billing/rules", as: "rules"
 render status: "ok"
 ```
 
-Parenless label arguments bind as keyword arguments when the callee accepts
-them. When a script function has a positional hash/options parameter instead,
-the same source form is passed as a final hash:
+Label arguments bind as keyword arguments when the callee accepts them. When a
+script function has a positional hash/options parameter instead, the same source
+form is passed as a final options hash. This options-hash binding applies to
+plain function calls in both parenless and parenthesized form, so the two are
+interchangeable:
 
 ```vibe
 accept_options retry: true, limit: 3
+accept_options(retry: true, limit: 3)
 ```
+
+Invoking a function value through its `call` alias follows the same rule, so
+`accept_options.call(retry: true, limit: 3)` binds the options hash exactly like
+the direct `accept_options(retry: true, limit: 3)` form. A function value reached
+through member access binds the same way, so calling a module function such as
+`rules.accept_options(retry: true, limit: 3)` matches the direct form too.
+
+The synthesized hash is type-checked against a typed options parameter, so
+`accept_options(retry: "soon")` is rejected with the shape mismatch when the
+parameter declares `{ retry: bool, limit: int }`.
+
+Constructor calls (`Klass.new(...)`) and method calls (`receiver.method(...)`)
+keep strict parenthesized keyword binding: a parenthesized keyword that has no
+matching keyword parameter does not collapse into a positional options hash.
+This includes an instance method named `call`, which stays distinct from a
+function value's `call` alias. Their parenless forms still pass the options
+hash, mirroring the historical behavior.
+
+Positional arguments must come before keyword labels. A positional argument that
+follows a keyword label, such as `collect(first: 1, "tail")`, is a parse error in
+both the parenthesized and parenless forms, matching Ruby. Keyword labels after a
+positional argument are fine, so `collect("head", first: 1)` is accepted.
 
 Blocks can be passed with `do ... end`:
 
