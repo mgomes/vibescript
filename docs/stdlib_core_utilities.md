@@ -41,7 +41,7 @@ Unicode characters, not bytes, unless noted.
 - `bytesize -> int` – number of UTF-8 bytes.
 - `empty? -> bool` – true when the string has no characters.
 - `ord -> int` – codepoint of the first character; errors on an empty string.
-- `chr -> string | nil` – first character, or `nil` for an empty string.
+- `chr -> string` – first character, or an empty string for an empty receiver.
 - `hex -> int` – leading characters parsed as a hexadecimal integer (optional
   whitespace, sign, `0x` prefix, and underscore separators); `0` when no hex
   digit leads, and an `integer out of range` error past the `int64` bounds.
@@ -130,8 +130,11 @@ then truncated at a character boundary to fill the span.
   occurrence of `pattern`.
 - `gsub(pattern, replacement, regex: false) -> string` – replace every
   occurrence of `pattern`.
-- `split(separator = nil) -> array` – split on whitespace (dropping empty
-  fields) without arguments, or on `separator` when given.
+- `split(separator = nil) -> array` – split on runs of ASCII whitespace
+  (space, tab, newline, vertical tab, form feed, carriage return; dropping empty
+  fields) without arguments, or on `separator` when given. Like Ruby, the
+  no-argument form keeps wider Unicode whitespace such as the non-breaking space
+  inside the field rather than splitting on it.
 - `chars -> array` – array of the string's Unicode characters, one per code
   point (rune-aware, like `length` and `slice`).
 - `lines -> array` – array of lines split on `"\n"`, retaining the trailing
