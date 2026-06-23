@@ -323,7 +323,8 @@ methods.
 
 - `merge(*others) -> hash` – combined entries from the receiver and every
   argument hash. Arguments are applied left to right, so later hashes win on key
-  conflicts. With no arguments it returns a copy of the receiver.
+  conflicts. With no arguments (including the bare, parenless `hash.merge`) it
+  returns a copy of the receiver.
 - `merge(*others) { |key, old_value, new_value| } -> hash` – combined entries; for
   keys present in both hashes the block resolves the conflict and its result is
   stored, folding through each argument in turn. Keys present on only one side are
