@@ -98,11 +98,16 @@ Unicode characters, not bytes, unless noted.
 
 ### Whitespace and Affix Trimming
 
-- `strip -> string` – trim leading and trailing whitespace.
-- `lstrip -> string` – trim leading whitespace.
-- `rstrip -> string` – trim trailing whitespace.
+- `strip -> string` – trim leading and trailing whitespace. Like Ruby, only the
+  ASCII whitespace bytes `\0 \t \n \v \f \r " "` are removed, with `\0` trimmed
+  from both ends; Unicode spaces such as NBSP (`U+00A0`), the Ogham space mark
+  (`U+1680`), em space (`U+2003`), and the BOM (`U+FEFF`) are preserved.
+- `lstrip -> string` – trim leading whitespace (same ASCII set as `strip`,
+  including a leading `\0`).
+- `rstrip -> string` – trim trailing whitespace (same ASCII set as `strip`,
+  including a trailing `\0`).
 - `squish -> string` – trim both ends and collapse internal whitespace runs to
-  a single space.
+  a single space. Unlike `strip`, `squish` also collapses Unicode whitespace.
 - `chomp(separator = nil) -> string` – remove one trailing `"\r\n"`, `"\n"`,
   or `"\r"`; with a `separator` remove that suffix once; with `""` remove all
   trailing newlines.
@@ -180,6 +185,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   non-positive `n` yields nothing. Omitting `n` or passing `nil` cycles forever,
   bounded by the step quota and context cancellation.
 - `map { |item| } -> array` – new array of block results.
+- `filter_map { |item| } -> array` – block results that are truthy; fuses `map`
+  with a truthiness filter, dropping falsy returns.
 - `select { |item| } -> array` – elements for which the block is truthy.
 - `reject { |item| } -> array` – elements for which the block is falsy (the
   inverse of `select`).
