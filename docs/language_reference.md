@@ -189,13 +189,26 @@ require "billing/rules", as: "rules"
 render status: "ok"
 ```
 
-Parenless label arguments bind as keyword arguments when the callee accepts
-them. When a script function has a positional hash/options parameter instead,
-the same source form is passed as a final hash:
+Label arguments bind as keyword arguments when the callee accepts them. When a
+script function has a positional hash/options parameter instead, the same source
+form is passed as a final options hash. This options-hash binding applies to
+plain function calls in both parenless and parenthesized form, so the two are
+interchangeable:
 
 ```vibe
 accept_options retry: true, limit: 3
+accept_options(retry: true, limit: 3)
 ```
+
+The synthesized hash is type-checked against a typed options parameter, so
+`accept_options(retry: "soon")` is rejected with the shape mismatch when the
+parameter declares `{ retry: bool, limit: int }`.
+
+Constructor calls (`Klass.new(...)`) and method calls (`receiver.method(...)`)
+keep strict parenthesized keyword binding: a parenthesized keyword that has no
+matching keyword parameter does not collapse into a positional options hash.
+Their parenless forms still pass the options hash, mirroring the historical
+behavior.
 
 Blocks can be passed with `do ... end`:
 
