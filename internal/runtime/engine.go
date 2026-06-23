@@ -521,8 +521,13 @@ func registerTimeBuiltins(engine *Engine) {
 			return NewTime(t), nil
 		}),
 		"at": NewBuiltin("Time.at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 1 {
-				return NewNil(), fmt.Errorf("Time.at expects seconds since epoch")
+			if len(args) < 1 || len(args) > 3 {
+				return NewNil(), fmt.Errorf("Time.at expects seconds since epoch with optional subsecond value and unit")
+			}
+			for key := range kwargs {
+				if key != "in" {
+					return NewNil(), fmt.Errorf("Time.at unknown keyword argument %s", key)
+				}
 			}
 			var loc *time.Location
 			if in, ok := kwargs["in"]; ok {
@@ -532,7 +537,14 @@ func registerTimeBuiltins(engine *Engine) {
 				}
 				loc = parsed
 			}
-			t, err := timeFromEpoch(args[0], loc)
+			var subsec, unit *Value
+			if len(args) >= 2 {
+				subsec = &args[1]
+			}
+			if len(args) == 3 {
+				unit = &args[2]
+			}
+			t, err := timeFromEpochParts(args[0], subsec, unit, loc)
 			if err != nil {
 				return NewNil(), err
 			}
