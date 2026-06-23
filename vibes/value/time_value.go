@@ -219,27 +219,179 @@ func microsecondRangeError() error {
 // TimeFromEpoch converts a numeric epoch value into a time.Time anchored
 // to the supplied (or local) location.
 func TimeFromEpoch(val Value, loc *time.Location) (time.Time, error) {
-	var seconds int64
-	var nanos int64
+	return TimeFromEpochParts(val, nil, nil, loc)
+}
+
+// subsecUnitNanos maps the unit symbols accepted by Time.at's three-argument
+// form to the number of nanoseconds each subsecond unit represents. Ruby spells
+// these as the symbols :microsecond/:usec, :millisecond, and :nanosecond/:nsec.
+var subsecUnitNanos = map[string]int64{
+	"microsecond": 1_000,
+	"usec":        1_000,
+	"millisecond": 1_000_000,
+	"nanosecond":  1,
+	"nsec":        1,
+}
+
+// TimeFromEpochParts converts Ruby-style Time.at arguments into a time.Time
+// anchored to the supplied (or local) location.
+//
+// The seconds argument may be an integer or float. The optional subsec argument
+// adds a subsecond offset whose unit defaults to microseconds and may be
+// overridden by the optional unit symbol (:microsecond/:usec, :millisecond, or
+// :nanosecond/:nsec). Pass a nil pointer for subsec and/or unit when they are
+// absent. A non-nil pointer to a nil Value represents a subsecond or unit that
+// was explicitly supplied as nil, which Ruby rejects (Time.at does not treat an
+// explicit nil subsecond as omitted the way the calendar constructors do).
+//
+// The result is backed by time.Time, which has nanosecond resolution, so
+// fractional nanoseconds (for example a float subsecond value) are truncated
+// toward zero rather than retained as Ruby's arbitrary-precision rationals do.
+func TimeFromEpochParts(secVal Value, subsecVal, unitVal *Value, loc *time.Location) (time.Time, error) {
+	seconds, nanos, err := epochSecondsToParts(secVal)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if subsecVal != nil {
+		unitNanos := int64(1_000)
+		if unitVal != nil {
+			if unitVal.Kind() != KindSymbol {
+				return time.Time{}, fmt.Errorf("unexpected unit: %s", unitVal.String())
+			}
+			factor, ok := subsecUnitNanos[unitVal.String()]
+			if !ok {
+				return time.Time{}, fmt.Errorf("unexpected unit: %s", unitVal.String())
+			}
+			unitNanos = factor
+		}
+
+		subNanos, err := subsecToNanos(*subsecVal, unitNanos)
+		if err != nil {
+			return time.Time{}, err
+		}
+		total, ok := addInt64Checked(nanos, subNanos)
+		if !ok {
+			return time.Time{}, subsecondOverflowError()
+		}
+		nanos = total
+	} else if unitVal != nil {
+		return time.Time{}, fmt.Errorf("Time.at expects a subsecond value before a unit")
+	}
+
+	seconds, nanos, err = normalizeUnixParts(seconds, nanos)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.Unix(seconds, nanos).In(loc), nil
+}
+
+// normalizeUnixParts carries whole seconds out of the nanosecond component so
+// nanos lands in [0, 1_000_000_000) before reaching time.Unix. time.Unix accepts
+// an out-of-range nanos and normalizes it itself, but that normalization wraps
+// silently when the carry overflows the int64 seconds -- for example
+// Time.at(math.MaxInt64, 1_000_000) carries one whole second and would wrap the
+// seconds to math.MinInt64. Performing the carry here with checked addition
+// surfaces that overflow as an error instead.
+func normalizeUnixParts(seconds, nanos int64) (int64, int64, error) {
+	carry := nanos / nanosPerSecond
+	nanos -= carry * nanosPerSecond
+	if nanos < 0 {
+		// Borrow a second so the nanosecond remainder is non-negative, matching
+		// time.Unix's normalization.
+		nanos += nanosPerSecond
+		carry--
+	}
+	seconds, ok := addInt64Checked(seconds, carry)
+	if !ok {
+		return 0, 0, subsecondOverflowError()
+	}
+	return seconds, nanos, nil
+}
+
+// epochSecondsToParts decomposes the seconds argument of Time.at into whole
+// seconds and a nanosecond remainder. Float seconds carry their fractional part
+// into the nanosecond component.
+func epochSecondsToParts(val Value) (seconds, nanos int64, err error) {
 	switch val.Kind() {
 	case KindInt:
-		seconds = val.Int()
+		return val.Int(), 0, nil
 	case KindFloat:
 		f := val.Float()
 		// Reject non-finite epochs: int64() of Infinity/NaN is
 		// implementation-specific and would silently create a bogus time.
 		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return time.Time{}, fmt.Errorf("Time.at expects a finite numeric epoch")
+			return 0, 0, fmt.Errorf("Time.at expects a finite numeric epoch")
 		}
-		seconds = int64(f)
-		nanos = int64((f - float64(seconds)) * 1e9)
+		whole := int64(f)
+		return whole, int64((f - float64(whole)) * 1e9), nil
 	default:
-		return time.Time{}, fmt.Errorf("Time.at expects numeric seconds")
+		return 0, 0, fmt.Errorf("Time.at expects numeric seconds")
 	}
-	if loc == nil {
-		loc = time.Local
+}
+
+// subsecToNanos converts a subsecond value expressed in units of unitNanos
+// nanoseconds into a nanosecond count. Float subsecond values are floored to
+// whole nanoseconds, matching the way Ruby exposes a fractional subsecond
+// offset (see below).
+//
+// Unlike Ruby's Time.at, which carries an arbitrarily large subsecond argument
+// into the seconds via arbitrary-precision arithmetic, the result here is bound
+// by time.Time's int64 nanosecond resolution. A subsecond magnitude whose scaled
+// nanosecond count would not fit in an int64 is rejected rather than silently
+// wrapped into a bogus instant.
+func subsecToNanos(val Value, unitNanos int64) (int64, error) {
+	switch val.Kind() {
+	case KindInt:
+		nanos, ok := mulInt64Checked(val.Int(), unitNanos)
+		if !ok {
+			return 0, subsecondOverflowError()
+		}
+		return nanos, nil
+	case KindFloat:
+		f := val.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, fmt.Errorf("Time.at expects a finite subsecond value")
+		}
+		// Scale and floor against the float's exact binary value via a
+		// rational. Multiplying in float64 can round the product before
+		// integer conversion -- e.g. the float 0.29 is 0.28999...998, but
+		// 0.29 * 1000.0 rounds back to exactly 290.0 -- which would flip the
+		// nanosecond count. The exact rational keeps representation error from
+		// deciding the result.
+		//
+		// Ruby keeps the rational offset and floors the resulting instant when
+		// exposing nanoseconds, so a negative fractional offset rounds toward
+		// negative infinity rather than toward zero: Time.at(0, -0.29, :usec)
+		// floors -289.99...98 ns to -290 ns (nsec 999999710), and
+		// Time.at(0, 0.29, :usec) floors 289.99...98 ns to 289 ns. Because the
+		// whole-second and integer-nanosecond epoch parts are added afterward
+		// as exact integers, flooring this rational is equivalent to flooring
+		// the combined instant. Use Div (floored, Euclidean) rather than Quo
+		// (truncated toward zero); unitNanos is always positive.
+		exact := new(big.Rat).SetFloat64(f)
+		if exact == nil {
+			return 0, fmt.Errorf("Time.at expects a finite subsecond value")
+		}
+		exact.Mul(exact, new(big.Rat).SetInt64(unitNanos))
+		nanos := new(big.Int).Div(exact.Num(), exact.Denom()) // floor toward negative infinity
+		if !nanos.IsInt64() {
+			return 0, subsecondOverflowError()
+		}
+		return nanos.Int64(), nil
+	default:
+		return 0, fmt.Errorf("Time.at subsecond value must be numeric")
 	}
-	return time.Unix(seconds, nanos).In(loc), nil
+}
+
+// subsecondOverflowError is returned when a Time.at subsecond argument is too
+// large (in magnitude) to express within time.Time's int64 nanosecond range.
+func subsecondOverflowError() error {
+	return fmt.Errorf("Time.at subsecond value out of range")
 }
 
 // ParseTimeString parses a time string, optionally using a caller-supplied
