@@ -1280,6 +1280,11 @@ func arrayFillResolveSpan(selectors []Value, length int) (arrayFillSpan, error) 
 		if err != nil {
 			return arrayFillSpan{}, err
 		}
+		// A nil length is treated as omitted, filling from begin to the end,
+		// matching Ruby's Array#fill (which reads a nil length as "to the end").
+		if selectors[1].Kind() == KindNil {
+			return arrayFillSpanFromStart(begin, length, length-begin)
+		}
 		count, err := arrayFillLength(selectors[1])
 		if err != nil {
 			return arrayFillSpan{}, err
@@ -1291,11 +1296,16 @@ func arrayFillResolveSpan(selectors []Value, length int) (arrayFillSpan, error) 
 }
 
 // arrayFillStartIndex resolves a start argument to a non-negative index.
-// Fractional floats truncate toward zero like Ruby's to_int. A negative start
-// counts back from the end like Ruby; a start more negative than the receiver
-// length clamps to 0 (Ruby's Array#fill does not raise for an out-of-range
-// negative integer start, unlike a range bound).
+// A nil start is treated as 0, matching Ruby's Array#fill, which reads a nil
+// start (or omitted start) as the beginning of the array. Fractional floats
+// truncate toward zero like Ruby's to_int. A negative start counts back from
+// the end like Ruby; a start more negative than the receiver length clamps to 0
+// (Ruby's Array#fill does not raise for an out-of-range negative integer start,
+// unlike a range bound).
 func arrayFillStartIndex(value Value, length int) (int, error) {
+	if value.Kind() == KindNil {
+		return 0, nil
+	}
 	start, err := valueToInt(value)
 	if err != nil {
 		return 0, fmt.Errorf("array.fill start must be integer")

@@ -342,6 +342,113 @@ func TestArrayFillStartArgWithBlockIsStartNotValue(t *testing.T) {
 	compareArrays(t, got, []Value{NewInt(0), NewInt(10), NewInt(20)})
 }
 
+// TestArrayFillNilSelectors confirms a nil start or nil length is read as
+// omitted, matching Ruby's Array#fill: a nil start means 0 and a nil length
+// means "to the end". This covers code that forwards optional selectors stored
+// in variables defaulting to nil, in both the value and block forms.
+func TestArrayFillNilSelectors(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def fill_start(values, value, start)
+      values.fill(value, start)
+    end
+
+    def fill_start_length(values, value, start, length)
+      values.fill(value, start, length)
+    end
+
+    def fill_block_start(values, start)
+      values.fill(start) do |i|
+        i * 10
+      end
+    end
+
+    def fill_block_start_length(values, start, length)
+      values.fill(start, length) do |i|
+        i * 10
+      end
+    end
+    `)
+
+	makeArr := func(ints ...int64) Value {
+		out := make([]Value, len(ints))
+		for i, n := range ints {
+			out[i] = NewInt(n)
+		}
+		return NewArray(out)
+	}
+
+	tests := []struct {
+		name string
+		fn   string
+		args []Value
+		want []Value
+	}{
+		{
+			// Ruby: [1, 2, 3].fill(0, nil) => [0, 0, 0]. A nil start is read as 0.
+			name: "nil start value form",
+			fn:   "fill_start",
+			args: []Value{makeArr(1, 2, 3), NewInt(0), NewNil()},
+			want: []Value{NewInt(0), NewInt(0), NewInt(0)},
+		},
+		{
+			// Ruby: [1, 2, 3].fill(0, 1, nil) => [1, 0, 0]. A nil length fills to
+			// the end starting at the given start.
+			name: "nil length value form",
+			fn:   "fill_start_length",
+			args: []Value{makeArr(1, 2, 3), NewInt(0), NewInt(1), NewNil()},
+			want: []Value{NewInt(1), NewInt(0), NewInt(0)},
+		},
+		{
+			// Ruby: [1, 2, 3].fill(0, nil, nil) => [0, 0, 0]. Both selectors nil
+			// means start 0 to the end.
+			name: "nil start and nil length value form",
+			fn:   "fill_start_length",
+			args: []Value{makeArr(1, 2, 3), NewInt(0), NewNil(), NewNil()},
+			want: []Value{NewInt(0), NewInt(0), NewInt(0)},
+		},
+		{
+			// Ruby: [1, 2, 3].fill(0, nil, 2) => [0, 0, 3]. A nil start with an
+			// explicit length fills length elements from index 0.
+			name: "nil start with explicit length value form",
+			fn:   "fill_start_length",
+			args: []Value{makeArr(1, 2, 3), NewInt(0), NewNil(), NewInt(2)},
+			want: []Value{NewInt(0), NewInt(0), NewInt(3)},
+		},
+		{
+			// Ruby: [1, 2, 3, 4, 5].fill(nil) { |i| i * 10 } => [0, 10, 20, 30, 40].
+			// A nil start in the block form is read as 0.
+			name: "nil start block form",
+			fn:   "fill_block_start",
+			args: []Value{makeArr(1, 2, 3, 4, 5), NewNil()},
+			want: []Value{NewInt(0), NewInt(10), NewInt(20), NewInt(30), NewInt(40)},
+		},
+		{
+			// Ruby: [1, 2, 3, 4, 5].fill(2, nil) { |i| i * 10 } => [1, 2, 20, 30, 40].
+			// A nil length in the block form fills from the start to the end.
+			name: "nil length block form",
+			fn:   "fill_block_start_length",
+			args: []Value{makeArr(1, 2, 3, 4, 5), NewInt(2), NewNil()},
+			want: []Value{NewInt(1), NewInt(2), NewInt(20), NewInt(30), NewInt(40)},
+		},
+		{
+			// Ruby: [1, 2, 3, 4, 5].fill(nil, nil) { |i| i * 10 } =>
+			// [0, 10, 20, 30, 40]. Both selectors nil fills the whole array.
+			name: "nil start and nil length block form",
+			fn:   "fill_block_start_length",
+			args: []Value{makeArr(1, 2, 3, 4, 5), NewNil(), NewNil()},
+			want: []Value{NewInt(0), NewInt(10), NewInt(20), NewInt(30), NewInt(40)},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			compareArrays(t, callFunc(t, script, tc.fn, tc.args), tc.want)
+		})
+	}
+}
+
 // TestArrayFillDoesNotMutateReceiver confirms fill returns a new array and
 // leaves the receiver untouched, consistent with the immutable collection
 // helpers it sits beside.
