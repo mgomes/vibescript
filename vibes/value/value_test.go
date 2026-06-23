@@ -850,6 +850,107 @@ func TestValueStringBounded(t *testing.T) {
 	})
 }
 
+// TestValueStringBoundedNeverExceedsLimit is a property-style sweep over deeply
+// nested arrays and hashes. Across a range of small limits it asserts two
+// invariants for every value:
+//
+//   - the returned partial output is never longer than the requested limit, so
+//     no individual write site (opening or closing delimiter, separator, key,
+//     value, or scalar repr) can push the result past the cap, and
+//   - ErrStringRenderTruncated is returned exactly when the full rendering would
+//     not have fit, i.e. when len(value.String()) > limit, so truncation is
+//     reported neither too eagerly nor too late.
+//
+// The nested fixtures exercise the delimiter-on-descent paths that previously
+// overshot the budget by emitting a child's opening "[" or "{" after the parent
+// had already filled the cap.
+func TestValueStringBoundedNeverExceedsLimit(t *testing.T) {
+	t.Parallel()
+
+	fixtures := []struct {
+		name  string
+		value value.Value
+	}{
+		{name: "scalar_int", value: value.NewInt(1234567)},
+		{name: "scalar_string", value: value.NewString("hello world")},
+		{name: "empty_array", value: value.NewArray(nil)},
+		{name: "empty_hash", value: value.NewHash(nil)},
+		{name: "flat_array", value: value.NewArray([]value.Value{
+			value.NewInt(1), value.NewInt(22), value.NewInt(333),
+		})},
+		{name: "flat_hash", value: value.NewHash(map[string]value.Value{
+			"k": value.NewInt(1),
+		})},
+		{name: "nested_array", value: value.NewArray([]value.Value{
+			value.NewArray([]value.Value{value.NewInt(1)}),
+			value.NewArray([]value.Value{value.NewInt(2)}),
+		})},
+		{name: "nested_hash", value: value.NewHash(map[string]value.Value{
+			"a": value.NewHash(map[string]value.Value{"b": value.NewInt(1)}),
+		})},
+		{name: "deeply_nested_array", value: value.NewArray([]value.Value{
+			value.NewArray([]value.Value{
+				value.NewArray([]value.Value{
+					value.NewArray([]value.Value{value.NewString("x")}),
+				}),
+			}),
+		})},
+		{name: "mixed_array_of_hashes", value: value.NewArray([]value.Value{
+			value.NewHash(map[string]value.Value{"id": value.NewInt(1)}),
+			value.NewHash(map[string]value.Value{"id": value.NewInt(2)}),
+		})},
+		{name: "hash_of_arrays", value: value.NewHash(map[string]value.Value{
+			"xs": value.NewArray([]value.Value{value.NewInt(1), value.NewInt(2)}),
+		})},
+		{name: "scalar_variety", value: value.NewArray([]value.Value{
+			value.NewNil(), value.NewBool(true), value.NewFloat(1.5),
+			value.NewSymbol("sym"), value.NewString("str"),
+		})},
+	}
+
+	for _, tc := range fixtures {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			full := tc.value.String()
+			for limit := range 41 {
+				got, err := tc.value.StringBounded(limit)
+
+				if limit > 0 && len(got) > limit {
+					t.Fatalf("StringBounded(%d) = %d bytes (%q), must not exceed the limit", limit, len(got), got)
+				}
+
+				// A non-positive limit means unbounded: it must render in full and
+				// never report truncation.
+				if limit <= 0 {
+					if err != nil {
+						t.Fatalf("StringBounded(%d) error = %v, want nil for unbounded render", limit, err)
+					}
+					if got != full {
+						t.Fatalf("StringBounded(%d) = %q, want full render %q", limit, got, full)
+					}
+					continue
+				}
+
+				wantTruncated := len(full) > limit
+				gotTruncated := errors.Is(err, value.ErrStringRenderTruncated)
+				if gotTruncated != wantTruncated {
+					t.Fatalf("StringBounded(%d) truncated = %v (err %v), want %v (full %q is %d bytes)",
+						limit, gotTruncated, err, wantTruncated, full, len(full))
+				}
+				if err != nil && !gotTruncated {
+					t.Fatalf("StringBounded(%d) error = %v, want only ErrStringRenderTruncated", limit, err)
+				}
+				if !wantTruncated && got != full {
+					t.Fatalf("StringBounded(%d) = %q, want full render %q", limit, got, full)
+				}
+				if wantTruncated && got != full[:len(got)] {
+					t.Fatalf("StringBounded(%d) = %q, want a prefix of full render %q", limit, got, full)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkValueStringLargeComposite(b *testing.B) {
 	b.Run("array_100000", func(b *testing.B) {
 		elems := make([]value.Value, 100000)
