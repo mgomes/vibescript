@@ -63,9 +63,13 @@ Unicode characters, not bytes, unless noted.
   before `offset`; `nil` when not found.
 - `match(pattern) -> array | nil` – regex match returning
   `[full, capture1, ...]` (unmatched groups are `nil`); `nil` when no match.
+- `match?(pattern, offset = 0) -> bool` – allocation-light predicate returning
+  `true` when `pattern` matches at or after the character `offset`, else
+  `false`. Anchors keep the full-string context across the offset; an offset
+  past the end yields `false`, and negative offsets are rejected.
 - `scan(pattern) -> array` – all non-overlapping full regex matches.
 
-`match` and `scan` treat `pattern` as a regex and enforce the
+`match`, `match?`, and `scan` treat `pattern` as a regex and enforce the
 [regex guard limits](#guard-limits).
 
 ```vibe
@@ -133,6 +137,8 @@ then truncated at a character boundary to fill the span.
 - `lines -> array` – array of lines split on `"\n"`, retaining the trailing
   newline on each line; an empty string yields no lines and carriage returns
   stay attached so `"\r\n"` endings round-trip.
+- `bytes -> array` – array of the string's bytes as integers in `0..255`
+  (byte-level, so a multibyte character expands to one entry per UTF-8 byte).
 - `template(context, strict: false) -> string` – interpolate `{{key.path}}`
   placeholders from a hash; `strict: true` errors on missing placeholders.
 
@@ -323,7 +329,8 @@ methods.
 
 - `merge(*others) -> hash` – combined entries from the receiver and every
   argument hash. Arguments are applied left to right, so later hashes win on key
-  conflicts. With no arguments it returns a copy of the receiver.
+  conflicts. With no arguments (including the bare, parenless `hash.merge`) it
+  returns a copy of the receiver.
 - `merge(*others) { |key, old_value, new_value| } -> hash` – combined entries; for
   keys present in both hashes the block resolves the conflict and its result is
   stored, folding through each argument in turn. Keys present on only one side are
@@ -848,13 +855,13 @@ scope has exited:
 JSON, regex, and ID helpers enforce fixed input-guard limits so hostile
 data cannot exhaust host memory or CPU. The limits are not configurable
 and apply to the `JSON`/`Regex` builtins and the regex-enabled string
-members (`match`, `scan`, `sub`, `gsub`, and their `!` variants):
+members (`match`, `match?`, `scan`, `sub`, `gsub`, and their `!` variants):
 
 | Guard | Limit |
 | --- | --- |
 | `JSON.parse` input / `JSON.stringify` output | 1 MiB |
 | `JSON.parse` / `JSON.stringify` nesting depth | 10,000 arrays/objects |
-| Regex pattern size (`Regex.*`, `match`, `scan`, `sub`/`gsub` with `regex: true`) | 16 KiB |
+| Regex pattern size (`Regex.*`, `match`, `match?`, `scan`, `sub`/`gsub` with `regex: true`) | 16 KiB |
 | Regex text, replacement, and output size | 1 MiB |
 | `random_id` length | 1024 characters |
 

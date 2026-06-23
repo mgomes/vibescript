@@ -14,9 +14,9 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var stringMemberNames = []string{
-	"size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice",
+	"size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
-	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "each_char", "each_line", "template",
+	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "each_char", "each_line", "each_byte", "template",
 	"center", "ljust", "rjust",
 }
 
@@ -31,11 +31,11 @@ func stringMember(str Value, property string) (Value, error) {
 
 func stringMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "scan", "index", "rindex", "slice":
+	case "size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
-	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "each_char", "each_line", "template":
+	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "each_char", "each_line", "each_byte", "template":
 		return stringMemberTextOps(property)
 	case "center", "ljust", "rjust":
 		return stringMemberPadding(property)
@@ -449,6 +449,61 @@ func validateRegexTextPattern(method, text, pattern string) error {
 		return fmt.Errorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	return nil
+}
+
+// regexMatchFromRuneOffset reports whether pattern has a match in text that
+// starts at or after the given rune offset, mirroring Ruby's
+// Regexp#match?(str, pos). The offset is a rune (codepoint) position; a match
+// may begin anywhere from that position onward. Anchors such as \A, ^, and \b
+// keep the full-string context: rather than searching a detached suffix (which
+// would let \A or \b match at the slice boundary), the search begins one rune
+// before the offset so the engine still sees the real character preceding every
+// candidate start. Because Go's RE2 has no lookbehind, that single preceding
+// rune is the only left context any anchor can observe, so the wrapper stays a
+// fixed size regardless of the offset: it never embeds the subject prefix into
+// the pattern, keeping the compiled regex small and within the pattern-size
+// guard. An offset past the end of text yields no match rather than an error,
+// matching Ruby; an invalid pattern is still reported regardless of the offset,
+// since the offset only decides the match result, never whether a bad regex is
+// accepted. The pattern is compiled with the same guards and cache as
+// String#match.
+func regexMatchFromRuneOffset(method, text, pattern string, offset int) (bool, error) {
+	return regexMatchFromRuneOffsetWithCache(compiledRegexps, method, text, pattern, offset)
+}
+
+// regexMatchFromRuneOffsetWithCache implements regexMatchFromRuneOffset against
+// an explicit regex cache so tests can assert that the offset wrapper never
+// stores an oversized, prefix-bearing pattern.
+func regexMatchFromRuneOffsetWithCache(cache *regexCache, method, text, pattern string, offset int) (bool, error) {
+	// Compile (and validate) the user pattern first so an invalid regex is always
+	// reported, even when the offset lands past the end of the string. The offset
+	// must only decide the match result, never whether a bad pattern is accepted.
+	re, err := cache.compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("%s invalid regex: %w", method, err)
+	}
+	if offset == 0 {
+		return re.MatchString(text), nil
+	}
+	byteOffset, ok := stringByteIndexForRuneOffset(text, offset)
+	if !ok {
+		// The offset lands past the final rune, so no match can begin there.
+		return false, nil
+	}
+	// Search a view that begins one rune before the offset. The leading [\s\S]
+	// consumes that real preceding rune so \b, \B, and ^ evaluate against it,
+	// while \A correctly fails (the view does not start at the absolute string
+	// start). The lazy [\s\S]*? then advances to the first candidate start at or
+	// after the offset. The wrapper is independent of the prefix length, so it
+	// stays small even for offsets deep into a megabyte subject.
+	_, ctxSize := utf8.DecodeLastRuneInString(text[:byteOffset])
+	ctxStart := byteOffset - ctxSize
+	wrapped := `\A[\s\S][\s\S]*?(?:` + pattern + `)`
+	re, err = cache.compile(wrapped)
+	if err != nil {
+		return false, fmt.Errorf("%s invalid regex: %w", method, err)
+	}
+	return re.MatchString(text[ctxStart:]), nil
 }
 
 func validateRegexReplacement(method, replacement string) error {
@@ -1037,6 +1092,36 @@ func stringMemberQuery(property string) (Value, error) {
 			}
 			return NewArray(values), nil
 		}), nil
+	case "match?":
+		return NewAutoBuiltin("string.match?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.match? does not accept keyword arguments")
+			}
+			if len(args) < 1 || len(args) > 2 {
+				return NewNil(), fmt.Errorf("string.match? expects a pattern and optional offset")
+			}
+			if args[0].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.match? pattern must be string")
+			}
+			offset := 0
+			if len(args) == 2 {
+				i, err := valueToInt(args[1])
+				if err != nil || i < 0 {
+					return NewNil(), fmt.Errorf("string.match? offset must be non-negative integer")
+				}
+				offset = i
+			}
+			pattern := args[0].String()
+			text := receiver.String()
+			if err := validateRegexTextPattern("string.match?", text, pattern); err != nil {
+				return NewNil(), err
+			}
+			matched, err := regexMatchFromRuneOffset("string.match?", text, pattern, offset)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewBool(matched), nil
+		}), nil
 	case "scan":
 		return NewAutoBuiltin("string.scan", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
@@ -1292,6 +1377,25 @@ func stringMemberTextOps(property string) (Value, error) {
 			}
 			return NewArray(values), nil
 		}), nil
+	case "bytes":
+		return NewAutoBuiltin("string.bytes", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.bytes does not take arguments")
+			}
+			text := receiver.String()
+			// Reject the allocation up front so a string that fits the memory
+			// quota cannot reserve a result array of one Value per byte that
+			// does not. make([]Value, len(text)) would reserve the entire
+			// backing array before the post-call check could observe it.
+			if err := exec.checkProjectedIntArrayBytes(len(text)); err != nil {
+				return NewNil(), err
+			}
+			values := make([]Value, len(text))
+			for i := range len(text) {
+				values[i] = NewInt(int64(text[i]))
+			}
+			return NewArray(values), nil
+		}), nil
 	case "each_char":
 		return NewAutoBuiltin("string.each_char", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
@@ -1304,6 +1408,25 @@ func stringMemberTextOps(property string) (Value, error) {
 			var blockArg [1]Value
 			for _, r := range receiver.String() {
 				blockArg[0] = NewString(string(r))
+				if _, err := runner.call(blockArg[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
+	case "each_byte":
+		return NewAutoBuiltin("string.each_byte", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.each_byte does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "string.each_byte")
+			if err != nil {
+				return NewNil(), err
+			}
+			var blockArg [1]Value
+			text := receiver.String()
+			for i := range len(text) {
+				blockArg[0] = NewInt(int64(text[i]))
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
 				}
