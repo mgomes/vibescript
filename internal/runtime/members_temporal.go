@@ -125,8 +125,11 @@ func callDurationEql(d Duration, args []Value, kwargs map[string]Value) (Value, 
 	if err := rejectTemporalKwargs("duration.eql?", kwargs); err != nil {
 		return NewNil(), err
 	}
-	if len(args) != 1 || args[0].Kind() != KindDuration {
-		return NewNil(), fmt.Errorf("duration.eql? expects a duration")
+	if len(args) != 1 {
+		return NewNil(), fmt.Errorf("duration.eql? expects 1 argument, got %d", len(args))
+	}
+	if args[0].Kind() != KindDuration {
+		return NewBool(false), nil
 	}
 	return NewBool(d.Seconds() == args[0].Duration().Seconds()), nil
 }
@@ -349,8 +352,11 @@ func callTimeEql(t time.Time, args []Value, kwargs map[string]Value) (Value, err
 	if err := rejectTemporalKwargs("time.eql?", kwargs); err != nil {
 		return NewNil(), err
 	}
-	if len(args) != 1 || args[0].Kind() != KindTime {
-		return NewNil(), fmt.Errorf("time.eql? expects a Time")
+	if len(args) != 1 {
+		return NewNil(), fmt.Errorf("time.eql? expects 1 argument, got %d", len(args))
+	}
+	if args[0].Kind() != KindTime {
+		return NewBool(false), nil
 	}
 	return NewBool(t.Equal(args[0].Time())), nil
 }
