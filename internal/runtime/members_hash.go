@@ -364,20 +364,57 @@ func hashMemberQuery(property string) (Value, error) {
 	}
 }
 
-// mergedKeyCount returns the number of distinct keys a merge of base and args
-// would hold. The merged hash is the union of the receiver's keys and every
-// argument's keys, so overlapping keys (h.merge(h), or the same defaults applied
-// repeatedly) collapse to one entry. Counting the union lets the projected memory
-// check size the real output map instead of summing every input length, which
-// would over-count an overlapping merge and reject one that fits the quota.
-//
-// When no argument adds a key beyond the receiver, the union is just len(base);
-// the helper short-circuits that case so the common single-overlay merge avoids
-// allocating a tracking set. Otherwise it counts the receiver's keys plus each
-// argument key not already seen, walking maps that are inputs already resident in
-// memory.
-func mergedKeyCount(base map[string]Value, args []Value) int {
+// looseMergedKeyUpperBound returns a non-allocating upper bound on the number of
+// keys a merge of base and args could hold: the receiver's keys plus every
+// argument's length, summed without subtracting overlaps. It never under-counts
+// the real union, so when checkProjectedHashBytes accepts this bound the merge is
+// guaranteed to fit and the caller can skip the exact (allocating) union count.
+func looseMergedKeyUpperBound(base map[string]Value, args []Value) int {
 	count := len(base)
+	for _, arg := range args {
+		count = saturatingAdd(count, len(arg.Hash()))
+	}
+	return count
+}
+
+// mergedKeyCount returns the number of distinct keys a merge of base and args
+// would hold, stopping early once the running total passes limit. The merged
+// hash is the union of the receiver's keys and every argument's keys, so
+// overlapping keys (h.merge(h), or the same defaults applied repeatedly) collapse
+// to one entry. Counting the union lets the projected memory check size the real
+// output map instead of summing every input length, which would over-count an
+// overlapping merge and reject one that fits the quota.
+//
+// limit is the largest output the quota can admit (maxProjectedHashEntries). A
+// single argument needs no cross-argument deduplication, so its union is counted
+// against base alone with no tracking set. Multiple arguments require a seen set
+// to collapse keys repeated across arguments, but the set is bounded by limit:
+// once the distinct-key total exceeds limit the merge is certain to be rejected,
+// so counting stops and returns limit+1 rather than growing a tracking table
+// sized to the over-quota result. All inputs walked here are already resident in
+// memory.
+func mergedKeyCount(base map[string]Value, args []Value, limit int) int {
+	count := len(base)
+	if count > limit {
+		return count
+	}
+	if len(args) <= 1 {
+		// One argument (or none): every argument key is distinct on its own, so
+		// the union is base plus the argument keys absent from base, countable
+		// without a tracking set.
+		for _, arg := range args {
+			for key := range arg.Hash() {
+				if _, inBase := base[key]; inBase {
+					continue
+				}
+				count++
+				if count > limit {
+					return count
+				}
+			}
+		}
+		return count
+	}
 	var seen map[string]struct{}
 	for _, arg := range args {
 		for key := range arg.Hash() {
@@ -392,6 +429,12 @@ func mergedKeyCount(base map[string]Value, args []Value) int {
 			}
 			seen[key] = struct{}{}
 			count++
+			if count > limit {
+				// The merge already exceeds the quota's entry budget, so it will
+				// be rejected regardless of further keys. Stop before the tracking
+				// set grows past the admissible result size.
+				return count
+			}
 		}
 	}
 	return count
@@ -427,16 +470,26 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			base := receiver.Hash()
 			// Preflight the map this merge could materialize before allocating it.
-			// The output holds the union of the receiver's keys and every
-			// argument's keys, so its size is the count of distinct keys, not the
-			// sum of every input length: when arguments overlap the receiver or
-			// each other (h.merge(h), or repeatedly overlaying the same defaults)
-			// the duplicates collapse and only the unique final keys are reserved.
-			// Projecting the union rejects an over-quota merge up front without
-			// over-counting a merge that stays within the sandbox limit.
-			projected := mergedKeyCount(base, args)
-			if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
-				return NewNil(), err
+			// Two phases keep the check itself within the quota it enforces:
+			//
+			// First try a non-allocating upper bound (the receiver's keys plus
+			// every argument's length, overlaps included). If even that loose
+			// bound fits, the merge is guaranteed to fit and no tracking set is
+			// needed to count the exact union.
+			//
+			// Only when the loose bound exceeds the quota does the exact union
+			// count matter, because overlap (h.merge(h), repeated defaults) could
+			// still bring the real output within the limit. The exact count is
+			// then taken with mergedKeyCount, which caps its deduplication set at
+			// the quota's entry budget so a doomed merge cannot allocate a large
+			// tracking table before being rejected here.
+			upperBound := looseMergedKeyUpperBound(base, args)
+			if exec.checkProjectedHashBytes(upperBound, receiver, args, kwargs, block) != nil {
+				limit := exec.maxProjectedHashEntries(receiver, args, kwargs, block)
+				projected := mergedKeyCount(base, args, limit)
+				if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
+					return NewNil(), err
+				}
 			}
 			out := make(map[string]Value, len(base))
 			maps.Copy(out, base)

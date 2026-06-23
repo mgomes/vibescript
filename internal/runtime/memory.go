@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"unsafe"
 )
@@ -156,6 +157,20 @@ func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args [
 		return nil
 	}
 
+	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	used = saturatingAdd(used, saturatingMul(count, perEntry))
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+// projectedHashBaseBytes estimates the live footprint a hash transform holds
+// before it reserves its output map: the call-root usage plus the empty map's
+// structural overhead. checkProjectedHashBytes and maxProjectedHashEntries both
+// build on it so the entry budget and the byte check agree on the same baseline.
+func (exec *Execution) projectedHashBaseBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
 	est := exec.memoryEstimatorForCheck()
 	used := exec.estimateMemoryUsageBase(est)
 	if receiver.Kind() != KindNil {
@@ -172,13 +187,27 @@ func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args [
 	}
 	est.reset()
 
-	used = saturatingAdd(used, estimatedValueBytes+estimatedMapBaseBytes)
-	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	used = saturatingAdd(used, saturatingMul(count, perEntry))
-	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	return saturatingAdd(used, estimatedValueBytes+estimatedMapBaseBytes)
+}
+
+// maxProjectedHashEntries returns the largest output-map entry count that
+// checkProjectedHashBytes would still accept for the given call roots, or
+// math.MaxInt when no memory quota is enforced. Counting helpers that must
+// deduplicate keys across inputs (such as the merge union count) use it to cap
+// their tracking set at the quota-derived budget: once the distinct-key total
+// passes this ceiling the transform is certain to be rejected, so they can stop
+// allocating and report an over-budget count instead of building a tracking
+// table sized to the rejected result.
+func (exec *Execution) maxProjectedHashEntries(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	if exec.memoryQuota <= 0 {
+		return math.MaxInt
 	}
-	return nil
+	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
+	if used >= exec.memoryQuota {
+		return 0
+	}
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	return (exec.memoryQuota - used) / perEntry
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {

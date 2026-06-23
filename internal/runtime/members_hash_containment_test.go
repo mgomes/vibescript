@@ -218,37 +218,155 @@ func TestHashMergeProjectionCountsUnionNotSum(t *testing.T) {
 	}
 }
 
+func TestHashMergeMultiArgOverlapStaysWithinQuota(t *testing.T) {
+	t.Parallel()
+
+	// A merge whose arguments all duplicate the receiver collapses to the
+	// receiver's keys, so it fits a union-sized quota. The loose upper bound
+	// (len(base) + sum of argument lengths) exceeds that quota, forcing the exact
+	// multi-argument union count, which must deduplicate the repeated keys and
+	// admit the merge. This exercises the two-phase containment path: the loose
+	// precheck fails, then the capped union count brings the projection back
+	// within budget without growing an unbounded tracking set.
+	const count = 4_000
+	receiver := largeHashReceiver(count)
+	args := []Value{receiver, receiver, receiver}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, args, nil, NewNil())
+	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+	quota := liveWithRoots + outputStructure
+
+	// Sanity: the loose upper bound sums every argument length, so it exceeds the
+	// union-sized quota and the exact count path must run for this merge to pass.
+	looseProjection := estimatedValueBytes + estimatedMapBaseBytes +
+		(count+len(args)*count)*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+	if liveWithRoots+looseProjection <= quota {
+		t.Fatalf("test setup expects the loose projection (%d) to exceed the quota (%d)", liveWithRoots+looseProjection, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "merge", args, NewNil())
+	if err != nil {
+		t.Fatalf("merge with overlapping args under union-sized quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("merge produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	}
+}
+
+func TestHashMergeMultiArgDistinctKeysTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// A merge whose multiple arguments contribute many distinct new keys exceeds a
+	// tiny quota and must be rejected up front. The containment must reject it
+	// without first allocating a deduplication set sized to the rejected union, so
+	// the merge fails fast on the projected check rather than after building a
+	// large tracking table.
+	const count = 50_000
+	const quota = 8 * 1024
+	receiver := largeHashReceiver(8)
+
+	first := make(map[string]Value, count)
+	second := make(map[string]Value, count)
+	for i := range count {
+		first["f"+strconv.Itoa(i)] = NewInt(int64(i))
+		second["s"+strconv.Itoa(i)] = NewInt(int64(i))
+	}
+	args := []Value{NewHash(first), NewHash(second)}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "merge", args, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestMergedKeyCount(t *testing.T) {
 	t.Parallel()
 
 	base := map[string]Value{"a": NewInt(1), "b": NewInt(2)}
 
 	tests := []struct {
-		name string
-		args []Value
-		want int
+		name  string
+		args  []Value
+		limit int
+		want  int
 	}{
-		{name: "no args", want: 2},
-		{name: "self overlay", args: []Value{NewHash(base)}, want: 2},
-		{name: "all new keys", args: []Value{NewHash(map[string]Value{"c": NewInt(3), "d": NewInt(4)})}, want: 4},
-		{name: "partial overlap", args: []Value{NewHash(map[string]Value{"b": NewInt(9), "c": NewInt(3)})}, want: 3},
+		{name: "no args", limit: 100, want: 2},
+		{name: "self overlay", args: []Value{NewHash(base)}, limit: 100, want: 2},
+		{name: "all new keys", args: []Value{NewHash(map[string]Value{"c": NewInt(3), "d": NewInt(4)})}, limit: 100, want: 4},
+		{name: "partial overlap", args: []Value{NewHash(map[string]Value{"b": NewInt(9), "c": NewInt(3)})}, limit: 100, want: 3},
 		{
 			name: "duplicate new key across args",
 			args: []Value{
 				NewHash(map[string]Value{"c": NewInt(3)}),
 				NewHash(map[string]Value{"c": NewInt(4)}),
 			},
-			want: 3,
+			limit: 100,
+			want:  3,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := mergedKeyCount(base, tc.args); got != tc.want {
+			if got := mergedKeyCount(base, tc.args, tc.limit); got != tc.want {
 				t.Fatalf("mergedKeyCount(%s) = %d, want %d", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestMergedKeyCountStopsAtLimit verifies the union counter never grows its
+// deduplication set past the quota-derived budget. With many distinct new keys
+// spread across multiple arguments the exact union would be large, but once the
+// running count exceeds the limit the helper returns limit+1 without continuing
+// to track keys, so a doomed over-quota merge cannot allocate a tracking table
+// sized to the rejected result. This guards the P1 finding on PR #776.
+func TestMergedKeyCountStopsAtLimit(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]Value{"a": NewInt(1)}
+	// Two arguments so the multi-argument deduplication path runs; the keys are
+	// disjoint from base and from each other, so the true union is 1+500+500.
+	first := make(map[string]Value, 500)
+	second := make(map[string]Value, 500)
+	for i := range 500 {
+		first["f"+strconv.Itoa(i)] = NewInt(int64(i))
+		second["s"+strconv.Itoa(i)] = NewInt(int64(i))
+	}
+	args := []Value{NewHash(first), NewHash(second)}
+
+	const limit = 10
+	got := mergedKeyCount(base, args, limit)
+	if got <= limit {
+		t.Fatalf("mergedKeyCount returned %d, want a value greater than the limit %d", got, limit)
+	}
+	if got > limit+1 {
+		t.Fatalf("mergedKeyCount returned %d, want it to stop at limit+1 (%d) rather than counting the full union", got, limit+1)
+	}
+}
+
+// TestMergedKeyCountSingleArgNeedsNoTrackingSet verifies the single-argument path
+// counts the exact union against the receiver alone without a deduplication set,
+// even when the result is rejected. A single argument can never repeat a key
+// within itself, so no tracking table is required regardless of size.
+func TestMergedKeyCountSingleArgNeedsNoTrackingSet(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]Value{"a": NewInt(1)}
+	arg := make(map[string]Value, 100)
+	for i := range 100 {
+		arg["x"+strconv.Itoa(i)] = NewInt(int64(i))
+	}
+
+	// A generous limit yields the exact union (base plus the 100 disjoint keys).
+	if got := mergedKeyCount(base, []Value{NewHash(arg)}, 1_000); got != 101 {
+		t.Fatalf("mergedKeyCount(single arg) = %d, want 101", got)
+	}
+	// A tight limit stops early without tracking, reporting an over-budget count.
+	if got := mergedKeyCount(base, []Value{NewHash(arg)}, 5); got <= 5 {
+		t.Fatalf("mergedKeyCount(single arg, limit 5) = %d, want it to exceed the limit", got)
 	}
 }
 
