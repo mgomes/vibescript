@@ -383,6 +383,47 @@ func TestArrayFilterMapCountsDistinctBackings(t *testing.T) {
 	}
 }
 
+// TestArrayFilterMapCountsLiveCallRoots guards the incremental per-element memory
+// charge against ignoring the builtin's live call roots. While filter_map runs,
+// its receiver and block are held on the Go call stack, so they are invisible to
+// estimateMemoryUsageBase even though the pre-call checkCallMemoryRoots already
+// charged them. If the accumulator seeded its baseline from the base alone, a
+// receiver that already nears the quota would leave room for the loop to
+// accumulate a result that pushes total live memory over the limit, and the
+// breach would only surface at the post-call check — which never runs when the
+// builtin is driven directly. Seeding the baseline with the live receiver makes
+// the loop trip mid-iteration instead.
+//
+// The quota is sized to comfortably hold the receiver alone (so seeding it does
+// not reject before the loop even starts) but to leave room for only a few kept
+// results on top of it. With the receiver counted, the loop must abort well
+// before traversing the whole receiver; without it, the few-result headroom would
+// be measured against a near-empty baseline and the call would run to completion.
+func TestArrayFilterMapCountsLiveCallRoots(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 4096
+	const resultWidth = 16
+	fn := arrayFilterMapBuiltin(t)
+
+	receiver := largeIntArray(receiverSize)
+	receiverFootprint := newMemoryEstimator().value(receiver)
+	oneResult := newMemoryEstimator().value(freshIntArrayValue(resultWidth))
+
+	// Hold the receiver plus a few results, but far fewer than the receiver has
+	// elements. Without the receiver in the baseline the same headroom would admit
+	// hundreds of results, letting the loop keep every element and succeed.
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: receiverFootprint + oneResult*8,
+	}
+	_, err := fn(exec, receiver, nil, nil, freshArrayBlockValue(resultWidth))
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps >= receiverSize {
+		t.Fatalf("steps = %d, want the loop to trip the memory quota before traversing the whole receiver (%d) — the live receiver must count toward the accumulator baseline", exec.steps, receiverSize)
+	}
+}
+
 // constantTruthyBlockValue builds a block whose body is a single truthy integer
 // literal, so every invocation keeps its element while allocating nothing. Driving
 // filter_map with it isolates the per-element memory charge: the only per-element

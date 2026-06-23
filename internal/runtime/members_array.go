@@ -743,9 +743,14 @@ func arrayMemberQuery(property string) (Value, error) {
 			// with no payload beyond their slot, letting it use the O(1) cap-based
 			// projection), filter_map keeps arbitrary block results, so the
 			// accumulator walks each element to account for string and collection
-			// payloads. It dedups shared backings exactly like the post-call check,
-			// so it never rejects a result the post-call check would have accepted.
-			acc := newArrayBuildAccumulator(exec)
+			// payloads. Its baseline includes the live receiver and block (held on
+			// the Go stack during the call, so invisible to estimateMemoryUsageBase
+			// but charged by the pre-call checkCallMemoryRoots), so a transform
+			// whose receiver or captured block already nears the quota cannot
+			// accumulate an unbounded result. It dedups shared backings exactly
+			// like the post-call check, so it never rejects a result the post-call
+			// check would have accepted.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			var blockArg [1]Value
 			for _, item := range arr {
 				// Charge a step per yield so an empty or trivial block body
@@ -1330,10 +1335,11 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	// Track accumulated payloads incrementally rather than re-estimating the whole
 	// prefix on each append: checkMemoryWith(NewArray(out)) would walk every element
 	// per append and make the fill O(n^2). The accumulator snapshots the live base
-	// once, then per kept element walks only that element (O(element size)), so a
-	// block returning quota-sized values is charged during the loop instead of
-	// slipping past the slot-only backing check until fill returns.
-	acc := newArrayBuildAccumulator(exec)
+	// (including this call's receiver/args/block, still live on the Go stack) once,
+	// then per kept element walks only that element (O(element size)), so a block
+	// returning quota-sized values is charged during the loop instead of slipping
+	// past the slot-only backing check until fill returns.
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 
 	appendValue := func(val Value) error {
 		out = append(out, val)
