@@ -18,19 +18,36 @@ func TestMemoryEstimatorLayoutConstantsMatchRuntimeTypes(t *testing.T) {
 	}
 }
 
-func TestMemoryEstimatorDeduplicatesAliasedEmptySlices(t *testing.T) {
+func TestMemoryEstimatorCountsEmptySlicesDeterministically(t *testing.T) {
 	t.Parallel()
-	// Back the zero-length slice with a live, fully-sized array and re-slice it
-	// to length zero. A bare `make([]Value, 0, 8)` leaves the backing array
-	// referenced only by zero-length headers, which produced an unstable
-	// reflect.Pointer in some CI environments and intermittently defeated the
-	// alias dedup (the second estimate occasionally counted the full size
-	// instead of 0). Holding a full-length reference keeps the data pointer
-	// stable so the dedup is deterministic.
+	// Zero-length slices are not pointer-deduplicated: their backing identity is
+	// unreliable under coverage instrumentation, and an empty slice has no
+	// elements to recurse into, so the only thing dedup could save is the tiny
+	// backing estimate. Each empty alias is therefore counted identically and
+	// deterministically (conservative — never under-counts).
 	backing := make([]Value, 8)
 	empty := backing[:0]
-	aliasA := empty
-	aliasB := empty
+
+	est := newMemoryEstimator()
+	first := est.slice(empty)
+	second := est.slice(empty)
+	runtime.KeepAlive(backing)
+
+	if first == 0 {
+		t.Fatalf("expected empty slice to contribute memory")
+	}
+	if second != first {
+		t.Fatalf("expected empty slice estimate to be deterministic, got first=%d second=%d", first, second)
+	}
+}
+
+func TestMemoryEstimatorDeduplicatesAliasedNonEmptySlices(t *testing.T) {
+	t.Parallel()
+	// Non-empty aliased slices share a stable backing pointer, so the second
+	// estimate of the same backing is fully deduplicated to zero.
+	backing := []Value{NewInt(1), NewInt(2), NewInt(3)}
+	aliasA := backing
+	aliasB := backing
 
 	est := newMemoryEstimator()
 	first := est.slice(aliasA)
@@ -41,7 +58,7 @@ func TestMemoryEstimatorDeduplicatesAliasedEmptySlices(t *testing.T) {
 		t.Fatalf("expected first alias to contribute memory")
 	}
 	if second != 0 {
-		t.Fatalf("expected aliased empty slice to be deduplicated, got %d", second)
+		t.Fatalf("expected aliased non-empty slice to be deduplicated, got %d", second)
 	}
 }
 

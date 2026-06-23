@@ -419,6 +419,18 @@ func (est *memoryEstimator) slice(values []Value) int {
 		return size
 	}
 
+	// A zero-length slice has no elements to recurse into, so the only thing
+	// alias dedup could save for it is the (tiny) backing estimate. Skip the
+	// pointer-based dedup entirely for empty slices: the backing identity of a
+	// zero-length slice is unreliable under coverage instrumentation (it can
+	// report a zero or shifting pointer), which made aliased empty slices
+	// intermittently fail to dedup in the coverage CI job. Counting each empty
+	// alias is deterministic and conservative — it never under-counts, so the
+	// sandbox memory bound stays safe.
+	if len(values) == 0 {
+		return size
+	}
+
 	id := sliceBackingIdentity(values)
 	if id != 0 {
 		if _, seen := est.seenSlices[id]; seen {
@@ -428,10 +440,6 @@ func (est *memoryEstimator) slice(values []Value) int {
 			est.seenSlices = make(map[uintptr]struct{})
 		}
 		est.seenSlices[id] = struct{}{}
-	}
-
-	if len(values) == 0 {
-		return size
 	}
 
 	for _, val := range values {
