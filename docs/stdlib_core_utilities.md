@@ -99,11 +99,11 @@ Unicode characters, not bytes, unless noted.
 ### Whitespace and Affix Trimming
 
 - `strip -> string` – trim leading and trailing whitespace. Like Ruby, only the
-  ASCII whitespace bytes `\t \n \v \f \r " "` are removed (plus a trailing
-  `\0`); Unicode spaces such as NBSP (`U+00A0`), the Ogham space mark
+  ASCII whitespace bytes `\0 \t \n \v \f \r " "` are removed, with `\0` trimmed
+  from both ends; Unicode spaces such as NBSP (`U+00A0`), the Ogham space mark
   (`U+1680`), em space (`U+2003`), and the BOM (`U+FEFF`) are preserved.
-- `lstrip -> string` – trim leading whitespace (same ASCII set as `strip`; a
-  leading `\0` is kept).
+- `lstrip -> string` – trim leading whitespace (same ASCII set as `strip`,
+  including a leading `\0`).
 - `rstrip -> string` – trim trailing whitespace (same ASCII set as `strip`,
   including a trailing `\0`).
 - `squish -> string` – trim both ends and collapse internal whitespace runs to
