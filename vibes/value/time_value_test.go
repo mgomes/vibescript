@@ -502,12 +502,63 @@ func TestTimeFromEpochParts(t *testing.T) {
 			wantNanos: 876544000,
 		},
 		{
-			name:      "float subsecond truncates toward zero",
+			// Ruby floors a fractional subsecond offset; for a positive value
+			// flooring and truncation coincide, so Time.at(0, 1.9, :nsec) keeps
+			// 1 ns.
+			name:      "positive float subsecond floors to whole nanosecond",
 			sec:       value.NewInt(0),
 			subsec:    subsec(value.NewFloat(1.9)),
 			unit:      unitSym("nsec"),
 			wantUnix:  0,
 			wantNanos: 1,
+		},
+		{
+			// Ruby keeps the rational offset and floors the resulting instant,
+			// so a negative fractional offset rounds toward negative infinity:
+			// Time.at(0, -1.9, :nsec) floors -1.9 ns to -2 ns, leaving
+			// sec=-1, nsec=999999998. Truncating toward zero would land one
+			// nanosecond too late (nsec 999999999).
+			name:      "negative float nanosecond floors toward negative infinity",
+			sec:       value.NewInt(0),
+			subsec:    subsec(value.NewFloat(-1.9)),
+			unit:      unitSym("nsec"),
+			wantUnix:  -1,
+			wantNanos: 999999998,
+		},
+		{
+			// The float -0.1 has no representation that lands on zero, so
+			// flooring -0.1 ns yields -1 ns (nsec 999999999). Truncating toward
+			// zero would leave the instant unchanged at 0 ns -- the regression
+			// this guards against.
+			name:      "negative subnanosecond floors to one nanosecond earlier",
+			sec:       value.NewInt(0),
+			subsec:    subsec(value.NewFloat(-0.1)),
+			unit:      unitSym("nsec"),
+			wantUnix:  -1,
+			wantNanos: 999999999,
+		},
+		{
+			// The float -0.29 is -0.28999...998, so scaled by 1000 ns/usec the
+			// exact value is -289.99...98 ns. Ruby floors this to -290 ns,
+			// leaving nsec 999999710. Truncating toward zero (or rounding the
+			// float product back to -290.0) would give the wrong result.
+			name:      "negative float microsecond floors exact value",
+			sec:       value.NewInt(0),
+			subsec:    subsec(value.NewFloat(-0.29)),
+			unit:      unitSym("usec"),
+			wantUnix:  -1,
+			wantNanos: 999999710,
+		},
+		{
+			// Time.at(0, -1.5, :usec) == -1500 ns exactly (no sub-nanosecond
+			// fraction), so flooring and truncation coincide: sec=-1,
+			// nsec=999998500.
+			name:      "negative float microsecond exact half",
+			sec:       value.NewInt(0),
+			subsec:    subsec(value.NewFloat(-1.5)),
+			unit:      unitSym("usec"),
+			wantUnix:  -1,
+			wantNanos: 999998500,
 		},
 		{
 			name:        "non numeric seconds",

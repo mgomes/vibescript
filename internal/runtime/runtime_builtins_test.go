@@ -410,7 +410,18 @@ func TestTimeAtSubsecondConstructor(t *testing.T) {
 	        nsec_unit: Time.at(0, 123456789, :nanosecond).utc.nsec,
 	        nsec_alias: Time.at(0, 123456789, :nsec).utc.nsec,
 	        zone_offset: Time.at(0, 123456, in: "+05:30").utc_offset,
-	        zone_nsec: Time.at(0, 123456, in: "+05:30").nsec
+	        zone_nsec: Time.at(0, 123456, in: "+05:30").nsec,
+	        # Ruby floors a fractional subsecond offset, so a negative fractional
+	        # value rounds toward negative infinity rather than toward zero:
+	        # Time.at(0, -1.9, :nsec) floors -1.9 ns to -2 ns, leaving the
+	        # instant at -1 s + 999999998 ns.
+	        neg_float_nsec: Time.at(0, -1.9, :nsec).utc.nsec,
+	        neg_float_nsec_sec: Time.at(0, -1.9, :nsec).utc.to_i,
+	        # Time.at(0, -0.29, :usec) floors -289.99...98 ns to -290 ns.
+	        neg_float_usec: Time.at(0, -0.29, :usec).utc.nsec,
+	        # Time.at(0, -0.1, :nsec) floors -0.1 ns to -1 ns; truncation toward
+	        # zero would leave the instant unchanged at 0 ns.
+	        neg_subnano: Time.at(0, -0.1, :nsec).utc.nsec
 	      }
 	    end
 
@@ -467,6 +478,12 @@ func TestTimeAtSubsecondConstructor(t *testing.T) {
 		// the subsecond component is preserved.
 		"zone_offset": NewInt(19800),
 		"zone_nsec":   NewInt(123456000),
+		// Negative fractional subsecond offsets floor toward negative infinity,
+		// matching Ruby's Time.at(0, -1.9, :nsec).nsec == 999999998.
+		"neg_float_nsec":     NewInt(999999998),
+		"neg_float_nsec_sec": NewInt(-1),
+		"neg_float_usec":     NewInt(999999710),
+		"neg_subnano":        NewInt(999999999),
 	}
 	got := result.Hash()
 	for key, expected := range want {

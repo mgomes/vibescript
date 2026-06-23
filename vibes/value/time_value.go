@@ -335,8 +335,9 @@ func epochSecondsToParts(val Value) (seconds, nanos int64, err error) {
 }
 
 // subsecToNanos converts a subsecond value expressed in units of unitNanos
-// nanoseconds into a nanosecond count. Float subsecond values truncate any
-// fractional nanoseconds toward zero, matching time.Time's resolution.
+// nanoseconds into a nanosecond count. Float subsecond values are floored to
+// whole nanoseconds, matching the way Ruby exposes a fractional subsecond
+// offset (see below).
 //
 // Unlike Ruby's Time.at, which carries an arbitrarily large subsecond argument
 // into the seconds via arbitrary-precision arithmetic, the result here is bound
@@ -356,20 +357,28 @@ func subsecToNanos(val Value, unitNanos int64) (int64, error) {
 		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return 0, fmt.Errorf("Time.at expects a finite subsecond value")
 		}
-		// Scale and truncate against the float's exact binary value via a
-		// rational, mirroring floatMicrosecondsNanos. Multiplying in float64
-		// can round the product up before int64 truncation -- e.g. the float
-		// 0.29 is 0.28999...998, but 0.29 * 1000.0 rounds back to exactly
-		// 290.0 -- which would flip the truncated nanosecond count. Ruby
-		// truncates the exact value, yielding 289 ns for Time.at(0, 0.29,
-		// :usec), so the exact rational keeps representation error from
+		// Scale and floor against the float's exact binary value via a
+		// rational. Multiplying in float64 can round the product before
+		// integer conversion -- e.g. the float 0.29 is 0.28999...998, but
+		// 0.29 * 1000.0 rounds back to exactly 290.0 -- which would flip the
+		// nanosecond count. The exact rational keeps representation error from
 		// deciding the result.
+		//
+		// Ruby keeps the rational offset and floors the resulting instant when
+		// exposing nanoseconds, so a negative fractional offset rounds toward
+		// negative infinity rather than toward zero: Time.at(0, -0.29, :usec)
+		// floors -289.99...98 ns to -290 ns (nsec 999999710), and
+		// Time.at(0, 0.29, :usec) floors 289.99...98 ns to 289 ns. Because the
+		// whole-second and integer-nanosecond epoch parts are added afterward
+		// as exact integers, flooring this rational is equivalent to flooring
+		// the combined instant. Use Div (floored, Euclidean) rather than Quo
+		// (truncated toward zero); unitNanos is always positive.
 		exact := new(big.Rat).SetFloat64(f)
 		if exact == nil {
 			return 0, fmt.Errorf("Time.at expects a finite subsecond value")
 		}
 		exact.Mul(exact, new(big.Rat).SetInt64(unitNanos))
-		nanos := new(big.Int).Quo(exact.Num(), exact.Denom()) // truncate toward zero
+		nanos := new(big.Int).Div(exact.Num(), exact.Denom()) // floor toward negative infinity
 		if !nanos.IsInt64() {
 			return 0, subsecondOverflowError()
 		}

@@ -8,8 +8,9 @@
   non-numeric subsecond value raises a runtime error. Unlike the calendar
   constructors (`Time.utc`/`Time.local`), `Time.at` does not treat an explicit
   `nil` subsecond as omitted: `Time.at(0, nil)` raises just as Ruby does.
-  Subsecond values truncate
-  toward zero at nanosecond resolution rather than retaining Ruby's
-  arbitrary-precision rationals. A subsecond magnitude too large to express
-  within that nanosecond range is rejected with `Time.at subsecond value out of
-  range` instead of silently wrapping into a bogus instant.
+  Subsecond values are floored toward negative infinity at nanosecond
+  resolution rather than retaining Ruby's arbitrary-precision rationals, so a
+  negative fractional offset rounds the way Ruby exposes it
+  (`Time.at(0, -1.9, :nsec).nsec == 999999998`). A subsecond magnitude too large
+  to express within that nanosecond range is rejected with `Time.at subsecond
+  value out of range` instead of silently wrapping into a bogus instant.
