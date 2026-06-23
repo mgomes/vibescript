@@ -131,6 +131,63 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 	return nil
 }
 
+// arrayBuildAccumulator charges the memory of an array assembled element by
+// element against the quota without re-walking the whole prefix on each append.
+// Builtins that grow a Go-local result slice from values they cannot bound up
+// front (such as Array#fill's block form, where each block call can return an
+// arbitrarily large value) use it so accumulated payloads count toward the quota
+// during construction, not only after the builtin returns.
+//
+// checkProjectedIntArrayBytes is enough for results whose every element is an
+// inlined scalar, because there the slot array is the entire allocation. It does
+// not account for the payloads reachable from each element (string bytes, nested
+// collections), so a fill block returning many quota-sized strings would slip
+// past it until the post-call check. This accumulator closes that gap: it keeps
+// a baseline of everything live at the start of the build plus a running total of
+// each kept element's payload, walking only the new element on each append.
+type arrayBuildAccumulator struct {
+	exec    *Execution
+	est     *memoryEstimator
+	base    int
+	payload int
+}
+
+// newArrayBuildAccumulator snapshots the execution's current live memory as the
+// baseline for an incremental array build. It uses its own estimator rather than
+// the execution's shared one so nested evaluation (a fill block, say) cannot
+// reset the seen-set mid-build; that estimator persists across add calls so a
+// value aliased by an earlier element or already reachable from the baseline is
+// counted once, matching the real shared backing.
+func newArrayBuildAccumulator(exec *Execution) *arrayBuildAccumulator {
+	acc := &arrayBuildAccumulator{exec: exec}
+	if exec.memoryQuota <= 0 {
+		return acc
+	}
+	acc.est = newMemoryEstimator()
+	acc.base = exec.estimateMemoryUsageBase(acc.est)
+	return acc
+}
+
+// add charges a newly appended element and rejects the build if the result's
+// projected memory exceeds the quota. backingCap is the capacity of the result's
+// backing slice after the append; its slot array is charged from that capacity
+// while only the element's payload beyond its slot is added to the running total,
+// so the slot is never double counted.
+func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
+
+	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(backingCap, estimatedValueBytes))
+	used := saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	est := exec.memoryEstimatorForCheck()
 
