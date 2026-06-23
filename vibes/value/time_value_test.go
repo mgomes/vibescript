@@ -564,6 +564,49 @@ func TestTimeFromEpochParts(t *testing.T) {
 			unit:        value.NewSymbol("nsec"),
 			wantErrText: "Time.at subsecond value out of range",
 		},
+		{
+			// The float 0.29 is 0.28999...998, so the exact value scaled by
+			// 1000 ns/usec truncates to 289, not the 290 that float64
+			// multiplication would round up to. Ruby's Time.at(0, 0.29, :usec)
+			// yields 289 ns, so representation error must not flip the result.
+			name:      "float microsecond truncates exact value not rounded product",
+			sec:       value.NewInt(0),
+			subsec:    value.NewFloat(0.29),
+			unit:      value.NewSymbol("usec"),
+			wantUnix:  0,
+			wantNanos: 289,
+		},
+		{
+			// Matches Ruby's Time.at(0, 1.005, :millisecond) == 1004999 ns:
+			// the float 1.005 is just below 1.005, so scaling by 1e6 ns/ms and
+			// truncating yields 1004999 rather than 1005000.
+			name:      "float millisecond truncates exact value not rounded product",
+			sec:       value.NewInt(0),
+			subsec:    value.NewFloat(1.005),
+			unit:      value.NewSymbol("millisecond"),
+			wantUnix:  0,
+			wantNanos: 1004999,
+		},
+		{
+			// A whole-second subsecond carry that pushes the epoch seconds past
+			// math.MaxInt64 must raise rather than let time.Unix normalize the
+			// overflow into a wrapped (negative) instant. Time.Time cannot
+			// represent Ruby's arbitrary-precision result of MaxInt64 + 1 second.
+			name:        "subsecond carry overflows epoch seconds",
+			sec:         value.NewInt(math.MaxInt64),
+			subsec:      value.NewInt(1_000_000),
+			unit:        nilVal,
+			wantErrText: "Time.at subsecond value out of range",
+		},
+		{
+			// The mirror image at the lower bound: a borrow that pushes the
+			// epoch seconds below math.MinInt64 must raise rather than wrap.
+			name:        "subsecond borrow underflows epoch seconds",
+			sec:         value.NewInt(math.MinInt64),
+			subsec:      value.NewInt(-1_000_000),
+			unit:        nilVal,
+			wantErrText: "Time.at subsecond value out of range",
+		},
 	}
 
 	for _, tc := range cases {

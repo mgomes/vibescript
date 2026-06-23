@@ -276,10 +276,38 @@ func TimeFromEpochParts(secVal, subsecVal, unitVal Value, loc *time.Location) (t
 		return time.Time{}, fmt.Errorf("Time.at expects a subsecond value before a unit")
 	}
 
+	seconds, nanos, err = normalizeUnixParts(seconds, nanos)
+	if err != nil {
+		return time.Time{}, err
+	}
+
 	if loc == nil {
 		loc = time.Local
 	}
 	return time.Unix(seconds, nanos).In(loc), nil
+}
+
+// normalizeUnixParts carries whole seconds out of the nanosecond component so
+// nanos lands in [0, 1_000_000_000) before reaching time.Unix. time.Unix accepts
+// an out-of-range nanos and normalizes it itself, but that normalization wraps
+// silently when the carry overflows the int64 seconds -- for example
+// Time.at(math.MaxInt64, 1_000_000) carries one whole second and would wrap the
+// seconds to math.MinInt64. Performing the carry here with checked addition
+// surfaces that overflow as an error instead.
+func normalizeUnixParts(seconds, nanos int64) (int64, int64, error) {
+	carry := nanos / nanosPerSecond
+	nanos -= carry * nanosPerSecond
+	if nanos < 0 {
+		// Borrow a second so the nanosecond remainder is non-negative, matching
+		// time.Unix's normalization.
+		nanos += nanosPerSecond
+		carry--
+	}
+	seconds, ok := addInt64Checked(seconds, carry)
+	if !ok {
+		return 0, 0, subsecondOverflowError()
+	}
+	return seconds, nanos, nil
 }
 
 // epochSecondsToParts decomposes the seconds argument of Time.at into whole
@@ -325,15 +353,24 @@ func subsecToNanos(val Value, unitNanos int64) (int64, error) {
 		if math.IsNaN(f) || math.IsInf(f, 0) {
 			return 0, fmt.Errorf("Time.at expects a finite subsecond value")
 		}
-		scaled := f * float64(unitNanos)
-		// int64() of a float outside the int64 range is implementation-specific
-		// and would silently fabricate a nanosecond count. float64(math.MaxInt64)
-		// rounds up to 2^63, so use 2^63 as the exclusive upper bound. The bounds
-		// also reject a product that overflowed to +/-Inf.
-		if scaled < float64(math.MinInt64) || scaled >= math.Exp2(63) {
+		// Scale and truncate against the float's exact binary value via a
+		// rational, mirroring floatMicrosecondsNanos. Multiplying in float64
+		// can round the product up before int64 truncation -- e.g. the float
+		// 0.29 is 0.28999...998, but 0.29 * 1000.0 rounds back to exactly
+		// 290.0 -- which would flip the truncated nanosecond count. Ruby
+		// truncates the exact value, yielding 289 ns for Time.at(0, 0.29,
+		// :usec), so the exact rational keeps representation error from
+		// deciding the result.
+		exact := new(big.Rat).SetFloat64(f)
+		if exact == nil {
+			return 0, fmt.Errorf("Time.at expects a finite subsecond value")
+		}
+		exact.Mul(exact, new(big.Rat).SetInt64(unitNanos))
+		nanos := new(big.Int).Quo(exact.Num(), exact.Denom()) // truncate toward zero
+		if !nanos.IsInt64() {
 			return 0, subsecondOverflowError()
 		}
-		return int64(scaled), nil
+		return nanos.Int64(), nil
 	default:
 		return 0, fmt.Errorf("Time.at subsecond value must be numeric")
 	}
