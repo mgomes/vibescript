@@ -55,6 +55,7 @@ func TestHashBlocklessTransformTripsMemoryQuota(t *testing.T) {
 		{name: "except"},
 		{name: "merge", args: []Value{largeHashReceiver(count)}},
 		{name: "replace", args: []Value{largeHashReceiver(count)}},
+		{name: "slice", args: hashSymbolKeys(count)},
 		{name: "store", args: []Value{NewSymbol("extra"), NewInt(1)}},
 		{name: "remap_keys", args: []Value{NewHash(map[string]Value{"k0": NewSymbol("renamed")})}},
 	}
@@ -174,6 +175,54 @@ func TestHashTransformProjectionCountsLiveCallRoots(t *testing.T) {
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	_, err := callHashMember(t, exec, receiver, "compact", nil, NewNil())
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashSliceProjectionBoundsByOutputNotArgCount complements the slice case in
+// TestHashBlocklessTransformTripsMemoryQuota (which guards the P1 finding on PR
+// #776 that slice reserved make(map, len(args)) before any projected check). It
+// pins the other side of the fix: the projected bound is min(len(args),
+// len(entries)), not len(args). A tiny receiver with a huge candidate list must
+// still fit a quota sized only to the receiver's entries and return the correct
+// slice, so the bound can never be over-tightened to reject valid small results.
+func TestHashSliceProjectionBoundsByOutputNotArgCount(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeHashReceiver(2)
+	const argCount = 100_000
+	args := hashSymbolKeys(argCount)
+
+	// A quota that fits the live receiver plus an output map of every receiver
+	// entry, sized to what slice actually needs.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, args, nil, NewNil())
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	outputStructure := estimatedValueBytes + estimatedMapBaseBytes + len(receiver.Hash())*perEntry
+	quota := liveWithRoots + outputStructure
+
+	// Sanity: a map projected at len(args) would dwarf this quota, so admitting the
+	// call proves the projection is bounded by the receiver, not the candidate list.
+	argSizedStructure := estimatedValueBytes + estimatedMapBaseBytes + argCount*perEntry
+	if argSizedStructure <= quota {
+		t.Fatalf("test setup expects an arg-sized map (%d) to exceed the quota (%d)", argSizedStructure, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "slice", args, NewNil())
+	if err != nil {
+		t.Fatalf("slice with a large candidate list under an output-sized quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("slice returned %v, want hash", got.Kind())
+	}
+	want := receiver.Hash()
+	if len(got.Hash()) != len(want) {
+		t.Fatalf("slice produced %d entries, want %d", len(got.Hash()), len(want))
+	}
+	for key, value := range want {
+		if got.Hash()[key].String() != value.String() {
+			t.Fatalf("slice entry %q = %v, want %v", key, got.Hash()[key], value)
+		}
+	}
 }
 
 func TestHashMergeProjectionCountsUnionNotSum(t *testing.T) {

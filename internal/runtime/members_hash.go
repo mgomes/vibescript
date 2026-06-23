@@ -635,7 +635,18 @@ func hashMemberTransforms(property string) (Value, error) {
 		// their candidate keys through the normal call path.
 		return NewAutoBuiltin("hash.slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			entries := receiver.Hash()
-			out := make(map[string]Value, len(args))
+			// Preflight the map slice could materialize before reserving it. The
+			// output holds at most one entry per requested key and never more than
+			// the receiver has, so the worst case is min(len(args), len(entries)) --
+			// missing and duplicate candidate keys collapse. Reserving the backing
+			// map at len(args) would let a huge candidate-key list allocate past the
+			// quota even when the receiver (and result) is tiny, before the
+			// statement-level check could observe it.
+			projected := min(len(args), len(entries))
+			if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			out := make(map[string]Value, projected)
 			for _, arg := range args {
 				// Charge a step per requested key so slicing with many candidate
 				// keys participates in the step quota and honors cancellation.
