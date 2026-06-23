@@ -200,6 +200,10 @@ accept_options retry: true, limit: 3
 accept_options(retry: true, limit: 3)
 ```
 
+Invoking a function value through its `call` alias follows the same rule, so
+`accept_options.call(retry: true, limit: 3)` binds the options hash exactly like
+the direct `accept_options(retry: true, limit: 3)` form.
+
 The synthesized hash is type-checked against a typed options parameter, so
 `accept_options(retry: "soon")` is rejected with the shape mismatch when the
 parameter declares `{ retry: bool, limit: int }`.
@@ -207,8 +211,9 @@ parameter declares `{ retry: bool, limit: int }`.
 Constructor calls (`Klass.new(...)`) and method calls (`receiver.method(...)`)
 keep strict parenthesized keyword binding: a parenthesized keyword that has no
 matching keyword parameter does not collapse into a positional options hash.
-Their parenless forms still pass the options hash, mirroring the historical
-behavior.
+This includes an instance method named `call`, which stays distinct from a
+function value's `call` alias. Their parenless forms still pass the options
+hash, mirroring the historical behavior.
 
 Blocks can be passed with `do ... end`:
 

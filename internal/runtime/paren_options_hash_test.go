@@ -148,3 +148,109 @@ func TestParenthesizedMethodOptionsHashStaysStrict(t *testing.T) {
 
 	requireCallErrorContains(t, script, "parenthesized_method", nil, CallOptions{}, "missing argument opts")
 }
+
+// TestFunctionCallAliasOptionsHashParity verifies that invoking an
+// options-taking function through its `call` alias collapses keyword arguments
+// into a positional options hash for both call forms, matching direct
+// invocation. This guards the direct-call/`fn.call` parity documented for
+// function values.
+func TestFunctionCallAliasOptionsHashParity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def configure(opts)
+      opts[:retries]
+    end
+
+    def typed_configure(opts: { retries: int })
+      opts[:retries]
+    end
+
+    def direct_call
+      configure(retries: 3)
+    end
+
+    def parenthesized_call_alias
+      configure.call(retries: 3)
+    end
+
+    def parenless_call_alias
+      configure.call retries: 3
+    end
+
+    def typed_call_alias
+      typed_configure.call(retries: 3)
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{name: "direct call", fn: "direct_call", want: NewInt(3)},
+		{name: "parenthesized call alias", fn: "parenthesized_call_alias", want: NewInt(3)},
+		{name: "parenless call alias", fn: "parenless_call_alias", want: NewInt(3)},
+		{name: "typed call alias", fn: "typed_call_alias", want: NewInt(3)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := callFunc(t, script, tc.fn, nil); !got.Equal(tc.want) {
+				t.Fatalf("%s() = %v, want %v", tc.fn, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFunctionCallAliasOptionsHashTypeMismatch verifies that type validation
+// runs against the synthesized options hash when binding through the `call`
+// alias, rejecting a shape mismatch with the type error rather than a
+// missing-argument error.
+func TestFunctionCallAliasOptionsHashTypeMismatch(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def configure(opts: { retries: int })
+      opts[:retries]
+    end
+
+    def bad_shape
+      configure.call(retries: "slow")
+    end
+    `)
+
+	requireCallErrorContains(t, script, "bad_shape", nil, CallOptions{}, "expected { retries: int }")
+}
+
+// TestParenthesizedMethodNamedCallStaysStrict guards the boundary between a
+// function value's `call` alias and an instance method named `call`. A
+// parenthesized call to the method must stay strict, while the parenless form
+// still collapses into an options hash like any other method call.
+func TestParenthesizedMethodNamedCallStaysStrict(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class Server
+      def call(opts)
+        opts[:retries]
+      end
+    end
+
+    def parenthesized_method_call
+      Server.new.call(retries: 3)
+    end
+
+    def parenless_method_call
+      Server.new.call retries: 3
+    end
+    `)
+
+	requireCallErrorContains(t, script, "parenthesized_method_call", nil, CallOptions{}, "missing argument opts")
+
+	if got := callFunc(t, script, "parenless_method_call", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("parenless_method_call() = %v, want %v", got, NewInt(3))
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/mgomes/vibescript/internal/ast"
 )
@@ -135,11 +136,13 @@ end`
 	}
 }
 
-// TestParserParenthesizedKeywordOptionsHashScope verifies that the
-// KeywordOptionsHash flag is set only for parenthesized plain function calls.
-// Method and constructor calls (member callees) keep strict parenthesized
-// keyword binding, so they leave the flag unset to preserve the boundary with
-// issue #576.
+// TestParserParenthesizedKeywordOptionsHashScope verifies that parenthesized
+// calls with keyword arguments mark KeywordOptionsHash for every callee shape
+// and record the parenthesized call form. The parser cannot tell a function
+// value's `call` alias from a method named `call`, so it defers the
+// collapse-vs-strict decision to the runtime, which keeps parenthesized method
+// and constructor calls strict (issue #576) while preserving direct-call parity
+// for `fn.call(...)` (issue #589).
 func TestParserParenthesizedKeywordOptionsHashScope(t *testing.T) {
 	t.Parallel()
 
@@ -147,6 +150,7 @@ func TestParserParenthesizedKeywordOptionsHashScope(t *testing.T) {
   configure(retries: 3)
   obj.configure(retries: 3)
   Server.new(retries: 3)
+  handler.call(retries: 3)
 end`
 
 	got, errs := parseSource(t, source)
@@ -162,6 +166,7 @@ end`
 				{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
 			},
 			KeywordOptionsHash: true,
+			Parenthesized:      true,
 		}},
 		&ast.ExprStmt{Expr: &ast.CallExpr{
 			Callee: &ast.MemberExpr{
@@ -172,6 +177,8 @@ end`
 			KwArgs: []ast.KeywordArg{
 				{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
 			},
+			KeywordOptionsHash: true,
+			Parenthesized:      true,
 		}},
 		&ast.ExprStmt{Expr: &ast.CallExpr{
 			Callee: &ast.MemberExpr{
@@ -182,9 +189,59 @@ end`
 			KwArgs: []ast.KeywordArg{
 				{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
 			},
+			KeywordOptionsHash: true,
+			Parenthesized:      true,
+		}},
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.MemberExpr{
+				Object:   &ast.Identifier{Name: "handler"},
+				Property: "call",
+			},
+			Args: []ast.Expression{},
+			KwArgs: []ast.KeywordArg{
+				{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
+			},
+			KeywordOptionsHash: true,
+			Parenthesized:      true,
 		}},
 	}
-	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+	// astCmpOpts ignores Parenthesized, so compare with an options set that only
+	// drops source positions to lock in the parenthesized call form alongside
+	// the structural shape.
+	strictCmpOpts := cmp.Options{cmpopts.IgnoreFields(ast.Position{}, "Line", "Column")}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), strictCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserParenlessKeywordOptionsHashForm verifies that a parenless keyword
+// call records the parenless form so the runtime collapses an options hash for
+// any options-hash target, including method calls.
+func TestParserParenlessKeywordOptionsHashForm(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  configure retries: 3
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "configure"},
+			Args:   []ast.Expression{},
+			KwArgs: []ast.KeywordArg{
+				{Name: "retries", Value: &ast.IntegerLiteral{Value: 3}},
+			},
+			KeywordOptionsHash: true,
+			Parenthesized:      false,
+		}},
+	}
+	strictCmpOpts := cmp.Options{cmpopts.IgnoreFields(ast.Position{}, "Line", "Column")}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), strictCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }

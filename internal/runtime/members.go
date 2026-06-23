@@ -72,7 +72,9 @@ func (exec *Execution) functionMember(obj Value, property string, pos Position) 
 	caller := NewAutoBuiltin("function.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
 	})
-	valueBuiltin(caller).OptionsHashTarget = fn
+	callerBuiltin := valueBuiltin(caller)
+	callerBuiltin.OptionsHashTarget = fn
+	callerBuiltin.DirectCallAlias = true
 	return caller, nil
 }
 

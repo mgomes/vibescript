@@ -1375,11 +1375,14 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	expr.Args = args
 	expr.KwArgs = kwargs
-	// A parenthesized plain function call (identifier callee) collapses its
-	// keyword arguments into a positional options hash on the same terms as a
-	// parenless call. Method and constructor calls keep parenthesized keywords
-	// strict, so their callee is a member expression and is excluded here.
-	if len(kwargs) > 0 && isIdentifierCallee(function) {
+	expr.Parenthesized = true
+	// Mark keyword arguments as eligible to collapse into a positional options
+	// hash. The runtime decides whether the collapse actually applies: plain
+	// function calls (including a function value's `call` alias) collapse like
+	// the parenless form, while parenthesized method and constructor calls stay
+	// strict. The parser cannot distinguish a function value's `call` alias from
+	// a method named `call`, so it defers that decision to the runtime.
+	if len(kwargs) > 0 {
 		expr.KeywordOptionsHash = true
 	}
 	if p.canAttachPeekBlock() {
@@ -1387,14 +1390,6 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 		expr.Block = p.parseBlockLiteral()
 	}
 	return expr
-}
-
-// isIdentifierCallee reports whether a call target is a bare identifier, which
-// distinguishes plain function calls from member-access method and constructor
-// calls.
-func isIdentifierCallee(callee ast.Expression) bool {
-	_, ok := callee.(*ast.Identifier)
-	return ok
 }
 
 func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expression {

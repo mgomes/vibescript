@@ -620,8 +620,15 @@ type Builtin struct {
 	Fn         BuiltinFunc
 	AutoInvoke bool
 	// OptionsHashTarget receives a collapsed keyword options hash for builtin
-	// wrappers around script functions (method and constructor callers).
+	// wrappers around script functions (method, constructor, and function-call
+	// alias callers).
 	OptionsHashTarget *ScriptFunction
+	// DirectCallAlias marks a builtin that invokes a function value directly,
+	// such as the `call` member exposed on function values. Direct-call aliases
+	// follow plain function-call semantics, so they collapse a parenthesized
+	// keyword options hash just like `fn(...)`. Method and constructor wrappers
+	// leave this false to keep parenthesized keyword binding strict.
+	DirectCallAlias bool
 }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.

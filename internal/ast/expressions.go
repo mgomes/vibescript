@@ -91,14 +91,22 @@ type CallExpr struct {
 	Callee Expression
 	Args   []Expression
 	KwArgs []KeywordArg
-	// KeywordOptionsHash marks calls whose keyword arguments may collapse into a
-	// trailing positional options hash when the callee has no matching keyword
-	// parameter. It is set for parenless calls and for parenthesized plain
-	// function calls, mirroring how Ruby binds an options hash to a positional
-	// parameter.
+	// KeywordOptionsHash marks calls whose keyword arguments are eligible to
+	// collapse into a trailing positional options hash when the callee has no
+	// matching keyword parameter, mirroring how Ruby binds an options hash to a
+	// positional parameter. It is set for parenless calls and for parenthesized
+	// calls; the runtime applies the collapse only when the resolved callee
+	// supports it. Parenthesized member calls additionally consult
+	// Parenthesized so method and constructor calls stay strict while a
+	// function value's call alias keeps direct-call parity.
 	KeywordOptionsHash bool
-	Block              *BlockLiteral
-	Position           Position
+	// Parenthesized reports whether the call used explicit parentheses. The
+	// runtime keeps parenthesized method and constructor calls strict, so it
+	// only collapses their keyword arguments into an options hash for the
+	// parenless form.
+	Parenthesized bool
+	Block         *BlockLiteral
+	Position      Position
 }
 
 func (e *CallExpr) exprNode()     {}

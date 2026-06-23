@@ -628,10 +628,16 @@ func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Valu
 // resolveKeywordOptionsHash collapses a call's keyword arguments into a trailing
 // positional options hash when the callee has no matching keyword parameter and
 // exposes a positional parameter to receive it. This mirrors Ruby's options-hash
-// binding and applies identically to parenless calls and parenthesized plain
-// function calls.
-func resolveKeywordOptionsHash(call *CallExpr, callee Value, args []Value, kwargs map[string]Value) ([]Value, map[string]Value) {
+// binding. Parenless calls collapse for any options-hash target. Parenthesized
+// calls collapse only for plain function calls (a function value or its `call`
+// alias); parenthesized method and constructor calls stay strict. memberCall
+// reports whether the call resolved through member access, which the direct
+// method-call path uses to surface a method as a bare function value.
+func resolveKeywordOptionsHash(call *CallExpr, callee Value, memberCall bool, args []Value, kwargs map[string]Value) ([]Value, map[string]Value) {
 	if !call.KeywordOptionsHash || len(kwargs) == 0 {
+		return args, kwargs
+	}
+	if !calleeCollapsesOptionsHash(call, callee, memberCall) {
 		return args, kwargs
 	}
 	fn := optionsHashTarget(callee)
@@ -643,6 +649,24 @@ func resolveKeywordOptionsHash(call *CallExpr, callee Value, args []Value, kwarg
 		hash[name] = val
 	}
 	return append(args, NewHash(hash)), nil
+}
+
+// calleeCollapsesOptionsHash reports whether the resolved callee permits keyword
+// arguments to collapse into a positional options hash for the given call form.
+// The parenless form collapses for any options-hash target. Parenthesized calls
+// keep method and constructor binding strict: a non-member call to a function
+// value collapses like a plain function call, but a member call collapses only
+// through a function value's direct-call alias, since the direct method-call
+// path surfaces methods as bare function values too.
+func calleeCollapsesOptionsHash(call *CallExpr, callee Value, memberCall bool) bool {
+	if !call.Parenthesized {
+		return true
+	}
+	if memberCall {
+		builtin := valueBuiltin(callee)
+		return builtin != nil && builtin.DirectCallAlias
+	}
+	return callee.Kind() == KindFunction
 }
 
 func optionsHashTarget(callee Value) *ScriptFunction {
@@ -723,7 +747,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	args, kwargs = resolveKeywordOptionsHash(call, callee, args, kwargs)
+	args, kwargs = resolveKeywordOptionsHash(call, callee, false, args, kwargs)
 	block, err := exec.evalCallBlock(call, env)
 	if err != nil {
 		return NewNil(), err
@@ -777,7 +801,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
-	args, kwargs = resolveKeywordOptionsHash(call, callee, args, kwargs)
+	args, kwargs = resolveKeywordOptionsHash(call, callee, true, args, kwargs)
 	block, err := exec.evalCallBlock(call, env)
 	if err != nil {
 		return NewNil(), err
