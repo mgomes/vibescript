@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"math"
 	"strconv"
 	"testing"
 )
@@ -359,7 +360,12 @@ func TestMergedKeyCount(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := mergedKeyCount(base, tc.args, tc.limit); got != tc.want {
+			exec := &Execution{ctx: context.Background()}
+			got, err := mergedKeyCount(exec, base, tc.args, tc.limit)
+			if err != nil {
+				t.Fatalf("mergedKeyCount(%s) error = %v, want nil", tc.name, err)
+			}
+			if got != tc.want {
 				t.Fatalf("mergedKeyCount(%s) = %d, want %d", tc.name, got, tc.want)
 			}
 		})
@@ -387,7 +393,11 @@ func TestMergedKeyCountStopsAtLimit(t *testing.T) {
 	args := []Value{NewHash(first), NewHash(second)}
 
 	const limit = 10
-	got := mergedKeyCount(base, args, limit)
+	exec := &Execution{ctx: context.Background()}
+	got, err := mergedKeyCount(exec, base, args, limit)
+	if err != nil {
+		t.Fatalf("mergedKeyCount error = %v, want nil", err)
+	}
 	if got <= limit {
 		t.Fatalf("mergedKeyCount returned %d, want a value greater than the limit %d", got, limit)
 	}
@@ -409,14 +419,95 @@ func TestMergedKeyCountSingleArgNeedsNoTrackingSet(t *testing.T) {
 		arg["x"+strconv.Itoa(i)] = NewInt(int64(i))
 	}
 
+	exec := &Execution{ctx: context.Background()}
 	// A generous limit yields the exact union (base plus the 100 disjoint keys).
-	if got := mergedKeyCount(base, []Value{NewHash(arg)}, 1_000); got != 101 {
+	got, err := mergedKeyCount(exec, base, []Value{NewHash(arg)}, 1_000)
+	if err != nil {
+		t.Fatalf("mergedKeyCount(single arg) error = %v, want nil", err)
+	}
+	if got != 101 {
 		t.Fatalf("mergedKeyCount(single arg) = %d, want 101", got)
 	}
 	// A tight limit stops early without tracking, reporting an over-budget count.
-	if got := mergedKeyCount(base, []Value{NewHash(arg)}, 5); got <= 5 {
+	got, err = mergedKeyCount(exec, base, []Value{NewHash(arg)}, 5)
+	if err != nil {
+		t.Fatalf("mergedKeyCount(single arg, limit 5) error = %v, want nil", err)
+	}
+	if got <= 5 {
 		t.Fatalf("mergedKeyCount(single arg, limit 5) = %d, want it to exceed the limit", got)
 	}
+}
+
+// TestMergedKeyCountChargesStepsPerKey verifies the union counter charges a step
+// for every key it examines, so counting a large overlapping merge is itself
+// CPU-bounded by the step quota. With a high entry limit the count would otherwise
+// scan the whole argument before any check ran; here the step quota trips mid-walk
+// and the helper propagates the error instead of finishing the O(n) scan. This
+// guards the P2 finding on PR #776, where the exact-count preflight could burn
+// O(n) CPU after the step quota was already exhausted.
+func TestMergedKeyCountChargesStepsPerKey(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]Value{"a": NewInt(1)}
+	// A single overlapping argument: every key is already in base, so the union is
+	// tiny (the loose projection would even fit), yet each key must still cost a
+	// step. A high limit ensures the limit-based early exit cannot mask the walk.
+	arg := make(map[string]Value, 1_000)
+	for i := range 1_000 {
+		arg["k"+strconv.Itoa(i)] = NewInt(int64(i))
+	}
+
+	const quota = 10
+	exec := &Execution{ctx: context.Background(), quota: quota}
+	_, err := mergedKeyCount(exec, base, []Value{NewHash(arg)}, math.MaxInt)
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps > quota+1 {
+		t.Fatalf("mergedKeyCount took %d steps, want it to stop near the quota %d", exec.steps, quota)
+	}
+}
+
+// TestMergedKeyCountObservesCancellation verifies the union counter observes a
+// canceled context while walking keys, so a sandboxed merge cannot keep scanning
+// after cancellation. step checks the context on its first call, so a counter that
+// charges a step per key abandons the walk immediately.
+func TestMergedKeyCountObservesCancellation(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]Value{"a": NewInt(1)}
+	arg := make(map[string]Value, 1_000)
+	for i := range 1_000 {
+		arg["k"+strconv.Itoa(i)] = NewInt(int64(i))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, quota: 1 << 30}
+	_, err := mergedKeyCount(exec, base, []Value{NewHash(arg)}, math.MaxInt)
+	requireErrorIs(t, err, context.Canceled)
+}
+
+// TestHashMergeUnionCountHonorsStepQuota drives the finding end to end through the
+// merge builtin. A small receiver merged with the same large argument twice makes
+// the loose upper bound (receiver + both argument lengths) exceed the memory quota
+// while the deduplicated call-root projection still fits, so the exact union count
+// runs and walks every argument key. That walk must respect the step quota: without
+// charging steps in mergedKeyCount the preflight would scan tens of thousands of
+// keys before the step quota was observed. The memory quota is sized so the
+// per-key step charge trips first, proving the count is CPU-bounded.
+func TestHashMergeUnionCountHonorsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	argument := largeHashReceiver(count)
+	receiver := NewHash(map[string]Value{"z": NewInt(0)})
+	// Passing the same argument value twice keeps the deduplicated projection at one
+	// copy's size (so the exact-count path is reached) while the loose bound counts
+	// both lengths (so it overflows and forces that path).
+	args := []Value{argument, argument}
+
+	exec := &Execution{ctx: context.Background(), quota: 100, memoryQuota: 8_000_000}
+	_, err := callHashMember(t, exec, receiver, "merge", args, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
 }
 
 func TestHashBlockTransformTripsMemoryQuota(t *testing.T) {

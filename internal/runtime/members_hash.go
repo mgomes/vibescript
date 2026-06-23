@@ -391,12 +391,21 @@ func looseMergedKeyUpperBound(base map[string]Value, args []Value) int {
 // to collapse keys repeated across arguments, but the set is bounded by limit:
 // once the distinct-key total exceeds limit the merge is certain to be rejected,
 // so counting stops and returns limit+1 rather than growing a tracking table
-// sized to the over-quota result. All inputs walked here are already resident in
-// memory.
-func mergedKeyCount(base map[string]Value, args []Value, limit int) int {
+// sized to the over-quota result.
+//
+// Every key examined charges a step via exec.step, so the union count itself is
+// CPU-bounded by the step quota and observes cancellation. Without this a large
+// overlapping merge under a tight memory quota (h.merge(h)) could scan O(n) keys
+// here, between the loose projection failing and the exact projection running,
+// while the step quota was already exhausted or the context already canceled.
+// When step returns an error the walk stops and propagates it: the merge is
+// abandoned for the same quota or cancellation reason that would have stopped the
+// merge loop itself. All inputs walked here are already resident in memory, so the
+// step charge guards CPU, not allocation.
+func mergedKeyCount(exec *Execution, base map[string]Value, args []Value, limit int) (int, error) {
 	count := len(base)
 	if count > limit {
-		return count
+		return count, nil
 	}
 	if len(args) <= 1 {
 		// One argument (or none): every argument key is distinct on its own, so
@@ -404,20 +413,26 @@ func mergedKeyCount(base map[string]Value, args []Value, limit int) int {
 		// without a tracking set.
 		for _, arg := range args {
 			for key := range arg.Hash() {
+				if err := exec.step(); err != nil {
+					return count, err
+				}
 				if _, inBase := base[key]; inBase {
 					continue
 				}
 				count++
 				if count > limit {
-					return count
+					return count, nil
 				}
 			}
 		}
-		return count
+		return count, nil
 	}
 	var seen map[string]struct{}
 	for _, arg := range args {
 		for key := range arg.Hash() {
+			if err := exec.step(); err != nil {
+				return count, err
+			}
 			if _, inBase := base[key]; inBase {
 				continue
 			}
@@ -433,11 +448,11 @@ func mergedKeyCount(base map[string]Value, args []Value, limit int) int {
 				// The merge already exceeds the quota's entry budget, so it will
 				// be rejected regardless of further keys. Stop before the tracking
 				// set grows past the admissible result size.
-				return count
+				return count, nil
 			}
 		}
 	}
-	return count
+	return count, nil
 }
 
 func hashMemberTransforms(property string) (Value, error) {
@@ -486,7 +501,10 @@ func hashMemberTransforms(property string) (Value, error) {
 			upperBound := looseMergedKeyUpperBound(base, args)
 			if exec.checkProjectedHashBytes(upperBound, receiver, args, kwargs, block) != nil {
 				limit := exec.maxProjectedHashEntries(receiver, args, kwargs, block)
-				projected := mergedKeyCount(base, args, limit)
+				projected, err := mergedKeyCount(exec, base, args, limit)
+				if err != nil {
+					return NewNil(), err
+				}
 				if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
