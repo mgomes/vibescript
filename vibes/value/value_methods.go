@@ -218,7 +218,12 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		buf.WriteByte('[')
 		for i, e := range elems {
 			if i > 0 {
-				buf.WriteString(", ")
+				// The element separator counts against the budget like any other
+				// byte, so a packed array trips the limit on the separator rather
+				// than emitting a result over the cap.
+				if err := appendBounded(buf, ", ", limit); err != nil {
+					return err
+				}
 			}
 			if err := e.appendString(buf, state, limit); err != nil {
 				return err
@@ -248,7 +253,12 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		first := true
 		for k, val := range entries {
 			if !first {
-				buf.WriteString(", ")
+				// The entry separator counts against the budget like any other
+				// byte, so a packed hash trips the limit on the separator rather
+				// than emitting a result over the cap.
+				if err := appendBounded(buf, ", ", limit); err != nil {
+					return err
+				}
 			}
 			first = false
 			// A hash key is an arbitrary string that may itself exceed the
@@ -258,7 +268,12 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 			if err := appendBounded(buf, k, limit); err != nil {
 				return err
 			}
-			buf.WriteString(": ")
+			// The key/value separator counts against the budget too: a key that
+			// fills the budget exactly must trip the limit here rather than let
+			// ": " push the result past the cap.
+			if err := appendBounded(buf, ": ", limit); err != nil {
+				return err
+			}
 			if err := val.appendString(buf, state, limit); err != nil {
 				return err
 			}

@@ -715,6 +715,91 @@ func TestValueStringBounded(t *testing.T) {
 		}
 	})
 
+	// Element and key/value separators count against the byte budget just like
+	// any other byte. A key that fills the budget exactly must trip the limit on
+	// its ": " separator, and an element that fills the budget must trip on its
+	// ", " separator, rather than letting the separators push the partial output
+	// past the configured cap.
+	t.Run("separators_respect_limit", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name  string
+			value value.Value
+			limit int
+			want  string
+		}{
+			{
+				// The finding's example: "{" + "k" fills a two-byte budget, so the
+				// ": " separator must trip the limit instead of emitting "{k: ".
+				name:  "hash_kv_separator_at_key_limit",
+				value: value.NewHash(map[string]value.Value{"k": value.NewInt(1)}),
+				limit: 2,
+				want:  "{k",
+			},
+			{
+				// "{" + "k" + ":" exhausts a three-byte budget mid-separator; only
+				// the first separator byte fits, and the result stays at the cap.
+				name:  "hash_kv_separator_partial",
+				value: value.NewHash(map[string]value.Value{"k": value.NewInt(1)}),
+				limit: 3,
+				want:  "{k:",
+			},
+			{
+				// "[1" fills a two-byte budget; the ", " element separator before
+				// the second element must trip the limit, never reaching it.
+				name:  "array_element_separator_at_limit",
+				value: value.NewArray([]value.Value{value.NewInt(1), value.NewInt(2)}),
+				limit: 2,
+				want:  "[1",
+			},
+			{
+				// "[1," exhausts a three-byte budget mid-separator; only the first
+				// separator byte fits, and the result stays at the cap.
+				name:  "array_element_separator_partial",
+				value: value.NewArray([]value.Value{value.NewInt(1), value.NewInt(2)}),
+				limit: 3,
+				want:  "[1,",
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := tc.value.StringBounded(tc.limit)
+				if !errors.Is(err, value.ErrStringRenderTruncated) {
+					t.Fatalf("StringBounded(%d) error = %v, want ErrStringRenderTruncated", tc.limit, err)
+				}
+				if got != tc.want {
+					t.Fatalf("StringBounded(%d) = %q, want %q", tc.limit, got, tc.want)
+				}
+				if len(got) > tc.limit {
+					t.Fatalf("StringBounded(%d) = %d bytes, must not exceed the limit", tc.limit, len(got))
+				}
+			})
+		}
+	})
+
+	// A multi-entry hash iterates in randomized map order, so two entries can
+	// appear in either sequence. Whichever entry comes first, the ", " separator
+	// before the second entry must trip the budget and the partial output must
+	// never exceed the configured cap.
+	t.Run("hash_entry_separator_respects_limit", func(t *testing.T) {
+		t.Parallel()
+		v := value.NewHash(map[string]value.Value{
+			"a": value.NewInt(1),
+			"b": value.NewInt(2),
+		})
+		// "{a: 1" / "{b: 2" is five bytes; one byte more fits the closer but not
+		// the ", " separator that would precede the second entry.
+		const limit = 6
+		got, err := v.StringBounded(limit)
+		if !errors.Is(err, value.ErrStringRenderTruncated) {
+			t.Fatalf("StringBounded(%d) error = %v, want ErrStringRenderTruncated", limit, err)
+		}
+		if len(got) > limit {
+			t.Fatalf("StringBounded(%d) = %d bytes, must not exceed the limit", limit, len(got))
+		}
+	})
+
 	// One byte past the boundary is enough for the closing delimiter, so these
 	// render in full with no truncation.
 	t.Run("closing_delimiter_fits_at_limit", func(t *testing.T) {
