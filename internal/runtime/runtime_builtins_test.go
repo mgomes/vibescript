@@ -397,6 +397,134 @@ func TestTimeParseAndAliases(t *testing.T) {
 	requireErrorContains(t, err, "could not parse time")
 }
 
+func TestTimeAtSubsecondConstructor(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+	    def subsecond()
+	      {
+	        float_nsec: Time.at(0.123456).utc.nsec,
+	        usec_positional: Time.at(0, 123456).utc.nsec,
+	        usec_unit: Time.at(0, 123456, :microsecond).utc.nsec,
+	        usec_alias: Time.at(0, 123456, :usec).utc.nsec,
+	        msec_unit: Time.at(0, 123, :millisecond).utc.nsec,
+	        nsec_unit: Time.at(0, 123456789, :nanosecond).utc.nsec,
+	        nsec_alias: Time.at(0, 123456789, :nsec).utc.nsec,
+	        zone_offset: Time.at(0, 123456, in: "+05:30").utc_offset,
+	        zone_nsec: Time.at(0, 123456, in: "+05:30").nsec,
+	        # Ruby floors a fractional subsecond offset, so a negative fractional
+	        # value rounds toward negative infinity rather than toward zero:
+	        # Time.at(0, -1.9, :nsec) floors -1.9 ns to -2 ns, leaving the
+	        # instant at -1 s + 999999998 ns.
+	        neg_float_nsec: Time.at(0, -1.9, :nsec).utc.nsec,
+	        neg_float_nsec_sec: Time.at(0, -1.9, :nsec).utc.to_i,
+	        # Time.at(0, -0.29, :usec) floors -289.99...98 ns to -290 ns.
+	        neg_float_usec: Time.at(0, -0.29, :usec).utc.nsec,
+	        # Time.at(0, -0.1, :nsec) floors -0.1 ns to -1 ns; truncation toward
+	        # zero would leave the instant unchanged at 0 ns.
+	        neg_subnano: Time.at(0, -0.1, :nsec).utc.nsec
+	      }
+	    end
+
+	    def too_many()
+	      Time.at(0, 1, :nsec, 2)
+	    end
+
+	    def unknown_kwarg()
+	      Time.at(0, bogus: 1)
+	    end
+
+	    def bad_unit()
+	      Time.at(0, 1, :picosecond)
+	    end
+
+	    def nil_subsec_with_unit()
+	      Time.at(0, nil, :nsec)
+	    end
+
+	    def nil_subsec()
+	      Time.at(0, nil)
+	    end
+
+	    def nil_unit()
+	      Time.at(0, 500, nil)
+	    end
+
+	    def subsec_carries_into_seconds()
+	      Time.at(5, 1_500_000).utc.to_i
+	    end
+
+	    def subsec_scaling_overflows()
+	      Time.at(0, 9_223_372_036_854_776, :microsecond)
+	    end
+
+	    def float_subsec_overflows()
+	      Time.at(0, 99999999999999999999.0, :nsec)
+	    end
+	    `)
+
+	result := callFunc(t, script, "subsecond", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	want := map[string]Value{
+		"float_nsec":      NewInt(123456000),
+		"usec_positional": NewInt(123456000),
+		"usec_unit":       NewInt(123456000),
+		"usec_alias":      NewInt(123456000),
+		"msec_unit":       NewInt(123000000),
+		"nsec_unit":       NewInt(123456789),
+		"nsec_alias":      NewInt(123456789),
+		// in: composes with the subsecond forms: the offset is applied while
+		// the subsecond component is preserved.
+		"zone_offset": NewInt(19800),
+		"zone_nsec":   NewInt(123456000),
+		// Negative fractional subsecond offsets floor toward negative infinity,
+		// matching Ruby's Time.at(0, -1.9, :nsec).nsec == 999999998.
+		"neg_float_nsec":     NewInt(999999998),
+		"neg_float_nsec_sec": NewInt(-1),
+		"neg_float_usec":     NewInt(999999710),
+		"neg_subnano":        NewInt(999999999),
+	}
+	got := result.Hash()
+	for key, expected := range want {
+		if val, ok := got[key]; !ok || !val.Equal(expected) {
+			t.Fatalf("subsecond[%s] = %v, want %v", key, val, expected)
+		}
+	}
+
+	requireCallErrorContains(t, script, "too_many", nil, CallOptions{},
+		"Time.at expects seconds since epoch with optional subsecond value and unit")
+	requireCallErrorContains(t, script, "unknown_kwarg", nil, CallOptions{},
+		"Time.at unknown keyword argument bogus")
+	requireCallErrorContains(t, script, "bad_unit", nil, CallOptions{},
+		"unexpected unit: picosecond")
+	// An explicitly-supplied nil subsecond is non-numeric and rejected, matching
+	// Ruby's Time.at(0, nil) and Time.at(0, nil, :nsec) TypeError. Unlike the
+	// calendar constructors (Time.utc/local), Time.at does not treat an explicit
+	// nil subsecond as omitted.
+	requireCallErrorContains(t, script, "nil_subsec_with_unit", nil, CallOptions{},
+		"Time.at subsecond value must be numeric")
+	requireCallErrorContains(t, script, "nil_subsec", nil, CallOptions{},
+		"Time.at subsecond value must be numeric")
+	// An explicit nil unit is an unrecognized unit, matching Ruby's
+	// Time.at(0, 500, nil) ArgumentError ("unexpected unit: ").
+	requireCallErrorContains(t, script, "nil_unit", nil, CallOptions{},
+		"unexpected unit: ")
+
+	// A subsecond value that exceeds one second still carries into the seconds,
+	// matching Ruby, as long as the scaled nanosecond count fits in an int64.
+	if carried := callFunc(t, script, "subsec_carries_into_seconds", nil); !carried.Equal(NewInt(6)) {
+		t.Fatalf("subsec_carries_into_seconds = %v, want 6", carried)
+	}
+
+	// A subsecond magnitude whose scaled nanosecond count overflows int64 is
+	// rejected rather than silently wrapped into a bogus instant.
+	requireCallErrorContains(t, script, "subsec_scaling_overflows", nil, CallOptions{},
+		"Time.at subsecond value out of range")
+	requireCallErrorContains(t, script, "float_subsec_overflows", nil, CallOptions{},
+		"Time.at subsecond value out of range")
+}
+
 func TestTimeSpaceshipComparison(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
