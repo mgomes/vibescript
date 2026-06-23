@@ -505,6 +505,23 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	return exec.callBlock(blk, args, newEnv(blk.Env))
 }
 
+// callCallableValue invokes any callable value (script function, builtin, or
+// block) with the supplied positional arguments and no keywords or block. It
+// is the bridge stdlib methods use to call a script-supplied callable that
+// arrives as a positional argument, such as the optional ifnone fallback of
+// array.find. Non-callable values yield a descriptive error so callers can
+// surface a clear "expected a callable" message.
+func (exec *Execution) callCallableValue(callable Value, args []Value) (Value, error) {
+	switch callable.Kind() {
+	case KindFunction, KindBuiltin:
+		return exec.invokeCallable(callable, NewNil(), args, nil, NewNil(), Position{})
+	case KindBlock:
+		return exec.CallBlock(callable, args)
+	default:
+		return NewNil(), fmt.Errorf("expected a callable value, got %s", callable.Kind())
+	}
+}
+
 func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env) (Value, error) {
 	exec.pushModuleContext(moduleContext{
 		key:    blk.moduleKey,

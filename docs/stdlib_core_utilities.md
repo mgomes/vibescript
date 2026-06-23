@@ -183,7 +183,12 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   and other values by equality. The optional block transforms each match.
 - `grep_v(pattern) { |item| } -> array` – elements that do not match `pattern`,
   with the same matching rules and optional transform block as `grep`.
-- `find { |item| } -> value | nil` – first element matching the block.
+- `find(ifnone = nil) { |item| } -> value` – first element matching the block.
+  Without a match it returns `nil`, unless the optional `ifnone` callable is
+  supplied: that callable is invoked with no arguments and its result is
+  returned instead. A match always returns the element and never invokes
+  `ifnone`. The fallback must be a callable value (a function value works
+  today); passing a non-callable raises an error.
 - `find_index { |item| } -> int | nil` – index of the first match.
 - `reduce(initial = nil) { |acc, item| } -> value` – fold left; without
   `initial` the first element seeds the accumulator (errors on an empty

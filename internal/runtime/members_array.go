@@ -804,8 +804,8 @@ func arrayMemberQuery(property string) (Value, error) {
 		return arrayMemberGrep(property)
 	case "find":
 		return NewAutoBuiltin("array.find", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.find does not take arguments")
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.find accepts at most one ifnone fallback")
 			}
 			runner, err := newBlockCallRunner(exec, block, "array.find")
 			if err != nil {
@@ -821,6 +821,15 @@ func arrayMemberQuery(property string) (Value, error) {
 				if match.Truthy() {
 					return item, nil
 				}
+			}
+			// Ruby calls the optional ifnone fallback only when no element
+			// matches; the no-argument miss stays nil.
+			if len(args) == 1 {
+				result, err := exec.callCallableValue(args[0], nil)
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.find ifnone fallback: %w", err)
+				}
+				return result, nil
 			}
 			return NewNil(), nil
 		}), nil
