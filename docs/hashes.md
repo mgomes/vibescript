@@ -27,6 +27,17 @@ player = {
 player["first-name"] # "Ada"
 ```
 
+Reserved words are valid shorthand labels when followed by an explicit value, so
+keyword-shaped payload keys behave like any other label:
+
+```vibe
+result = { begin: 0, rescue: "retry", ensure: true, raise: false, return: 1 }
+result[:rescue] # "retry"
+```
+
+This mirrors Ruby, which treats keyword-shaped labels uniformly. The same labels
+are accepted as keyword arguments at call sites (`record(rescue: "retry")`).
+
 Hash literals only accept colon-style keys: shorthand labels (`name:`) and
 quoted string keys (`"name":`). Ruby's hash rocket syntax (`=>`) is not
 supported, so write `{ name: "Ada" }` rather than `{ :name => "Ada" }`. To use a

@@ -1008,12 +1008,8 @@ func isMemberNameToken(tok ast.Token) bool {
 	if isLabelNameToken(tok) {
 		return true
 	}
-	switch tok.Type {
-	case ast.TokenExport, ast.TokenBegin, ast.TokenRescue, ast.TokenEnsure, ast.TokenRaise, ast.TokenSpaceship:
-		return true
-	default:
-		return false
-	}
+	// The spaceship operator doubles as the `<=>` comparison method name.
+	return tok.Type == ast.TokenSpaceship
 }
 
 func (p *parser) parseArrayLiteral() ast.Expression {
@@ -1556,10 +1552,15 @@ func (p *parser) recoverUnsupportedCallArgument() {
 	}
 }
 
+// isLabelNameToken reports whether a token may appear immediately before a
+// colon as a label, such as a hash key (`{rescue: 1}`) or a keyword argument
+// (`call(begin: 1)`). Every reserved keyword that can precede a colon is
+// allowed, mirroring Ruby, which treats keyword-shaped labels uniformly.
 func isLabelNameToken(tok ast.Token) bool {
 	switch tok.Type {
 	case ast.TokenIdent,
-		ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenSelf, ast.TokenPrivate, ast.TokenProperty, ast.TokenGetter, ast.TokenSetter,
+		ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenExport, ast.TokenSelf, ast.TokenPrivate, ast.TokenProperty, ast.TokenGetter, ast.TokenSetter,
+		ast.TokenBegin, ast.TokenRescue, ast.TokenEnsure, ast.TokenRaise,
 		ast.TokenEnd, ast.TokenReturn, ast.TokenYield, ast.TokenDo, ast.TokenThen, ast.TokenFor, ast.TokenWhile, ast.TokenUntil,
 		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenUnless, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
