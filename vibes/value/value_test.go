@@ -655,6 +655,114 @@ func TestValueStringBounded(t *testing.T) {
 			t.Fatalf("StringBounded() = %q, want %q", got, want)
 		}
 	})
+
+	// The closing delimiter counts against the byte budget. When the contents
+	// fill the budget exactly, appending the trailing bracket/brace must trip
+	// the limit rather than emit a result one byte over the configured cap.
+	t.Run("closing_delimiter_respects_limit", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name  string
+			value value.Value
+			limit int
+			want  string
+		}{
+			{
+				// "[]" is two bytes; a one-byte budget cannot fit the closer.
+				name:  "empty_array_at_limit",
+				value: value.NewArray(nil),
+				limit: 1,
+				want:  "[",
+			},
+			{
+				// "{}" is two bytes; a one-byte budget cannot fit the closer.
+				name:  "empty_hash_at_limit",
+				value: value.NewHash(nil),
+				limit: 1,
+				want:  "{",
+			},
+			{
+				// "[1]" is three bytes; with a two-byte budget the element fills
+				// the budget and the trailing "]" must trip the limit.
+				name:  "single_element_array_at_limit",
+				value: value.NewArray([]value.Value{value.NewInt(1)}),
+				limit: 2,
+				want:  "[1",
+			},
+			{
+				// "{k: 1}" is six bytes; the contents fill a five-byte budget and
+				// the trailing "}" must trip the limit.
+				name:  "single_entry_hash_at_limit",
+				value: value.NewHash(map[string]value.Value{"k": value.NewInt(1)}),
+				limit: 5,
+				want:  "{k: 1",
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := tc.value.StringBounded(tc.limit)
+				if !errors.Is(err, value.ErrStringRenderTruncated) {
+					t.Fatalf("StringBounded(%d) error = %v, want ErrStringRenderTruncated", tc.limit, err)
+				}
+				if got != tc.want {
+					t.Fatalf("StringBounded(%d) = %q, want %q", tc.limit, got, tc.want)
+				}
+				if len(got) > tc.limit {
+					t.Fatalf("StringBounded(%d) = %d bytes, must not exceed the limit", tc.limit, len(got))
+				}
+			})
+		}
+	})
+
+	// One byte past the boundary is enough for the closing delimiter, so these
+	// render in full with no truncation.
+	t.Run("closing_delimiter_fits_at_limit", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name  string
+			value value.Value
+			limit int
+			want  string
+		}{
+			{
+				name:  "empty_array",
+				value: value.NewArray(nil),
+				limit: 2,
+				want:  "[]",
+			},
+			{
+				name:  "empty_hash",
+				value: value.NewHash(nil),
+				limit: 2,
+				want:  "{}",
+			},
+			{
+				name:  "single_element_array",
+				value: value.NewArray([]value.Value{value.NewInt(1)}),
+				limit: 3,
+				want:  "[1]",
+			},
+			{
+				name:  "single_entry_hash",
+				value: value.NewHash(map[string]value.Value{"k": value.NewInt(1)}),
+				limit: 6,
+				want:  "{k: 1}",
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := tc.value.StringBounded(tc.limit)
+				if err != nil {
+					t.Fatalf("StringBounded(%d) error = %v, want nil", tc.limit, err)
+				}
+				if got != tc.want {
+					t.Fatalf("StringBounded(%d) = %q, want %q", tc.limit, got, tc.want)
+				}
+			})
+		}
+	})
 }
 
 func BenchmarkValueStringLargeComposite(b *testing.B) {

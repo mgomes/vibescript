@@ -210,8 +210,7 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		}
 		if id.Ptr != 0 {
 			if _, seen := state.arrays[id]; seen {
-				buf.WriteString("<cycle>")
-				return nil
+				return appendBounded(buf, "<cycle>", limit)
 			}
 			state.arrays[id] = struct{}{}
 			defer delete(state.arrays, id)
@@ -228,19 +227,19 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 				return ErrStringRenderTruncated
 			}
 		}
-		buf.WriteByte(']')
-		return nil
+		// The closing delimiter still counts against the budget: an array that
+		// fills the budget exactly with its elements must trip the limit rather
+		// than emit a result one byte over the cap.
+		return appendByteBounded(buf, ']', limit)
 	case KindHash:
 		entries := v.data.(map[string]Value)
 		if len(entries) == 0 {
-			buf.WriteString("{}")
-			return nil
+			return appendBounded(buf, "{}", limit)
 		}
 		ptr := reflect.ValueOf(entries).Pointer()
 		if ptr != 0 {
 			if _, seen := state.maps[ptr]; seen {
-				buf.WriteString("<cycle>")
-				return nil
+				return appendBounded(buf, "<cycle>", limit)
 			}
 			state.maps[ptr] = struct{}{}
 			defer delete(state.maps, ptr)
@@ -267,8 +266,9 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 				return ErrStringRenderTruncated
 			}
 		}
-		buf.WriteByte('}')
-		return nil
+		// See the array closing delimiter above: the trailing brace counts
+		// against the budget too.
+		return appendByteBounded(buf, '}', limit)
 	default:
 		// A scalar element may be an arbitrarily large string, so cap its write
 		// to the remaining budget instead of materializing the whole value in
@@ -279,6 +279,19 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 
 func exceedsStringLimit(buf *strings.Builder, limit int) bool {
 	return limit > 0 && buf.Len() > limit
+}
+
+// appendByteBounded writes a single closing delimiter into buf, but when limit
+// is positive it refuses to write past the budget and reports
+// ErrStringRenderTruncated instead. Closing delimiters count against the cap
+// like any other byte, so a composite that fills its budget exactly with its
+// contents must trip the limit rather than emit a result one byte over the cap.
+func appendByteBounded(buf *strings.Builder, b byte, limit int) error {
+	if limit > 0 && buf.Len() >= limit {
+		return ErrStringRenderTruncated
+	}
+	buf.WriteByte(b)
+	return nil
 }
 
 // appendBounded writes s into buf, but when limit is positive it copies only as
