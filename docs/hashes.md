@@ -36,7 +36,10 @@ result[:rescue] # "retry"
 ```
 
 This mirrors Ruby, which treats keyword-shaped labels uniformly. The same labels
-are accepted as keyword arguments at call sites (`record(rescue: "retry")`).
+are accepted as keyword arguments at call sites, with or without parentheses
+(`record(rescue: "retry")` and `record rescue: "retry"`). The trailing colon
+disambiguates the label from the keyword, so `record rescue: "retry"` passes a
+keyword argument rather than parsing `rescue` as a control-flow keyword.
 
 Hash literals only accept colon-style keys: shorthand labels (`name:`) and
 quoted string keys (`"name":`). Ruby's hash rocket syntax (`=>`) is not

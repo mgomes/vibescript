@@ -181,7 +181,21 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 	if p.peekStartsPercentArrayArgument(left) {
 		return true
 	}
+	if p.peekStartsParenlessKeywordLabel() {
+		return true
+	}
 	return isParenlessArgumentStart(p.peekToken.Type)
+}
+
+// peekStartsParenlessKeywordLabel reports whether the lookahead begins a
+// keyword-argument label (`name:`) for a parenless call. Reserved keywords
+// such as `rescue` are valid only as labels here, so they are not accepted
+// by isParenlessArgumentStart; recognizing the `label:` shape lets forms
+// like `record rescue: 1` start a parenless call. The trailing colon is the
+// disambiguator, mirroring Ruby, where `record rescue 1` is the rescue
+// modifier while `record rescue: 1` is a keyword argument.
+func (p *parser) peekStartsParenlessKeywordLabel() bool {
+	return isLabelNameToken(p.peekToken) && p.peekPeek.Type == ast.TokenColon
 }
 
 func isParenlessCallCallee(expr ast.Expression) bool {
@@ -1383,7 +1397,7 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 	for p.peekToken.Type == ast.TokenComma &&
 		p.peekToken.Pos.Line == p.curToken.Pos.Line &&
 		p.peekPeek.Pos.Line == p.curToken.Pos.Line &&
-		isParenlessArgumentStart(p.peekPeek.Type) {
+		(isParenlessArgumentStart(p.peekPeek.Type) || isLabelNameToken(p.peekPeek)) {
 		p.nextToken()
 		p.nextToken()
 		if bareKeywordArgs && (!isLabelNameToken(p.curToken) || p.peekToken.Type != ast.TokenColon) {
