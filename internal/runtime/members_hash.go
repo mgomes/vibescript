@@ -647,6 +647,14 @@ func hashMemberTransforms(property string) (Value, error) {
 				// accumulator's doc comment); the running total only grows, so it can
 				// never drop below the live footprint.
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+				// The output map is preallocated with make(map, len(base)), so its full
+				// len(base)-slot backing is live before the first conflict block runs.
+				// Reserve it in the accumulator's running budget so a large early conflict
+				// result is checked against the whole preallocated backing rather than only
+				// the slots filled so far, matching the up-front projection.
+				if err := acc.reserveBacking(len(base)); err != nil {
+					return NewNil(), err
+				}
 				// The sorted key scratch buffer stays live the whole build, coexisting
 				// with the output map at peak, so reserve it in the accumulator's
 				// running budget -- the same bytes the projection above charged.
@@ -710,7 +718,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					out[key] = resolved
-					if err := acc.add(key, resolved); err != nil {
+					if err := acc.add(resolved); err != nil {
 						return NewNil(), err
 					}
 				}
@@ -1046,6 +1054,13 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+			// The output map is preallocated with make(map, len(entries)), so its full
+			// backing is live before the first block runs; reserve it so a large early
+			// synthesized key is checked against the whole backing, not just the slots
+			// filled so far.
+			if err := acc.reserveBacking(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			if err := acc.reserveScratch(scratch); err != nil {
 				return NewNil(), err
 			}
@@ -1148,6 +1163,13 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+			// The output map is preallocated with make(map, len(entries)), so its full
+			// backing is live before the first block runs; reserve it so a large early
+			// block result is checked against the whole backing, not just the slots
+			// filled so far.
+			if err := acc.reserveBacking(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			if err := acc.reserveScratch(scratch); err != nil {
 				return NewNil(), err
 			}
@@ -1167,7 +1189,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out[key] = nextValue
-				if err := acc.add(key, nextValue); err != nil {
+				if err := acc.add(nextValue); err != nil {
 					return NewNil(), err
 				}
 			}

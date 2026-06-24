@@ -46,7 +46,13 @@
   reserved, so it cannot escape the sandbox limit on a large receiver; for the
   block-driven transforms that buffer stays live while the output map fills, so it
   is held against the quota for the whole build rather than only at the up-front
-  projection, keeping the combined output-plus-scratch peak bounded.
+  projection, keeping the combined output-plus-scratch peak bounded. Those
+  transforms preallocate their output with the receiver's size, so the full output
+  backing is live before the first block runs; that backing is now reserved against
+  the quota up front (matching the bytes the up-front projection charges) rather
+  than charged one slot at a time as entries are written, so a large *early* block
+  result is checked against the whole live backing instead of only the slots filled
+  so far and cannot transiently exceed the quota before later entries are added.
   `Hash#each`, `Hash#each_key`, and `Hash#each_value` build no derived map -- they
   return the receiver -- so they no longer reserve an output map they never
   allocate, and a quota that exactly fits the receiver and the scratch buffer

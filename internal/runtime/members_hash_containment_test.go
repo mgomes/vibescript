@@ -896,21 +896,28 @@ func TestHashBuildAccumulatorChargesIncrementally(t *testing.T) {
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	exec.root = newEnv(nil)
 	// Headroom for several large values but not many: each payload is 4 KiB and the
-	// quota above the live baseline admits roughly three before tripping.
+	// quota above the live baseline admits roughly three before tripping. The
+	// backing reservation for the preallocated slots is folded into the quota so the
+	// trip comes from the accumulated payloads, not the reserved structure.
 	const payloadBytes = 4 * 1024
+	const capacity = 100
 	base := exec.estimateMemoryUsageBase(newMemoryEstimator())
-	exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + 3*(payloadBytes+128)
+	exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes +
+		capacity*estimatedMapEntryStructuralBytes + 3*payloadBytes
 
 	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	// Mirror a transform that preallocates make(map, capacity): the full backing is
+	// reserved up front, so add charges only each block result's payload.
+	if err := acc.reserveBacking(capacity); err != nil {
+		t.Fatalf("reserving the backing tripped the quota before any entry: %v", err)
+	}
 
 	var tripped int
-	for i := range 100 {
-		// Distinct keys and distinct value backings so nothing dedups to zero: each
-		// add charges a fresh payload, mirroring a block that returns new heap
-		// values per entry.
-		key := "k" + strconv.Itoa(i)
+	for i := range capacity {
+		// Distinct value backings so nothing dedups to zero: each add charges a fresh
+		// payload, mirroring a block that returns new heap values per entry.
 		fresh := NewString(strings.Repeat("x", payloadBytes))
-		if err := acc.add(key, fresh); err != nil {
+		if err := acc.add(fresh); err != nil {
 			requireErrorIs(t, err, errMemoryQuotaExceeded)
 			tripped = i
 			break
@@ -949,11 +956,11 @@ func TestHashBuildAccumulatorReservesScratch(t *testing.T) {
 	// The fresh string payloads dedup against nothing, so each entry charges its full
 	// cost.
 	probe := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	if err := probe.add("k0", NewString(strings.Repeat("x", payloadBytes))); err != nil {
+	if err := probe.add(NewString(strings.Repeat("x", payloadBytes))); err != nil {
 		t.Fatalf("probe first entry error = %v", err)
 	}
 	builtOneEntry := probe.built
-	if err := probe.add("k1", NewString(strings.Repeat("y", payloadBytes))); err != nil {
+	if err := probe.add(NewString(strings.Repeat("y", payloadBytes))); err != nil {
 		t.Fatalf("probe second entry error = %v", err)
 	}
 	secondEntryCost := probe.built - builtOneEntry
@@ -978,10 +985,10 @@ func TestHashBuildAccumulatorReservesScratch(t *testing.T) {
 	// Without reserving the scratch, both entries fit the budget, proving the
 	// reservation -- not the entry payloads alone -- is what rejects the second.
 	unreserved := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	if err := unreserved.add("k0", NewString(strings.Repeat("x", payloadBytes))); err != nil {
+	if err := unreserved.add(NewString(strings.Repeat("x", payloadBytes))); err != nil {
 		t.Fatalf("first entry tripped the quota without a scratch reservation: %v", err)
 	}
-	if err := unreserved.add("k1", NewString(strings.Repeat("y", payloadBytes))); err != nil {
+	if err := unreserved.add(NewString(strings.Repeat("y", payloadBytes))); err != nil {
 		t.Fatalf("test setup expects two entries to fit without the scratch reservation: %v", err)
 	}
 
@@ -991,11 +998,100 @@ func TestHashBuildAccumulatorReservesScratch(t *testing.T) {
 	if err := reserved.reserveScratch(scratchBytes); err != nil {
 		t.Fatalf("reserving the scratch tripped the quota before any entry: %v", err)
 	}
-	if err := reserved.add("k0", NewString(strings.Repeat("x", payloadBytes))); err != nil {
+	if err := reserved.add(NewString(strings.Repeat("x", payloadBytes))); err != nil {
 		t.Fatalf("first entry tripped the quota with the scratch reserved, want it to fit: %v", err)
 	}
-	err := reserved.add("k1", NewString(strings.Repeat("y", payloadBytes)))
+	err := reserved.add(NewString(strings.Repeat("y", payloadBytes)))
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashBuildAccumulatorReservesBacking pins the latest P1 finding on PR #776:
+// the output map is allocated with make(map, capacity), so its full capacity
+// backing is live before the first block result is charged. The accumulator must
+// reserve that whole backing in the baseline up front; otherwise a large EARLY
+// block result is checked against only the slots filled so far, letting the
+// backing plus that result exceed the quota before later entries (or the post-call
+// check) caught it.
+//
+// The test drives the accumulator directly with one large early result and a quota
+// sized to admit base + empty map + one entry's payload + a single backing slot,
+// but NOT the full capacity backing. With the backing reserved the early result is
+// rejected; without it the identical result is wrongly admitted -- exactly the
+// transient under-count the reservation closes.
+func TestHashBuildAccumulatorReservesBacking(t *testing.T) {
+	t.Parallel()
+
+	// A capacity far larger than one entry, so the reserved backing dominates the
+	// budget: the gap between "one slot" and "capacity slots" is what the fix charges.
+	const capacity = 10_000
+	const payloadBytes = 4 * 1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	exec.root = newEnv(nil)
+
+	// Measure the empty-map baseline and one result's payload under an ample quota so
+	// the budget is sized from the real accounting rather than a hand-derived estimate.
+	probe := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	emptyMapBase := probe.base
+	if err := probe.add(NewString(strings.Repeat("x", payloadBytes))); err != nil {
+		t.Fatalf("probe result tripped under an unbounded quota: %v", err)
+	}
+	resultPayload := probe.built
+
+	// A quota that admits the empty-map baseline, the one result's payload, and a
+	// single backing slot -- but not the full capacity backing. The early result fits
+	// when only one slot is reserved (the buggy view) yet overflows once the whole
+	// capacity backing is charged (the fixed view).
+	exec.memoryQuota = emptyMapBase + resultPayload + estimatedMapEntryStructuralBytes
+
+	// Without reserving the backing, the single early result is wrongly admitted: the
+	// running budget sees only the slots filled so far, not the live capacity backing.
+	unreserved := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	if err := unreserved.add(NewString(strings.Repeat("x", payloadBytes))); err != nil {
+		t.Fatalf("without the backing reservation the early result should be wrongly admitted, got %v", err)
+	}
+
+	// Reserving the full capacity backing first -- exactly what the transform's
+	// make(map, capacity) allocates -- rejects the same early result, since the backing
+	// plus the result already exceeds the quota.
+	reserved := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	if err := reserved.reserveBacking(capacity); err != nil {
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+		return
+	}
+	err := reserved.add(NewString(strings.Repeat("x", payloadBytes)))
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashBuildAccumulatorBackingReservationMatchesProjection pins that the
+// accumulator's reserved backing equals exactly what the up-front projection
+// charges for the same capacity, so the running budget and the preflight reserve
+// the same bytes. A drift between the two views would either reject builds the
+// projection admitted or admit builds it rejected. The build's final base after
+// reserveBacking(capacity) must equal the call-root usage plus the empty map plus
+// capacity structural slots -- the same outputEntries*perEntry the projection adds.
+func TestHashBuildAccumulatorBackingReservationMatchesProjection(t *testing.T) {
+	t.Parallel()
+
+	const capacity = 4_096
+	receiver := largeHashReceiver(capacity)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	exec.root = newEnv(nil)
+
+	acc := newHashBuildAccumulator(exec, receiver, nil, nil, NewNil())
+	if err := acc.reserveBacking(capacity); err != nil {
+		t.Fatalf("reserving the backing tripped under an unbounded quota: %v", err)
+	}
+
+	// The projection's baseline (call roots + empty map) plus capacity structural slots
+	// is exactly what the accumulator's base must hold after reserveBacking, proving the
+	// two budgets reserve the same backing.
+	wantBase := exec.projectedHashBaseBytes(receiver, nil, nil, NewNil()) +
+		capacity*estimatedMapEntryStructuralBytes
+	if acc.base != wantBase {
+		t.Fatalf("accumulator base after reserveBacking = %d, want %d (the projection's backing)", acc.base, wantBase)
+	}
 }
 
 // TestHashTransformValuesScratchPeakTripsMemoryQuota drives the P1 scratch
@@ -1027,8 +1123,14 @@ func TestHashTransformValuesScratchPeakTripsMemoryQuota(t *testing.T) {
 	// final built footprint.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	acc := newHashBuildAccumulator(probe, receiver, nil, nil, block)
-	for _, key := range sortedHashKeysInto(receiver.Hash(), nil) {
-		if err := acc.add(key, NewNil()); err != nil {
+	// Mirror the real transform: it preallocates make(map, count) and reserves that
+	// backing before charging block results, so the probe must reserve it too or the
+	// scratch-blind peak would under-count the live backing.
+	if err := acc.reserveBacking(count); err != nil {
+		t.Fatalf("reserving the backing tripped under an unbounded quota: %v", err)
+	}
+	for range sortedHashKeysInto(receiver.Hash(), nil) {
+		if err := acc.add(NewNil()); err != nil {
 			t.Fatalf("probe build tripped under an unbounded quota: %v", err)
 		}
 	}
@@ -1268,17 +1370,17 @@ func TestHashBuildAccumulatorChargesInPlaceMutatedBaseContainer(t *testing.T) {
 	}
 	mutatedArray := NewArray(mutated)
 
-	// Conservative counting charges the returned value's full current footprint, so the
+	// Conservative counting charges the returned value's full current payload, so the
 	// fresh payload is observed and the quota is tripped. The removed base-seeded dedup
 	// would have charged ~0 here (the backing was in the baseline) and admitted it.
-	err := acc.add("a", mutatedArray)
+	err := acc.add(mutatedArray)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 // TestHashMergeBaseSeedingWouldUndercountConflictResult pins the exact P1 finding
 // on PR #776: merge's base-copy loop must NOT charge receiver entries through the
 // results-only estimator before the conflict block runs. The buggy loop did
-// (acc.add(key, val) per base entry), which recorded the receiver's array backings
+// (acc.add per base entry), which recorded the receiver's array backings
 // in the estimator's seen-set. A conflict block that mutated one of those arrays in
 // place (within spare capacity, keeping the same backing) and returned it was then
 // deduplicated against the seeded backing and charged ~0 for the freshly stored
@@ -1323,10 +1425,10 @@ func TestHashMergeBaseSeedingWouldUndercountConflictResult(t *testing.T) {
 	// under-count this regression test exists to forbid in the production path.
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	seeded := newHashBuildAccumulator(exec, receiver, []Value{arg}, nil, NewNil())
-	if err := seeded.add("x", receiverArray); err != nil {
+	if err := seeded.add(receiverArray); err != nil {
 		t.Fatalf("seeding the base entry tripped the quota before any conflict: %v", err)
 	}
-	if err := seeded.add("x", conflictResult); err != nil {
+	if err := seeded.add(conflictResult); err != nil {
 		t.Fatalf("base-seeded accumulator unexpectedly tripped (%v); the test must demonstrate the undercount the buggy seeding produces", err)
 	}
 
@@ -1336,7 +1438,7 @@ func TestHashMergeBaseSeedingWouldUndercountConflictResult(t *testing.T) {
 	// and tripping the same quota. The difference between the two branches is exactly the
 	// sandbox escape the fix closes.
 	fixed := newHashBuildAccumulator(exec, receiver, []Value{arg}, nil, NewNil())
-	err := fixed.add("x", conflictResult)
+	err := fixed.add(conflictResult)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
@@ -1346,13 +1448,14 @@ func TestHashMergeBaseSeedingWouldUndercountConflictResult(t *testing.T) {
 // the entry through add(resolved, entries[key]), routing the receiver value through
 // the results-only estimator and recording its backing in the seen-set -- a
 // receiver/argument value reaching the estimator, the same class of bug as merge's
-// base seeding. addSynthesizedKey charges only the fresh key plus the value's bare
-// structural slot, so the receiver value's backing is never recorded.
+// base seeding. addSynthesizedKey charges only the fresh key's payload (the entry's
+// structural slot is reserved up front by reserveBacking), so the receiver value's
+// backing is never recorded.
 //
-// The test asserts both halves: the charge equals key header + key payload + map
-// bucket + one value slot (not the value's reachable payload), and the value's
-// backing is absent from the estimator's seen-set afterward, so a later block result
-// that aliased it would still be charged at full size.
+// The test asserts both halves: the charge equals the synthesized key's payload
+// only (not the value's reachable payload), and the value's backing is absent from
+// the estimator's seen-set afterward, so a later block result that aliased it would
+// still be charged at full size.
 func TestHashTransformKeysSynthesizedKeyChargesKeyNotValue(t *testing.T) {
 	t.Parallel()
 
@@ -1374,12 +1477,13 @@ func TestHashTransformKeysSynthesizedKeyChargesKeyNotValue(t *testing.T) {
 		t.Fatalf("addSynthesizedKey tripped under an unbounded quota: %v", err)
 	}
 
-	// The charge is the fresh key (header + payload), the map bucket, and a single value
-	// slot -- the value's reachable payload is NOT charged here, since it is already in
-	// the baseline as a receiver value.
-	want := estimatedMapEntryBytes + estimatedStringHeaderBytes + len(synthesized) + estimatedValueBytes
+	// The charge is only the fresh key's payload -- the entry's structural slot (map
+	// bucket, key header, value slot) is reserved up front by reserveBacking, and the
+	// value's reachable payload is already in the baseline as a receiver value, so
+	// neither is charged here.
+	want := len(synthesized)
 	if acc.built != want {
-		t.Fatalf("addSynthesizedKey charged %d bytes, want %d (key header+payload, map bucket, one value slot only)", acc.built, want)
+		t.Fatalf("addSynthesizedKey charged %d bytes, want %d (the synthesized key payload only)", acc.built, want)
 	}
 
 	// The receiver value's backing must be absent from the estimator's seen-set: a later
@@ -1428,7 +1532,7 @@ func TestHashBuildAccumulatorChargesCyclicBlockResult(t *testing.T) {
 			exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + 64*1024
 
 			acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-			if err := acc.add("k", shape.build()); err != nil {
+			if err := acc.add(shape.build()); err != nil {
 				t.Fatalf("charging a cyclic block result tripped an ample quota: %v", err)
 			}
 			if acc.built <= 0 {
@@ -1780,12 +1884,12 @@ func TestHashSelectSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 // The test exercises the accumulator directly (the same newHashBuildAccumulator +
 // add per entry that transform_values uses) rather than the full builtin, because
 // the builtin's post-call check independently rejects an over-quota materialized
-// result and would mask whether the accumulator caught the undercount. The key in
-// transform_values is a receiver key kept unchanged, already counted in the call-root
-// baseline, so add charges it as a bare structural slot (map bucket + key header)
-// without routing its payload through the results-only estimator; only the
-// block-returned value is charged its full footprint (its slot plus the result
-// hash's payload). That is the single source of truth the accumulator mirrors.
+// result and would mask whether the accumulator caught the undercount. The entry's
+// structural slot (map bucket, key header, value slot) is reserved up front by
+// reserveBacking and the receiver key's payload is already in the call-root
+// baseline, so add charges only the block-returned value's PAYLOAD beyond its slot
+// (the result hash's reachable footprint, including its per-entry value slots).
+// That is the single source of truth the accumulator mirrors.
 func TestHashTransformValuesFreshScalarHashesTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 
@@ -1799,22 +1903,19 @@ func TestHashTransformValuesFreshScalarHashesTripsMemoryQuota(t *testing.T) {
 		"b": NewInt(2),
 		"c": NewInt(3),
 	})
-	const key = "row"
-
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	exec.root = newEnv(nil)
 	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	if err := acc.add(key, result); err != nil {
+	if err := acc.add(result); err != nil {
 		t.Fatalf("add tripped under an unbounded quota: %v", err)
 	}
 
-	// The conservative accumulator's charge for the entry must equal the map bucket
-	// and key header (the key's payload is counted in the baseline, not here) plus the
-	// value's full footprint (its slot plus the result hash's payload). The result
-	// hash's per-entry value slots are part of est.value, so a charge that omits them
-	// would charge slotsPerResult*estimatedValueBytes too little.
-	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes
-	want := entry + newMemoryEstimator().value(result)
+	// The conservative accumulator's charge for the entry must equal the value's
+	// payload beyond its slot (the entry's structural slot is reserved up front by
+	// reserveBacking, and the receiver key's payload is in the baseline). The result
+	// hash's per-entry value slots are part of est.valuePayload, so a charge that
+	// omits them would charge slotsPerResult*estimatedValueBytes too little.
+	want := newMemoryEstimator().valuePayload(result)
 	if acc.built != want {
 		t.Fatalf("accumulator charged %d entry bytes, estimator charges %d (the result hash's value slots must be counted)", acc.built, want)
 	}

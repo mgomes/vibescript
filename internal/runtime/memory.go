@@ -20,6 +20,16 @@ const (
 	estimatedModuleContextSize = 24
 )
 
+// estimatedMapEntryStructuralBytes is the per-entry structural footprint a
+// map[string]Value reserves for one slot regardless of what its key and value
+// point at: the bucket overhead, the key string header, and the value slot. It
+// is what make(map[string]Value, n) charges per capacity slot beyond the empty
+// map's base overhead; the key bytes and value payloads are charged on top by
+// whoever inserts them. The hash projections and the incremental build
+// accumulator share this constant so the up-front and running budgets reserve
+// the same per-entry structure.
+const estimatedMapEntryStructuralBytes = estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+
 type memoryEstimator struct {
 	seenFrozen    *Env
 	seenEnvs      map[*Env]struct{}
@@ -219,8 +229,7 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 	}
 
 	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
-	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	used = saturatingAdd(used, saturatingMul(outputEntries, perEntry))
+	used = saturatingAdd(used, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
 	used = saturatingAdd(used, scratchBytes)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
@@ -368,6 +377,15 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 // documented (see changelog.d/608 and docs/hashes.md); the array-side equivalent
 // is tracked in #787.
 //
+// The output map is preallocated with make(map[string]Value, n), so its full
+// n-slot backing is live from the first block call -- before any result has been
+// charged. The accumulator therefore reserves that backing in the baseline up
+// front via reserveBacking, then charges each add only the entry's key/value
+// PAYLOAD beyond the structural slot already reserved. Without the reservation a
+// large early block result would be checked against only the slots inserted so
+// far rather than the whole live backing, letting backing + early result exceed
+// the quota until later entries (or the post-call check) caught it.
+//
 // Each add is O(size of the inserted value) and the total is O(sum of inserted
 // result sizes), not O(n^2): the estimator walks only the newly inserted value,
 // never the accumulated prefix.
@@ -377,8 +395,9 @@ type hashBuildAccumulator struct {
 	// roots, so it deduplicates backings shared across block results but charges a
 	// result's full footprint even when it aliases a baseline container. base is the
 	// live footprint snapshotted when the build started (exec's reachable roots, the
-	// call roots, and the output map's empty overhead); built is the running byte
-	// total charged for the block-result payloads as the output is assembled.
+	// call roots, the output map's empty overhead, and -- once reserveBacking is
+	// called -- the preallocated n-slot backing); built is the running byte total
+	// charged for the per-entry key/value payloads as the output is assembled.
 	est   *memoryEstimator
 	base  int
 	built int
@@ -386,12 +405,15 @@ type hashBuildAccumulator struct {
 
 // newHashBuildAccumulator snapshots the execution's current live memory plus the
 // transform's call roots as the baseline for an incremental hash build, then folds
-// the output map's empty overhead into that baseline so add charges only the
-// per-entry growth. The accumulator's results-only estimator is a fresh estimator
-// that is deliberately NOT seeded with the base or call roots: it deduplicates
-// backings shared across block results but never against the baseline, so an
-// in-place-mutated receiver container returned by a block is charged at its full
-// current size rather than treated as already accounted.
+// the output map's empty overhead into that baseline. Callers that preallocate the
+// output with make(map[string]Value, capacity) must then call reserveBacking so the
+// whole capacity backing is held against the quota before any block runs; add then
+// charges only the per-entry payloads beyond the reserved structural slots. The
+// accumulator's results-only estimator is a fresh estimator that is deliberately
+// NOT seeded with the base or call roots: it deduplicates backings shared across
+// block results but never against the baseline, so an in-place-mutated receiver
+// container returned by a block is charged at its full current size rather than
+// treated as already accounted.
 func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *hashBuildAccumulator {
 	acc := &hashBuildAccumulator{exec: exec}
 	if exec.memoryQuota <= 0 {
@@ -427,22 +449,45 @@ func (acc *hashBuildAccumulator) reserveScratch(scratchBytes int) error {
 	return acc.checkQuota()
 }
 
+// reserveBacking folds the structural footprint of a preallocated output map into
+// the baseline so the whole backing is held against the quota from the first block
+// call, and rejects the build if the reservation alone already overflows. Hash
+// transforms allocate their output with make(map[string]Value, capacity), so all
+// capacity slots are live before any block result is charged; without reserving
+// them, an early add would be checked against only the slots filled so far rather
+// than the full backing, letting a large early result plus the whole backing slip
+// past the quota until later entries (or the post-call check) caught it.
+//
+// capacity is the slot count passed to make; the empty map's base overhead is
+// already folded into the baseline by newHashBuildAccumulator, so only the
+// per-slot structure is reserved here. The key and value PAYLOADS are charged
+// incrementally by add/addSynthesizedKey, which after this reservation add only
+// the payload beyond the structural slot already counted, so nothing is double
+// counted: base ends at call roots + empty map + capacity*slot, and built ends at
+// the sum of per-entry payloads.
+func (acc *hashBuildAccumulator) reserveBacking(capacity int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
+	return acc.checkQuota()
+}
+
 // add charges a write whose VALUE is a block result to the output map and rejects
 // the build if the projected map memory exceeds the quota. Use it where the block
 // produces the VALUE (transform_values, the merge conflict block) and the key is a
 // receiver or argument key kept unchanged; transform_keys, whose block produces
 // the KEY while the value stays a receiver value, uses addSynthesizedKey instead.
 //
-// Only the block-returned value goes through the results-only estimator. The key
-// is a receiver/argument key whose payload is already counted in the baseline
-// (acc.base via the call roots), so it is charged as a bare structural slot (map
-// bucket + key header) without its payload -- routing the key through the
-// estimator would both double-count it and record its backing in the seen-set,
-// risking a later block result that aliases it being dedup'd to nothing. The
-// value is charged its full footprint as the estimator would measure it, so a
+// The entry's structural slot (map bucket, key header, value slot) is already
+// held in the baseline by reserveBacking, so add charges only PAYLOADS beyond it.
+// The key is a receiver/argument key whose payload is already counted in the
+// baseline via the call roots, so it contributes nothing further. Only the
+// block-returned value's payload goes through the results-only estimator, so a
 // backing shared across two block results is counted once but a result that
 // aliases a baseline container is counted at full size rather than deduplicated to
-// nothing.
+// nothing. Routing the key through the estimator would record its backing in the
+// seen-set and risk a later block result that aliases it being dedup'd away.
 //
 // Charging per write (rather than per distinct key) means a key overwritten by a
 // later write -- a merge conflict block folding several colliding arguments -- is
@@ -450,38 +495,35 @@ func (acc *hashBuildAccumulator) reserveScratch(scratchBytes int) error {
 // map's footprint, the intentional tradeoff that makes the bound sound under
 // in-place mutation: built only ever grows, so it can never drop below the live
 // footprint and let a later insert materialize past the quota.
-func (acc *hashBuildAccumulator) add(key string, val Value) error {
+func (acc *hashBuildAccumulator) add(val Value) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes
-	entry = saturatingAdd(entry, acc.est.value(val))
-	acc.built = saturatingAdd(acc.built, entry)
+	acc.built = saturatingAdd(acc.built, acc.est.valuePayload(val))
 	return acc.checkQuota()
 }
 
 // addSynthesizedKey charges a key write whose KEY is a fresh block-synthesized
 // string but whose VALUE is a receiver value already counted in the baseline
 // (transform_keys yields a new key per entry while keeping the original value).
-// Only the synthesized key is a block result, so only it goes through the
-// results-only estimator; the value contributes just its structural map slot
-// (estimatedValueBytes), not its reachable payload, because that payload is
-// already folded into acc.base via the call roots. Charging the value's full
-// footprint here would both double-count it and -- by recording its backing in
-// the estimator's seen-set -- let a later block result that aliases the same
-// backing be dedup'd to nothing, the exact under-count the results-only
-// estimator exists to prevent. The synthesized key payload is the only
-// unbounded fresh allocation the up-front structural projection cannot see, so
-// charging it incrementally keeps the build within the quota during the loop.
+// The entry's structural slot (map bucket, key header, value slot) is already held
+// in the baseline by reserveBacking, and the value's reachable payload is already
+// folded into acc.base via the call roots, so the only fresh allocation to charge
+// is the synthesized key's PAYLOAD beyond its header. It goes through the
+// results-only estimator so a key string shared across block results is counted
+// once; the value never goes through the estimator, since routing it would record
+// its backing in the seen-set and let a later block result aliasing it be dedup'd
+// to nothing -- the exact under-count the results-only estimator exists to
+// prevent. The synthesized key payload is the only unbounded fresh allocation the
+// up-front structural projection cannot see, so charging it incrementally keeps
+// the build within the quota during the loop.
 func (acc *hashBuildAccumulator) addSynthesizedKey(key string) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + acc.est.stringPayloadSize(key)
-	entry = saturatingAdd(entry, estimatedValueBytes)
-	acc.built = saturatingAdd(acc.built, entry)
+	acc.built = saturatingAdd(acc.built, acc.est.stringPayloadSize(key))
 	return acc.checkQuota()
 }
 
@@ -553,8 +595,7 @@ func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value,
 	if used >= exec.memoryQuota {
 		return 0
 	}
-	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	return (exec.memoryQuota - used) / perEntry
+	return (exec.memoryQuota - used) / estimatedMapEntryStructuralBytes
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
