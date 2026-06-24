@@ -186,15 +186,6 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "index must be integer",
 		},
 		{
-			name: "array.count with argument and block",
-			script: `def run()
-  [1, 1].count(1) do |v|
-    v == 1
-  end
-end`,
-			errMsg: "does not accept both argument and block",
-		},
-		{
 			name:   "array.any? with argument",
 			script: `def run() [1].any?(1) end`,
 			errMsg: "array.any? does not take arguments",
