@@ -325,8 +325,9 @@ func hashMemberQuery(property string) (Value, error) {
 			entries := receiver.Hash()
 			// each builds no output map, but it materializes a sorted key list to
 			// walk entries deterministically. Charge that scratch buffer before
-			// allocating it so a large receiver cannot escape the memory quota.
-			if err := exec.checkProjectedHashTransformBytes(0, sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// allocating it so a large receiver cannot escape the memory quota; the
+			// walk projection charges no output map this iterator never creates.
+			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArgs [2]Value
@@ -358,8 +359,9 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			// Charge the sorted key scratch buffer before allocating it; each_key
-			// builds no output map but walks a materialized key list.
-			if err := exec.checkProjectedHashTransformBytes(0, sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// builds no output map but walks a materialized key list, so the walk
+			// projection charges no output map.
+			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
@@ -388,8 +390,9 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			// Charge the sorted key scratch buffer before allocating it; each_value
-			// builds no output map but walks a materialized key list.
-			if err := exec.checkProjectedHashTransformBytes(0, sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// builds no output map but walks a materialized key list, so the walk
+			// projection charges no output map.
+			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
@@ -620,6 +623,12 @@ func hashMemberTransforms(property string) (Value, error) {
 				// a conflict block overwrites an existing slot, so the second write
 				// for a key charges only the net value change, never a second entry.
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+				// The sorted key scratch buffers stay live the whole build, coexisting
+				// with the output map at peak, so reserve them in the accumulator's
+				// running budget -- the same bytes the projection above charged.
+				if err := acc.reserveScratch(scratchBytes); err != nil {
+					return NewNil(), err
+				}
 				var baseKeyBuf [smallHashKeyBufferSize]string
 				for _, key := range sortedHashKeysInto(base, baseKeyBuf[:]) {
 					// Charge a step per base entry so seeding the accumulator over a
@@ -962,11 +971,16 @@ func hashMemberTransforms(property string) (Value, error) {
 			// input keys onto the same output key overwrites a slot rather than
 			// growing the map, and the accumulator charges that as a net value
 			// swap, not a second entry. The sorted key scratch buffer is charged
-			// alongside the structural projection here.
-			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// alongside the structural projection here and reserved in the
+			// accumulator so it stays charged for the whole build.
+			scratch := sortedKeyBufferBytes(len(entries))
+			if err := exec.checkProjectedHashTransformBytes(len(entries), scratch, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveScratch(scratch); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -1054,11 +1068,16 @@ func hashMemberTransforms(property string) (Value, error) {
 			// them. Charge each result incrementally through a build accumulator
 			// seeded with the live call roots so accumulated payloads count toward
 			// the quota during the loop, not only at the post-call check. The sorted
-			// key scratch buffer is charged alongside the structural projection here.
-			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// key scratch buffer is charged alongside the structural projection here
+			// and reserved in the accumulator so it stays charged for the whole build.
+			scratch := sortedKeyBufferBytes(len(entries))
+			if err := exec.checkProjectedHashTransformBytes(len(entries), scratch, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveScratch(scratch); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string

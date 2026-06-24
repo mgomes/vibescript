@@ -904,6 +904,196 @@ func TestHashBuildAccumulatorChargesTrackingMap(t *testing.T) {
 	}
 }
 
+// TestHashBuildAccumulatorReservesScratch pins the P1 finding on PR #776: the
+// sorted-key scratch buffer is live for the whole block-driven build, coexisting
+// with the output map at peak, so the accumulator must reserve its bytes for the
+// build's lifetime. reserveScratch folds the scratch into the baseline, shrinking
+// the headroom by exactly the scratch size; an entry that fits without the
+// reservation but not with it must be rejected once the scratch is reserved.
+// Before the fix the accumulator's running budget omitted the scratch entirely, so
+// the combined output+scratch peak could exceed the quota by the scratch size.
+func TestHashBuildAccumulatorReservesScratch(t *testing.T) {
+	t.Parallel()
+
+	// A large but finite memory quota: the accumulator only runs its accounting when
+	// a positive quota is set, so the probe below must measure under a real (ample)
+	// quota rather than the unbounded (memoryQuota == 0) short circuit.
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	exec.root = newEnv(nil)
+
+	const payloadBytes = 4 * 1024
+
+	// Measure the accumulator's exact built footprint after one entry and after two,
+	// under an ample quota, so the test sizes the budget from the real per-entry cost
+	// rather than a hand-derived estimate that could drift if the accounting changes.
+	// The fresh string payloads dedup against nothing, so each entry charges its full
+	// cost.
+	probe := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	if err := probe.add("k0", NewString(strings.Repeat("x", payloadBytes))); err != nil {
+		t.Fatalf("probe first entry error = %v", err)
+	}
+	builtOneEntry := probe.built
+	if err := probe.add("k1", NewString(strings.Repeat("y", payloadBytes))); err != nil {
+		t.Fatalf("probe second entry error = %v", err)
+	}
+	secondEntryCost := probe.built - builtOneEntry
+
+	// A scratch smaller than one entry's cost: with it reserved the first entry still
+	// fits, so the rejection lands cleanly on the second add and is attributable to
+	// the scratch reservation rather than to the first entry overflowing on its own.
+	scratchBytes := secondEntryCost / 2
+	if scratchBytes <= 0 {
+		t.Fatalf("test setup expects a positive scratch derived from the entry cost (%d)", secondEntryCost)
+	}
+
+	// A quota that admits the empty output map plus exactly one full entry and the
+	// reserved scratch, but would admit a second entry if the scratch were not
+	// reserved. The second entry costs more than the scratch, so without the
+	// reservation the leftover headroom (a full entry's worth) covers it; with the
+	// reservation only the scratch's worth of headroom remains, which is too small.
+	emptyMap := estimatedValueBytes + estimatedMapBaseBytes
+	base := probe.base - emptyMap // probe.base folds in the empty-map overhead
+	exec.memoryQuota = base + emptyMap + builtOneEntry + secondEntryCost
+
+	// Without reserving the scratch, both entries fit the budget, proving the
+	// reservation -- not the entry payloads alone -- is what rejects the second.
+	unreserved := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	if err := unreserved.add("k0", NewString(strings.Repeat("x", payloadBytes))); err != nil {
+		t.Fatalf("first entry tripped the quota without a scratch reservation: %v", err)
+	}
+	if err := unreserved.add("k1", NewString(strings.Repeat("y", payloadBytes))); err != nil {
+		t.Fatalf("test setup expects two entries to fit without the scratch reservation: %v", err)
+	}
+
+	// Reserving the scratch consumes the headroom the second entry relied on, so the
+	// first entry fits but the second is rejected.
+	reserved := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	if err := reserved.reserveScratch(scratchBytes); err != nil {
+		t.Fatalf("reserving the scratch tripped the quota before any entry: %v", err)
+	}
+	if err := reserved.add("k0", NewString(strings.Repeat("x", payloadBytes))); err != nil {
+		t.Fatalf("first entry tripped the quota with the scratch reserved, want it to fit: %v", err)
+	}
+	err := reserved.add("k1", NewString(strings.Repeat("y", payloadBytes)))
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashTransformValuesScratchPeakTripsMemoryQuota drives the P1 scratch
+// reservation through transform_values: the sorted-key scratch buffer is live for
+// the whole build, coexisting with the output map at peak, so it must be charged
+// against the running budget rather than only the up-front projection. The quota
+// is sized to exactly the accumulator's peak with the scratch reserved minus one
+// byte, so the call is rejected precisely because of the scratch; granting the
+// scratch's bytes back admits the identical build. Before the fix the accumulator
+// ignored the scratch, so the combined output+scratch peak slipped past the quota
+// until the post-call check.
+func TestHashTransformValuesScratchPeakTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// Enough keys that the sorted-key list heaps a real buffer rather than reusing
+	// the inline stack array, so its reservation is a meaningful share of the budget.
+	const count = 20_000
+	receiver := largeHashReceiver(count)
+	// An empty block makes transform_values map every key to nil: nil is a valid
+	// result value with no heap payload, so the build's only allocations are the
+	// output map's structural slots, the accumulator's tracking map, and the sorted
+	// key scratch buffer. That keeps the peak exactly computable end to end.
+	block := emptyHashBlock()
+
+	// Compute the accumulator's exact peak the build reaches, then add the scratch
+	// the live key list holds alongside it. The probe runs under an ample (but
+	// finite) quota so its accounting executes -- a zero quota would short-circuit
+	// every add -- while staying large enough never to trip, letting us read the
+	// final built footprint.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	acc := newHashBuildAccumulator(probe, receiver, nil, nil, block)
+	for _, key := range sortedHashKeysInto(receiver.Hash(), nil) {
+		if err := acc.add(key, NewNil()); err != nil {
+			t.Fatalf("probe build tripped under an unbounded quota: %v", err)
+		}
+	}
+	peakWithoutScratch := acc.base + acc.built
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	// A quota one byte short of the peak plus the reserved scratch: the build fits
+	// without the scratch (peakWithoutScratch <= quota) but not with it.
+	quota := peakWithoutScratch + scratch - 1
+	if peakWithoutScratch > quota {
+		t.Fatalf("test setup expects the scratch-blind peak (%d) to fit the quota (%d)", peakWithoutScratch, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "transform_values", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	// Sanity: granting exactly the scratch budget back admits the identical build,
+	// proving the rejection above is the scratch reservation and not an over-tight
+	// quota. The empty block charges steps per entry; the ample step quota lets the
+	// memory accounting be the only constraint.
+	roomy := quota + scratch + 1
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roomy}
+	got, err := callHashMember(t, exec, receiver, "transform_values", nil, block)
+	if err != nil {
+		t.Fatalf("transform_values under a quota that fits the scratch = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("transform_values produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	}
+}
+
+// TestHashEachFitsRealFootprint pins the P2 finding on PR #776: pure iterators
+// (each, each_key, each_value) build no output map -- they return the receiver --
+// so charging them an empty output map's overhead is a pure over-charge. A quota
+// sized to the iterator's real footprint (the live receiver and the sorted-key
+// scratch buffer, with no derived map) must admit the walk. Before the fix the
+// projection folded in an empty output map the iterator never allocates, so a quota
+// that exactly fit the real footprint was falsely rejected.
+func TestHashEachFitsRealFootprint(t *testing.T) {
+	t.Parallel()
+
+	const count = 20_000
+	receiver := largeHashReceiver(count)
+	block := emptyHashBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	for _, name := range []string{"each", "each_key", "each_value"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// A quota that exactly covers the call roots and the scratch buffer: the
+			// iterator's true peak. The empty block charges no steps and builds no map,
+			// so this is everything the walk needs.
+			quota := roots + scratch
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			got, err := callHashMember(t, exec, receiver, name, nil, block)
+			if err != nil {
+				t.Fatalf("%s under a footprint-sized quota = %v, want success", name, err)
+			}
+			if got.Kind() != KindHash || len(got.Hash()) != count {
+				t.Fatalf("%s returned %v with %d entries, want the receiver with %d", name, got.Kind(), len(got.Hash()), count)
+			}
+
+			// The discarded projection added an empty output map (value slot plus map
+			// base) the iterator never allocates. A quota one byte below the real
+			// footprint must still reject, proving the success above is not slack from
+			// a quota that happens to also cover the phantom map.
+			tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota - 1}
+			if _, err := callHashMember(t, tight, receiver, name, nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+				t.Fatalf("%s one byte below its footprint = %v, want errMemoryQuotaExceeded", name, err)
+			}
+		})
+	}
+}
+
 // mergeManyCollidingArgsSource generates a script whose run() merges the receiver
 // with collisions one-key hashes that all share key :x, in a single merge call, so
 // every argument folds through one accumulator and overwrites the same slot. The
@@ -1126,12 +1316,13 @@ func TestHashSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 	const count = 50_000
 	receiver := largeHashReceiver(count)
 
-	// The live baseline a walk holds: the call roots (receiver plus the block)
-	// and the empty output-map overhead projectedHashBaseBytes folds in. each
-	// builds no map, so its only extra allocation is the sorted key scratch buffer.
+	// The live baseline a walk holds: the call roots (receiver plus the block).
+	// each builds no output map, so its baseline is the call roots alone (no
+	// empty-map overhead) and its only extra allocation is the sorted key scratch
+	// buffer.
 	block := emptyHashBlock()
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	base := probe.projectedHashBaseBytes(receiver, nil, nil, block)
+	base := probe.hashCallRootBytes(receiver, nil, nil, block)
 	scratch := sortedKeyBufferBytes(count)
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)

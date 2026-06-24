@@ -163,13 +163,18 @@ func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args [
 	return exec.checkProjectedHashTransformBytes(count, 0, receiver, args, kwargs, block)
 }
 
-// checkProjectedHashTransformBytes rejects a hash transform before it allocates
-// either its output map or the sorted-key scratch buffer(s) that drive an
-// ordered walk. outputEntries is the number of entries the result map would hold
-// (zero for a walk that builds no map, such as each); scratchBytes is the heap
-// footprint of the scratch key slices (see sortedKeyBufferBytes), which the
-// caller sums per-buffer so the inline-stack-buffer threshold is applied to each
-// independently.
+// checkProjectedHashTransformBytes rejects a map-producing hash transform before
+// it allocates either its output map or the sorted-key scratch buffer(s) that
+// drive an ordered walk. outputEntries is the number of entries the result map
+// would hold; scratchBytes is the heap footprint of the scratch key slices (see
+// sortedKeyBufferBytes), which the caller sums per-buffer so the inline-stack-
+// buffer threshold is applied to each independently.
+//
+// The output map's fixed overhead is always charged, even when outputEntries is
+// zero: a transform that produces a hash (merge, select, transform_values, ...)
+// allocates a real empty map for an empty result. Pure iterators that build no
+// map (each, each_key, each_value) use checkProjectedHashWalkBytes instead, which
+// omits that overhead.
 //
 // Both allocations coexist at peak: the scratch list of every key is live while
 // the output map fills, so they are charged together against the same call-root
@@ -187,6 +192,25 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
 	used = saturatingAdd(used, saturatingMul(outputEntries, perEntry))
 	used = saturatingAdd(used, scratchBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+// checkProjectedHashWalkBytes rejects a pure hash iterator (each, each_key,
+// each_value) before it allocates its sorted-key scratch buffer. These iterators
+// return the receiver and build no derived map, so their only allocation beyond
+// the live call roots is the scratch key list (see sortedKeyBufferBytes); they
+// must not be charged an output map they never create. scratchBytes is the heap
+// footprint of that key list. Charging a phantom empty map here would falsely
+// reject a quota that exactly fits the receiver, block, and scratch.
+func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), scratchBytes)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
@@ -371,6 +395,25 @@ func newRootSeededHashBuildAccumulator(exec *Execution, receiver Value, args []V
 	return acc
 }
 
+// reserveScratch folds a fixed scratch allocation into the baseline so it is held
+// against the quota for the build's entire lifetime, and rejects the build if the
+// reservation alone already overflows. Block-driven hash transforms materialize a
+// sorted-key scratch slice (see sortedKeyBufferBytes) that stays live the whole
+// time the output map fills, so its bytes coexist with every accumulated entry at
+// peak. The up-front projection charges this scratch once before any fresh block
+// result exists, but the accumulator's running budget (base + built) does not,
+// so without reserving it here the combined output+scratch peak could exceed the
+// quota by the scratch size before the post-call check observed it. scratchBytes
+// is the heap footprint the caller passed to its projection, so the two views of
+// the budget reserve the same bytes.
+func (acc *hashBuildAccumulator) reserveScratch(scratchBytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, scratchBytes)
+	return acc.checkQuota()
+}
+
 // add charges a key write to the output map and rejects the build if the
 // projected map memory exceeds the quota.
 //
@@ -444,11 +487,12 @@ func (acc *hashBuildAccumulator) chargeDelta(delta int) error {
 	return nil
 }
 
-// projectedHashBaseBytes estimates the live footprint a hash transform holds
-// before it reserves its output map: the call-root usage plus the empty map's
-// structural overhead. checkProjectedHashBytes and maxProjectedHashEntries both
-// build on it so the entry budget and the byte check agree on the same baseline.
-func (exec *Execution) projectedHashBaseBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+// hashCallRootBytes estimates the live footprint a hash transform holds before it
+// reserves any output: exec's reachable roots plus the call roots (receiver,
+// args, kwargs, block). It excludes the output map's overhead so callers that
+// build no derived map (the pure iterators) are not charged a map they never
+// allocate; callers that do build one fold the empty-map overhead in themselves.
+func (exec *Execution) hashCallRootBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
 	est := exec.memoryEstimatorForCheck()
 	used := exec.estimateMemoryUsageBase(est)
 	if receiver.Kind() != KindNil {
@@ -465,7 +509,16 @@ func (exec *Execution) projectedHashBaseBytes(receiver Value, args []Value, kwar
 	}
 	est.reset()
 
-	return saturatingAdd(used, estimatedValueBytes+estimatedMapBaseBytes)
+	return used
+}
+
+// projectedHashBaseBytes estimates the live footprint a hash transform holds
+// before it reserves its output map: the call-root usage plus the empty map's
+// structural overhead. maxProjectedHashEntries builds on it so the entry budget
+// and the byte check agree on the same baseline. Callers that build no output map
+// (the pure iterators) use hashCallRootBytes directly instead.
+func (exec *Execution) projectedHashBaseBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	return saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), estimatedValueBytes+estimatedMapBaseBytes)
 }
 
 // maxProjectedHashEntries returns the largest output-map entry count that

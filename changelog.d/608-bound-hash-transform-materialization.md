@@ -19,6 +19,13 @@
   block still consumes steps and observes cancellation instead of walking the
   receiver unbounded. The sorted key scratch buffer these transforms allocate to
   iterate deterministically is now charged against the memory quota before it is
-  reserved, so it cannot escape the sandbox limit on a large receiver.
-  `Hash#deep_transform_keys` is intentionally left unbounded for now; bounding its
-  recursive materialization is tracked separately in #786.
+  reserved, so it cannot escape the sandbox limit on a large receiver; for the
+  block-driven transforms that buffer stays live while the output map fills, so it
+  is held against the quota for the whole build rather than only at the up-front
+  projection, keeping the combined output-plus-scratch peak bounded.
+  `Hash#each`, `Hash#each_key`, and `Hash#each_value` build no derived map -- they
+  return the receiver -- so they no longer reserve an output map they never
+  allocate, and a quota that exactly fits the receiver and the scratch buffer
+  admits the walk instead of being falsely rejected. `Hash#deep_transform_keys` is
+  intentionally left unbounded for now; bounding its recursive materialization is
+  tracked separately in #786.
