@@ -427,29 +427,60 @@ func (acc *hashBuildAccumulator) reserveScratch(scratchBytes int) error {
 	return acc.checkQuota()
 }
 
-// add charges a key write to the output map and rejects the build if the
-// projected map memory exceeds the quota.
+// add charges a write whose VALUE is a block result to the output map and rejects
+// the build if the projected map memory exceeds the quota. Use it where the block
+// produces the VALUE (transform_values, the merge conflict block) and the key is a
+// receiver or argument key kept unchanged; transform_keys, whose block produces
+// the KEY while the value stays a receiver value, uses addSynthesizedKey instead.
 //
-// Each write charges the entry's full footprint as the estimator would measure
-// it for the finished map: the map bucket, the key header and payload, and the
-// value (its slot plus everything reachable from it). The charge goes through the
-// accumulator's results-only estimator, so a backing shared across two block
-// results is counted once but a result that aliases a baseline container is
-// counted at full size rather than deduplicated to nothing. Charging per write
-// (rather than per distinct key) means a key overwritten by a later write -- a
-// merge conflict block folding several colliding arguments, or a transform_keys
-// block collapsing several input keys onto one output key -- is counted once per
-// occurrence. That is a conservative over-count of the final map's footprint, the
-// intentional tradeoff that makes the bound sound under in-place mutation: built
-// only ever grows, so it can never drop below the live footprint and let a later
-// insert materialize past the quota.
+// Only the block-returned value goes through the results-only estimator. The key
+// is a receiver/argument key whose payload is already counted in the baseline
+// (acc.base via the call roots), so it is charged as a bare structural slot (map
+// bucket + key header) without its payload -- routing the key through the
+// estimator would both double-count it and record its backing in the seen-set,
+// risking a later block result that aliases it being dedup'd to nothing. The
+// value is charged its full footprint as the estimator would measure it, so a
+// backing shared across two block results is counted once but a result that
+// aliases a baseline container is counted at full size rather than deduplicated to
+// nothing.
+//
+// Charging per write (rather than per distinct key) means a key overwritten by a
+// later write -- a merge conflict block folding several colliding arguments -- is
+// counted once per occurrence. That is a conservative over-count of the final
+// map's footprint, the intentional tradeoff that makes the bound sound under
+// in-place mutation: built only ever grows, so it can never drop below the live
+// footprint and let a later insert materialize past the quota.
 func (acc *hashBuildAccumulator) add(key string, val Value) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + acc.est.stringPayloadSize(key)
+	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes
 	entry = saturatingAdd(entry, acc.est.value(val))
+	acc.built = saturatingAdd(acc.built, entry)
+	return acc.checkQuota()
+}
+
+// addSynthesizedKey charges a key write whose KEY is a fresh block-synthesized
+// string but whose VALUE is a receiver value already counted in the baseline
+// (transform_keys yields a new key per entry while keeping the original value).
+// Only the synthesized key is a block result, so only it goes through the
+// results-only estimator; the value contributes just its structural map slot
+// (estimatedValueBytes), not its reachable payload, because that payload is
+// already folded into acc.base via the call roots. Charging the value's full
+// footprint here would both double-count it and -- by recording its backing in
+// the estimator's seen-set -- let a later block result that aliases the same
+// backing be dedup'd to nothing, the exact under-count the results-only
+// estimator exists to prevent. The synthesized key payload is the only
+// unbounded fresh allocation the up-front structural projection cannot see, so
+// charging it incrementally keeps the build within the quota during the loop.
+func (acc *hashBuildAccumulator) addSynthesizedKey(key string) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + acc.est.stringPayloadSize(key)
+	entry = saturatingAdd(entry, estimatedValueBytes)
 	acc.built = saturatingAdd(acc.built, entry)
 	return acc.checkQuota()
 }

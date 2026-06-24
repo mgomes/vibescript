@@ -1275,6 +1275,122 @@ func TestHashBuildAccumulatorChargesInPlaceMutatedBaseContainer(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+// TestHashMergeBaseSeedingWouldUndercountConflictResult pins the exact P1 finding
+// on PR #776: merge's base-copy loop must NOT charge receiver entries through the
+// results-only estimator before the conflict block runs. The buggy loop did
+// (acc.add(key, val) per base entry), which recorded the receiver's array backings
+// in the estimator's seen-set. A conflict block that mutated one of those arrays in
+// place (within spare capacity, keeping the same backing) and returned it was then
+// deduplicated against the seeded backing and charged ~0 for the freshly stored
+// payload -- the under-count that escapes the quota.
+//
+// The test reproduces both seeding orders against one accumulator each. Seeding the
+// base first (the bug) deduplicates the mutated array on the conflict charge, so the
+// fresh payload slips past a quota the conflict result alone should trip. Not seeding
+// the base (the fix) charges the conflict result at full current size and trips. The
+// gap between the two is exactly the undercount the fix closes.
+func TestHashMergeBaseSeedingWouldUndercountConflictResult(t *testing.T) {
+	t.Parallel()
+
+	const payload = 256 * 1024
+
+	// A receiver array with spare capacity, holding key "x" -- the conflict key.
+	backing := make([]Value, 1, 2)
+	backing[0] = NewInt(0)
+	receiverArray := NewArray(backing)
+	receiver := NewHash(map[string]Value{"x": receiverArray})
+	arg := NewHash(map[string]Value{"x": NewInt(1)})
+
+	// Baseline counts the receiver array once via the call roots. The quota sits above
+	// it (the array fits as held) but below it plus the fresh payload, so charging the
+	// conflict result's full current footprint must trip while a dedup'd ~0 charge does
+	// not.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1}
+	base := newHashBuildAccumulator(probe, receiver, []Value{arg}, nil, NewNil()).base
+	quota := base + payload/2
+
+	// The conflict block mutates the receiver-owned backing in place (old[1] = big) and
+	// returns the same array, mirroring `old[1] = big; old`.
+	mutated := append(backing, NewString(strings.Repeat("x", payload)))
+	if sliceBackingIdentity(mutated) != sliceBackingIdentity(backing) {
+		t.Fatalf("test setup expects the append to stay within capacity (same backing)")
+	}
+	conflictResult := NewArray(mutated)
+
+	// Buggy order: seed the base entry first (what merge's base-copy loop used to do),
+	// then charge the conflict result. The seeded backing dedups the conflict result, so
+	// the fresh payload is NOT counted and the build is wrongly admitted -- the
+	// under-count this regression test exists to forbid in the production path.
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	seeded := newHashBuildAccumulator(exec, receiver, []Value{arg}, nil, NewNil())
+	if err := seeded.add("x", receiverArray); err != nil {
+		t.Fatalf("seeding the base entry tripped the quota before any conflict: %v", err)
+	}
+	if err := seeded.add("x", conflictResult); err != nil {
+		t.Fatalf("base-seeded accumulator unexpectedly tripped (%v); the test must demonstrate the undercount the buggy seeding produces", err)
+	}
+
+	// Fixed order: the base entry is never charged through the accumulator (merge's
+	// base-copy loop no longer calls acc.add), so the conflict result is the first thing
+	// the estimator sees and is charged at full current size, observing the fresh payload
+	// and tripping the same quota. The difference between the two branches is exactly the
+	// sandbox escape the fix closes.
+	fixed := newHashBuildAccumulator(exec, receiver, []Value{arg}, nil, NewNil())
+	err := fixed.add("x", conflictResult)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashTransformKeysSynthesizedKeyChargesKeyNotValue audits the second half of
+// the P1 finding on PR #776: transform_keys' block returns the KEY while the value
+// stays a receiver value already counted in the baseline. The earlier code charged
+// the entry through add(resolved, entries[key]), routing the receiver value through
+// the results-only estimator and recording its backing in the seen-set -- a
+// receiver/argument value reaching the estimator, the same class of bug as merge's
+// base seeding. addSynthesizedKey charges only the fresh key plus the value's bare
+// structural slot, so the receiver value's backing is never recorded.
+//
+// The test asserts both halves: the charge equals key header + key payload + map
+// bucket + one value slot (not the value's reachable payload), and the value's
+// backing is absent from the estimator's seen-set afterward, so a later block result
+// that aliased it would still be charged at full size.
+func TestHashTransformKeysSynthesizedKeyChargesKeyNotValue(t *testing.T) {
+	t.Parallel()
+
+	// The receiver value is a large array: routing it through the estimator would both
+	// over-count it (its payload is already in the baseline) and seed its backing.
+	const payload = 4096
+	valueBacking := make([]Value, payload)
+	for i := range valueBacking {
+		valueBacking[i] = NewInt(int64(i))
+	}
+	receiverValue := NewArray(valueBacking)
+	receiver := NewHash(map[string]Value{"orig": receiverValue})
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	acc := newHashBuildAccumulator(exec, receiver, nil, nil, NewNil())
+
+	const synthesized = "freshkey"
+	if err := acc.addSynthesizedKey(synthesized); err != nil {
+		t.Fatalf("addSynthesizedKey tripped under an unbounded quota: %v", err)
+	}
+
+	// The charge is the fresh key (header + payload), the map bucket, and a single value
+	// slot -- the value's reachable payload is NOT charged here, since it is already in
+	// the baseline as a receiver value.
+	want := estimatedMapEntryBytes + estimatedStringHeaderBytes + len(synthesized) + estimatedValueBytes
+	if acc.built != want {
+		t.Fatalf("addSynthesizedKey charged %d bytes, want %d (key header+payload, map bucket, one value slot only)", acc.built, want)
+	}
+
+	// The receiver value's backing must be absent from the estimator's seen-set: a later
+	// block result that aliased it must still be charged its full footprint. Charging the
+	// receiver value through a fresh estimator must therefore measure its full payload,
+	// proving addSynthesizedKey left it unseen.
+	if got := acc.est.value(receiverValue); got <= estimatedValueBytes {
+		t.Fatalf("receiver value charged %d bytes after addSynthesizedKey, want its full footprint (the value backing must not be seeded)", got)
+	}
+}
+
 // TestHashBuildAccumulatorChargesCyclicBlockResult pins that the conservative
 // accumulator handles a cyclic block result safely: a transform block can return a
 // value that reaches itself through in-place index assignment (a = [0]; a[0] = a, or
@@ -1664,20 +1780,20 @@ func TestHashSelectSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 // The test exercises the accumulator directly (the same newHashBuildAccumulator +
 // add per entry that transform_values uses) rather than the full builtin, because
 // the builtin's post-call check independently rejects an over-quota materialized
-// result and would mask whether the accumulator caught the undercount. With a fresh
-// result that aliases nothing in the empty baseline, the conservative accumulator's
-// charge for one entry is exactly the estimator's measure of the finished entry: the
-// output map bucket, the key header and payload, and the value (its slot plus the
-// result hash's full payload). That is the single source of truth the accumulator
-// mirrors.
+// result and would mask whether the accumulator caught the undercount. The key in
+// transform_values is a receiver key kept unchanged, already counted in the call-root
+// baseline, so add charges it as a bare structural slot (map bucket + key header)
+// without routing its payload through the results-only estimator; only the
+// block-returned value is charged its full footprint (its slot plus the result
+// hash's payload). That is the single source of truth the accumulator mirrors.
 func TestHashTransformValuesFreshScalarHashesTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 
 	// The block maps a value to a fresh three-key scalar hash, exactly the
-	// transform_values shape the finding called out. Its keys and values are freshly
-	// allocated and never alias the empty baseline, so the accumulator charges the
-	// result's full payload with no dedup -- the clean case where the omitted value
-	// slots would be a pure undercount.
+	// transform_values shape the finding called out. The value is freshly allocated
+	// and never aliases the empty baseline, so the accumulator charges the result's
+	// full payload with no dedup -- the clean case where the omitted value slots
+	// would be a pure undercount.
 	result := NewHash(map[string]Value{
 		"a": NewInt(1),
 		"b": NewInt(2),
@@ -1692,12 +1808,12 @@ func TestHashTransformValuesFreshScalarHashesTripsMemoryQuota(t *testing.T) {
 		t.Fatalf("add tripped under an unbounded quota: %v", err)
 	}
 
-	// The conservative accumulator's charge for the entry must equal exactly what the
-	// estimator charges for the same entry: the output map bucket, the key header and
-	// payload, and the value (its slot plus the result hash's full payload). The
-	// result hash's per-entry value slots are part of est.value, so a charge that
-	// omits them would charge slotsPerResult*estimatedValueBytes too little.
-	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + len(key)
+	// The conservative accumulator's charge for the entry must equal the map bucket
+	// and key header (the key's payload is counted in the baseline, not here) plus the
+	// value's full footprint (its slot plus the result hash's payload). The result
+	// hash's per-entry value slots are part of est.value, so a charge that omits them
+	// would charge slotsPerResult*estimatedValueBytes too little.
+	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes
 	want := entry + newMemoryEstimator().value(result)
 	if acc.built != want {
 		t.Fatalf("accumulator charged %d entry bytes, estimator charges %d (the result hash's value slots must be counted)", acc.built, want)
@@ -1713,4 +1829,57 @@ func TestHashTransformValuesFreshScalarHashesTripsMemoryQuota(t *testing.T) {
 end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 16 * 1024}, source)
 	requireCallRuntimeErrorType(t, script, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// TestHashMergeConflictBlockMutatesAndReturnsReceiverValueTrips drives the P1
+// finding through the real merge code path end to end, not just the accumulator
+// in isolation. The bug lived in merge's base-copy loop, which charged each
+// receiver entry through the results-only estimator before any conflict block ran.
+// That seeded the estimator's seen-set with the receiver's array backings, so a
+// conflict block that mutated one of those arrays in place (within its spare
+// capacity, keeping the same backing) and returned it -- old[1] = big; old -- was
+// then deduplicated against the already-seen backing on its acc.add, charging ~0
+// for the freshly stored payload. The merge could grow past the quota one fresh
+// payload at a time until the post-call safety net, a sandbox escape.
+//
+// The fix stops seeding base/argument entries into the estimator; only the
+// block-returned conflict result is charged, at its full current footprint. The
+// quota here sits above the receiver's own footprint (so the structural projection
+// and the receiver copy are admitted) but below that footprint plus the fresh
+// block-synthesized payload, so the conflict result must trip the accumulator. The
+// payload is created inside the block (not passed as a call root), so it is genuinely
+// invisible to the baseline: only charging the returned value's full footprint can
+// catch it. Under the pre-fix base-seeded accounting the same quota would have
+// wrongly admitted the merge, since the mutated array's backing was already in the
+// seen-set and its fresh payload dedup'd to nothing.
+func TestHashMergeConflictBlockMutatesAndReturnsReceiverValueTrips(t *testing.T) {
+	t.Parallel()
+
+	const payload = 256 * 1024
+
+	// The receiver maps key "x" to a two-element array. The conflict block stores a
+	// fresh large string into slot 1 (in place, keeping the same backing) and returns
+	// the array, so the result aliases the receiver-owned backing that the base copy
+	// would have seeded into the estimator.
+	receiver := NewHash(map[string]Value{"x": NewArray([]Value{NewInt(0), NewInt(0)})})
+	arg := NewHash(map[string]Value{"x": NewInt(1)})
+
+	// Measure the live footprint the merge holds before producing any block result:
+	// exec's roots plus the call roots (receiver, the argument hash). The fresh payload
+	// is synthesized inside the block, so it is deliberately absent from this baseline.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, []Value{arg}, nil, NewNil())
+
+	// A quota above the receiver's footprint plus the merge's one-entry output map, so
+	// the structural projection passes and the receiver array fits, but well below that
+	// plus the fresh payload, so charging the conflict result's full footprint trips.
+	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+		(estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes)
+	quota := liveWithRoots + outputStructure + payload/2
+
+	source := `def run(receiver, other)
+  receiver.merge(other) { |k, old, new| old[1] = "".ljust(262144, "z"); old }
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{receiver, arg}, CallOptions{}, runtimeErrorTypeLimit)
 }

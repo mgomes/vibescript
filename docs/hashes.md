@@ -164,11 +164,16 @@ cancellation, so large materializations stay bounded. This applies to `merge`
 `remap_keys`.
 
 The block-driven transforms (`transform_keys`, `transform_values`, and the
-`merge` conflict block) also charge each value a block returns against the memory
-quota as it is produced, so fresh values accumulated in the result cannot exceed
-the quota before the build completes. This block-result charge is *conservative*:
-each result's full payload is counted as it is inserted, deduplicated only against
-other block results and never against the receiver. A block that returns a value
+`merge` conflict block) also charge what a block produces against the memory quota
+as it is produced, so fresh content accumulated in the result cannot exceed the
+quota before the build completes. `transform_values` and the `merge` conflict
+block charge each block-returned *value* at its full payload; `transform_keys`
+charges each block-synthesized *key* (its value stays a receiver value already
+counted, so only the fresh key is new). This block-result charge is
+*conservative*: each result is counted as it is inserted, deduplicated only
+against other block results and never against the receiver or argument values --
+those are already counted once in the call's live footprint, so they are written
+to the output map slots without being re-measured. A block that returns a value
 unchanged and shared with the receiver -- or that collapses several writes onto
 one key -- is therefore counted at full size rather than deduplicated away. This
 over-count is deliberate: it keeps the bound sound even when a block mutates a

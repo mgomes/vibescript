@@ -622,9 +622,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				// (key, old_value, new_value) and storing the block result; keys
 				// present on only one side are copied without invoking the block.
 				// Conflicting keys are visited in sorted order so block side
-				// effects are deterministic, mirroring the other hash helpers; only
-				// the conflict resolution below runs the block, so charging the
-				// base entries into the accumulator can proceed in map order.
+				// effects are deterministic, mirroring the other hash helpers.
 				r, err := newBlockCallRunner(exec, block, "hash."+name)
 				if err != nil {
 					return NewNil(), err
@@ -632,16 +630,22 @@ func hashMemberTransforms(property string) (Value, error) {
 				runner = r
 				// The conflict block can return a fresh heap value per collision,
 				// and those results live only in the Go-local out map until merge
-				// returns, so the structural projection above cannot bound them.
-				// Charge every stored entry incrementally through a build
-				// accumulator whose results-only estimator counts each stored value's
-				// full footprint as it is produced. Counting is conservative: a
-				// conflict block that overwrites a slot is charged once per write, so
-				// a key folded through many colliding arguments is over-counted rather
-				// than dedup'd to a single entry. That tradeoff keeps the bound sound
-				// even when a block mutates a receiver-owned container in place and
-				// returns it (see the accumulator's doc comment); the running total
-				// only grows, so it can never drop below the live footprint.
+				// returns, so neither the structural projection above nor the call
+				// roots can bound them. Charge each conflict result incrementally
+				// through a build accumulator whose results-only estimator measures
+				// the result's full footprint as it is produced. Only conflict
+				// results pass through the accumulator: base and non-conflict
+				// argument values are receiver/argument values already counted in
+				// the call roots (acc.base) and the projection, so seeding them into
+				// the estimator would mark their backings as seen and let a later
+				// conflict block that mutates and returns one of them be dedup'd to
+				// nothing -- an under-count that escapes the quota. Counting is
+				// conservative: a key folded through many colliding arguments is
+				// charged once per conflict write rather than dedup'd to a single
+				// entry, so the bound stays sound even when a block mutates a
+				// receiver-owned container in place and returns it (see the
+				// accumulator's doc comment); the running total only grows, so it can
+				// never drop below the live footprint.
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				// The sorted key scratch buffer stays live the whole build, coexisting
 				// with the output map at peak, so reserve it in the accumulator's
@@ -653,19 +657,19 @@ func hashMemberTransforms(property string) (Value, error) {
 			// Copy the receiver entry by entry rather than with maps.Copy so a
 			// merge over a large base charges a step per copied entry and honors
 			// cancellation, matching the additions loop below and the other hash
-			// transforms. The output map is order-independent. When a conflict
-			// block runs, the same walk seeds the accumulator so the base is read
-			// only once.
+			// transforms. The output map is order-independent. The base entries are
+			// receiver values: their payloads are already counted in the call roots
+			// (acc.base) and their output map slots in the up-front projection, so
+			// they are never charged through the accumulator. Only block-returned
+			// conflict results -- fresh payloads invisible to both -- go through
+			// acc.add, which keeps the results-only estimator unseeded by receiver
+			// backings so a conflict block that mutates and returns a base value is
+			// charged at full size rather than dedup'd to nothing.
 			for key, val := range base {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
 				out[key] = val
-				if useBlock {
-					if err := acc.add(key, val); err != nil {
-						return NewNil(), err
-					}
-				}
 			}
 			if len(args) == 0 {
 				// Ruby's Hash#merge with no arguments returns a copy of self.
@@ -688,12 +692,14 @@ func hashMemberTransforms(property string) (Value, error) {
 					}
 					oldValue, conflict := out[key]
 					if !conflict || !useBlock {
+						// A non-conflict addition stores an argument value directly.
+						// Its payload is already counted in the call roots (acc.base)
+						// and its output map slot in the up-front projection, so it is
+						// never charged through the results-only estimator -- seeding
+						// the estimator with an argument backing would let a later
+						// conflict block that mutates and returns that same value be
+						// dedup'd to nothing and under-count its fresh payload.
 						out[key] = addition[key]
-						if useBlock {
-							if err := acc.add(key, addition[key]); err != nil {
-								return NewNil(), err
-							}
-						}
 						continue
 					}
 					blockArgs[0] = NewSymbol(key)
@@ -1023,16 +1029,18 @@ func hashMemberTransforms(property string) (Value, error) {
 			// transform_keys produces at most one entry per input key. The block can
 			// return a fresh key string per entry, and those synthesized keys live
 			// only in the Go-local out map until the builtin returns, so the
-			// structural projection cannot bound them. Charge each entry
-			// incrementally through a build accumulator whose results-only estimator
-			// counts each synthesized key's full payload as it is produced, so
-			// accumulated key payloads count toward the quota during the loop, not only
-			// at the post-call check. Counting is conservative: a block that collapses
-			// several input keys onto one output key is charged once per write rather
-			// than dedup'd to a single entry, an over-count that keeps the bound sound
-			// (the running total only grows). The sorted key scratch buffer is charged
-			// alongside the structural projection here and reserved in the accumulator
-			// so it stays charged for the whole build.
+			// structural projection cannot bound them. Charge each synthesized key
+			// incrementally through a build accumulator via addSynthesizedKey: only
+			// the block-returned key is fresh, so only it goes through the results-only
+			// estimator; the value stays a receiver value already counted in the call
+			// roots, so charging it through the estimator would record its backing as
+			// seen and risk dedup'ing a later block result to nothing. Counting is
+			// conservative: a block that collapses several input keys onto one output
+			// key is charged once per write rather than dedup'd to a single entry, an
+			// over-count that keeps the bound sound (the running total only grows). The
+			// sorted key scratch buffer is charged alongside the structural projection
+			// here and reserved in the accumulator so it stays charged for the whole
+			// build.
 			scratch := sortedKeyBufferBytes(len(entries))
 			if err := exec.checkProjectedHashTransformBytes(len(entries), scratch, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
@@ -1061,7 +1069,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.transform_keys block must return symbol or string")
 				}
 				out[resolved] = entries[key]
-				if err := acc.add(resolved, entries[key]); err != nil {
+				if err := acc.addSynthesizedKey(resolved); err != nil {
 					return NewNil(), err
 				}
 			}

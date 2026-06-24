@@ -16,9 +16,16 @@
   quota before the build completes. This block-result charge is accounted
   *conservatively*: each block result's full payload is counted as the result is
   inserted, deduplicated only against other block results, never against the
-  receiver or other call roots. A block that returns a value unchanged and shared
-  with the receiver (or that collapses several writes onto one key) is therefore
-  over-counted rather than deduplicated away. This is deliberate: deduplicating a
+  receiver or other call roots. Only block-produced content reaches this
+  estimator: `Hash#merge` copies its receiver and non-conflict argument entries
+  straight into the output map without charging them through it (their payloads are
+  already counted in the call's live footprint), and `Hash#transform_keys` charges
+  only the fresh key it synthesizes while leaving the retained receiver value
+  uncharged. Seeding the estimator with a receiver or argument value would let a
+  conflict block that mutates and returns that value in place be deduplicated to
+  nothing, under-counting its fresh payload. A block that returns a value unchanged
+  and shared with the receiver (or that collapses several writes onto one key) is
+  therefore over-counted rather than deduplicated away. This is deliberate: deduplicating a
   block result against the baseline is unsound when a block mutates a
   receiver-owned container in place (for example appending a large value into an
   array that still has spare capacity) and returns it -- the container's backing
