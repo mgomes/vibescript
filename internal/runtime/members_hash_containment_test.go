@@ -138,6 +138,67 @@ func TestHashBlocklessTransformHonorsCancellation(t *testing.T) {
 	}
 }
 
+// TestHashReplaceFitsOutputQuotaWithoutScratch pins the final finding on PR #776:
+// Hash#replace copies the replacement into an order-independent output map, so it
+// iterates the replacement directly rather than materializing a sorted key list.
+// Its blockless preflight (checkProjectedHashBytes) therefore charges only the
+// output map and no scratch buffer, so a quota sized to exactly the live call
+// roots plus that output map must admit the call over a large replacement.
+//
+// This is the no-scratch counterpart to TestHashSelectSortedKeyBufferTripsMemory-
+// Quota, which pins that map-producing transforms which DO sort charge their
+// scratch. If replace ever regrows a sorted walk and (correctly) charges the
+// sortedKeyBufferBytes(count) buffer through the transform preflight, this tight
+// output-only quota would start rejecting and this test would fail, forcing the
+// reviewer to confront the reintroduced cost. It also exercises the in-place copy
+// over enough entries to spill past the inline key buffer, guarding the order-
+// independent correctness of the result against a large replacement.
+func TestHashReplaceFitsOutputQuotaWithoutScratch(t *testing.T) {
+	t.Parallel()
+
+	// Enough keys that a reintroduced sorted-key list would heap a real buffer
+	// rather than reusing the inline stack array, so its omission is a meaningful
+	// share of the budget the no-scratch quota deliberately withholds.
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+	replacement := largeHashReceiver(count)
+
+	// Size the quota to exactly what replace allocates: the live call roots
+	// (receiver plus the replacement argument) and the output map of
+	// len(replacement) entries. No scratch term -- replace iterates in place.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	base := probe.projectedHashBaseBytes(receiver, []Value{replacement}, nil, NewNil())
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	outputStructure := count * perEntry
+	quota := base + outputStructure
+
+	// Sanity: a sorted-key scratch buffer for this many entries is non-trivial, so
+	// the no-scratch quota genuinely withholds it. A walk that charged that buffer
+	// through the preflight could not fit this budget, proving the fit pins the in-
+	// place copy rather than an incidentally roomy quota.
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "replace", []Value{replacement}, NewNil())
+	if err != nil {
+		t.Fatalf("replace under an output-sized quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("replace returned %v, want hash", got.Kind())
+	}
+	if len(got.Hash()) != count {
+		t.Fatalf("replace produced %d entries, want %d", len(got.Hash()), count)
+	}
+	for key, want := range replacement.Hash() {
+		if got.Hash()[key].String() != want.String() {
+			t.Fatalf("replace entry %q = %v, want %v", key, got.Hash()[key], want)
+		}
+	}
+}
+
 // hashSymbolKeys returns count symbol keys matching the entries built by
 // largeHashReceiver, for driving slice with many candidate keys.
 func hashSymbolKeys(count int) []Value {

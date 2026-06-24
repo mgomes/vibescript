@@ -726,15 +726,19 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(replacement))
-			var keyBuf [smallHashKeyBufferSize]string
-			for _, key := range sortedHashKeysInto(replacement, keyBuf[:]) {
-				// Charge a step per copied entry so replacing with a large
-				// replacement participates in the step quota and honors
-				// cancellation, matching every other O(n) hash transform.
+			// The output map is order-independent, so iterate the replacement
+			// directly rather than materializing a sorted key list. A sorted
+			// walk would heap a len(replacement) []string scratch buffer that
+			// the scratch-free memory preflight above does not charge, letting
+			// it escape the quota; iterating in place keeps accounting exact and
+			// mirrors compact and slice. The range loop still charges a step per
+			// copied entry so a large replacement participates in the step quota
+			// and honors cancellation, matching every other O(n) hash transform.
+			for key, val := range replacement {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
 				}
-				out[key] = replacement[key]
+				out[key] = val
 			}
 			return NewHash(out), nil
 		}), nil
