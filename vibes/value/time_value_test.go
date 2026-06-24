@@ -161,6 +161,38 @@ func TestTimeFromParts(t *testing.T) {
 		}
 	})
 
+	// Ruby treats an explicit nil optional part identically to omitting it, so
+	// Time.new(2024, nil) is January 1 -- not month 0, which time.Date would
+	// normalize backward into December 2023.
+	t.Run("explicit_nil_optional_parts_use_defaults", func(t *testing.T) {
+		t.Parallel()
+		nilArg := value.NewNil()
+		tests := []struct {
+			name string
+			args []value.Value
+			want time.Time
+		}{
+			{name: "nil_month", args: []value.Value{value.NewInt(2024), nilArg}, want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_day", args: []value.Value{value.NewInt(2024), value.NewInt(2), nilArg}, want: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_hour", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), nilArg}, want: time.Date(2024, 2, 3, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_minute", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), nilArg}, want: time.Date(2024, 2, 3, 4, 0, 0, 0, time.UTC)},
+			{name: "nil_second", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), value.NewInt(5), nilArg}, want: time.Date(2024, 2, 3, 4, 5, 0, 0, time.UTC)},
+			{name: "all_optional_nil", args: []value.Value{value.NewInt(2024), nilArg, nilArg, nilArg, nilArg, nilArg}, want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := value.TimeFromParts(tc.args, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !got.Equal(tc.want) || got.Location() != time.UTC {
+					t.Fatalf("TimeFromParts(%s) = %v, want %v", tc.name, got, tc.want)
+				}
+			})
+		}
+	})
+
 	t.Run("full_date_time", func(t *testing.T) {
 		t.Parallel()
 		got, err := value.TimeFromParts(intArgs(2024, 6, 1, 12, 30, 45), time.UTC)
@@ -251,6 +283,39 @@ func TestTimeFromCalendarParts(t *testing.T) {
 			{name: "year_only", args: intArgs(2024), want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
 			{name: "year_month", args: intArgs(2024, 2), want: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
 			{name: "year_month_day", args: intArgs(2024, 6, 1), want: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := value.TimeFromCalendarParts(tc.args, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !got.Equal(tc.want) || got.Location() != time.UTC {
+					t.Fatalf("TimeFromCalendarParts(%s) = %v, want %v", tc.name, got, tc.want)
+				}
+			})
+		}
+	})
+
+	// Ruby treats an explicit nil optional part identically to omitting it, so
+	// Time.utc(2024, nil) is January 1 -- not month 0, which time.Date would
+	// normalize backward into December 2023.
+	t.Run("explicit_nil_optional_parts_use_defaults", func(t *testing.T) {
+		t.Parallel()
+		nilArg := value.NewNil()
+		tests := []struct {
+			name string
+			args []value.Value
+			want time.Time
+		}{
+			{name: "nil_month", args: []value.Value{value.NewInt(2024), nilArg}, want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_day", args: []value.Value{value.NewInt(2024), value.NewInt(2), nilArg}, want: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_hour", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), nilArg}, want: time.Date(2024, 2, 3, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_minute", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), nilArg}, want: time.Date(2024, 2, 3, 4, 0, 0, 0, time.UTC)},
+			{name: "nil_second", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), value.NewInt(5), nilArg}, want: time.Date(2024, 2, 3, 4, 5, 0, 0, time.UTC)},
+			{name: "nil_microsecond", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), value.NewInt(5), value.NewInt(6), nilArg}, want: time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)},
+			{name: "all_optional_nil", args: []value.Value{value.NewInt(2024), nilArg, nilArg, nilArg, nilArg, nilArg, nilArg}, want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {

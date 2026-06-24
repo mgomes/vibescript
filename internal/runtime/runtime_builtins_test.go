@@ -318,6 +318,10 @@ func TestTimeConstructorDefaultDateParts(t *testing.T) {
 	        utc_year: fields(Time.utc(2024)),
 	        utc_year_month: fields(Time.utc(2024, 2)),
 	        gm_year: fields(Time.gm(2024)),
+	        new_nil_month: fields(Time.new(2024, nil)),
+	        utc_nil_month: fields(Time.utc(2024, nil)),
+	        utc_nil_day: fields(Time.utc(2024, 2, nil)),
+	        new_nil_time_fields: fields(Time.new(2024, 2, 3, nil, nil, nil)),
 	      }
 	    end
 
@@ -343,14 +347,18 @@ func TestTimeConstructorDefaultDateParts(t *testing.T) {
 		t.Fatalf("expected hash, got %v", result.Kind())
 	}
 	wantFields := map[string]Value{
-		"new_year":           intArr(2024, 1, 1, 0, 0, 0),
-		"new_year_month":     intArr(2024, 2, 1, 0, 0, 0),
-		"new_year_month_day": intArr(2024, 2, 3, 0, 0, 0),
-		"local_year":         intArr(2024, 1, 1, 0, 0, 0),
-		"mktime_year":        intArr(2024, 1, 1, 0, 0, 0),
-		"utc_year":           intArr(2024, 1, 1, 0, 0, 0),
-		"utc_year_month":     intArr(2024, 2, 1, 0, 0, 0),
-		"gm_year":            intArr(2024, 1, 1, 0, 0, 0),
+		"new_year":            intArr(2024, 1, 1, 0, 0, 0),
+		"new_year_month":      intArr(2024, 2, 1, 0, 0, 0),
+		"new_year_month_day":  intArr(2024, 2, 3, 0, 0, 0),
+		"local_year":          intArr(2024, 1, 1, 0, 0, 0),
+		"mktime_year":         intArr(2024, 1, 1, 0, 0, 0),
+		"utc_year":            intArr(2024, 1, 1, 0, 0, 0),
+		"utc_year_month":      intArr(2024, 2, 1, 0, 0, 0),
+		"gm_year":             intArr(2024, 1, 1, 0, 0, 0),
+		"new_nil_month":       intArr(2024, 1, 1, 0, 0, 0),
+		"utc_nil_month":       intArr(2024, 1, 1, 0, 0, 0),
+		"utc_nil_day":         intArr(2024, 2, 1, 0, 0, 0),
+		"new_nil_time_fields": intArr(2024, 2, 3, 0, 0, 0),
 	}
 	got := result.Hash()
 	for key, expected := range wantFields {

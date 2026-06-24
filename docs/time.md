@@ -17,7 +17,7 @@ end
 - `Time.now(in: zone)`
 - `Time.parse(string, layout=nil, in: zone)`
 
-Only the year is required for the calendar constructors. As in Ruby, an omitted month or day defaults to `1` (so `Time.utc(2024)` is January 1, 2024 and `Time.utc(2024, 2)` is February 1, 2024) and omitted time fields default to midnight.
+Only the year is required for the calendar constructors. As in Ruby, an omitted month or day defaults to `1` (so `Time.utc(2024)` is January 1, 2024 and `Time.utc(2024, 2)` is February 1, 2024) and omitted time fields default to midnight. An explicit `nil` in an optional position is treated the same as omitting it, so `Time.utc(2024, nil)` is also January 1, 2024.
 
 ```vibe
 def start_of_year
