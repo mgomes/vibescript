@@ -466,7 +466,16 @@ func TestBlockErrorCases(t *testing.T) {
 
 	requireCallErrorContains(t, script, "each_without_block", nil, CallOptions{}, "requires a block")
 	requireCallErrorContains(t, script, "map_without_block", nil, CallOptions{}, "requires a block")
-	requireCallErrorContains(t, script, "reduce_empty_without_init", nil, CallOptions{}, "requires an initial value")
+
+	// An empty array with no initial value folds to nil, matching Ruby's
+	// `[].reduce { ... }`, rather than raising.
+	emptyNoInit, err := script.Call(context.Background(), "reduce_empty_without_init", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("reduce_empty_without_init: unexpected error %v", err)
+	}
+	if emptyNoInit.Kind() != KindNil {
+		t.Fatalf("reduce_empty_without_init = %v, want nil", emptyNoInit.Kind())
+	}
 
 	val, err := script.Call(context.Background(), "reduce_empty_with_init", nil, CallOptions{})
 	if err != nil {

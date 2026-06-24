@@ -937,38 +937,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			return NewNil(), nil
 		}), nil
 	case "reduce":
-		return NewAutoBuiltin("array.reduce", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			runner, err := newBlockCallRunner(exec, block, "array.reduce")
-			if err != nil {
-				return NewNil(), err
-			}
-			if len(args) > 1 {
-				return NewNil(), fmt.Errorf("array.reduce accepts at most one initial value")
-			}
-			arr := receiver.Array()
-			if len(arr) == 0 && len(args) == 0 {
-				return NewNil(), fmt.Errorf("array.reduce on empty array requires an initial value")
-			}
-			var acc Value
-			start := 0
-			if len(args) == 1 {
-				acc = args[0]
-			} else {
-				acc = arr[0]
-				start = 1
-			}
-			var blockArgs [2]Value
-			for i := start; i < len(arr); i++ {
-				blockArgs[0] = acc
-				blockArgs[1] = arr[i]
-				next, err := runner.call(blockArgs[:])
-				if err != nil {
-					return NewNil(), err
-				}
-				acc = next
-			}
-			return acc, nil
-		}), nil
+		return NewAutoBuiltin("array.reduce", arrayReduce), nil
 	case "include?":
 		return NewAutoBuiltin("array.include?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) != 1 {
@@ -1193,6 +1162,158 @@ func arrayMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+// arrayReduce folds the receiver into a single value. It supports Ruby's three
+// calling conventions for Array#reduce / Enumerable#inject:
+//
+//	reduce { |acc, item| ... }          # fold from the first element
+//	reduce(initial) { |acc, item| ... } # fold from an explicit initial value
+//	reduce(operation)                   # fold by sending a symbol/string op
+//	reduce(initial, operation)          # fold from initial by sending an op
+//
+// The operation form sends the named operation to the accumulator with each
+// element as its argument, matching Ruby's `acc.public_send(op, item)`. Both
+// symbol and string operation names are accepted, mirroring Ruby's acceptance
+// of `reduce(:+)` and `reduce("+")`. Following Ruby, a block takes precedence:
+// when a block is supplied, a lone argument is always treated as the initial
+// value, never as an operation.
+func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.reduce does not take keyword arguments")
+	}
+	if len(args) > 2 {
+		return NewNil(), fmt.Errorf("array.reduce accepts at most an initial value and an operation")
+	}
+
+	hasBlock := valueBlock(block) != nil
+	var initial Value
+	hasInitial := false
+	operation := ""
+	hasOperation := false
+
+	switch {
+	case len(args) == 2:
+		// reduce(initial, operation): the operation argument must name an op.
+		op, ok := reduceOperationName(args[1])
+		if !ok {
+			return NewNil(), fmt.Errorf("array.reduce operation must be a symbol or string")
+		}
+		initial, hasInitial = args[0], true
+		operation, hasOperation = op, true
+	case len(args) == 1 && hasBlock:
+		// reduce(initial) { block }: a block always makes the argument the seed.
+		initial, hasInitial = args[0], true
+	case len(args) == 1:
+		// reduce(operation): the sole argument must name an op when no block runs.
+		op, ok := reduceOperationName(args[0])
+		if !ok {
+			return NewNil(), fmt.Errorf("array.reduce operation must be a symbol or string")
+		}
+		operation, hasOperation = op, true
+	case !hasBlock:
+		return NewNil(), fmt.Errorf("array.reduce requires a block or an operation")
+	}
+
+	var runner *blockCallRunner
+	if hasBlock {
+		var err error
+		runner, err = newBlockCallRunner(exec, block, "array.reduce")
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+
+	arr := receiver.Array()
+	if len(arr) == 0 {
+		if hasInitial {
+			return initial, nil
+		}
+		// An empty array with no initial value folds to nil, matching Ruby's
+		// `[].reduce(:+)` and `[].reduce { ... }`.
+		return NewNil(), nil
+	}
+
+	acc := initial
+	start := 0
+	if !hasInitial {
+		acc = arr[0]
+		start = 1
+	}
+
+	if hasOperation {
+		// The operation form has no block runner to account for work, so charge
+		// a step per element and bound the accumulator's retained size, honoring
+		// the sandbox limits exactly as the block form's runner does.
+		for i := start; i < len(arr); i++ {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			next, err := exec.reduceSendOperation(acc, operation, arr[i])
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := exec.checkMemoryWith(next); err != nil {
+				return NewNil(), err
+			}
+			acc = next
+		}
+		return acc, nil
+	}
+
+	var blockArgs [2]Value
+	for i := start; i < len(arr); i++ {
+		blockArgs[0] = acc
+		blockArgs[1] = arr[i]
+		next, err := runner.call(blockArgs[:])
+		if err != nil {
+			return NewNil(), err
+		}
+		acc = next
+	}
+	return acc, nil
+}
+
+// reduceOperationName extracts an operation name from a reduce argument. Ruby
+// accepts both symbols and strings here (`reduce(:+)` and `reduce("+")`) and
+// raises a TypeError ("not a symbol nor a string") for anything else.
+func reduceOperationName(v Value) (string, bool) {
+	switch v.Kind() {
+	case KindSymbol, KindString:
+		return v.String(), true
+	default:
+		return "", false
+	}
+}
+
+// reduceArithmeticOps maps the binary operator names accepted by reduce's
+// operation form to the runtime helpers that implement them. Ruby exposes these
+// as methods on its numeric and collection types; Vibescript implements them as
+// operators, so the symbol shorthand routes through the same helpers the `+`,
+// `-`, `*`, `/`, `%`, and `**` operators use.
+var reduceArithmeticOps = map[string]func(left, right Value) (Value, error){
+	"+":  addValues,
+	"-":  subtractValues,
+	"*":  multiplyValues,
+	"/":  divideValues,
+	"%":  moduloValues,
+	"**": powerValues,
+}
+
+// reduceSendOperation applies a single fold step by sending operation to the
+// accumulator with item as its argument. Operator names dispatch to the same
+// arithmetic helpers the corresponding operators use; any other name is treated
+// as a method invoked as `accumulator.operation(item)`, mirroring Ruby's
+// `accumulator.public_send(operation, item)`.
+func (exec *Execution) reduceSendOperation(accumulator Value, operation string, item Value) (Value, error) {
+	if op, ok := reduceArithmeticOps[operation]; ok {
+		return op(accumulator, item)
+	}
+	member, err := exec.getMember(accumulator, operation, Position{})
+	if err != nil {
+		return NewNil(), fmt.Errorf("array.reduce cannot apply %q: %w", operation, err)
+	}
+	return exec.invokeCallable(member, accumulator, []Value{item}, nil, NewNil(), Position{})
 }
 
 // arrayMemberGrep builds array.grep and array.grep_v. Both select elements

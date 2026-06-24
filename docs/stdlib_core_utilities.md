@@ -204,8 +204,16 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `find { |item| } -> value | nil` – first element matching the block.
 - `find_index { |item| } -> int | nil` – index of the first match.
 - `reduce(initial = nil) { |acc, item| } -> value` – fold left; without
-  `initial` the first element seeds the accumulator (errors on an empty
-  array).
+  `initial` the first element seeds the accumulator. An empty array folds to
+  `nil` when no `initial` is given, or to `initial` when one is.
+- `reduce(operation) -> value` and `reduce(initial, operation) -> value` –
+  fold by sending `operation` to the accumulator with each element, like Ruby's
+  `[1, 2, 3].reduce(:+)`. `operation` is a symbol or string naming either a
+  method on the accumulator (`["a", "b"].reduce(:concat)`) or a binary operator
+  (`[1, 2, 3].reduce("+")`, also `-`, `*`, `/`, `%`, `**`). Operator-name
+  symbols such as `:+` route through the same path once they parse as symbol
+  literals. A block, when supplied, always takes precedence, so a lone argument
+  alongside a block is treated as `initial`.
 
 ### Membership and Counting
 
