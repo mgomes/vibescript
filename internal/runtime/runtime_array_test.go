@@ -36,6 +36,128 @@ func TestArrayPushPopAndSum(t *testing.T) {
 	}
 }
 
+func TestArrayPushCallShapes(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def push_no_parens(values)
+      values.push
+    end
+
+    def push_empty_parens(values)
+      values.push()
+    end
+
+    def push_one(values, extra)
+      values.push(extra)
+    end
+
+    def push_many(values, a, b, c)
+      values.push(a, b, c)
+    end
+    `)
+
+	tests := []struct {
+		name     string
+		function string
+		args     []Value
+		want     []Value
+	}{
+		{
+			name:     "no parens is a no-op returning the array",
+			function: "push_no_parens",
+			args:     []Value{NewArray([]Value{NewInt(1), NewInt(2)})},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+		{
+			name:     "empty parens is a no-op returning the array",
+			function: "push_empty_parens",
+			args:     []Value{NewArray([]Value{NewInt(1), NewInt(2)})},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+		{
+			name:     "single value appends",
+			function: "push_one",
+			args:     []Value{NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(3)},
+			want:     []Value{NewInt(1), NewInt(2), NewInt(3)},
+		},
+		{
+			name:     "multiple values append in order",
+			function: "push_many",
+			args:     []Value{NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(3), NewInt(4), NewInt(5)},
+			want:     []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compareArrays(t, callFunc(t, script, tt.function, tt.args), tt.want)
+		})
+	}
+}
+
+func TestArrayPushRejectsKeywordArguments(t *testing.T) {
+	t.Parallel()
+	// Keyword-only push (args empty, kwargs non-empty) must not silently drop
+	// the keyword map; it raises a clear error instead. Bare push and push()
+	// with no positional or keyword arguments stay valid no-ops.
+	script := compileScript(t, `
+    def push_keyword(values)
+      values.push(foo: 1)
+    end
+
+    def push_no_parens(values)
+      values.push
+    end
+
+    def push_empty_parens(values)
+      values.push()
+    end
+    `)
+
+	base := []Value{NewArray([]Value{NewInt(1), NewInt(2)})}
+	requireCallErrorContains(t, script, "push_keyword", base, CallOptions{},
+		"array.push does not take keyword arguments")
+	compareArrays(t, callFunc(t, script, "push_no_parens", base), []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, callFunc(t, script, "push_empty_parens", base), []Value{NewInt(1), NewInt(2)})
+}
+
+func TestArrayPushAppendAssignmentZeroArgs(t *testing.T) {
+	t.Parallel()
+	// x = x.push and x = x.push() exercise the in-place append-assignment
+	// fast path; with no values they must be no-ops that keep x intact and
+	// preserve alias isolation against later appends.
+	script := compileScript(t, `
+    def no_parens()
+      x = [1, 2]
+      x = x.push
+      x
+    end
+
+    def empty_parens()
+      x = [1, 2]
+      x = x.push()
+      x
+    end
+
+    def alias_isolation()
+      a = [1]
+      b = a
+      a = a.push
+      a = a.push(2)
+      b[0] = 9
+      { a: a, b: b }
+    end
+    `)
+
+	compareArrays(t, callFunc(t, script, "no_parens", nil), []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, callFunc(t, script, "empty_parens", nil), []Value{NewInt(1), NewInt(2)})
+
+	aliased := callFunc(t, script, "alias_isolation", nil).Hash()
+	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, aliased["b"], []Value{NewInt(9)})
+}
+
 func TestArrayAppendAssignmentAccumulation(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
