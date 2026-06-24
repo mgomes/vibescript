@@ -445,25 +445,23 @@ func looseMergedKeyUpperBound(base map[string]Value, args []Value) int {
 }
 
 // mergeSortScratchBytes returns the peak heap footprint of merge's sorted scratch
-// buffers. The per-argument buffer is reused across arguments, so it only ever
-// sizes to the largest single argument; a conflict block adds a second buffer
-// over the base, sorted alongside. Each buffer's bytes are computed independently
-// (so each gets its own inline-stack-buffer threshold) and summed. The result
-// feeds the merge projection so the scratch lists cannot allocate past the quota
-// even when the merged union itself is small (a huge argument that fully overlaps
-// the base).
-func mergeSortScratchBytes(base map[string]Value, args []Value, useBlock bool) int {
+// buffer. The per-argument buffer is reused across arguments, so it only ever
+// sizes to the largest single argument. The receiver base is copied in map order
+// without sorting, so it contributes no scratch. The result feeds the merge
+// projection so the scratch list cannot allocate past the quota even when the
+// merged union itself is small (a huge argument that fully overlaps the base).
+func mergeSortScratchBytes(args []Value) int {
 	maxArg := 0
 	for _, arg := range args {
 		if n := len(arg.Hash()); n > maxArg {
 			maxArg = n
 		}
 	}
-	scratch := sortedKeyBufferBytes(maxArg)
-	if useBlock {
-		scratch = saturatingAdd(scratch, sortedKeyBufferBytes(len(base)))
-	}
-	return scratch
+	// The merge sorts each argument's keys (reusing one buffer sized to the
+	// largest argument) so conflict block side effects are deterministic. The
+	// receiver base is copied in map order without a sorted buffer, so it adds no
+	// scratch of its own.
+	return sortedKeyBufferBytes(maxArg)
 }
 
 // mergedKeyCount returns the number of distinct keys a merge of base and args
@@ -599,12 +597,12 @@ func hashMemberTransforms(property string) (Value, error) {
 			// the quota's entry budget so a doomed merge cannot allocate a large
 			// tracking table before being rejected here.
 			//
-			// The merge also materializes sorted key scratch buffers: one sized to
-			// the largest single argument (reused across arguments) and, when a
-			// conflict block runs, one sized to the base. Charge that scratch in the
-			// projection so a merge whose union fits but whose largest input dwarfs
-			// the quota cannot allocate the key list past the sandbox limit.
-			scratchBytes := mergeSortScratchBytes(base, args, useBlock)
+			// The merge also materializes a sorted key scratch buffer sized to the
+			// largest single argument (reused across arguments). Charge that scratch
+			// in the projection so a merge whose union fits but whose largest input
+			// dwarfs the quota cannot allocate the key list past the sandbox limit.
+			// The receiver base is copied in map order, so it needs no scratch.
+			scratchBytes := mergeSortScratchBytes(args)
 			upperBound := looseMergedKeyUpperBound(base, args)
 			if exec.checkProjectedHashTransformBytes(upperBound, scratchBytes, receiver, args, kwargs, block) != nil {
 				limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
@@ -617,11 +615,6 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 			}
 			out := make(map[string]Value, len(base))
-			maps.Copy(out, base)
-			if len(args) == 0 {
-				// Ruby's Hash#merge with no arguments returns a copy of self.
-				return NewHash(out), nil
-			}
 			var runner *blockCallRunner
 			var acc *hashBuildAccumulator
 			if useBlock {
@@ -629,7 +622,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				// (key, old_value, new_value) and storing the block result; keys
 				// present on only one side are copied without invoking the block.
 				// Conflicting keys are visited in sorted order so block side
-				// effects are deterministic, mirroring the other hash helpers.
+				// effects are deterministic, mirroring the other hash helpers; only
+				// the conflict resolution below runs the block, so seeding the
+				// accumulator over the base can proceed in map order.
 				r, err := newBlockCallRunner(exec, block, "hash."+name)
 				if err != nil {
 					return NewNil(), err
@@ -646,24 +641,33 @@ func hashMemberTransforms(property string) (Value, error) {
 				// a conflict block overwrites an existing slot, so the second write
 				// for a key charges only the net value change, never a second entry.
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
-				// The sorted key scratch buffers stay live the whole build, coexisting
-				// with the output map at peak, so reserve them in the accumulator's
+				// The sorted key scratch buffer stays live the whole build, coexisting
+				// with the output map at peak, so reserve it in the accumulator's
 				// running budget -- the same bytes the projection above charged.
 				if err := acc.reserveScratch(scratchBytes); err != nil {
 					return NewNil(), err
 				}
-				var baseKeyBuf [smallHashKeyBufferSize]string
-				for _, key := range sortedHashKeysInto(base, baseKeyBuf[:]) {
-					// Charge a step per base entry so seeding the accumulator over a
-					// large base participates in the step quota and honors cancellation,
-					// matching the additions loop below.
-					if err := exec.step(); err != nil {
-						return NewNil(), err
-					}
-					if err := acc.add(key, base[key]); err != nil {
+			}
+			// Copy the receiver entry by entry rather than with maps.Copy so a
+			// merge over a large base charges a step per copied entry and honors
+			// cancellation, matching the additions loop below and the other hash
+			// transforms. The output map is order-independent. When a conflict
+			// block runs, the same walk seeds the accumulator so the base is read
+			// only once.
+			for key, val := range base {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				out[key] = val
+				if useBlock {
+					if err := acc.add(key, val); err != nil {
 						return NewNil(), err
 					}
 				}
+			}
+			if len(args) == 0 {
+				// Ruby's Hash#merge with no arguments returns a copy of self.
+				return NewHash(out), nil
 			}
 			// Multiple hashes are applied left to right, so later arguments win
 			// on conflicts, matching Ruby's Hash#merge(*others). The conflict
@@ -806,7 +810,16 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, projected)
-			maps.Copy(out, base)
+			// Copy the receiver entry by entry rather than with maps.Copy so a
+			// store into a large hash charges a step per copied entry and honors
+			// cancellation, matching replace, compact, and slice. The output map
+			// is order-independent, so no sorted key list is needed.
+			for k, v := range base {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				out[k] = v
+			}
 			out[key] = args[1]
 			return NewHash(out), nil
 		}), nil

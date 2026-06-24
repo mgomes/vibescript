@@ -91,6 +91,7 @@ func TestHashBlocklessTransformHonorsStepQuota(t *testing.T) {
 		{name: "merge", args: []Value{largeHashReceiver(count)}},
 		{name: "replace", args: []Value{largeHashReceiver(count)}},
 		{name: "slice", args: hashSymbolKeys(count)},
+		{name: "store", args: []Value{NewSymbol("extra"), NewInt(1)}},
 		{name: "remap_keys", args: []Value{NewHash(map[string]Value{})}},
 	}
 
@@ -121,6 +122,7 @@ func TestHashBlocklessTransformHonorsCancellation(t *testing.T) {
 		{name: "merge", args: []Value{largeHashReceiver(8)}},
 		{name: "replace", args: []Value{largeHashReceiver(8)}},
 		{name: "slice", args: hashSymbolKeys(8)},
+		{name: "store", args: []Value{NewSymbol("extra"), NewInt(1)}},
 		{name: "remap_keys", args: []Value{NewHash(map[string]Value{})}},
 	}
 
@@ -428,7 +430,7 @@ func TestHashMergeRejectsWhenScratchExceedsQuota(t *testing.T) {
 	projectedBase := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
 	unionOutput := count * perEntry
-	scratch := mergeSortScratchBytes(receiver.Hash(), args, false)
+	scratch := mergeSortScratchBytes(args)
 	if scratch <= 0 {
 		t.Fatalf("test setup expects a heaped scratch buffer, got %d bytes", scratch)
 	}
