@@ -124,24 +124,111 @@ func TestTimeFromParts(t *testing.T) {
 		return out
 	}
 
-	t.Run("too_few_args", func(t *testing.T) {
+	t.Run("no_args", func(t *testing.T) {
 		t.Parallel()
-		_, err := value.TimeFromParts(intArgs(2024, 6), time.UTC)
-		want := "Time.new expects at least year, month, day"
+		_, err := value.TimeFromParts(nil, time.UTC)
+		want := "Time.new expects at least a year"
 		if err == nil || err.Error() != want {
 			t.Fatalf("TimeFromParts error = %v, want %q", err, want)
 		}
 	})
 
-	t.Run("date_only", func(t *testing.T) {
+	// Ruby never treats the required year as omittable: a nil (or any other
+	// non-numeric) year raises rather than coercing to year 0. This guards the
+	// one-argument form against silently building a bogus year-0 timestamp.
+	t.Run("non_numeric_year_rejected", func(t *testing.T) {
 		t.Parallel()
-		got, err := value.TimeFromParts(intArgs(2024, 6, 1), time.UTC)
+		tests := []struct {
+			name string
+			year value.Value
+			want string
+		}{
+			{name: "nil", year: value.NewNil(), want: "Time constructor year must be numeric, got nil"},
+			{name: "string", year: value.NewString("2024"), want: "Time constructor year must be numeric, got string"},
+			{name: "symbol", year: value.NewSymbol("2024"), want: "Time constructor year must be numeric, got symbol"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				_, err := value.TimeFromParts([]value.Value{tc.year}, time.UTC)
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("TimeFromParts(%s year) error = %v, want %q", tc.name, err, tc.want)
+				}
+			})
+		}
+	})
+
+	// Ruby coerces a float year to an integer by truncating toward zero, so
+	// Time.new(2024.9) is the year 2024.
+	t.Run("float_year_truncates", func(t *testing.T) {
+		t.Parallel()
+		got, err := value.TimeFromParts([]value.Value{value.NewFloat(2024.9)}, time.UTC)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-		if !got.Equal(want) || got.Location() != time.UTC {
-			t.Fatalf("TimeFromParts = %v, want %v", got, want)
+		want := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Fatalf("TimeFromParts(2024.9) = %v, want %v", got, want)
+		}
+	})
+
+	// Ruby's Time.new defaults an omitted month/day to January 1 and omitted
+	// time fields to midnight, so the year-, year+month-, and date-only forms
+	// all anchor at the start of the relevant period.
+	t.Run("default_date_parts", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name string
+			args []value.Value
+			want time.Time
+		}{
+			{name: "year_only", args: intArgs(2024), want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "year_month", args: intArgs(2024, 2), want: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "year_month_day", args: intArgs(2024, 6, 3), want: time.Date(2024, 6, 3, 0, 0, 0, 0, time.UTC)},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := value.TimeFromParts(tc.args, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !got.Equal(tc.want) || got.Location() != time.UTC {
+					t.Fatalf("TimeFromParts(%s) = %v, want %v", tc.name, got, tc.want)
+				}
+			})
+		}
+	})
+
+	// Ruby treats an explicit nil optional part identically to omitting it, so
+	// Time.new(2024, nil) is January 1 -- not month 0, which time.Date would
+	// normalize backward into December 2023.
+	t.Run("explicit_nil_optional_parts_use_defaults", func(t *testing.T) {
+		t.Parallel()
+		nilArg := value.NewNil()
+		tests := []struct {
+			name string
+			args []value.Value
+			want time.Time
+		}{
+			{name: "nil_month", args: []value.Value{value.NewInt(2024), nilArg}, want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_day", args: []value.Value{value.NewInt(2024), value.NewInt(2), nilArg}, want: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_hour", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), nilArg}, want: time.Date(2024, 2, 3, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_minute", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), nilArg}, want: time.Date(2024, 2, 3, 4, 0, 0, 0, time.UTC)},
+			{name: "nil_second", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), value.NewInt(5), nilArg}, want: time.Date(2024, 2, 3, 4, 5, 0, 0, time.UTC)},
+			{name: "all_optional_nil", args: []value.Value{value.NewInt(2024), nilArg, nilArg, nilArg, nilArg, nilArg}, want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := value.TimeFromParts(tc.args, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !got.Equal(tc.want) || got.Location() != time.UTC {
+					t.Fatalf("TimeFromParts(%s) = %v, want %v", tc.name, got, tc.want)
+				}
+			})
 		}
 	})
 
@@ -205,10 +292,10 @@ func TestTimeFromCalendarParts(t *testing.T) {
 		return out
 	}
 
-	t.Run("too_few_args", func(t *testing.T) {
+	t.Run("no_args", func(t *testing.T) {
 		t.Parallel()
-		_, err := value.TimeFromCalendarParts(intArgs(2024, 6), time.UTC)
-		want := "Time constructor expects at least year, month, day"
+		_, err := value.TimeFromCalendarParts(nil, time.UTC)
+		want := "Time constructor expects at least a year"
 		if err == nil || err.Error() != want {
 			t.Fatalf("TimeFromCalendarParts error = %v, want %q", err, want)
 		}
@@ -223,15 +310,102 @@ func TestTimeFromCalendarParts(t *testing.T) {
 		}
 	})
 
-	t.Run("date_only_keeps_location", func(t *testing.T) {
+	// Time.utc/gm/local/mktime share the required-year rule: a nil (or any other
+	// non-numeric) year raises rather than coercing to year 0, so the new
+	// one-argument form cannot silently build a year-0 timestamp.
+	t.Run("non_numeric_year_rejected", func(t *testing.T) {
 		t.Parallel()
-		got, err := value.TimeFromCalendarParts(intArgs(2024, 6, 1), time.UTC)
+		tests := []struct {
+			name string
+			year value.Value
+			want string
+		}{
+			{name: "nil", year: value.NewNil(), want: "Time constructor year must be numeric, got nil"},
+			{name: "string", year: value.NewString("2024"), want: "Time constructor year must be numeric, got string"},
+			{name: "symbol", year: value.NewSymbol("2024"), want: "Time constructor year must be numeric, got symbol"},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				_, err := value.TimeFromCalendarParts([]value.Value{tc.year}, time.UTC)
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("TimeFromCalendarParts(%s year) error = %v, want %q", tc.name, err, tc.want)
+				}
+			})
+		}
+	})
+
+	// Ruby coerces a float year to an integer by truncating toward zero, so
+	// Time.utc(2024.9) is the year 2024.
+	t.Run("float_year_truncates", func(t *testing.T) {
+		t.Parallel()
+		got, err := value.TimeFromCalendarParts([]value.Value{value.NewFloat(2024.9)}, time.UTC)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-		if !got.Equal(want) || got.Location() != time.UTC {
-			t.Fatalf("TimeFromCalendarParts = %v, want %v", got, want)
+		want := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Fatalf("TimeFromCalendarParts(2024.9) = %v, want %v", got, want)
+		}
+	})
+
+	// Ruby's Time.utc/gm/local/mktime default an omitted month/day to January 1
+	// and omitted time fields to midnight, fixing the location by constructor.
+	t.Run("default_date_parts_keep_location", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name string
+			args []value.Value
+			want time.Time
+		}{
+			{name: "year_only", args: intArgs(2024), want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "year_month", args: intArgs(2024, 2), want: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "year_month_day", args: intArgs(2024, 6, 1), want: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := value.TimeFromCalendarParts(tc.args, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !got.Equal(tc.want) || got.Location() != time.UTC {
+					t.Fatalf("TimeFromCalendarParts(%s) = %v, want %v", tc.name, got, tc.want)
+				}
+			})
+		}
+	})
+
+	// Ruby treats an explicit nil optional part identically to omitting it, so
+	// Time.utc(2024, nil) is January 1 -- not month 0, which time.Date would
+	// normalize backward into December 2023.
+	t.Run("explicit_nil_optional_parts_use_defaults", func(t *testing.T) {
+		t.Parallel()
+		nilArg := value.NewNil()
+		tests := []struct {
+			name string
+			args []value.Value
+			want time.Time
+		}{
+			{name: "nil_month", args: []value.Value{value.NewInt(2024), nilArg}, want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_day", args: []value.Value{value.NewInt(2024), value.NewInt(2), nilArg}, want: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_hour", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), nilArg}, want: time.Date(2024, 2, 3, 0, 0, 0, 0, time.UTC)},
+			{name: "nil_minute", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), nilArg}, want: time.Date(2024, 2, 3, 4, 0, 0, 0, time.UTC)},
+			{name: "nil_second", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), value.NewInt(5), nilArg}, want: time.Date(2024, 2, 3, 4, 5, 0, 0, time.UTC)},
+			{name: "nil_microsecond", args: []value.Value{value.NewInt(2024), value.NewInt(2), value.NewInt(3), value.NewInt(4), value.NewInt(5), value.NewInt(6), nilArg}, want: time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)},
+			{name: "all_optional_nil", args: []value.Value{value.NewInt(2024), nilArg, nilArg, nilArg, nilArg, nilArg, nilArg}, want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := value.TimeFromCalendarParts(tc.args, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !got.Equal(tc.want) || got.Location() != time.UTC {
+					t.Fatalf("TimeFromCalendarParts(%s) = %v, want %v", tc.name, got, tc.want)
+				}
+			})
 		}
 	})
 
