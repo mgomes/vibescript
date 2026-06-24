@@ -124,24 +124,40 @@ func TestTimeFromParts(t *testing.T) {
 		return out
 	}
 
-	t.Run("too_few_args", func(t *testing.T) {
+	t.Run("no_args", func(t *testing.T) {
 		t.Parallel()
-		_, err := value.TimeFromParts(intArgs(2024, 6), time.UTC)
-		want := "Time.new expects at least year, month, day"
+		_, err := value.TimeFromParts(nil, time.UTC)
+		want := "Time.new expects at least a year"
 		if err == nil || err.Error() != want {
 			t.Fatalf("TimeFromParts error = %v, want %q", err, want)
 		}
 	})
 
-	t.Run("date_only", func(t *testing.T) {
+	// Ruby's Time.new defaults an omitted month/day to January 1 and omitted
+	// time fields to midnight, so the year-, year+month-, and date-only forms
+	// all anchor at the start of the relevant period.
+	t.Run("default_date_parts", func(t *testing.T) {
 		t.Parallel()
-		got, err := value.TimeFromParts(intArgs(2024, 6, 1), time.UTC)
-		if err != nil {
-			t.Fatal(err)
+		tests := []struct {
+			name string
+			args []value.Value
+			want time.Time
+		}{
+			{name: "year_only", args: intArgs(2024), want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "year_month", args: intArgs(2024, 2), want: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "year_month_day", args: intArgs(2024, 6, 3), want: time.Date(2024, 6, 3, 0, 0, 0, 0, time.UTC)},
 		}
-		want := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-		if !got.Equal(want) || got.Location() != time.UTC {
-			t.Fatalf("TimeFromParts = %v, want %v", got, want)
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := value.TimeFromParts(tc.args, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !got.Equal(tc.want) || got.Location() != time.UTC {
+					t.Fatalf("TimeFromParts(%s) = %v, want %v", tc.name, got, tc.want)
+				}
+			})
 		}
 	})
 
@@ -205,10 +221,10 @@ func TestTimeFromCalendarParts(t *testing.T) {
 		return out
 	}
 
-	t.Run("too_few_args", func(t *testing.T) {
+	t.Run("no_args", func(t *testing.T) {
 		t.Parallel()
-		_, err := value.TimeFromCalendarParts(intArgs(2024, 6), time.UTC)
-		want := "Time constructor expects at least year, month, day"
+		_, err := value.TimeFromCalendarParts(nil, time.UTC)
+		want := "Time constructor expects at least a year"
 		if err == nil || err.Error() != want {
 			t.Fatalf("TimeFromCalendarParts error = %v, want %q", err, want)
 		}
@@ -223,15 +239,30 @@ func TestTimeFromCalendarParts(t *testing.T) {
 		}
 	})
 
-	t.Run("date_only_keeps_location", func(t *testing.T) {
+	// Ruby's Time.utc/gm/local/mktime default an omitted month/day to January 1
+	// and omitted time fields to midnight, fixing the location by constructor.
+	t.Run("default_date_parts_keep_location", func(t *testing.T) {
 		t.Parallel()
-		got, err := value.TimeFromCalendarParts(intArgs(2024, 6, 1), time.UTC)
-		if err != nil {
-			t.Fatal(err)
+		tests := []struct {
+			name string
+			args []value.Value
+			want time.Time
+		}{
+			{name: "year_only", args: intArgs(2024), want: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "year_month", args: intArgs(2024, 2), want: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)},
+			{name: "year_month_day", args: intArgs(2024, 6, 1), want: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)},
 		}
-		want := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-		if !got.Equal(want) || got.Location() != time.UTC {
-			t.Fatalf("TimeFromCalendarParts = %v, want %v", got, want)
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := value.TimeFromCalendarParts(tc.args, time.UTC)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !got.Equal(tc.want) || got.Location() != time.UTC {
+					t.Fatalf("TimeFromCalendarParts(%s) = %v, want %v", tc.name, got, tc.want)
+				}
+			})
 		}
 	})
 

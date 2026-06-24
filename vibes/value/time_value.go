@@ -70,25 +70,27 @@ func ParseLocationString(spec string) (*time.Location, error) {
 	return loc, nil
 }
 
-// TimeFromParts constructs a time.Time from year/month/day positional
-// arguments, with optional hour/minute/second and timezone arguments.
+// TimeFromParts constructs a time.Time from a required year positional
+// argument, with optional month/day/hour/minute/second and timezone arguments.
+// Matching Ruby's Time.new, an omitted month or day defaults to 1 (January 1)
+// and omitted time fields default to zero (midnight).
 func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
-	if len(args) < 3 {
-		return time.Time{}, fmt.Errorf("Time.new expects at least year, month, day")
+	if len(args) < 1 {
+		return time.Time{}, fmt.Errorf("Time.new expects at least a year")
 	}
-	getInt := func(idx int) int {
+	getInt := func(idx, fallback int) int {
 		if idx >= len(args) {
-			return 0
+			return fallback
 		}
 		return int(args[idx].Int())
 	}
 
-	year := getInt(0)
-	month := getInt(1)
-	day := getInt(2)
-	hour := getInt(3)
-	min := getInt(4)
-	sec := getInt(5)
+	year := getInt(0, 0)
+	month := getInt(1, 1)
+	day := getInt(2, 1)
+	hour := getInt(3, 0)
+	min := getInt(4, 0)
+	sec := getInt(5, 0)
 
 	loc := defaultLoc
 	if len(args) >= 7 {
@@ -107,33 +109,35 @@ func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	return time.Date(year, time.Month(month), day, hour, min, sec, 0, loc), nil
 }
 
-// TimeFromCalendarParts constructs a time.Time from year/month/day positional
-// arguments, with optional hour/minute/second and a subsecond argument. Unlike
-// TimeFromParts (which backs Time.new and reads the seventh argument as a
+// TimeFromCalendarParts constructs a time.Time from a required year positional
+// argument, with optional month/day/hour/minute/second and a subsecond argument.
+// Unlike TimeFromParts (which backs Time.new and reads the seventh argument as a
 // timezone), this matches Ruby's Time.local/mktime/utc/gm where the seventh
 // argument is microseconds-with-fraction and the location is fixed by the
-// constructor. A nil defaultLoc falls back to the local timezone.
+// constructor. As with Ruby, an omitted month or day defaults to 1 (January 1)
+// and omitted time fields default to zero (midnight). A nil defaultLoc falls
+// back to the local timezone.
 func TimeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
-	if len(args) < 3 {
-		return time.Time{}, fmt.Errorf("Time constructor expects at least year, month, day")
+	if len(args) < 1 {
+		return time.Time{}, fmt.Errorf("Time constructor expects at least a year")
 	}
 	if len(args) > 7 {
 		return time.Time{}, fmt.Errorf("Time constructor expects at most year, month, day, hour, minute, second, microsecond")
 	}
 
-	getInt := func(idx int) int {
+	getInt := func(idx, fallback int) int {
 		if idx >= len(args) {
-			return 0
+			return fallback
 		}
 		return int(args[idx].Int())
 	}
 
-	year := getInt(0)
-	month := getInt(1)
-	day := getInt(2)
-	hour := getInt(3)
-	min := getInt(4)
-	sec := getInt(5)
+	year := getInt(0, 0)
+	month := getInt(1, 1)
+	day := getInt(2, 1)
+	hour := getInt(3, 0)
+	min := getInt(4, 0)
+	sec := getInt(5, 0)
 
 	nanos := 0
 	if len(args) >= 7 {
