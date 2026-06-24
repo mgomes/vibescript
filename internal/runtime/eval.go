@@ -203,12 +203,12 @@ func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, en
 //
 // Charging the projected capacity rather than sb.Len()+len(chunk) matters
 // because Builder.Grow does not reserve exactly the requested bytes once the
-// current backing is exhausted: it reallocates to roughly 2*cap+n. After a
-// prefix or a prior interpolation the doubled term can exceed the running
-// length plus the chunk, so charging only the final length would let the real
-// reservation escape the memory quota. projectedBuilderCap reproduces Grow's
-// reallocation so the quota check accounts for the backing array actually
-// reserved.
+// current backing is exhausted: it reallocates to roundedAllocSize(2*cap+n).
+// After a prefix or a prior interpolation the doubled-and-rounded term can
+// exceed the running length plus the chunk, so charging only the final length
+// would let the real reservation escape the memory quota. projectedBuilderCap
+// reproduces Grow's reallocation, including the allocator's size-class rounding,
+// so the quota check accounts for the backing array actually reserved.
 func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string) error {
 	if err := exec.step(); err != nil {
 		return err
@@ -226,19 +226,24 @@ func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string
 // rather than the bytes the caller intends to write.
 //
 // Builder.Grow only reallocates when the free tail (Cap-Len) cannot hold n more
-// bytes. When it does, strings.Builder requests 2*Cap+n bytes; the runtime then
-// rounds that up to a size class, so the realized capacity is at least 2*Cap+n.
-// Charging 2*Cap+n is therefore a tight lower bound on the reservation and the
-// largest amount that can be computed without performing the allocation. When
-// the value already fits the free tail, no reallocation happens and the current
-// capacity is returned unchanged, preserving the no-copy fast path. n must be
-// non-negative, matching Grow.
+// bytes. When it does, strings.Builder requests 2*Cap+n bytes through
+// bytealg.MakeNoZero, and the runtime rounds that request up to an allocator
+// size class before reserving the backing array. The realized capacity is
+// therefore roundedAllocSize(2*Cap+n), which can exceed 2*Cap+n: growing a
+// 10 KiB builder by 10 KiB requests 30,720 bytes but reserves the 32,768-byte
+// class. Charging only 2*Cap+n would leave a quota between the request and the
+// rounded class, letting the check pass while Grow allocates over the limit.
+// roundedAllocSize mirrors the runtime's rounding exactly (see sizeclass.go), so
+// the projection equals the realized capacity. When the value already fits the
+// free tail, no reallocation happens and the current capacity is returned
+// unchanged, preserving the no-copy fast path. n must be non-negative, matching
+// Grow.
 func projectedBuilderCap(sb *strings.Builder, n int) int {
 	capacity := sb.Cap()
 	if capacity-sb.Len() >= n {
 		return capacity
 	}
-	return saturatingAdd(saturatingMul(2, capacity), n)
+	return roundedAllocSize(saturatingAdd(saturatingMul(2, capacity), n))
 }
 
 // appendInterpolatedValue renders val into the interpolation builder under the
@@ -274,11 +279,11 @@ func projectedBuilderCap(sb *strings.Builder, n int) int {
 //
 // The projection charges the builder's projected backing capacity (see
 // projectedBuilderCap), not sb.Len()+payload. Builder.Grow reallocates to
-// roughly 2*cap+payload once the current backing is full, so after a prefix or a
-// prior interpolation the reserved backing can exceed the running length plus the
-// payload. Charging the projected capacity keeps that reservation inside the
-// memory quota; for a value that fits the free tail no reallocation happens and
-// the fast path is unchanged.
+// roundedAllocSize(2*cap+payload) once the current backing is full, so after a
+// prefix or a prior interpolation the reserved backing can exceed the running
+// length plus the payload. Charging the projected capacity keeps that
+// reservation inside the memory quota; for a value that fits the free tail no
+// reallocation happens and the fast path is unchanged.
 func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) error {
 	if err := exec.step(); err != nil {
 		return err
