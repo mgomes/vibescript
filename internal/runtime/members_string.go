@@ -1359,6 +1359,12 @@ func stringMemberQuery(property string) (Value, error) {
 			// compiled in that branch so an invalid pattern is rejected regardless
 			// of the offset, mirroring the in-range path: the offset only decides
 			// the match result, never whether a bad regex is accepted.
+			//
+			// Unlike String#match?, a positive offset that runs past the end is
+			// clamped to the length rather than rejected: Ruby still starts the
+			// search at the end, so a zero-width-capable pattern matches the empty
+			// string there while a pattern that needs a character returns nil. The
+			// regex engine decides the outcome from the clamped end position.
 			offset := 0
 			if len(args) == 2 {
 				raw, err := valueToInt(args[1])
@@ -1371,6 +1377,9 @@ func stringMemberQuery(property string) (Value, error) {
 						return NewNil(), fmt.Errorf("string.match invalid regex: %w", compileErr)
 					}
 					return NewNil(), nil
+				}
+				if runeLen := stringRuneLen(text); effective > runeLen {
+					effective = runeLen
 				}
 				offset = effective
 			}

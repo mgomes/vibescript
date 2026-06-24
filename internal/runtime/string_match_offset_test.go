@@ -40,9 +40,49 @@ func TestStringMatchOffset(t *testing.T) {
 			want:   nil,
 		},
 		{
-			name:   "offset beyond length misses",
+			name:   "offset beyond length on char pattern misses",
 			script: `def run() "hello".match("o", 99) end`,
 			want:   nil,
+		},
+		{
+			name:   "offset beyond length on single-char pattern misses",
+			script: `def run() "hello".match("l", 4) end`,
+			want:   nil,
+		},
+		{
+			name:   "offset beyond length on missing char pattern misses",
+			script: `def run() "abc".match("z", 4) end`,
+			want:   nil,
+		},
+		{
+			name:   "offset one past length on zero-width pattern matches empty",
+			script: `def run() "hello".match("o*", 6) end`,
+			want:   []Value{NewString("")},
+		},
+		{
+			name:   "offset far past length on zero-width pattern matches empty",
+			script: `def run() "hello".match("o*", 99) end`,
+			want:   []Value{NewString("")},
+		},
+		{
+			name:   "offset at length on zero-width pattern matches empty",
+			script: `def run() "hello".match("o*", 5) end`,
+			want:   []Value{NewString("")},
+		},
+		{
+			name:   "offset past length on dot-star matches empty",
+			script: `def run() "abc".match(".*", 4) end`,
+			want:   []Value{NewString("")},
+		},
+		{
+			name:   "offset past length on dollar anchor matches empty",
+			script: `def run() "abc".match("$", 6) end`,
+			want:   []Value{NewString("")},
+		},
+		{
+			name:   "offset past length on end anchor matches empty",
+			script: `def run() "abc".match("\\z", 6) end`,
+			want:   []Value{NewString("")},
 		},
 		{
 			name:   "captures retained with offset",
@@ -80,9 +120,9 @@ func TestStringMatchOffset(t *testing.T) {
 			want:   []Value{NewString("")},
 		},
 		{
-			name:   "empty pattern past end offset misses",
+			name:   "empty pattern past end offset clamps and matches empty",
 			script: `def run() "abc".match("", 6) end`,
-			want:   nil,
+			want:   []Value{NewString("")},
 		},
 		{
 			name:   "multibyte offset is counted in runes",
