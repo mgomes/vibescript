@@ -560,6 +560,14 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 			}
 			base := receiver.Hash()
+			// A block only resolves conflicts, which require at least one argument
+			// hash. With zero arguments the merge short-circuits to a plain copy
+			// below and never runs the block or sorts the base, so the conflict
+			// block's base scratch buffer is never allocated. Gate useBlock on having
+			// arguments so the projection does not charge that phantom scratch and
+			// reject a large receiver whose copy fits but whose unused base scratch
+			// would not.
+			useBlock := valueBlock(block) != nil && len(args) > 0
 			// Preflight the map this merge could materialize before allocating it.
 			// Two phases keep the check itself within the quota it enforces:
 			//
@@ -580,7 +588,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// conflict block runs, one sized to the base. Charge that scratch in the
 			// projection so a merge whose union fits but whose largest input dwarfs
 			// the quota cannot allocate the key list past the sandbox limit.
-			scratchBytes := mergeSortScratchBytes(base, args, valueBlock(block) != nil)
+			scratchBytes := mergeSortScratchBytes(base, args, useBlock)
 			upperBound := looseMergedKeyUpperBound(base, args)
 			if exec.checkProjectedHashTransformBytes(upperBound, scratchBytes, receiver, args, kwargs, block) != nil {
 				limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
@@ -598,7 +606,6 @@ func hashMemberTransforms(property string) (Value, error) {
 				// Ruby's Hash#merge with no arguments returns a copy of self.
 				return NewHash(out), nil
 			}
-			useBlock := valueBlock(block) != nil
 			var runner *blockCallRunner
 			var acc *hashBuildAccumulator
 			if useBlock {

@@ -26,6 +26,17 @@
   `Hash#each`, `Hash#each_key`, and `Hash#each_value` build no derived map -- they
   return the receiver -- so they no longer reserve an output map they never
   allocate, and a quota that exactly fits the receiver and the scratch buffer
-  admits the walk instead of being falsely rejected. `Hash#deep_transform_keys` is
-  intentionally left unbounded for now; bounding its recursive materialization is
-  tracked separately in #786.
+  admits the walk instead of being falsely rejected. When a transform overwrites a
+  key it already holds -- a `Hash#merge` conflict block returning the old value, or
+  a `Hash#transform_keys` block collapsing several input keys onto one output key --
+  the incremental accounting now reference-counts the output's payload backings and
+  releases only the bytes the swap leaves unreachable, so a still-reachable value
+  (the returned old value, or one a fresh result wraps) is never un-charged. This
+  keeps the running total from dropping below the map's true live footprint, which
+  could otherwise let later inserts materialize past the quota. A bare
+  `Hash#merge { ... }` with no argument hashes returns a copy of the receiver
+  without running the block, so it no longer charges the conflict block's base
+  scratch buffer it never allocates, and a large receiver whose copy fits the quota
+  is admitted instead of being falsely rejected for that phantom scratch.
+  `Hash#deep_transform_keys` is intentionally left unbounded for now; bounding its
+  recursive materialization is tracked separately in #786.

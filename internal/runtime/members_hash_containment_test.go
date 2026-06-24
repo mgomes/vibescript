@@ -1233,6 +1233,137 @@ end`
 	requireCallRuntimeErrorType(t, script, "run", []Value{largeHashReceiver(2_000)}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+// TestHashBuildAccumulatorReplacementKeepsReachablePayload pins the P1 finding on
+// PR #776 at the accumulator level: when a slot is overwritten with the value it
+// already holds (a merge block returning the `old` value), the live footprint is
+// unchanged, so built must not drop. The pre-fix net-swap delta trusted the
+// persistent estimator's stateful dedup, which deduplicated the returned-old value
+// to ~0 and then subtracted the slot's full recorded bytes, dropping built below
+// the still-reachable payload and letting a later insert materialize past the
+// quota. Reference counting keeps the shared payload charged.
+//
+// The accumulator is driven directly with controlled Values so the trajectory is
+// deterministic: a fresh large string is stored, returned as old, then a second
+// fresh large string is stored under a different key. With the fix both payloads
+// stay charged and the second insert trips the quota; the pre-fix code dropped the
+// first payload on the returns-old write and admitted the second insert.
+func TestHashBuildAccumulatorReplacementKeepsReachablePayload(t *testing.T) {
+	t.Parallel()
+
+	const payload = 256 * 1024
+	bigX := NewString(strings.Repeat("x", payload))
+	bigZ := NewString(strings.Repeat("z", payload))
+
+	// Build the accumulator with no memory pressure first to learn its baseline, so
+	// the quota can be placed in the window between the buggy single-payload peak and
+	// the correct two-payload peak independent of estimator constants.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1}
+	probeAcc := newHashBuildAccumulator(probe, NewNil(), nil, nil, NewNil())
+	base := probeAcc.base
+
+	// Window: above base + one payload (buggy peak) and below base + two payloads
+	// (correct peak), with a half-payload margin so neither boundary is grazed.
+	quota := base + payload + payload/2
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+
+	mustAdd := func(key string, val Value) {
+		t.Helper()
+		if err := acc.add(key, val); err != nil {
+			t.Fatalf("add(%q): unexpected quota error: %v", key, err)
+		}
+	}
+
+	// Simulate a merge conflict folding over key x: store a fresh large value, then
+	// have the block return that same value (old). The footprint after both writes
+	// is one payload; built must reflect it.
+	mustAdd("x", NewInt(0))
+	mustAdd("x", bigX)
+	builtAfterStore := acc.built
+	mustAdd("x", bigX) // returns old: same backing, footprint unchanged.
+	if acc.built < builtAfterStore {
+		t.Fatalf("returns-old write dropped built from %d to %d; the reachable payload was un-charged", builtAfterStore, acc.built)
+	}
+
+	// A second fresh large value under a different key pushes the true footprint to
+	// two payloads, past the quota. The fix keeps x's payload charged, so this insert
+	// is rejected; the pre-fix code would have dropped it and admitted this write.
+	err := acc.add("z", bigZ)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashMergeReturnsOldThenGrowsTrips drives the P1 returns-old finding end to
+// end through merge's conflict block. Key :x collides across two argument hashes:
+// the first conflict stores a fresh large string, the second returns the old value
+// unchanged. A later key then stores another fresh large value. The output's live
+// footprint holds both payloads, which exceeds the quota, so the merge must be
+// rejected. The pre-fix accumulator dropped the first payload on the returns-old
+// write, lowering its running total enough to admit the later insert.
+func TestHashMergeReturnsOldThenGrowsTrips(t *testing.T) {
+	t.Parallel()
+
+	const payload = 256 * 1024
+	base := NewHash(map[string]Value{"x": NewString(""), "z": NewString("")})
+	arg1 := NewHash(map[string]Value{"x": NewString("")})
+	arg2 := NewHash(map[string]Value{"x": NewString("")})
+	arg3 := NewHash(map[string]Value{"z": NewString("")})
+	args := []Value{arg1, arg2, arg3}
+
+	// Probe the live footprint of the call roots, then size the quota into the window
+	// between the buggy single-payload peak and the correct two-payload peak.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(base, args, nil, NewNil())
+	quota := liveWithRoots + payload + payload/2
+
+	// The block stores a fresh large string when the current value is small and
+	// returns it unchanged once it is already large, so :x is stored fresh on arg1
+	// and returned old on arg2 while :z is stored fresh on arg3.
+	source := fmt.Sprintf(`def run(base, a1, a2, a3)
+  base.merge(a1, a2, a3) { |k, old, new| old.length >= %d ? old : "".ljust(%d, "y") }
+end`, payload, payload)
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{base, arg1, arg2, arg3}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds pins the P2 finding on PR
+// #776: a bare `h.merge { ... }` with no argument hashes short-circuits to a copy
+// of the receiver and never runs the block or sorts the base, so the conflict
+// block's base scratch buffer is never allocated. The projection must not charge
+// that phantom scratch. A receiver whose real copy fits the quota but whose
+// phantom base scratch would not must still be admitted.
+func TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+
+	// Size the quota to fit the live receiver plus the copied output map exactly,
+	// with no headroom for a base-sized sorted key scratch buffer. The phantom
+	// scratch the pre-fix projection charged would push this over the limit.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, NewNil())
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	outputStructure := estimatedValueBytes + estimatedMapBaseBytes + count*perEntry
+	scratch := sortedKeyBufferBytes(count)
+	quota := liveWithRoots + outputStructure + scratch/2
+
+	// Sanity: the pre-fix projection added the full base scratch on top, which would
+	// exceed this quota, so admitting the call proves the phantom charge is gone.
+	if liveWithRoots+outputStructure+scratch <= quota {
+		t.Fatalf("test setup expects the phantom-scratch projection (%d) to exceed the quota (%d)", liveWithRoots+outputStructure+scratch, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "merge", nil, emptyHashBlock())
+	if err != nil {
+		t.Fatalf("zero-arg merge with block over a fitting receiver = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("zero-arg merge produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	}
+}
+
 // emptyHashBlock returns a block value whose body has no statements, mirroring an
 // `h.select { }` call. callBlock charges a step only per statement it runs, so an
 // empty body charges none through runner.call; the transforms must charge their

@@ -19,12 +19,20 @@ const (
 	estimatedCallFrameBytes    = 48
 	estimatedModuleContextSize = 24
 	// estimatedTrackingMapEntryBytes is the live footprint of one entry in the
-	// hashBuildAccumulator's keyValueBytes bookkeeping map (a map[string]int): the
+	// hashBuildAccumulator's storedValues bookkeeping map (a map[string]Value): the
 	// map bucket overhead, a string header for the key (a distinct header from the
 	// output map's, even though both alias the same backing key bytes), and the
-	// inline int value. The key payload bytes are shared with the output map's key
-	// and already charged there, so they are not re-counted here.
-	estimatedTrackingMapEntryBytes = estimatedMapEntryBytes + estimatedStringHeaderBytes + int(unsafe.Sizeof(int(0)))
+	// inline Value the entry stores. The key payload bytes and the stored Value's
+	// own payload are shared with the output map and already charged there, so they
+	// are not re-counted here.
+	estimatedTrackingMapEntryBytes = estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	// estimatedRefTrackingEntryBytes is the live footprint of one entry in the
+	// hashBuildAccumulator's valueRefs bookkeeping map (a map[backingID]int): the
+	// map bucket overhead plus the inline backingID key and the int reference count.
+	// It is folded into a backing's charged bytes when its reference count first
+	// rises from zero and credited back when it falls to zero, so the O(distinct
+	// backings) tracking map is itself accounted against the quota.
+	estimatedRefTrackingEntryBytes = estimatedMapEntryBytes + int(unsafe.Sizeof(backingID{})) + int(unsafe.Sizeof(int(0)))
 )
 
 type memoryEstimator struct {
@@ -370,13 +378,14 @@ type hashBuildAccumulator struct {
 	// running byte total charged for the output as it is assembled.
 	base  int
 	built int
-	// keyValueBytes records, per key currently present in the output map, the value
-	// bytes charged for that key's stored value. add consults it so a key written
-	// more than once (a merge conflict block, or a transform_keys block that maps
-	// several input keys onto the same output key) charges a replacement as the net
-	// swap of the new value for the old, not as a fresh entry. Without this, built
-	// would grow monotonically by a full entry per write and over-count values that
-	// the map no longer holds, falsely tripping the quota on valid colliding builds.
+	// storedValues records, per key currently present in the output map, the value
+	// stored for that key. add consults it so a key written more than once (a merge
+	// conflict block, or a transform_keys block that maps several input keys onto
+	// the same output key) is charged as a replacement: the old value's backings are
+	// released and the new value's backings are charged, rather than a fresh entry.
+	// Without this, built would grow monotonically by a full entry per write and
+	// over-count values the map no longer holds, falsely tripping the quota on valid
+	// colliding builds.
 	//
 	// This map is itself live memory held alongside the output hash while the build
 	// runs, with the same cardinality as the output (one entry per distinct output
@@ -384,7 +393,37 @@ type hashBuildAccumulator struct {
 	// first inserted (see estimatedTrackingMapEntryBytes), so a block-driven
 	// transform that keeps many distinct keys cannot allocate an unaccounted O(n)
 	// bookkeeping map past the quota.
-	keyValueBytes map[string]int
+	storedValues map[string]Value
+	// valueRefs reference-counts the payload backings (string bytes, slice and map
+	// structures) that the output map's values keep live but the baseline does not
+	// already account for. Charging a value adds its newly-live backings to built
+	// and increments their refcount; releasing a replaced value decrements those
+	// refcounts and subtracts only the backings that drop to zero references — those
+	// no longer reachable from any live slot.
+	//
+	// This reference counting is what keeps built from ever dropping below the output
+	// map's true live footprint on a replacement. A naive net-swap delta computed
+	// from the persistent estimator's stateful dedup under-counts whenever the new
+	// value shares a backing with the value it replaces (a merge block returning the
+	// `old` value, or wrapping it in a fresh container): the estimator dedups that
+	// shared payload to zero for the new value, so subtracting the old value's full
+	// recorded bytes would drop built by a payload the map still holds, letting later
+	// inserts materialize past the quota. Refcounting only releases a backing once no
+	// live slot references it, so a still-reachable payload is never subtracted.
+	valueRefs map[backingID]int
+}
+
+// backingID identifies a heap backing the output map's values keep live. The kind
+// tag keeps a string payload, a slice backing, and a map backing distinct even
+// when their pointers happen to coincide (an empty slice and an interned string,
+// say), so reference counts never alias across structurally different backings.
+type backingID struct {
+	kind ValueKind
+	ptr  uintptr
+	// length disambiguates string backings that share a data pointer but cover
+	// different byte spans (a substring of a larger string), mirroring how the
+	// estimator's stringIdentity keys on pointer and length together.
+	length int
 }
 
 // newHashBuildAccumulator snapshots the execution's current live memory plus the
@@ -455,20 +494,25 @@ func (acc *hashBuildAccumulator) reserveScratch(scratchBytes int) error {
 // projected map memory exceeds the quota.
 //
 // A first write for a key charges a full entry: the bucket overhead, the key
-// header and payload, and the value, exactly as the estimator counts them for a
-// finished map. The estimator deduplicates keys and values already reachable
-// from the baseline or an earlier entry so shared backings are counted once.
+// header and payload, the value slot, and the value's payload backings, exactly
+// as the estimator counts them for a finished map. Payload backings already
+// reachable from the baseline are not re-counted; backings shared across the
+// output's own values are counted once and reference-counted so they survive a
+// replacement of one sharing slot.
 //
 // A repeated write for a key (the output map already holds it) is a replacement:
-// the bucket, key header, and key payload already exist, so re-charging them
-// would over-count. The map only swaps the stored value, so add charges just the
-// net change between the new value's bytes and the old value's recorded bytes,
-// keeping built a measure of the map's live footprint rather than a monotonic sum
-// of every value ever written. This matters for merge conflict blocks and for
+// the bucket, key header, key payload, and value slot already exist, so
+// re-charging them would over-count. The map only swaps the stored value, so add
+// releases the old value's payload backings and charges the new value's,
+// subtracting only the backings the swap leaves unreachable. This keeps built a
+// measure of the map's live footprint rather than a monotonic sum of every value
+// ever written, and — critically — never drops built below the live footprint
+// when the new value shares a backing with the value it replaces (a merge block
+// returning the old value). It matters for merge conflict blocks and for
 // transform_keys blocks that collapse many input keys onto one output key, where
 // monotonic accumulation would falsely trip the quota on valid builds.
 //
-// A first write also charges the keyValueBytes bookkeeping map's own footprint:
+// A first write also charges the storedValues bookkeeping map's own footprint:
 // its empty-map overhead on the very first insert, then one tracking entry per
 // distinct key. That map is live alongside the output for the build's duration, so
 // counting it keeps a transform that retains many distinct keys from allocating an
@@ -478,24 +522,35 @@ func (acc *hashBuildAccumulator) add(key string, val Value) error {
 		return nil
 	}
 
-	valueBytes := acc.est.value(val)
-	if prevBytes, replaced := acc.keyValueBytes[key]; replaced {
-		acc.keyValueBytes[key] = valueBytes
-		return acc.chargeDelta(valueBytes - prevBytes)
+	if old, replaced := acc.storedValues[key]; replaced {
+		// Charge the new payload before releasing the old so a backing the two share
+		// keeps a positive refcount throughout: its bytes are never momentarily
+		// subtracted and re-added, which keeps the net delta exact when the new value
+		// simply returns or wraps the old. chargeValuePayload returns a positive
+		// footprint delta and releaseValuePayload a non-positive one, so their sum is
+		// the signed net change to the output map's live footprint.
+		added := acc.chargeValuePayload(val)
+		freed := acc.releaseValuePayload(old)
+		acc.storedValues[key] = val
+		return acc.charge(added + freed)
 	}
 
 	tracking := estimatedTrackingMapEntryBytes
-	if acc.keyValueBytes == nil {
-		acc.keyValueBytes = make(map[string]int)
+	if acc.storedValues == nil {
+		acc.storedValues = make(map[string]Value)
 		tracking = saturatingAdd(tracking, estimatedMapBaseBytes)
 	}
-	acc.keyValueBytes[key] = valueBytes
+	acc.storedValues[key] = val
 	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + acc.est.stringPayloadSize(key)
-	return acc.charge(saturatingAdd(saturatingAdd(entry, valueBytes), tracking))
+	payload := saturatingAdd(estimatedValueBytes, acc.chargeValuePayload(val))
+	return acc.charge(saturatingAdd(saturatingAdd(entry, payload), tracking))
 }
 
 func (acc *hashBuildAccumulator) charge(delta int) error {
 	acc.built = saturatingAdd(acc.built, delta)
+	if acc.built < 0 {
+		acc.built = 0
+	}
 	return acc.checkQuota()
 }
 
@@ -509,19 +564,199 @@ func (acc *hashBuildAccumulator) checkQuota() error {
 	return nil
 }
 
-// chargeDelta adjusts built by a signed delta, used when a key replacement swaps
-// a stored value for a different-sized one. A negative delta shrinks built toward
-// zero (the output map never holds fewer than zero bytes); a positive delta is
-// charged like any other growth so a larger replacement can still trip the quota.
-func (acc *hashBuildAccumulator) chargeDelta(delta int) error {
-	if delta >= 0 {
-		return acc.charge(delta)
+// chargeValuePayload reference-counts the payload backings val keeps live that the
+// baseline does not already hold, returning the (non-negative) bytes that became
+// newly live: the backings whose refcount rose from zero. The value slot itself is
+// charged by the caller; this counts only what hangs off the slot.
+func (acc *hashBuildAccumulator) chargeValuePayload(val Value) int {
+	return acc.walkValuePayload(val, +1)
+}
+
+// releaseValuePayload reference-counts down the payload backings of a value being
+// removed from the output map, returning the (non-positive) footprint delta: the
+// negated bytes of the backings whose refcount fell back to zero. A backing still
+// referenced by another live slot keeps a positive count and contributes nothing,
+// so a shared payload is never subtracted while it remains reachable.
+func (acc *hashBuildAccumulator) releaseValuePayload(val Value) int {
+	return acc.walkValuePayload(val, -1)
+}
+
+// walkValuePayload traverses the payload reachable from val and adjusts the
+// reference count of each heap backing by sign (+1 to charge, -1 to release). It
+// returns the net bytes by which the live footprint changed: the sum of backings
+// crossing from zero to one reference (charged) minus those crossing from one to
+// zero (freed).
+//
+// Backings already accounted by the baseline are skipped: the persistent
+// estimator's seen-sets, populated when the accumulator snapshotted the call
+// roots, are consulted read-only so a payload shared with the receiver or another
+// root is never double-counted here. String, slice, and map backings are
+// reference-counted by identity so a value shared across output slots is counted
+// once and survives the replacement of any single sharing slot.
+//
+// Object-identity kinds whose payload the estimator walks through nested
+// environments (instances, classes, blocks) are charged once as a permanent
+// contribution rather than reference-counted: enumerating and releasing their
+// nested backings would duplicate the entire estimator traversal. Charging them
+// permanently can only over-count an evicted closure or instance, never
+// under-count a live one, which keeps the sandbox-containment guarantee intact for
+// the exotic case of such a value being stored in a transform output and later
+// replaced.
+func (acc *hashBuildAccumulator) walkValuePayload(val Value, sign int) int {
+	switch val.Kind() {
+	case KindString, KindSymbol:
+		str := val.String()
+		if len(str) == 0 {
+			return 0
+		}
+		ptr := uintptr(unsafe.Pointer(unsafe.StringData(str)))
+		if acc.baseHasString(str, ptr) {
+			return 0
+		}
+		id := backingID{kind: KindString, ptr: ptr, length: len(str)}
+		return acc.adjustRef(id, sign, estimatedStringHeaderBytes+len(str))
+	case KindArray:
+		return acc.walkSlicePayload(val.Array(), sign)
+	case KindHash, KindObject:
+		return acc.walkHashPayload(val.Hash(), sign)
+	default:
+		// Scalars contribute only their value slot, charged by the caller. Instances,
+		// classes, blocks, functions, and builtins are charged permanently below.
+		return acc.chargeOpaquePayload(val, sign)
 	}
-	acc.built += delta
-	if acc.built < 0 {
-		acc.built = 0
+}
+
+// walkSlicePayload reference-counts a slice backing and recurses into its
+// elements. The backing's structural bytes (its base plus one value slot per
+// capacity slot) are counted with the slice's identity so they live and die with
+// it; element payloads beyond their slots are reference-counted independently so a
+// nested string shared with another slot survives this slice's release.
+func (acc *hashBuildAccumulator) walkSlicePayload(values []Value, sign int) int {
+	id := backingID{kind: KindArray, ptr: sliceBackingIdentity(values)}
+	if id.ptr != 0 && acc.baseHasSlice(id.ptr) {
+		return 0
 	}
-	return nil
+	structural := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(cap(values), estimatedValueBytes))
+	total := 0
+	if id.ptr == 0 {
+		// A zero-capacity slice has no shared backing to reference-count; charge its
+		// (empty) structural bytes directly so the sign still applies.
+		total = sign * structural
+	} else {
+		total = acc.adjustRef(id, sign, structural)
+		if total == 0 && cap(values) > 0 {
+			// The backing was already counted by another live reference, so its
+			// elements were too; do not re-walk them.
+			return 0
+		}
+	}
+	for _, elem := range values {
+		total += acc.walkValuePayload(elem, sign)
+	}
+	return total
+}
+
+// walkHashPayload reference-counts a map backing and recurses into its values. The
+// backing's structural bytes (its base plus one entry per key, with key headers
+// and payloads) are counted with the map's identity; value payloads beyond their
+// slots are reference-counted independently.
+func (acc *hashBuildAccumulator) walkHashPayload(values map[string]Value, sign int) int {
+	ptr := reflect.ValueOf(values).Pointer()
+	if ptr != 0 && acc.baseHasMap(ptr) {
+		return 0
+	}
+	structural := estimatedMapBaseBytes + len(values)*estimatedMapEntryBytes
+	for key := range values {
+		structural += estimatedStringHeaderBytes + len(key)
+	}
+	total := 0
+	if ptr == 0 {
+		total = sign * structural
+	} else {
+		id := backingID{kind: KindHash, ptr: ptr}
+		total = acc.adjustRef(id, sign, structural)
+		if total == 0 && len(values) > 0 {
+			return 0
+		}
+	}
+	for _, elem := range values {
+		total += acc.walkValuePayload(elem, sign)
+	}
+	return total
+}
+
+// chargeOpaquePayload charges an object-identity value (instance, class, block,
+// function, builtin) as a permanent contribution the first time it is stored,
+// measured by the estimator so its nested footprint is counted exactly once. It is
+// never released: such values are not reference-counted, so a replacement that
+// evicts one keeps its charge, which can only over-count and so preserves the
+// never-under-count guarantee. Functions and builtins measure as zero payload, so
+// they contribute nothing.
+func (acc *hashBuildAccumulator) chargeOpaquePayload(val Value, sign int) int {
+	if sign < 0 {
+		return 0
+	}
+	payload := acc.est.value(val) - estimatedValueBytes
+	if payload <= 0 {
+		return 0
+	}
+	return payload
+}
+
+// adjustRef changes the reference count of a backing by sign and returns the
+// signed bytes by which the live footprint changed: +(bytes + tracking) when the
+// count rises from zero (the backing becomes live and gains a valueRefs entry),
+// -(bytes + tracking) when it falls back to zero (the backing is freed and its
+// entry removed), 0 otherwise. The tracking term accounts for the valueRefs map's
+// own per-backing footprint so the O(distinct backings) bookkeeping map is charged
+// against the quota alongside the payload it tracks.
+func (acc *hashBuildAccumulator) adjustRef(id backingID, sign, bytes int) int {
+	if acc.valueRefs == nil {
+		acc.valueRefs = make(map[backingID]int)
+	}
+	prev := acc.valueRefs[id]
+	count := prev + sign
+	if count < 0 {
+		count = 0
+	}
+	if count == 0 {
+		delete(acc.valueRefs, id)
+	} else {
+		acc.valueRefs[id] = count
+	}
+	switch {
+	case prev == 0 && count > 0:
+		return saturatingAdd(bytes, estimatedRefTrackingEntryBytes)
+	case prev > 0 && count == 0:
+		return -saturatingAdd(bytes, estimatedRefTrackingEntryBytes)
+	default:
+		return 0
+	}
+}
+
+// baseHasString reports whether a string backing was already counted by the
+// baseline. It consults the persistent estimator's string seen-set read-only, so
+// a payload shared with the receiver or another call root (already folded into
+// base) is not re-counted by the reference-counting walk.
+func (acc *hashBuildAccumulator) baseHasString(str string, ptr uintptr) bool {
+	_, seen := acc.est.seenStrings[stringIdentity{ptr: ptr, len: len(str)}]
+	return seen
+}
+
+// baseHasSlice reports whether a slice backing was already counted by the
+// baseline, consulting the persistent estimator's slice seen-set read-only. The
+// seen-set keys on the same sliceBackingIdentity the estimator uses, so the two
+// views agree on which backings the base already holds.
+func (acc *hashBuildAccumulator) baseHasSlice(ptr uintptr) bool {
+	_, seen := acc.est.seenSlices[ptr]
+	return seen
+}
+
+// baseHasMap reports whether a map backing was already counted by the baseline,
+// consulting the persistent estimator's map seen-set read-only.
+func (acc *hashBuildAccumulator) baseHasMap(ptr uintptr) bool {
+	_, seen := acc.est.seenMaps[ptr]
+	return seen
 }
 
 // hashCallRootBytes estimates the live footprint a hash transform holds before it
