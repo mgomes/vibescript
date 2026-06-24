@@ -249,9 +249,15 @@ end
 Core operator families:
 
 - Arithmetic: `+`, `-`, `*`, `/`, `%`, `**`
-- Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
 - Conditional: `condition ? when_true : when_false`
+
+The spaceship operator `<=>` returns `-1`, `0`, or `1` for ordered operands and
+`nil` when the two operands cannot be ordered (different kinds, money values in
+different currencies, or a `NaN` on either side), matching Ruby's spaceship
+contract. The relational operators `<`, `<=`, `>`, `>=` instead raise on
+incomparable operands, matching Ruby's `ArgumentError`.
 
 Operator precedence follows conventional arithmetic/boolean ordering.
 Exponentiation with `**` is right-associative and binds more tightly than

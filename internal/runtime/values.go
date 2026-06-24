@@ -60,6 +60,23 @@ var errWidthNotInteger = errors.New("width must be integer")
 // mirroring Ruby's RangeError for such widths.
 var errWidthOutOfRange = errors.New("width is out of range")
 
+// errIncomparableOperands signals that two operands of different kinds cannot
+// be ordered. The spaceship operator detects it with isIncomparable and yields
+// nil, matching Ruby's `1 <=> "a"`, while relational operators surface it.
+var errIncomparableOperands = errors.New("unsupported comparison operands")
+
+// errMoneyCompareMismatch signals that two money values cannot be ordered
+// because their currencies differ. Its message follows the documented
+// comparison convention; the spaceship operator still treats it as
+// incomparable via isIncomparable.
+var errMoneyCompareMismatch = errors.New("money currency mismatch for comparison")
+
+// isIncomparable reports whether err marks an operand pair that cannot be
+// ordered, so the spaceship operator can yield nil instead of raising.
+func isIncomparable(err error) bool {
+	return errors.Is(err, errIncomparableOperands) || errors.Is(err, errMoneyCompareMismatch)
+}
+
 // valueToPadWidth converts a numeric width argument to an int, truncating
 // fractional Floats toward zero like Ruby's to_int. Unlike valueToCount it
 // permits negative widths because padding helpers treat a width at or below the
@@ -799,8 +816,10 @@ func compareValues(left, right Value, cmp func(int) bool) (Value, error) {
 // compareValueOrder reports the relative order of two values as -1, 0, or 1.
 // The ordered result is false when the operands are numeric but unordered (a
 // NaN on either side); callers translate that into false comparisons and a nil
-// spaceship result, matching IEEE 754 and Ruby. A non-nil error means the
-// operand kinds are not comparable at all.
+// spaceship result, matching IEEE 754 and Ruby. A non-nil error for which
+// isIncomparable reports true means the operand pair cannot be ordered at all
+// (different kinds, or money values in different currencies); the spaceship
+// operator turns that into nil while relational operators surface it.
 func compareValueOrder(left, right Value) (order int, ordered bool, err error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
@@ -835,7 +854,7 @@ func compareValueOrder(left, right Value) (order int, ordered bool, err error) {
 		}
 	case left.Kind() == KindMoney && right.Kind() == KindMoney:
 		if left.Money().Currency() != right.Money().Currency() {
-			return 0, false, fmt.Errorf("money currency mismatch for comparison")
+			return 0, false, errMoneyCompareMismatch
 		}
 		switch {
 		case left.Money().Cents() < right.Money().Cents():
@@ -865,6 +884,6 @@ func compareValueOrder(left, right Value) (order int, ordered bool, err error) {
 			return 0, true, nil
 		}
 	default:
-		return 0, false, fmt.Errorf("unsupported comparison operands")
+		return 0, false, errIncomparableOperands
 	}
 }

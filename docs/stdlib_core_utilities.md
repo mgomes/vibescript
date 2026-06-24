@@ -645,7 +645,8 @@ formatting. Times also support `time + duration`, `time - duration`,
 
 ### Comparison and Rounding
 
-- `<=>(other) -> int` – `-1`, `0`, or `1` ordering against another time.
+- `<=>(other) -> int | nil` – `-1`, `0`, or `1` ordering against another time,
+  or `nil` when `other` is not a time (matching Ruby's spaceship contract).
 - `eql?(other) -> bool` – true when both times are the same instant.
 - `round(ndigits = 0) -> time` – round to the given number of fractional-second
   digits, half away from zero. No argument or `0` rounds to whole seconds;

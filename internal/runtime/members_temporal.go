@@ -334,8 +334,14 @@ func callTimeCompare(t time.Time, args []Value, kwargs map[string]Value) (Value,
 	if err := rejectTemporalKwargs("time.<=>", kwargs); err != nil {
 		return NewNil(), err
 	}
-	if len(args) != 1 || args[0].Kind() != KindTime {
-		return NewNil(), fmt.Errorf("time comparison expects another Time")
+	if len(args) != 1 {
+		return NewNil(), fmt.Errorf("time.<=> expects 1 argument, got %d", len(args))
+	}
+	// A non-Time argument is incomparable: Ruby's Time#<=> yields nil rather
+	// than raising, matching the spaceship operator's nil-on-incomparable
+	// contract.
+	if args[0].Kind() != KindTime {
+		return NewNil(), nil
 	}
 	other := args[0].Time()
 	switch {
