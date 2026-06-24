@@ -487,6 +487,12 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 	case tokenSpaceship:
 		order, ordered, err := compareValueOrder(left, right)
 		if err != nil {
+			// Incomparable operand pairs (different kinds, or money in different
+			// currencies) make the spaceship operator return nil rather than
+			// raising, matching Ruby's `1 <=> "a"`. Genuine errors still surface.
+			if isIncomparable(err) {
+				return NewNil(), nil
+			}
 			return NewNil(), exec.wrapError(err, pos)
 		}
 		// Unordered operands (a NaN on either side) make the spaceship operator
