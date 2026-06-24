@@ -1815,15 +1815,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "flatten":
 		return NewAutoBuiltin("array.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			// depth=-1 is a sentinel value meaning "flatten fully" (no depth limit)
+			// depth=-1 is a sentinel value meaning "flatten fully" (no depth
+			// limit). flattenValues treats every negative depth as unlimited, so
+			// nil, negative integers, and the no-argument form all flatten fully,
+			// matching Ruby's Array#flatten depth semantics.
 			depth := -1
 			if len(args) > 1 {
 				return NewNil(), fmt.Errorf("array.flatten accepts at most one depth argument")
 			}
-			if len(args) == 1 {
+			if len(args) == 1 && args[0].Kind() != KindNil {
 				n, err := valueToInt(args[0])
-				if err != nil || n < 0 {
-					return NewNil(), fmt.Errorf("array.flatten depth must be non-negative integer")
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.flatten depth must be an integer")
 				}
 				depth = n
 			}

@@ -296,6 +296,97 @@ func TestTimeCalendarConstructorSubsecond(t *testing.T) {
 	}
 }
 
+func TestTimeConstructorDefaultDateParts(t *testing.T) {
+	t.Parallel()
+	// Ruby defaults an omitted month/day to January 1 and omitted time fields to
+	// midnight for every calendar constructor. We assert the constructed calendar
+	// fields (year/month/day plus the start-of-day hour:minute:second) directly so
+	// the test does not depend on the host timezone: Time.new/local/mktime anchor
+	// at local midnight, whose UTC instant would otherwise shift with TZ.
+	script := compileScript(t, `
+	    def fields(t)
+	      [t.year, t.month, t.day, t.hour, t.min, t.sec]
+	    end
+
+	    def constructors()
+	      {
+	        new_year: fields(Time.new(2024)),
+	        new_year_month: fields(Time.new(2024, 2)),
+	        new_year_month_day: fields(Time.new(2024, 2, 3)),
+	        local_year: fields(Time.local(2024)),
+	        mktime_year: fields(Time.mktime(2024)),
+	        utc_year: fields(Time.utc(2024)),
+	        utc_year_month: fields(Time.utc(2024, 2)),
+	        gm_year: fields(Time.gm(2024)),
+	        new_nil_month: fields(Time.new(2024, nil)),
+	        utc_nil_month: fields(Time.utc(2024, nil)),
+	        utc_nil_day: fields(Time.utc(2024, 2, nil)),
+	        new_nil_time_fields: fields(Time.new(2024, 2, 3, nil, nil, nil)),
+	      }
+	    end
+
+	    def utc_iso()
+	      {
+	        utc1: Time.utc(2024).iso8601,
+	        utc2: Time.utc(2024, 2).iso8601,
+	        gm1: Time.gm(2024).iso8601,
+	      }
+	    end
+	    `)
+
+	intArr := func(vals ...int64) Value {
+		out := make([]Value, len(vals))
+		for i, v := range vals {
+			out[i] = NewInt(v)
+		}
+		return NewArray(out)
+	}
+
+	result := callFunc(t, script, "constructors", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("expected hash, got %v", result.Kind())
+	}
+	wantFields := map[string]Value{
+		"new_year":            intArr(2024, 1, 1, 0, 0, 0),
+		"new_year_month":      intArr(2024, 2, 1, 0, 0, 0),
+		"new_year_month_day":  intArr(2024, 2, 3, 0, 0, 0),
+		"local_year":          intArr(2024, 1, 1, 0, 0, 0),
+		"mktime_year":         intArr(2024, 1, 1, 0, 0, 0),
+		"utc_year":            intArr(2024, 1, 1, 0, 0, 0),
+		"utc_year_month":      intArr(2024, 2, 1, 0, 0, 0),
+		"gm_year":             intArr(2024, 1, 1, 0, 0, 0),
+		"new_nil_month":       intArr(2024, 1, 1, 0, 0, 0),
+		"utc_nil_month":       intArr(2024, 1, 1, 0, 0, 0),
+		"utc_nil_day":         intArr(2024, 2, 1, 0, 0, 0),
+		"new_nil_time_fields": intArr(2024, 2, 3, 0, 0, 0),
+	}
+	got := result.Hash()
+	for key, expected := range wantFields {
+		val, ok := got[key]
+		if !ok {
+			t.Fatalf("constructors missing key %s", key)
+		}
+		if !val.Equal(expected) {
+			t.Fatalf("constructors[%s] = %v, want %v", key, val, expected)
+		}
+	}
+
+	// The UTC/gm aliases anchor at a fixed zone, so their serialized instant is
+	// independent of the host timezone and matches Ruby's iso8601 output.
+	iso := callFunc(t, script, "utc_iso", nil)
+	wantISO := map[string]Value{
+		"utc1": NewString("2024-01-01T00:00:00Z"),
+		"utc2": NewString("2024-02-01T00:00:00Z"),
+		"gm1":  NewString("2024-01-01T00:00:00Z"),
+	}
+	gotISO := iso.Hash()
+	for key, expected := range wantISO {
+		if val, ok := gotISO[key]; !ok || !val.Equal(expected) {
+			t.Fatalf("utc_iso[%s] = %v, want %v", key, val, expected)
+		}
+	}
+}
+
 func TestTimeCalendarConstructorArgRejection(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -309,7 +400,7 @@ func TestTimeCalendarConstructorArgRejection(t *testing.T) {
 	    end
 
 	    def too_few()
-	      Time.utc(2024, 1)
+	      Time.utc()
 	    end
 
 	    def too_many()
@@ -319,6 +410,16 @@ func TestTimeCalendarConstructorArgRejection(t *testing.T) {
 	    def out_of_range(usec)
 	      Time.utc(2024, 1, 2, 3, 4, 5, usec)
 	    end
+
+	    def nil_year(method)
+	      case method
+	      when "new" then Time.new(nil)
+	      when "local" then Time.local(nil)
+	      when "mktime" then Time.mktime(nil)
+	      when "utc" then Time.utc(nil)
+	      when "gm" then Time.gm(nil)
+	      end
+	    end
 	    `)
 
 	for _, method := range []string{"local", "mktime", "utc", "gm"} {
@@ -326,9 +427,17 @@ func TestTimeCalendarConstructorArgRejection(t *testing.T) {
 			"Time constructor microsecond argument must be numeric")
 	}
 	requireCallErrorContains(t, script, "too_few", nil, CallOptions{},
-		"Time constructor expects at least year, month, day")
+		"Time constructor expects at least a year")
 	requireCallErrorContains(t, script, "too_many", nil, CallOptions{},
 		"Time constructor expects at most year, month, day, hour, minute, second, microsecond")
+
+	// Ruby never treats the required year as omittable: a nil year raises
+	// (TypeError) rather than coercing to year 0, even with the new
+	// one-argument forms.
+	for _, method := range []string{"new", "local", "mktime", "utc", "gm"} {
+		requireCallErrorContains(t, script, "nil_year", []Value{NewString(method)}, CallOptions{},
+			"Time constructor year must be numeric, got nil")
+	}
 
 	// Ruby raises for a subsecond component that does not fit in one second
 	// instead of rolling the timestamp into an adjacent second.

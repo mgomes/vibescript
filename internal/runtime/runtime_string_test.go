@@ -116,6 +116,85 @@ func TestStringSplitDefaultWhitespace(t *testing.T) {
 	}
 }
 
+func TestStringSplitNilSeparator(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		script string
+		want   []Value
+	}{
+		{
+			name:   "nil splits on whitespace",
+			script: `def go() " a  b ".split(nil) end`,
+			want:   []Value{NewString("a"), NewString("b")},
+		},
+		{
+			name:   "nil matches no-argument form",
+			script: `def go() "one two  three".split(nil) end`,
+			want:   []Value{NewString("one"), NewString("two"), NewString("three")},
+		},
+		{
+			name: "nil keeps wider unicode whitespace inside fields",
+			// The non-breaking space (U+00A0) is spliced in via an explicit
+			// escape so it cannot be confused with an ASCII space; the lexer
+			// only decodes \n, \t, \", and \\ escapes, so the raw byte must
+			// reach the runtime.
+			script: "def go() \"a\u00a0b\".split(nil) end",
+			want:   []Value{NewString("a\u00a0b")},
+		},
+		{
+			name:   "nil on blank yields empty",
+			script: `def go() "   ".split(nil) end`,
+			want:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.script)
+			got := callFunc(t, script, "go", nil)
+			if got.Kind() != KindArray {
+				t.Fatalf("expected array, got %v", got.Kind())
+			}
+			if diff := valuesDiff(tt.want, got.Array()); diff != "" {
+				t.Fatalf("split(nil) mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestStringSplitRejectsInvalidSeparator(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "integer separator",
+			script: `def run() "a,b".split(1) end`,
+			want:   "string.split separator must be string or nil",
+		},
+		{
+			name:   "array separator",
+			script: `def run() "a,b".split([","]) end`,
+			want:   "string.split separator must be string or nil",
+		},
+		{
+			name:   "too many separators",
+			script: `def run() "a,b".split(",", "-") end`,
+			want:   "string.split accepts at most one separator",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.script)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
+		})
+	}
+}
+
 func TestStringPredicatesAndLength(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -318,6 +397,130 @@ func TestStringBoundaryHelpers(t *testing.T) {
 		if got[key].String() != want {
 			t.Fatalf("%s mismatch: %q, want %q", key, got[key].String(), want)
 		}
+	}
+}
+
+// TestStringChomp covers the immutable String#chomp across the default
+// separator, an explicit separator, an empty separator, and Ruby's nil
+// separator "do not chomp" case.
+func TestStringChomp(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{name: "default newline", script: `def run() "line\n".chomp end`, want: "line"},
+		{name: "default no separator", script: `def run() "line".chomp end`, want: "line"},
+		{name: "explicit separator hit", script: `def run() "path///".chomp("/") end`, want: "path//"},
+		{name: "explicit separator miss", script: `def run() "abc".chomp("/") end`, want: "abc"},
+		{name: "empty separator strips newlines", script: `def run() "line\n\n".chomp("") end`, want: "line"},
+		{name: "nil separator no chomp", script: `def run() "abc".chomp(nil) end`, want: "abc"},
+		{name: "nil separator keeps newline", script: `def run() "abc\n".chomp(nil) end`, want: "abc\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString {
+				t.Fatalf("expected string, got %v", result.Kind())
+			}
+			if result.String() != tc.want {
+				t.Fatalf("chomp mismatch: %q, want %q", result.String(), tc.want)
+			}
+		})
+	}
+}
+
+// TestStringChompBang covers the mutator String#chomp!: it returns the chomped
+// value on change and nil when nothing changes, including Ruby's nil separator
+// case which always returns nil because no chomp occurs.
+func TestStringChompBang(t *testing.T) {
+	t.Parallel()
+
+	stringCases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{name: "default newline", script: `def run() "line\n".chomp! end`, want: "line"},
+		{name: "explicit separator hit", script: `def run() "path/".chomp!("/") end`, want: "path"},
+		{name: "empty separator strips newlines", script: `def run() "line\n\n".chomp!("") end`, want: "line"},
+	}
+	for _, tc := range stringCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString {
+				t.Fatalf("expected string, got %v", result.Kind())
+			}
+			if result.String() != tc.want {
+				t.Fatalf("chomp! mismatch: %q, want %q", result.String(), tc.want)
+			}
+		})
+	}
+
+	nilCases := []struct {
+		name   string
+		script string
+	}{
+		{name: "default no change", script: `def run() "line".chomp! end`},
+		{name: "explicit separator miss", script: `def run() "abc".chomp!("/") end`},
+		{name: "nil separator", script: `def run() "abc\n".chomp!(nil) end`},
+		{name: "nil separator without newline", script: `def run() "abc".chomp!(nil) end`},
+	}
+	for _, tc := range nilCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindNil {
+				t.Fatalf("expected nil, got %v", result.Kind())
+			}
+		})
+	}
+}
+
+func TestStringChompErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "chomp rejects extra arguments",
+			script: `def run() "abc".chomp("a", "b") end`,
+			want:   "string.chomp accepts at most one separator",
+		},
+		{
+			name:   "chomp rejects non-string separator",
+			script: `def run() "abc".chomp(1) end`,
+			want:   "string.chomp separator must be string",
+		},
+		{
+			name:   "chomp! rejects extra arguments",
+			script: `def run() "abc".chomp!("a", "b") end`,
+			want:   "string.chomp! accepts at most one separator",
+		},
+		{
+			name:   "chomp! rejects non-string separator",
+			script: `def run() "abc".chomp!(1) end`,
+			want:   "string.chomp! separator must be string",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
 	}
 }
 
