@@ -304,13 +304,39 @@ ASCII case folding so that distinct byte sequences stay distinct. This mirrors
 Ruby's binary-string path and preserves byte identity, where the Unicode path
 would otherwise treat every invalid byte as the same replacement character.
 
-### `match(pattern)`
+### `match(pattern, offset = 0)`
 
-Regex match returning `[full, capture1, ...]` or `nil`:
+Regex match returning `[full, capture1, ...]` or `nil`. Captures that did not
+participate are `nil`:
 
 ```vibe
 "ID-12 ID-34".match("ID-([0-9]+)") # ["ID-12", "12"]
 ```
+
+The optional `offset` is a character (codepoint) position to begin searching
+from, so callers can scan from a known point without slicing the receiver first:
+
+```vibe
+"hello".match("l", 3) # ["l"]
+"hello".match("l", 4) # nil
+```
+
+Offsets behave like Ruby's `String#match`:
+
+- a non-negative offset searches for the first match starting at or after that
+  character position;
+- a negative offset counts back from the end of the string (so `-1` starts at
+  the last character); an offset that lands before the start returns `nil`;
+- an offset equal to the receiver length still lets a zero-width pattern match at
+  the end, while an offset past the length returns `nil`;
+- `^`, `\b`, and `\B` keep the full-string context across the offset (the
+  characters before the offset still count toward boundary checks), and `\A`
+  only matches at the absolute start, so it fails once the offset is past
+  position zero.
+
+The offset accepts an integer or a float (truncated toward zero, as in Ruby);
+any other type is rejected. An invalid regex is reported regardless of the
+offset, and the same regex engine and size guards as `match?` apply.
 
 ### `match?(pattern, offset = 0)`
 
