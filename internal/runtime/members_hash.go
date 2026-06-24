@@ -455,13 +455,16 @@ func mergeSortScratchBytes(base map[string]Value, args []Value, useBlock bool) i
 // output map instead of summing every input length, which would over-count an
 // overlapping merge and reject one that fits the quota.
 //
-// limit is the largest output the quota can admit (maxProjectedHashEntries). A
-// single argument needs no cross-argument deduplication, so its union is counted
-// against base alone with no tracking set. Multiple arguments require a seen set
-// to collapse keys repeated across arguments, but the set is bounded by limit:
-// once the distinct-key total exceeds limit the merge is certain to be rejected,
-// so counting stops and returns limit+1 rather than growing a tracking table
-// sized to the over-quota result.
+// limit is the largest output the quota can admit once the merge's scratch
+// budget is reserved (maxProjectedHashEntries, passed the same scratchBytes the
+// final projection charges). A single argument needs no cross-argument
+// deduplication, so its union is counted against base alone with no tracking set.
+// Multiple arguments require a seen set to collapse keys repeated across
+// arguments, but the set is bounded by limit: once the distinct-key total exceeds
+// limit the merge is certain to be rejected, so counting stops and returns
+// limit+1 rather than growing a tracking table sized to the over-quota result.
+// Because limit already accounts for the scratch bytes, the seen set never grows
+// past what the projection's real byte budget permits.
 //
 // Every key examined charges a step via exec.step, so the union count itself is
 // CPU-bounded by the step quota and observes cancellation. Without this a large
@@ -577,7 +580,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			scratchBytes := mergeSortScratchBytes(base, args, valueBlock(block) != nil)
 			upperBound := looseMergedKeyUpperBound(base, args)
 			if exec.checkProjectedHashTransformBytes(upperBound, scratchBytes, receiver, args, kwargs, block) != nil {
-				limit := exec.maxProjectedHashEntries(receiver, args, kwargs, block)
+				limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
 				projected, err := mergedKeyCount(exec, base, args, limit)
 				if err != nil {
 					return NewNil(), err

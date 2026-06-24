@@ -339,6 +339,96 @@ func TestHashMergeMultiArgDistinctKeysTripsMemoryQuota(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestHashMergeRejectsWhenScratchExceedsQuota(t *testing.T) {
+	t.Parallel()
+
+	// A multi-argument merge whose arguments fully overlap the receiver collapses
+	// to the receiver's keys, so its output map fits a quota sized for the union
+	// alone. The sorted-key scratch buffer, however, sizes to the largest single
+	// argument and is materialized alongside the output. When the quota admits the
+	// union output but not the scratch on top of it, the merge must be rejected.
+	//
+	// Before the fix, maxProjectedHashEntries derived its entry cap from the byte
+	// budget WITHOUT the scratch the final projection charges, so the cap admitted
+	// the full union; mergedKeyCount then built a deduplication set sized to that
+	// union before the scratch-aware projection rejected the merge. That temporary
+	// set is exactly the allocation the quota is meant to bound. Subtracting the
+	// scratch budget before deriving the cap makes the exact-count ceiling agree
+	// with the projection, so the doomed merge stops counting at the real budget.
+	const count = 5_000
+	receiver := largeHashReceiver(count)
+	// Two arguments, both full duplicates of the receiver, force the multi-argument
+	// deduplication path while keeping the union exactly the receiver's keys.
+	args := []Value{receiver, receiver}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	projectedBase := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+	unionOutput := count * perEntry
+	scratch := mergeSortScratchBytes(receiver.Hash(), args, false)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heaped scratch buffer, got %d bytes", scratch)
+	}
+
+	// Size the quota to fit the union output but fall one byte short of also fitting
+	// the scratch buffer, so the scratch is the sole reason the merge is rejected.
+	quota := projectedBase + unionOutput + scratch - 1
+
+	// The byte budget left after the union output is consumed is exactly the
+	// scratch minus one, so a scratch-blind entry cap would still admit the full
+	// union and let mergedKeyCount build a set of count keys.
+	scratchBlindCap := (quota - projectedBase) / perEntry
+	if scratchBlindCap < count {
+		t.Fatalf("test setup expects a scratch-blind cap (%d) of at least the union size (%d)", scratchBlindCap, count)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if got := exec.maxProjectedHashEntries(scratch, receiver, args, nil, NewNil()); got >= count {
+		t.Fatalf("maxProjectedHashEntries with scratch = %d, want it capped below the union size %d so the dedup set stays within the scratch-aware budget", got, count)
+	}
+
+	_, err := callHashMember(t, exec, receiver, "merge", args, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestMaxProjectedHashEntriesAgreesWithProjection verifies the entry cap and the
+// byte projection agree once a scratch budget is reserved: the cap is the largest
+// entry count checkProjectedHashTransformBytes still accepts for the same scratch,
+// and one entry past it is rejected. This guards the P1 finding on PR #776, where
+// the cap was derived from a byte budget that omitted the scratch the projection
+// charged, so the cap admitted entries the projection's real budget could not.
+func TestMaxProjectedHashEntriesAgreesWithProjection(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeHashReceiver(1_000)
+	args := []Value{receiver}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	projectedBase := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
+	scratch := sortedKeyBufferBytes(2_000)
+	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
+
+	// Pick a quota that admits some entries beyond the base plus scratch so the cap
+	// is a positive number bounded by the byte budget.
+	const wantCap = 50
+	quota := projectedBase + scratch + wantCap*perEntry
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+
+	entryCap := exec.maxProjectedHashEntries(scratch, receiver, args, nil, NewNil())
+	if entryCap != wantCap {
+		t.Fatalf("maxProjectedHashEntries = %d, want %d", entryCap, wantCap)
+	}
+
+	// The projection must accept exactly entryCap entries and reject entryCap+1,
+	// proving the two views of the budget share the same scratch reservation.
+	if err := exec.checkProjectedHashTransformBytes(entryCap, scratch, receiver, args, nil, NewNil()); err != nil {
+		t.Fatalf("checkProjectedHashTransformBytes(%d, scratch) = %v, want it to fit the cap", entryCap, err)
+	}
+	if err := exec.checkProjectedHashTransformBytes(entryCap+1, scratch, receiver, args, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("checkProjectedHashTransformBytes(%d, scratch) = %v, want it to exceed the cap", entryCap+1, err)
+	}
+}
+
 func TestMergedKeyCount(t *testing.T) {
 	t.Parallel()
 

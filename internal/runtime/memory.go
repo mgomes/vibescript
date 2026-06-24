@@ -447,18 +447,26 @@ func (exec *Execution) projectedHashBaseBytes(receiver Value, args []Value, kwar
 }
 
 // maxProjectedHashEntries returns the largest output-map entry count that
-// checkProjectedHashBytes would still accept for the given call roots, or
-// math.MaxInt when no memory quota is enforced. Counting helpers that must
-// deduplicate keys across inputs (such as the merge union count) use it to cap
-// their tracking set at the quota-derived budget: once the distinct-key total
-// passes this ceiling the transform is certain to be rejected, so they can stop
-// allocating and report an over-budget count instead of building a tracking
-// table sized to the rejected result.
-func (exec *Execution) maxProjectedHashEntries(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+// checkProjectedHashTransformBytes would still accept for the given call roots
+// and scratch budget, or math.MaxInt when no memory quota is enforced. Counting
+// helpers that must deduplicate keys across inputs (such as the merge union
+// count) use it to cap their tracking set at the quota-derived budget: once the
+// distinct-key total passes this ceiling the transform is certain to be
+// rejected, so they can stop allocating and report an over-budget count instead
+// of building a tracking table sized to the rejected result.
+//
+// scratchBytes is the heap footprint of any sorted-key scratch buffers the
+// transform materializes alongside its output (see mergeSortScratchBytes). It is
+// subtracted from the byte budget before deriving the entry cap so this ceiling
+// agrees with the final checkProjectedHashTransformBytes, which charges the same
+// scratch: without it the cap would admit entries the projection's actual budget
+// (quota minus base minus scratch) cannot, letting a doomed merge grow its
+// dedup set past the bytes the quota allows.
+func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
 	if exec.memoryQuota <= 0 {
 		return math.MaxInt
 	}
-	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
+	used := saturatingAdd(exec.projectedHashBaseBytes(receiver, args, kwargs, block), scratchBytes)
 	if used >= exec.memoryQuota {
 		return 0
 	}
