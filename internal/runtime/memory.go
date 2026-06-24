@@ -746,23 +746,34 @@ func (acc *hashBuildAccumulator) chargeOpaquePayload(val Value, sign int) int {
 // entry removed), 0 otherwise. The tracking term accounts for the valueRefs map's
 // own per-backing footprint so the O(distinct backings) bookkeeping map is charged
 // against the quota alongside the payload it tracks.
+//
+// The very first entry also charges the valueRefs map's empty-map base, mirroring
+// how add charges the storedValues base on its first insert. Like storedValues,
+// valueRefs stays allocated once created (release only deletes entries, never the
+// map), so the base is charged once and never credited back.
 func (acc *hashBuildAccumulator) adjustRef(id backingID, sign, bytes int) int {
-	if acc.valueRefs == nil {
-		acc.valueRefs = make(map[backingID]int)
-	}
 	prev := acc.valueRefs[id]
 	count := prev + sign
 	if count < 0 {
 		count = 0
 	}
-	if count == 0 {
+	base := 0
+	switch {
+	case count == 0:
+		// A release that empties the entry (or a no-op release before any charge):
+		// drop the entry but keep the allocated map, as add does for storedValues.
 		delete(acc.valueRefs, id)
-	} else {
+	case acc.valueRefs == nil:
+		// First entry: allocate the bookkeeping map and charge its empty-map base.
+		acc.valueRefs = make(map[backingID]int)
+		acc.valueRefs[id] = count
+		base = estimatedMapBaseBytes
+	default:
 		acc.valueRefs[id] = count
 	}
 	switch {
 	case prev == 0 && count > 0:
-		return saturatingAdd(bytes, estimatedRefTrackingEntryBytes)
+		return saturatingAdd(saturatingAdd(bytes, estimatedRefTrackingEntryBytes), base)
 	case prev > 0 && count == 0:
 		return -saturatingAdd(bytes, estimatedRefTrackingEntryBytes)
 	default:

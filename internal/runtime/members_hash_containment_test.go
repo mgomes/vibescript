@@ -1484,6 +1484,54 @@ func TestHashBuildAccumulatorReleasesCyclicValuesFully(t *testing.T) {
 	}
 }
 
+// TestHashBuildAccumulatorChargesValueRefsMapBase pins that the reference-counting
+// bookkeeping map (valueRefs) charges its own empty-map base the first time a fresh
+// payload backing is referenced, mirroring how add charges the storedValues base on
+// its first insert. Without that charge the live hmap is invisible to the quota: it
+// is allocated during the build but never accounted, so the peak can exceed the
+// sandbox by estimatedMapBaseBytes.
+//
+// The test differences two consecutive inserts of equal-cost fresh-payload values.
+// The first insert pays both bookkeeping bases (storedValues and valueRefs) plus
+// the shared per-entry and per-ref costs; the second pays only the shared costs. The
+// difference is therefore exactly the two map bases. A regression that drops the
+// valueRefs base would make the difference a single base and trip this assertion.
+func TestHashBuildAccumulatorChargesValueRefsMapBase(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	exec.root = newEnv(nil)
+	base := exec.estimateMemoryUsageBase(newMemoryEstimator())
+	exec.memoryQuota = base + 1<<20
+
+	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+
+	// Two distinct fresh string values of equal length backed by distinct allocations
+	// so each charges an identical per-entry and per-ref cost while introducing its
+	// own backing. Equal-length distinct keys keep the key-entry cost identical too.
+	if err := acc.add("k1", NewString("alpha-payload-0")); err != nil {
+		t.Fatalf("first insert tripped the quota: %v", err)
+	}
+	firstDelta := acc.built
+
+	prev := acc.built
+	if err := acc.add("k2", NewString("alpha-payload-1")); err != nil {
+		t.Fatalf("second insert tripped the quota: %v", err)
+	}
+	secondDelta := acc.built - prev
+
+	// The first insert pays the storedValues base and the valueRefs base on top of
+	// the shared per-entry/per-ref costs; the second pays neither base. Their
+	// difference is exactly the two bookkeeping-map bases. Pre-fix, the valueRefs base
+	// was never charged, so the difference would be a single base.
+	gotBaseCharges := firstDelta - secondDelta
+	wantBaseCharges := 2 * estimatedMapBaseBytes
+	if gotBaseCharges != wantBaseCharges {
+		t.Fatalf("first-insert base charges = %d bytes, want %d (storedValues base + valueRefs base); the valueRefs bookkeeping map base is not accounted",
+			gotBaseCharges, wantBaseCharges)
+	}
+}
+
 // The P1 "returns-old" finding is pinned at the accumulator level by
 // TestHashBuildAccumulatorReplacementKeepsReachablePayload, which drives acc.add
 // directly. It deliberately has no end-to-end merge twin: the returns-old shape
