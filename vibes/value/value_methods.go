@@ -405,6 +405,93 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 	}
 }
 
+// StringByteLenBounded reports the same byte count as StringByteLen but invokes
+// step once per node visited during the projection walk, so a caller can charge
+// a sandbox step budget against the traversal and abort it when step returns an
+// error. The first error step reports stops the walk and is returned unchanged
+// alongside the partial count.
+//
+// StringByteLen's cycle detection only collapses references that are currently
+// on the recursion stack: a shared but acyclic graph (for example the result of
+// repeatedly evaluating a = [a, a], where each level holds two references to the
+// same child slice) is fully re-walked at every occurrence, so the traversal is
+// exponential in the nesting depth even though the value's memory and its
+// eventual rendering both stay bounded by the cycle marker. The memory quota
+// alone cannot bound that work because it is checked only after the walk
+// completes. Driving step from inside the walk lets the step quota trip during
+// the traversal instead of letting it run unbounded.
+func (v Value) StringByteLenBounded(step func() error) (int, error) {
+	switch v.kind {
+	case KindArray, KindHash:
+		return v.stringByteLenBoundedWithState(newValueStringState(), step)
+	default:
+		if err := step(); err != nil {
+			return 0, err
+		}
+		return len(v.String()), nil
+	}
+}
+
+func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func() error) (int, error) {
+	if err := step(); err != nil {
+		return 0, err
+	}
+	switch v.kind {
+	case KindArray:
+		elems := v.data.([]Value)
+		id := SliceIdentity{
+			Ptr: reflect.ValueOf(elems).Pointer(),
+			Len: len(elems),
+			Cap: cap(elems),
+		}
+		if id.Ptr != 0 {
+			if _, seen := state.arrays[id]; seen {
+				return len(cycleMarker), nil
+			}
+			state.arrays[id] = struct{}{}
+			defer delete(state.arrays, id)
+		}
+		// "[" + elements joined by ", " + "]".
+		total := len(arrayOpen) + len(arrayClose)
+		total += separatorBytes(len(elems))
+		for _, e := range elems {
+			n, err := e.stringByteLenBoundedWithState(state, step)
+			if err != nil {
+				return 0, err
+			}
+			total += n
+		}
+		return total, nil
+	case KindHash:
+		entries := v.data.(map[string]Value)
+		if len(entries) == 0 {
+			return len(hashOpen) + len(hashClose), nil
+		}
+		ptr := reflect.ValueOf(entries).Pointer()
+		if ptr != 0 {
+			if _, seen := state.maps[ptr]; seen {
+				return len(cycleMarker), nil
+			}
+			state.maps[ptr] = struct{}{}
+			defer delete(state.maps, ptr)
+		}
+		// "{" + entries joined by ", " + "}"; each entry is key + ": " + value.
+		total := len(hashOpen) + len(hashClose)
+		total += separatorBytes(len(entries))
+		for k, val := range entries {
+			total += len(k) + len(keyValueSeparator)
+			n, err := val.stringByteLenBoundedWithState(state, step)
+			if err != nil {
+				return 0, err
+			}
+			total += n
+		}
+		return total, nil
+	default:
+		return len(v.String()), nil
+	}
+}
+
 // separatorBytes returns the bytes the ", " separators contribute when joining
 // count elements: zero for fewer than two elements, otherwise two bytes per gap.
 func separatorBytes(count int) int {

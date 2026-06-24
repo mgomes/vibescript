@@ -243,13 +243,14 @@ func projectedBuilderCap(sb *strings.Builder, n int) int {
 
 // appendInterpolatedValue renders val into the interpolation builder under the
 // same sandbox limits as appendInterpolatedChunk. It projects the rendered byte
-// length with Value.StringByteLen before materializing, so an aggregate whose
-// String representation expands far beyond its own footprint (for example an
-// array holding many references to one large string) is rejected by the memory
-// quota instead of allocating the oversized rendering first and only then
-// failing the post-build check. Value.StringByteLen walks the aggregate without
+// length with Value.StringByteLenBounded before materializing, so an aggregate
+// whose String representation expands far beyond its own footprint (for example
+// an array holding many references to one large string) is rejected by the
+// memory quota instead of allocating the oversized rendering first and only then
+// failing the post-build check. StringByteLenBounded walks the aggregate without
 // allocating the joined result, so the projection is the only work done for a
-// value that overruns the quota.
+// value that overruns the quota, and it charges exec.step per visited node so
+// the walk itself is bounded by the step quota (see the call site below).
 //
 // The projection also charges val's own footprint, not just the rendered output.
 // An interpolated expression can produce a temporary that no environment holds —
@@ -282,7 +283,19 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	if err := exec.step(); err != nil {
 		return err
 	}
-	payload := val.StringByteLen()
+	// StringByteLenBounded charges exec.step once per node it visits, so the
+	// projection walk itself is bounded by the step quota. A composite with a
+	// compact but exponentially shared graph (for example a = [a, a] repeated)
+	// has bounded memory and a bounded rendering — the cycle marker collapses
+	// the repetition once it is on the recursion stack — yet projecting its
+	// length re-walks every shared subtree, which is exponential in the nesting
+	// depth. Charging steps during that walk (rather than only once per
+	// interpolation part) trips the quota or honors a canceled context instead
+	// of burning unbounded CPU before the memory check runs.
+	payload, err := val.StringByteLenBounded(exec.step)
+	if err != nil {
+		return err
+	}
 	if err := exec.checkProjectedInterpolatedValue(val, projectedBuilderCap(sb, payload)); err != nil {
 		return err
 	}

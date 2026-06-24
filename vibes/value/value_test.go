@@ -1042,6 +1042,82 @@ func TestValueStringByteLenCycleDetection(t *testing.T) {
 	})
 }
 
+func TestValueStringByteLenBounded(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matches_unbounded_count", func(t *testing.T) {
+		t.Parallel()
+		vals := []value.Value{
+			value.NewInt(-42),
+			value.NewString("hello"),
+			value.NewArray([]value.Value{
+				value.NewInt(1),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+			value.NewHash(map[string]value.Value{"name": value.NewString("acme")}),
+		}
+		for _, v := range vals {
+			got, err := v.StringByteLenBounded(func() error { return nil })
+			if err != nil {
+				t.Fatalf("StringByteLenBounded() error = %v", err)
+			}
+			if want := v.StringByteLen(); got != want {
+				t.Fatalf("StringByteLenBounded() = %d, want StringByteLen() = %d", got, want)
+			}
+		}
+	})
+
+	t.Run("propagates_step_error", func(t *testing.T) {
+		t.Parallel()
+		sentinel := errors.New("budget exhausted")
+		arr := value.NewArray([]value.Value{value.NewInt(1), value.NewInt(2)})
+
+		calls := 0
+		_, err := arr.StringByteLenBounded(func() error {
+			calls++
+			if calls >= 2 {
+				return sentinel
+			}
+			return nil
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("StringByteLenBounded() error = %v, want %v", err, sentinel)
+		}
+	})
+
+	t.Run("shared_exponential_graph_trips_budget", func(t *testing.T) {
+		t.Parallel()
+
+		// A compact aggregate with an exponentially shared, acyclic graph: each
+		// level holds two references to the same child array (the shape of
+		// repeatedly evaluating a = [a, a]). The cycle marker bounds the rendering
+		// and the memory stays small, but the projection re-walks every shared
+		// subtree, so the traversal is exponential in the depth. Charging the step
+		// callback per node lets a bounded budget trip the walk instead of hanging.
+		const depth = 25
+		const budget = 1_000_000
+
+		cur := value.NewArray([]value.Value{value.NewInt(0)})
+		for range depth {
+			cur = value.NewArray([]value.Value{cur, cur})
+		}
+
+		sentinel := errors.New("step budget exhausted")
+		calls := 0
+		_, err := cur.StringByteLenBounded(func() error {
+			calls++
+			if calls > budget {
+				return sentinel
+			}
+			return nil
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("StringByteLenBounded() error = %v, want %v (calls=%d)", err, sentinel, calls)
+		}
+	})
+}
+
 func BenchmarkValueStringLargeComposite(b *testing.B) {
 	b.Run("array_100000", func(b *testing.B) {
 		elems := make([]value.Value, 100000)

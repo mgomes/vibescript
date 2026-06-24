@@ -497,6 +497,42 @@ func TestEvalInterpolatedStringLiteralCanceledContext(t *testing.T) {
 	}
 }
 
+func TestEvalInterpolatedStringLiteralSharedGraphTripsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	// A compact aggregate with an exponentially shared, acyclic graph: each level
+	// holds two references to the same child array (the shape of repeatedly
+	// evaluating a = [a, a]). Its memory stays small because every level reuses
+	// one backing slice, and its rendering is bounded because the cycle marker
+	// collapses a reference once it is on the recursion stack. But projecting the
+	// rendered length re-walks each shared subtree at every occurrence, so the
+	// traversal is exponential in the depth. The projection must charge the step
+	// budget during that walk so it trips the step quota instead of burning
+	// unbounded CPU before the memory check runs.
+	const depth = 40
+
+	cur := NewArray([]Value{NewInt(0)})
+	for range depth {
+		cur = NewArray([]Value{cur, cur})
+	}
+
+	lit := &InterpolatedString{Parts: []StringPart{StringExpr{Expr: &Identifier{Name: "shared"}}}}
+
+	exec := &Execution{
+		ctx:   context.Background(),
+		quota: 100_000,
+		// Ample memory: the failure must be the step quota, not memory. The value
+		// itself is tiny (one int plus depth two-element arrays).
+		memoryQuota: 64 << 20,
+	}
+	env := newEnv(nil)
+	env.Define("shared", cur)
+	exec.pushEnv(env)
+
+	_, err := exec.evalInterpolatedStringLiteral(lit, env)
+	requireErrorIs(t, err, errStepQuotaExceeded)
+}
+
 func TestInterpolatedStringGrowthTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 
