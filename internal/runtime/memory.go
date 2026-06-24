@@ -115,6 +115,43 @@ func (exec *Execution) checkProjectedStringBytes(payloadBytes int) error {
 	return nil
 }
 
+// checkProjectedInterpolatedValue rejects an interpolation step that would exceed
+// the memory quota before the rendered value is streamed into the builder. It
+// charges three things that are all live at the peak of the write: the
+// execution's reachable roots (the base), the interpolated value's own footprint,
+// and the string the rendering is being streamed into (its header plus
+// payloadBytes of rendered output).
+//
+// The value's footprint matters because the interpolated expression may produce
+// a temporary that is not reachable from any environment — a function return, or
+// an array/hash literal constructed inline. Such a temporary lives only on the Go
+// call stack while WriteStringTo copies its rendering, so estimateMemoryUsageBase
+// never sees it, yet it is real memory held alongside the growing builder. Without
+// charging it, base+output and base+value could each fit the quota while
+// base+value+output exceeds it, letting a huge temporary stream past the limit.
+//
+// val is charged through the same estimator that walks the base, so a value that
+// IS reachable from an environment (an existing variable interpolated directly) is
+// deduplicated against the base and contributes only its already-counted footprint
+// once, leaving the small-interpolation fast path unchanged.
+func (exec *Execution) checkProjectedInterpolatedValue(val Value, payloadBytes int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	used = saturatingAdd(used, est.value(val))
+	est.reset()
+
+	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
+	used = saturatingAdd(used, payloadBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 // checkProjectedIntArrayBytes rejects allocations that would exceed the memory
 // quota before the array is built. Builtins that preallocate an array of int
 // values sized by a user-controlled count (such as the range materialization

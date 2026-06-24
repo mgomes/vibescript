@@ -174,16 +174,149 @@ func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, en
 	for _, part := range lit.Parts {
 		switch p := part.(type) {
 		case StringText:
-			sb.WriteString(p.Text)
+			if err := exec.appendInterpolatedChunk(&sb, p.Text); err != nil {
+				return NewNil(), err
+			}
 		case StringExpr:
 			val, err := exec.evalExpressionWithAuto(p.Expr, env, true)
 			if err != nil {
 				return NewNil(), err
 			}
-			sb.WriteString(val.String())
+			if err := exec.appendInterpolatedValue(&sb, val); err != nil {
+				return NewNil(), err
+			}
 		}
 	}
 	return NewString(sb.String()), nil
+}
+
+// appendInterpolatedChunk writes a literal text chunk to the interpolation
+// builder while keeping the partially built result inside the sandbox limits.
+// step() honors a canceled context and the step quota during repeated or large
+// interpolation, and checkProjectedStringBytes rejects the materialization
+// before the builder grows past the memory quota. The projected check is keyed
+// on the builder's projected backing capacity (see projectedBuilderCap) so a
+// doubling interpolation such as "#{text}#{text}" fails fast instead of
+// allocating the oversized backing array that the surrounding evaluator would
+// only observe after it already exists. Small interpolations stay on the fast
+// path: with no quotas the checks are O(1) no-ops.
+//
+// Charging the projected capacity rather than sb.Len()+len(chunk) matters
+// because Builder.Grow does not reserve exactly the requested bytes once the
+// current backing is exhausted: it reallocates to roundedAllocSize(2*cap+n).
+// After a prefix or a prior interpolation the doubled-and-rounded term can
+// exceed the running length plus the chunk, so charging only the final length
+// would let the real reservation escape the memory quota. projectedBuilderCap
+// reproduces Grow's reallocation, including the allocator's size-class rounding,
+// so the quota check accounts for the backing array actually reserved.
+func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string) error {
+	if err := exec.step(); err != nil {
+		return err
+	}
+	if err := exec.checkProjectedStringBytes(projectedBuilderCap(sb, len(chunk))); err != nil {
+		return err
+	}
+	sb.Grow(len(chunk))
+	sb.WriteString(chunk)
+	return nil
+}
+
+// projectedBuilderCap reports the backing-array capacity sb will hold after
+// sb.Grow(n), so a quota check can account for the bytes Grow actually reserves
+// rather than the bytes the caller intends to write.
+//
+// Builder.Grow only reallocates when the free tail (Cap-Len) cannot hold n more
+// bytes. When it does, strings.Builder requests 2*Cap+n bytes through
+// bytealg.MakeNoZero, and the runtime rounds that request up to an allocator
+// size class before reserving the backing array. The realized capacity is
+// therefore roundedAllocSize(2*Cap+n), which can exceed 2*Cap+n: growing a
+// 10 KiB builder by 10 KiB requests 30,720 bytes but reserves the 32,768-byte
+// class. Charging only 2*Cap+n would leave a quota between the request and the
+// rounded class, letting the check pass while Grow allocates over the limit.
+// roundedAllocSize mirrors the runtime's rounding exactly (see sizeclass.go), so
+// the projection equals the realized capacity. When the value already fits the
+// free tail, no reallocation happens and the current capacity is returned
+// unchanged, preserving the no-copy fast path. n must be non-negative, matching
+// Grow.
+func projectedBuilderCap(sb *strings.Builder, n int) int {
+	capacity := sb.Cap()
+	if capacity-sb.Len() >= n {
+		return capacity
+	}
+	return roundedAllocSize(saturatingAdd(saturatingMul(2, capacity), n))
+}
+
+// appendInterpolatedValue renders val into the interpolation builder under the
+// same sandbox limits as appendInterpolatedChunk. It projects the rendered byte
+// length with Value.StringByteLenBounded before materializing, so an aggregate
+// whose String representation expands far beyond its own footprint (for example
+// an array holding many references to one large string) is rejected by the
+// memory quota instead of allocating the oversized rendering first and only then
+// failing the post-build check. StringByteLenBounded walks the aggregate without
+// allocating the joined result, so the projection is the only work done for a
+// value that overruns the quota, and it charges exec.step per visited node so
+// the walk itself is bounded by the step quota (see the call site below).
+//
+// The projection also charges val's own footprint, not just the rendered output.
+// An interpolated expression can produce a temporary that no environment holds —
+// a function return, or an array/hash literal constructed inline — which stays
+// live on the Go call stack while WriteStringTo copies its rendering. That
+// temporary is invisible to the env-reachable base, so charging only the output
+// would let base+value+output exceed the quota during the write even though
+// base+output passes. checkProjectedInterpolatedValue deduplicates val against the
+// base, so a value already reachable from an environment is not double counted and
+// the small-interpolation fast path is unchanged.
+//
+// Once the projection passes, the builder is grown by exactly the projected
+// payload and Value.WriteStringTo streams the rendering straight into sb rather
+// than building a temporary string and copying it in. A second full copy would
+// transiently hold both the temporary rendering and the builder copy, so a quota
+// close to the final output size could be exceeded even though the single-payload
+// projection passed. Reserving the payload up front also keeps WriteStringTo's
+// per-element writes from triggering the builder's doubling growth, which would
+// overshoot the quota-checked size; the peak allocation stays a single rendering,
+// matching what the projection accounted for.
+//
+// The projection charges the builder's projected backing capacity (see
+// projectedBuilderCap), not sb.Len()+payload. Builder.Grow reallocates to
+// roundedAllocSize(2*cap+payload) once the current backing is full, so after a
+// prefix or a prior interpolation the reserved backing can exceed the running
+// length plus the payload. Charging the projected capacity keeps that
+// reservation inside the memory quota; for a value that fits the free tail no
+// reallocation happens and the fast path is unchanged.
+func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) error {
+	if err := exec.step(); err != nil {
+		return err
+	}
+	// StringByteLenBounded charges exec.step once per node it visits, so the
+	// projection walk itself is bounded by the step quota. A composite with a
+	// compact but exponentially shared graph (for example a = [a, a] repeated)
+	// has bounded memory and a bounded rendering — the cycle marker collapses
+	// the repetition once it is on the recursion stack — yet projecting its
+	// length re-walks every shared subtree, which is exponential in the nesting
+	// depth. Charging steps during that walk (rather than only once per
+	// interpolation part) trips the quota or honors a canceled context instead
+	// of burning unbounded CPU before the memory check runs.
+	payload, err := val.StringByteLenBounded(exec.step)
+	if err != nil {
+		return err
+	}
+	if err := exec.checkProjectedInterpolatedValue(val, projectedBuilderCap(sb, payload)); err != nil {
+		return err
+	}
+	// Grow only on a positive payload: StringByteLen sums byte counts without
+	// saturating, so a rendering larger than the int range (physically
+	// unreachable but not statically excluded) could wrap negative, and Grow
+	// panics on a negative count.
+	if payload > 0 {
+		sb.Grow(payload)
+	}
+	// WriteStringTo streams the rendering straight into sb without materializing a
+	// separate string, so the peak allocation stays the single reservation made
+	// above. Writing into a strings.Builder never fails, so there is no error to
+	// surface here.
+	val.WriteStringTo(sb)
+	return nil
 }
 
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {

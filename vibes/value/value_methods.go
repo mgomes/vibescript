@@ -187,6 +187,19 @@ func newValueStringState() *valueStringState {
 	}
 }
 
+// WriteStringTo streams the same bytes String would return for v directly into
+// buf, without first materializing the rendered representation as a separate
+// string. Callers that have already bounded the rendering against a quota (such
+// as the sandbox's interpolation memory guard, which reserves the projected
+// length before calling) use it to stream an aggregate straight into their
+// builder instead of allocating the full rendering and then copying it, which
+// would transiently hold both the temporary and the destination copy and could
+// exceed a memory limit the projected length already passed. It delegates to the
+// unified unbounded renderer, so writing into a strings.Builder never fails.
+func (v Value) WriteStringTo(buf *strings.Builder) {
+	_ = v.appendString(buf, newValueStringState(), 0)
+}
+
 // appendString streams v's rendering into buf instead of building intermediate
 // per-element slices and a final joined string. When limit is positive, every
 // write site routes through a bounded helper (appendBounded for strings,
@@ -326,6 +339,177 @@ func appendBounded(buf *strings.Builder, s string, limit int) error {
 	buf.WriteString(s)
 	return nil
 }
+
+// StringByteLen returns the number of bytes String would produce for v without
+// materializing the rendered representation. Callers that must bound an
+// allocation before it happens (such as the sandbox's interpolation memory
+// guard) use it to reject an oversized rendering instead of building the string
+// first and only then observing that it exceeded a quota. The byte count walks
+// arrays and hashes with the same cycle detection String uses, so the projection
+// matches the eventual output exactly.
+func (v Value) StringByteLen() int {
+	switch v.kind {
+	case KindArray, KindHash:
+		return v.stringByteLenWithState(newValueStringState())
+	default:
+		return len(v.String())
+	}
+}
+
+func (v Value) stringByteLenWithState(state *valueStringState) int {
+	switch v.kind {
+	case KindArray:
+		elems := v.data.([]Value)
+		id := SliceIdentity{
+			Ptr: reflect.ValueOf(elems).Pointer(),
+			Len: len(elems),
+			Cap: cap(elems),
+		}
+		if id.Ptr != 0 {
+			if _, seen := state.arrays[id]; seen {
+				return len(cycleMarker)
+			}
+			state.arrays[id] = struct{}{}
+			defer delete(state.arrays, id)
+		}
+		// "[" + elements joined by ", " + "]".
+		total := len(arrayOpen) + len(arrayClose)
+		total += separatorBytes(len(elems))
+		for _, e := range elems {
+			total += e.stringByteLenWithState(state)
+		}
+		return total
+	case KindHash:
+		entries := v.data.(map[string]Value)
+		if len(entries) == 0 {
+			return len(hashOpen) + len(hashClose)
+		}
+		ptr := reflect.ValueOf(entries).Pointer()
+		if ptr != 0 {
+			if _, seen := state.maps[ptr]; seen {
+				return len(cycleMarker)
+			}
+			state.maps[ptr] = struct{}{}
+			defer delete(state.maps, ptr)
+		}
+		// "{" + entries joined by ", " + "}"; each entry is key + ": " + value.
+		total := len(hashOpen) + len(hashClose)
+		total += separatorBytes(len(entries))
+		for k, val := range entries {
+			total += len(k) + len(keyValueSeparator)
+			total += val.stringByteLenWithState(state)
+		}
+		return total
+	default:
+		return len(v.String())
+	}
+}
+
+// StringByteLenBounded reports the same byte count as StringByteLen but invokes
+// step once per node visited during the projection walk, so a caller can charge
+// a sandbox step budget against the traversal and abort it when step returns an
+// error. The first error step reports stops the walk and is returned unchanged
+// alongside the partial count.
+//
+// StringByteLen's cycle detection only collapses references that are currently
+// on the recursion stack: a shared but acyclic graph (for example the result of
+// repeatedly evaluating a = [a, a], where each level holds two references to the
+// same child slice) is fully re-walked at every occurrence, so the traversal is
+// exponential in the nesting depth even though the value's memory and its
+// eventual rendering both stay bounded by the cycle marker. The memory quota
+// alone cannot bound that work because it is checked only after the walk
+// completes. Driving step from inside the walk lets the step quota trip during
+// the traversal instead of letting it run unbounded.
+func (v Value) StringByteLenBounded(step func() error) (int, error) {
+	switch v.kind {
+	case KindArray, KindHash:
+		return v.stringByteLenBoundedWithState(newValueStringState(), step)
+	default:
+		if err := step(); err != nil {
+			return 0, err
+		}
+		return len(v.String()), nil
+	}
+}
+
+func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func() error) (int, error) {
+	if err := step(); err != nil {
+		return 0, err
+	}
+	switch v.kind {
+	case KindArray:
+		elems := v.data.([]Value)
+		id := SliceIdentity{
+			Ptr: reflect.ValueOf(elems).Pointer(),
+			Len: len(elems),
+			Cap: cap(elems),
+		}
+		if id.Ptr != 0 {
+			if _, seen := state.arrays[id]; seen {
+				return len(cycleMarker), nil
+			}
+			state.arrays[id] = struct{}{}
+			defer delete(state.arrays, id)
+		}
+		// "[" + elements joined by ", " + "]".
+		total := len(arrayOpen) + len(arrayClose)
+		total += separatorBytes(len(elems))
+		for _, e := range elems {
+			n, err := e.stringByteLenBoundedWithState(state, step)
+			if err != nil {
+				return 0, err
+			}
+			total += n
+		}
+		return total, nil
+	case KindHash:
+		entries := v.data.(map[string]Value)
+		if len(entries) == 0 {
+			return len(hashOpen) + len(hashClose), nil
+		}
+		ptr := reflect.ValueOf(entries).Pointer()
+		if ptr != 0 {
+			if _, seen := state.maps[ptr]; seen {
+				return len(cycleMarker), nil
+			}
+			state.maps[ptr] = struct{}{}
+			defer delete(state.maps, ptr)
+		}
+		// "{" + entries joined by ", " + "}"; each entry is key + ": " + value.
+		total := len(hashOpen) + len(hashClose)
+		total += separatorBytes(len(entries))
+		for k, val := range entries {
+			total += len(k) + len(keyValueSeparator)
+			n, err := val.stringByteLenBoundedWithState(state, step)
+			if err != nil {
+				return 0, err
+			}
+			total += n
+		}
+		return total, nil
+	default:
+		return len(v.String()), nil
+	}
+}
+
+// separatorBytes returns the bytes the ", " separators contribute when joining
+// count elements: zero for fewer than two elements, otherwise two bytes per gap.
+func separatorBytes(count int) int {
+	if count < 2 {
+		return 0
+	}
+	return (count - 1) * len(elementSeparator)
+}
+
+const (
+	arrayOpen         = "["
+	arrayClose        = "]"
+	hashOpen          = "{"
+	hashClose         = "}"
+	elementSeparator  = ", "
+	keyValueSeparator = ": "
+	cycleMarker       = "<cycle>"
+)
 
 // Truthy reports whether v is considered true in a boolean context.
 func (v Value) Truthy() bool {

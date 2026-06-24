@@ -3,6 +3,8 @@ package value_test
 import (
 	"errors"
 	"math"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"testing"
@@ -467,6 +469,62 @@ func TestValueStringCycleDetection(t *testing.T) {
 			t.Fatalf("String() = %q, want %q", got, "[[1], [1]]")
 		}
 	})
+}
+
+func TestValueStringByteLen(t *testing.T) {
+	t.Parallel()
+
+	big := value.NewString(strings.Repeat("x", 1024))
+
+	tests := []struct {
+		name string
+		val  value.Value
+	}{
+		{"nil", value.NewNil()},
+		{"bool", value.NewBool(true)},
+		{"int", value.NewInt(-42)},
+		{"float", value.NewFloat(2.5)},
+		{"float_infinity", value.NewFloat(math.Inf(1))},
+		{"string", value.NewString("hello")},
+		{"symbol", value.NewSymbol("status")},
+		{"money", value.NewMoney(mustMoney(t, 1999, "usd"))},
+		{"duration", value.NewDuration(value.DurationFromSeconds(90))},
+		{"time", value.NewTime(time.Date(2024, 6, 1, 12, 30, 0, 500_000_000, time.UTC))},
+		{"range", value.NewRange(value.Range{Start: 1, End: 5})},
+		{"empty_array", value.NewArray(nil)},
+		{"single_array", value.NewArray([]value.Value{value.NewInt(1)})},
+		{
+			"nested_array",
+			value.NewArray([]value.Value{
+				value.NewInt(1),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+		},
+		{"empty_hash", value.NewHash(nil)},
+		{
+			"single_hash",
+			value.NewHash(map[string]value.Value{"name": value.NewString("acme")}),
+		},
+		{"runtime_kind_fallback", value.NewValue(value.KindBlock, fakeBlock{})},
+		// An aggregate whose rendering expands far beyond its own footprint: a
+		// short array holding many references to one large string materializes a
+		// representation many times the value's memory. The projection must still
+		// equal the eventual byte count exactly.
+		{
+			"array_of_repeated_large_string",
+			value.NewArray([]value.Value{big, big, big, big, big}),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got, want := tc.val.StringByteLen(), len(tc.val.String()); got != want {
+				t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+			}
+		})
+	}
 }
 
 func TestValueStringBounded(t *testing.T) {
@@ -951,6 +1009,115 @@ func TestValueStringBoundedNeverExceedsLimit(t *testing.T) {
 	}
 }
 
+func TestValueStringByteLenCycleDetection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("self_referential_array", func(t *testing.T) {
+		t.Parallel()
+		elems := make([]value.Value, 1)
+		arr := value.NewArray(elems)
+		elems[0] = arr
+		if got, want := arr.StringByteLen(), len(arr.String()); got != want {
+			t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+		}
+	})
+
+	t.Run("self_referential_hash", func(t *testing.T) {
+		t.Parallel()
+		entries := make(map[string]value.Value)
+		hash := value.NewHash(entries)
+		entries["self"] = hash
+		if got, want := hash.StringByteLen(), len(hash.String()); got != want {
+			t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+		}
+	})
+
+	t.Run("shared_subtree_is_counted_each_appearance", func(t *testing.T) {
+		t.Parallel()
+		shared := value.NewArray([]value.Value{value.NewInt(1)})
+		outer := value.NewArray([]value.Value{shared, shared})
+		if got, want := outer.StringByteLen(), len(outer.String()); got != want {
+			t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+		}
+	})
+}
+
+func TestValueStringByteLenBounded(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matches_unbounded_count", func(t *testing.T) {
+		t.Parallel()
+		vals := []value.Value{
+			value.NewInt(-42),
+			value.NewString("hello"),
+			value.NewArray([]value.Value{
+				value.NewInt(1),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+			value.NewHash(map[string]value.Value{"name": value.NewString("acme")}),
+		}
+		for _, v := range vals {
+			got, err := v.StringByteLenBounded(func() error { return nil })
+			if err != nil {
+				t.Fatalf("StringByteLenBounded() error = %v", err)
+			}
+			if want := v.StringByteLen(); got != want {
+				t.Fatalf("StringByteLenBounded() = %d, want StringByteLen() = %d", got, want)
+			}
+		}
+	})
+
+	t.Run("propagates_step_error", func(t *testing.T) {
+		t.Parallel()
+		sentinel := errors.New("budget exhausted")
+		arr := value.NewArray([]value.Value{value.NewInt(1), value.NewInt(2)})
+
+		calls := 0
+		_, err := arr.StringByteLenBounded(func() error {
+			calls++
+			if calls >= 2 {
+				return sentinel
+			}
+			return nil
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("StringByteLenBounded() error = %v, want %v", err, sentinel)
+		}
+	})
+
+	t.Run("shared_exponential_graph_trips_budget", func(t *testing.T) {
+		t.Parallel()
+
+		// A compact aggregate with an exponentially shared, acyclic graph: each
+		// level holds two references to the same child array (the shape of
+		// repeatedly evaluating a = [a, a]). The cycle marker bounds the rendering
+		// and the memory stays small, but the projection re-walks every shared
+		// subtree, so the traversal is exponential in the depth. Charging the step
+		// callback per node lets a bounded budget trip the walk instead of hanging.
+		const depth = 25
+		const budget = 1_000_000
+
+		cur := value.NewArray([]value.Value{value.NewInt(0)})
+		for range depth {
+			cur = value.NewArray([]value.Value{cur, cur})
+		}
+
+		sentinel := errors.New("step budget exhausted")
+		calls := 0
+		_, err := cur.StringByteLenBounded(func() error {
+			calls++
+			if calls > budget {
+				return sentinel
+			}
+			return nil
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("StringByteLenBounded() error = %v, want %v (calls=%d)", err, sentinel, calls)
+		}
+	})
+}
+
 func BenchmarkValueStringLargeComposite(b *testing.B) {
 	b.Run("array_100000", func(b *testing.B) {
 		elems := make([]value.Value, 100000)
@@ -990,6 +1157,194 @@ func BenchmarkValueStringLargeComposite(b *testing.B) {
 			benchValueStringSink, _ = v.StringBounded(4096)
 		}
 	})
+}
+
+func TestValueStringByteLenDoesNotMaterializeRendering(t *testing.T) {
+	// Deliberately not parallel: this measures heap bytes via runtime.MemStats,
+	// which observes the whole process. A non-parallel top-level test runs while
+	// every parallel sibling is paused, so the only allocations during the
+	// measured window are this test's own.
+
+	// An aggregate whose rendering expands far beyond its footprint: a short
+	// array holding many references to one large string. String joins the large
+	// string once per element, allocating a representation many times the value's
+	// memory. StringByteLen must report the same byte length without allocating
+	// that rendering, so a sandbox can reject an oversized interpolation before
+	// the join happens rather than after.
+	const elementBytes = 8192
+	const elementCount = 64
+
+	large := value.NewString(strings.Repeat("x", elementBytes))
+	elems := make([]value.Value, elementCount)
+	for i := range elems {
+		elems[i] = large
+	}
+	arr := value.NewArray(elems)
+
+	stringBytes := allocBytes(t, func() { _ = arr.String() })
+	byteLenBytes := allocBytes(t, func() { _ = arr.StringByteLen() })
+
+	rendered := uint64(elementBytes * elementCount)
+	if stringBytes < rendered {
+		t.Fatalf("String allocated %d bytes, want at least the rendered %d", stringBytes, rendered)
+	}
+	// StringByteLen walks the structure with only small bookkeeping allocations;
+	// it must not allocate anything close to the rendered representation. A guard
+	// that projected the size by calling String first would allocate as String
+	// does.
+	if byteLenBytes >= rendered {
+		t.Fatalf("StringByteLen allocated %d bytes, want well below the rendered %d", byteLenBytes, rendered)
+	}
+}
+
+// allocBytes reports the heap bytes fn allocates. It disables the garbage
+// collector for the measurement window and reads the cumulative allocation
+// counter before and after, so a sweep cannot reclaim memory mid-measurement
+// and skew the delta. Callers must invoke it from a non-parallel test so no
+// sibling goroutine allocates concurrently.
+func allocBytes(t *testing.T, fn func()) uint64 {
+	t.Helper()
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+func TestValueWriteStringTo(t *testing.T) {
+	t.Parallel()
+
+	big := value.NewString(strings.Repeat("x", 1024))
+
+	tests := []struct {
+		name string
+		val  value.Value
+	}{
+		{"nil", value.NewNil()},
+		{"bool", value.NewBool(true)},
+		{"int", value.NewInt(-42)},
+		{"float", value.NewFloat(2.5)},
+		{"float_infinity", value.NewFloat(math.Inf(1))},
+		{"string", value.NewString("hello")},
+		{"symbol", value.NewSymbol("status")},
+		{"money", value.NewMoney(mustMoney(t, 1999, "usd"))},
+		{"duration", value.NewDuration(value.DurationFromSeconds(90))},
+		{"time", value.NewTime(time.Date(2024, 6, 1, 12, 30, 0, 500_000_000, time.UTC))},
+		{"range", value.NewRange(value.Range{Start: 1, End: 5})},
+		{"empty_array", value.NewArray(nil)},
+		{"single_array", value.NewArray([]value.Value{value.NewInt(1)})},
+		{
+			"nested_array",
+			value.NewArray([]value.Value{
+				value.NewInt(1),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+		},
+		{"empty_hash", value.NewHash(nil)},
+		{
+			"single_hash",
+			value.NewHash(map[string]value.Value{"name": value.NewString("acme")}),
+		},
+		{"runtime_kind_fallback", value.NewValue(value.KindBlock, fakeBlock{})},
+		{
+			"array_of_repeated_large_string",
+			value.NewArray([]value.Value{big, big, big, big, big}),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var sb strings.Builder
+			tc.val.WriteStringTo(&sb)
+			if got, want := sb.String(), tc.val.String(); got != want {
+				t.Fatalf("WriteStringTo wrote %q, want String() %q", got, want)
+			}
+		})
+	}
+}
+
+func TestValueWriteStringToCycleDetection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("self_referential_array", func(t *testing.T) {
+		t.Parallel()
+		elems := make([]value.Value, 1)
+		arr := value.NewArray(elems)
+		elems[0] = arr
+		var sb strings.Builder
+		arr.WriteStringTo(&sb)
+		if got, want := sb.String(), arr.String(); got != want {
+			t.Fatalf("WriteStringTo wrote %q, want String() %q", got, want)
+		}
+	})
+
+	t.Run("self_referential_hash", func(t *testing.T) {
+		t.Parallel()
+		entries := make(map[string]value.Value)
+		hash := value.NewHash(entries)
+		entries["self"] = hash
+		var sb strings.Builder
+		hash.WriteStringTo(&sb)
+		if got, want := sb.String(), hash.String(); got != want {
+			t.Fatalf("WriteStringTo wrote %q, want String() %q", got, want)
+		}
+	})
+
+	t.Run("shared_subtree_is_not_a_cycle", func(t *testing.T) {
+		t.Parallel()
+		shared := value.NewArray([]value.Value{value.NewInt(1)})
+		outer := value.NewArray([]value.Value{shared, shared})
+		var sb strings.Builder
+		outer.WriteStringTo(&sb)
+		if got, want := sb.String(), "[[1], [1]]"; got != want {
+			t.Fatalf("WriteStringTo wrote %q, want %q", got, want)
+		}
+	})
+}
+
+func TestValueWriteStringToDoesNotMaterializeRendering(t *testing.T) {
+	// Deliberately not parallel: this measures heap bytes via runtime.MemStats,
+	// which observes the whole process. A non-parallel top-level test runs while
+	// every parallel sibling is paused, so the only allocations during the
+	// measured window are this test's own.
+
+	// An aggregate whose rendering expands far beyond its footprint: a short
+	// array holding many references to one large string. An implementation that
+	// rendered the value to a temporary string and then copied it into the
+	// destination would transiently hold both the temporary and the destination
+	// copy. WriteStringTo must stream straight into the builder, so writing into a
+	// builder already grown to the rendered size allocates nothing close to that
+	// rendering. The sandbox relies on this so a quota that passed the projected
+	// length is not blown by a second full copy.
+	const elementBytes = 8192
+	const elementCount = 64
+
+	large := value.NewString(strings.Repeat("x", elementBytes))
+	elems := make([]value.Value, elementCount)
+	for i := range elems {
+		elems[i] = large
+	}
+	arr := value.NewArray(elems)
+
+	rendered := len(arr.String())
+
+	var sb strings.Builder
+	sb.Grow(rendered)
+	writeBytes := allocBytes(t, func() {
+		arr.WriteStringTo(&sb)
+	})
+
+	// With the builder pre-grown to hold the result, a streaming writer copies
+	// each chunk in place and allocates nothing close to the rendered size. An
+	// implementation that built the full string first (WriteString(val.String()))
+	// would allocate at least the rendered bytes for that temporary.
+	if writeBytes >= uint64(rendered) {
+		t.Fatalf("WriteStringTo allocated %d bytes, want well below the rendered %d", writeBytes, rendered)
+	}
 }
 
 var benchValueStringSink string
