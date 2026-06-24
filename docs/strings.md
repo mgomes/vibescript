@@ -14,6 +14,12 @@ name = "Ada"
 Escape the marker with `\#{...}` when literal text is required. Single-quoted
 strings do not interpolate.
 
+Interpolated results are built incrementally and bounded by the sandbox step
+and memory quotas. A script that grows a string through repeated or large
+interpolation (for example `"#{text}#{text}"` in a loop) fails safely with a
+memory quota error instead of materializing the oversized result, and a
+canceled context stops construction promptly.
+
 ## Locale Behavior
 
 String transforms are locale-insensitive and deterministic across supported
