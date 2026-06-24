@@ -331,7 +331,7 @@ such as `\A`, `^`, and `\b` keep the full-string context even when an offset is
 supplied: the characters preceding the offset still count toward boundary and
 anchor checks. The offset is a character (codepoint) position; an offset past
 the end of the string yields `false` rather than an error. Unlike Ruby,
-negative offsets are rejected, matching `index` and `rindex`.
+`match?` rejects negative offsets.
 
 ### `scan(pattern)`
 
@@ -343,21 +343,31 @@ Regex scan returning all full matches:
 
 ### `index(substring, offset = 0)`
 
-Returns the first character index for `substring`, or `nil` when not found:
+Returns the first character index for `substring`, or `nil` when not found.
+A negative `offset` counts back from the end of the string, so the search
+starts at `size + offset`; it yields `nil` when that effective offset falls
+before the start of the string:
 
 ```vibe
 "héllo hello".index("llo")    # 2
 "héllo hello".index("llo", 6) # 8
 "héllo hello".index("zzz")    # nil
+"hello".index("l", -3)        # 2
+"hello".index("l", -9)        # nil
 ```
 
 ### `rindex(substring, offset = size)`
 
-Returns the last character index for `substring`, or `nil` when not found:
+Returns the last character index for `substring`, or `nil` when not found.
+A negative `offset` counts back from the end of the string and the backward
+search starts at `size + offset`; it yields `nil` when that effective offset
+falls before the start of the string:
 
 ```vibe
 "héllo hello".rindex("llo")    # 8
 "héllo hello".rindex("llo", 4) # 2
+"hello".rindex("l", -2)        # 3
+"hello".rindex("l", -9)        # nil
 ```
 
 ### `slice(index, length = nil)`

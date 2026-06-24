@@ -277,6 +277,22 @@ func stringByteIndexForRuneOffset(text string, offset int) (int, bool) {
 	return 0, false
 }
 
+// stringEffectiveOffset normalizes a rune offset that may be negative the way
+// Ruby's String#index and String#rindex do: a negative offset counts back from
+// the end of the string, so -1 refers to the last rune. The second return value
+// is false when the resulting offset falls before the start of the string, which
+// callers translate into a nil result.
+func stringEffectiveOffset(text string, offset int) (int, bool) {
+	if offset >= 0 {
+		return offset, true
+	}
+	effective := stringRuneLen(text) + offset
+	if effective < 0 {
+		return 0, false
+	}
+	return effective, true
+}
+
 func stringRuneIndex(text, needle string, offset int) int {
 	if offset < 0 {
 		return -1
@@ -1233,12 +1249,16 @@ func stringMemberQuery(property string) (Value, error) {
 			offset := 0
 			if len(args) == 2 {
 				i, err := valueToInt(args[1])
-				if err != nil || i < 0 {
-					return NewNil(), fmt.Errorf("string.index offset must be non-negative integer")
+				if err != nil {
+					return NewNil(), fmt.Errorf("string.index offset must be integer")
 				}
 				offset = i
 			}
-			index := stringRuneIndex(receiver.String(), args[0].String(), offset)
+			effective, ok := stringEffectiveOffset(receiver.String(), offset)
+			if !ok {
+				return NewNil(), nil
+			}
+			index := stringRuneIndex(receiver.String(), args[0].String(), effective)
 			if index < 0 {
 				return NewNil(), nil
 			}
@@ -1255,10 +1275,14 @@ func stringMemberQuery(property string) (Value, error) {
 			offset := stringRuneLen(receiver.String())
 			if len(args) == 2 {
 				i, err := valueToInt(args[1])
-				if err != nil || i < 0 {
-					return NewNil(), fmt.Errorf("string.rindex offset must be non-negative integer")
+				if err != nil {
+					return NewNil(), fmt.Errorf("string.rindex offset must be integer")
 				}
-				offset = i
+				effective, ok := stringEffectiveOffset(receiver.String(), i)
+				if !ok {
+					return NewNil(), nil
+				}
+				offset = effective
 			}
 			index := stringRuneRIndex(receiver.String(), args[0].String(), offset)
 			if index < 0 {

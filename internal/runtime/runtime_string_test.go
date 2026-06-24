@@ -609,6 +609,64 @@ func TestStringSearchAndSlice(t *testing.T) {
 	}
 }
 
+func TestStringIndexNegativeOffset(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def find_index(text, needle, offset)
+      text.index(needle, offset)
+    end
+
+    def find_rindex(text, needle, offset)
+      text.rindex(needle, offset)
+    end
+    `)
+
+	// Expectations cross-checked against Ruby 2.6.10 (see issue #615).
+	tests := []struct {
+		name    string
+		fn      string
+		text    string
+		needle  string
+		offset  int64
+		wantNil bool
+		want    int64
+	}{
+		{name: "index negative within range", fn: "find_index", text: "hello", needle: "l", offset: -3, want: 2},
+		{name: "index negative maps to start", fn: "find_index", text: "hello", needle: "l", offset: -5, want: 2},
+		{name: "index negative before start", fn: "find_index", text: "hello", needle: "l", offset: -9, wantNil: true},
+		{name: "index negative last rune", fn: "find_index", text: "hello", needle: "e", offset: -1, wantNil: true},
+		{name: "index negative empty needle", fn: "find_index", text: "hello", needle: "", offset: -2, want: 3},
+		{name: "index negative empty needle start", fn: "find_index", text: "hello", needle: "", offset: -5, want: 0},
+		{name: "index negative empty needle before start", fn: "find_index", text: "hello", needle: "", offset: -6, wantNil: true},
+		{name: "index negative needle past offset", fn: "find_index", text: "hello", needle: "lo", offset: -1, wantNil: true},
+		{name: "index negative multibyte", fn: "find_index", text: "héllo", needle: "l", offset: -3, want: 2},
+		{name: "rindex negative within range", fn: "find_rindex", text: "hello", needle: "l", offset: -2, want: 3},
+		{name: "rindex negative before start", fn: "find_rindex", text: "hello", needle: "l", offset: -9, wantNil: true},
+		{name: "rindex negative last rune", fn: "find_rindex", text: "hello", needle: "l", offset: -1, want: 3},
+		{name: "rindex negative empty needle", fn: "find_rindex", text: "hello", needle: "", offset: -2, want: 3},
+		{name: "rindex negative empty needle before start", fn: "find_rindex", text: "hello", needle: "", offset: -6, wantNil: true},
+		{name: "rindex negative needle ends at offset", fn: "find_rindex", text: "hello", needle: "lo", offset: -1, want: 3},
+		{name: "rindex negative multibyte", fn: "find_rindex", text: "héllo", needle: "l", offset: -2, want: 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := []Value{NewString(tc.text), NewString(tc.needle), NewInt(tc.offset)}
+			got := callFunc(t, script, tc.fn, args)
+			if tc.wantNil {
+				if got.Kind() != KindNil {
+					t.Fatalf("%s(%q, %q, %d) = %v, want nil", tc.fn, tc.text, tc.needle, tc.offset, got)
+				}
+				return
+			}
+			if got.Kind() != KindInt || got.Int() != tc.want {
+				t.Fatalf("%s(%q, %q, %d) = %v, want %d", tc.fn, tc.text, tc.needle, tc.offset, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStringSliceNormalizesInvalidUTF8(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
