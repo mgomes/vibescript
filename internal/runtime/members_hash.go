@@ -583,20 +583,6 @@ func hashMemberTransforms(property string) (Value, error) {
 			// would not.
 			useBlock := valueBlock(block) != nil && len(args) > 0
 			// Preflight the map this merge could materialize before allocating it.
-			// Two phases keep the check itself within the quota it enforces:
-			//
-			// First try a non-allocating upper bound (the receiver's keys plus
-			// every argument's length, overlaps included). If even that loose
-			// bound fits, the merge is guaranteed to fit and no tracking set is
-			// needed to count the exact union.
-			//
-			// Only when the loose bound exceeds the quota does the exact union
-			// count matter, because overlap (h.merge(h), repeated defaults) could
-			// still bring the real output within the limit. The exact count is
-			// then taken with mergedKeyCount, which caps its deduplication set at
-			// the quota's entry budget so a doomed merge cannot allocate a large
-			// tracking table before being rejected here.
-			//
 			// The merge also materializes a sorted key scratch buffer sized to the
 			// largest single argument (reused across arguments). Charge that scratch
 			// in the projection so a merge whose union fits but whose largest input
@@ -604,25 +590,58 @@ func hashMemberTransforms(property string) (Value, error) {
 			// The receiver base is copied in map order, so it needs no scratch.
 			scratchBytes := mergeSortScratchBytes(args)
 			// projectedEntries records the output-map entry count the projection
-			// charged, so the accumulator below can reserve the identical backing.
-			// The output map grows from len(base) up to the distinct union as
-			// non-conflicting argument keys are inserted, so its peak backing is the
-			// union bound -- not len(base) -- and the accumulator must reserve that
-			// same union so its running budget stays aligned with the up-front check.
-			projectedEntries := looseMergedKeyUpperBound(base, args)
-			if exec.checkProjectedHashTransformBytes(projectedEntries, scratchBytes, receiver, args, kwargs, block) != nil {
+			// charged, so the block accumulator below can reserve the identical
+			// backing. The output map grows from len(base) up to the distinct union
+			// as non-conflicting argument keys are inserted, so its peak backing is
+			// the union -- not len(base).
+			var projectedEntries int
+			switch {
+			case useBlock && exec.memoryQuota > 0:
+				// The block accumulator reserves projectedEntries as the output map's
+				// backing, and the real output grows to exactly the distinct union.
+				// The loose upper bound (len(base)+sum(arg lens)) over-counts every
+				// overlapping key, so reserving it would hold phantom slots the result
+				// never allocates and let acc.add falsely reject a merge whose true
+				// union plus block results fit the quota (h.merge(h) { ... }). Compute
+				// the exact union up front so the projection and the reservation agree
+				// on the backing the map will actually hold. mergedKeyCount caps its
+				// deduplication set at the quota's entry budget (limit) so a doomed
+				// merge cannot allocate a large tracking table before being rejected.
+				// Only the memory-bounded block path takes this exact pre-walk: with no
+				// memory quota nothing is reserved, so the cheap loose bound below is
+				// used and the merge loop charges steps once, as before.
 				limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
 				projected, err := mergedKeyCount(exec, base, args, limit)
 				if err != nil {
 					return NewNil(), err
 				}
-				if err := exec.checkProjectedHashTransformBytes(projected, scratchBytes, receiver, args, kwargs, block); err != nil {
-					return NewNil(), err
-				}
-				// The exact distinct-union count is a tighter (and never larger) bound
-				// than the loose sum, so reserve the accumulator against it -- the same
-				// value this branch's projection charged.
 				projectedEntries = projected
+			default:
+				// Reached without a block (no accumulator lingers to over-reserve) or
+				// with no memory quota (nothing is reserved or checked), so
+				// projectedEntries is only a cheap up-front admission bound. Two phases
+				// keep the check itself within the quota it enforces: first try the
+				// non-allocating loose upper bound (the receiver's keys plus every
+				// argument's length, overlaps included). If even that fits the merge is
+				// guaranteed to fit and no tracking set is needed. Only when the loose
+				// bound exceeds the quota does the exact union matter, because overlap
+				// (h.merge(h), repeated defaults) could still bring the real output
+				// within the limit; mergedKeyCount then caps its deduplication set at the
+				// quota's entry budget so a doomed merge cannot allocate a large tracking
+				// table before being rejected. (With no memory quota the loose check
+				// passes immediately and the exact union is never walked.)
+				projectedEntries = looseMergedKeyUpperBound(base, args)
+				if exec.checkProjectedHashTransformBytes(projectedEntries, scratchBytes, receiver, args, kwargs, block) != nil {
+					limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
+					projected, err := mergedKeyCount(exec, base, args, limit)
+					if err != nil {
+						return NewNil(), err
+					}
+					projectedEntries = projected
+				}
+			}
+			if err := exec.checkProjectedHashTransformBytes(projectedEntries, scratchBytes, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			out := make(map[string]Value, len(base))
 			var runner *blockCallRunner
@@ -658,13 +677,16 @@ func hashMemberTransforms(property string) (Value, error) {
 				// never drop below the live footprint.
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				// The output map is preallocated with make(map, len(base)) but grows as
-				// non-conflicting argument keys are inserted, reaching the distinct union
-				// at peak. Reserve that union (projectedEntries -- the same bound the
+				// non-conflicting argument keys are inserted, reaching the exact distinct
+				// union at peak. Reserve that union (projectedEntries -- the same bound the
 				// up-front projection charged) so a large early conflict result is checked
 				// against the whole grown backing, not just the len(base) slots filled so
 				// far; reserving only len(base) would under-count the backing live once the
 				// non-conflict additions have grown the map and let backing + an early
-				// conflict result slip past the quota until a later check.
+				// conflict result slip past the quota until a later check. The exact union
+				// (not the loose len(base)+sum(arg lens) bound) is reserved here so an
+				// overlapping merge whose true union fits is never rejected by phantom
+				// slots the result map never allocates.
 				if err := acc.reserveBacking(projectedEntries); err != nil {
 					return NewNil(), err
 				}

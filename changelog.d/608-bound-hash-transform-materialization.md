@@ -55,10 +55,18 @@
   so far and cannot transiently exceed the quota before later entries are added.
   `Hash#merge`'s output map grows past its initial size as non-conflicting argument
   keys are inserted, reaching the distinct union of the receiver and argument keys,
-  so its accumulator reserves that full union backing -- the same upper bound the
-  up-front projection charges -- rather than only the receiver's size; reserving the
-  smaller receiver size would leave the grown union slots uncharged and let the
-  backing plus an early conflict-block result exceed the quota until a later check.
+  so its accumulator reserves that full union backing -- the same bound the up-front
+  projection charges -- rather than only the receiver's size; reserving the smaller
+  receiver size would leave the grown union slots uncharged and let the backing plus
+  an early conflict-block result exceed the quota until a later check. For a merge
+  with a conflict block the reserved bound is the *exact* distinct union, computed up
+  front, rather than the loose `len(receiver) + sum(argument lengths)` upper bound:
+  the loose bound over-counts every overlapping key, so reserving it would hold
+  phantom slots the result map never allocates and could falsely reject an
+  overlapping merge whose true union plus its block results fit the quota (for
+  example `h.merge(h) { ... }`). The blockless path keeps the cheaper loose bound as
+  its up-front admission check and only computes the exact union when the loose bound
+  alone exceeds the quota, since no accumulator lingers there to over-reserve.
   `Hash#each`, `Hash#each_key`, and `Hash#each_value` build no derived map -- they
   return the receiver -- so they no longer reserve an output map they never
   allocate, and a quota that exactly fits the receiver and the scratch buffer

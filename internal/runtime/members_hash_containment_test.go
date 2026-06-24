@@ -2114,3 +2114,98 @@ end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
 	requireCallRuntimeErrorType(t, script, "run", []Value{receiver, arg}, CallOptions{}, runtimeErrorTypeLimit)
 }
+
+// sharedValueBlock builds a conflict block (its params are ignored) whose body
+// returns the same captured value on every invocation. Because each call yields a
+// value backed by the identical pointer, the merge accumulator's results-only
+// estimator deduplicates it to a single payload charge across every conflict,
+// mirroring sharedArrayBlockValue for the array accumulator.
+func sharedValueBlock(shared Value) Value {
+	pos := Position{Line: 1, Column: 1}
+	env := newEnv(nil)
+	env.Define("shared", shared)
+	body := []Statement{&ExprStmt{Expr: &Identifier{Name: "shared", Position: pos}, Position: pos}}
+	return NewBlock(nil, body, env)
+}
+
+// TestHashMergeOverlappingBlockExactUnionFitsLooseBoundWouldReject pins the P2
+// finding on PR #776 (members_hash.go:613): an overlapping merge with a conflict
+// block must reserve the EXACT distinct union as the accumulator's output backing,
+// not the loose len(base)+sum(arg lens) upper bound. The loose bound over-counts
+// every overlapping key, so reserving it holds phantom slots the result map never
+// allocates and falsely rejects a merge whose true union plus its block results
+// fits the quota.
+//
+// The receiver and the argument hold the same keys but are distinct map objects, so
+// every key conflicts: the union is exactly len(base) while the loose bound is
+// 2*len(base). The conflict block returns a single shared large string (counted
+// once, since every call yields the same backing). The quota is sized so the loose
+// bound's structural backing alone still passes the up-front projection -- the
+// regime where the buggy code leaves projectedEntries at the loose bound -- but the
+// loose backing plus the shared block result overflows it, while the exact union
+// backing plus the same result fits exactly. With the fix (reserve the exact union)
+// the merge succeeds; reserving the loose bound would wrongly reject it.
+func TestHashMergeOverlappingBlockExactUnionFitsLooseBoundWouldReject(t *testing.T) {
+	t.Parallel()
+
+	const count = 8_000
+
+	// The conflict block returns the same shared string on every collision, so its
+	// payload is charged once through the accumulator's results-only estimator no
+	// matter how many keys collide. The payload is sized well below the gap between
+	// the loose and exact backings (count*estimatedMapEntryStructuralBytes) so the
+	// fixed (exact-union) reservation plus this result leaves room for the
+	// interpreter's own per-step memory checks, while the loose reservation plus the
+	// same result overflows. Keeping it comfortably inside that gap makes the test
+	// robust to the exact size of those interpreter checks.
+	resultPayload := 64 * 1024
+	shared := NewString(strings.Repeat("z", resultPayload))
+	block := sharedValueBlock(shared)
+
+	receiver := largeHashReceiver(count)
+	arg := largeHashReceiver(count)
+	args := []Value{arg}
+
+	// Mirror the merge accumulator's baseline by driving the real block value through
+	// the probe: live call roots (receiver, arg, and the block whose env captures the
+	// shared result) plus the empty output map.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	probe.root = newEnv(nil)
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, args, nil, block)
+	emptyMap := estimatedValueBytes + estimatedMapBaseBytes
+	scratch := mergeSortScratchBytes(args)
+	exactBacking := count * estimatedMapEntryStructuralBytes
+	looseBacking := 2 * count * estimatedMapEntryStructuralBytes
+	resultBytes := newMemoryEstimator().valuePayload(shared)
+
+	// Size the quota to exactly the loose bound's structural backing plus scratch, the
+	// boundary where the buggy loose-first projection still passes the up-front check
+	// (so it keeps the loose bound rather than recomputing the exact union). With the
+	// loose bound reserved, charging the shared result then overflows; with the exact
+	// union reserved, the same result stays within the quota.
+	quota := liveWithRoots + emptyMap + looseBacking + scratch
+
+	// Sanity: reserving the loose bound and then charging the shared result overflows
+	// the quota, so the buggy reservation would wrongly reject this merge.
+	if liveWithRoots+emptyMap+looseBacking+scratch+resultBytes <= quota {
+		t.Fatalf("test setup expects loose backing + result (%d) to exceed the quota (%d)",
+			liveWithRoots+emptyMap+looseBacking+scratch+resultBytes, quota)
+	}
+	// Sanity: the exact union backing plus the result leaves headroom below the quota
+	// (the loose/exact gap, count*estimatedMapEntryStructuralBytes, must exceed the
+	// result so the fix genuinely admits the merge with room for interpreter checks).
+	if liveWithRoots+emptyMap+exactBacking+scratch+resultBytes >= quota {
+		t.Fatalf("test setup expects exact backing + result (%d) to stay below the quota (%d)",
+			liveWithRoots+emptyMap+exactBacking+scratch+resultBytes, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	exec.root = newEnv(nil)
+	got, err := callHashMember(t, exec, receiver, "merge", args, block)
+	if err != nil {
+		t.Fatalf("overlapping merge whose exact union fits the quota = %v, want success (the loose bound would wrongly reject)", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("overlapping merge produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	}
+}
