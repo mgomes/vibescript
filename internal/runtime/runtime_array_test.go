@@ -521,6 +521,24 @@ func TestArrayChunkWindowValidation(t *testing.T) {
 	requireCallErrorContains(t, script, "bad_group_by_stable", nil, CallOptions{}, "array.group_by_stable requires a block")
 }
 
+func TestArrayCountValueIgnoresBlock(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def count_value_with_block()
+      [1, 2, 1, 3].count(1) do |v|
+        raise "block must not run"
+      end
+    end
+    `)
+
+	// Ruby's Array#count(value) ignores any attached block: the call succeeds,
+	// returns the value count, and never invokes the block.
+	got := callFunc(t, script, "count_value_with_block", nil)
+	if !got.Equal(NewInt(2)) {
+		t.Fatalf("count(value) with block mismatch: want 2, got %#v", got)
+	}
+}
+
 func TestArrayConcatAndSubtract(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

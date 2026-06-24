@@ -1063,9 +1063,8 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			if len(args) == 1 {
-				if valueBlock(block) != nil {
-					return NewNil(), fmt.Errorf("array.count does not accept both argument and block")
-				}
+				// A value argument takes precedence and any attached block is
+				// ignored, matching Ruby's Array#count(value) { ... }.
 				total := int64(0)
 				for _, item := range arr {
 					if item.Equal(args[0]) {

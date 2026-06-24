@@ -95,7 +95,9 @@ and leaves the receiver untouched.
 
 - `include?(value)` for membership checks.
 - `index(value, offset = 0)` / `rindex(value, offset = last_index)` for positional lookup.
-- `count`, `count(value)`, or `count { ... }`.
+- `count`, `count(value)`, or `count { ... }`. As in Ruby, a `value` argument
+  takes precedence: `count(value) { ... }` counts elements equal to `value` and
+  ignores the block.
 - `any?`, `all?`, `none?` with optional blocks.
 
 ```vibe
