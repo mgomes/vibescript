@@ -18,6 +18,13 @@ const (
 	estimatedBlockBytes        = 24
 	estimatedCallFrameBytes    = 48
 	estimatedModuleContextSize = 24
+	// estimatedTrackingMapEntryBytes is the live footprint of one entry in the
+	// hashBuildAccumulator's keyValueBytes bookkeeping map (a map[string]int): the
+	// map bucket overhead, a string header for the key (a distinct header from the
+	// output map's, even though both alias the same backing key bytes), and the
+	// inline int value. The key payload bytes are shared with the output map's key
+	// and already charged there, so they are not re-counted here.
+	estimatedTrackingMapEntryBytes = estimatedMapEntryBytes + estimatedStringHeaderBytes + int(unsafe.Sizeof(int(0)))
 )
 
 type memoryEstimator struct {
@@ -309,6 +316,13 @@ type hashBuildAccumulator struct {
 	// swap of the new value for the old, not as a fresh entry. Without this, built
 	// would grow monotonically by a full entry per write and over-count values that
 	// the map no longer holds, falsely tripping the quota on valid colliding builds.
+	//
+	// This map is itself live memory held alongside the output hash while the build
+	// runs, with the same cardinality as the output (one entry per distinct output
+	// key). add charges its structural footprint into built as each distinct key is
+	// first inserted (see estimatedTrackingMapEntryBytes), so a block-driven
+	// transform that keeps many distinct keys cannot allocate an unaccounted O(n)
+	// bookkeeping map past the quota.
 	keyValueBytes map[string]int
 }
 
@@ -373,6 +387,12 @@ func newRootSeededHashBuildAccumulator(exec *Execution, receiver Value, args []V
 // of every value ever written. This matters for merge conflict blocks and for
 // transform_keys blocks that collapse many input keys onto one output key, where
 // monotonic accumulation would falsely trip the quota on valid builds.
+//
+// A first write also charges the keyValueBytes bookkeeping map's own footprint:
+// its empty-map overhead on the very first insert, then one tracking entry per
+// distinct key. That map is live alongside the output for the build's duration, so
+// counting it keeps a transform that retains many distinct keys from allocating an
+// O(n) tracking map outside the quota.
 func (acc *hashBuildAccumulator) add(key string, val Value) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
@@ -384,12 +404,14 @@ func (acc *hashBuildAccumulator) add(key string, val Value) error {
 		return acc.chargeDelta(valueBytes - prevBytes)
 	}
 
+	tracking := estimatedTrackingMapEntryBytes
 	if acc.keyValueBytes == nil {
 		acc.keyValueBytes = make(map[string]int)
+		tracking = saturatingAdd(tracking, estimatedMapBaseBytes)
 	}
 	acc.keyValueBytes[key] = valueBytes
 	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + acc.est.stringPayloadSize(key)
-	return acc.charge(saturatingAdd(entry, valueBytes))
+	return acc.charge(saturatingAdd(saturatingAdd(entry, valueBytes), tracking))
 }
 
 func (acc *hashBuildAccumulator) charge(delta int) error {

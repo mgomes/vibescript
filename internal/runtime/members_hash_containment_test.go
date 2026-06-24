@@ -854,6 +854,56 @@ func TestHashBuildAccumulatorChargesReplacementsAsNetSwap(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+// TestHashBuildAccumulatorChargesTrackingMap pins that the accumulator's own
+// keyValueBytes bookkeeping map is charged against the quota. That map keeps one
+// entry per distinct output key, so a block-driven transform that retains many
+// distinct keys allocates an O(n) tracking map alongside the output. Here the
+// per-key value payload is a tiny inlined int, so the output entries alone stay
+// comfortably under the quota -- only when the tracking map's per-entry overhead
+// is also charged does the build cross the limit. The pre-fix accumulator left the
+// tracking map unaccounted and would admit every insert.
+func TestHashBuildAccumulatorChargesTrackingMap(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	exec.root = newEnv(nil)
+
+	base := exec.estimateMemoryUsageBase(newMemoryEstimator())
+
+	// Precompute the exact output-map cost of every key: the bucket, the key header,
+	// the key payload, and the inlined int value. This is precisely what the pre-fix
+	// accumulator charged into built; the tracking map's footprint is deliberately
+	// excluded from the budget.
+	const entries = 64
+	keys := make([]string, entries)
+	outputCost := 0
+	for i := range keys {
+		keys[i] = "k" + strconv.Itoa(i)
+		outputCost += estimatedMapEntryBytes + estimatedStringHeaderBytes + len(keys[i]) + estimatedValueBytes
+	}
+
+	// Quota that exactly admits the empty output map plus every output entry but
+	// nothing more. A build that ignores the tracking map fits all entries; one that
+	// charges the tracking map's per-entry overhead must trip before the last insert.
+	exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + outputCost
+
+	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+
+	var tripped int
+	for i, key := range keys {
+		// Distinct keys whose value is an inlined int, so no heap payload is charged
+		// and the only growth beyond the output entry is the tracking map's overhead.
+		if err := acc.add(key, NewInt(int64(i))); err != nil {
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			tripped = i
+			break
+		}
+	}
+	if tripped == 0 {
+		t.Fatalf("accumulator admitted all %d entries; the tracking map's footprint was not charged", entries)
+	}
+}
+
 // mergeManyCollidingArgsSource generates a script whose run() merges the receiver
 // with collisions one-key hashes that all share key :x, in a single merge call, so
 // every argument folds through one accumulator and overwrites the same slot. The
