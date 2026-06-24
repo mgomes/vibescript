@@ -154,13 +154,24 @@ end
 - `deep_transform_keys` for recursive key mapping across nested hashes/arrays.
 - `remap_keys(mapping_hash)` for direct key rename maps.
 
-These transforms run inside the sandbox. Before building a derived map they
-project its size against the memory quota, so a transform over a large hash is
-rejected up front rather than after the backing map is allocated. While walking
-the receiver they charge the step quota per entry and honor context
-cancellation, so large materializations stay bounded. `deep_transform_keys` is
-the exception: it does not yet bound its recursive materialization against the
-sandbox limits (tracked in #786), so apply it only to inputs of known size.
+The map-producing transforms run inside the sandbox. Before building a derived
+map they project its size against the memory quota, so a transform over a large
+hash is rejected up front rather than after the backing map is allocated. While
+walking the receiver they charge the step quota per entry and honor context
+cancellation, so large materializations stay bounded. This applies to `merge`
+(and its `update` / `merge!` aliases), `replace`, `store`, `compact`, `slice`,
+`except`, `select`, `reject`, `transform_keys`, `transform_values`, and
+`remap_keys`.
+
+Two helpers are not yet bounded this way:
+
+- `deep_transform_keys` does not bound its recursive materialization against the
+  sandbox limits (tracked in #786).
+- `flatten` materializes a sorted key list and a `[key, value, ...]` array
+  without a projected memory check or per-entry step charge; it is grouped with
+  the array-materialization work alongside `keys` and `values`.
+
+Apply both only to inputs of known size.
 
 ```vibe
 def public_profile(record)
