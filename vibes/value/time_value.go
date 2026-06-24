@@ -97,8 +97,22 @@ func optionalDatePartReader(args []Value) func(idx, fallback int) int {
 // this helper rejects those instead.
 func requiredYear(arg Value) (int, error) {
 	switch arg.Kind() {
-	case KindInt, KindFloat:
+	case KindInt:
 		return int(arg.Int()), nil
+	case KindFloat:
+		f := arg.Float()
+		// int64() of Infinity/NaN is implementation-specific and would
+		// silently build a bogus year, so reject non-finite years like the
+		// other numeric coercions (Time.at, microsecond parts) do.
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, fmt.Errorf("Time constructor year must be finite, got %v", f)
+		}
+		// float64(math.MaxInt) rounds up to 2^63, so bound with >=/<= to keep
+		// the int conversion from overflowing instead of truncating toward Ruby.
+		if f >= float64(math.MaxInt) || f <= float64(math.MinInt) {
+			return 0, fmt.Errorf("Time constructor year %v is out of range", f)
+		}
+		return int(f), nil
 	default:
 		return 0, fmt.Errorf("Time constructor year must be numeric, got %s", arg.Kind())
 	}
