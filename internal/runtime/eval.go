@@ -1133,9 +1133,6 @@ func (exec *Execution) evalArrayPushAppendAssignment(name string, call *CallExpr
 	if err := exec.checkMemoryWith(receiver); err != nil {
 		return NewNil(), true, err
 	}
-	if len(call.Args) == 0 {
-		return NewNil(), true, exec.wrapError(fmt.Errorf("array.push expects at least one argument"), call.Pos())
-	}
 
 	args, err := exec.evalCallArgs(call, env)
 	if err != nil {
