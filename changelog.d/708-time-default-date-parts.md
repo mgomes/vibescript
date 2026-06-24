@@ -6,4 +6,5 @@
   given month) at the start of the day instead of raising an arity error. An
   explicit `nil` in an optional position is treated the same as omitting it, so
   `Time.utc(2024, nil)` builds January 1 rather than normalizing month `0` into
-  the prior year.
+  the prior year. The year itself remains required: a `nil` (or any other
+  non-numeric) year raises instead of coercing to year `0`.

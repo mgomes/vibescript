@@ -410,6 +410,16 @@ func TestTimeCalendarConstructorArgRejection(t *testing.T) {
 	    def out_of_range(usec)
 	      Time.utc(2024, 1, 2, 3, 4, 5, usec)
 	    end
+
+	    def nil_year(method)
+	      case method
+	      when "new" then Time.new(nil)
+	      when "local" then Time.local(nil)
+	      when "mktime" then Time.mktime(nil)
+	      when "utc" then Time.utc(nil)
+	      when "gm" then Time.gm(nil)
+	      end
+	    end
 	    `)
 
 	for _, method := range []string{"local", "mktime", "utc", "gm"} {
@@ -420,6 +430,14 @@ func TestTimeCalendarConstructorArgRejection(t *testing.T) {
 		"Time constructor expects at least a year")
 	requireCallErrorContains(t, script, "too_many", nil, CallOptions{},
 		"Time constructor expects at most year, month, day, hour, minute, second, microsecond")
+
+	// Ruby never treats the required year as omittable: a nil year raises
+	// (TypeError) rather than coercing to year 0, even with the new
+	// one-argument forms.
+	for _, method := range []string{"new", "local", "mktime", "utc", "gm"} {
+		requireCallErrorContains(t, script, "nil_year", []Value{NewString(method)}, CallOptions{},
+			"Time constructor year must be numeric, got nil")
+	}
 
 	// Ruby raises for a subsecond component that does not fit in one second
 	// instead of rolling the timestamp into an adjacent second.

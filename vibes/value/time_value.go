@@ -76,14 +76,31 @@ func ParseLocationString(spec string) (*time.Location, error) {
 // explicit nil. Ruby's calendar constructors treat an explicit nil optional part
 // the same as an omitted one, so a nil must resolve to the field's default rather
 // than being coerced through Value.Int() to 0 (which time.Date would normalize
-// backward into the previous month or year). The required year is read directly
-// by the caller and never defaulted.
+// backward into the previous month or year). The required year is read by
+// requiredYear, which never defaults.
 func optionalDatePartReader(args []Value) func(idx, fallback int) int {
 	return func(idx, fallback int) int {
 		if idx >= len(args) || args[idx].Kind() == KindNil {
 			return fallback
 		}
 		return int(args[idx].Int())
+	}
+}
+
+// requiredYear reads the mandatory year argument of a Time constructor. Unlike
+// the optional date parts, the year is never defaulted: Ruby treats a nil year
+// as an error (TypeError: no implicit conversion of nil into Integer) rather
+// than as an omitted field, and only an integer- or float-valued year is
+// accepted (a float is truncated toward zero, matching Ruby's coercion). Reading
+// the year through Value.Int() unconditionally would silently coerce a nil --
+// or any other non-numeric kind -- to year 0, constructing a bogus timestamp;
+// this helper rejects those instead.
+func requiredYear(arg Value) (int, error) {
+	switch arg.Kind() {
+	case KindInt, KindFloat:
+		return int(arg.Int()), nil
+	default:
+		return 0, fmt.Errorf("Time constructor year must be numeric, got %s", arg.Kind())
 	}
 }
 
@@ -99,7 +116,10 @@ func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	}
 	getOptional := optionalDatePartReader(args)
 
-	year := int(args[0].Int())
+	year, err := requiredYear(args[0])
+	if err != nil {
+		return time.Time{}, err
+	}
 	month := getOptional(1, 1)
 	day := getOptional(2, 1)
 	hour := getOptional(3, 0)
@@ -143,7 +163,10 @@ func TimeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, 
 
 	getOptional := optionalDatePartReader(args)
 
-	year := int(args[0].Int())
+	year, err := requiredYear(args[0])
+	if err != nil {
+		return time.Time{}, err
+	}
 	month := getOptional(1, 1)
 	day := getOptional(2, 1)
 	hour := getOptional(3, 0)
