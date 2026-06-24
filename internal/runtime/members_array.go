@@ -1629,6 +1629,9 @@ func arrayMemberTransforms(property string) (Value, error) {
 				}
 				return arr[0], nil
 			}
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.first accepts at most one count")
+			}
 			n, err := valueToInt(args[0])
 			if err != nil || n < 0 {
 				return NewNil(), fmt.Errorf("array.first expects non-negative integer")
@@ -1648,6 +1651,9 @@ func arrayMemberTransforms(property string) (Value, error) {
 					return NewNil(), nil
 				}
 				return arr[len(arr)-1], nil
+			}
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.last accepts at most one count")
 			}
 			n, err := valueToInt(args[0])
 			if err != nil || n < 0 {
