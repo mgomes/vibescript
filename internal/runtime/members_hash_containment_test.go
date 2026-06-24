@@ -1704,6 +1704,73 @@ func TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds(t *testing.T) {
 	}
 }
 
+// TestHashMergeZeroArgHonorsStepQuotaOnBaseCopy pins the P2 finding on PR #776:
+// a zero-argument `h.merge` (or `h.merge {}`) short-circuits to a copy of the
+// receiver, so the only work it does is copying the base. That copy must walk the
+// receiver entry by entry charging a step each, not maps.Copy the whole map at
+// once, or a large receiver duplicates unbounded by the step quota. The existing
+// merge subtests in TestHashBlocklessTransformHonorsStepQuota pass a non-empty
+// argument hash, so their additions loop trips the quota whether or not the base
+// copy steps; only a zero-argument merge isolates the base-copy path. A tight step
+// quota with ample memory must trip on errStepQuotaExceeded; reverting the base
+// copy to maps.Copy would skip the per-entry step and let this complete.
+func TestHashMergeZeroArgHonorsStepQuotaOnBaseCopy(t *testing.T) {
+	t.Parallel()
+
+	const count = 5_000
+	const stepQuota = 100
+
+	// Both the bare `h.merge` (nil block) and `h.merge {}` (empty block) forms
+	// short-circuit to the base copy with zero arguments, so both must charge a
+	// step per copied entry.
+	for _, tc := range []struct {
+		name  string
+		block Value
+	}{
+		{name: "no block", block: NewNil()},
+		{name: "empty block", block: emptyHashBlock()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			receiver := largeHashReceiver(count)
+			exec := &Execution{ctx: context.Background(), quota: stepQuota, memoryQuota: 64 << 20}
+			_, err := callHashMember(t, exec, receiver, "merge", nil, tc.block)
+			requireErrorIs(t, err, errStepQuotaExceeded)
+			if exec.steps > stepQuota+1 {
+				t.Fatalf("zero-arg merge took %d steps, want it to stop near the quota %d", exec.steps, stepQuota)
+			}
+		})
+	}
+}
+
+// TestHashMergeZeroArgHonorsCancellationOnBaseCopy is the cancellation half of the
+// same finding: step polls the context on its first call, so the base copy of a
+// zero-argument merge aborts on a canceled context before copying any entries.
+// Reverting the base copy to maps.Copy would skip that poll and complete the copy.
+func TestHashMergeZeroArgHonorsCancellationOnBaseCopy(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		block Value
+	}{
+		{name: "no block", block: NewNil()},
+		{name: "empty block", block: emptyHashBlock()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			receiver := largeHashReceiver(8)
+			exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
+			_, err := callHashMember(t, exec, receiver, "merge", nil, tc.block)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("zero-arg merge under a canceled context = %v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
 // emptyHashBlock returns a block value whose body has no statements, mirroring an
 // `h.select { }` call. callBlock charges a step only per statement it runs, so an
 // empty body charges none through runner.call; the transforms must charge their
