@@ -175,6 +175,98 @@ func TestEvalInterpolatedStringLiteralBoundsAggregateRendering(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestEvalInterpolatedStringLiteralBoundsTemporaryAggregate(t *testing.T) {
+	t.Parallel()
+
+	// An inline array literal of distinct large strings produces a temporary
+	// aggregate that no environment holds: it lives only on the Go call stack
+	// while WriteStringTo copies its rendering. Its own footprint and its rendered
+	// output are both ~elementBytes*elementCount, so a quota set above either one
+	// alone but below their sum must trip. A projection that charged only the
+	// env-reachable base plus the output (omitting the temporary's footprint)
+	// would let this stream past the limit.
+	const elementBytes = 4096
+	const elementCount = 16
+
+	elements := make([]Expression, elementCount)
+	for i := range elements {
+		elements[i] = &StringLiteral{Value: strings.Repeat("x", elementBytes)}
+	}
+	lit := &InterpolatedString{Parts: []StringPart{
+		StringExpr{Expr: &ArrayLiteral{Elements: elements}},
+	}}
+
+	// Size the quota above the rendered output alone (and above the temporary
+	// alone) but below base+temporary+output. Each is roughly one full copy of the
+	// distinct strings, so their sum is ~2x either one.
+	oneCopy := elementBytes * elementCount
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 20,
+		memoryQuota: oneCopy + oneCopy/2,
+	}
+	env := newEnv(nil)
+	exec.pushEnv(env)
+
+	_, err := exec.evalInterpolatedStringLiteral(lit, env)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestEvalInterpolatedStringLiteralBoundsTemporaryHash(t *testing.T) {
+	t.Parallel()
+
+	// Same temporary-footprint concern as the array case, but for an inline hash
+	// literal whose values are distinct large strings. The hash is never bound to
+	// an environment, so only charging the rendered output would let its own
+	// footprint slip past the quota during the streamed write.
+	const valueBytes = 4096
+	const entryCount = 16
+
+	pairs := make([]HashPair, entryCount)
+	for i := range pairs {
+		pairs[i] = HashPair{
+			Key:   &StringLiteral{Value: string(rune('a' + i))},
+			Value: &StringLiteral{Value: strings.Repeat("y", valueBytes)},
+		}
+	}
+	lit := &InterpolatedString{Parts: []StringPart{
+		StringExpr{Expr: &HashLiteral{Pairs: pairs}},
+	}}
+
+	oneCopy := valueBytes * entryCount
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 20,
+		memoryQuota: oneCopy + oneCopy/2,
+	}
+	env := newEnv(nil)
+	exec.pushEnv(env)
+
+	_, err := exec.evalInterpolatedStringLiteral(lit, env)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestInterpolatedStringTemporaryFunctionReturnTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// A function returns a large string that is interpolated directly. The return
+	// value is a temporary held on the Go call stack, not reachable from any
+	// environment, so the env-reachable base does not include it. Both the
+	// returned string and the interpolated output are one copy of the large
+	// string; the quota holds either alone but not both live at once, so the
+	// interpolation must trip the memory quota rather than streaming the temporary
+	// past the limit.
+	source := `def big(n)
+  "".ljust(n, "z")
+end
+
+def run(n)
+  "#{big(n)}"
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: 48 * 1024}, source)
+	requireRunMemoryQuotaError(t, script, []Value{NewInt(40 * 1024)}, CallOptions{})
+}
+
 func TestEvalInterpolatedStringLiteralAggregateRendersUnderAmpleQuota(t *testing.T) {
 	t.Parallel()
 

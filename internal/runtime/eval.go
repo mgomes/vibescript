@@ -227,6 +227,16 @@ func (exec *Execution) appendInterpolatedChunk(sb *strings.Builder, chunk string
 // allocating the joined result, so the projection is the only work done for a
 // value that overruns the quota.
 //
+// The projection also charges val's own footprint, not just the rendered output.
+// An interpolated expression can produce a temporary that no environment holds —
+// a function return, or an array/hash literal constructed inline — which stays
+// live on the Go call stack while WriteStringTo copies its rendering. That
+// temporary is invisible to the env-reachable base, so charging only the output
+// would let base+value+output exceed the quota during the write even though
+// base+output passes. checkProjectedInterpolatedValue deduplicates val against the
+// base, so a value already reachable from an environment is not double counted and
+// the small-interpolation fast path is unchanged.
+//
 // Once the projection passes, the builder is grown by exactly the projected
 // payload and Value.WriteStringTo streams the rendering straight into sb rather
 // than building a temporary string and copying it in. A second full copy would
@@ -241,7 +251,7 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 		return err
 	}
 	payload := val.StringByteLen()
-	if err := exec.checkProjectedStringBytes(saturatingAdd(sb.Len(), payload)); err != nil {
+	if err := exec.checkProjectedInterpolatedValue(val, saturatingAdd(sb.Len(), payload)); err != nil {
 		return err
 	}
 	// Grow only on a positive payload: StringByteLen sums byte counts without
