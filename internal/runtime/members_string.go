@@ -1512,11 +1512,14 @@ func stringMemberTextOps(property string) (Value, error) {
 			}
 			text := receiver.String()
 			var parts []string
-			if len(args) == 0 {
+			// An explicit nil separator behaves like the no-argument form,
+			// splitting on runs of ASCII whitespace, matching Ruby's
+			// String#split(nil).
+			if len(args) == 0 || args[0].IsNil() {
 				parts = splitOnASCIIWhitespace(text)
 			} else {
 				if args[0].Kind() != KindString {
-					return NewNil(), fmt.Errorf("string.split separator must be string")
+					return NewNil(), fmt.Errorf("string.split separator must be string or nil")
 				}
 				parts = strings.Split(text, args[0].String())
 			}

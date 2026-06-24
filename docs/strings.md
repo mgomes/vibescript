@@ -549,6 +549,16 @@ full Unicode whitespace table as delimiters:
 "path/to/file".split("/") # ["path", "to", "file"]
 ```
 
+**With an explicit `nil` separator:** Behaves exactly like the no-argument
+form, splitting on runs of ASCII whitespace, matching Ruby's
+`String#split(nil)`:
+
+```vibe
+" a  b ".split(nil) # ["a", "b"]
+```
+
+Any other non-string separator raises an error.
+
 ### `partition(separator)`
 
 Splits the string around the **first** occurrence of `separator`, returning a
