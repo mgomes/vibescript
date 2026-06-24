@@ -136,9 +136,9 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "separator must be string",
 		},
 		{
-			name:   "array.flatten with negative depth",
-			script: `def run() [[1, 2]].flatten(-1) end`,
-			errMsg: "must be non-negative",
+			name:   "array.flatten with nonnumeric depth",
+			script: `def run() [[1, 2]].flatten("1") end`,
+			errMsg: "depth must be an integer",
 		},
 		{
 			name:   "array.join with non-string separator",

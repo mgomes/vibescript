@@ -238,8 +238,10 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `last -> value | nil` / `last(n) -> array` – trailing element(s).
 - `uniq -> array` – distinct values, keeping first occurrences.
 - `compact -> array` – elements with `nil` entries removed.
-- `flatten(depth = nil) -> array` – collapse nested arrays; flattens fully
-  without a depth.
+- `flatten(depth = nil) -> array` – collapse nested arrays. No argument, `nil`,
+  or a negative depth flattens fully; `0` returns a shallow copy; a positive
+  depth flattens that many levels and a `Float` depth is truncated to an integer.
+  A nonnumeric depth raises.
 - `chunk(size) -> array` – consecutive slices of `size` elements (last chunk
   may be shorter).
 - `window(size) -> array` – overlapping windows of `size` elements; empty when
