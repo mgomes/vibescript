@@ -138,6 +138,121 @@ func TestEvalInterpolatedStringLiteralBoundsMaterialization(t *testing.T) {
 	})
 }
 
+func TestEvalInterpolatedStringLiteralChargesBuilderGrowthAfterPrefix(t *testing.T) {
+	t.Parallel()
+
+	// Builder.Grow does not reserve exactly the requested bytes once the current
+	// backing is exhausted: it reallocates to roughly 2*cap+n. Appending a large
+	// value after a prior large segment therefore reserves a backing array far
+	// larger than the running length plus the payload. A projection keyed on
+	// sb.Len()+payload would charge only the smaller final length and let the real
+	// reservation escape the memory quota; the projection must charge the backing
+	// the builder actually allocates.
+	//
+	// The two segments are sized so the second append's reserved capacity (the
+	// doubled term) exceeds the quota while the running-length-plus-payload sum
+	// stays under it. With the fixed projection the second append trips the quota.
+	const segmentBytes = 5000
+
+	segment := strings.Repeat("a", segmentBytes)
+	lit := newInterpolatedTextLiteral(segment, segment)
+
+	// projectedBuilderCap reproduces Grow's reallocation for the second segment.
+	// Run the first segment exactly as the evaluator would, then read the
+	// projected reservation and the smaller sum a length-keyed projection would
+	// have charged, so the quota can be pinned strictly between them.
+	var probe strings.Builder
+	probe.Grow(segmentBytes)
+	probe.WriteString(segment)
+	doubledProjection := projectedBuilderCap(&probe, segmentBytes)
+	lengthProjection := probe.Len() + segmentBytes
+	if doubledProjection <= lengthProjection {
+		t.Fatalf("doubled projection %d must exceed length projection %d for the test to isolate the growth charge",
+			doubledProjection, lengthProjection)
+	}
+
+	base := func() int {
+		exec := &Execution{
+			ctx:         context.Background(),
+			quota:       1 << 20,
+			memoryQuota: 1 << 20,
+		}
+		env := newEnv(nil)
+		exec.pushEnv(env)
+		return exec.estimateMemoryUsageBase(exec.memoryEstimatorForCheck())
+	}()
+
+	// checkProjectedStringBytes also charges a value header on top of the
+	// projection, so fold that into the floor and ceiling the quota sits between.
+	const header = estimatedValueBytes + estimatedStringHeaderBytes
+	floor := base + header + lengthProjection
+	ceiling := base + header + doubledProjection
+	quota := (floor + ceiling) / 2
+	if quota <= floor || quota >= ceiling {
+		t.Fatalf("quota %d must fall strictly between %d and %d", quota, floor, ceiling)
+	}
+
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 20,
+		memoryQuota: quota,
+	}
+	env := newEnv(nil)
+	exec.pushEnv(env)
+
+	_, err := exec.evalInterpolatedStringLiteral(lit, env)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestInterpolatedStringValueGrowthAfterPrefixTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// End-to-end mirror of the builder-growth charge: a script interpolates a
+	// large value after a large prefix. The second append reallocates the builder
+	// to roughly 2*cap+payload (Grow's doubling), so the reserved backing exceeds
+	// the running length plus the payload. A projection keyed on running length
+	// would let that reservation escape the quota; with the fixed projection the
+	// second append trips it.
+	//
+	// Both segments arrive as arguments so they are already counted in the base,
+	// isolating the failure to the builder reservation made during interpolation
+	// rather than to constructing the segments.
+	const segmentBytes = 6000
+
+	source := `def run(prefix, value)
+  "#{prefix}#{value}"
+end`
+	prefix := NewString(strings.Repeat("p", segmentBytes))
+	value := NewString(strings.Repeat("v", segmentBytes))
+
+	// Reproduce the projection the second append performs so the quota can be
+	// pinned strictly between the length-keyed charge (which a projection ignoring
+	// Grow's doubling would make) and the doubled charge the fixed code makes.
+	exec := &Execution{ctx: context.Background(), quota: 1 << 20, memoryQuota: 1 << 20}
+	env := newEnv(nil)
+	env.Define("prefix", prefix)
+	env.Define("value", value)
+	exec.pushEnv(env)
+	base := exec.estimateMemoryUsageBase(exec.memoryEstimatorForCheck())
+
+	var probe strings.Builder
+	probe.Grow(segmentBytes)
+	probe.WriteString(prefix.String())
+	doubledProjection := projectedBuilderCap(&probe, segmentBytes)
+	lengthProjection := probe.Len() + segmentBytes
+
+	const header = estimatedValueBytes + estimatedStringHeaderBytes
+	floor := base + header + lengthProjection
+	ceiling := base + header + doubledProjection
+	quota := (floor + ceiling) / 2
+	if quota <= floor || quota >= ceiling {
+		t.Fatalf("quota %d must fall strictly between %d and %d", quota, floor, ceiling)
+	}
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 20, MemoryQuotaBytes: quota}, source)
+	requireRunMemoryQuotaError(t, script, []Value{prefix, value}, CallOptions{})
+}
+
 func TestEvalInterpolatedStringLiteralBoundsAggregateRendering(t *testing.T) {
 	t.Parallel()
 
