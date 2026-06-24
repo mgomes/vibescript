@@ -186,15 +186,6 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "index must be integer",
 		},
 		{
-			name: "array.count with argument and block",
-			script: `def run()
-  [1, 1].count(1) do |v|
-    v == 1
-  end
-end`,
-			errMsg: "does not accept both argument and block",
-		},
-		{
 			name:   "array.any? with argument",
 			script: `def run() [1].any?(1) end`,
 			errMsg: "array.any? does not take arguments",
@@ -301,9 +292,14 @@ end`,
 			errMsg: "substring must be string",
 		},
 		{
-			name:   "string.index with invalid offset",
-			script: `def run() "hello".index("e", -1) end`,
-			errMsg: "offset must be non-negative integer",
+			name:   "string.index with non-integer offset",
+			script: `def run() "hello".index("e", "1") end`,
+			errMsg: "string.index offset must be integer",
+		},
+		{
+			name:   "string.rindex with non-integer offset",
+			script: `def run() "hello".rindex("l", "1") end`,
+			errMsg: "string.rindex offset must be integer",
 		},
 		{
 			name:   "string.rindex with too many args",

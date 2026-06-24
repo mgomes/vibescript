@@ -58,9 +58,11 @@ Unicode characters, not bytes, unless noted.
   given suffixes, with the same left-to-right short-circuit behavior.
 - `include?(substring) -> bool` – true when `substring` occurs anywhere.
 - `index(substring, offset = 0) -> int | nil` – first character index at or
-  after `offset`; `nil` when not found.
+  after `offset`; `nil` when not found. A negative `offset` counts back from the
+  end (`size + offset`) and yields `nil` when it falls before the start.
 - `rindex(substring, offset = size) -> int | nil` – last character index at or
-  before `offset`; `nil` when not found.
+  before `offset`; `nil` when not found. A negative `offset` counts back from the
+  end (`size + offset`) and yields `nil` when it falls before the start.
 - `match(pattern) -> array | nil` – regex match returning
   `[full, capture1, ...]` (unmatched groups are `nil`); `nil` when no match.
 - `match?(pattern, offset = 0) -> bool` – allocation-light predicate returning
