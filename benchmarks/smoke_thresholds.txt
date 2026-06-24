@@ -16,7 +16,14 @@ BenchmarkExecutionArrayPushAccumulation 3000000 10000 800000
 BenchmarkExecutionArrayConcatAccumulation 3500000 12000 900000
 BenchmarkExecutionMethodDispatchLoop 8000000 1000 130000
 BenchmarkBuiltinMemberDispatchLoop 5000000 100 10000
-BenchmarkCallTypedCompositeValidation 10000000 2000 250000
+# Allocation-heavy (typed composite validation walks/builds large structures),
+# so wall-clock ns/op is GC- and shared-runner-variance-sensitive. The CI
+# runner's best-of-3 sits around 10.2-10.6M ns/op, so the prior 10M cap sat
+# below actual and tripped intermittently on master and PRs alike. Widen the
+# ns/op headroom to absorb runner variance while still catching gross
+# regressions; the alloc/byte caps (the meaningful, stable signals here) are
+# unchanged.
+BenchmarkCallTypedCompositeValidation 14000000 2000 250000
 BenchmarkExecutionCapabilityFindLoop 12000000 9000
 BenchmarkExecutionCapabilityWorkflowLoop 16000000 15000
 BenchmarkExecutionJSONParseLoop 3000000 3200 180000
