@@ -163,6 +163,20 @@ cancellation, so large materializations stay bounded. This applies to `merge`
 `except`, `select`, `reject`, `transform_keys`, `transform_values`, and
 `remap_keys`.
 
+The block-driven transforms (`transform_keys`, `transform_values`, and the
+`merge` conflict block) also charge each value a block returns against the memory
+quota as it is produced, so fresh values accumulated in the result cannot exceed
+the quota before the build completes. This block-result charge is *conservative*:
+each result's full payload is counted as it is inserted, deduplicated only against
+other block results and never against the receiver. A block that returns a value
+unchanged and shared with the receiver -- or that collapses several writes onto
+one key -- is therefore counted at full size rather than deduplicated away. This
+over-count is deliberate: it keeps the bound sound even when a block mutates a
+receiver-owned container in place (for example appending into an array that still
+has spare capacity) and returns it, a case where deduplicating against the
+receiver would charge the fresh payload nothing and let it escape the quota. The
+array-side equivalent of this accounting is tracked in #787.
+
 Two helpers are not yet bounded this way:
 
 - `deep_transform_keys` does not bound its recursive materialization against the

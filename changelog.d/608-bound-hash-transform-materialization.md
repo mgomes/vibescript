@@ -13,7 +13,20 @@
   (`Hash#transform_keys`, `Hash#transform_values`, and the `Hash#merge` conflict
   block) additionally charge each block result against the quota as it is
   produced, so fresh values accumulated in the output cannot exceed the memory
-  quota before the build completes. `Hash#store` sizes its projection by the
+  quota before the build completes. This block-result charge is accounted
+  *conservatively*: each block result's full payload is counted as the result is
+  inserted, deduplicated only against other block results, never against the
+  receiver or other call roots. A block that returns a value unchanged and shared
+  with the receiver (or that collapses several writes onto one key) is therefore
+  over-counted rather than deduplicated away. This is deliberate: deduplicating a
+  block result against the baseline is unsound when a block mutates a
+  receiver-owned container in place (for example appending a large value into an
+  array that still has spare capacity) and returns it -- the container's backing
+  was already in the baseline, so dedup would charge the fresh payload nothing and
+  let it escape the quota. Counting each result at its full current size never
+  under-counts the live result footprint, keeping the sandbox bound sound under
+  in-place mutation; the array-side equivalent of this accounting is tracked in
+  #787. `Hash#store` sizes its projection by the
   existing-key case, so replacing a key no longer over-reports the result size, and
   `Hash#except` projects against the receiver before building its exclusion set so
   a huge candidate-key list against a tiny receiver fails fast. Block-driven hash
@@ -30,23 +43,11 @@
   `Hash#each`, `Hash#each_key`, and `Hash#each_value` build no derived map -- they
   return the receiver -- so they no longer reserve an output map they never
   allocate, and a quota that exactly fits the receiver and the scratch buffer
-  admits the walk instead of being falsely rejected. When a transform overwrites a
-  key it already holds -- a `Hash#merge` conflict block returning the old value, or
-  a `Hash#transform_keys` block collapsing several input keys onto one output key --
-  the incremental accounting now reference-counts the output's payload backings and
-  releases only the bytes the swap leaves unreachable, so a still-reachable value
-  (the returned old value, or one a fresh result wraps) is never un-charged. This
-  keeps the running total from dropping below the map's true live footprint, which
-  could otherwise let later inserts materialize past the quota. The reference-count
-  walk is cycle-safe: a block can return a value that reaches itself through
-  in-place index assignment (`a = [0]; a[0] = a`), and charging then releasing such
-  a value is now mirror-symmetric, so repeatedly replacing a key that holds a cyclic
-  value keeps the running total constant instead of inflating it on every write and
-  falsely tripping the quota. The incremental walk now charges a value's payload
-  exactly as the memory estimator would (the two derive every backing's structural
-  cost from one shared computation), closing an undercount where a block returning
-  a fresh hash of scalar values omitted the per-entry value slots and could
-  accumulate past the quota. `Hash#except` now also charges the exclusion set it
+  admits the walk instead of being falsely rejected. The conservative block-result
+  charge is cycle-safe by construction: a block can return a value that reaches
+  itself through in-place index assignment (`a = [0]; a[0] = a`), and the memory
+  estimator's own seen-sets terminate the walk within a single value, so a cyclic
+  result is charged a finite amount once. `Hash#except` now also charges the exclusion set it
   builds from the candidate keys present in the receiver, which is live alongside
   the copied output at peak, so `h.except(*h.keys)` over a large receiver can no
   longer allocate that set plus the full output past a receiver-plus-output quota.

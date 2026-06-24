@@ -634,12 +634,14 @@ func hashMemberTransforms(property string) (Value, error) {
 				// and those results live only in the Go-local out map until merge
 				// returns, so the structural projection above cannot bound them.
 				// Charge every stored entry incrementally through a build
-				// accumulator seeded with the live call roots; the copied base
-				// values dedup against the receiver root and cost only their new
-				// structural slot, while block-resolved values add their fresh
-				// payload as the loop proceeds. The accumulator is replacement-aware:
-				// a conflict block overwrites an existing slot, so the second write
-				// for a key charges only the net value change, never a second entry.
+				// accumulator whose results-only estimator counts each stored value's
+				// full footprint as it is produced. Counting is conservative: a
+				// conflict block that overwrites a slot is charged once per write, so
+				// a key folded through many colliding arguments is over-counted rather
+				// than dedup'd to a single entry. That tradeoff keeps the bound sound
+				// even when a block mutates a receiver-owned container in place and
+				// returns it (see the accumulator's doc comment); the running total
+				// only grows, so it can never drop below the live footprint.
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 				// The sorted key scratch buffer stays live the whole build, coexisting
 				// with the output map at peak, so reserve it in the accumulator's
@@ -1022,14 +1024,15 @@ func hashMemberTransforms(property string) (Value, error) {
 			// return a fresh key string per entry, and those synthesized keys live
 			// only in the Go-local out map until the builtin returns, so the
 			// structural projection cannot bound them. Charge each entry
-			// incrementally through a build accumulator seeded with the live call
-			// roots so accumulated key payloads count toward the quota during the
-			// loop, not only at the post-call check. A block that maps several
-			// input keys onto the same output key overwrites a slot rather than
-			// growing the map, and the accumulator charges that as a net value
-			// swap, not a second entry. The sorted key scratch buffer is charged
-			// alongside the structural projection here and reserved in the
-			// accumulator so it stays charged for the whole build.
+			// incrementally through a build accumulator whose results-only estimator
+			// counts each synthesized key's full payload as it is produced, so
+			// accumulated key payloads count toward the quota during the loop, not only
+			// at the post-call check. Counting is conservative: a block that collapses
+			// several input keys onto one output key is charged once per write rather
+			// than dedup'd to a single entry, an over-count that keeps the bound sound
+			// (the running total only grows). The sorted key scratch buffer is charged
+			// alongside the structural projection here and reserved in the accumulator
+			// so it stays charged for the whole build.
 			scratch := sortedKeyBufferBytes(len(entries))
 			if err := exec.checkProjectedHashTransformBytes(len(entries), scratch, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
@@ -1122,11 +1125,16 @@ func hashMemberTransforms(property string) (Value, error) {
 			// transform_values keeps every key. The block can return a fresh heap
 			// value per entry, and those results live only in the Go-local out map
 			// until the builtin returns, so the structural projection cannot bound
-			// them. Charge each result incrementally through a build accumulator
-			// seeded with the live call roots so accumulated payloads count toward
-			// the quota during the loop, not only at the post-call check. The sorted
-			// key scratch buffer is charged alongside the structural projection here
-			// and reserved in the accumulator so it stays charged for the whole build.
+			// them. Charge each result incrementally through a build accumulator whose
+			// results-only estimator counts each block result's full footprint as it is
+			// produced, so accumulated payloads count toward the quota during the loop,
+			// not only at the post-call check. Counting is conservative: a block that
+			// returns a value unchanged and shared with the receiver is counted again
+			// rather than dedup'd against the baseline, an over-count that keeps the
+			// bound sound even when a block mutates a receiver-owned container in place
+			// and returns it. The sorted key scratch buffer is charged alongside the
+			// structural projection here and reserved in the accumulator so it stays
+			// charged for the whole build.
 			scratch := sortedKeyBufferBytes(len(entries))
 			if err := exec.checkProjectedHashTransformBytes(len(entries), scratch, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err

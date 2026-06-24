@@ -924,108 +924,6 @@ func TestHashBuildAccumulatorChargesIncrementally(t *testing.T) {
 	}
 }
 
-// TestHashBuildAccumulatorChargesReplacementsAsNetSwap pins the replacement-aware
-// accounting that the merge conflict block relies on. Writing the same key many
-// times (as a merge with many colliding one-key hashes does) overwrites a single
-// slot, so the accumulator must charge each rewrite as the net change between the
-// new value and the old, not as a fresh entry. A monotonic full-entry charge per
-// write would over-count the dropped values and falsely trip a quota that
-// comfortably holds the receiver and the single final entry.
-func TestHashBuildAccumulatorChargesReplacementsAsNetSwap(t *testing.T) {
-	t.Parallel()
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	exec.root = newEnv(nil)
-
-	const payloadBytes = 4 * 1024
-	const rewrites = 1_000
-	base := exec.estimateMemoryUsageBase(newMemoryEstimator())
-	// Headroom for the empty output map plus a handful of full entries -- far less
-	// than the rewrites count, so a monotonic per-write charge would trip well
-	// before the loop ends while the net-swap charge stays at a single slot.
-	exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + 4*(payloadBytes+128)
-
-	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-
-	// Seed the slot once, then overwrite it repeatedly with fresh, equal-sized heap
-	// values, mirroring a merge conflict block that returns a new value per colliding
-	// argument.
-	if err := acc.add("k", NewString(strings.Repeat("x", payloadBytes))); err != nil {
-		t.Fatalf("seeding the slot tripped the quota: %v", err)
-	}
-	afterSeed := acc.built
-	for i := range rewrites {
-		fresh := NewString(strings.Repeat("y", payloadBytes))
-		if err := acc.add("k", fresh); err != nil {
-			t.Fatalf("rewrite %d falsely tripped the quota: %v", i, err)
-		}
-	}
-
-	// Net-swap accounting keeps built at one entry's worth: the seed entry plus a
-	// single value swap, never growing with the rewrite count.
-	if acc.built > afterSeed+payloadBytes {
-		t.Fatalf("built grew to %d after %d same-key rewrites, want it to stay near one entry (%d)",
-			acc.built, rewrites, afterSeed)
-	}
-
-	// A genuinely oversized replacement still trips: swapping in a value far larger
-	// than the headroom must be rejected, proving the net-swap path still enforces
-	// the quota on growth rather than ignoring it.
-	huge := NewString(strings.Repeat("z", payloadBytes*1_000))
-	err := acc.add("k", huge)
-	requireErrorIs(t, err, errMemoryQuotaExceeded)
-}
-
-// TestHashBuildAccumulatorChargesTrackingMap pins that the accumulator's own
-// keyValueBytes bookkeeping map is charged against the quota. That map keeps one
-// entry per distinct output key, so a block-driven transform that retains many
-// distinct keys allocates an O(n) tracking map alongside the output. Here the
-// per-key value payload is a tiny inlined int, so the output entries alone stay
-// comfortably under the quota -- only when the tracking map's per-entry overhead
-// is also charged does the build cross the limit. The pre-fix accumulator left the
-// tracking map unaccounted and would admit every insert.
-func TestHashBuildAccumulatorChargesTrackingMap(t *testing.T) {
-	t.Parallel()
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	exec.root = newEnv(nil)
-
-	base := exec.estimateMemoryUsageBase(newMemoryEstimator())
-
-	// Precompute the exact output-map cost of every key: the bucket, the key header,
-	// the key payload, and the inlined int value. This is precisely what the pre-fix
-	// accumulator charged into built; the tracking map's footprint is deliberately
-	// excluded from the budget.
-	const entries = 64
-	keys := make([]string, entries)
-	outputCost := 0
-	for i := range keys {
-		keys[i] = "k" + strconv.Itoa(i)
-		outputCost += estimatedMapEntryBytes + estimatedStringHeaderBytes + len(keys[i]) + estimatedValueBytes
-	}
-
-	// Quota that exactly admits the empty output map plus every output entry but
-	// nothing more. A build that ignores the tracking map fits all entries; one that
-	// charges the tracking map's per-entry overhead must trip before the last insert.
-	exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + outputCost
-
-	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-
-	var tripped int
-	for i, key := range keys {
-		// Distinct keys whose value is an inlined int, so no heap payload is charged
-		// and the only growth beyond the output entry is the tracking map's overhead.
-		if err := acc.add(key, NewInt(int64(i))); err != nil {
-			requireErrorIs(t, err, errMemoryQuotaExceeded)
-			tripped = i
-			break
-		}
-	}
-	if tripped == 0 {
-		t.Fatalf("accumulator admitted all %d entries; the tracking map's footprint was not charged", entries)
-	}
-}
-
 // TestHashBuildAccumulatorReservesScratch pins the P1 finding on PR #776: the
 // sorted-key scratch buffer is live for the whole block-driven build, coexisting
 // with the output map at peak, so the accumulator must reserve its bytes for the
@@ -1234,24 +1132,31 @@ func mergeManyCollidingArgsSource(collisions, payloadBytes int) string {
 	return b.String()
 }
 
-// TestHashMergeManyCollidingOneKeyHashesWithBlockSucceeds drives the replacement
-// fix end to end: a single merge call folds many one-key hashes that all collide
-// on the same key through a conflict block. The block returns a fresh value per
-// collision, but each overwrites the same slot, so the final result holds one
-// entry. A quota that comfortably fits the receiver and that single result must
-// admit the merge; the pre-fix accumulator charged a full entry per collision and
-// would falsely reject it.
-func TestHashMergeManyCollidingOneKeyHashesWithBlockSucceeds(t *testing.T) {
+// TestHashMergeManyCollidingOneKeyHashesWithBlockConservativeFootprint pins the
+// conservative block-result accounting end to end: a single merge call folds many
+// one-key hashes that all collide on the same key through a conflict block. The
+// block returns a fresh value per collision, and although each overwrites the same
+// slot so the final result holds one entry, the accumulator charges every block
+// result its full footprint as it is produced. That conservative counting is what
+// keeps the bound sound under in-place mutation, at the cost of over-counting a
+// collapsed slot: the running total tracks the sum of every block result, not the
+// single final entry.
+//
+// The test exercises both halves of that contract. A quota sized to the
+// conservative footprint (every collision's payload, plus headroom) admits the
+// merge; a quota sized only to the single final entry -- which the pre-fix
+// replacement-aware accumulator would have accepted -- is now correctly rejected,
+// because the transient block results accumulate past it.
+func TestHashMergeManyCollidingOneKeyHashesWithBlockConservativeFootprint(t *testing.T) {
 	t.Parallel()
 
 	const collisions = 400
 	const payloadBytes = 4 * 1024
 	receiver := NewHash(map[string]Value{"x": NewInt(0)})
 
-	// The legitimate live footprint is the receiver, the colliding argument hashes
-	// (each a one-key map of a small int), and the single final entry holding one
-	// fresh payload. Estimate the arguments the script holds live and budget a quota
-	// that comfortably exceeds that real footprint.
+	// The live footprint is the receiver, the colliding argument hashes (each a
+	// one-key map of a small int), and the conservative output charge: one full entry
+	// per collision (the block result is charged once per write).
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveArgs := make([]Value, collisions)
 	for i := range liveArgs {
@@ -1259,33 +1164,37 @@ func TestHashMergeManyCollidingOneKeyHashesWithBlockSucceeds(t *testing.T) {
 	}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, liveArgs, nil, NewNil())
 	entryBytes := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	// Generous headroom over the live footprint: the empty output map, one full
-	// payload entry, and slack for the script's AST and environment.
-	quota := liveWithRoots + estimatedValueBytes + estimatedMapBaseBytes + payloadBytes + 64*entryBytes + 64*1024
+	// The conservative footprint: a full payload entry per collision, since each
+	// block result is charged once when it is written.
+	conservative := collisions * (entryBytes + payloadBytes)
 
-	// Sanity: the pre-fix monotonic charge (a full payload entry per collision) far
-	// exceeds this quota, confirming the test exercises the replacement fix rather
-	// than passing trivially.
-	monotonic := (collisions + 1) * (entryBytes + payloadBytes)
-	if monotonic <= quota {
-		t.Fatalf("test setup expects the monotonic projection (%d) to exceed the quota (%d)", monotonic, quota)
-	}
-
+	// A quota above the conservative footprint admits the merge.
+	roomy := liveWithRoots + estimatedValueBytes + estimatedMapBaseBytes + conservative + 64*1024
 	source := mergeManyCollidingArgsSource(collisions, payloadBytes)
-	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: roomy}, source)
 	got, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
 	if err != nil {
-		t.Fatalf("merge of %d colliding one-key hashes under a fitting quota = %v, want success", collisions, err)
+		t.Fatalf("merge of %d colliding one-key hashes under a conservative-sized quota = %v, want success", collisions, err)
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != 1 {
 		t.Fatalf("merge produced %v with %d entries, want a hash with 1 entry", got.Kind(), len(got.Hash()))
 	}
+
+	// A quota sized only to the single final entry -- enough for the replacement-aware
+	// accounting this PR removed, but far below the conservative footprint -- is now
+	// rejected, because the transient block results accumulate past it.
+	tight := liveWithRoots + estimatedValueBytes + estimatedMapBaseBytes + payloadBytes + 64*entryBytes + 64*1024
+	if tight >= conservative {
+		t.Fatalf("test setup expects the single-entry quota (%d) below the conservative footprint (%d)", tight, conservative)
+	}
+	tightScript := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: tight}, source)
+	requireCallRuntimeErrorType(t, tightScript, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
 // TestHashMergeManyCollidingOneKeyHashesOversizedBlockTrips is the safety twin of
-// the success case: when the conflict block returns a value far larger than the
-// quota's headroom, the net-swap accounting must still reject the merge. This
-// guards against the replacement path silently dropping the quota on growth.
+// the conservative-footprint case: when the conflict block returns a value far
+// larger than the quota's headroom, the accumulator must reject the merge. This
+// guards against the block-result accounting silently dropping the quota on growth.
 func TestHashMergeManyCollidingOneKeyHashesOversizedBlockTrips(t *testing.T) {
 	t.Parallel()
 
@@ -1302,67 +1211,114 @@ func TestHashMergeManyCollidingOneKeyHashesOversizedBlockTrips(t *testing.T) {
 	requireCallRuntimeErrorType(t, script, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
-// mergeCollidingCyclicBlockSource builds a merge that folds collisions one-key
-// hashes all colliding on :x, whose conflict block returns a fresh cyclic value
-// per collision: a two-element array carrying a payloadBytes string at index 0 and
-// a self-edge at index 1 (c[1] = c). Each result overwrites the same slot, so the
-// final map holds one entry, but every intermediate cyclic value is built and then
-// replaced.
-func mergeCollidingCyclicBlockSource(collisions, payloadBytes int) string {
-	var b strings.Builder
-	b.WriteString("def run(a)\n  a.merge(")
-	for i := range collisions {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString("{ x: 1 }")
-	}
-	fmt.Fprintf(&b, ") { |k, old, new| c = [\"\".ljust(%d, \"z\"), 0]; c[1] = c; c }\nend", payloadBytes)
-	return b.String()
-}
-
-// TestHashMergeCollidingCyclicBlockReplacementsSucceed is the end-to-end twin of
-// TestHashBuildAccumulatorReleasesCyclicValuesFully: a merge conflict block returns
-// a fresh self-cyclic value per collision (c = [big, 0]; c[1] = c). Each overwrites
-// the same slot, so the final map holds a single cyclic entry whose footprint fits
-// comfortably under the quota, and the merge must succeed.
+// TestHashBuildAccumulatorChargesInPlaceMutatedBaseContainer pins the P1 finding on
+// PR #776 (memory.go:676): a block that mutates a receiver-owned container in place
+// -- appending a large fresh payload into an array that still has spare capacity --
+// and returns it. The array's backing was already in the call-root baseline before
+// the block ran, but the newly stored element payload was not. The conservative
+// accumulator's results-only estimator is deliberately NOT seeded with the
+// baseline, so it charges the returned value at its full current size and observes
+// the fresh payload. The removed base-seeded dedup machinery saw the backing in the
+// baseline's seen-set and deduplicated the whole array (fresh payload included) to
+// ~0, under-counting the live result mid-build -- a sandbox escape, since the
+// accumulator runs precisely where the post-call safety net cannot (the mutated
+// array's transient mid-build footprint).
 //
-// Before the payload walk was made cycle-safe, releasing a replaced cyclic value
-// early-returned on its self-edge and never credited its bytes (and the big string
-// nested under it) back, so the accumulator's running total climbed by a full
-// payload per collision and falsely tripped the quota partway through -- the exact
-// false-rejection class this PR removes. The cycle-safe walk releases each replaced
-// cycle fully, keeping the running total at one entry.
-func TestHashMergeCollidingCyclicBlockReplacementsSucceed(t *testing.T) {
+// The accumulator is driven directly with controlled Values so the under-count is
+// isolated: a receiver array with spare capacity is passed as a call root (folded
+// into the baseline), then the block "returns" that same array after a large string
+// is stored into a previously-empty slot. With conservative counting the fresh
+// payload pushes the running total past a quota sized to the array's original
+// footprint, so the build is rejected.
+func TestHashBuildAccumulatorChargesInPlaceMutatedBaseContainer(t *testing.T) {
 	t.Parallel()
 
-	const collisions = 60
-	const payloadBytes = 4 * 1024
-	receiver := NewHash(map[string]Value{"x": NewInt(0)})
+	const payload = 256 * 1024
 
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, NewNil())
-	// Room for the receiver, the script's AST and environment, and one final cyclic
-	// entry holding a single payload, but far less than the sum of every collision's
-	// payload. The pre-fix leak charged one payload per collision and tripped here.
-	quota := liveWithRoots + payloadBytes + 60*1024
+	// A receiver array with one filled slot and spare capacity: the block appends
+	// into the spare slot (within capacity, so the backing pointer is unchanged) and
+	// returns the same array. The backing is receiver-owned, so it is in the call-root
+	// baseline before the block runs.
+	backing := make([]Value, 1, 2)
+	backing[0] = NewInt(0)
+	receiverArray := NewArray(backing)
+	receiver := NewHash(map[string]Value{"a": receiverArray})
 
-	// Sanity: the pre-fix per-collision leak (a full payload plus the leaked cyclic
-	// backing per collision) dwarfs this quota, so success proves the cycle is
-	// released rather than the quota being slack enough to hide the leak.
-	leaked := collisions * payloadBytes
-	if leaked <= quota {
-		t.Fatalf("test setup expects the per-collision leak (%d) to exceed the quota (%d)", leaked, quota)
+	// Learn the accumulator's baseline (which counts the receiver array once) under no
+	// memory pressure, so the quota can sit between the array's original footprint and
+	// its footprint plus the fresh payload.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1}
+	probeAcc := newHashBuildAccumulator(probe, receiver, nil, nil, NewNil())
+	base := probeAcc.base
+
+	// A quota above the baseline (so the array fits as the receiver holds it) but well
+	// below the baseline plus the fresh payload (so charging the mutated array's full
+	// current size must trip).
+	quota := base + payload/2
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	acc := newHashBuildAccumulator(exec, receiver, nil, nil, NewNil())
+
+	// Mutate the receiver-owned backing in place: append a large string into the spare
+	// capacity. The append keeps the same backing pointer (cap headroom), mirroring an
+	// in-place block mutation like `v << big` or `v[1] = big` on a receiver value.
+	mutated := append(backing, NewString(strings.Repeat("x", payload)))
+	if sliceBackingIdentity(mutated) != sliceBackingIdentity(backing) {
+		t.Fatalf("test setup expects the append to stay within capacity (same backing)")
+	}
+	mutatedArray := NewArray(mutated)
+
+	// Conservative counting charges the returned value's full current footprint, so the
+	// fresh payload is observed and the quota is tripped. The removed base-seeded dedup
+	// would have charged ~0 here (the backing was in the baseline) and admitted it.
+	err := acc.add("a", mutatedArray)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashBuildAccumulatorChargesCyclicBlockResult pins that the conservative
+// accumulator handles a cyclic block result safely: a transform block can return a
+// value that reaches itself through in-place index assignment (a = [0]; a[0] = a, or
+// obj["self"] = obj). The results-only estimator's own seen-sets terminate the walk
+// within a single value, so charging the cyclic value is bounded and finite -- it
+// neither recurses forever nor over-charges the self-edge. Charging it once must fit
+// an ample quota.
+func TestHashBuildAccumulatorChargesCyclicBlockResult(t *testing.T) {
+	t.Parallel()
+
+	shapes := []struct {
+		name  string
+		build func() Value
+	}{
+		{name: "self_cyclic_array", build: selfCyclicArray},
+		{name: "self_cyclic_hash", build: selfCyclicHash},
+		{
+			name: "cycle_nested_under_fresh_container",
+			build: func() Value {
+				return NewArray([]Value{selfCyclicArray()})
+			},
+		},
 	}
 
-	source := mergeCollidingCyclicBlockSource(collisions, payloadBytes)
-	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
-	got, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
-	if err != nil {
-		t.Fatalf("merge of %d colliding cyclic-block collisions under a fitting quota = %v, want success", collisions, err)
-	}
-	if got.Kind() != KindHash || len(got.Hash()) != 1 {
-		t.Fatalf("merge produced %v with %d entries, want a hash with 1 entry", got.Kind(), len(got.Hash()))
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			t.Parallel()
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+			exec.root = newEnv(nil)
+			base := exec.estimateMemoryUsageBase(newMemoryEstimator())
+			// Ample headroom: a single cyclic value is tiny, so the quota only needs to
+			// admit one entry. The point is that the walk terminates and charges a finite
+			// amount rather than looping on the self-edge.
+			exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + 64*1024
+
+			acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+			if err := acc.add("k", shape.build()); err != nil {
+				t.Fatalf("charging a cyclic block result tripped an ample quota: %v", err)
+			}
+			if acc.built <= 0 {
+				t.Fatalf("cyclic block result charged %d bytes, want a positive finite charge", acc.built)
+			}
+		})
 	}
 }
 
@@ -1419,66 +1375,6 @@ end`
 	requireCallRuntimeErrorType(t, script, "run", []Value{largeHashReceiver(2_000)}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
-// TestHashBuildAccumulatorReplacementKeepsReachablePayload pins the P1 finding on
-// PR #776 at the accumulator level: when a slot is overwritten with the value it
-// already holds (a merge block returning the `old` value), the live footprint is
-// unchanged, so built must not drop. The pre-fix net-swap delta trusted the
-// persistent estimator's stateful dedup, which deduplicated the returned-old value
-// to ~0 and then subtracted the slot's full recorded bytes, dropping built below
-// the still-reachable payload and letting a later insert materialize past the
-// quota. Reference counting keeps the shared payload charged.
-//
-// The accumulator is driven directly with controlled Values so the trajectory is
-// deterministic: a fresh large string is stored, returned as old, then a second
-// fresh large string is stored under a different key. With the fix both payloads
-// stay charged and the second insert trips the quota; the pre-fix code dropped the
-// first payload on the returns-old write and admitted the second insert.
-func TestHashBuildAccumulatorReplacementKeepsReachablePayload(t *testing.T) {
-	t.Parallel()
-
-	const payload = 256 * 1024
-	bigX := NewString(strings.Repeat("x", payload))
-	bigZ := NewString(strings.Repeat("z", payload))
-
-	// Build the accumulator with no memory pressure first to learn its baseline, so
-	// the quota can be placed in the window between the buggy single-payload peak and
-	// the correct two-payload peak independent of estimator constants.
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1}
-	probeAcc := newHashBuildAccumulator(probe, NewNil(), nil, nil, NewNil())
-	base := probeAcc.base
-
-	// Window: above base + one payload (buggy peak) and below base + two payloads
-	// (correct peak), with a half-payload margin so neither boundary is grazed.
-	quota := base + payload + payload/2
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-
-	mustAdd := func(key string, val Value) {
-		t.Helper()
-		if err := acc.add(key, val); err != nil {
-			t.Fatalf("add(%q): unexpected quota error: %v", key, err)
-		}
-	}
-
-	// Simulate a merge conflict folding over key x: store a fresh large value, then
-	// have the block return that same value (old). The footprint after both writes
-	// is one payload; built must reflect it.
-	mustAdd("x", NewInt(0))
-	mustAdd("x", bigX)
-	builtAfterStore := acc.built
-	mustAdd("x", bigX) // returns old: same backing, footprint unchanged.
-	if acc.built < builtAfterStore {
-		t.Fatalf("returns-old write dropped built from %d to %d; the reachable payload was un-charged", builtAfterStore, acc.built)
-	}
-
-	// A second fresh large value under a different key pushes the true footprint to
-	// two payloads, past the quota. The fix keeps x's payload charged, so this insert
-	// is rejected; the pre-fix code would have dropped it and admitted this write.
-	err := acc.add("z", bigZ)
-	requireErrorIs(t, err, errMemoryQuotaExceeded)
-}
-
 // selfCyclicArray builds an array whose single element points back at the array
 // itself: a = [0]; a[0] = a. NewArray stores the slice header directly, so
 // mutating the backing after construction makes the value reach itself, mirroring
@@ -1490,17 +1386,6 @@ func selfCyclicArray() Value {
 	return a
 }
 
-// mutualCyclicArrays builds two arrays that reference each other: a = [b], b = [a].
-func mutualCyclicArrays() (Value, Value) {
-	aBacking := make([]Value, 1)
-	bBacking := make([]Value, 1)
-	a := NewArray(aBacking)
-	b := NewArray(bBacking)
-	aBacking[0] = b
-	bBacking[0] = a
-	return a, b
-}
-
 // selfCyclicHash builds a hash that holds a reference to itself under one key:
 // obj = {}; obj["self"] = obj, the map analog of selfCyclicArray.
 func selfCyclicHash() Value {
@@ -1509,162 +1394,6 @@ func selfCyclicHash() Value {
 	backing["self"] = h
 	return h
 }
-
-// TestHashBuildAccumulatorReleasesCyclicValuesFully pins the cycle-safety of the
-// reference-counting payload walk. A transform block can return a value that
-// reaches itself through Go-level index assignment (a = [0]; a[0] = a, or
-// obj.Hash()[k] = obj). Charging and releasing such a value must be
-// mirror-symmetric: the walk visits each backing once per charge and once per
-// release, so a key repeatedly overwritten with a cyclic value holds a constant
-// live footprint and leaves no orphaned reference-count entries behind.
-//
-// Without the per-walk visited set the release walk early-returns on the cyclic
-// backing -- its self-edge keeps the refcount positive, so release never recurses
-// and the backing's bytes are never credited back. built then climbs on every
-// replacement (an over-count that causes false rejections) and valueRefs leaks one
-// entry per replacement.
-func TestHashBuildAccumulatorReleasesCyclicValuesFully(t *testing.T) {
-	t.Parallel()
-
-	shapes := []struct {
-		name  string
-		build func() Value
-	}{
-		{name: "self_cyclic_array", build: selfCyclicArray},
-		{name: "self_cyclic_hash", build: selfCyclicHash},
-		{
-			name: "mutual_cyclic_arrays",
-			build: func() Value {
-				a, _ := mutualCyclicArrays()
-				return a
-			},
-		},
-		{
-			name: "cycle_nested_under_fresh_container",
-			build: func() Value {
-				// A fresh outer array wrapping a self-cyclic inner array, so the walk
-				// must descend through a non-cyclic backing before hitting the cycle.
-				return NewArray([]Value{selfCyclicArray()})
-			},
-		},
-	}
-
-	for _, shape := range shapes {
-		t.Run(shape.name, func(t *testing.T) {
-			t.Parallel()
-
-			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-			exec.root = newEnv(nil)
-			base := exec.estimateMemoryUsageBase(newMemoryEstimator())
-			// Ample headroom: the footprint of a single cyclic value is tiny, and the
-			// test asserts built stays constant rather than tripping, so the quota only
-			// needs to admit one steady-state entry.
-			exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + 64*1024
-
-			acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-
-			// Seed the slot with a first cyclic value, then record the steady-state
-			// footprint after one replacement so the comparison ignores the one-time
-			// tracking-map and entry costs of the first insert.
-			if err := acc.add("k", shape.build()); err != nil {
-				t.Fatalf("seeding the cyclic slot tripped the quota: %v", err)
-			}
-			if err := acc.add("k", shape.build()); err != nil {
-				t.Fatalf("first cyclic replacement tripped the quota: %v", err)
-			}
-			steady := acc.built
-			steadyRefs := len(acc.valueRefs)
-
-			// Replace the same slot with a fresh distinct cyclic value many times. Each
-			// replacement charges a new cycle and releases the old one; a cycle-safe walk
-			// keeps built and the reference-count map at their steady-state size.
-			const replacements = 50
-			for i := range replacements {
-				if err := acc.add("k", shape.build()); err != nil {
-					t.Fatalf("cyclic replacement %d tripped the quota: %v", i, err)
-				}
-				if acc.built != steady {
-					t.Fatalf("cyclic replacement %d changed built from %d to %d; the cyclic payload is being charged or released asymmetrically",
-						i, steady, acc.built)
-				}
-				if len(acc.valueRefs) != steadyRefs {
-					t.Fatalf("cyclic replacement %d changed valueRefs size from %d to %d; a cyclic backing leaked a reference-count entry",
-						i, steadyRefs, len(acc.valueRefs))
-				}
-			}
-
-			// Draining the slot to a payload-free scalar must release every cyclic
-			// backing: with no payload-bearing value left, the reference-count map must
-			// be empty. A leaked self-edge would keep an orphaned entry alive here.
-			if err := acc.add("k", NewInt(0)); err != nil {
-				t.Fatalf("draining the slot tripped the quota: %v", err)
-			}
-			if len(acc.valueRefs) != 0 {
-				t.Fatalf("valueRefs holds %d orphaned entries after draining the cyclic slot, want 0", len(acc.valueRefs))
-			}
-		})
-	}
-}
-
-// TestHashBuildAccumulatorChargesValueRefsMapBase pins that the reference-counting
-// bookkeeping map (valueRefs) charges its own empty-map base the first time a fresh
-// payload backing is referenced, mirroring how add charges the storedValues base on
-// its first insert. Without that charge the live hmap is invisible to the quota: it
-// is allocated during the build but never accounted, so the peak can exceed the
-// sandbox by estimatedMapBaseBytes.
-//
-// The test differences two consecutive inserts of equal-cost fresh-payload values.
-// The first insert pays both bookkeeping bases (storedValues and valueRefs) plus
-// the shared per-entry and per-ref costs; the second pays only the shared costs. The
-// difference is therefore exactly the two map bases. A regression that drops the
-// valueRefs base would make the difference a single base and trip this assertion.
-func TestHashBuildAccumulatorChargesValueRefsMapBase(t *testing.T) {
-	t.Parallel()
-
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	exec.root = newEnv(nil)
-	base := exec.estimateMemoryUsageBase(newMemoryEstimator())
-	exec.memoryQuota = base + 1<<20
-
-	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-
-	// Two distinct fresh string values of equal length backed by distinct allocations
-	// so each charges an identical per-entry and per-ref cost while introducing its
-	// own backing. Equal-length distinct keys keep the key-entry cost identical too.
-	if err := acc.add("k1", NewString("alpha-payload-0")); err != nil {
-		t.Fatalf("first insert tripped the quota: %v", err)
-	}
-	firstDelta := acc.built
-
-	prev := acc.built
-	if err := acc.add("k2", NewString("alpha-payload-1")); err != nil {
-		t.Fatalf("second insert tripped the quota: %v", err)
-	}
-	secondDelta := acc.built - prev
-
-	// The first insert pays the storedValues base and the valueRefs base on top of
-	// the shared per-entry/per-ref costs; the second pays neither base. Their
-	// difference is exactly the two bookkeeping-map bases. Pre-fix, the valueRefs base
-	// was never charged, so the difference would be a single base.
-	gotBaseCharges := firstDelta - secondDelta
-	wantBaseCharges := 2 * estimatedMapBaseBytes
-	if gotBaseCharges != wantBaseCharges {
-		t.Fatalf("first-insert base charges = %d bytes, want %d (storedValues base + valueRefs base); the valueRefs bookkeeping map base is not accounted",
-			gotBaseCharges, wantBaseCharges)
-	}
-}
-
-// The P1 "returns-old" finding is pinned at the accumulator level by
-// TestHashBuildAccumulatorReplacementKeepsReachablePayload, which drives acc.add
-// directly. It deliberately has no end-to-end merge twin: the returns-old shape
-// keeps both the returned-old payload and the later fresh payload in the final
-// output map, so the post-call checkMemory safety net always observes the
-// over-quota result regardless of whether the accumulator under-counts mid-build.
-// An end-to-end merge test would therefore pass whether or not the incremental
-// accounting is correct, masking the very regression it claims to guard. The
-// merge wiring's use of the replacement-aware accumulator is instead covered by
-// TestHashMergeManyCollidingOneKeyHashesWithBlockSucceeds and its oversized twin,
-// whose transient (overwritten) peaks the post-call check cannot see.
 
 // TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds pins the P2 finding on PR
 // #776: a bare `h.merge { ... }` with no argument hashes short-circuits to a copy
@@ -1923,113 +1652,24 @@ func TestHashSelectSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
-// chargedValuePayload returns the pure payload bytes the accumulator's
-// reference-counting walk charges for val -- the walk's total charge minus the
-// valueRefs bookkeeping it adds on top (one tracking entry per distinct backing
-// plus the bookkeeping map's base once any backing is tracked). It runs on a fresh
-// accumulator with no call roots so nothing is pre-seen by the baseline, isolating
-// the per-value charge for comparison against the estimator.
-func chargedValuePayload(t *testing.T, val Value) int {
-	t.Helper()
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
-	exec.root = newEnv(nil)
-	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	charged := acc.chargeValuePayload(val)
-	bookkeeping := len(acc.valueRefs) * estimatedRefTrackingEntryBytes
-	if len(acc.valueRefs) > 0 {
-		bookkeeping += estimatedMapBaseBytes
-	}
-	return charged - bookkeeping
-}
-
-// TestHashBuildAccumulatorPayloadMatchesEstimator pins the parity guarantee for the
-// P1 finding on PR #776: the accumulator's reference-counting walk must charge a
-// value's payload backings exactly what the memory estimator charges for the same
-// value (est.valuePayload). The two were a hand-rolled re-implementation of one
-// traversal and had diverged twice -- first on cycle safety, then on the per-entry
-// value slots of nested hashes (a transform block returning fresh scalar-keyed
-// hashes undercounted by len(values)*estimatedValueBytes). Sharing the structural
-// byte computation (sliceStructuralBytes, mapStructuralBytes) keeps them in lock
-// step; this test enforces that they cannot drift again across representative
-// shapes, including the nested-scalar-hash case the finding called out.
-func TestHashBuildAccumulatorPayloadMatchesEstimator(t *testing.T) {
-	t.Parallel()
-
-	nestedScalarHash := NewHash(map[string]Value{
-		"a": NewInt(1),
-		"b": NewInt(2),
-		"c": NewInt(3),
-	})
-	hashOfArrays := NewHash(map[string]Value{
-		"xs": NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
-		"ys": NewArray([]Value{NewString("alpha"), NewString("beta")}),
-	})
-	arrayOfHashes := NewArray([]Value{
-		NewHash(map[string]Value{"k": NewInt(1)}),
-		NewHash(map[string]Value{"k": NewInt(2), "j": NewInt(3)}),
-	})
-
-	// A value that shares a backing internally: the same nested array appears under
-	// two keys, so a correct walk reference-counts it once, matching the estimator's
-	// dedup by backing pointer.
-	shared := NewArray([]Value{NewString("shared-payload-bytes")})
-	sharedBackings := NewHash(map[string]Value{
-		"left":  shared,
-		"right": shared,
-	})
-
-	tests := []struct {
-		name string
-		val  Value
-	}{
-		{name: "scalar", val: NewInt(42)},
-		{name: "string", val: NewString("hello world")},
-		{name: "empty hash", val: NewHash(map[string]Value{})},
-		{name: "nested hash of scalars", val: nestedScalarHash},
-		{name: "hash of arrays", val: hashOfArrays},
-		{name: "array of hashes", val: arrayOfHashes},
-		{name: "shared backings", val: sharedBackings},
-		{
-			name: "deeply nested",
-			val: NewHash(map[string]Value{
-				"meta": NewHash(map[string]Value{
-					"tags":  NewArray([]Value{NewString("a"), NewString("b")}),
-					"count": NewInt(7),
-				}),
-				"rows": arrayOfHashes,
-			}),
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			want := newMemoryEstimator().valuePayload(tc.val)
-			got := chargedValuePayload(t, tc.val)
-			if got != want {
-				t.Fatalf("accumulator charged %d payload bytes, estimator charges %d (they must be identical)", got, want)
-			}
-		})
-	}
-}
-
-// TestHashTransformValuesFreshScalarHashesTripsMemoryQuota guards the P1 value-slot
-// undercount on PR #776 through the accumulator transform_values drives: a block
+// TestHashTransformValuesFreshScalarHashesTripsMemoryQuota guards the value-slot
+// accounting on PR #776 through the accumulator transform_values drives: a block
 // returning a fresh hash of scalar values per entry. Each result hash's per-entry
-// value slots (len(values)*estimatedValueBytes) were charged nowhere before the fix,
-// so the accumulator's running budget undercounted the build by
-// count*slotsPerResult*slot bytes and admitted it -- letting the block-produced
-// hashes accumulate past the quota before any check observed the peak.
+// value slots (len(values)*estimatedValueBytes) are part of the estimator's measure
+// of the value, so the conservative accumulator -- which charges every inserted
+// value its full est.value footprint -- must count them; a charge that omitted them
+// would undercount the build by count*slotsPerResult*slot bytes and let the
+// block-produced hashes accumulate past the quota before any check observed the peak.
 //
 // The test exercises the accumulator directly (the same newHashBuildAccumulator +
 // add per entry that transform_values uses) rather than the full builtin, because
 // the builtin's post-call check independently rejects an over-quota materialized
-// result and would mask whether the accumulator caught the undercount. The quota is
-// derived from the estimator's measurement of the fully materialized result -- the
-// single source of truth the corrected accumulator now mirrors (see the parity test
-// TestHashBuildAccumulatorPayloadMatchesEstimator) -- set just below that true peak.
-// The corrected accumulator converges to the estimator's peak and rejects mid-build;
-// the pre-fix accounting converged to peak minus the omitted slots and admitted it.
+// result and would mask whether the accumulator caught the undercount. With a fresh
+// result that aliases nothing in the empty baseline, the conservative accumulator's
+// charge for one entry is exactly the estimator's measure of the finished entry: the
+// output map bucket, the key header and payload, and the value (its slot plus the
+// result hash's full payload). That is the single source of truth the accumulator
+// mirrors.
 func TestHashTransformValuesFreshScalarHashesTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 
@@ -2037,7 +1677,7 @@ func TestHashTransformValuesFreshScalarHashesTripsMemoryQuota(t *testing.T) {
 	// transform_values shape the finding called out. Its keys and values are freshly
 	// allocated and never alias the empty baseline, so the accumulator charges the
 	// result's full payload with no dedup -- the clean case where the omitted value
-	// slots are a pure undercount.
+	// slots would be a pure undercount.
 	result := NewHash(map[string]Value{
 		"a": NewInt(1),
 		"b": NewInt(2),
@@ -2052,21 +1692,15 @@ func TestHashTransformValuesFreshScalarHashesTripsMemoryQuota(t *testing.T) {
 		t.Fatalf("add tripped under an unbounded quota: %v", err)
 	}
 
-	// The accumulator's charge for the entry, minus the bookkeeping it adds on top
-	// (the storedValues tracking map: its base plus one entry; the valueRefs tracking
-	// map: its base plus one entry per distinct backing), must equal exactly what the
-	// estimator charges for the same entry: the output map bucket, key header and
-	// payload, the value slot, and the result hash's full payload. The result hash's
-	// per-entry value slots are part of est.valuePayload, so a walk that omits them
-	// charges slotsPerResult*estimatedValueBytes too little and fails this equality.
-	bookkeeping := estimatedMapBaseBytes + estimatedTrackingMapEntryBytes // storedValues
-	bookkeeping += estimatedMapBaseBytes + len(acc.valueRefs)*estimatedRefTrackingEntryBytes
-	chargedPayload := acc.built - bookkeeping
-
-	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + len(key) + estimatedValueBytes
-	want := entry + newMemoryEstimator().valuePayload(result)
-	if chargedPayload != want {
-		t.Fatalf("accumulator charged %d entry bytes, estimator charges %d (the result hash's value slots must be counted)", chargedPayload, want)
+	// The conservative accumulator's charge for the entry must equal exactly what the
+	// estimator charges for the same entry: the output map bucket, the key header and
+	// payload, and the value (its slot plus the result hash's full payload). The
+	// result hash's per-entry value slots are part of est.value, so a charge that
+	// omits them would charge slotsPerResult*estimatedValueBytes too little.
+	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + len(key)
+	want := entry + newMemoryEstimator().value(result)
+	if acc.built != want {
+		t.Fatalf("accumulator charged %d entry bytes, estimator charges %d (the result hash's value slots must be counted)", acc.built, want)
 	}
 
 	// End-to-end sanity: transform_values producing the same fresh scalar hashes is
