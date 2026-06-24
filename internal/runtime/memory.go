@@ -302,15 +302,6 @@ type hashBuildAccumulator struct {
 	// running byte total charged for the output as it is assembled.
 	base  int
 	built int
-	// scratch is the transient heap a recursive build holds alongside the output as
-	// it descends -- the sorted-key scratch buffers (see sortedKeyBufferBytes) live
-	// simultaneously down the active recursion path while each level walks its
-	// entries. Unlike built, which only grows because the rebuilt structure stays
-	// live, scratch is a stack: a level reserves its buffer before sorting and
-	// releases it when its loop finishes, so completed sibling subtrees do not leave
-	// phantom scratch charged. Every charge checks base+built+scratch, so a level's
-	// buffer counts against the quota for the whole subtree it spans.
-	scratch int
 	// keyValueBytes records, per key currently present in the output map, the value
 	// bytes charged for that key's stored value. add consults it so a key written
 	// more than once (a merge conflict block, or a transform_keys block that maps
@@ -340,10 +331,9 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 }
 
 // newRootSeededHashBuildAccumulator seeds an accumulator with the live execution
-// memory plus the call roots, but without any output-map overhead. Recursive
-// builders that materialize many nested containers use it and charge each
-// container's base explicitly through addMapBase/addArrayBase, so the top-level
-// node is not special-cased and no container's fixed cost is double counted.
+// memory plus the call roots as the baseline, without any output-map overhead.
+// newHashBuildAccumulator builds on it and folds in the output map's fixed cost
+// so the per-entry charges add only their incremental growth.
 func newRootSeededHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *hashBuildAccumulator {
 	acc := &hashBuildAccumulator{exec: exec}
 	if exec.memoryQuota <= 0 {
@@ -402,98 +392,19 @@ func (acc *hashBuildAccumulator) add(key string, val Value) error {
 	return acc.charge(saturatingAdd(entry, valueBytes))
 }
 
-// The per-node charges below decompose the memory estimator's recursive
-// accounting so a transform that rebuilds a structure can charge each node
-// against the quota as it is created, without re-walking the parts already built.
-// They mirror estimateMemoryUsage exactly: addValueBase is the per-value header
-// the estimator adds for every value; addMapBase and addMapEntryShell together
-// reproduce est.hash; addArrayBase reproduces the est.slice backing. Recursive
-// builders charge addValueBase once per produced value (leaf or container),
-// addMapBase plus an addMapEntryShell per entry for each map node, and addArrayBase
-// per array node, so every byte the estimator would count for the finished value
-// is charged incrementally and exactly once.
-
-// addValueBase charges the value header the estimator counts for every value.
-func (acc *hashBuildAccumulator) addValueBase() error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	return acc.charge(estimatedValueBytes)
-}
-
-// addMapBase charges a freshly built map node's bucket table overhead.
-func (acc *hashBuildAccumulator) addMapBase() error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	return acc.charge(estimatedMapBaseBytes)
-}
-
-// addMapEntryShell charges the bucket overhead and the synthesized key (header
-// plus bytes) one map entry adds. The stored value's header and payload are
-// charged separately at the value's own node, so the entry shell never re-walks
-// it. The key's bytes dedup against keys already seen, matching the shared string
-// backing the real map would hold.
-func (acc *hashBuildAccumulator) addMapEntryShell(key string) error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	shell := estimatedMapEntryBytes + estimatedStringHeaderBytes
-	return acc.charge(saturatingAdd(shell, acc.est.stringPayloadSize(key)))
-}
-
-// addArrayBase charges a freshly built array node's base overhead and slot array.
-// Each element's value header and payload are charged separately at the element's
-// own node, matching how the estimator counts both the backing slot and the
-// element value.
-func (acc *hashBuildAccumulator) addArrayBase(slots int) error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	backing := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(slots, estimatedValueBytes))
-	return acc.charge(backing)
-}
-
 func (acc *hashBuildAccumulator) charge(delta int) error {
 	acc.built = saturatingAdd(acc.built, delta)
 	return acc.checkQuota()
 }
 
-// checkQuota rejects the build when the live baseline plus the rebuilt output plus
-// the transient scratch held on the active recursion path exceeds the quota.
+// checkQuota rejects the build when the live baseline plus the rebuilt output
+// exceeds the quota.
 func (acc *hashBuildAccumulator) checkQuota() error {
-	used := saturatingAdd(saturatingAdd(acc.base, acc.built), acc.scratch)
+	used := saturatingAdd(acc.base, acc.built)
 	if used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
-}
-
-// reserveScratch charges a transient scratch buffer (such as a sorted-key list)
-// the build holds while it walks one structure level. The bytes count against the
-// quota for the whole subtree the level spans -- every nested charge sees them via
-// checkQuota -- and must be released with releaseScratch once the level's walk
-// finishes so completed siblings do not leave the buffer charged. A reservation
-// that already exceeds the quota is rejected before the buffer is allocated.
-func (acc *hashBuildAccumulator) reserveScratch(bytes int) error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	acc.scratch = saturatingAdd(acc.scratch, bytes)
-	return acc.checkQuota()
-}
-
-// releaseScratch returns scratch bytes reserved by reserveScratch once the level
-// that held them has finished walking, never letting the running total fall below
-// zero.
-func (acc *hashBuildAccumulator) releaseScratch(bytes int) {
-	if acc.exec.memoryQuota <= 0 {
-		return
-	}
-	acc.scratch -= bytes
-	if acc.scratch < 0 {
-		acc.scratch = 0
-	}
 }
 
 // chargeDelta adjusts built by a signed delta, used when a key replacement swaps

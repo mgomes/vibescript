@@ -80,43 +80,19 @@ func sortedKeyBufferBytes(keyCount int) int {
 	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(keyCount, estimatedStringHeaderBytes))
 }
 
-func deepTransformKeys(exec *Execution, receiver, block Value) (Value, error) {
-	state := &deepTransformState{
+func deepTransformKeys(exec *Execution, value, block Value) (Value, error) {
+	return deepTransformKeysWithState(exec, value, block, &deepTransformState{
 		seenHashes: make(map[uintptr]struct{}),
 		seenArrays: make(map[uintptr]struct{}),
-		// Seed the accumulator with the receiver as a live call root so the
-		// rebuilt structure is charged against everything already resident, not
-		// against an empty baseline. Leaf values are shared with the input and so
-		// add no new bytes; only the rebuilt containers and the block's
-		// synthesized keys are charged as the recursion materializes them.
-		acc: newRootSeededHashBuildAccumulator(exec, receiver, nil, nil, NewNil()),
-	}
-	return deepTransformKeysWithState(exec, receiver, block, state)
+	})
 }
 
 type deepTransformState struct {
 	seenHashes map[uintptr]struct{}
 	seenArrays map[uintptr]struct{}
-	acc        *hashBuildAccumulator
 }
 
-// deepTransformKeysWithState rebuilds value with every hash key passed through
-// block, recursing into nested hashes and arrays. Each visited key and array
-// element charges a step so a deep or wide structure participates in the step
-// quota and honors cancellation. Every produced value charges its header through
-// the build accumulator, each map node charges its base plus a shell per entry,
-// and each array node charges its backing, so every byte the estimator would
-// count for the rebuilt structure is charged incrementally as the result
-// materializes rather than only at the post-call check. Leaf values are shared
-// with the input, so only their new slot (the header) is charged, not their
-// payload.
 func deepTransformKeysWithState(exec *Execution, value, block Value, state *deepTransformState) (Value, error) {
-	// Every value the recursion produces occupies a fresh slot in the rebuilt
-	// structure (a map value, an array element, or the top-level result), so
-	// charge its header up front regardless of kind.
-	if err := state.acc.addValueBase(); err != nil {
-		return NewNil(), err
-	}
 	switch value.Kind() {
 	case KindHash, KindObject:
 		entries := value.Hash()
@@ -128,28 +104,10 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 			state.seenHashes[id] = struct{}{}
 			defer delete(state.seenHashes, id)
 		}
-		if err := state.acc.addMapBase(); err != nil {
-			return NewNil(), err
-		}
-		// Reserve the sorted-key scratch buffer this level allocates before sorting
-		// so it counts against the quota for the whole subtree it spans. The buffers
-		// down the active recursion path are live simultaneously, so each level
-		// charges its own and releases it once its walk finishes, keeping completed
-		// siblings from leaving phantom scratch charged. Without this a deep or wide
-		// hash could allocate an uncharged key list per recursion frame past the
-		// sandbox limit.
-		scratch := sortedKeyBufferBytes(len(entries))
-		if err := state.acc.reserveScratch(scratch); err != nil {
-			return NewNil(), err
-		}
-		defer state.acc.releaseScratch(scratch)
 		out := make(map[string]Value, len(entries))
 		var blockArg [1]Value
 		var keyBuf [smallHashKeyBufferSize]string
 		for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
-			if err := exec.step(); err != nil {
-				return NewNil(), err
-			}
 			blockArg[0] = NewSymbol(key)
 			nextKeyValue, err := exec.CallBlock(block, blockArg[:])
 			if err != nil {
@@ -158,9 +116,6 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 			nextKey, err := valueToHashKey(nextKeyValue)
 			if err != nil {
 				return NewNil(), fmt.Errorf("hash.deep_transform_keys block must return symbol or string")
-			}
-			if err := state.acc.addMapEntryShell(nextKey); err != nil {
-				return NewNil(), err
 			}
 			nextValue, err := deepTransformKeysWithState(exec, entries[key], block, state)
 			if err != nil {
@@ -179,14 +134,8 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 			state.seenArrays[id] = struct{}{}
 			defer delete(state.seenArrays, id)
 		}
-		if err := state.acc.addArrayBase(len(items)); err != nil {
-			return NewNil(), err
-		}
 		out := make([]Value, len(items))
 		for i, item := range items {
-			if err := exec.step(); err != nil {
-				return NewNil(), err
-			}
 			nextValue, err := deepTransformKeysWithState(exec, item, block, state)
 			if err != nil {
 				return NewNil(), err
