@@ -546,10 +546,20 @@ func (acc *hashBuildAccumulator) add(key string, val Value) error {
 	return acc.charge(saturatingAdd(saturatingAdd(entry, payload), tracking))
 }
 
+// charge applies a signed footprint delta to built and rejects the build if the
+// running total then exceeds the quota. A replacement releases the old value's
+// payload and charges the new one, so delta can be negative; saturatingAdd guards
+// only non-negative operands, so a negative delta is added directly (it can only
+// shrink built, never overflow upward) and clamped at zero, while a non-negative
+// delta saturates against MaxInt.
 func (acc *hashBuildAccumulator) charge(delta int) error {
-	acc.built = saturatingAdd(acc.built, delta)
-	if acc.built < 0 {
-		acc.built = 0
+	if delta < 0 {
+		acc.built += delta
+		if acc.built < 0 {
+			acc.built = 0
+		}
+	} else {
+		acc.built = saturatingAdd(acc.built, delta)
 	}
 	return acc.checkQuota()
 }
@@ -569,7 +579,7 @@ func (acc *hashBuildAccumulator) checkQuota() error {
 // newly live: the backings whose refcount rose from zero. The value slot itself is
 // charged by the caller; this counts only what hangs off the slot.
 func (acc *hashBuildAccumulator) chargeValuePayload(val Value) int {
-	return acc.walkValuePayload(val, +1)
+	return acc.walkValuePayload(val, +1, make(map[backingID]struct{}))
 }
 
 // releaseValuePayload reference-counts down the payload backings of a value being
@@ -578,7 +588,7 @@ func (acc *hashBuildAccumulator) chargeValuePayload(val Value) int {
 // referenced by another live slot keeps a positive count and contributes nothing,
 // so a shared payload is never subtracted while it remains reachable.
 func (acc *hashBuildAccumulator) releaseValuePayload(val Value) int {
-	return acc.walkValuePayload(val, -1)
+	return acc.walkValuePayload(val, -1, make(map[backingID]struct{}))
 }
 
 // walkValuePayload traverses the payload reachable from val and adjusts the
@@ -586,6 +596,19 @@ func (acc *hashBuildAccumulator) releaseValuePayload(val Value) int {
 // returns the net bytes by which the live footprint changed: the sum of backings
 // crossing from zero to one reference (charged) minus those crossing from one to
 // zero (freed).
+//
+// visited records the backings already touched during this single charge or
+// release walk so each is reference-counted at most once per top-level value. A
+// stored value's graph can reach the same backing through several paths, or even
+// form a Go-level cycle (a = [0]; a[0] = a, or obj.Hash()[k] = obj built by
+// in-place index assignment), which a transform block can return. Without the
+// per-walk visited set a cyclic backing would either recurse forever or, with an
+// ad-hoc "already counted, skip" guard, charge and release asymmetrically: the
+// self-edge keeps the count positive so release never recurses and the backing
+// leaks. Deduplicating by visited makes charge and release mirror-symmetric for
+// every shape -- a self-cycle, a mutual cycle a<->b, or a cycle nested under a
+// fresh container -- so a cyclic value is charged exactly once and released fully,
+// leaving no orphaned valueRefs entry behind.
 //
 // Backings already accounted by the baseline are skipped: the persistent
 // estimator's seen-sets, populated when the accumulator snapshotted the call
@@ -602,7 +625,7 @@ func (acc *hashBuildAccumulator) releaseValuePayload(val Value) int {
 // under-count a live one, which keeps the sandbox-containment guarantee intact for
 // the exotic case of such a value being stored in a transform output and later
 // replaced.
-func (acc *hashBuildAccumulator) walkValuePayload(val Value, sign int) int {
+func (acc *hashBuildAccumulator) walkValuePayload(val Value, sign int, visited map[backingID]struct{}) int {
 	switch val.Kind() {
 	case KindString, KindSymbol:
 		str := val.String()
@@ -614,11 +637,15 @@ func (acc *hashBuildAccumulator) walkValuePayload(val Value, sign int) int {
 			return 0
 		}
 		id := backingID{kind: KindString, ptr: ptr, length: len(str)}
+		if _, seen := visited[id]; seen {
+			return 0
+		}
+		visited[id] = struct{}{}
 		return acc.adjustRef(id, sign, estimatedStringHeaderBytes+len(str))
 	case KindArray:
-		return acc.walkSlicePayload(val.Array(), sign)
+		return acc.walkSlicePayload(val.Array(), sign, visited)
 	case KindHash, KindObject:
-		return acc.walkHashPayload(val.Hash(), sign)
+		return acc.walkHashPayload(val.Hash(), sign, visited)
 	default:
 		// Scalars contribute only their value slot, charged by the caller. Instances,
 		// classes, blocks, functions, and builtins are charged permanently below.
@@ -631,7 +658,12 @@ func (acc *hashBuildAccumulator) walkValuePayload(val Value, sign int) int {
 // capacity slot) are counted with the slice's identity so they live and die with
 // it; element payloads beyond their slots are reference-counted independently so a
 // nested string shared with another slot survives this slice's release.
-func (acc *hashBuildAccumulator) walkSlicePayload(values []Value, sign int) int {
+//
+// A backing already visited in this walk (a shared sub-graph reached twice, or a
+// cycle pointing back to itself) is skipped without re-adjusting its count or
+// recursing, so the structural bytes and every element are charged or released
+// exactly once per top-level value regardless of how many internal paths reach it.
+func (acc *hashBuildAccumulator) walkSlicePayload(values []Value, sign int, visited map[backingID]struct{}) int {
 	id := backingID{kind: KindArray, ptr: sliceBackingIdentity(values)}
 	if id.ptr != 0 && acc.baseHasSlice(id.ptr) {
 		return 0
@@ -643,15 +675,14 @@ func (acc *hashBuildAccumulator) walkSlicePayload(values []Value, sign int) int 
 		// (empty) structural bytes directly so the sign still applies.
 		total = sign * structural
 	} else {
-		total = acc.adjustRef(id, sign, structural)
-		if total == 0 && cap(values) > 0 {
-			// The backing was already counted by another live reference, so its
-			// elements were too; do not re-walk them.
+		if _, seen := visited[id]; seen {
 			return 0
 		}
+		visited[id] = struct{}{}
+		total = acc.adjustRef(id, sign, structural)
 	}
 	for _, elem := range values {
-		total += acc.walkValuePayload(elem, sign)
+		total += acc.walkValuePayload(elem, sign, visited)
 	}
 	return total
 }
@@ -660,7 +691,11 @@ func (acc *hashBuildAccumulator) walkSlicePayload(values []Value, sign int) int 
 // backing's structural bytes (its base plus one entry per key, with key headers
 // and payloads) are counted with the map's identity; value payloads beyond their
 // slots are reference-counted independently.
-func (acc *hashBuildAccumulator) walkHashPayload(values map[string]Value, sign int) int {
+//
+// As in walkSlicePayload, a backing already visited in this walk is skipped, so a
+// map reachable by several paths or one that points back at itself (a self-cycle
+// built by obj.Hash()[k] = obj) is charged and released exactly once.
+func (acc *hashBuildAccumulator) walkHashPayload(values map[string]Value, sign int, visited map[backingID]struct{}) int {
 	ptr := reflect.ValueOf(values).Pointer()
 	if ptr != 0 && acc.baseHasMap(ptr) {
 		return 0
@@ -674,13 +709,14 @@ func (acc *hashBuildAccumulator) walkHashPayload(values map[string]Value, sign i
 		total = sign * structural
 	} else {
 		id := backingID{kind: KindHash, ptr: ptr}
-		total = acc.adjustRef(id, sign, structural)
-		if total == 0 && len(values) > 0 {
+		if _, seen := visited[id]; seen {
 			return 0
 		}
+		visited[id] = struct{}{}
+		total = acc.adjustRef(id, sign, structural)
 	}
 	for _, elem := range values {
-		total += acc.walkValuePayload(elem, sign)
+		total += acc.walkValuePayload(elem, sign, visited)
 	}
 	return total
 }

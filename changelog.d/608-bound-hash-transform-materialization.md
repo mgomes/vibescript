@@ -33,7 +33,12 @@
   releases only the bytes the swap leaves unreachable, so a still-reachable value
   (the returned old value, or one a fresh result wraps) is never un-charged. This
   keeps the running total from dropping below the map's true live footprint, which
-  could otherwise let later inserts materialize past the quota. A bare
+  could otherwise let later inserts materialize past the quota. The reference-count
+  walk is cycle-safe: a block can return a value that reaches itself through
+  in-place index assignment (`a = [0]; a[0] = a`), and charging then releasing such
+  a value is now mirror-symmetric, so repeatedly replacing a key that holds a cyclic
+  value keeps the running total constant instead of inflating it on every write and
+  falsely tripping the quota. A bare
   `Hash#merge { ... }` with no argument hashes returns a copy of the receiver
   without running the block, so it no longer charges the conflict block's base
   scratch buffer it never allocates, and a large receiver whose copy fits the quota

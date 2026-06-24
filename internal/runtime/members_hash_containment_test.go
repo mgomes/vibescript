@@ -1180,6 +1180,70 @@ func TestHashMergeManyCollidingOneKeyHashesOversizedBlockTrips(t *testing.T) {
 	requireCallRuntimeErrorType(t, script, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+// mergeCollidingCyclicBlockSource builds a merge that folds collisions one-key
+// hashes all colliding on :x, whose conflict block returns a fresh cyclic value
+// per collision: a two-element array carrying a payloadBytes string at index 0 and
+// a self-edge at index 1 (c[1] = c). Each result overwrites the same slot, so the
+// final map holds one entry, but every intermediate cyclic value is built and then
+// replaced.
+func mergeCollidingCyclicBlockSource(collisions, payloadBytes int) string {
+	var b strings.Builder
+	b.WriteString("def run(a)\n  a.merge(")
+	for i := range collisions {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("{ x: 1 }")
+	}
+	fmt.Fprintf(&b, ") { |k, old, new| c = [\"\".ljust(%d, \"z\"), 0]; c[1] = c; c }\nend", payloadBytes)
+	return b.String()
+}
+
+// TestHashMergeCollidingCyclicBlockReplacementsSucceed is the end-to-end twin of
+// TestHashBuildAccumulatorReleasesCyclicValuesFully: a merge conflict block returns
+// a fresh self-cyclic value per collision (c = [big, 0]; c[1] = c). Each overwrites
+// the same slot, so the final map holds a single cyclic entry whose footprint fits
+// comfortably under the quota, and the merge must succeed.
+//
+// Before the payload walk was made cycle-safe, releasing a replaced cyclic value
+// early-returned on its self-edge and never credited its bytes (and the big string
+// nested under it) back, so the accumulator's running total climbed by a full
+// payload per collision and falsely tripped the quota partway through -- the exact
+// false-rejection class this PR removes. The cycle-safe walk releases each replaced
+// cycle fully, keeping the running total at one entry.
+func TestHashMergeCollidingCyclicBlockReplacementsSucceed(t *testing.T) {
+	t.Parallel()
+
+	const collisions = 60
+	const payloadBytes = 4 * 1024
+	receiver := NewHash(map[string]Value{"x": NewInt(0)})
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, NewNil())
+	// Room for the receiver, the script's AST and environment, and one final cyclic
+	// entry holding a single payload, but far less than the sum of every collision's
+	// payload. The pre-fix leak charged one payload per collision and tripped here.
+	quota := liveWithRoots + payloadBytes + 60*1024
+
+	// Sanity: the pre-fix per-collision leak (a full payload plus the leaked cyclic
+	// backing per collision) dwarfs this quota, so success proves the cycle is
+	// released rather than the quota being slack enough to hide the leak.
+	leaked := collisions * payloadBytes
+	if leaked <= quota {
+		t.Fatalf("test setup expects the per-collision leak (%d) to exceed the quota (%d)", leaked, quota)
+	}
+
+	source := mergeCollidingCyclicBlockSource(collisions, payloadBytes)
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+	got, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
+	if err != nil {
+		t.Fatalf("merge of %d colliding cyclic-block collisions under a fitting quota = %v, want success", collisions, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 1 {
+		t.Fatalf("merge produced %v with %d entries, want a hash with 1 entry", got.Kind(), len(got.Hash()))
+	}
+}
+
 // TestHashTransformValuesIncrementalBlockCharging drives the P1 transform_values
 // finding end to end: a block that returns a fresh large string per entry
 // accumulates payloads only reachable through the Go-local output map, so without
@@ -1293,38 +1357,144 @@ func TestHashBuildAccumulatorReplacementKeepsReachablePayload(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
-// TestHashMergeReturnsOldThenGrowsTrips drives the P1 returns-old finding end to
-// end through merge's conflict block. Key :x collides across two argument hashes:
-// the first conflict stores a fresh large string, the second returns the old value
-// unchanged. A later key then stores another fresh large value. The output's live
-// footprint holds both payloads, which exceeds the quota, so the merge must be
-// rejected. The pre-fix accumulator dropped the first payload on the returns-old
-// write, lowering its running total enough to admit the later insert.
-func TestHashMergeReturnsOldThenGrowsTrips(t *testing.T) {
+// selfCyclicArray builds an array whose single element points back at the array
+// itself: a = [0]; a[0] = a. NewArray stores the slice header directly, so
+// mutating the backing after construction makes the value reach itself, mirroring
+// a Vibescript script that builds a cycle with in-place index assignment.
+func selfCyclicArray() Value {
+	backing := make([]Value, 1)
+	a := NewArray(backing)
+	backing[0] = a
+	return a
+}
+
+// mutualCyclicArrays builds two arrays that reference each other: a = [b], b = [a].
+func mutualCyclicArrays() (Value, Value) {
+	aBacking := make([]Value, 1)
+	bBacking := make([]Value, 1)
+	a := NewArray(aBacking)
+	b := NewArray(bBacking)
+	aBacking[0] = b
+	bBacking[0] = a
+	return a, b
+}
+
+// selfCyclicHash builds a hash that holds a reference to itself under one key:
+// obj = {}; obj["self"] = obj, the map analog of selfCyclicArray.
+func selfCyclicHash() Value {
+	backing := make(map[string]Value, 1)
+	h := NewHash(backing)
+	backing["self"] = h
+	return h
+}
+
+// TestHashBuildAccumulatorReleasesCyclicValuesFully pins the cycle-safety of the
+// reference-counting payload walk. A transform block can return a value that
+// reaches itself through Go-level index assignment (a = [0]; a[0] = a, or
+// obj.Hash()[k] = obj). Charging and releasing such a value must be
+// mirror-symmetric: the walk visits each backing once per charge and once per
+// release, so a key repeatedly overwritten with a cyclic value holds a constant
+// live footprint and leaves no orphaned reference-count entries behind.
+//
+// Without the per-walk visited set the release walk early-returns on the cyclic
+// backing -- its self-edge keeps the refcount positive, so release never recurses
+// and the backing's bytes are never credited back. built then climbs on every
+// replacement (an over-count that causes false rejections) and valueRefs leaks one
+// entry per replacement.
+func TestHashBuildAccumulatorReleasesCyclicValuesFully(t *testing.T) {
 	t.Parallel()
 
-	const payload = 256 * 1024
-	base := NewHash(map[string]Value{"x": NewString(""), "z": NewString("")})
-	arg1 := NewHash(map[string]Value{"x": NewString("")})
-	arg2 := NewHash(map[string]Value{"x": NewString("")})
-	arg3 := NewHash(map[string]Value{"z": NewString("")})
-	args := []Value{arg1, arg2, arg3}
+	shapes := []struct {
+		name  string
+		build func() Value
+	}{
+		{name: "self_cyclic_array", build: selfCyclicArray},
+		{name: "self_cyclic_hash", build: selfCyclicHash},
+		{
+			name: "mutual_cyclic_arrays",
+			build: func() Value {
+				a, _ := mutualCyclicArrays()
+				return a
+			},
+		},
+		{
+			name: "cycle_nested_under_fresh_container",
+			build: func() Value {
+				// A fresh outer array wrapping a self-cyclic inner array, so the walk
+				// must descend through a non-cyclic backing before hitting the cycle.
+				return NewArray([]Value{selfCyclicArray()})
+			},
+		},
+	}
 
-	// Probe the live footprint of the call roots, then size the quota into the window
-	// between the buggy single-payload peak and the correct two-payload peak.
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	liveWithRoots := probe.estimateMemoryUsageForCallRoots(base, args, nil, NewNil())
-	quota := liveWithRoots + payload + payload/2
+	for _, shape := range shapes {
+		t.Run(shape.name, func(t *testing.T) {
+			t.Parallel()
 
-	// The block stores a fresh large string when the current value is small and
-	// returns it unchanged once it is already large, so :x is stored fresh on arg1
-	// and returned old on arg2 while :z is stored fresh on arg3.
-	source := fmt.Sprintf(`def run(base, a1, a2, a3)
-  base.merge(a1, a2, a3) { |k, old, new| old.length >= %d ? old : "".ljust(%d, "y") }
-end`, payload, payload)
-	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
-	requireCallRuntimeErrorType(t, script, "run", []Value{base, arg1, arg2, arg3}, CallOptions{}, runtimeErrorTypeLimit)
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+			exec.root = newEnv(nil)
+			base := exec.estimateMemoryUsageBase(newMemoryEstimator())
+			// Ample headroom: the footprint of a single cyclic value is tiny, and the
+			// test asserts built stays constant rather than tripping, so the quota only
+			// needs to admit one steady-state entry.
+			exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + 64*1024
+
+			acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+
+			// Seed the slot with a first cyclic value, then record the steady-state
+			// footprint after one replacement so the comparison ignores the one-time
+			// tracking-map and entry costs of the first insert.
+			if err := acc.add("k", shape.build()); err != nil {
+				t.Fatalf("seeding the cyclic slot tripped the quota: %v", err)
+			}
+			if err := acc.add("k", shape.build()); err != nil {
+				t.Fatalf("first cyclic replacement tripped the quota: %v", err)
+			}
+			steady := acc.built
+			steadyRefs := len(acc.valueRefs)
+
+			// Replace the same slot with a fresh distinct cyclic value many times. Each
+			// replacement charges a new cycle and releases the old one; a cycle-safe walk
+			// keeps built and the reference-count map at their steady-state size.
+			const replacements = 50
+			for i := range replacements {
+				if err := acc.add("k", shape.build()); err != nil {
+					t.Fatalf("cyclic replacement %d tripped the quota: %v", i, err)
+				}
+				if acc.built != steady {
+					t.Fatalf("cyclic replacement %d changed built from %d to %d; the cyclic payload is being charged or released asymmetrically",
+						i, steady, acc.built)
+				}
+				if len(acc.valueRefs) != steadyRefs {
+					t.Fatalf("cyclic replacement %d changed valueRefs size from %d to %d; a cyclic backing leaked a reference-count entry",
+						i, steadyRefs, len(acc.valueRefs))
+				}
+			}
+
+			// Draining the slot to a payload-free scalar must release every cyclic
+			// backing: with no payload-bearing value left, the reference-count map must
+			// be empty. A leaked self-edge would keep an orphaned entry alive here.
+			if err := acc.add("k", NewInt(0)); err != nil {
+				t.Fatalf("draining the slot tripped the quota: %v", err)
+			}
+			if len(acc.valueRefs) != 0 {
+				t.Fatalf("valueRefs holds %d orphaned entries after draining the cyclic slot, want 0", len(acc.valueRefs))
+			}
+		})
+	}
 }
+
+// The P1 "returns-old" finding is pinned at the accumulator level by
+// TestHashBuildAccumulatorReplacementKeepsReachablePayload, which drives acc.add
+// directly. It deliberately has no end-to-end merge twin: the returns-old shape
+// keeps both the returned-old payload and the later fresh payload in the final
+// output map, so the post-call checkMemory safety net always observes the
+// over-quota result regardless of whether the accumulator under-counts mid-build.
+// An end-to-end merge test would therefore pass whether or not the incremental
+// accounting is correct, masking the very regression it claims to guard. The
+// merge wiring's use of the replacement-aware accumulator is instead covered by
+// TestHashMergeManyCollidingOneKeyHashesWithBlockSucceeds and its oversized twin,
+// whose transient (overwritten) peaks the post-call check cannot see.
 
 // TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds pins the P2 finding on PR
 // #776: a bare `h.merge { ... }` with no argument hashes short-circuits to a copy
