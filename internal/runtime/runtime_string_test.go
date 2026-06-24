@@ -609,6 +609,64 @@ func TestStringSearchAndSlice(t *testing.T) {
 	}
 }
 
+func TestStringIndexNegativeOffset(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def find_index(text, needle, offset)
+      text.index(needle, offset)
+    end
+
+    def find_rindex(text, needle, offset)
+      text.rindex(needle, offset)
+    end
+    `)
+
+	// Expectations cross-checked against Ruby 2.6.10 (see issue #615).
+	tests := []struct {
+		name    string
+		fn      string
+		text    string
+		needle  string
+		offset  int64
+		wantNil bool
+		want    int64
+	}{
+		{name: "index negative within range", fn: "find_index", text: "hello", needle: "l", offset: -3, want: 2},
+		{name: "index negative maps to start", fn: "find_index", text: "hello", needle: "l", offset: -5, want: 2},
+		{name: "index negative before start", fn: "find_index", text: "hello", needle: "l", offset: -9, wantNil: true},
+		{name: "index negative last rune", fn: "find_index", text: "hello", needle: "e", offset: -1, wantNil: true},
+		{name: "index negative empty needle", fn: "find_index", text: "hello", needle: "", offset: -2, want: 3},
+		{name: "index negative empty needle start", fn: "find_index", text: "hello", needle: "", offset: -5, want: 0},
+		{name: "index negative empty needle before start", fn: "find_index", text: "hello", needle: "", offset: -6, wantNil: true},
+		{name: "index negative needle past offset", fn: "find_index", text: "hello", needle: "lo", offset: -1, wantNil: true},
+		{name: "index negative multibyte", fn: "find_index", text: "héllo", needle: "l", offset: -3, want: 2},
+		{name: "rindex negative within range", fn: "find_rindex", text: "hello", needle: "l", offset: -2, want: 3},
+		{name: "rindex negative before start", fn: "find_rindex", text: "hello", needle: "l", offset: -9, wantNil: true},
+		{name: "rindex negative last rune", fn: "find_rindex", text: "hello", needle: "l", offset: -1, want: 3},
+		{name: "rindex negative empty needle", fn: "find_rindex", text: "hello", needle: "", offset: -2, want: 3},
+		{name: "rindex negative empty needle before start", fn: "find_rindex", text: "hello", needle: "", offset: -6, wantNil: true},
+		{name: "rindex negative needle ends at offset", fn: "find_rindex", text: "hello", needle: "lo", offset: -1, want: 3},
+		{name: "rindex negative multibyte", fn: "find_rindex", text: "héllo", needle: "l", offset: -2, want: 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := []Value{NewString(tc.text), NewString(tc.needle), NewInt(tc.offset)}
+			got := callFunc(t, script, tc.fn, args)
+			if tc.wantNil {
+				if got.Kind() != KindNil {
+					t.Fatalf("%s(%q, %q, %d) = %v, want nil", tc.fn, tc.text, tc.needle, tc.offset, got)
+				}
+				return
+			}
+			if got.Kind() != KindInt || got.Int() != tc.want {
+				t.Fatalf("%s(%q, %q, %d) = %v, want %d", tc.fn, tc.text, tc.needle, tc.offset, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStringSliceNormalizesInvalidUTF8(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -623,6 +681,127 @@ func TestStringSliceNormalizesInvalidUTF8(t *testing.T) {
 	}
 	if !utf8.ValidString(result.String()) {
 		t.Fatalf("first_char invalid UTF-8 returned non-UTF-8 string %q", result.String())
+	}
+}
+
+// TestStringSliceRubySemantics verifies String#slice across the argument shapes
+// Vibescript can represent, mirroring Ruby 2.6.10. wantNil marks an
+// out-of-range selector that must return nil; otherwise want is the expected
+// substring.
+func TestStringSliceRubySemantics(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		expr    string
+		want    string
+		wantNil bool
+	}{
+		{name: "positive index", expr: `"héllo".slice(0)`, want: "h"},
+		{name: "positive index interior", expr: `"héllo".slice(1)`, want: "é"},
+		{name: "negative index", expr: `"héllo".slice(-1)`, want: "o"},
+		{name: "negative index to first", expr: `"héllo".slice(-5)`, want: "h"},
+		{name: "negative index out of range", expr: `"héllo".slice(-6)`, wantNil: true},
+		{name: "index at length is nil", expr: `"héllo".slice(5)`, wantNil: true},
+		{name: "index past length is nil", expr: `"héllo".slice(6)`, wantNil: true},
+		{name: "float index truncates", expr: `"héllo".slice(1.9)`, want: "é"},
+		{name: "negative float index truncates", expr: `"héllo".slice(-1.5)`, want: "o"},
+
+		{name: "start and length", expr: `"héllo".slice(1, 4)`, want: "éllo"},
+		{name: "negative start and length", expr: `"héllo".slice(-3, 2)`, want: "ll"},
+		{name: "zero length", expr: `"héllo".slice(1, 0)`, want: ""},
+		{name: "start at length zero len", expr: `"héllo".slice(5, 0)`, want: ""},
+		{name: "start at length positive len", expr: `"héllo".slice(5, 2)`, want: ""},
+		{name: "start past length", expr: `"héllo".slice(6, 1)`, wantNil: true},
+		{name: "negative length is nil", expr: `"héllo".slice(1, -1)`, wantNil: true},
+		{name: "negative start positive length", expr: `"héllo".slice(-1, 2)`, want: "o"},
+		{name: "huge length clamps to end", expr: `"héllo".slice(1, 9223372036854775807)`, want: "éllo"},
+
+		{name: "inclusive range to end", expr: `"héllo".slice(1..-1)`, want: "éllo"},
+		{name: "exclusive range", expr: `"héllo".slice(1...3)`, want: "él"},
+		{name: "inclusive range", expr: `"héllo".slice(1..2)`, want: "él"},
+		{name: "negative inclusive range", expr: `"héllo".slice(-3..-1)`, want: "llo"},
+		{name: "negative exclusive range", expr: `"héllo".slice(-3...-1)`, want: "ll"},
+		{name: "whole range", expr: `"héllo".slice(0..-1)`, want: "héllo"},
+		{name: "range begin at length", expr: `"héllo".slice(5..7)`, want: ""},
+		{name: "range begin past length", expr: `"héllo".slice(6..7)`, wantNil: true},
+		{name: "range begin too negative", expr: `"héllo".slice(-6..-1)`, wantNil: true},
+		{name: "range begin after end", expr: `"héllo".slice(2..1)`, want: ""},
+		{name: "range mixed bounds", expr: `"héllo".slice(1..-3)`, want: "él"},
+
+		{name: "substring present", expr: `"héllo".slice("llo")`, want: "llo"},
+		{name: "substring multibyte", expr: `"héllo".slice("é")`, want: "é"},
+		{name: "substring absent", expr: `"héllo".slice("x")`, wantNil: true},
+		{name: "empty substring", expr: `"héllo".slice("")`, want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			got := callFunc(t, script, "run", nil)
+			if tc.wantNil {
+				if got.Kind() != KindNil {
+					t.Fatalf("%s = %v, want nil", tc.expr, got)
+				}
+				return
+			}
+			if got.Kind() != KindString {
+				t.Fatalf("%s kind = %v, want string", tc.expr, got.Kind())
+			}
+			if got.String() != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.expr, got.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestStringSliceErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "no arguments",
+			script: `def run() "abc".slice() end`,
+			want:   "string.slice expects an index, range, or substring with optional length",
+		},
+		{
+			name:   "too many arguments",
+			script: `def run() "abc".slice(1, 2, 3) end`,
+			want:   "string.slice expects an index, range, or substring with optional length",
+		},
+		{
+			name:   "non-numeric single argument",
+			script: `def run() "abc".slice(true) end`,
+			want:   "string.slice index must be an integer, range, or substring",
+		},
+		{
+			name:   "nil single argument",
+			script: `def run() "abc".slice(nil) end`,
+			want:   "string.slice index must be an integer, range, or substring",
+		},
+		{
+			name:   "substring with length",
+			script: `def run() "abc".slice("a", 2) end`,
+			want:   "string.slice index must be integer",
+		},
+		{
+			name:   "non-numeric length",
+			script: `def run() "abc".slice(0, "x") end`,
+			want:   "string.slice length must be integer",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
 	}
 }
 

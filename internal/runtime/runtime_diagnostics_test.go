@@ -292,9 +292,14 @@ end`,
 			errMsg: "substring must be string",
 		},
 		{
-			name:   "string.index with invalid offset",
-			script: `def run() "hello".index("e", -1) end`,
-			errMsg: "offset must be non-negative integer",
+			name:   "string.index with non-integer offset",
+			script: `def run() "hello".index("e", "1") end`,
+			errMsg: "string.index offset must be integer",
+		},
+		{
+			name:   "string.rindex with non-integer offset",
+			script: `def run() "hello".rindex("l", "1") end`,
+			errMsg: "string.rindex offset must be integer",
 		},
 		{
 			name:   "string.rindex with too many args",

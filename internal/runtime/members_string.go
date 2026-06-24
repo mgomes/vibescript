@@ -277,6 +277,22 @@ func stringByteIndexForRuneOffset(text string, offset int) (int, bool) {
 	return 0, false
 }
 
+// stringEffectiveOffset normalizes a rune offset that may be negative the way
+// Ruby's String#index and String#rindex do: a negative offset counts back from
+// the end of the string, so -1 refers to the last rune. The second return value
+// is false when the resulting offset falls before the start of the string, which
+// callers translate into a nil result.
+func stringEffectiveOffset(text string, offset int) (int, bool) {
+	if offset >= 0 {
+		return offset, true
+	}
+	effective := stringRuneLen(text) + offset
+	if effective < 0 {
+		return 0, false
+	}
+	return effective, true
+}
+
 func stringRuneIndex(text, needle string, offset int) int {
 	if offset < 0 {
 		return -1
@@ -409,23 +425,145 @@ func runesHavePrefix(text, prefix []rune) bool {
 	return true
 }
 
+// stringRuneSlice extracts at most length runes starting at the rune offset
+// start, matching Ruby's String#slice(start, length). A negative start counts
+// back from the end of the string. It returns ok=false when length is negative
+// or when start lands outside the string; a start exactly equal to the rune
+// length is in range and yields an empty string (Ruby's "abc".slice(3, n) =>
+// ""). The length is clamped to the remaining runes, so an oversized length
+// returns the suffix from start rather than overrunning.
 func stringRuneSlice(text string, start, length int) (string, bool) {
-	if start < 0 || length < 0 {
+	if length < 0 {
 		return "", false
 	}
+	if start < 0 {
+		start += stringRuneLen(text)
+		if start < 0 {
+			return "", false
+		}
+	}
 	startByte, ok := stringByteIndexForRuneOffset(text, start)
-	if !ok || startByte == len(text) {
+	if !ok {
 		return "", false
 	}
 	endByte := startByte
 	for range length {
 		if endByte == len(text) {
-			return normalizeInvalidUTF8(text[startByte:]), true
+			break
 		}
 		_, size := utf8.DecodeRuneInString(text[endByte:])
 		endByte += size
 	}
 	return normalizeInvalidUTF8(text[startByte:endByte]), true
+}
+
+// stringSlice implements String#slice. It mirrors Ruby's extraction semantics
+// across the four argument shapes Vibescript can represent: a single integer
+// index (single character, negative counts from the end), an integer start with
+// a length, an integer range, and a substring. Out-of-range selectors yield nil
+// rather than raising, matching Ruby. Regexp selectors are intentionally not
+// handled because Vibescript has no regexp value type yet (tracked separately).
+func stringSlice(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("string.slice expects an index, range, or substring with optional length")
+	}
+	text := receiver.String()
+	if len(args) == 2 {
+		start, err := valueToInt(args[0])
+		if err != nil {
+			return NewNil(), fmt.Errorf("string.slice index must be integer")
+		}
+		length, err := valueToInt(args[1])
+		if err != nil {
+			return NewNil(), fmt.Errorf("string.slice length must be integer")
+		}
+		substr, ok := stringRuneSlice(text, start, length)
+		if !ok {
+			return NewNil(), nil
+		}
+		return NewString(substr), nil
+	}
+	switch arg := args[0]; arg.Kind() {
+	case KindRange:
+		substr, ok := stringRuneRangeSlice(text, arg.Range())
+		if !ok {
+			return NewNil(), nil
+		}
+		return NewString(substr), nil
+	case KindString:
+		if strings.Contains(text, arg.String()) {
+			return NewString(arg.String()), nil
+		}
+		return NewNil(), nil
+	default:
+		index, err := valueToInt(arg)
+		if err != nil {
+			return NewNil(), fmt.Errorf("string.slice index must be an integer, range, or substring")
+		}
+		return stringSliceCharAt(text, index), nil
+	}
+}
+
+// stringSliceCharAt returns the single-character slice for String#slice(index).
+// Unlike the (start, length) form, an index equal to the rune length is out of
+// range and yields nil (Ruby's "abc".slice(3) => nil while "abc".slice(3, 1) =>
+// ""). A negative index counts back from the end.
+func stringSliceCharAt(text string, index int) Value {
+	if index < 0 {
+		index += stringRuneLen(text)
+		if index < 0 {
+			return NewNil()
+		}
+	}
+	if index >= stringRuneLen(text) {
+		return NewNil()
+	}
+	substr, ok := stringRuneSlice(text, index, 1)
+	if !ok {
+		return NewNil()
+	}
+	return NewString(substr)
+}
+
+// stringRuneRangeSlice extracts the runes selected by a range, matching Ruby's
+// String#slice(range). Negative bounds count back from the end. A begin bound
+// before the start of the string (after normalization) or past its length
+// returns ok=false (nil); a begin exactly at the length yields an empty string.
+// The end bound is clamped to the string length, and an end before begin yields
+// an empty string.
+func stringRuneRangeSlice(text string, rng Range) (string, bool) {
+	length := int64(stringRuneLen(text))
+	begin := rng.Start
+	if begin < 0 {
+		begin += length
+	}
+	if begin < 0 || begin > length {
+		return "", false
+	}
+	end := rng.End
+	if end < 0 {
+		end += length
+	}
+	if !rng.Exclusive {
+		// An inclusive range's exclusive end is one past End; guard the increment so
+		// End == math.MaxInt64 cannot wrap to a negative no-op window.
+		if end == math.MaxInt64 {
+			end = length
+		} else {
+			end++
+		}
+	}
+	if end > length {
+		end = length
+	}
+	if end < begin {
+		end = begin
+	}
+	substr, ok := stringRuneSlice(text, int(begin), int(end-begin))
+	if !ok {
+		return "", false
+	}
+	return substr, true
 }
 
 func normalizeInvalidUTF8(text string) string {
@@ -1233,12 +1371,16 @@ func stringMemberQuery(property string) (Value, error) {
 			offset := 0
 			if len(args) == 2 {
 				i, err := valueToInt(args[1])
-				if err != nil || i < 0 {
-					return NewNil(), fmt.Errorf("string.index offset must be non-negative integer")
+				if err != nil {
+					return NewNil(), fmt.Errorf("string.index offset must be integer")
 				}
 				offset = i
 			}
-			index := stringRuneIndex(receiver.String(), args[0].String(), offset)
+			effective, ok := stringEffectiveOffset(receiver.String(), offset)
+			if !ok {
+				return NewNil(), nil
+			}
+			index := stringRuneIndex(receiver.String(), args[0].String(), effective)
 			if index < 0 {
 				return NewNil(), nil
 			}
@@ -1255,10 +1397,14 @@ func stringMemberQuery(property string) (Value, error) {
 			offset := stringRuneLen(receiver.String())
 			if len(args) == 2 {
 				i, err := valueToInt(args[1])
-				if err != nil || i < 0 {
-					return NewNil(), fmt.Errorf("string.rindex offset must be non-negative integer")
+				if err != nil {
+					return NewNil(), fmt.Errorf("string.rindex offset must be integer")
 				}
-				offset = i
+				effective, ok := stringEffectiveOffset(receiver.String(), i)
+				if !ok {
+					return NewNil(), nil
+				}
+				offset = effective
 			}
 			index := stringRuneRIndex(receiver.String(), args[0].String(), offset)
 			if index < 0 {
@@ -1267,31 +1413,7 @@ func stringMemberQuery(property string) (Value, error) {
 			return NewInt(int64(index)), nil
 		}), nil
 	case "slice":
-		return NewAutoBuiltin("string.slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) < 1 || len(args) > 2 {
-				return NewNil(), fmt.Errorf("string.slice expects index and optional length")
-			}
-			start, err := valueToInt(args[0])
-			if err != nil {
-				return NewNil(), fmt.Errorf("string.slice index must be integer")
-			}
-			if len(args) == 1 {
-				substr, ok := stringRuneSlice(receiver.String(), start, 1)
-				if !ok {
-					return NewNil(), nil
-				}
-				return NewString(substr), nil
-			}
-			length, err := valueToInt(args[1])
-			if err != nil {
-				return NewNil(), fmt.Errorf("string.slice length must be integer")
-			}
-			substr, ok := stringRuneSlice(receiver.String(), start, length)
-			if !ok {
-				return NewNil(), nil
-			}
-			return NewString(substr), nil
-		}), nil
+		return NewAutoBuiltin("string.slice", stringSlice), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}

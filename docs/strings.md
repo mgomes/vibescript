@@ -331,7 +331,7 @@ such as `\A`, `^`, and `\b` keep the full-string context even when an offset is
 supplied: the characters preceding the offset still count toward boundary and
 anchor checks. The offset is a character (codepoint) position; an offset past
 the end of the string yields `false` rather than an error. Unlike Ruby,
-negative offsets are rejected, matching `index` and `rindex`.
+`match?` rejects negative offsets.
 
 ### `scan(pattern)`
 
@@ -343,31 +343,58 @@ Regex scan returning all full matches:
 
 ### `index(substring, offset = 0)`
 
-Returns the first character index for `substring`, or `nil` when not found:
+Returns the first character index for `substring`, or `nil` when not found.
+A negative `offset` counts back from the end of the string, so the search
+starts at `size + offset`; it yields `nil` when that effective offset falls
+before the start of the string:
 
 ```vibe
 "héllo hello".index("llo")    # 2
 "héllo hello".index("llo", 6) # 8
 "héllo hello".index("zzz")    # nil
+"hello".index("l", -3)        # 2
+"hello".index("l", -9)        # nil
 ```
 
 ### `rindex(substring, offset = size)`
 
-Returns the last character index for `substring`, or `nil` when not found:
+Returns the last character index for `substring`, or `nil` when not found.
+A negative `offset` counts back from the end of the string and the backward
+search starts at `size + offset`; it yields `nil` when that effective offset
+falls before the start of the string:
 
 ```vibe
 "héllo hello".rindex("llo")    # 8
 "héllo hello".rindex("llo", 4) # 2
+"hello".rindex("l", -2)        # 3
+"hello".rindex("l", -9)        # nil
 ```
 
-### `slice(index, length = nil)`
+### `slice(selector, length = nil)`
 
-Returns a character or substring; returns `nil` when out of bounds:
+Extracts a character or substring, returning `nil` when the selector falls
+outside the string. Indexing is rune-aware. `slice` accepts the same selector
+shapes as Ruby's `String#slice`:
+
+- an integer index returns a single character; a negative index counts back
+  from the end, and an index at or past the length returns `nil`;
+- an integer `start` with a `length` returns up to `length` characters from
+  `start` (negative `start` counts from the end). A `start` exactly at the
+  length yields `""`, a negative `length` returns `nil`, and an oversized
+  `length` is clamped to the end of the string;
+- a range returns the selected substring, with Ruby-compatible negative bounds;
+- a substring returns that substring when it is contained, otherwise `nil`.
 
 ```vibe
-"héllo".slice(1)    # "é"
-"héllo".slice(1, 3) # "éll"
-"héllo".slice(99)   # nil
+"héllo".slice(1)      # "é"
+"héllo".slice(-1)     # "o"
+"héllo".slice(99)     # nil
+"héllo".slice(1, 3)   # "éll"
+"héllo".slice(-3, 2)  # "ll"
+"héllo".slice(1..-1)  # "éllo"
+"héllo".slice(1...3)  # "él"
+"héllo".slice("llo")  # "llo"
+"héllo".slice("x")    # nil
 ```
 
 ### `sub(pattern, replacement, regex: false)`
