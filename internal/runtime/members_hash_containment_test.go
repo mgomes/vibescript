@@ -763,6 +763,63 @@ func TestHashExceptHonorsCancellationOnCandidateScan(t *testing.T) {
 	requireErrorIs(t, err, context.Canceled)
 }
 
+// TestHashExceptChargesExclusionSet pins the P1 except finding on PR #776: the
+// exclusion set built from candidate keys present in the receiver is live
+// alongside the freshly copied output map, so its footprint must be projected too.
+// h.except(*h.keys) excludes every key, so the exclusion set holds one entry per
+// receiver entry while the worst-case-sized output map is allocated. The pre-fix
+// projection charged only the output copy, so a quota sized for receiver + output
+// admitted the call and then allocated the unaccounted set, exceeding the limit
+// during the call (gone before the post-call check could observe the peak).
+func TestHashExceptChargesExclusionSet(t *testing.T) {
+	t.Parallel()
+
+	const count = 20_000
+	receiver := largeHashReceiver(count)
+	// h.except(*h.keys): the candidate keys are exactly the receiver's keys, so the
+	// exclusion set reaches one entry per receiver entry.
+	args := make([]Value, 0, count)
+	for key := range receiver.Hash() {
+		args = append(args, NewSymbol(key))
+	}
+
+	// Measure the live call-root footprint and the worst-case output map (except
+	// projects a full copy because absent candidates would leave every entry in
+	// place), then size the quota to admit exactly that pre-fix budget. The
+	// exclusion set's footprint is the only charge that pushes the build over, so a
+	// quota that fits roots + output but not the set proves the set is now charged.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, args, nil, NewNil())
+	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
+	preFixBudget := liveWithRoots + outputStructure
+
+	exclusion := exclusionSetBytes(count)
+	if exclusion <= 0 {
+		t.Fatalf("expected a positive exclusion-set footprint, got %d", exclusion)
+	}
+
+	// Above the pre-fix budget (the old projection of roots + output would pass) but
+	// below roots + output + exclusion set (the new projection must reject).
+	quota := preFixBudget + exclusion/2
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "except", args, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	// A quota generously above roots + output + exclusion set still admits the call
+	// and returns the empty result, proving the new charge does not over-tighten a
+	// valid except.
+	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: preFixBudget + exclusion + 64*1024}
+	out, err := callHashMember(t, roomy, receiver, "except", args, NewNil())
+	if err != nil {
+		t.Fatalf("except within an ample quota failed: %v", err)
+	}
+	if got := len(out.Hash()); got != 0 {
+		t.Fatalf("except(*keys) kept %d entries, want 0", got)
+	}
+}
+
 // TestHashBuildAccumulatorChargesIncrementally exercises the accumulator that
 // charges block-returned values during a hash build. Feeding values whose
 // cumulative payload crosses the quota must trip on the insertion that crosses
@@ -1732,4 +1789,162 @@ func TestHashSelectSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	_, err := callHashMember(t, exec, receiver, "select", nil, block)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// chargedValuePayload returns the pure payload bytes the accumulator's
+// reference-counting walk charges for val -- the walk's total charge minus the
+// valueRefs bookkeeping it adds on top (one tracking entry per distinct backing
+// plus the bookkeeping map's base once any backing is tracked). It runs on a fresh
+// accumulator with no call roots so nothing is pre-seen by the baseline, isolating
+// the per-value charge for comparison against the estimator.
+func chargedValuePayload(t *testing.T, val Value) int {
+	t.Helper()
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	exec.root = newEnv(nil)
+	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	charged := acc.chargeValuePayload(val)
+	bookkeeping := len(acc.valueRefs) * estimatedRefTrackingEntryBytes
+	if len(acc.valueRefs) > 0 {
+		bookkeeping += estimatedMapBaseBytes
+	}
+	return charged - bookkeeping
+}
+
+// TestHashBuildAccumulatorPayloadMatchesEstimator pins the parity guarantee for the
+// P1 finding on PR #776: the accumulator's reference-counting walk must charge a
+// value's payload backings exactly what the memory estimator charges for the same
+// value (est.valuePayload). The two were a hand-rolled re-implementation of one
+// traversal and had diverged twice -- first on cycle safety, then on the per-entry
+// value slots of nested hashes (a transform block returning fresh scalar-keyed
+// hashes undercounted by len(values)*estimatedValueBytes). Sharing the structural
+// byte computation (sliceStructuralBytes, mapStructuralBytes) keeps them in lock
+// step; this test enforces that they cannot drift again across representative
+// shapes, including the nested-scalar-hash case the finding called out.
+func TestHashBuildAccumulatorPayloadMatchesEstimator(t *testing.T) {
+	t.Parallel()
+
+	nestedScalarHash := NewHash(map[string]Value{
+		"a": NewInt(1),
+		"b": NewInt(2),
+		"c": NewInt(3),
+	})
+	hashOfArrays := NewHash(map[string]Value{
+		"xs": NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
+		"ys": NewArray([]Value{NewString("alpha"), NewString("beta")}),
+	})
+	arrayOfHashes := NewArray([]Value{
+		NewHash(map[string]Value{"k": NewInt(1)}),
+		NewHash(map[string]Value{"k": NewInt(2), "j": NewInt(3)}),
+	})
+
+	// A value that shares a backing internally: the same nested array appears under
+	// two keys, so a correct walk reference-counts it once, matching the estimator's
+	// dedup by backing pointer.
+	shared := NewArray([]Value{NewString("shared-payload-bytes")})
+	sharedBackings := NewHash(map[string]Value{
+		"left":  shared,
+		"right": shared,
+	})
+
+	tests := []struct {
+		name string
+		val  Value
+	}{
+		{name: "scalar", val: NewInt(42)},
+		{name: "string", val: NewString("hello world")},
+		{name: "empty hash", val: NewHash(map[string]Value{})},
+		{name: "nested hash of scalars", val: nestedScalarHash},
+		{name: "hash of arrays", val: hashOfArrays},
+		{name: "array of hashes", val: arrayOfHashes},
+		{name: "shared backings", val: sharedBackings},
+		{
+			name: "deeply nested",
+			val: NewHash(map[string]Value{
+				"meta": NewHash(map[string]Value{
+					"tags":  NewArray([]Value{NewString("a"), NewString("b")}),
+					"count": NewInt(7),
+				}),
+				"rows": arrayOfHashes,
+			}),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			want := newMemoryEstimator().valuePayload(tc.val)
+			got := chargedValuePayload(t, tc.val)
+			if got != want {
+				t.Fatalf("accumulator charged %d payload bytes, estimator charges %d (they must be identical)", got, want)
+			}
+		})
+	}
+}
+
+// TestHashTransformValuesFreshScalarHashesTripsMemoryQuota guards the P1 value-slot
+// undercount on PR #776 through the accumulator transform_values drives: a block
+// returning a fresh hash of scalar values per entry. Each result hash's per-entry
+// value slots (len(values)*estimatedValueBytes) were charged nowhere before the fix,
+// so the accumulator's running budget undercounted the build by
+// count*slotsPerResult*slot bytes and admitted it -- letting the block-produced
+// hashes accumulate past the quota before any check observed the peak.
+//
+// The test exercises the accumulator directly (the same newHashBuildAccumulator +
+// add per entry that transform_values uses) rather than the full builtin, because
+// the builtin's post-call check independently rejects an over-quota materialized
+// result and would mask whether the accumulator caught the undercount. The quota is
+// derived from the estimator's measurement of the fully materialized result -- the
+// single source of truth the corrected accumulator now mirrors (see the parity test
+// TestHashBuildAccumulatorPayloadMatchesEstimator) -- set just below that true peak.
+// The corrected accumulator converges to the estimator's peak and rejects mid-build;
+// the pre-fix accounting converged to peak minus the omitted slots and admitted it.
+func TestHashTransformValuesFreshScalarHashesTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// The block maps a value to a fresh three-key scalar hash, exactly the
+	// transform_values shape the finding called out. Its keys and values are freshly
+	// allocated and never alias the empty baseline, so the accumulator charges the
+	// result's full payload with no dedup -- the clean case where the omitted value
+	// slots are a pure undercount.
+	result := NewHash(map[string]Value{
+		"a": NewInt(1),
+		"b": NewInt(2),
+		"c": NewInt(3),
+	})
+	const key = "row"
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	exec.root = newEnv(nil)
+	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	if err := acc.add(key, result); err != nil {
+		t.Fatalf("add tripped under an unbounded quota: %v", err)
+	}
+
+	// The accumulator's charge for the entry, minus the bookkeeping it adds on top
+	// (the storedValues tracking map: its base plus one entry; the valueRefs tracking
+	// map: its base plus one entry per distinct backing), must equal exactly what the
+	// estimator charges for the same entry: the output map bucket, key header and
+	// payload, the value slot, and the result hash's full payload. The result hash's
+	// per-entry value slots are part of est.valuePayload, so a walk that omits them
+	// charges slotsPerResult*estimatedValueBytes too little and fails this equality.
+	bookkeeping := estimatedMapBaseBytes + estimatedTrackingMapEntryBytes // storedValues
+	bookkeeping += estimatedMapBaseBytes + len(acc.valueRefs)*estimatedRefTrackingEntryBytes
+	chargedPayload := acc.built - bookkeeping
+
+	entry := estimatedMapEntryBytes + estimatedStringHeaderBytes + len(key) + estimatedValueBytes
+	want := entry + newMemoryEstimator().valuePayload(result)
+	if chargedPayload != want {
+		t.Fatalf("accumulator charged %d entry bytes, estimator charges %d (the result hash's value slots must be counted)", chargedPayload, want)
+	}
+
+	// End-to-end sanity: transform_values producing the same fresh scalar hashes is
+	// rejected once its accumulated footprint crosses the quota. The receiver entries
+	// each map to a three-key hash, so the materialized result dwarfs a tiny quota and
+	// the build is bounded rather than escaping.
+	receiver := largeHashReceiver(20_000)
+	source := `def run(values)
+  values.transform_values { |v| { "a": v, "b": v + 1, "c": v + 2 } }
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 16 * 1024}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
 }

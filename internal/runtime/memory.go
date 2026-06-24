@@ -654,10 +654,16 @@ func (acc *hashBuildAccumulator) walkValuePayload(val Value, sign int, visited m
 }
 
 // walkSlicePayload reference-counts a slice backing and recurses into its
-// elements. The backing's structural bytes (its base plus one value slot per
-// capacity slot) are counted with the slice's identity so they live and die with
-// it; element payloads beyond their slots are reference-counted independently so a
-// nested string shared with another slot survives this slice's release.
+// elements. The backing's structural bytes -- its base, one value slot per
+// capacity slot, and one value slot per element -- are counted with the slice's
+// identity so they live and die with it; element payloads beyond those slots are
+// reference-counted independently so a nested string shared with another slot
+// survives this slice's release.
+//
+// The structural cost mirrors exactly what the estimator charges a slice backing
+// (est.value on a slice contributes sliceStructuralBytes plus one estimatedValueBytes
+// per element through its per-element est.value call), so the accumulator's charge
+// for a value equals est.valuePayload for the same value (see the parity test).
 //
 // A backing already visited in this walk (a shared sub-graph reached twice, or a
 // cycle pointing back to itself) is skipped without re-adjusting its count or
@@ -668,7 +674,12 @@ func (acc *hashBuildAccumulator) walkSlicePayload(values []Value, sign int, visi
 	if id.ptr != 0 && acc.baseHasSlice(id.ptr) {
 		return 0
 	}
-	structural := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(cap(values), estimatedValueBytes))
+	// The per-element value slots are tied to the backing's lifetime (the estimator
+	// charges them through its per-element est.value, not as a separately reachable
+	// payload), so they are reference-counted with the backing rather than in the
+	// element loop, which keeps them from being recharged when a shared backing is
+	// reached from a second output slot.
+	structural := saturatingAdd(sliceStructuralBytes(values), saturatingMul(len(values), estimatedValueBytes))
 	total := 0
 	if id.ptr == 0 {
 		// A zero-capacity slice has no shared backing to reference-count; charge its
@@ -688,9 +699,17 @@ func (acc *hashBuildAccumulator) walkSlicePayload(values []Value, sign int, visi
 }
 
 // walkHashPayload reference-counts a map backing and recurses into its values. The
-// backing's structural bytes (its base plus one entry per key, with key headers
-// and payloads) are counted with the map's identity; value payloads beyond their
-// slots are reference-counted independently.
+// backing's structural bytes (mapStructuralBytes: its base, one bucket per entry,
+// a key header and key bytes per entry, and one value slot per entry) are counted
+// with the map's identity; value payloads beyond those slots are reference-counted
+// independently.
+//
+// mapStructuralBytes is the same function the estimator uses for a map backing, so
+// the accumulator's charge for a value equals est.valuePayload for the same value
+// (see the parity test). The per-entry value slot is part of the structural cost,
+// which is what the earlier accounting omitted: a transform block returning fresh
+// hashes of scalar values undercounted each result by len(values)*estimatedValueBytes
+// because the value slots were charged nowhere.
 //
 // As in walkSlicePayload, a backing already visited in this walk is skipped, so a
 // map reachable by several paths or one that points back at itself (a self-cycle
@@ -700,10 +719,7 @@ func (acc *hashBuildAccumulator) walkHashPayload(values map[string]Value, sign i
 	if ptr != 0 && acc.baseHasMap(ptr) {
 		return 0
 	}
-	structural := estimatedMapBaseBytes + len(values)*estimatedMapEntryBytes
-	for key := range values {
-		structural += estimatedStringHeaderBytes + len(key)
-	}
+	structural := mapStructuralBytes(values)
 	total := 0
 	if ptr == 0 {
 		total = sign * structural
@@ -1150,8 +1166,37 @@ func (est *memoryEstimator) stringPayloadSize(str string) int {
 	return len(str)
 }
 
+// sliceStructuralBytes is the heap footprint of a slice backing excluding the
+// payloads reachable from its elements: the slice base plus one Value slot per
+// capacity slot. The estimator and the hashBuildAccumulator's reference-counting
+// walk both derive a slice backing's structural cost from this single function so
+// the two views of memory cannot drift; the element payloads are added on top by
+// recursing into each element.
+func sliceStructuralBytes(values []Value) int {
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(cap(values), estimatedValueBytes))
+}
+
+// mapStructuralBytes is the heap footprint of a map backing excluding the
+// payloads reachable from its values: the map base, one bucket per entry, a key
+// header and key bytes per entry, and one Value slot per entry. The estimator and
+// the hashBuildAccumulator's reference-counting walk both derive a map backing's
+// structural cost from this single function so the two views of memory cannot
+// drift; the value payloads are added on top by recursing into each value.
+//
+// The per-entry Value slot is part of the structural cost (it exists for every
+// entry regardless of what the value points at), so a map of scalar values is
+// charged its full slot footprint here even though the recursion contributes no
+// further payload for those scalars.
+func mapStructuralBytes(values map[string]Value) int {
+	size := estimatedMapBaseBytes + len(values)*(estimatedMapEntryBytes+estimatedValueBytes)
+	for key := range values {
+		size += estimatedStringHeaderBytes + len(key)
+	}
+	return size
+}
+
 func (est *memoryEstimator) slice(values []Value) int {
-	size := estimatedSliceBaseBytes + cap(values)*estimatedValueBytes
+	size := sliceStructuralBytes(values)
 	if cap(values) == 0 {
 		return size
 	}
@@ -1203,10 +1248,9 @@ func (est *memoryEstimator) hash(values map[string]Value) int {
 		est.seenMaps[id] = struct{}{}
 	}
 
-	size := estimatedMapBaseBytes + len(values)*estimatedMapEntryBytes
-	for key, val := range values {
-		size += estimatedStringHeaderBytes + len(key)
-		size += est.value(val)
+	size := mapStructuralBytes(values)
+	for _, val := range values {
+		size += est.valuePayload(val)
 	}
 	return size
 }

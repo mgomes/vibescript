@@ -80,6 +80,22 @@ func sortedKeyBufferBytes(keyCount int) int {
 	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(keyCount, estimatedStringHeaderBytes))
 }
 
+// exclusionSetBytes returns the live heap footprint of a map[string]struct{} set
+// holding count entries. Hash#except builds such a set of the candidate keys that
+// appear in the receiver and holds it alongside the freshly copied output map, so
+// its footprint must be charged before either allocation or a large set could
+// allocate past the quota and vanish before the post-call check observed the peak
+// (for example h.except(*h.keys), which excludes every key). The set's keys alias
+// the receiver's own keys (already counted in the call-root usage), and its values
+// are zero-size struct{} with no slot, so only the structural bytes are new: the
+// map base plus one bucket and one distinct string header per entry.
+func exclusionSetBytes(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedMapBaseBytes, saturatingMul(count, estimatedMapEntryBytes+estimatedStringHeaderBytes))
+}
+
 func deepTransformKeys(exec *Execution, value, block Value) (Value, error) {
 	return deepTransformKeysWithState(exec, value, block, &deepTransformState{
 		seenHashes: make(map[uintptr]struct{}),
@@ -833,7 +849,15 @@ func hashMemberTransforms(property string) (Value, error) {
 			// first means a tiny receiver paired with a huge candidate-key list
 			// fails fast on the output bound rather than after allocating and
 			// scanning a set proportional to the argument count.
-			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
+			//
+			// The exclusion set is live alongside the output copy at peak: it holds
+			// the candidate keys present in the receiver (at most one per receiver
+			// entry, and never more than the argument count), so charge its footprint
+			// here too. Without it h.except(*h.keys) over a large receiver could
+			// allocate the full set plus the full output past a receiver+output quota,
+			// with the set gone before the post-call check could observe the peak.
+			exclusionEntries := min(len(args), len(entries))
+			if err := exec.checkProjectedHashTransformBytes(len(entries), exclusionSetBytes(exclusionEntries), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			// Build the exclusion set from candidate keys that actually appear in

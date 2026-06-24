@@ -38,7 +38,15 @@
   in-place index assignment (`a = [0]; a[0] = a`), and charging then releasing such
   a value is now mirror-symmetric, so repeatedly replacing a key that holds a cyclic
   value keeps the running total constant instead of inflating it on every write and
-  falsely tripping the quota. A bare
+  falsely tripping the quota. The incremental walk now charges a value's payload
+  exactly as the memory estimator would (the two derive every backing's structural
+  cost from one shared computation), closing an undercount where a block returning
+  a fresh hash of scalar values omitted the per-entry value slots and could
+  accumulate past the quota. `Hash#except` now also charges the exclusion set it
+  builds from the candidate keys present in the receiver, which is live alongside
+  the copied output at peak, so `h.except(*h.keys)` over a large receiver can no
+  longer allocate that set plus the full output past a receiver-plus-output quota.
+  A bare
   `Hash#merge { ... }` with no argument hashes returns a copy of the receiver
   without running the block, so it no longer charges the conflict block's base
   scratch buffer it never allocates, and a large receiver whose copy fits the quota
