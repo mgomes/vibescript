@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"unsafe"
 )
@@ -18,6 +19,16 @@ const (
 	estimatedCallFrameBytes    = 48
 	estimatedModuleContextSize = 24
 )
+
+// estimatedMapEntryStructuralBytes is the per-entry structural footprint a
+// map[string]Value reserves for one slot regardless of what its key and value
+// point at: the bucket overhead, the key string header, and the value slot. It
+// is what make(map[string]Value, n) charges per capacity slot beyond the empty
+// map's base overhead; the key bytes and value payloads are charged on top by
+// whoever inserts them. The hash projections and the incremental build
+// accumulator share this constant so the up-front and running budgets reserve
+// the same per-entry structure.
+const estimatedMapEntryStructuralBytes = estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
 
 type memoryEstimator struct {
 	seenFrozen    *Env
@@ -168,6 +179,83 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 	return nil
 }
 
+// checkProjectedHashBytes rejects allocations that would exceed the memory quota
+// before a derived map is built. Hash transform helpers (such as merge, except,
+// compact, and remap_keys) materialize an output map sized to their inputs; for
+// large receivers that backing map can dwarf the quota, and the statement-level
+// check would only observe it after the allocation already happened. count is the
+// number of entries the output map would hold. Each entry contributes the map's
+// per-entry overhead plus a key header and a value slot; the keys and values are
+// references shared with the receiver and arguments, whose payloads are already
+// counted in the call-root usage below, so only the new map's structural
+// footprint is projected here.
+//
+// The receiver, arguments, and block are the call roots that hold the transform's
+// inputs alive while the output map is built. When the transform runs on an
+// ephemeral receiver or argument (for example a hash literal or capability return
+// invoked immediately, `{ ... }.compact` or `h.merge(load_defaults)`), those
+// inputs are reachable only through these roots and are not part of
+// estimateMemoryUsageBase, so the projection must count them or it would
+// under-report the peak and admit a transform that doubles the live footprint.
+// The estimator de-duplicates by backing pointer, so a root that overlaps the
+// base (a named local) or another root (`h.merge(h)`) is counted once.
+func (exec *Execution) checkProjectedHashBytes(count int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	return exec.checkProjectedHashTransformBytes(count, 0, receiver, args, kwargs, block)
+}
+
+// checkProjectedHashTransformBytes rejects a map-producing hash transform before
+// it allocates either its output map or the sorted-key scratch buffer(s) that
+// drive an ordered walk. outputEntries is the number of entries the result map
+// would hold; scratchBytes is the heap footprint of the scratch key slices (see
+// sortedKeyBufferBytes), which the caller sums per-buffer so the inline-stack-
+// buffer threshold is applied to each independently.
+//
+// The output map's fixed overhead is always charged, even when outputEntries is
+// zero: a transform that produces a hash (merge, select, transform_values, ...)
+// allocates a real empty map for an empty result. Pure iterators that build no
+// map (each, each_key, each_value) use checkProjectedHashWalkBytes instead, which
+// omits that overhead.
+//
+// Both allocations coexist at peak: the scratch list of every key is live while
+// the output map fills, so they are charged together against the same call-root
+// baseline. The buffered keys alias the receiver's map keys, already counted in
+// the call-root usage, so only the scratch slices' headers (not the key bytes)
+// are added here. Without this the scratch list -- one header per entry, outside
+// the output-map projection -- could allocate past the quota on a large receiver
+// before any later check observed it.
+func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := exec.projectedHashBaseBytes(receiver, args, kwargs, block)
+	used = saturatingAdd(used, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
+	used = saturatingAdd(used, scratchBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+// checkProjectedHashWalkBytes rejects a pure hash iterator (each, each_key,
+// each_value) before it allocates its sorted-key scratch buffer. These iterators
+// return the receiver and build no derived map, so their only allocation beyond
+// the live call roots is the scratch key list (see sortedKeyBufferBytes); they
+// must not be charged an output map they never create. scratchBytes is the heap
+// footprint of that key list. Charging a phantom empty map here would falsely
+// reject a quota that exactly fits the receiver, block, and scratch.
+func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), scratchBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 // arrayBuildAccumulator charges the memory of an array assembled element by
 // element against the quota without re-walking the whole prefix on each append.
 // Builtins that grow a Go-local result slice from values they cannot bound up
@@ -256,6 +344,258 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
+}
+
+// hashBuildAccumulator charges the memory of an output map assembled entry by
+// entry against the quota without re-walking the whole map on each insertion.
+// Hash transforms whose block returns fresh heap values (transform_values and
+// transform_keys, where each block call can yield an arbitrarily large string
+// or nested collection, and the merge conflict block) use it so accumulated
+// payloads count toward the quota during construction, not only after the
+// builtin returns.
+//
+// checkProjectedHashBytes alone is enough for blockless transforms whose values
+// are references shared with the receiver, because there the output map's
+// payloads are already resident and the projection only needs the new map's
+// structural slots. It cannot bound a block that synthesizes new values: those
+// live solely in the Go-local result map, unreachable from any execution root
+// until the builtin returns, so many individually-under-quota results could
+// accumulate well past the quota before the post-call check observes them.
+//
+// The accumulator charges block results conservatively. It keeps a results-only
+// estimator that is NOT seeded with the build's base or call roots, so each
+// inserted entry is charged its full current footprint as the estimator would
+// measure it. Two results that share a backing are still deduplicated against
+// each other (the estimator's seen-sets persist across add calls), but a result
+// is never deduplicated against the base, so a block that mutates a
+// receiver-owned container in place and returns it is charged at its full
+// current size rather than dedup'd to nothing against the backing the baseline
+// already saw. This can only over-count -- a block returning an unchanged value
+// shared with the base or another result is counted again -- and so never
+// under-counts the live result footprint, which keeps the sandbox bound sound by
+// construction even under in-place mutation. The over-count is intentional and
+// documented (see changelog.d/608 and docs/hashes.md); the array-side equivalent
+// is tracked in #787.
+//
+// The output map is preallocated with make(map[string]Value, n), so its full
+// n-slot backing is live from the first block call -- before any result has been
+// charged. The accumulator therefore reserves that backing in the baseline up
+// front via reserveBacking, then charges each add only the entry's key/value
+// PAYLOAD beyond the structural slot already reserved. Without the reservation a
+// large early block result would be checked against only the slots inserted so
+// far rather than the whole live backing, letting backing + early result exceed
+// the quota until later entries (or the post-call check) caught it.
+//
+// Each add is O(size of the inserted value) and the total is O(sum of inserted
+// result sizes), not O(n^2): the estimator walks only the newly inserted value,
+// never the accumulated prefix.
+type hashBuildAccumulator struct {
+	exec *Execution
+	// est is a results-only estimator: it is never seeded with the base or call
+	// roots, so it deduplicates backings shared across block results but charges a
+	// result's full footprint even when it aliases a baseline container. base is the
+	// live footprint snapshotted when the build started (exec's reachable roots, the
+	// call roots, the output map's empty overhead, and -- once reserveBacking is
+	// called -- the preallocated n-slot backing); built is the running byte total
+	// charged for the per-entry key/value payloads as the output is assembled.
+	est   *memoryEstimator
+	base  int
+	built int
+}
+
+// newHashBuildAccumulator snapshots the execution's current live memory plus the
+// transform's call roots as the baseline for an incremental hash build, then folds
+// the output map's empty overhead into that baseline. Callers that preallocate the
+// output with make(map[string]Value, capacity) must then call reserveBacking so the
+// whole capacity backing is held against the quota before any block runs; add then
+// charges only the per-entry payloads beyond the reserved structural slots. The
+// accumulator's results-only estimator is a fresh estimator that is deliberately
+// NOT seeded with the base or call roots: it deduplicates backings shared across
+// block results but never against the baseline, so an in-place-mutated receiver
+// container returned by a block is charged at its full current size rather than
+// treated as already accounted.
+func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *hashBuildAccumulator {
+	acc := &hashBuildAccumulator{exec: exec}
+	if exec.memoryQuota <= 0 {
+		return acc
+	}
+	// Measure the baseline through a throwaway estimator so the results-only
+	// estimator stays empty: the base must be counted, but the results estimator
+	// must not dedup later block results against the call roots it walked.
+	acc.base = exec.estimateMemoryUsageForCallRoots(receiver, args, kwargs, block)
+	// The output is a single map, so fold its empty-map overhead into the baseline;
+	// add then charges only the per-entry growth.
+	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes)
+	acc.est = newMemoryEstimator()
+	return acc
+}
+
+// reserveScratch folds a fixed scratch allocation into the baseline so it is held
+// against the quota for the build's entire lifetime, and rejects the build if the
+// reservation alone already overflows. Block-driven hash transforms materialize a
+// sorted-key scratch slice (see sortedKeyBufferBytes) that stays live the whole
+// time the output map fills, so its bytes coexist with every accumulated entry at
+// peak. The up-front projection charges this scratch once before any fresh block
+// result exists, but the accumulator's running budget (base + built) does not,
+// so without reserving it here the combined output+scratch peak could exceed the
+// quota by the scratch size before the post-call check observed it. scratchBytes
+// is the heap footprint the caller passed to its projection, so the two views of
+// the budget reserve the same bytes.
+func (acc *hashBuildAccumulator) reserveScratch(scratchBytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, scratchBytes)
+	return acc.checkQuota()
+}
+
+// reserveBacking folds the structural footprint of a preallocated output map into
+// the baseline so the whole backing is held against the quota from the first block
+// call, and rejects the build if the reservation alone already overflows. Hash
+// transforms allocate their output with make(map[string]Value, capacity), so all
+// capacity slots are live before any block result is charged; without reserving
+// them, an early add would be checked against only the slots filled so far rather
+// than the full backing, letting a large early result plus the whole backing slip
+// past the quota until later entries (or the post-call check) caught it.
+//
+// capacity is the slot count passed to make; the empty map's base overhead is
+// already folded into the baseline by newHashBuildAccumulator, so only the
+// per-slot structure is reserved here. The key and value PAYLOADS are charged
+// incrementally by add/addSynthesizedKey, which after this reservation add only
+// the payload beyond the structural slot already counted, so nothing is double
+// counted: base ends at call roots + empty map + capacity*slot, and built ends at
+// the sum of per-entry payloads.
+func (acc *hashBuildAccumulator) reserveBacking(capacity int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
+	return acc.checkQuota()
+}
+
+// add charges a write whose VALUE is a block result to the output map and rejects
+// the build if the projected map memory exceeds the quota. Use it where the block
+// produces the VALUE (transform_values, the merge conflict block) and the key is a
+// receiver or argument key kept unchanged; transform_keys, whose block produces
+// the KEY while the value stays a receiver value, uses addSynthesizedKey instead.
+//
+// The entry's structural slot (map bucket, key header, value slot) is already
+// held in the baseline by reserveBacking, so add charges only PAYLOADS beyond it.
+// The key is a receiver/argument key whose payload is already counted in the
+// baseline via the call roots, so it contributes nothing further. Only the
+// block-returned value's payload goes through the results-only estimator, so a
+// backing shared across two block results is counted once but a result that
+// aliases a baseline container is counted at full size rather than deduplicated to
+// nothing. Routing the key through the estimator would record its backing in the
+// seen-set and risk a later block result that aliases it being dedup'd away.
+//
+// Charging per write (rather than per distinct key) means a key overwritten by a
+// later write -- a merge conflict block folding several colliding arguments -- is
+// counted once per occurrence. That is a conservative over-count of the final
+// map's footprint, the intentional tradeoff that makes the bound sound under
+// in-place mutation: built only ever grows, so it can never drop below the live
+// footprint and let a later insert materialize past the quota.
+func (acc *hashBuildAccumulator) add(val Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	acc.built = saturatingAdd(acc.built, acc.est.valuePayload(val))
+	return acc.checkQuota()
+}
+
+// addSynthesizedKey charges a key write whose KEY is a fresh block-synthesized
+// string but whose VALUE is a receiver value already counted in the baseline
+// (transform_keys yields a new key per entry while keeping the original value).
+// The entry's structural slot (map bucket, key header, value slot) is already held
+// in the baseline by reserveBacking, and the value's reachable payload is already
+// folded into acc.base via the call roots, so the only fresh allocation to charge
+// is the synthesized key's PAYLOAD beyond its header. It goes through the
+// results-only estimator so a key string shared across block results is counted
+// once; the value never goes through the estimator, since routing it would record
+// its backing in the seen-set and let a later block result aliasing it be dedup'd
+// to nothing -- the exact under-count the results-only estimator exists to
+// prevent. The synthesized key payload is the only unbounded fresh allocation the
+// up-front structural projection cannot see, so charging it incrementally keeps
+// the build within the quota during the loop.
+func (acc *hashBuildAccumulator) addSynthesizedKey(key string) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	acc.built = saturatingAdd(acc.built, acc.est.stringPayloadSize(key))
+	return acc.checkQuota()
+}
+
+// checkQuota rejects the build when the live baseline plus the accumulated output
+// exceeds the quota.
+func (acc *hashBuildAccumulator) checkQuota() error {
+	used := saturatingAdd(acc.base, acc.built)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
+// hashCallRootBytes estimates the live footprint a hash transform holds before it
+// reserves any output: exec's reachable roots plus the call roots (receiver,
+// args, kwargs, block). It excludes the output map's overhead so callers that
+// build no derived map (the pure iterators) are not charged a map they never
+// allocate; callers that do build one fold the empty-map overhead in themselves.
+func (exec *Execution) hashCallRootBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	if receiver.Kind() != KindNil {
+		used = saturatingAdd(used, est.value(receiver))
+	}
+	for _, arg := range args {
+		used = saturatingAdd(used, est.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		used = saturatingAdd(used, est.value(kwarg))
+	}
+	if !block.IsNil() {
+		used = saturatingAdd(used, est.value(block))
+	}
+	est.reset()
+
+	return used
+}
+
+// projectedHashBaseBytes estimates the live footprint a hash transform holds
+// before it reserves its output map: the call-root usage plus the empty map's
+// structural overhead. maxProjectedHashEntries builds on it so the entry budget
+// and the byte check agree on the same baseline. Callers that build no output map
+// (the pure iterators) use hashCallRootBytes directly instead.
+func (exec *Execution) projectedHashBaseBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	return saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), estimatedValueBytes+estimatedMapBaseBytes)
+}
+
+// maxProjectedHashEntries returns the largest output-map entry count that
+// checkProjectedHashTransformBytes would still accept for the given call roots
+// and scratch budget, or math.MaxInt when no memory quota is enforced. Counting
+// helpers that must deduplicate keys across inputs (such as the merge union
+// count) use it to cap their tracking set at the quota-derived budget: once the
+// distinct-key total passes this ceiling the transform is certain to be
+// rejected, so they can stop allocating and report an over-budget count instead
+// of building a tracking table sized to the rejected result.
+//
+// scratchBytes is the heap footprint of any sorted-key scratch buffers the
+// transform materializes alongside its output (see mergeSortScratchBytes). It is
+// subtracted from the byte budget before deriving the entry cap so this ceiling
+// agrees with the final checkProjectedHashTransformBytes, which charges the same
+// scratch: without it the cap would admit entries the projection's actual budget
+// (quota minus base minus scratch) cannot, letting a doomed merge grow its
+// dedup set past the bytes the quota allows.
+func (exec *Execution) maxProjectedHashEntries(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+	if exec.memoryQuota <= 0 {
+		return math.MaxInt
+	}
+	used := saturatingAdd(exec.projectedHashBaseBytes(receiver, args, kwargs, block), scratchBytes)
+	if used >= exec.memoryQuota {
+		return 0
+	}
+	return (exec.memoryQuota - used) / estimatedMapEntryStructuralBytes
 }
 
 func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
@@ -540,8 +880,33 @@ func (est *memoryEstimator) stringPayloadSize(str string) int {
 	return len(str)
 }
 
+// sliceStructuralBytes is the heap footprint of a slice backing excluding the
+// payloads reachable from its elements: the slice base plus one Value slot per
+// capacity slot. The element payloads are added on top by recursing into each
+// element.
+func sliceStructuralBytes(values []Value) int {
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(cap(values), estimatedValueBytes))
+}
+
+// mapStructuralBytes is the heap footprint of a map backing excluding the
+// payloads reachable from its values: the map base, one bucket per entry, a key
+// header and key bytes per entry, and one Value slot per entry. The value
+// payloads are added on top by recursing into each value.
+//
+// The per-entry Value slot is part of the structural cost (it exists for every
+// entry regardless of what the value points at), so a map of scalar values is
+// charged its full slot footprint here even though the recursion contributes no
+// further payload for those scalars.
+func mapStructuralBytes(values map[string]Value) int {
+	size := estimatedMapBaseBytes + len(values)*(estimatedMapEntryBytes+estimatedValueBytes)
+	for key := range values {
+		size += estimatedStringHeaderBytes + len(key)
+	}
+	return size
+}
+
 func (est *memoryEstimator) slice(values []Value) int {
-	size := estimatedSliceBaseBytes + cap(values)*estimatedValueBytes
+	size := sliceStructuralBytes(values)
 	if cap(values) == 0 {
 		return size
 	}
@@ -593,10 +958,9 @@ func (est *memoryEstimator) hash(values map[string]Value) int {
 		est.seenMaps[id] = struct{}{}
 	}
 
-	size := estimatedMapBaseBytes + len(values)*estimatedMapEntryBytes
-	for key, val := range values {
-		size += estimatedStringHeaderBytes + len(key)
-		size += est.value(val)
+	size := mapStructuralBytes(values)
+	for _, val := range values {
+		size += est.valuePayload(val)
 	}
 	return size
 }

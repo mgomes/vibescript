@@ -154,6 +154,44 @@ end
 - `deep_transform_keys` for recursive key mapping across nested hashes/arrays.
 - `remap_keys(mapping_hash)` for direct key rename maps.
 
+The map-producing transforms run inside the sandbox. Before building a derived
+map they project its size against the memory quota, so a transform over a large
+hash is rejected up front rather than after the backing map is allocated. While
+walking the receiver they charge the step quota per entry and honor context
+cancellation, so large materializations stay bounded. This applies to `merge`
+(and its `update` / `merge!` aliases), `replace`, `store`, `compact`, `slice`,
+`except`, `select`, `reject`, `transform_keys`, `transform_values`, and
+`remap_keys`.
+
+The block-driven transforms (`transform_keys`, `transform_values`, and the
+`merge` conflict block) also charge what a block produces against the memory quota
+as it is produced, so fresh content accumulated in the result cannot exceed the
+quota before the build completes. `transform_values` and the `merge` conflict
+block charge each block-returned *value* at its full payload; `transform_keys`
+charges each block-synthesized *key* (its value stays a receiver value already
+counted, so only the fresh key is new). This block-result charge is
+*conservative*: each result is counted as it is inserted, deduplicated only
+against other block results and never against the receiver or argument values --
+those are already counted once in the call's live footprint, so they are written
+to the output map slots without being re-measured. A block that returns a value
+unchanged and shared with the receiver -- or that collapses several writes onto
+one key -- is therefore counted at full size rather than deduplicated away. This
+over-count is deliberate: it keeps the bound sound even when a block mutates a
+receiver-owned container in place (for example appending into an array that still
+has spare capacity) and returns it, a case where deduplicating against the
+receiver would charge the fresh payload nothing and let it escape the quota. The
+array-side equivalent of this accounting is tracked in #787.
+
+Two helpers are not yet bounded this way:
+
+- `deep_transform_keys` does not bound its recursive materialization against the
+  sandbox limits (tracked in #786).
+- `flatten` materializes a sorted key list and a `[key, value, ...]` array
+  without a projected memory check or per-entry step charge; it is grouped with
+  the array-materialization work alongside `keys` and `values`.
+
+Apply both only to inputs of known size.
+
 ```vibe
 def public_profile(record)
   record

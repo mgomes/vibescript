@@ -65,6 +65,37 @@ func sortedHashKeysInto(entries map[string]Value, buf []string) []string {
 	return keys
 }
 
+// sortedKeyBufferBytes returns the heap bytes sortedHashKeysInto allocates to
+// hold a sorted key list for keyCount keys. A count that fits the inline stack
+// buffer reuses it and allocates nothing; a larger count heaps a fresh []string
+// of one header per key plus the slice base. The key strings alias the map's
+// own keys (already resident), so only the scratch slice's backing is new and
+// the payload bytes are not counted here. Hash transforms charge this against
+// the quota before sorting so the scratch list itself cannot escape the sandbox
+// on a large receiver.
+func sortedKeyBufferBytes(keyCount int) int {
+	if keyCount <= smallHashKeyBufferSize {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(keyCount, estimatedStringHeaderBytes))
+}
+
+// exclusionSetBytes returns the live heap footprint of a map[string]struct{} set
+// holding count entries. Hash#except builds such a set of the candidate keys that
+// appear in the receiver and holds it alongside the freshly copied output map, so
+// its footprint must be charged before either allocation or a large set could
+// allocate past the quota and vanish before the post-call check observed the peak
+// (for example h.except(*h.keys), which excludes every key). The set's keys alias
+// the receiver's own keys (already counted in the call-root usage), and its values
+// are zero-size struct{} with no slot, so only the structural bytes are new: the
+// map base plus one bucket and one distinct string header per entry.
+func exclusionSetBytes(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedMapBaseBytes, saturatingMul(count, estimatedMapEntryBytes+estimatedStringHeaderBytes))
+}
+
 func deepTransformKeys(exec *Execution, value, block Value) (Value, error) {
 	return deepTransformKeysWithState(exec, value, block, &deepTransformState{
 		seenHashes: make(map[uintptr]struct{}),
@@ -308,9 +339,23 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// each builds no output map, but it materializes a sorted key list to
+			// walk entries deterministically. Charge that scratch buffer before
+			// allocating it so a large receiver cannot escape the memory quota; the
+			// walk projection charges no output map this iterator never creates.
+			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call only charges a step
+				// per statement it runs, so a blockless body would otherwise iterate
+				// the whole hash uncharged.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
 				if _, err := runner.call(blockArgs[:]); err != nil {
@@ -329,9 +374,20 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Charge the sorted key scratch buffer before allocating it; each_key
+			// builds no output map but walks a materialized key list, so the walk
+			// projection charges no output map.
+			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per key so an empty block still consumes the step
+				// quota and observes cancellation rather than relying on runner.call.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = NewSymbol(key)
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
@@ -349,9 +405,20 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Charge the sorted key scratch buffer before allocating it; each_value
+			// builds no output map but walks a materialized key list, so the walk
+			// projection charges no output map.
+			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per value so an empty block still consumes the step
+				// quota and observes cancellation rather than relying on runner.call.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = entries[key]
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
@@ -362,6 +429,120 @@ func hashMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
 	}
+}
+
+// looseMergedKeyUpperBound returns a non-allocating upper bound on the number of
+// keys a merge of base and args could hold: the receiver's keys plus every
+// argument's length, summed without subtracting overlaps. It never under-counts
+// the real union, so when checkProjectedHashBytes accepts this bound the merge is
+// guaranteed to fit and the caller can skip the exact (allocating) union count.
+func looseMergedKeyUpperBound(base map[string]Value, args []Value) int {
+	count := len(base)
+	for _, arg := range args {
+		count = saturatingAdd(count, len(arg.Hash()))
+	}
+	return count
+}
+
+// mergeSortScratchBytes returns the peak heap footprint of merge's sorted scratch
+// buffer. The per-argument buffer is reused across arguments, so it only ever
+// sizes to the largest single argument. The receiver base is copied in map order
+// without sorting, so it contributes no scratch. The result feeds the merge
+// projection so the scratch list cannot allocate past the quota even when the
+// merged union itself is small (a huge argument that fully overlaps the base).
+func mergeSortScratchBytes(args []Value) int {
+	maxArg := 0
+	for _, arg := range args {
+		if n := len(arg.Hash()); n > maxArg {
+			maxArg = n
+		}
+	}
+	// The merge sorts each argument's keys (reusing one buffer sized to the
+	// largest argument) so conflict block side effects are deterministic. The
+	// receiver base is copied in map order without a sorted buffer, so it adds no
+	// scratch of its own.
+	return sortedKeyBufferBytes(maxArg)
+}
+
+// mergedKeyCount returns the number of distinct keys a merge of base and args
+// would hold, stopping early once the running total passes limit. The merged
+// hash is the union of the receiver's keys and every argument's keys, so
+// overlapping keys (h.merge(h), or the same defaults applied repeatedly) collapse
+// to one entry. Counting the union lets the projected memory check size the real
+// output map instead of summing every input length, which would over-count an
+// overlapping merge and reject one that fits the quota.
+//
+// limit is the largest output the quota can admit once the merge's scratch
+// budget is reserved (maxProjectedHashEntries, passed the same scratchBytes the
+// final projection charges). A single argument needs no cross-argument
+// deduplication, so its union is counted against base alone with no tracking set.
+// Multiple arguments require a seen set to collapse keys repeated across
+// arguments, but the set is bounded by limit: once the distinct-key total exceeds
+// limit the merge is certain to be rejected, so counting stops and returns
+// limit+1 rather than growing a tracking table sized to the over-quota result.
+// Because limit already accounts for the scratch bytes, the seen set never grows
+// past what the projection's real byte budget permits.
+//
+// Every key examined charges a step via exec.step, so the union count itself is
+// CPU-bounded by the step quota and observes cancellation. Without this a large
+// overlapping merge under a tight memory quota (h.merge(h)) could scan O(n) keys
+// here, between the loose projection failing and the exact projection running,
+// while the step quota was already exhausted or the context already canceled.
+// When step returns an error the walk stops and propagates it: the merge is
+// abandoned for the same quota or cancellation reason that would have stopped the
+// merge loop itself. All inputs walked here are already resident in memory, so the
+// step charge guards CPU, not allocation.
+func mergedKeyCount(exec *Execution, base map[string]Value, args []Value, limit int) (int, error) {
+	count := len(base)
+	if count > limit {
+		return count, nil
+	}
+	if len(args) <= 1 {
+		// One argument (or none): every argument key is distinct on its own, so
+		// the union is base plus the argument keys absent from base, countable
+		// without a tracking set.
+		for _, arg := range args {
+			for key := range arg.Hash() {
+				if err := exec.step(); err != nil {
+					return count, err
+				}
+				if _, inBase := base[key]; inBase {
+					continue
+				}
+				count++
+				if count > limit {
+					return count, nil
+				}
+			}
+		}
+		return count, nil
+	}
+	var seen map[string]struct{}
+	for _, arg := range args {
+		for key := range arg.Hash() {
+			if err := exec.step(); err != nil {
+				return count, err
+			}
+			if _, inBase := base[key]; inBase {
+				continue
+			}
+			if seen == nil {
+				seen = make(map[string]struct{})
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			count++
+			if count > limit {
+				// The merge already exceeds the quota's entry budget, so it will
+				// be rejected regardless of further keys. Stop before the tracking
+				// set grows past the admissible result size.
+				return count, nil
+			}
+		}
+	}
+	return count, nil
 }
 
 func hashMemberTransforms(property string) (Value, error) {
@@ -393,14 +574,78 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 			}
 			base := receiver.Hash()
-			out := make(map[string]Value, len(base))
-			maps.Copy(out, base)
-			if len(args) == 0 {
-				// Ruby's Hash#merge with no arguments returns a copy of self.
-				return NewHash(out), nil
+			// A block only resolves conflicts, which require at least one argument
+			// hash. With zero arguments the merge short-circuits to a plain copy
+			// below and never runs the block or sorts the base, so the conflict
+			// block's base scratch buffer is never allocated. Gate useBlock on having
+			// arguments so the projection does not charge that phantom scratch and
+			// reject a large receiver whose copy fits but whose unused base scratch
+			// would not.
+			useBlock := valueBlock(block) != nil && len(args) > 0
+			// Preflight the map this merge could materialize before allocating it.
+			// The merge also materializes a sorted key scratch buffer sized to the
+			// largest single argument (reused across arguments). Charge that scratch
+			// in the projection so a merge whose union fits but whose largest input
+			// dwarfs the quota cannot allocate the key list past the sandbox limit.
+			// The receiver base is copied in map order, so it needs no scratch.
+			scratchBytes := mergeSortScratchBytes(args)
+			// projectedEntries records the output-map entry count the projection
+			// charged, so the block accumulator below can reserve the identical
+			// backing. The output map grows from len(base) up to the distinct union
+			// as non-conflicting argument keys are inserted, so its peak backing is
+			// the union -- not len(base).
+			var projectedEntries int
+			switch {
+			case useBlock && exec.memoryQuota > 0:
+				// The block accumulator reserves projectedEntries as the output map's
+				// backing, and the real output grows to exactly the distinct union.
+				// The loose upper bound (len(base)+sum(arg lens)) over-counts every
+				// overlapping key, so reserving it would hold phantom slots the result
+				// never allocates and let acc.add falsely reject a merge whose true
+				// union plus block results fit the quota (h.merge(h) { ... }). Compute
+				// the exact union up front so the projection and the reservation agree
+				// on the backing the map will actually hold. mergedKeyCount caps its
+				// deduplication set at the quota's entry budget (limit) so a doomed
+				// merge cannot allocate a large tracking table before being rejected.
+				// Only the memory-bounded block path takes this exact pre-walk: with no
+				// memory quota nothing is reserved, so the cheap loose bound below is
+				// used and the merge loop charges steps once, as before.
+				limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
+				projected, err := mergedKeyCount(exec, base, args, limit)
+				if err != nil {
+					return NewNil(), err
+				}
+				projectedEntries = projected
+			default:
+				// Reached without a block (no accumulator lingers to over-reserve) or
+				// with no memory quota (nothing is reserved or checked), so
+				// projectedEntries is only a cheap up-front admission bound. Two phases
+				// keep the check itself within the quota it enforces: first try the
+				// non-allocating loose upper bound (the receiver's keys plus every
+				// argument's length, overlaps included). If even that fits the merge is
+				// guaranteed to fit and no tracking set is needed. Only when the loose
+				// bound exceeds the quota does the exact union matter, because overlap
+				// (h.merge(h), repeated defaults) could still bring the real output
+				// within the limit; mergedKeyCount then caps its deduplication set at the
+				// quota's entry budget so a doomed merge cannot allocate a large tracking
+				// table before being rejected. (With no memory quota the loose check
+				// passes immediately and the exact union is never walked.)
+				projectedEntries = looseMergedKeyUpperBound(base, args)
+				if exec.checkProjectedHashTransformBytes(projectedEntries, scratchBytes, receiver, args, kwargs, block) != nil {
+					limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
+					projected, err := mergedKeyCount(exec, base, args, limit)
+					if err != nil {
+						return NewNil(), err
+					}
+					projectedEntries = projected
+				}
 			}
-			useBlock := valueBlock(block) != nil
+			if err := exec.checkProjectedHashTransformBytes(projectedEntries, scratchBytes, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			out := make(map[string]Value, len(base))
 			var runner *blockCallRunner
+			var acc *hashBuildAccumulator
 			if useBlock {
 				// With a block, Ruby resolves conflicts by yielding
 				// (key, old_value, new_value) and storing the block result; keys
@@ -412,6 +657,66 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				runner = r
+				// The conflict block can return a fresh heap value per collision,
+				// and those results live only in the Go-local out map until merge
+				// returns, so neither the structural projection above nor the call
+				// roots can bound them. Charge each conflict result incrementally
+				// through a build accumulator whose results-only estimator measures
+				// the result's full footprint as it is produced. Only conflict
+				// results pass through the accumulator: base and non-conflict
+				// argument values are receiver/argument values already counted in
+				// the call roots (acc.base) and the projection, so seeding them into
+				// the estimator would mark their backings as seen and let a later
+				// conflict block that mutates and returns one of them be dedup'd to
+				// nothing -- an under-count that escapes the quota. Counting is
+				// conservative: a key folded through many colliding arguments is
+				// charged once per conflict write rather than dedup'd to a single
+				// entry, so the bound stays sound even when a block mutates a
+				// receiver-owned container in place and returns it (see the
+				// accumulator's doc comment); the running total only grows, so it can
+				// never drop below the live footprint.
+				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+				// The output map is preallocated with make(map, len(base)) but grows as
+				// non-conflicting argument keys are inserted, reaching the exact distinct
+				// union at peak. Reserve that union (projectedEntries -- the same bound the
+				// up-front projection charged) so a large early conflict result is checked
+				// against the whole grown backing, not just the len(base) slots filled so
+				// far; reserving only len(base) would under-count the backing live once the
+				// non-conflict additions have grown the map and let backing + an early
+				// conflict result slip past the quota until a later check. The exact union
+				// (not the loose len(base)+sum(arg lens) bound) is reserved here so an
+				// overlapping merge whose true union fits is never rejected by phantom
+				// slots the result map never allocates.
+				if err := acc.reserveBacking(projectedEntries); err != nil {
+					return NewNil(), err
+				}
+				// The sorted key scratch buffer stays live the whole build, coexisting
+				// with the output map at peak, so reserve it in the accumulator's
+				// running budget -- the same bytes the projection above charged.
+				if err := acc.reserveScratch(scratchBytes); err != nil {
+					return NewNil(), err
+				}
+			}
+			// Copy the receiver entry by entry rather than with maps.Copy so a
+			// merge over a large base charges a step per copied entry and honors
+			// cancellation, matching the additions loop below and the other hash
+			// transforms. The output map is order-independent. The base entries are
+			// receiver values: their payloads are already counted in the call roots
+			// (acc.base) and their output map slots in the up-front projection, so
+			// they are never charged through the accumulator. Only block-returned
+			// conflict results -- fresh payloads invisible to both -- go through
+			// acc.add, which keeps the results-only estimator unseeded by receiver
+			// backings so a conflict block that mutates and returns a base value is
+			// charged at full size rather than dedup'd to nothing.
+			for key, val := range base {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				out[key] = val
+			}
+			if len(args) == 0 {
+				// Ruby's Hash#merge with no arguments returns a copy of self.
+				return NewHash(out), nil
 			}
 			// Multiple hashes are applied left to right, so later arguments win
 			// on conflicts, matching Ruby's Hash#merge(*others). The conflict
@@ -422,8 +727,21 @@ func hashMemberTransforms(property string) (Value, error) {
 			for _, arg := range args {
 				addition := arg.Hash()
 				for _, key := range sortedHashKeysInto(addition, keyBuf[:]) {
+					// Charge a step per merged key so a large merge participates in
+					// the step quota and honors cancellation; the block conflict
+					// path also steps through runner.call below.
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
 					oldValue, conflict := out[key]
 					if !conflict || !useBlock {
+						// A non-conflict addition stores an argument value directly.
+						// Its payload is already counted in the call roots (acc.base)
+						// and its output map slot in the up-front projection, so it is
+						// never charged through the results-only estimator -- seeding
+						// the estimator with an argument backing would let a later
+						// conflict block that mutates and returns that same value be
+						// dedup'd to nothing and under-count its fresh payload.
 						out[key] = addition[key]
 						continue
 					}
@@ -435,6 +753,9 @@ func hashMemberTransforms(property string) (Value, error) {
 						return NewNil(), err
 					}
 					out[key] = resolved
+					if err := acc.add(resolved); err != nil {
+						return NewNil(), err
+					}
 				}
 			}
 			return NewHash(out), nil
@@ -454,8 +775,26 @@ func hashMemberTransforms(property string) (Value, error) {
 			// immutable-style, so replace returns a fresh hash holding a copy of
 			// the replacement's entries and leaves the receiver unchanged.
 			replacement := args[0].Hash()
+			// Preflight the copied map before reserving it so a large replacement
+			// cannot allocate past the quota ahead of the statement-level check.
+			if err := exec.checkProjectedHashBytes(len(replacement), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(replacement))
-			maps.Copy(out, replacement)
+			// The output map is order-independent, so iterate the replacement
+			// directly rather than materializing a sorted key list. A sorted
+			// walk would heap a len(replacement) []string scratch buffer that
+			// the scratch-free memory preflight above does not charge, letting
+			// it escape the quota; iterating in place keeps accounting exact and
+			// mirrors compact and slice. The range loop still charges a step per
+			// copied entry so a large replacement participates in the step quota
+			// and honors cancellation, matching every other O(n) hash transform.
+			for key, val := range replacement {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				out[key] = val
+			}
 			return NewHash(out), nil
 		}), nil
 	case "flatten":
@@ -508,8 +847,30 @@ func hashMemberTransforms(property string) (Value, error) {
 			// returns a new hash with the key assigned rather than mutating the
 			// receiver, matching merge and the array collection helpers.
 			base := receiver.Hash()
-			out := make(map[string]Value, len(base)+1)
-			maps.Copy(out, base)
+			// Preflight the copied map before reserving it so storing into a large
+			// hash cannot allocate past the quota ahead of the statement-level
+			// check. Storing an existing key replaces its value, so the result keeps
+			// len(base) entries; only a new key grows the map to len(base)+1.
+			// Sizing the projection by the existing-key case avoids rejecting an
+			// in-place-style update that fits a quota tuned to the receiver's size.
+			projected := len(base)
+			if _, exists := base[key]; !exists {
+				projected = saturatingAdd(projected, 1)
+			}
+			if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			out := make(map[string]Value, projected)
+			// Copy the receiver entry by entry rather than with maps.Copy so a
+			// store into a large hash charges a step per copied entry and honors
+			// cancellation, matching replace, compact, and slice. The output map
+			// is order-independent, so no sorted key list is needed.
+			for k, v := range base {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				out[k] = v
+			}
 			out[key] = args[1]
 			return NewHash(out), nil
 		}), nil
@@ -520,8 +881,24 @@ func hashMemberTransforms(property string) (Value, error) {
 		// their candidate keys through the normal call path.
 		return NewAutoBuiltin("hash.slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			entries := receiver.Hash()
-			out := make(map[string]Value, len(args))
+			// Preflight the map slice could materialize before reserving it. The
+			// output holds at most one entry per requested key and never more than
+			// the receiver has, so the worst case is min(len(args), len(entries)) --
+			// missing and duplicate candidate keys collapse. Reserving the backing
+			// map at len(args) would let a huge candidate-key list allocate past the
+			// quota even when the receiver (and result) is tiny, before the
+			// statement-level check could observe it.
+			projected := min(len(args), len(entries))
+			if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			out := make(map[string]Value, projected)
 			for _, arg := range args {
+				// Charge a step per requested key so slicing with many candidate
+				// keys participates in the step quota and honors cancellation.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				// Vibescript hash keys are only symbols or strings, so an
 				// unsupported argument can never match an entry. Ruby's
 				// Hash#slice omits candidate keys that are absent, so we
@@ -542,8 +919,35 @@ func hashMemberTransforms(property string) (Value, error) {
 		// no parentheses distinction. Explicit `except(...)` calls still pass
 		// their excluded keys through the normal call path.
 		return NewAutoBuiltin("hash.except", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			excluded := make(map[string]struct{}, len(args))
+			entries := receiver.Hash()
+			// Preflight the largest map except could materialize before reserving
+			// anything. Excluded keys absent from the receiver leave the full input
+			// in place, so the worst case is a copy of every entry. Checking this
+			// first means a tiny receiver paired with a huge candidate-key list
+			// fails fast on the output bound rather than after allocating and
+			// scanning a set proportional to the argument count.
+			//
+			// The exclusion set is live alongside the output copy at peak: it holds
+			// the candidate keys present in the receiver (at most one per receiver
+			// entry, and never more than the argument count), so charge its footprint
+			// here too. Without it h.except(*h.keys) over a large receiver could
+			// allocate the full set plus the full output past a receiver+output quota,
+			// with the set gone before the post-call check could observe the peak.
+			exclusionEntries := min(len(args), len(entries))
+			if err := exec.checkProjectedHashTransformBytes(len(entries), exclusionSetBytes(exclusionEntries), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			// Build the exclusion set from candidate keys that actually appear in
+			// the receiver. Only present keys affect the result, so the set is
+			// bounded by the receiver's size, never the argument count: a huge
+			// candidate list against a tiny receiver cannot grow a set past the
+			// output the projection already admitted. A step per candidate keeps
+			// the scan CPU-bounded and observing cancellation before the copy loop.
+			var excluded map[string]struct{}
 			for _, arg := range args {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				// Vibescript hash keys are only symbols or strings, so an
 				// unsupported argument can never match an entry. Ruby's
 				// Hash#except ignores keys that are not present, so we treat
@@ -552,11 +956,21 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err != nil {
 					continue
 				}
+				if _, present := entries[key]; !present {
+					continue
+				}
+				if excluded == nil {
+					excluded = make(map[string]struct{})
+				}
 				excluded[key] = struct{}{}
 			}
-			entries := receiver.Hash()
 			out := make(map[string]Value, len(entries))
 			for key, value := range entries {
+				// Charge a step per surviving-candidate entry so excepting a large
+				// hash participates in the step quota and honors cancellation.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				if _, skip := excluded[key]; skip {
 					continue
 				}
@@ -574,10 +988,24 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Preflight the largest map select could keep plus the sorted key scratch
+			// buffer before reserving either; the block may keep every entry, so
+			// project the full input. The scratch list of all keys is live alongside
+			// the output map, so both are charged together here.
+			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body, so without this an empty select would scan the whole
+				// hash uncharged.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
 				include, err := runner.call(blockArgs[:])
@@ -600,10 +1028,24 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Preflight the largest map reject could keep plus the sorted key scratch
+			// buffer before reserving either; the block may keep every entry, so
+			// project the full input. The scratch list of all keys is live alongside
+			// the output map, so both are charged together here.
+			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body, so without this an empty reject would scan the whole
+				// hash uncharged.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
 				exclude, err := runner.call(blockArgs[:])
@@ -626,10 +1068,47 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Preflight the output map's structural slots before reserving it;
+			// transform_keys produces at most one entry per input key. The block can
+			// return a fresh key string per entry, and those synthesized keys live
+			// only in the Go-local out map until the builtin returns, so the
+			// structural projection cannot bound them. Charge each synthesized key
+			// incrementally through a build accumulator via addSynthesizedKey: only
+			// the block-returned key is fresh, so only it goes through the results-only
+			// estimator; the value stays a receiver value already counted in the call
+			// roots, so charging it through the estimator would record its backing as
+			// seen and risk dedup'ing a later block result to nothing. Counting is
+			// conservative: a block that collapses several input keys onto one output
+			// key is charged once per write rather than dedup'd to a single entry, an
+			// over-count that keeps the bound sound (the running total only grows). The
+			// sorted key scratch buffer is charged alongside the structural projection
+			// here and reserved in the accumulator so it stays charged for the whole
+			// build.
+			scratch := sortedKeyBufferBytes(len(entries))
+			if err := exec.checkProjectedHashTransformBytes(len(entries), scratch, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+			// The output map is preallocated with make(map, len(entries)), so its full
+			// backing is live before the first block runs; reserve it so a large early
+			// synthesized key is checked against the whole backing, not just the slots
+			// filled so far.
+			if err := acc.reserveBacking(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			if err := acc.reserveScratch(scratch); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = NewSymbol(key)
 				nextKey, err := runner.call(blockArg[:])
 				if err != nil {
@@ -640,6 +1119,9 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.transform_keys block must return symbol or string")
 				}
 				out[resolved] = entries[key]
+				if err := acc.addSynthesizedKey(resolved); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewHash(out), nil
 		}), nil
@@ -660,9 +1142,20 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			mapping := args[0].Hash()
+			// Preflight the output map plus the sorted key scratch buffer before
+			// reserving either; remap_keys produces one entry per input key (renamed
+			// or kept), so project the full input.
+			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per remapped key so remapping a large hash
+				// participates in the step quota and honors cancellation.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				value := entries[key]
 				if mapped, ok := mapping[key]; ok {
 					nextKey, err := valueToHashKey(mapped)
@@ -686,16 +1179,54 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
+			// Preflight the output map's structural slots before reserving it;
+			// transform_values keeps every key. The block can return a fresh heap
+			// value per entry, and those results live only in the Go-local out map
+			// until the builtin returns, so the structural projection cannot bound
+			// them. Charge each result incrementally through a build accumulator whose
+			// results-only estimator counts each block result's full footprint as it is
+			// produced, so accumulated payloads count toward the quota during the loop,
+			// not only at the post-call check. Counting is conservative: a block that
+			// returns a value unchanged and shared with the receiver is counted again
+			// rather than dedup'd against the baseline, an over-count that keeps the
+			// bound sound even when a block mutates a receiver-owned container in place
+			// and returns it. The sorted key scratch buffer is charged alongside the
+			// structural projection here and reserved in the accumulator so it stays
+			// charged for the whole build.
+			scratch := sortedKeyBufferBytes(len(entries))
+			if err := exec.checkProjectedHashTransformBytes(len(entries), scratch, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+			// The output map is preallocated with make(map, len(entries)), so its full
+			// backing is live before the first block runs; reserve it so a large early
+			// block result is checked against the whole backing, not just the slots
+			// filled so far.
+			if err := acc.reserveBacking(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			if err := acc.reserveScratch(scratch); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = entries[key]
 				nextValue, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
 				out[key] = nextValue
+				if err := acc.add(nextValue); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewHash(out), nil
 		}), nil
@@ -705,8 +1236,18 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.compact does not take arguments")
 			}
 			entries := receiver.Hash()
+			// Preflight the largest map compact could keep before reserving it; a
+			// hash with no nil values keeps every entry, so project the full input.
+			if err := exec.checkProjectedHashBytes(len(entries), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(entries))
 			for k, v := range entries {
+				// Charge a step per inspected entry so compacting a large hash
+				// participates in the step quota and honors cancellation.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				if v.Kind() != KindNil {
 					out[k] = v
 				}
