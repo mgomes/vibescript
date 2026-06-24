@@ -623,8 +623,8 @@ func hashMemberTransforms(property string) (Value, error) {
 				// present on only one side are copied without invoking the block.
 				// Conflicting keys are visited in sorted order so block side
 				// effects are deterministic, mirroring the other hash helpers; only
-				// the conflict resolution below runs the block, so seeding the
-				// accumulator over the base can proceed in map order.
+				// the conflict resolution below runs the block, so charging the
+				// base entries into the accumulator can proceed in map order.
 				r, err := newBlockCallRunner(exec, block, "hash."+name)
 				if err != nil {
 					return NewNil(), err
