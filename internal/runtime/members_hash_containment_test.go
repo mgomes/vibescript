@@ -89,6 +89,7 @@ func TestHashBlocklessTransformHonorsStepQuota(t *testing.T) {
 		{name: "compact"},
 		{name: "except"},
 		{name: "merge", args: []Value{largeHashReceiver(count)}},
+		{name: "replace", args: []Value{largeHashReceiver(count)}},
 		{name: "slice", args: hashSymbolKeys(count)},
 		{name: "remap_keys", args: []Value{NewHash(map[string]Value{})}},
 	}
@@ -118,6 +119,7 @@ func TestHashBlocklessTransformHonorsCancellation(t *testing.T) {
 		{name: "compact"},
 		{name: "except"},
 		{name: "merge", args: []Value{largeHashReceiver(8)}},
+		{name: "replace", args: []Value{largeHashReceiver(8)}},
 		{name: "slice", args: hashSymbolKeys(8)},
 		{name: "remap_keys", args: []Value{NewHash(map[string]Value{})}},
 	}

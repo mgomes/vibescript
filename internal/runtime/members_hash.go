@@ -726,7 +726,16 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(replacement))
-			maps.Copy(out, replacement)
+			var keyBuf [smallHashKeyBufferSize]string
+			for _, key := range sortedHashKeysInto(replacement, keyBuf[:]) {
+				// Charge a step per copied entry so replacing with a large
+				// replacement participates in the step quota and honors
+				// cancellation, matching every other O(n) hash transform.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				out[key] = replacement[key]
+			}
 			return NewHash(out), nil
 		}), nil
 	case "flatten":

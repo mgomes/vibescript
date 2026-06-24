@@ -5,7 +5,11 @@
   derived map against the memory quota before reserving it, so a transform over a
   large hash is rejected up front instead of after a full output map has already
   been allocated. The blockless transforms charge the step quota per entry and
-  honor context cancellation while walking the receiver. Block-driven transforms
+  honor context cancellation while walking their entries; `Hash#replace` charges
+  a step per copied entry as it adopts the replacement's contents, so replacing
+  with a large replacement hash is bounded by the step quota and cancellation
+  rather than copying the whole replacement after the sandbox should have
+  stopped. Block-driven transforms
   (`Hash#transform_keys`, `Hash#transform_values`, and the `Hash#merge` conflict
   block) additionally charge each block result against the quota as it is
   produced, so fresh values accumulated in the output cannot exceed the memory
