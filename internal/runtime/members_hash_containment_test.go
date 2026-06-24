@@ -1984,3 +1984,132 @@ end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
 	requireCallRuntimeErrorType(t, script, "run", []Value{receiver, arg}, CallOptions{}, runtimeErrorTypeLimit)
 }
+
+// TestHashMergeReservesUnionBackingNotBaseLen pins the P1 finding on PR #776
+// (members_hash.go:655): a block merge that inserts many non-conflicting argument
+// keys grows the output map from len(base) up to the distinct union before any
+// conflict block result is charged. The accumulator must reserve that union's
+// backing, not just len(base), or an early conflict result is checked against a
+// backing far smaller than the one actually live -- so backing + an early result
+// can exceed the quota until a later post-call check observes the peak.
+//
+// The test drives the accumulator exactly as merge does (reserveBacking +
+// reserveScratch, then add per conflict result) under two reservations against one
+// accumulator each. Reserving the union (the fix) rejects the first conflict
+// result, because the grown backing plus the result overflows the quota. Reserving
+// only len(base) (the pre-fix bug) wrongly admits it, since the under-reserved
+// backing leaves headroom the live map has already consumed. The gap between the
+// two is exactly the (union - len(base)) slots the non-conflict additions grow.
+func TestHashMergeReservesUnionBackingNotBaseLen(t *testing.T) {
+	t.Parallel()
+
+	const baseLen = 1
+	const nonConflictKeys = 4_000
+	const unionLen = baseLen + nonConflictKeys
+
+	// The conflict block returns a fresh string per collision. Size it so that, on
+	// the union-sized backing, backing + the first result overflows the quota, while
+	// on a len(base)-sized backing the same result still fits.
+	const resultPayload = 32 * 1024
+	result := NewString(strings.Repeat("z", resultPayload))
+
+	// Learn the accumulator baseline (call roots + empty map) under no real pressure,
+	// matching what merge snapshots before reserving any backing.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1}
+	probe.root = newEnv(nil)
+	probeAcc := newHashBuildAccumulator(probe, NewNil(), nil, nil, NewNil())
+	base := probeAcc.base
+	resultBytes := newMemoryEstimator().valuePayload(result)
+
+	// Size the quota to fit the union backing plus the first result short by one byte,
+	// so reserving the union and then adding the result trips, while reserving only
+	// len(base) leaves room the union-grown map has actually consumed.
+	quota := base + unionLen*estimatedMapEntryStructuralBytes + resultBytes - 1
+
+	// Sanity: a len(base)-sized backing plus the same result must fit the quota, so
+	// the pre-fix reservation would wrongly admit the result.
+	if base+baseLen*estimatedMapEntryStructuralBytes+resultBytes > quota {
+		t.Fatalf("test setup expects base-len backing + result (%d) to fit the quota (%d)",
+			base+baseLen*estimatedMapEntryStructuralBytes+resultBytes, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	exec.root = newEnv(nil)
+
+	// The fix: reserving the union backing, then the first conflict result trips,
+	// because the grown backing already consumed the quota's headroom.
+	fixed := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	if err := fixed.reserveBacking(unionLen); err != nil {
+		t.Fatalf("reserving the union backing under a quota sized to hold it tripped early: %v", err)
+	}
+	if err := fixed.add(result); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("union-backed accumulator admitted the first conflict result, want rejection: %v", err)
+	}
+
+	// The pre-fix bug: reserving only len(base) leaves headroom the union-grown map
+	// has already consumed, so the same result is wrongly admitted.
+	buggy := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	if err := buggy.reserveBacking(baseLen); err != nil {
+		t.Fatalf("reserving the base-len backing tripped early: %v", err)
+	}
+	if err := buggy.add(result); err != nil {
+		t.Fatalf("base-len-backed accumulator rejected the first result, want it to wrongly admit (proving the under-reservation): %v", err)
+	}
+}
+
+// TestHashMergeNonConflictGrowthWithEarlyConflictTrips drives the same P1 finding
+// through the real merge code path end to end. The argument hash adds thousands of
+// non-conflicting keys (growing the output map well past len(base)) plus one
+// conflicting key whose block returns a fresh payload. Visiting the conflict key in
+// sorted order ("a..." sorts before the "k..." non-conflict keys) means the block
+// runs while the union backing is already reserved; the grown backing plus that
+// result overflows a quota that fits the union backing alone, so the merge is
+// rejected. Reserving only len(base) (the pre-fix bug) would have let this same
+// merge materialize the full union map plus the result before the post-call check.
+func TestHashMergeNonConflictGrowthWithEarlyConflictTrips(t *testing.T) {
+	t.Parallel()
+
+	const nonConflictKeys = 4_000
+	const conflictPayload = 64 * 1024
+
+	// The receiver holds one key the argument also carries (the conflict), so the
+	// block runs exactly once. base = 1 entry; the union grows to 1 + nonConflictKeys.
+	receiver := NewHash(map[string]Value{"x": NewInt(0)})
+
+	addition := make(map[string]Value, nonConflictKeys+1)
+	addition["x"] = NewInt(1)
+	for i := range nonConflictKeys {
+		addition["k"+strconv.Itoa(i)] = NewInt(int64(i))
+	}
+	arg := NewHash(addition)
+	args := []Value{arg}
+
+	unionLen := 1 + nonConflictKeys
+	scratch := mergeSortScratchBytes(args)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	probe.root = newEnv(nil)
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(receiver, args, nil, NewNil())
+	emptyMap := estimatedValueBytes + estimatedMapBaseBytes
+	unionBacking := unionLen * estimatedMapEntryStructuralBytes
+	resultBytes := newMemoryEstimator().stringPayloadSize(strings.Repeat("z", conflictPayload))
+
+	// A quota that fits the live roots, the full union backing, and the scratch, but
+	// not the conflict block's fresh result on top. With the union reserved, the
+	// result trips at acc.add; reserving only len(base) would leave (union-1) slots of
+	// phantom headroom and admit it.
+	quota := liveWithRoots + emptyMap + unionBacking + scratch + resultBytes/2
+
+	// Sanity: the conflict result alone exceeds the headroom left after the union
+	// backing, so the rejection is genuinely the union-reservation closing the gap.
+	if resultBytes <= quota-(liveWithRoots+emptyMap+unionBacking+scratch) {
+		t.Fatalf("test setup expects the result (%d) to exceed the post-union headroom (%d)",
+			resultBytes, quota-(liveWithRoots+emptyMap+unionBacking+scratch))
+	}
+
+	source := `def run(receiver, other)
+  receiver.merge(other) { |k, old, new| "".ljust(65536, "z") }
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+	requireCallRuntimeErrorType(t, script, "run", []Value{receiver, arg}, CallOptions{}, runtimeErrorTypeLimit)
+}

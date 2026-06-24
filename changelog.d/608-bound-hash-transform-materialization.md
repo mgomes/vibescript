@@ -53,6 +53,12 @@
   than charged one slot at a time as entries are written, so a large *early* block
   result is checked against the whole live backing instead of only the slots filled
   so far and cannot transiently exceed the quota before later entries are added.
+  `Hash#merge`'s output map grows past its initial size as non-conflicting argument
+  keys are inserted, reaching the distinct union of the receiver and argument keys,
+  so its accumulator reserves that full union backing -- the same upper bound the
+  up-front projection charges -- rather than only the receiver's size; reserving the
+  smaller receiver size would leave the grown union slots uncharged and let the
+  backing plus an early conflict-block result exceed the quota until a later check.
   `Hash#each`, `Hash#each_key`, and `Hash#each_value` build no derived map -- they
   return the receiver -- so they no longer reserve an output map they never
   allocate, and a quota that exactly fits the receiver and the scratch buffer

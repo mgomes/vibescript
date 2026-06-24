@@ -603,8 +603,14 @@ func hashMemberTransforms(property string) (Value, error) {
 			// dwarfs the quota cannot allocate the key list past the sandbox limit.
 			// The receiver base is copied in map order, so it needs no scratch.
 			scratchBytes := mergeSortScratchBytes(args)
-			upperBound := looseMergedKeyUpperBound(base, args)
-			if exec.checkProjectedHashTransformBytes(upperBound, scratchBytes, receiver, args, kwargs, block) != nil {
+			// projectedEntries records the output-map entry count the projection
+			// charged, so the accumulator below can reserve the identical backing.
+			// The output map grows from len(base) up to the distinct union as
+			// non-conflicting argument keys are inserted, so its peak backing is the
+			// union bound -- not len(base) -- and the accumulator must reserve that
+			// same union so its running budget stays aligned with the up-front check.
+			projectedEntries := looseMergedKeyUpperBound(base, args)
+			if exec.checkProjectedHashTransformBytes(projectedEntries, scratchBytes, receiver, args, kwargs, block) != nil {
 				limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
 				projected, err := mergedKeyCount(exec, base, args, limit)
 				if err != nil {
@@ -613,6 +619,10 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.checkProjectedHashTransformBytes(projected, scratchBytes, receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
+				// The exact distinct-union count is a tighter (and never larger) bound
+				// than the loose sum, so reserve the accumulator against it -- the same
+				// value this branch's projection charged.
+				projectedEntries = projected
 			}
 			out := make(map[string]Value, len(base))
 			var runner *blockCallRunner
@@ -647,12 +657,15 @@ func hashMemberTransforms(property string) (Value, error) {
 				// accumulator's doc comment); the running total only grows, so it can
 				// never drop below the live footprint.
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
-				// The output map is preallocated with make(map, len(base)), so its full
-				// len(base)-slot backing is live before the first conflict block runs.
-				// Reserve it in the accumulator's running budget so a large early conflict
-				// result is checked against the whole preallocated backing rather than only
-				// the slots filled so far, matching the up-front projection.
-				if err := acc.reserveBacking(len(base)); err != nil {
+				// The output map is preallocated with make(map, len(base)) but grows as
+				// non-conflicting argument keys are inserted, reaching the distinct union
+				// at peak. Reserve that union (projectedEntries -- the same bound the
+				// up-front projection charged) so a large early conflict result is checked
+				// against the whole grown backing, not just the len(base) slots filled so
+				// far; reserving only len(base) would under-count the backing live once the
+				// non-conflict additions have grown the map and let backing + an early
+				// conflict result slip past the quota until a later check.
+				if err := acc.reserveBacking(projectedEntries); err != nil {
 					return NewNil(), err
 				}
 				// The sorted key scratch buffer stays live the whole build, coexisting
