@@ -96,6 +96,32 @@ func TestArrayPushCallShapes(t *testing.T) {
 	}
 }
 
+func TestArrayPushRejectsKeywordArguments(t *testing.T) {
+	t.Parallel()
+	// Keyword-only push (args empty, kwargs non-empty) must not silently drop
+	// the keyword map; it raises a clear error instead. Bare push and push()
+	// with no positional or keyword arguments stay valid no-ops.
+	script := compileScript(t, `
+    def push_keyword(values)
+      values.push(foo: 1)
+    end
+
+    def push_no_parens(values)
+      values.push
+    end
+
+    def push_empty_parens(values)
+      values.push()
+    end
+    `)
+
+	base := []Value{NewArray([]Value{NewInt(1), NewInt(2)})}
+	requireCallErrorContains(t, script, "push_keyword", base, CallOptions{},
+		"array.push does not take keyword arguments")
+	compareArrays(t, callFunc(t, script, "push_no_parens", base), []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, callFunc(t, script, "push_empty_parens", base), []Value{NewInt(1), NewInt(2)})
+}
+
 func TestArrayPushAppendAssignmentZeroArgs(t *testing.T) {
 	t.Parallel()
 	// x = x.push and x = x.push() exercise the in-place append-assignment

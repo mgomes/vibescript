@@ -1540,6 +1540,9 @@ func arrayMemberTransforms(property string) (Value, error) {
 	switch property {
 	case "push":
 		return NewAutoBuiltin("array.push", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.push does not take keyword arguments")
+			}
 			base := receiver.Array()
 			out := make([]Value, len(base)+len(args))
 			copy(out, base)
