@@ -887,8 +887,8 @@ func TestArrayAndHashHelpers(t *testing.T) {
 }
 
 // TestArrayFirstLastArity confirms first and last keep their zero-argument and
-// single-count behavior while rejecting extra positional arguments, matching
-// Ruby's Array#first/Array#last arity of 0..1.
+// single-count behavior while rejecting extra positional arguments and any
+// keyword arguments, matching Ruby's Array#first/Array#last arity of 0..1.
 func TestArrayFirstLastArity(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -904,6 +904,14 @@ func TestArrayFirstLastArity(t *testing.T) {
       [1, 2, 3].first(1, 2)
     end
 
+    def first_kwarg()
+      [1, 2, 3].first(n: 2)
+    end
+
+    def first_count_kwarg()
+      [1, 2, 3].first(1, n: 2)
+    end
+
     def last_default()
       [1, 2, 3].last
     end
@@ -914,6 +922,14 @@ func TestArrayFirstLastArity(t *testing.T) {
 
     def last_extra()
       [1, 2, 3].last(1, 2)
+    end
+
+    def last_kwarg()
+      [1, 2, 3].last(n: 2)
+    end
+
+    def last_count_kwarg()
+      [1, 2, 3].last(1, n: 2)
     end
     `)
 
@@ -945,4 +961,8 @@ func TestArrayFirstLastArity(t *testing.T) {
 
 	requireCallErrorContains(t, script, "first_extra", nil, CallOptions{}, "array.first accepts at most one count")
 	requireCallErrorContains(t, script, "last_extra", nil, CallOptions{}, "array.last accepts at most one count")
+	requireCallErrorContains(t, script, "first_kwarg", nil, CallOptions{}, "array.first does not take keyword arguments")
+	requireCallErrorContains(t, script, "first_count_kwarg", nil, CallOptions{}, "array.first does not take keyword arguments")
+	requireCallErrorContains(t, script, "last_kwarg", nil, CallOptions{}, "array.last does not take keyword arguments")
+	requireCallErrorContains(t, script, "last_count_kwarg", nil, CallOptions{}, "array.last does not take keyword arguments")
 }
