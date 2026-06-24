@@ -824,16 +824,22 @@ Duration.parse("P2W").days      # 14
 Zone keywords accept IANA names (`"America/New_York"`), `"UTC"`/`"GMT"`,
 `"LOCAL"`, or numeric offsets like `"+05:30"`.
 
-- `Time.new(year, month, day, hour = 0, min = 0, sec = 0, zone = nil,
-  in: nil) -> time` – build from calendar parts (local zone by default). The
-  seventh positional argument is a zone/offset that overrides `in:`
+- `Time.new(year, month = 1, day = 1, hour = 0, min = 0, sec = 0, zone = nil,
+  in: nil) -> time` – build from calendar parts (local zone by default). Only the
+  year is required; an omitted month or day defaults to `1` and omitted time
+  fields default to midnight (`Time.new(2024)` is January 1, 2024). The seventh
+  positional argument is a zone/offset that overrides `in:`
   (`Time.new(2024, 1, 1, 0, 0, 0, "+05:30")` is `+05:30`, not local).
-- `Time.local(year, month, day, hour = 0, min = 0, sec = 0, usec = 0) -> time` /
+- `Time.local(year, month = 1, day = 1, hour = 0, min = 0, sec = 0, usec = 0) -> time` /
   `Time.mktime(...)` -> time – build calendar parts anchored to the local zone.
-  The seventh positional argument is microseconds-with-fraction, not a zone.
-- `Time.utc(year, month, day, hour = 0, min = 0, sec = 0, usec = 0) -> time` /
-  `Time.gm(...)` -> time – build calendar parts anchored to UTC. The seventh
-  positional argument is microseconds-with-fraction, not a zone
+  Only the year is required, with the same January 1 / midnight defaults as
+  `Time.new`. The seventh positional argument is microseconds-with-fraction, not
+  a zone.
+- `Time.utc(year, month = 1, day = 1, hour = 0, min = 0, sec = 0, usec = 0) -> time` /
+  `Time.gm(...)` -> time – build calendar parts anchored to UTC. Only the year is
+  required, with the same January 1 / midnight defaults (`Time.utc(2024)` is
+  `2024-01-01T00:00:00Z`). The seventh positional argument is
+  microseconds-with-fraction, not a zone
   (`Time.utc(2024, 1, 1, 0, 0, 0, 123456).usec` is `123456`). Integer
   microseconds are exact and floats carry sub-microsecond precision down to the
   nanosecond; a non-numeric microsecond argument raises a runtime error.

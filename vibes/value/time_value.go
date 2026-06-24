@@ -70,25 +70,75 @@ func ParseLocationString(spec string) (*time.Location, error) {
 	return loc, nil
 }
 
-// TimeFromParts constructs a time.Time from year/month/day positional
-// arguments, with optional hour/minute/second and timezone arguments.
-func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
-	if len(args) < 3 {
-		return time.Time{}, fmt.Errorf("Time.new expects at least year, month, day")
-	}
-	getInt := func(idx int) int {
-		if idx >= len(args) {
-			return 0
+// optionalDatePartReader returns a reader for the optional date/time parts of a
+// Time constructor (month, day, hour, minute, second). It yields the integer
+// value of the argument at idx, or fallback when that argument is absent or an
+// explicit nil. Ruby's calendar constructors treat an explicit nil optional part
+// the same as an omitted one, so a nil must resolve to the field's default rather
+// than being coerced through Value.Int() to 0 (which time.Date would normalize
+// backward into the previous month or year). The required year is read by
+// requiredYear, which never defaults.
+func optionalDatePartReader(args []Value) func(idx, fallback int) int {
+	return func(idx, fallback int) int {
+		if idx >= len(args) || args[idx].Kind() == KindNil {
+			return fallback
 		}
 		return int(args[idx].Int())
 	}
+}
 
-	year := getInt(0)
-	month := getInt(1)
-	day := getInt(2)
-	hour := getInt(3)
-	min := getInt(4)
-	sec := getInt(5)
+// requiredYear reads the mandatory year argument of a Time constructor. Unlike
+// the optional date parts, the year is never defaulted: Ruby treats a nil year
+// as an error (TypeError: no implicit conversion of nil into Integer) rather
+// than as an omitted field, and only an integer- or float-valued year is
+// accepted (a float is truncated toward zero, matching Ruby's coercion). Reading
+// the year through Value.Int() unconditionally would silently coerce a nil --
+// or any other non-numeric kind -- to year 0, constructing a bogus timestamp;
+// this helper rejects those instead.
+func requiredYear(arg Value) (int, error) {
+	switch arg.Kind() {
+	case KindInt:
+		return int(arg.Int()), nil
+	case KindFloat:
+		f := arg.Float()
+		// int64() of Infinity/NaN is implementation-specific and would
+		// silently build a bogus year, so reject non-finite years like the
+		// other numeric coercions (Time.at, microsecond parts) do.
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, fmt.Errorf("Time constructor year must be finite, got %v", f)
+		}
+		// float64(math.MaxInt) rounds up to 2^63, so bound with >=/<= to keep
+		// the int conversion from overflowing instead of truncating toward Ruby.
+		if f >= float64(math.MaxInt) || f <= float64(math.MinInt) {
+			return 0, fmt.Errorf("Time constructor year %v is out of range", f)
+		}
+		return int(f), nil
+	default:
+		return 0, fmt.Errorf("Time constructor year must be numeric, got %s", arg.Kind())
+	}
+}
+
+// TimeFromParts constructs a time.Time from a required year positional
+// argument, with optional month/day/hour/minute/second and timezone arguments.
+// Matching Ruby's Time.new, an omitted month or day defaults to 1 (January 1)
+// and omitted time fields default to zero (midnight). An explicit nil in any of
+// those positions is treated the same as omitting it, so Time.new(2024, nil)
+// yields January 1 rather than normalizing month 0 into the prior year.
+func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
+	if len(args) < 1 {
+		return time.Time{}, fmt.Errorf("Time.new expects at least a year")
+	}
+	getOptional := optionalDatePartReader(args)
+
+	year, err := requiredYear(args[0])
+	if err != nil {
+		return time.Time{}, err
+	}
+	month := getOptional(1, 1)
+	day := getOptional(2, 1)
+	hour := getOptional(3, 0)
+	min := getOptional(4, 0)
+	sec := getOptional(5, 0)
 
 	loc := defaultLoc
 	if len(args) >= 7 {
@@ -107,33 +157,35 @@ func TimeFromParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
 	return time.Date(year, time.Month(month), day, hour, min, sec, 0, loc), nil
 }
 
-// TimeFromCalendarParts constructs a time.Time from year/month/day positional
-// arguments, with optional hour/minute/second and a subsecond argument. Unlike
-// TimeFromParts (which backs Time.new and reads the seventh argument as a
+// TimeFromCalendarParts constructs a time.Time from a required year positional
+// argument, with optional month/day/hour/minute/second and a subsecond argument.
+// Unlike TimeFromParts (which backs Time.new and reads the seventh argument as a
 // timezone), this matches Ruby's Time.local/mktime/utc/gm where the seventh
 // argument is microseconds-with-fraction and the location is fixed by the
-// constructor. A nil defaultLoc falls back to the local timezone.
+// constructor. As with Ruby, an omitted month or day defaults to 1 (January 1)
+// and omitted time fields default to zero (midnight). An explicit nil in any of
+// those positions is treated the same as omitting it, so Time.utc(2024, nil)
+// yields January 1 rather than normalizing month 0 into the prior year. A nil
+// defaultLoc falls back to the local timezone.
 func TimeFromCalendarParts(args []Value, defaultLoc *time.Location) (time.Time, error) {
-	if len(args) < 3 {
-		return time.Time{}, fmt.Errorf("Time constructor expects at least year, month, day")
+	if len(args) < 1 {
+		return time.Time{}, fmt.Errorf("Time constructor expects at least a year")
 	}
 	if len(args) > 7 {
 		return time.Time{}, fmt.Errorf("Time constructor expects at most year, month, day, hour, minute, second, microsecond")
 	}
 
-	getInt := func(idx int) int {
-		if idx >= len(args) {
-			return 0
-		}
-		return int(args[idx].Int())
-	}
+	getOptional := optionalDatePartReader(args)
 
-	year := getInt(0)
-	month := getInt(1)
-	day := getInt(2)
-	hour := getInt(3)
-	min := getInt(4)
-	sec := getInt(5)
+	year, err := requiredYear(args[0])
+	if err != nil {
+		return time.Time{}, err
+	}
+	month := getOptional(1, 1)
+	day := getOptional(2, 1)
+	hour := getOptional(3, 0)
+	min := getOptional(4, 0)
+	sec := getOptional(5, 0)
 
 	nanos := 0
 	if len(args) >= 7 {
