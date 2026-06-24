@@ -10,12 +10,20 @@ end
 
 ## Creating Time values
 
-- `Time.new(year, month, day, hour=0, min=0, sec=0, zone=nil, in: zone)`
-- `Time.local(year, month, day, hour=0, min=0, sec=0, usec=0)` / `Time.mktime(...)`
-- `Time.utc(year, month, day, hour=0, min=0, sec=0, usec=0)` / `Time.gm(...)`
+- `Time.new(year, month=1, day=1, hour=0, min=0, sec=0, zone=nil, in: zone)`
+- `Time.local(year, month=1, day=1, hour=0, min=0, sec=0, usec=0)` / `Time.mktime(...)`
+- `Time.utc(year, month=1, day=1, hour=0, min=0, sec=0, usec=0)` / `Time.gm(...)`
 - `Time.at(seconds_since_epoch, subsec=nil, unit=nil, in: zone)`
 - `Time.now(in: zone)`
 - `Time.parse(string, layout=nil, in: zone)`
+
+Only the year is required for the calendar constructors. As in Ruby, an omitted month or day defaults to `1` (so `Time.utc(2024)` is January 1, 2024 and `Time.utc(2024, 2)` is February 1, 2024) and omitted time fields default to midnight. An explicit `nil` in an optional position is treated the same as omitting it, so `Time.utc(2024, nil)` is also January 1, 2024.
+
+```vibe
+def start_of_year
+  Time.utc(2024).iso8601 # "2024-01-01T00:00:00Z"
+end
+```
 
 Zones accept Go-style names (e.g. `"America/New_York"`), `"UTC"`/`"GMT"`, `"LOCAL"`, or numeric offsets like `"+05:30"`.
 

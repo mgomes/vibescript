@@ -565,6 +565,72 @@ func TestArrayCountValueIgnoresBlock(t *testing.T) {
 	}
 }
 
+func TestArrayFlattenDepthArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def flatten_default()
+      [1, [2, [3]]].flatten
+    end
+
+    def flatten_nil()
+      [1, [2, [3]]].flatten(nil)
+    end
+
+    def flatten_negative()
+      [1, [2, [3]]].flatten(-1)
+    end
+
+    def flatten_deep_negative()
+      [1, [2, [3]]].flatten(-5)
+    end
+
+    def flatten_zero()
+      [1, [2, [3]]].flatten(0)
+    end
+
+    def flatten_one()
+      [1, [2, [3]]].flatten(1)
+    end
+
+    def flatten_two()
+      [1, [2, [3]]].flatten(2)
+    end
+
+    def flatten_float()
+      [1, [2, [3]]].flatten(1.2)
+    end
+
+    def flatten_string()
+      [1, [2, [3]]].flatten("1")
+    end
+
+    def flatten_too_many()
+      [1, [2, [3]]].flatten(1, 2)
+    end
+    `)
+
+	// nil, no argument, and any negative depth flatten fully, matching Ruby.
+	full := []Value{NewInt(1), NewInt(2), NewInt(3)}
+	for _, fn := range []string{"flatten_default", "flatten_nil", "flatten_negative", "flatten_deep_negative", "flatten_two"} {
+		compareArrays(t, callFunc(t, script, fn, nil), full)
+	}
+
+	// Zero depth returns a shallow copy without flattening any nesting.
+	compareArrays(t, callFunc(t, script, "flatten_zero", nil), []Value{
+		NewInt(1),
+		NewArray([]Value{NewInt(2), NewArray([]Value{NewInt(3)})}),
+	})
+
+	// A positive depth flattens that many levels; a float is truncated to int.
+	oneLevel := []Value{NewInt(1), NewInt(2), NewArray([]Value{NewInt(3)})}
+	compareArrays(t, callFunc(t, script, "flatten_one", nil), oneLevel)
+	compareArrays(t, callFunc(t, script, "flatten_float", nil), oneLevel)
+
+	// Nonnumeric depths are rejected, as are extra arguments.
+	requireCallErrorContains(t, script, "flatten_string", nil, CallOptions{}, "array.flatten depth must be an integer")
+	requireCallErrorContains(t, script, "flatten_too_many", nil, CallOptions{}, "array.flatten accepts at most one depth argument")
+}
+
 func TestArrayConcatAndSubtract(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
