@@ -116,6 +116,85 @@ func TestStringSplitDefaultWhitespace(t *testing.T) {
 	}
 }
 
+func TestStringSplitNilSeparator(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		script string
+		want   []Value
+	}{
+		{
+			name:   "nil splits on whitespace",
+			script: `def go() " a  b ".split(nil) end`,
+			want:   []Value{NewString("a"), NewString("b")},
+		},
+		{
+			name:   "nil matches no-argument form",
+			script: `def go() "one two  three".split(nil) end`,
+			want:   []Value{NewString("one"), NewString("two"), NewString("three")},
+		},
+		{
+			name: "nil keeps wider unicode whitespace inside fields",
+			// The non-breaking space (U+00A0) is spliced in via an explicit
+			// escape so it cannot be confused with an ASCII space; the lexer
+			// only decodes \n, \t, \", and \\ escapes, so the raw byte must
+			// reach the runtime.
+			script: "def go() \"a\u00a0b\".split(nil) end",
+			want:   []Value{NewString("a\u00a0b")},
+		},
+		{
+			name:   "nil on blank yields empty",
+			script: `def go() "   ".split(nil) end`,
+			want:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.script)
+			got := callFunc(t, script, "go", nil)
+			if got.Kind() != KindArray {
+				t.Fatalf("expected array, got %v", got.Kind())
+			}
+			if diff := valuesDiff(tt.want, got.Array()); diff != "" {
+				t.Fatalf("split(nil) mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestStringSplitRejectsInvalidSeparator(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "integer separator",
+			script: `def run() "a,b".split(1) end`,
+			want:   "string.split separator must be string or nil",
+		},
+		{
+			name:   "array separator",
+			script: `def run() "a,b".split([","]) end`,
+			want:   "string.split separator must be string or nil",
+		},
+		{
+			name:   "too many separators",
+			script: `def run() "a,b".split(",", "-") end`,
+			want:   "string.split accepts at most one separator",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.script)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
+		})
+	}
+}
+
 func TestStringPredicatesAndLength(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
