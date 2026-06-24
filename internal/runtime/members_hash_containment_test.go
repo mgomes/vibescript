@@ -2060,12 +2060,13 @@ func TestHashMergeReservesUnionBackingNotBaseLen(t *testing.T) {
 // TestHashMergeNonConflictGrowthWithEarlyConflictTrips drives the same P1 finding
 // through the real merge code path end to end. The argument hash adds thousands of
 // non-conflicting keys (growing the output map well past len(base)) plus one
-// conflicting key whose block returns a fresh payload. Visiting the conflict key in
-// sorted order ("a..." sorts before the "k..." non-conflict keys) means the block
-// runs while the union backing is already reserved; the grown backing plus that
-// result overflows a quota that fits the union backing alone, so the merge is
-// rejected. Reserving only len(base) (the pre-fix bug) would have let this same
-// merge materialize the full union map plus the result before the post-call check.
+// conflicting key ("x") whose block returns a fresh payload. The union backing is
+// reserved up front (before the copy/additions loops), so iteration order is
+// irrelevant: by the time the conflict block runs, the full union backing is
+// already charged, and the grown backing plus that result overflows a quota that
+// fits the union backing alone, so the merge is rejected. Reserving only len(base)
+// (the pre-fix bug) would have let this same merge materialize the full union map
+// plus the result before the post-call check.
 func TestHashMergeNonConflictGrowthWithEarlyConflictTrips(t *testing.T) {
 	t.Parallel()
 
