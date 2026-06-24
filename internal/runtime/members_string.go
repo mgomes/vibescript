@@ -1910,6 +1910,11 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) == 0 {
 				return NewString(chompDefault(text)), nil
 			}
+			if args[0].Kind() == KindNil {
+				// Ruby treats a nil separator as "do not chomp" and returns
+				// the receiver unchanged.
+				return NewString(text), nil
+			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.chomp separator must be string")
 			}
@@ -1930,6 +1935,11 @@ func stringMemberTransforms(property string) (Value, error) {
 			original := receiver.String()
 			if len(args) == 0 {
 				return stringBangResult(original, chompDefault(original)), nil
+			}
+			if args[0].Kind() == KindNil {
+				// Ruby treats a nil separator as "do not chomp"; since no
+				// change occurs, the mutator form returns nil.
+				return NewNil(), nil
 			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.chomp! separator must be string")

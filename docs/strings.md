@@ -164,12 +164,20 @@ including a trailing NUL. Unicode spaces are preserved.
 
 ### `chomp(separator = "\n")`
 
-Removes a trailing separator (default newline):
+Removes a trailing separator (default newline). An empty separator removes all
+trailing `"\r"` and `"\n"` characters. A `nil` separator means "do not chomp"
+and returns the string unchanged, matching Ruby:
 
 ```vibe
-"line\n".chomp      # "line"
+"line\n".chomp       # "line"
 "path///".chomp("/") # "path//"
+"line\n\n".chomp("") # "line"
+"abc\n".chomp(nil)   # "abc\n"
 ```
+
+The mutator `chomp!` returns the chomped string when it changes the receiver
+and `nil` when nothing changes; a `nil` separator therefore always returns
+`nil`.
 
 ### `chop`
 

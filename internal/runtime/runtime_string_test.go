@@ -321,6 +321,130 @@ func TestStringBoundaryHelpers(t *testing.T) {
 	}
 }
 
+// TestStringChomp covers the immutable String#chomp across the default
+// separator, an explicit separator, an empty separator, and Ruby's nil
+// separator "do not chomp" case.
+func TestStringChomp(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{name: "default newline", script: `def run() "line\n".chomp end`, want: "line"},
+		{name: "default no separator", script: `def run() "line".chomp end`, want: "line"},
+		{name: "explicit separator hit", script: `def run() "path///".chomp("/") end`, want: "path//"},
+		{name: "explicit separator miss", script: `def run() "abc".chomp("/") end`, want: "abc"},
+		{name: "empty separator strips newlines", script: `def run() "line\n\n".chomp("") end`, want: "line"},
+		{name: "nil separator no chomp", script: `def run() "abc".chomp(nil) end`, want: "abc"},
+		{name: "nil separator keeps newline", script: `def run() "abc\n".chomp(nil) end`, want: "abc\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString {
+				t.Fatalf("expected string, got %v", result.Kind())
+			}
+			if result.String() != tc.want {
+				t.Fatalf("chomp mismatch: %q, want %q", result.String(), tc.want)
+			}
+		})
+	}
+}
+
+// TestStringChompBang covers the mutator String#chomp!: it returns the chomped
+// value on change and nil when nothing changes, including Ruby's nil separator
+// case which always returns nil because no chomp occurs.
+func TestStringChompBang(t *testing.T) {
+	t.Parallel()
+
+	stringCases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{name: "default newline", script: `def run() "line\n".chomp! end`, want: "line"},
+		{name: "explicit separator hit", script: `def run() "path/".chomp!("/") end`, want: "path"},
+		{name: "empty separator strips newlines", script: `def run() "line\n\n".chomp!("") end`, want: "line"},
+	}
+	for _, tc := range stringCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindString {
+				t.Fatalf("expected string, got %v", result.Kind())
+			}
+			if result.String() != tc.want {
+				t.Fatalf("chomp! mismatch: %q, want %q", result.String(), tc.want)
+			}
+		})
+	}
+
+	nilCases := []struct {
+		name   string
+		script string
+	}{
+		{name: "default no change", script: `def run() "line".chomp! end`},
+		{name: "explicit separator miss", script: `def run() "abc".chomp!("/") end`},
+		{name: "nil separator", script: `def run() "abc\n".chomp!(nil) end`},
+		{name: "nil separator without newline", script: `def run() "abc".chomp!(nil) end`},
+	}
+	for _, tc := range nilCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			if result.Kind() != KindNil {
+				t.Fatalf("expected nil, got %v", result.Kind())
+			}
+		})
+	}
+}
+
+func TestStringChompErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "chomp rejects extra arguments",
+			script: `def run() "abc".chomp("a", "b") end`,
+			want:   "string.chomp accepts at most one separator",
+		},
+		{
+			name:   "chomp rejects non-string separator",
+			script: `def run() "abc".chomp(1) end`,
+			want:   "string.chomp separator must be string",
+		},
+		{
+			name:   "chomp! rejects extra arguments",
+			script: `def run() "abc".chomp!("a", "b") end`,
+			want:   "string.chomp! accepts at most one separator",
+		},
+		{
+			name:   "chomp! rejects non-string separator",
+			script: `def run() "abc".chomp!(1) end`,
+			want:   "string.chomp! separator must be string",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
 // TestChopDefault covers chopDefault directly so that record-separator cases
 // using "\r" can be expressed: the Vibescript lexer recognizes only \n, \t,
 // \" and \\ escapes, so a literal "\r" cannot be written in a script string.
