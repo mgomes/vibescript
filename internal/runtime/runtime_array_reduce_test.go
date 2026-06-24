@@ -83,7 +83,7 @@ func TestArrayReduceSymbolShorthand(t *testing.T) {
 // TestArrayReduceBlockForm confirms the explicit block form still works and
 // that a block always takes precedence over a lone symbol argument: the symbol
 // becomes the initial accumulator value, matching Ruby's
-// `[1,2,3].reduce(:+) { |a, b| "#{a}-#{b}" }`.
+// `[1].reduce(:seed) { |a, b| "#{a}-#{b}" }`.
 func TestArrayReduceBlockForm(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

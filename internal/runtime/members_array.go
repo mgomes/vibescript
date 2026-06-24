@@ -1174,10 +1174,13 @@ func arrayMemberQuery(property string) (Value, error) {
 //
 // The operation form sends the named operation to the accumulator with each
 // element as its argument, matching Ruby's `acc.public_send(op, item)`. Both
-// symbol and string operation names are accepted, mirroring Ruby's acceptance
-// of `reduce(:+)` and `reduce("+")`. Following Ruby, a block takes precedence:
-// when a block is supplied, a lone argument is always treated as the initial
-// value, never as an operation.
+// symbol and string operation names are accepted at runtime, mirroring Ruby's
+// acceptance of `reduce(:+)` and `reduce("+")`. Note that operator-symbol
+// literals such as `:+` cannot yet be written in source because the lexer does
+// not tokenize them (tracked in #801); reach the operator path with the string
+// form (`reduce("+")`) or a symbol naming a method (`reduce(:concat)`).
+// Following Ruby, a block takes precedence: when a block is supplied, a lone
+// argument is always treated as the initial value, never as an operation.
 func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("array.reduce does not take keyword arguments")

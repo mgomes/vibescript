@@ -208,12 +208,14 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   `nil` when no `initial` is given, or to `initial` when one is.
 - `reduce(operation) -> value` and `reduce(initial, operation) -> value` –
   fold by sending `operation` to the accumulator with each element, like Ruby's
-  `[1, 2, 3].reduce(:+)`. `operation` is a symbol or string naming either a
-  method on the accumulator (`["a", "b"].reduce(:concat)`) or a binary operator
-  (`[1, 2, 3].reduce("+")`, also `-`, `*`, `/`, `%`, `**`). Operator-name
-  symbols such as `:+` route through the same path once they parse as symbol
-  literals. A block, when supplied, always takes precedence, so a lone argument
-  alongside a block is treated as `initial`.
+  `["a", "b"].reduce(:concat)`. `operation` is a symbol naming a method on the
+  accumulator (`["a", "b"].reduce(:concat)`) or a string naming either a method
+  or a binary operator (`[1, 2, 3].reduce("+")`, also `-`, `*`, `/`, `%`, `**`).
+  Operator-symbol literals such as `:+` are not yet accepted because the lexer
+  cannot tokenize them; use the string form (`reduce("+")`) for now. That
+  shorthand is tracked in [#801](https://github.com/mgomes/vibescript/issues/801).
+  A block, when supplied, always takes precedence, so a lone argument alongside
+  a block is treated as `initial`.
 
 ### Membership and Counting
 
