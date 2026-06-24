@@ -370,14 +370,31 @@ falls before the start of the string:
 "hello".rindex("l", -9)        # nil
 ```
 
-### `slice(index, length = nil)`
+### `slice(selector, length = nil)`
 
-Returns a character or substring; returns `nil` when out of bounds:
+Extracts a character or substring, returning `nil` when the selector falls
+outside the string. Indexing is rune-aware. `slice` accepts the same selector
+shapes as Ruby's `String#slice`:
+
+- an integer index returns a single character; a negative index counts back
+  from the end, and an index at or past the length returns `nil`;
+- an integer `start` with a `length` returns up to `length` characters from
+  `start` (negative `start` counts from the end). A `start` exactly at the
+  length yields `""`, a negative `length` returns `nil`, and an oversized
+  `length` is clamped to the end of the string;
+- a range returns the selected substring, with Ruby-compatible negative bounds;
+- a substring returns that substring when it is contained, otherwise `nil`.
 
 ```vibe
-"héllo".slice(1)    # "é"
-"héllo".slice(1, 3) # "éll"
-"héllo".slice(99)   # nil
+"héllo".slice(1)      # "é"
+"héllo".slice(-1)     # "o"
+"héllo".slice(99)     # nil
+"héllo".slice(1, 3)   # "éll"
+"héllo".slice(-3, 2)  # "ll"
+"héllo".slice(1..-1)  # "éllo"
+"héllo".slice(1...3)  # "él"
+"héllo".slice("llo")  # "llo"
+"héllo".slice("x")    # nil
 ```
 
 ### `sub(pattern, replacement, regex: false)`
