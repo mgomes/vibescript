@@ -63,6 +63,7 @@ type Execution struct {
 	activeTaskGroups          []*taskGroup
 	validatedCapabilityArgs   []string
 	memoryEst                 memoryEstimator
+	reservedScratchBytes      int
 
 	// Inline backing storage for the always-used per-call stacks, so a
 	// fresh Execution costs one allocation instead of one per stack.
