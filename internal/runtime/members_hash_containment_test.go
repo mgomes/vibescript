@@ -1838,6 +1838,179 @@ func TestHashSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 	}
 }
 
+// TestForHashLoopSortedKeyBufferTripsMemoryQuota pins the scratch-buffer
+// accounting for `for pair in hash`. Like hash.each, a `for` over a hash builds no
+// output map but materializes a sorted []string key buffer (one header per entry)
+// to walk entries deterministically. That buffer must be charged before it is
+// allocated so a large iterable cannot allocate it past the sandbox limit; the
+// statement-level checkMemoryWith(iterable) only re-counts the already-resident
+// hash and never adds the scratch footprint. Before the fix the loop re-counted
+// only the iterable and admitted the buffer.
+func TestForHashLoopSortedKeyBufferTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 2_000
+	receiver := largeHashReceiver(count)
+
+	// The live baseline the loop holds: the hash bound to the run() parameter the
+	// loop iterates. `for` builds no output map, so its baseline is the call roots
+	// alone and its only extra allocation is the sorted key scratch buffer. The
+	// loop's runtime check (checkProjectedHashWalkBytes) charges the same shape:
+	// estimateMemoryUsageBase plus the iterable, deduplicated against the base.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	base := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, NewNil())
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	source := `def run(values)
+  for pair in values
+  end
+end`
+
+	// A quota above the live baseline (so the loop's roots fit) but below the
+	// baseline plus the scratch buffer (so the buffer must be rejected). Sit the
+	// quota midway so neither bound is grazed. An empty loop body charges no extra
+	// memory, leaving the scratch buffer as the sole over-budget allocation.
+	tight := base + scratch/2
+	if tight <= base || tight >= base+scratch {
+		t.Fatalf("test setup expects base (%d) < tight (%d) < base+scratch (%d)", base, tight, base+scratch)
+	}
+	tightScript := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: tight}, source)
+	requireCallRuntimeErrorType(t, tightScript, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
+
+	// Sanity: a quota that also fits the scratch buffer admits the loop, proving the
+	// rejection above comes from the buffer accounting and not an over-tight
+	// baseline. The empty body charges no per-iteration memory, so the scratch
+	// buffer the quota now covers is the loop's only allocation beyond the roots.
+	roomy := base + scratch + 64*1024
+	roomyScript := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: roomy}, source)
+	if _, err := roomyScript.Call(context.Background(), "run", []Value{receiver}, CallOptions{}); err != nil {
+		t.Fatalf("for loop under a quota that fits the key buffer = %v, want success", err)
+	}
+}
+
+// TestLoopScratchReservationChargesBodyChecks pins the core of the P2 finding on
+// PR #826: a hash-walking loop's sorted key scratch buffer stays live on the Go
+// stack while the loop body runs, yet the body's own memory checks measure only
+// the execution's reachable roots and so never see that scratch. reserveLoopScratch
+// folds the scratch into the baseline every later check observes, and
+// releaseLoopScratch removes it again, so a body allocation that breaches
+// roots+scratch+body is rejected even though roots+body alone would fit.
+func TestLoopScratchReservationChargesBodyChecks(t *testing.T) {
+	t.Parallel()
+
+	// The body's per-iteration allocation, modeled as a single value checked while
+	// the scratch is held. Sized so roots+body fits the quota but roots+scratch+body
+	// does not, isolating the scratch as the deciding term.
+	body := largeHashReceiver(4)
+	const scratch = 4096
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	bodyBytes := exec.estimateMemoryUsage(body)
+	exec.memoryQuota = bodyBytes + scratch/2
+
+	// Before any reservation the body allocation fits on its own.
+	if err := exec.checkMemoryWith(body); err != nil {
+		t.Fatalf("body allocation without held scratch = %v, want success", err)
+	}
+
+	// While the scratch is reserved the same check sees roots+scratch+body and
+	// rejects, exactly as a body check inside the loop now does.
+	delta := exec.reserveLoopScratch(scratch)
+	if err := exec.checkMemoryWith(body); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("body allocation while scratch held = %v, want errMemoryQuotaExceeded", err)
+	}
+
+	// Releasing the reservation restores the baseline so the body allocation fits
+	// again, proving the reservation is balanced and scoped to the loop's lifetime.
+	exec.releaseLoopScratch(delta)
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("reservedScratchBytes after release = %d, want 0", exec.reservedScratchBytes)
+	}
+	if err := exec.checkMemoryWith(body); err != nil {
+		t.Fatalf("body allocation after releasing scratch = %v, want success", err)
+	}
+}
+
+// TestForHashLoopHoldsScratchAcrossBody drives the P2 finding through the real
+// `for pair in hash` interpreter path. The sorted key scratch buffer must stay
+// reserved while the loop body runs, so a body allocation that is itself smaller
+// than the held scratch still overflows a quota tuned to exactly the empty-body
+// peak. Before the fix the body's own memory check did not see the scratch, so a
+// body smaller than the scratch slipped past and the true peak escaped the quota.
+func TestForHashLoopHoldsScratchAcrossBody(t *testing.T) {
+	t.Parallel()
+
+	// A receiver large enough that the sorted key buffer is a real heap allocation
+	// that dominates the small per-iteration body below.
+	const count = 4_000
+	receiver := largeHashReceiver(count)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	emptyBody := `def run(values)
+  for pair in values
+  end
+end`
+	// The body allocates a tiny two-element array each iteration -- far smaller than
+	// the held scratch buffer -- so only the scratch reservation can push a quota
+	// sized to the empty-body peak over the limit.
+	allocBody := `def run(values)
+  for pair in values
+    acc = [0, 0]
+    acc
+  end
+end`
+
+	// emptyPeak is the tightest quota that still admits the empty-body loop: the real
+	// resident roots plus the held scratch. Binary search avoids hand-computing every
+	// transient the interpreter holds across the iteration.
+	emptyPeak := tightestForHashQuota(t, emptyBody, receiver)
+
+	// At exactly that peak the body-allocating loop must overflow, because the tiny
+	// body array piles onto the already-maxed roots+scratch baseline. A body smaller
+	// than the scratch only trips the quota when the scratch is held through the body,
+	// which is the finding.
+	tight := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: emptyPeak}, allocBody)
+	requireCallRuntimeErrorType(t, tight, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
+
+	// Sanity: widening the quota past the body allocation admits the loop, proving the
+	// rejection came from the held scratch plus body and not an unrelated bound.
+	roomy := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: emptyPeak + scratch + 64*1024}, allocBody)
+	if _, err := roomy.Call(context.Background(), "run", []Value{receiver}, CallOptions{}); err != nil {
+		t.Fatalf("body-allocating loop under a roomy quota = %v, want success", err)
+	}
+}
+
+// tightestForHashQuota binary-searches the smallest MemoryQuotaBytes under which
+// run(receiver) still succeeds, so a test can pin a `for` loop's real live peak
+// without hand-computing every transient the interpreter holds.
+func tightestForHashQuota(t *testing.T, source string, receiver Value) int {
+	t.Helper()
+	admits := func(quota int) bool {
+		script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+		_, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
+		return err == nil
+	}
+	lo, hi := 0, 1<<22
+	if !admits(hi) {
+		t.Fatalf("upper bound quota %d did not admit the loop", hi)
+	}
+	for lo+1 < hi {
+		mid := (lo + hi) / 2
+		if admits(mid) {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	return hi
+}
+
 // TestHashSelectSortedKeyBufferTripsMemoryQuota pins the same scratch-buffer
 // accounting for a map-producing transform. select projects the full output map
 // plus the sorted key buffer; a quota sized to fit the live receiver and the

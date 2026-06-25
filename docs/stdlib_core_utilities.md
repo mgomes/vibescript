@@ -748,7 +748,10 @@ formatting. Times also support `time + duration`, `time - duration`,
 
 - `format(layout) -> string` – format with a Go layout string (reference time
   `Mon Jan 2 15:04:05 MST 2006`).
-- `strftime` – not supported; raises an error directing you to `format`.
+- `strftime(format) -> string` – format with a Ruby-style percent format string
+  (e.g. `"%Y-%m-%d %H:%M:%S"`). Supports the common directive subset; unknown
+  directives pass through verbatim, while a trailing `%` with no directive raises
+  a runtime error. See [time.md](time.md) for the directive table.
 
 ### Comparison and Rounding
 
