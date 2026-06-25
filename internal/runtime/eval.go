@@ -1065,8 +1065,11 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	}
 
 	trailing := len(target.Elements) - restIndex - 1
-	// Clamp the rest window to the available values so short inputs (fewer
-	// values than fixed targets) collect an empty rest instead of panicking.
+	// Clamp the rest window to the available values. When the target has more
+	// fixed targets than the value provides, restIndex can exceed len(values);
+	// the missing fixed targets bind to nil (via valueAt) and the rest is empty,
+	// matching Ruby. Without clamping the low bound, values[restIndex:restEnd]
+	// would panic the host (a sandbox DoS) on a slice-out-of-range.
 	restStart := min(restIndex, len(values))
 	restEnd := max(restStart, len(values)-trailing)
 	restValues := append([]Value(nil), values[restStart:restEnd]...)
