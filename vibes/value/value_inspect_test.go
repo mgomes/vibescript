@@ -85,6 +85,24 @@ func TestValueInspect(t *testing.T) {
 			value.NewHash(map[string]value.Value{"a b": value.NewInt(1)}),
 			`{"a b": 1}`,
 		},
+		{
+			// A KindHash carrying Ruby-style default metadata is backed by a
+			// hashData wrapper rather than a bare map; inspect must unwrap it to
+			// reach the entries and, like Ruby, render only the entries (never the
+			// default value).
+			"hash_with_default_value_renders_entries_only",
+			value.NewHashWithDefault(
+				map[string]value.Value{"a": value.NewInt(1)},
+				value.NewInt(0),
+				value.NewNil(),
+			),
+			`{a: 1}`,
+		},
+		{
+			"empty_hash_with_default_value",
+			value.NewHashWithDefault(nil, value.NewInt(0), value.NewNil()),
+			"{}",
+		},
 		{"empty_object", value.NewObject(nil), "{}"},
 		{
 			// Namespace and host objects share the hash member dispatch (keys,
@@ -302,6 +320,14 @@ func TestValueInspectByteLenBounded(t *testing.T) {
 		v := value.NewArray([]value.Value{
 			value.NewString("x"),
 			value.NewHash(map[string]value.Value{"a": value.NewInt(1)}),
+			// A hash carrying Ruby-style default metadata is backed by a hashData
+			// wrapper; the bounded walk must unwrap it rather than asserting the
+			// payload is a bare map.
+			value.NewHashWithDefault(
+				map[string]value.Value{"b": value.NewInt(2)},
+				value.NewInt(0),
+				value.NewNil(),
+			),
 		})
 		got, err := v.InspectByteLenBounded(func() error { return nil })
 		if err != nil {
@@ -354,6 +380,16 @@ func TestValueWriteInspectTo(t *testing.T) {
 			value.NewHash(map[string]value.Value{
 				"items": value.NewArray([]value.Value{value.NewInt(1), value.NewString("x")}),
 			}),
+		},
+		{
+			// The streaming renderer must unwrap a hashData-backed hash carrying a
+			// default rather than asserting a bare map.
+			"hash_with_default_renders_entries_only",
+			value.NewHashWithDefault(
+				map[string]value.Value{"a": value.NewInt(1)},
+				value.NewInt(0),
+				value.NewNil(),
+			),
 		},
 		{
 			"object_renders_fields_like_hash",

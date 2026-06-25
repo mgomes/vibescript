@@ -66,6 +66,14 @@ func NewValue(kind ValueKind, data any) Value {
 		if d, ok := data.(Duration); ok {
 			return NewDuration(d)
 		}
+	case KindHash:
+		// A KindHash payload is internally a *hashData wrapper, but the public
+		// payload exposed by Data is the bare entry map. Re-wrap it so that a
+		// hash round-tripped through Data/NewValue stays a usable KindHash
+		// rather than a value whose accessors panic on the wrong payload type.
+		if h, ok := data.(map[string]Value); ok {
+			return NewHash(h)
+		}
 	}
 	return Value{kind: kind, data: data}
 }
@@ -73,19 +81,29 @@ func NewValue(kind ValueKind, data any) Value {
 // Data returns the underlying payload stored in v. Callers are expected
 // to type-assert against the payload type associated with v.Kind().
 func (v Value) Data() any {
-	if v.data != nil {
-		return v.data
-	}
 	switch v.kind {
+	case KindHash:
+		// Expose the public entry map rather than the internal *hashData
+		// wrapper, so embedders can inspect entries and round-trip a hash
+		// through Data/NewValue. Default metadata is reached via the dedicated
+		// HashDefaultValue/HashDefaultProc accessors.
+		return v.hashEntries()
 	case KindBool:
-		return v.Bool()
+		if v.data == nil {
+			return v.Bool()
+		}
 	case KindInt:
-		return v.Int()
+		if v.data == nil {
+			return v.Int()
+		}
 	case KindFloat:
-		return v.Float()
+		if v.data == nil {
+			return v.Float()
+		}
 	case KindDuration:
-		return v.Duration()
-	default:
-		return nil
+		if v.data == nil {
+			return v.Duration()
+		}
 	}
+	return v.data
 }
