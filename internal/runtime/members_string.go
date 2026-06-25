@@ -2087,6 +2087,13 @@ func stringMemberTextOps(property string) (Value, error) {
 				parts = splitOnASCIIWhitespaceLimit(text, limit)
 			case args[0].Kind() != KindString:
 				return NewNil(), fmt.Errorf("string.split separator must be string or nil")
+			// A single ASCII space is Ruby's AWK whitespace mode, not a literal
+			// separator: it collapses runs of whitespace, discards leading
+			// whitespace, and honors the limit exactly like the nil form, so
+			// " a  b ".split(" ", 2) yields ["a", "b "] rather than a leading
+			// empty field.
+			case args[0].String() == " ":
+				parts = splitOnASCIIWhitespaceLimit(text, limit)
 			case args[0].String() == "":
 				parts = splitEmptySeparator(text, limit)
 			default:

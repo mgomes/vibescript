@@ -9,3 +9,7 @@
   the default limit of `0`, `"a,b,".split(",")` returns `["a", "b"]` instead of
   `["a", "b", ""]`, matching Ruby. Use a negative limit to keep trailing empty
   fields.
+- **Changed: a single space separator triggers whitespace splitting.** A
+  separator of exactly `" "` is Ruby's AWK whitespace mode, so it collapses
+  whitespace runs and discards leading whitespace instead of splitting literally.
+  `" a  b ".split(" ", 2)` returns `["a", "b "]` rather than `["", "a  b "]`.

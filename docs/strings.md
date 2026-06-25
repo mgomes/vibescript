@@ -779,6 +779,16 @@ form, splitting on runs of ASCII whitespace, matching Ruby's
 " a  b ".split(nil) # ["a", "b"]
 ```
 
+**With a single space separator:** A separator of exactly `" "` is Ruby's AWK
+whitespace mode rather than a literal split on the space character. It collapses
+runs of ASCII whitespace, discards leading whitespace, and honors the limit just
+like the `nil` form, so it never produces a leading empty field:
+
+```vibe
+" a  b ".split(" ")    # ["a", "b"]
+" a  b ".split(" ", 2) # ["a", "b "]
+```
+
 Any other non-string separator raises an error.
 
 **With a `limit`:** The optional second argument controls how many fields are

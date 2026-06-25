@@ -330,6 +330,56 @@ func TestStringSplitLimit(t *testing.T) {
 			script: `def go() "   ".split(nil, 0) end`,
 			want:   nil,
 		},
+		// A single space separator is Ruby's AWK whitespace mode: it collapses
+		// whitespace runs and discards leading whitespace rather than splitting
+		// literally on the space byte, so it never yields a leading empty field.
+		{
+			name:   "single space default collapses whitespace",
+			script: `def go() " a  b ".split(" ") end`,
+			want:   []Value{NewString("a"), NewString("b")},
+		},
+		{
+			name:   "single space positive limit keeps remainder",
+			script: `def go() " a  b ".split(" ", 2) end`,
+			want:   []Value{NewString("a"), NewString("b ")},
+		},
+		{
+			name:   "single space positive limit splits middle",
+			script: `def go() "a b c d".split(" ", 3) end`,
+			want:   []Value{NewString("a"), NewString("b"), NewString("c d")},
+		},
+		{
+			name:   "single space negative limit keeps trailing empty",
+			script: `def go() " a  b ".split(" ", -1) end`,
+			want: []Value{
+				NewString("a"), NewString("b"), NewString(""),
+			},
+		},
+		{
+			name:   "single space negative limit no trailing whitespace",
+			script: `def go() "a  b".split(" ", -1) end`,
+			want:   []Value{NewString("a"), NewString("b")},
+		},
+		{
+			name:   "single space limit one keeps string intact",
+			script: `def go() " a  b ".split(" ", 1) end`,
+			want:   []Value{NewString(" a  b ")},
+		},
+		{
+			name:   "single space splits mixed whitespace runs",
+			script: "def go() \"a\\tb\\nc\".split(\" \", -1) end",
+			want:   []Value{NewString("a"), NewString("b"), NewString("c")},
+		},
+		{
+			name:   "single space blank string negative yields single empty",
+			script: `def go() "   ".split(" ", -1) end`,
+			want:   []Value{NewString("")},
+		},
+		{
+			name:   "single space blank string default yields empty",
+			script: `def go() "   ".split(" ") end`,
+			want:   nil,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
