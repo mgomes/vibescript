@@ -6,6 +6,23 @@ import (
 )
 
 func (exec *Execution) getMember(obj Value, property string, pos Position) (Value, error) {
+	return exec.resolveMember(obj, property, pos, exec.isCurrentReceiver(obj))
+}
+
+// getPublicMember resolves a member as an external caller would, so private
+// methods are rejected even when obj is the current receiver. It backs the
+// `public_send`-style dispatch used by the reduce operation shorthand, where
+// the documented contract is `accumulator.public_send(operation, item)`: an
+// accumulator that happens to be self must not gain access to private methods.
+func (exec *Execution) getPublicMember(obj Value, property string, pos Position) (Value, error) {
+	return exec.resolveMember(obj, property, pos, false)
+}
+
+// resolveMember performs member resolution for getMember and getPublicMember.
+// callerIsReceiver controls private-method visibility: only the current
+// receiver may resolve private methods, so external/public dispatch passes
+// false to keep privacy enforced regardless of which value is self.
+func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	switch obj.Kind() {
 	case KindHash:
 		member, err := hashMember(obj, property)
@@ -38,9 +55,9 @@ func (exec *Execution) getMember(obj Value, property string, pos Position) (Valu
 	case KindEnumValue:
 		return exec.enumValueMember(obj, property, pos)
 	case KindClass:
-		return exec.classMember(obj, property, pos)
+		return exec.classMember(obj, property, pos, callerIsReceiver)
 	case KindInstance:
-		return exec.instanceMember(obj, property, pos)
+		return exec.instanceMember(obj, property, pos, callerIsReceiver)
 	case KindInt:
 		return exec.intMember(obj, property, pos)
 	case KindFloat:
@@ -78,7 +95,7 @@ func (exec *Execution) functionMember(obj Value, property string, pos Position) 
 	return caller, nil
 }
 
-func (exec *Execution) classMember(obj Value, property string, pos Position) (Value, error) {
+func (exec *Execution) classMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	cl := valueClass(obj)
 	if property == "new" {
 		constructor := NewAutoBuiltin(cl.Name+".new", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -97,7 +114,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position) (Va
 		return constructor, nil
 	}
 	if fn, ok := cl.ClassMethods[property]; ok {
-		if fn.Private && !exec.isCurrentReceiver(obj) {
+		if fn.Private && !callerIsReceiver {
 			return NewNil(), exec.errorAt(pos, "private method %s", property)
 		}
 		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -111,18 +128,18 @@ func (exec *Execution) classMember(obj Value, property string, pos Position) (Va
 	}
 	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1)
 	candidates = append(candidates, "new")
-	candidates = appendAccessibleMethodNames(candidates, cl.ClassMethods, exec.isCurrentReceiver(obj))
+	candidates = appendAccessibleMethodNames(candidates, cl.ClassMethods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassVars))
 	return NewNil(), exec.errorAt(pos, "unknown class member %s%s", property, didYouMean(property, candidates))
 }
 
-func (exec *Execution) instanceMember(obj Value, property string, pos Position) (Value, error) {
+func (exec *Execution) instanceMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	inst := valueInstance(obj)
 	if property == "class" {
 		return NewClass(inst.Class), nil
 	}
 	if fn, ok := inst.Class.Methods[property]; ok {
-		if fn.Private && !exec.isCurrentReceiver(obj) {
+		if fn.Private && !callerIsReceiver {
 			return NewNil(), exec.errorAt(pos, "private method %s", property)
 		}
 		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -136,7 +153,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position) 
 	}
 	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1)
 	candidates = append(candidates, "class")
-	candidates = appendAccessibleMethodNames(candidates, inst.Class.Methods, exec.isCurrentReceiver(obj))
+	candidates = appendAccessibleMethodNames(candidates, inst.Class.Methods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Ivars))
 	return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
 }
