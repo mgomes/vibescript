@@ -85,8 +85,41 @@ import (
 // (%6z -> "+00530") but treats the _ space-padding flag as a no-op. Ruby's
 // space-padded offset renders a quirky, lossy form (%_z -> " +530"); Vibescript
 // keeps the offset intact rather than reproducing that degenerate behavior.
-func strftime(t time.Time, format string) (string, error) {
-	return strftimeCase(t, format, false)
+//
+// A directive's width is script-controlled, and several directives turn it into a
+// run of pad bytes (or, for %N/%L, a run of trailing zero digits). exec carries
+// the sandbox memory quota so the renderer can preflight each width-driven run
+// against the running output size before allocating it, mirroring the string
+// padding helpers. A width like %1000000000N that would project past the quota is
+// rejected with a memory-quota error rather than allocating a multi-gigabyte
+// buffer the post-call check would only catch after the fact. A nil exec (or one
+// with no quota) skips the check, leaving the unbounded behavior to callers that
+// run outside the sandbox.
+func strftime(exec *Execution, t time.Time, format string) (string, error) {
+	r := strftimeRenderer{exec: exec, t: t}
+	return r.render(format, false)
+}
+
+// strftimeRenderer holds the per-call state the render pass threads through its
+// helpers: the execution whose memory quota bounds width-driven allocations, and
+// the receiver time. It exists so the padding helpers can preflight an oversized
+// width against the quota before materializing a huge buffer.
+type strftimeRenderer struct {
+	exec *Execution
+	t    time.Time
+}
+
+// checkPad rejects a pending pad run that, added to the bytes already written in
+// this render pass, would exceed the memory quota. written is the builder's
+// current byte length and padBytes is the number of pad bytes about to be
+// appended; both are clamped with saturating arithmetic so a pathological width
+// cannot overflow int before the quota rejects it. It returns nil when no quota
+// is enforced, leaving small formats on the allocation-free fast path.
+func (r strftimeRenderer) checkPad(written, padBytes int) error {
+	if r.exec == nil {
+		return nil
+	}
+	return r.exec.checkProjectedStringBytes(saturatingAdd(written, padBytes))
 }
 
 // caseFlag captures the case transformation applied to a directive's rendered
@@ -100,11 +133,13 @@ const (
 	caseToggle                 // # : lowercase all-uppercase results, else uppercase
 )
 
-// strftimeCase renders format. inheritedUpper carries the ^ flag down from a
-// compound directive so it uppercases the nested name directives, matching
-// Ruby's %^c -> "TUE JAN  2 ...". The # flag never propagates into a compound,
-// so it has no inherited counterpart.
-func strftimeCase(t time.Time, format string, inheritedUpper bool) (string, error) {
+// render renders format. inheritedUpper carries the ^ flag down from a compound
+// directive so it uppercases the nested name directives, matching Ruby's %^c ->
+// "TUE JAN  2 ...". The # flag never propagates into a compound, so it has no
+// inherited counterpart. The builder's current length is passed to each directive
+// render so a width-driven pad run can be preflighted against the memory quota
+// alongside the output already produced.
+func (r strftimeRenderer) render(format string, inheritedUpper bool) (string, error) {
 	var b strings.Builder
 	b.Grow(len(format) + 16)
 
@@ -121,7 +156,11 @@ func strftimeCase(t time.Time, format string, inheritedUpper bool) (string, erro
 			return "", fmt.Errorf("time.strftime invalid format: %q", format)
 		}
 
-		if out, recognized := renderStrftimeDirective(t, token, inheritedUpper); recognized {
+		out, recognized, err := r.renderDirective(token, inheritedUpper, b.Len())
+		if err != nil {
+			return "", err
+		}
+		if recognized {
 			b.WriteString(out)
 		} else {
 			// Unknown directive: emit the percent sequence verbatim like Ruby.
@@ -222,21 +261,28 @@ const (
 	fieldCompound                          // expands a fixed sub-format
 )
 
-// renderStrftimeDirective renders a parsed directive. recognized is false when
-// the directive is not part of the supported subset (or carries colon modifiers
-// the directive does not accept), signaling the caller to emit the source
-// verbatim.
-func renderStrftimeDirective(t time.Time, tok strftimeToken, inheritedUpper bool) (out string, recognized bool) {
+// renderDirective renders a parsed directive. recognized is false when the
+// directive is not part of the supported subset (or carries colon modifiers the
+// directive does not accept), signaling the caller to emit the source verbatim.
+// written is the builder's current byte length so a width-driven pad run can be
+// preflighted against the memory quota; err is non-nil only when such a run would
+// exceed the quota. For %N/%L, where width is the fractional digit count rather
+// than a pad run, the subsecond rendering is preflighted before its digits are
+// materialized.
+func (r strftimeRenderer) renderDirective(tok strftimeToken, inheritedUpper bool, written int) (out string, recognized bool, err error) {
 	// Only %z reads colon modifiers, and only one (%:z), two (%::z), or three
 	// (%:::z) of them; any other directive carrying a colon, or %z with four or
 	// more, is an unknown sequence emitted verbatim like Ruby.
 	if tok.colons != 0 && (tok.directive != 'z' || tok.colons > 3) {
-		return "", false
+		return "", false, nil
 	}
 
-	value, padChar, defaultWidth, kind, ok := strftimeField(t, tok)
+	value, padChar, defaultWidth, kind, ok, err := r.field(tok, written)
+	if err != nil {
+		return "", false, err
+	}
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 
 	shift := directiveCase(tok, inheritedUpper)
@@ -249,20 +295,37 @@ func renderStrftimeDirective(t time.Time, tok strftimeToken, inheritedUpper bool
 		// the nested names while the # flag does not reach into a compound at all
 		// (so it never propagates). The expanded result is then padded to the
 		// requested width as a single field.
-		expanded := mustStrftime(t, value, tok.upper || inheritedUpper)
-		return padCompound(expanded, tok), true
+		expanded := r.expandCompound(value, tok.upper || inheritedUpper)
+		padded, err := r.padCompound(expanded, tok, written)
+		if err != nil {
+			return "", false, err
+		}
+		return padded, true, nil
 	case fieldYear:
 		// %Y's default minimum width counts magnitude digits only, so a BCE year
 		// renders as "-0001" (sign plus four digits), while an explicit width is a
 		// total field width counting the sign (%5Y of -1 -> "-0001", %4Y -> "-001").
-		return applyCase(padYear(value, tok), shift), true
+		padded, err := r.padYear(value, tok, written)
+		if err != nil {
+			return "", false, err
+		}
+		return applyCase(padded, shift), true, nil
 	case fieldSubsec:
-		// %L/%N already encode width as digit count; only case applies.
-		return applyCase(value, shift), true
+		// %L/%N already encode width as digit count; the digits were materialized
+		// (and quota-checked) by the field helper, so only case applies here.
+		return applyCase(value, shift), true, nil
 	case fieldOffset:
-		return padOffset(value, tok), true
+		padded, err := r.padOffset(value, tok, written)
+		if err != nil {
+			return "", false, err
+		}
+		return padded, true, nil
 	default:
-		return applyCase(applyPad(value, padChar, defaultWidth, tok), shift), true
+		padded, err := r.applyPad(value, padChar, defaultWidth, tok, written)
+		if err != nil {
+			return "", false, err
+		}
+		return applyCase(padded, shift), true, nil
 	}
 }
 
@@ -282,85 +345,91 @@ func directiveCase(tok strftimeToken, inheritedUpper bool) caseFlag {
 	}
 }
 
-// strftimeField resolves a directive to its rendered value, default pad
-// character, default minimum width, and field kind. For a fieldCompound
-// directive, value is the sub-format the caller expands rather than a rendered
-// string. ok is false for unknown directives.
-func strftimeField(t time.Time, tok strftimeToken) (value string, padChar byte, defaultWidth int, kind strftimeFieldKind, ok bool) {
+// field resolves a directive to its rendered value, default pad character,
+// default minimum width, and field kind. For a fieldCompound directive, value is
+// the sub-format the caller expands rather than a rendered string. ok is false
+// for unknown directives. err is non-nil only for a recognized %N/%L whose
+// script-controlled digit count would project past the memory quota; those
+// directives materialize their digit run here (written is the builder length used
+// to preflight that run), so the quota check has to live with their rendering.
+func (r strftimeRenderer) field(tok strftimeToken, written int) (value string, padChar byte, defaultWidth int, kind strftimeFieldKind, ok bool, err error) {
+	t := r.t
 	switch tok.directive {
 	case 'Y':
-		return strftimeYear(t.Year()), '0', 4, fieldYear, true
+		return strftimeYear(t.Year()), '0', 4, fieldYear, true, nil
 	case 'C':
-		return strconv.Itoa(floorDiv(t.Year(), 100)), '0', 2, fieldNumeric, true
+		return strconv.Itoa(floorDiv(t.Year(), 100)), '0', 2, fieldNumeric, true, nil
 	case 'y':
-		return strconv.Itoa(((t.Year() % 100) + 100) % 100), '0', 2, fieldNumeric, true
+		return strconv.Itoa(((t.Year() % 100) + 100) % 100), '0', 2, fieldNumeric, true, nil
 	case 'm':
-		return strconv.Itoa(int(t.Month())), '0', 2, fieldNumeric, true
+		return strconv.Itoa(int(t.Month())), '0', 2, fieldNumeric, true, nil
 	case 'd':
-		return strconv.Itoa(t.Day()), '0', 2, fieldNumeric, true
+		return strconv.Itoa(t.Day()), '0', 2, fieldNumeric, true, nil
 	case 'e':
-		return strconv.Itoa(t.Day()), ' ', 2, fieldNumeric, true
+		return strconv.Itoa(t.Day()), ' ', 2, fieldNumeric, true, nil
 	case 'j':
-		return strconv.Itoa(t.YearDay()), '0', 3, fieldNumeric, true
+		return strconv.Itoa(t.YearDay()), '0', 3, fieldNumeric, true, nil
 	case 'H':
-		return strconv.Itoa(t.Hour()), '0', 2, fieldNumeric, true
+		return strconv.Itoa(t.Hour()), '0', 2, fieldNumeric, true, nil
 	case 'k':
-		return strconv.Itoa(t.Hour()), ' ', 2, fieldNumeric, true
+		return strconv.Itoa(t.Hour()), ' ', 2, fieldNumeric, true, nil
 	case 'I':
-		return strconv.Itoa(hour12(t.Hour())), '0', 2, fieldNumeric, true
+		return strconv.Itoa(hour12(t.Hour())), '0', 2, fieldNumeric, true, nil
 	case 'l':
-		return strconv.Itoa(hour12(t.Hour())), ' ', 2, fieldNumeric, true
+		return strconv.Itoa(hour12(t.Hour())), ' ', 2, fieldNumeric, true, nil
 	case 'M':
-		return strconv.Itoa(t.Minute()), '0', 2, fieldNumeric, true
+		return strconv.Itoa(t.Minute()), '0', 2, fieldNumeric, true, nil
 	case 'S':
-		return strconv.Itoa(t.Second()), '0', 2, fieldNumeric, true
+		return strconv.Itoa(t.Second()), '0', 2, fieldNumeric, true, nil
 	case 'w':
-		return strconv.Itoa(int(t.Weekday())), '0', 1, fieldNumeric, true
+		return strconv.Itoa(int(t.Weekday())), '0', 1, fieldNumeric, true, nil
 	case 'u':
-		return strconv.Itoa(isoWeekday(t.Weekday())), '0', 1, fieldNumeric, true
+		return strconv.Itoa(isoWeekday(t.Weekday())), '0', 1, fieldNumeric, true, nil
 	case 's':
-		return strconv.FormatInt(t.Unix(), 10), '0', 1, fieldNumeric, true
+		return strconv.FormatInt(t.Unix(), 10), '0', 1, fieldNumeric, true, nil
 	case 'L':
-		return strftimeSubsec(t.Nanosecond(), strftimeSubsecWidth(tok, 3)), 0, 0, fieldSubsec, true
+		sub, err := r.subsec(t.Nanosecond(), strftimeSubsecWidth(tok, 3), written)
+		return sub, 0, 0, fieldSubsec, err == nil, err
 	case 'N':
-		return strftimeSubsec(t.Nanosecond(), strftimeSubsecWidth(tok, 9)), 0, 0, fieldSubsec, true
+		sub, err := r.subsec(t.Nanosecond(), strftimeSubsecWidth(tok, 9), written)
+		return sub, 0, 0, fieldSubsec, err == nil, err
 	case 'p':
-		return meridian(t.Hour(), true), ' ', 0, fieldName, true
+		return meridian(t.Hour(), true), ' ', 0, fieldName, true, nil
 	case 'P':
-		return meridian(t.Hour(), false), ' ', 0, fieldName, true
+		return meridian(t.Hour(), false), ' ', 0, fieldName, true, nil
 	case 'A':
-		return t.Weekday().String(), ' ', 0, fieldName, true
+		return t.Weekday().String(), ' ', 0, fieldName, true, nil
 	case 'a':
-		return t.Weekday().String()[:3], ' ', 0, fieldName, true
+		return t.Weekday().String()[:3], ' ', 0, fieldName, true, nil
 	case 'B':
-		return t.Month().String(), ' ', 0, fieldName, true
+		return t.Month().String(), ' ', 0, fieldName, true, nil
 	case 'b', 'h':
-		return t.Month().String()[:3], ' ', 0, fieldName, true
+		return t.Month().String()[:3], ' ', 0, fieldName, true, nil
 	case 'z':
-		return strftimeOffset(t, tok.colons), '0', 0, fieldOffset, true
+		return strftimeOffset(t, tok.colons), '0', 0, fieldOffset, true, nil
 	case 'Z':
 		name, _ := t.Zone()
-		return name, ' ', 0, fieldName, true
+		return name, ' ', 0, fieldName, true, nil
 	case 'n':
-		return "\n", ' ', 1, fieldLiteral, true
+		return "\n", ' ', 1, fieldLiteral, true, nil
 	case 't':
-		return "\t", ' ', 1, fieldLiteral, true
+		return "\t", ' ', 1, fieldLiteral, true, nil
 	case '%':
-		return "%", ' ', 1, fieldLiteral, true
+		return "%", ' ', 1, fieldLiteral, true, nil
 	case 'F':
-		return "%Y-%m-%d", 0, 0, fieldCompound, true
+		return "%Y-%m-%d", 0, 0, fieldCompound, true, nil
 	case 'T', 'X':
-		return "%H:%M:%S", 0, 0, fieldCompound, true
+		return "%H:%M:%S", 0, 0, fieldCompound, true, nil
 	case 'R':
-		return "%H:%M", 0, 0, fieldCompound, true
+		return "%H:%M", 0, 0, fieldCompound, true, nil
 	case 'D', 'x':
-		return "%m/%d/%y", 0, 0, fieldCompound, true
+		return "%m/%d/%y", 0, 0, fieldCompound, true, nil
 	case 'r':
-		return "%I:%M:%S %p", 0, 0, fieldCompound, true
+		return "%I:%M:%S %p", 0, 0, fieldCompound, true, nil
 	case 'c':
-		return "%a %b %e %T %Y", 0, 0, fieldCompound, true
+		return "%a %b %e %T %Y", 0, 0, fieldCompound, true, nil
 	default:
-		return "", 0, 0, fieldNumeric, false
+		return "", 0, 0, fieldNumeric, false, nil
 	}
 }
 
@@ -368,12 +437,14 @@ func strftimeField(t time.Time, tok strftimeToken) (value string, padChar byte, 
 // minus flag omits padding, the underscore and zero flags override the pad
 // character, and an explicit width overrides the directive's default minimum.
 // Padding is never applied when it would have to truncate a value wider than the
-// field, and a sign on a zero-padded numeric stays ahead of the digits.
-func applyPad(value string, defaultPad byte, defaultWidth int, tok strftimeToken) string {
+// field, and a sign on a zero-padded numeric stays ahead of the digits. The pad
+// run is preflighted against the memory quota (with written, the bytes already
+// produced) before it is materialized, so a width like %2000000000d fails fast.
+func (r strftimeRenderer) applyPad(value string, defaultPad byte, defaultWidth int, tok strftimeToken, written int) (string, error) {
 	// An empty value (only %Z on an unnamed zone) is never padded; Ruby keeps it
 	// empty rather than emitting a run of pad characters.
 	if tok.noPad || value == "" {
-		return value
+		return value, nil
 	}
 
 	width := defaultWidth
@@ -381,7 +452,10 @@ func applyPad(value string, defaultPad byte, defaultWidth int, tok strftimeToken
 		width = tok.width
 	}
 	if len(value) >= width {
-		return value
+		return value, nil
+	}
+	if err := r.checkPad(saturatingAdd(written, len(value)), width-len(value)); err != nil {
+		return "", err
 	}
 
 	pad := defaultPad
@@ -393,22 +467,26 @@ func applyPad(value string, defaultPad byte, defaultWidth int, tok strftimeToken
 	}
 
 	if pad == '0' && len(value) > 0 && (value[0] == '+' || value[0] == '-') {
-		return string(value[0]) + strings.Repeat("0", width-len(value)) + value[1:]
+		return string(value[0]) + strings.Repeat("0", width-len(value)) + value[1:], nil
 	}
-	return strings.Repeat(string(pad), width-len(value)) + value
+	return strings.Repeat(string(pad), width-len(value)) + value, nil
 }
 
 // padOffset pads a %z offset. Ruby zero-pads the digit run after the sign to the
 // requested width and treats the -, _, and 0 flags as no-ops for the offset (so
-// even %-6z still zero-pads). Case flags do not affect an offset either.
-func padOffset(value string, tok strftimeToken) string {
+// even %-6z still zero-pads). Case flags do not affect an offset either. The
+// zero-pad run is preflighted against the memory quota before it is materialized.
+func (r strftimeRenderer) padOffset(value string, tok strftimeToken, written int) (string, error) {
 	if !tok.hasWidth || len(value) >= tok.width {
-		return value
+		return value, nil
+	}
+	if err := r.checkPad(saturatingAdd(written, len(value)), tok.width-len(value)); err != nil {
+		return "", err
 	}
 	if len(value) > 0 && (value[0] == '+' || value[0] == '-') {
-		return string(value[0]) + strings.Repeat("0", tok.width-len(value)) + value[1:]
+		return string(value[0]) + strings.Repeat("0", tok.width-len(value)) + value[1:], nil
 	}
-	return strings.Repeat("0", tok.width-len(value)) + value
+	return strings.Repeat("0", tok.width-len(value)) + value, nil
 }
 
 // padYear pads a %Y value, reproducing Ruby's split width semantics: an explicit
@@ -416,10 +494,11 @@ func padOffset(value string, tok strftimeToken) string {
 // four counts only the magnitude digits, so a BCE year keeps four digits after
 // the sign (%Y of -1 -> "-0001"). The zero pad (default or 0 flag) goes after the
 // sign; the space pad (_ flag) goes before the whole value; the - flag drops
-// padding entirely.
-func padYear(value string, tok strftimeToken) string {
+// padding entirely. The pad run is preflighted against the memory quota before it
+// is materialized, so a width like %2000000000Y fails fast.
+func (r strftimeRenderer) padYear(value string, tok strftimeToken, written int) (string, error) {
 	if tok.noPad {
-		return value
+		return value, nil
 	}
 
 	sign, digits := "", value
@@ -429,37 +508,44 @@ func padYear(value string, tok strftimeToken) string {
 
 	if tok.hasWidth {
 		if len(value) >= tok.width {
-			return value
+			return value, nil
+		}
+		if err := r.checkPad(saturatingAdd(written, len(value)), tok.width-len(value)); err != nil {
+			return "", err
 		}
 		if tok.spacePad {
-			return strings.Repeat(" ", tok.width-len(value)) + value
+			return strings.Repeat(" ", tok.width-len(value)) + value, nil
 		}
-		return sign + strings.Repeat("0", tok.width-len(value)) + digits
+		return sign + strings.Repeat("0", tok.width-len(value)) + digits, nil
 	}
 
 	const minDigits = 4
 	if len(digits) >= minDigits {
-		return value
+		return value, nil
 	}
 	if tok.spacePad {
-		return strings.Repeat(" ", minDigits-len(digits)) + value
+		return strings.Repeat(" ", minDigits-len(digits)) + value, nil
 	}
-	return sign + strings.Repeat("0", minDigits-len(digits)) + digits
+	return sign + strings.Repeat("0", minDigits-len(digits)) + digits, nil
 }
 
 // padCompound pads an expanded compound directive (e.g. %F, %T) to its width.
 // Ruby pads the whole expansion as one field with spaces, or zeros under the 0
 // flag, and ignores the - and _ flags here (so %-12F still space-pads), the same
-// way it treats the %z offset.
-func padCompound(value string, tok strftimeToken) string {
+// way it treats the %z offset. The pad run is preflighted against the memory
+// quota before it is materialized.
+func (r strftimeRenderer) padCompound(value string, tok strftimeToken, written int) (string, error) {
 	if !tok.hasWidth || len(value) >= tok.width {
-		return value
+		return value, nil
+	}
+	if err := r.checkPad(saturatingAdd(written, len(value)), tok.width-len(value)); err != nil {
+		return "", err
 	}
 	pad := byte(' ')
 	if tok.zeroPad {
 		pad = '0'
 	}
-	return strings.Repeat(string(pad), tok.width-len(value)) + value
+	return strings.Repeat(string(pad), tok.width-len(value)) + value, nil
 }
 
 // applyCase applies the ^/# case transformation to a rendered value. caseUpper
@@ -528,18 +614,24 @@ func floorDiv(a, b int) int {
 	return q
 }
 
-// strftimeSubsec renders the fractional-second component to exactly width
-// digits, truncating beyond nanosecond resolution and zero-padding past it.
-// This backs %L (default width 3) and %N (default width 9).
-func strftimeSubsec(nanos, width int) string {
+// subsec renders the fractional-second component to exactly width digits,
+// truncating beyond nanosecond resolution and zero-padding past it. This backs %L
+// (default width 3) and %N (default width 9). width is the script-controlled
+// digit count, so the trailing zero run is preflighted against the memory quota
+// (with written, the bytes already produced) before it is materialized; a width
+// like %1000000000N fails fast rather than allocating a multi-gigabyte buffer.
+func (r strftimeRenderer) subsec(nanos, width, written int) (string, error) {
 	if width <= 0 {
-		return ""
+		return "", nil
 	}
 	full := fmt.Sprintf("%09d", nanos)
 	if width <= len(full) {
-		return full[:width]
+		return full[:width], nil
 	}
-	return full + strings.Repeat("0", width-len(full))
+	if err := r.checkPad(saturatingAdd(written, len(full)), width-len(full)); err != nil {
+		return "", err
+	}
+	return full + strings.Repeat("0", width-len(full)), nil
 }
 
 // strftimeOffset renders the UTC offset for %z. colons selects the punctuation:
@@ -609,13 +701,14 @@ func isoWeekday(wd time.Weekday) int {
 	return int(wd)
 }
 
-// mustStrftime expands a compound directive's fixed sub-format, propagating the
+// expandCompound expands a compound directive's fixed sub-format, propagating the
 // ^ flag (inheritedUpper) the compound directive carried. The sub-formats are
-// literal and contain only supported single-byte directives, so strftime cannot
-// return an error here; a non-nil error would indicate a programming mistake in
-// a compound directive definition.
-func mustStrftime(t time.Time, format string, inheritedUpper bool) string {
-	out, err := strftimeCase(t, format, inheritedUpper)
+// literal and contain only supported single-byte directives with no width
+// modifier, so neither the malformed-format path nor a width-driven memory-quota
+// rejection can fire here; a non-nil error would indicate a programming mistake in
+// a compound directive definition and is surfaced as a panic.
+func (r strftimeRenderer) expandCompound(format string, inheritedUpper bool) string {
+	out, err := r.render(format, inheritedUpper)
 	if err != nil {
 		panic(fmt.Sprintf("runtime: invalid compound strftime directive %q: %v", format, err))
 	}

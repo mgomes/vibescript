@@ -268,7 +268,7 @@ func timeMember(t time.Time, property string) (Value, error) {
 		}), nil
 	case "strftime":
 		return NewBuiltin("time.strftime", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return callTimeStrftime(t, args, kwargs)
+			return callTimeStrftime(exec, t, args, kwargs)
 		}), nil
 	case "getutc", "getgm":
 		return NewTime(t.UTC()), nil
@@ -304,7 +304,7 @@ func canCallTimeMemberDirect(property string) bool {
 	}
 }
 
-func callTimeMemberDirect(t time.Time, property string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+func callTimeMemberDirect(exec *Execution, t time.Time, property string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	switch property {
 	case "<=>":
 		return callTimeCompare(t, args, kwargs)
@@ -313,7 +313,7 @@ func callTimeMemberDirect(t time.Time, property string, args []Value, kwargs map
 	case "format":
 		return callTimeFormat(t, args, kwargs)
 	case "strftime":
-		return callTimeStrftime(t, args, kwargs)
+		return callTimeStrftime(exec, t, args, kwargs)
 	case "iso8601", "xmlschema", "rfc3339":
 		return callTimeISO8601("time."+property, t, args, kwargs)
 	case "httpdate":
@@ -404,15 +404,16 @@ func callTimeFormat(t time.Time, args []Value, kwargs map[string]Value) (Value, 
 // string. Unlike Time#format (which takes a Go reference-time layout), strftime
 // uses percent directives so Ruby formatting code runs unchanged. It takes a
 // single String argument and rejects keyword arguments, mirroring the other
-// formatting members.
-func callTimeStrftime(t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
+// formatting members. exec carries the sandbox memory quota so a script-controlled
+// directive width cannot allocate a buffer past the limit before rendering.
+func callTimeStrftime(exec *Execution, t time.Time, args []Value, kwargs map[string]Value) (Value, error) {
 	if err := rejectTemporalKwargs("time.strftime", kwargs); err != nil {
 		return NewNil(), err
 	}
 	if len(args) != 1 || args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("time.strftime expects a format string")
 	}
-	out, err := strftime(t, args[0].String())
+	out, err := strftime(exec, t, args[0].String())
 	if err != nil {
 		return NewNil(), err
 	}

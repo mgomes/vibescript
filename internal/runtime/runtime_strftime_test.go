@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -123,7 +125,7 @@ func TestStrftimeDirectives(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := strftime(tc.tm, tc.format)
+			got, err := strftime(nil, tc.tm, tc.format)
 			if err != nil {
 				t.Fatalf("strftime(%q) returned error: %v", tc.format, err)
 			}
@@ -298,7 +300,7 @@ func TestStrftimeFlagsAndWidth(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := strftime(tc.tm, tc.format)
+			got, err := strftime(nil, tc.tm, tc.format)
 			if err != nil {
 				t.Fatalf("strftime(%q) returned error: %v", tc.format, err)
 			}
@@ -367,7 +369,7 @@ func TestStrftimeBCEYears(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tm := time.Date(tc.year, 1, 1, 0, 0, 0, 0, time.UTC)
-			got, err := strftime(tm, tc.format)
+			got, err := strftime(nil, tm, tc.format)
 			if err != nil {
 				t.Fatalf("strftime(%q) returned error: %v", tc.format, err)
 			}
@@ -396,7 +398,7 @@ func TestStrftimeRejectsMalformedFormat(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := strftime(time.Unix(0, 0).UTC(), tc.format); err == nil {
+			if _, err := strftime(nil, time.Unix(0, 0).UTC(), tc.format); err == nil {
 				t.Fatalf("strftime(%q) expected an error, got nil", tc.format)
 			}
 		})
@@ -475,6 +477,113 @@ func TestTimeStrftimeRejectsBadArguments(t *testing.T) {
     end
     `)
 			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+// TestStrftimeWidthRespectsMemoryQuota verifies that a script-controlled
+// directive width cannot allocate a buffer past the sandbox memory quota. Every
+// directive that turns width into a pad run (or, for %N/%L, a trailing zero-digit
+// run) must preflight that run against the quota before materializing it, so a
+// tiny format like "%1000000000N" fails fast with a memory-quota error instead of
+// attempting a multi-gigabyte allocation that the post-call check would only catch
+// after the fact. A nil execution (used by the parity tables) and a generous quota
+// must still render the same widths without error.
+func TestStrftimeWidthRespectsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	tm := time.Date(2024, 1, 2, 3, 4, 5, 123456789, time.UTC)
+
+	// Each format drives a different width-consuming path: %N/%L pad fractional
+	// digits, the numeric/year/offset directives pad a field, and %F pads the whole
+	// compound expansion. A width near 1e9 would allocate roughly a gigabyte if the
+	// preflight were missing.
+	hugeWidth := []string{
+		"%1000000000N",
+		"%1000000000L",
+		"%1000000000d",
+		"%1000000000Y",
+		"%1000000000z",
+		"%1000000000F",
+	}
+
+	for _, format := range hugeWidth {
+		t.Run("rejects "+format, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 4096}
+			if _, err := strftime(exec, tm, format); !errors.Is(err, errMemoryQuotaExceeded) {
+				t.Fatalf("strftime(%q) error = %v, want memory quota exceeded", format, err)
+			}
+		})
+	}
+
+	// A pad width at the integer ceiling must saturate rather than overflow before
+	// the quota rejects it; the preflight must still fire instead of panicking.
+	t.Run("rejects max-int width", func(t *testing.T) {
+		t.Parallel()
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 4096}
+		format := "%9223372036854775807N"
+		if _, err := strftime(exec, tm, format); !errors.Is(err, errMemoryQuotaExceeded) {
+			t.Fatalf("strftime(%q) error = %v, want memory quota exceeded", format, err)
+		}
+	})
+
+	// Under a generous quota the same widths render their full padded output, so the
+	// preflight only rejects allocations that genuinely exceed the limit.
+	t.Run("allows width within quota", func(t *testing.T) {
+		t.Parallel()
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 20}
+		got, err := strftime(exec, tm, "%12N")
+		if err != nil {
+			t.Fatalf("strftime(%q) returned error: %v", "%12N", err)
+		}
+		if want := "123456789000"; got != want {
+			t.Fatalf("strftime(%q) = %q, want %q", "%12N", got, want)
+		}
+	})
+
+	// A nil execution carries no quota, preserving the unbounded fast path the
+	// parity tables rely on for moderate widths.
+	t.Run("nil execution skips check", func(t *testing.T) {
+		t.Parallel()
+		got, err := strftime(nil, tm, "%12N")
+		if err != nil {
+			t.Fatalf("strftime(%q) returned error: %v", "%12N", err)
+		}
+		if want := "123456789000"; got != want {
+			t.Fatalf("strftime(%q) = %q, want %q", "%12N", got, want)
+		}
+	})
+}
+
+// TestTimeStrftimeWidthQuotaThroughRuntime drives an oversized directive width
+// through the interpreter end to end, exercising both the bound-builtin and
+// direct-call paths, to confirm the receiver's execution (and its memory quota) is
+// threaded into the formatter. The format is tiny, so a missing preflight would
+// attempt a multi-gigabyte allocation; with the guard in place the runtime reports
+// a limit error promptly.
+func TestTimeStrftimeWidthQuotaThroughRuntime(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		expr string
+	}{
+		{name: "bound builtin", expr: `Time.utc(2024, 1, 2, 3, 4, 5).strftime("%1000000000N")`},
+		{name: "direct call", expr: `
+      t = Time.utc(2024, 1, 2, 3, 4, 5)
+      t.strftime("%1000000000N")`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: 20000, MemoryQuotaBytes: 4096}, `
+    def run()
+      `+tc.expr+`
+    end
+    `)
+			requireRunMemoryQuotaError(t, script, nil, CallOptions{})
 		})
 	}
 }

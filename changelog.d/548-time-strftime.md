@@ -13,4 +13,7 @@
   `002024`, and `%^B` is `JANUARY`). Unknown directives pass through verbatim
   like Ruby (`%Q` stays `%Q`), `%Z` mirrors `Time#zone` (so fixed-offset
   receivers render their offset name rather than Ruby's empty string), and a
-  trailing `%` (or a modifier with no directive) raises a clear runtime error.
+  trailing `%` (or a modifier with no directive) raises a clear runtime error. A
+  script-controlled width is bounded by the sandbox memory quota, so a format like
+  `%1000000000N` is rejected before allocating its padding rather than risking an
+  out-of-memory crash.
