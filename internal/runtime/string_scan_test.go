@@ -373,15 +373,16 @@ end`)
 	}
 }
 
-// TestStringScanManyGroupsPeakMemory exercises the reviewer's P1 scenario: a
-// pattern made of many empty () capture groups over a large subject. Calling
-// FindAllStringSubmatchIndex(text, -1) here would materialize matches × 2(groups+1)
-// index integers as one contiguous allocation, OOMing the host inside that call.
-// scan projects the worst-case index footprint -- (runeCount+1) slices of
-// 2 + 2*groups ints -- from the rune and group counts alone and rejects before
-// invoking the engine when that worst case overflows the memory quota, so the scan
-// trips the memory limit cleanly without ever materializing the table. Reaching
-// that error (rather than crashing the test process) is the regression guard.
+// TestStringScanManyGroupsPeakMemory exercises a many-empty-group pattern over a
+// large subject whose worst-case index table is host-safe (well under the
+// maxRegexScanIndexBytes cap) but whose result and that coexisting table exceed a
+// tight memory quota. The host cap admits the scan up front; the engine materializes
+// the table host-safely; then the array-build accumulator -- seeded with the table's
+// actual footprint and charging each per-match capture array -- trips the memory quota
+// as the result accumulates. So the scan errors cleanly with the memory limit rather
+// than building an unbounded result. This is the memory-quota counterpart to
+// TestStringScanThousandsOfGroupsRejectedBeforeScan, where the worst case instead
+// overflows the fixed host cap and the engine is never called at all.
 func TestStringScanManyGroupsPeakMemory(t *testing.T) {
 	t.Parallel()
 
@@ -419,15 +420,15 @@ func TestStringScanManyGroupsUnderAmpleMemory(t *testing.T) {
 	}
 }
 
-// TestStringScanSparseMatchesNotOverRejected guards the worst-case bound against
-// over-rejecting low-group patterns. The worst-case projection is
-// (runeCount+1) * (2 + 2*groups) * intBytes, so a no-capture pattern -- here a digit
-// pattern over a 1000-character all-letter subject -- projects only
-// 1001 * 2 * 8 ~= 16 KiB even though it never matches, comfortably under the 64 KiB
-// quota. The scan must run and return an empty result rather than trip the memory
-// limit: the worst-case rejection is meant to catch many-capture-group footprints,
-// not legitimate low-group scans whose index table is small regardless of the match
-// count.
+// TestStringScanSparseMatchesNotOverRejected guards the worst-case host-cap bound
+// against over-rejecting low-group patterns. A no-capture digit pattern over a
+// 1000-character all-letter subject projects a worst-case index table of only
+// 1000 * (2*8 + 24) ~= 40 KiB, far under the 256 MiB host cap, even though it never
+// matches. The scan must run and return an empty result: the host-cap rejection
+// catches many-capture-group footprints, not legitimate low-group scans whose index
+// table is small regardless of match count. The tight memory quota here never
+// rejects the scan because the actual (empty) result is charged incrementally and
+// fits comfortably.
 func TestStringScanSparseMatchesNotOverRejected(t *testing.T) {
 	t.Parallel()
 
@@ -445,58 +446,93 @@ end`)
 	}
 }
 
-// TestStringScanSparseManyGroupsRejectedWithoutOOM pins the worst-case guard's
-// deliberate, documented over-rejection: a many-group pattern whose worst-case
-// index footprint ((runeCount+1) matches of 2 + 2*groups ints) exceeds the quota is
-// rejected up front even though its ACTUAL match count would fit. The pattern
-// matches only runs of thirty 'x's, so over a long mostly-'a' subject it matches
-// just twice -- but resolving that real count would require a counting FindAll whose
-// own index slice reintroduces the host-memory spike the guard exists to prevent, so
-// the scan conservatively rejects from the rune and group counts alone. This is the
-// sandbox-safe trade-off: legitimate low-group scans are never rejected (their index
-// table is small regardless of match count, see TestStringScanSparseMatchesNotOverRejected),
-// only pathological many-capture-group patterns over large subjects. Reaching the
-// memory error rather than exhausting host memory inside FindAll is the guard.
-func TestStringScanSparseManyGroupsRejectedWithoutOOM(t *testing.T) {
+// TestStringScanSparseManyGroupsNotOverRejected is the regression for the reviewer's
+// P1 on the worst-case match bound. A many-capture-group pattern whose every match
+// must consume runes (here thirty "(x)" groups, so each match consumes 30 runes) can
+// match at most runeCount/30 times -- a handful over a long mostly-'a' subject, not
+// the runeCount+1 a zero-width pattern reaches. Bounding the worst case by the
+// pattern's minimum match length (regexScanMaxMatches) keeps this scan's projected
+// index footprint small, so the guard admits it and the scan returns its real (tiny)
+// match count instead of rejecting on a zero-width worst case the pattern cannot reach.
+//
+// Before the min-match-length bound this scan's worst case was projected at
+// (runeCount+1) * (2 + 2*groups) ints and rejected under this quota even though it
+// matches only twice -- the over-rejection the reviewer flagged. The genuinely
+// dangerous shape (a ZERO-WIDTH many-group pattern, whose runeCount+1 worst case is
+// real) is still rejected; see TestStringScanThousandsOfGroupsRejectedBeforeScan and
+// TestStringScanManyGroupsPeakMemory.
+func TestStringScanSparseManyGroupsNotOverRejected(t *testing.T) {
 	t.Parallel()
 
 	const groups = 30
 	pattern := strings.Repeat("(x)", groups)
 	source := `def run(text) text.scan("` + pattern + `").size end`
-	// Worst case ~ (runeCount+1) * (2 + 2*groups) * 8 bytes exceeds 512 KiB for a
-	// ~4060-rune subject, so the guard rejects before the engine runs -- never
-	// materializing the table that would otherwise spike host memory.
+	// The same 512 KiB quota that the pre-fix worst case ((runeCount+1) matches)
+	// overflowed: the min-match-length bound (runeCount/30 matches) projects a tiny
+	// index footprint, so the guard must admit the scan rather than reject it.
 	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 512 * 1024}, source)
 
 	run := strings.Repeat("x", groups)
 	subject := NewString(strings.Repeat("a", 2000) + run + strings.Repeat("a", 2000) + run)
+	got, err := script.Call(context.Background(), "run", []Value{subject}, CallOptions{})
+	if err != nil {
+		t.Fatalf("sparse many-group scan = %v, want success (over-rejection regression)", err)
+	}
+	// The pattern matches each of the two thirty-'x' runs exactly once.
+	if got.Kind() != KindInt || got.Int() != 2 {
+		t.Fatalf("sparse many-group scan size = %v, want int 2", got)
+	}
+}
+
+// TestStringScanDenseManyGroupsRejected confirms the worst-case guard still rejects a
+// non-zero-width many-group pattern whose matches are DENSE: when every position can
+// start a match, runeCount/minRunes is large and the projected index footprint really
+// does overflow the quota, so the scan must reject before the engine materializes the
+// table. This is the counterpart to TestStringScanSparseManyGroupsNotOverRejected --
+// the min-match-length bound tightens the worst case for sparse patterns without
+// blinding the guard to genuinely large tables.
+func TestStringScanDenseManyGroupsRejected(t *testing.T) {
+	t.Parallel()
+
+	const groups = 30
+	// Thirty "(a)" groups: each match consumes 30 'a's, and an all-'a' subject lets a
+	// match start at every 30-rune boundary, so matches ~ runeCount/30 -- large enough
+	// that the (2 + 2*groups)-int submatch slices overflow the quota.
+	pattern := strings.Repeat("(a)", groups)
+	source := `def run(text) text.scan("` + pattern + `").size end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 256 * 1024}, source)
+
+	subject := NewString(strings.Repeat("a", 60_000))
 	requireRunMemoryQuotaError(t, script, []Value{subject}, CallOptions{})
 }
 
-// TestStringScanThousandsOfGroupsRejectedBeforeScan is the direct regression for
-// the reviewer's P1: a pattern of thousands of empty () capture groups (still well
-// under the 16 KiB pattern cap). A literal FindAllStringSubmatchIndex(text, -1)
-// would request matches × 2(groups+1) index integers -- many gigabytes -- and OOM
-// the host inside that call before any per-element accounting ran. scan rejects this
-// from the rune and group counts alone: the worst-case projection ((runeCount+1)
-// slices of 2 + 2*groups ints) dwarfs the quota, so the scan errors with the memory
-// limit and never calls any FindAll variant. Reaching that error (rather than
-// exhausting host memory) is the guard, so this test stays fast and cheap precisely
-// because no match is ever run.
+// TestStringScanThousandsOfGroupsRejectedBeforeScan is the direct regression for the
+// host-OOM half of the reviewer's P1: a pattern of thousands of empty () capture
+// groups (still under the 16 KiB pattern cap). A literal FindAllStringSubmatchIndex(
+// text, -1) would request matches × 2(groups+1) index integers -- hundreds of
+// megabytes to gigabytes -- and OOM the host inside that call before any per-element
+// accounting ran. scan rejects this from the rune and group counts alone: the
+// worst-case projection ((runeCount+1) slices of 2 + 2*groups ints) exceeds the fixed
+// maxRegexScanIndexBytes host cap, so the scan errors with the regex-scan limit and
+// never calls any FindAll variant. Reaching that error (rather than exhausting host
+// memory) is the guard, so this test stays fast and cheap precisely because no match
+// is ever run. The error is the fixed host-cap limit, independent of the memory quota.
 func TestStringScanThousandsOfGroupsRejectedBeforeScan(t *testing.T) {
 	t.Parallel()
 
 	const groups = 4_000
 	pattern := strings.Repeat("()", groups) // ~8 KiB, under the 16 KiB pattern cap.
 	source := `def run(text) text.scan("` + pattern + `") end`
-	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 * 1024}, source)
+	// Memory quota is generous: the rejection comes from the fixed host cap, not the
+	// quota, proving the guard protects host memory regardless of how the quota is set.
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 1 << 30}, source)
 
-	// 500 characters yield a ~501-match worst case; each submatch slice is
-	// 2 + 2*4000 = 8002 ints, so the projected index footprint (~32 MB) dwarfs the
-	// 64 KiB quota and the scan rejects up front, before the engine materializes the
-	// table -- keeping the test fast while exercising the many-group rejection path.
-	subject := NewString(strings.Repeat("a", 500))
-	requireRunMemoryQuotaError(t, script, []Value{subject}, CallOptions{})
+	// The pattern is zero-width, so the worst case is (runeCount+1) matches; each
+	// submatch slice is 2 + 2*4000 = 8002 ints (~64 KB with its header). 5000 runes
+	// project ~320 MB, past the 256 MiB host cap, so the scan rejects up front -- never
+	// materializing the table -- keeping the test fast while exercising the host-cap path.
+	subject := NewString(strings.Repeat("a", 5000))
+	requireCallErrorContains(t, script, "run", []Value{subject}, CallOptions{}, "string.scan match table exceeds limit")
 }
 
 // TestStringScanStepQuota verifies that scan charges a step per match attempt, so
@@ -707,47 +743,161 @@ func TestProjectedRegexSubmatchIndexBytesChargesSliceOverhead(t *testing.T) {
 }
 
 // TestStringScanGuardChargesSliceOverhead is the behavioral regression for charging
-// the [][]int table's per-match slice overhead against the memory quota. It exercises
-// guardRegexScanIndexFootprint directly with a no-capture pattern (the shape the
-// integer-only projection undercounts most): the slice headers are 24 of every 40
-// bytes per match. The quota is set so the integer-only footprint fits but the real
-// footprint -- ints plus the per-match slice header -- does not, so the guard must
-// reject. A guard that charged only the integers would admit this scan and let the
-// engine materialize a table larger than the quota allows.
+// the [][]int table's per-match slice overhead against the fixed host cap. It
+// exercises guardRegexScanIndexFootprint directly at a subject size chosen so the
+// integer-only worst case fits under maxRegexScanIndexBytes but the real worst case --
+// ints PLUS the per-match slice header -- does not. A guard that charged only the
+// integers would admit a scan whose table is actually larger than the cap allows, so
+// the guard must reject here. A subject one rune shorter, where even the full
+// (header-inclusive) footprint fits, must be admitted.
 func TestStringScanGuardChargesSliceOverhead(t *testing.T) {
 	t.Parallel()
 
-	const (
-		groups   = 0
-		runes    = 4000
-		maxMatch = runes + 1 // FindAllStringSubmatchIndex returns at most runeCount+1 matches.
-	)
-	text := strings.Repeat("a", runes)
+	// Forty empty zero-width groups: maxMatches == runeCount+1, and the (2 + 2*40)*8
+	// int bytes per match are large enough that the cap is reached at a runeCount under
+	// the 1 MiB subject limit, yet the 24-byte slice header per match still spans a
+	// range of runeCounts -- the window this test lands in.
+	const groups = 40
+	pattern := strings.Repeat("()", groups)
+	intBytesPerMatch := (2 + 2*groups) * estimatedIntBytes
+	fullBytesPerMatch := intBytesPerMatch + estimatedSliceBaseBytes
 
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
-	base := exec.estimateMemoryUsageBase(exec.memoryEstimatorForCheck())
-
-	intOnlyBytes := maxMatch * (2 + 2*groups) * estimatedIntBytes
-	fullBytes := projectedRegexSubmatchIndexBytes(maxMatch, groups)
-	if fullBytes != intOnlyBytes+maxMatch*estimatedSliceBaseBytes {
-		t.Fatalf("projection %d does not equal int bytes %d plus per-match slice headers %d",
-			fullBytes, intOnlyBytes, maxMatch*estimatedSliceBaseBytes)
+	// Pick maxMatches so the int-only footprint fits the cap but the full footprint
+	// (with every slice header) exceeds it: maxMatches just above cap/fullBytesPerMatch.
+	maxMatches := maxRegexScanIndexBytes/fullBytesPerMatch + 1
+	if intOnly := maxMatches * intBytesPerMatch; intOnly > maxRegexScanIndexBytes {
+		t.Fatalf("int-only footprint %d already exceeds cap %d; pick fewer groups or matches", intOnly, maxRegexScanIndexBytes)
+	}
+	if full := projectedRegexSubmatchIndexBytes(maxMatches, groups); full <= maxRegexScanIndexBytes {
+		t.Fatalf("full footprint %d does not exceed cap %d; the slice header is not the deciding factor", full, maxRegexScanIndexBytes)
 	}
 
-	// Quota sits strictly between the int-only footprint and the full footprint, so it
-	// admits the former and rejects the latter -- the slice overhead is the only thing
-	// that pushes the projection past the limit.
-	exec.memoryQuota = base + intOnlyBytes + maxMatch*estimatedSliceBaseBytes/2
+	runeCount := maxMatches - 1 // zero-width pattern: maxMatches == runeCount+1.
+	if runeCount > maxRegexInputBytes {
+		t.Fatalf("rune count %d exceeds the %d-byte subject cap; pick more groups", runeCount, maxRegexInputBytes)
+	}
+	text := strings.Repeat("a", runeCount)
 
-	if err := guardRegexScanIndexFootprint(exec, text, groups); !errors.Is(err, errMemoryQuotaExceeded) {
-		t.Fatalf("guard at int-only-plus-half-overhead quota = %v, want errMemoryQuotaExceeded", err)
+	// The slice headers are what push the projection past the cap, so the guard rejects.
+	if err := guardRegexScanIndexFootprint(pattern, text, groups); err == nil {
+		t.Fatalf("guard admitted a table whose full footprint %d exceeds the cap %d (slice overhead uncharged?)",
+			projectedRegexSubmatchIndexBytes(maxMatches, groups), maxRegexScanIndexBytes)
 	}
 
-	// Raising the quota to cover the full footprint (ints plus every slice header)
-	// admits the scan, confirming the guard rejects only the overhead deficit and not
-	// the legitimate footprint.
-	exec.memoryQuota = base + fullBytes
-	if err := guardRegexScanIndexFootprint(exec, text, groups); err != nil {
-		t.Fatalf("guard at full-footprint quota = %v, want success", err)
+	// One rune shorter, the full (header-inclusive) footprint fits, so the guard admits.
+	shorter := strings.Repeat("a", runeCount-1)
+	if full := projectedRegexSubmatchIndexBytes(runeCount, groups); full > maxRegexScanIndexBytes {
+		t.Fatalf("full footprint %d for the shorter subject still exceeds the cap %d; the window is too narrow", full, maxRegexScanIndexBytes)
+	}
+	if err := guardRegexScanIndexFootprint(pattern, shorter, groups); err != nil {
+		t.Fatalf("guard at one rune below the cap = %v, want success", err)
+	}
+}
+
+// TestRegexScanMinMatchRunes pins the lower bound the worst-case guard divides the
+// subject's rune count by. The value MUST never exceed a pattern's true minimum match
+// length: regexScanMaxMatches divides by it, so an over-estimate would under-bound the
+// match count and let the engine materialize a table larger than the quota admits.
+// Zero-width-capable patterns (and anything not provably consuming input) report 0,
+// collapsing the worst case to runeCount+1.
+func TestRegexScanMinMatchRunes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		pattern string
+		want    int
+	}{
+		{pattern: "z", want: 1},
+		{pattern: "abc", want: 3},
+		{pattern: "café", want: 4}, // four runes, not five bytes -- the bound is rune-based.
+		{pattern: "[a-z]", want: 1},
+		{pattern: ".", want: 1},
+		{pattern: "([a-z])([0-9])", want: 2},
+		{pattern: strings.Repeat("(x)", 30), want: 30},
+		{pattern: "a+", want: 1},
+		{pattern: "(ab)+", want: 2},
+		{pattern: `\d{3}`, want: 3},
+		{pattern: "a{2,5}", want: 2},
+		{pattern: "abc|de", want: 2}, // alternation takes its shortest branch.
+		{pattern: "a*", want: 0},     // zero-width: the empty string matches.
+		{pattern: "a?", want: 0},
+		{pattern: "", want: 0},
+		{pattern: `\b`, want: 0}, // a word boundary consumes nothing.
+		{pattern: "^abc$", want: 3},
+		{pattern: strings.Repeat("()", 40), want: 0}, // all-empty groups match empty.
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			t.Parallel()
+
+			if got := regexScanMinMatchRunes(tt.pattern); got != tt.want {
+				t.Fatalf("regexScanMinMatchRunes(%q) = %d, want %d", tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRegexScanMaxMatchesBoundsRealEngine is the safety invariant the whole guard
+// rests on: the bound regexScanMaxMatches computes from the pattern and subject alone,
+// without running the engine, must never be exceeded by the real match count
+// FindAllStringSubmatchIndex produces. If it ever were, the guard could admit a scan
+// whose table overflows the quota. Each case checks the analytic bound against the
+// engine's actual result.
+func TestRegexScanMaxMatchesBoundsRealEngine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		text    string
+	}{
+		{name: "no match sparse", pattern: "z", text: strings.Repeat("a", 2000)},
+		{name: "dense single char", pattern: "a", text: strings.Repeat("a", 500)},
+		{name: "two-char matches", pattern: "..", text: strings.Repeat("ab", 250)},
+		{
+			name: "many-group sparse", pattern: strings.Repeat("(x)", 30),
+			text: strings.Repeat("a", 2000) + strings.Repeat("x", 30) + strings.Repeat("a", 2000) + strings.Repeat("x", 30),
+		},
+		{name: "zero-width star", pattern: "a*", text: strings.Repeat("a", 300)},
+		{name: "all-empty groups", pattern: strings.Repeat("()", 5), text: strings.Repeat("a", 100)},
+		{name: "multibyte runes", pattern: ".", text: strings.Repeat("é", 200)},
+		{name: "empty subject", pattern: "a", text: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			bound := regexScanMaxMatches(tt.pattern, tt.text)
+			real := len(regexp.MustCompile(tt.pattern).FindAllStringSubmatchIndex(tt.text, -1))
+			if real > bound {
+				t.Fatalf("regexScanMaxMatches(%q, len %d) = %d, but engine produced %d matches (bound must not be exceeded)",
+					tt.pattern, len(tt.text), bound, real)
+			}
+		})
+	}
+}
+
+// TestStringScanSparseNoMatchUnderDefaultQuota is the exact scenario from the
+// reviewer's P1: scanning a 2 KB string with a no-capture, non-zero-width pattern that
+// never matches must succeed under the default 64 KiB quota NewEngine applies, not be
+// rejected on a zero-width worst case the pattern cannot reach. The empty result is
+// tiny; the old runeCount+1 projection rejected it before matching.
+func TestStringScanSparseNoMatchUnderDefaultQuota(t *testing.T) {
+	t.Parallel()
+
+	// 64 KiB matches the default NewEngine applies when MemoryQuotaBytes is unset.
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 * 1024}, `def run(text)
+  text.scan("z").size
+end`)
+
+	subject := NewString(strings.Repeat("a", 2000))
+	got, err := script.Call(context.Background(), "run", []Value{subject}, CallOptions{})
+	if err != nil {
+		t.Fatalf("sparse no-match scan under default quota = %v, want success", err)
+	}
+	if got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("sparse no-match scan size = %v, want int 0", got)
 	}
 }

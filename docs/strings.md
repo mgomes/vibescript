@@ -508,6 +508,14 @@ depends on the number of capture groups in `pattern`:
 "abc".scan("z")                   # []
 ```
 
+A pattern with many capture groups over a large subject can force the regex engine
+to materialize a huge match-index table, so `scan` rejects up front when that table's
+worst case would exceed a fixed 256 MiB host cap (see the Guard Limits table in
+[stdlib_core_utilities.md](stdlib_core_utilities.md#guard-limits)). The bound is
+derived from the subject length and the pattern's minimum match length, so ordinary
+sparse scans — a pattern that matches little or nothing over a modest string — are
+never rejected regardless of the memory quota.
+
 ### `index(substring, offset = 0)`
 
 Returns the first character index for `substring`, or `nil` when not found.

@@ -1038,6 +1038,7 @@ members (`match`, `match?`, `scan`, `sub`, `gsub`, and their `!` variants):
 | `JSON.parse` / `JSON.stringify` nesting depth | 10,000 arrays/objects |
 | Regex pattern size (`Regex.*`, `match`, `match?`, `scan`, `sub`/`gsub` with `regex: true`) | 16 KiB |
 | Regex text, replacement, and output size | 1 MiB |
+| `scan` match-index table (worst case) | 256 MiB |
 | `random_id` length | 1024 characters |
 
 Exceeding a limit raises a runtime error naming the offending guard.
