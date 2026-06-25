@@ -365,17 +365,22 @@ func hashMemberQuery(property string) (Value, error) {
 			perEntryBytes := pairsLive * collapsedPairBytes
 			// A destructuring parameter with a rest target makes AssignDestructure
 			// allocate a fresh array for the collected elements and bind it into the
-			// reused environment, so it lives there until the next runner.call resets
-			// it -- overlapping across iterations exactly like a whole-pair binding.
-			// A top-level rest (|(k, *rest)|) collects only from the two-element pair,
-			// but a nested rest (|(k, (head, *tail))|) collects an arbitrarily large
-			// slice of the hash value it destructures, so the peak cannot be bounded by
-			// the pair alone. Walk the entries once to size the largest rest allocation
-			// any single pair would trigger, then reserve it at the same peak the pair
-			// uses: two over two or more entries, one for a single entry, none for an
-			// empty receiver. evalStatements runs a final memory check even for an empty
-			// block body, but reserving up front fails fast before the rest array is
-			// materialized rather than after the allocation already happened.
+			// reused environment. Unlike a whole-pair binding -- whose pair array is
+			// allocated in the loop body before runner.call and stays referenced in the
+			// env until the next reset, so two pairs overlap -- the rest array is built
+			// inside callBlock, after runner.call's resetForBlockCall has already
+			// cleared the previous iteration's rest binding. The old rest is therefore
+			// released before AssignDestructure allocates the next one, so at most one
+			// rest array is ever live. A top-level rest (|(k, *rest)|) collects only
+			// from the two-element pair, but a nested rest (|(k, (head, *tail))|)
+			// collects an arbitrarily large slice of the hash value it destructures, so
+			// the per-entry footprint cannot be bounded by the pair alone. Walk the
+			// entries once to size the largest rest allocation any single pair would
+			// trigger, then reserve exactly that one peak rest array: one over any
+			// non-empty receiver, none for an empty receiver. evalStatements runs a
+			// final memory check even for an empty block body, but reserving up front
+			// fails fast before the rest array is materialized rather than after the
+			// allocation already happened.
 			if collapsePair {
 				if target := runner.destructureTarget(); target != nil {
 					maxRestBytes := 0
@@ -385,7 +390,7 @@ func hashMemberQuery(property string) (Value, error) {
 						pairBuf[1] = value
 						maxRestBytes = max(maxRestBytes, destructureRestAllocBytes(target, NewArray(pairBuf[:])))
 					}
-					perEntryBytes = saturatingAdd(perEntryBytes, saturatingMul(min(len(entries), 2), maxRestBytes))
+					perEntryBytes = saturatingAdd(perEntryBytes, saturatingMul(min(len(entries), 1), maxRestBytes))
 				}
 			}
 			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), perEntryBytes, receiver, args, kwargs, block); err != nil {
