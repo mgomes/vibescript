@@ -68,6 +68,39 @@ func TestStringRegexReplacementBackreferences(t *testing.T) {
 			want:   "<123>",
 		},
 		{
+			// Ruby 2.6.10: with named captures present, "\+" considers only
+			// participating named groups, ignoring the later unnamed ones.
+			name:   "last group escape named ignores later unnamed",
+			script: `def run() "abc".sub("(?<x>a)(b)(c)", "[\\+]", regex: true) end`,
+			want:   "[a]",
+		},
+		{
+			// Two named groups, both participate: last named one wins.
+			name:   "last group escape named picks last participating",
+			script: `def run() "ab".sub("(?<a>a)(?<b>b)", "[\\+]", regex: true) end`,
+			want:   "[b]",
+		},
+		{
+			// Trailing named group is optional and absent: earlier named one wins.
+			name:   "last group escape named skips non-participating trailing",
+			script: `def run() "a".sub("(?<a>a)(?<b>b)?", "[\\+]", regex: true) end`,
+			want:   "[a]",
+		},
+		{
+			// Mixed named and unnamed: only the named group counts even though the
+			// unnamed group participates.
+			name:   "last group escape named ignores trailing unnamed",
+			script: `def run() "ab".sub("(?<a>a)(b)?", "[\\+]", regex: true) end`,
+			want:   "[a]",
+		},
+		{
+			// No named captures: "\+" keeps the all-slots last-participating
+			// behavior, returning the last group overall.
+			name:   "last group escape no named uses last overall",
+			script: `def run() "ab".sub("(a)(b)", "[\\+]", regex: true) end`,
+			want:   "[b]",
+		},
+		{
 			name:   "escaped backslash is literal",
 			script: `def run() "abc".sub("b", "x\\\\y", regex: true) end`,
 			want:   "ax\\yc",

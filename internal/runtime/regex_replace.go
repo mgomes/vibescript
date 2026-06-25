@@ -118,7 +118,7 @@ func rubyAppendReplacement(dst []byte, re *regexp.Regexp, template, src string, 
 			dst = expanded
 			i++
 		case next == '+':
-			expanded, err := appendRubyLastGroup(dst, src, loc)
+			expanded, err := appendRubyLastGroup(dst, re, src, loc)
 			if err != nil {
 				return nil, err
 			}
@@ -183,11 +183,33 @@ func appendRubySubmatch(dst []byte, src string, loc []int, n int) ([]byte, error
 	return appendBounded(dst, src[lo:hi])
 }
 
-// appendRubyLastGroup appends the highest-numbered capture group that
-// participated in the match, matching Ruby's "\+" replacement escape. With no
-// participating group it appends nothing. The append is bounded by the shared
-// regex output guard.
-func appendRubyLastGroup(dst []byte, src string, loc []int) ([]byte, error) {
+// appendRubyLastGroup appends the last capture group that participated in the
+// match, matching Ruby's "\+" replacement escape. With no participating group
+// it appends nothing. The append is bounded by the shared regex output guard.
+//
+// Ruby restricts "\+" to named captures once the pattern defines any: it then
+// considers only participating *named* groups and ignores unnamed ones, so
+// "abc".sub(/(?<x>a)(b)(c)/, "\\+") expands to "a" (named x), not "c" (the
+// later unnamed group), and "a".sub(/(?<a>a)(?<b>b)?/, "\\+") expands to "a"
+// (the trailing named group did not participate). With no named captures it
+// keeps the all-slots behavior, returning the last participating group overall.
+func appendRubyLastGroup(dst []byte, re *regexp.Regexp, src string, loc []int) ([]byte, error) {
+	if regexHasNamedCapture(re) {
+		names := re.SubexpNames()
+		last := -1
+		for n := 1; 2*n+1 < len(loc); n++ {
+			if n >= len(names) || names[n] == "" {
+				continue
+			}
+			if loc[2*n] >= 0 && loc[2*n+1] >= 0 {
+				last = n
+			}
+		}
+		if last < 0 {
+			return dst, nil
+		}
+		return appendBounded(dst, src[loc[2*last]:loc[2*last+1]])
+	}
 	for n := len(loc)/2 - 1; n >= 1; n-- {
 		lo, hi := loc[2*n], loc[2*n+1]
 		if lo >= 0 && hi >= 0 {
