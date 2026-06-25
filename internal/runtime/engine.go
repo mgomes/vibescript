@@ -316,6 +316,7 @@ func cloneBuiltinValue(val Value) Value {
 		clonedBuiltin := valueBuiltin(cloned)
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
 		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
+		clonedBuiltin.CapturedValues = builtin.CapturedValues
 		return cloned
 	case KindArray:
 		arr := val.Array()

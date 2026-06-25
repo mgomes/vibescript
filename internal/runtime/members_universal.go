@@ -34,23 +34,27 @@ func universalMember(obj Value, property string) (Value, bool) {
 	// Time#eql?. The receiver is captured here rather than read from the call's
 	// receiver argument so a stored builtin still compares against the original
 	// value when later invoked as probe(other), where no receiver is bound.
+	// The receiver is recorded as a captured value (via NewCapturingBuiltin) so
+	// the memory estimator charges its payload while the bound builtin is
+	// reachable. Without this a stored probe such as `probe = huge_hash.eql?`
+	// would retain the receiver in a Go closure that the quota cannot see.
 	switch property {
 	case "eql?":
 		name := fmt.Sprintf("%s.eql?", obj.Kind())
-		return NewBuiltin(name, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewCapturingBuiltin(name, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if err := requireEqualityPredicateCall(name, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewBool(obj.Eql(args[0])), nil
-		}), true
+		}, obj), true
 	case "equal?":
 		name := fmt.Sprintf("%s.equal?", obj.Kind())
-		return NewBuiltin(name, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return NewCapturingBuiltin(name, func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if err := requireEqualityPredicateCall(name, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewBool(obj.Identical(args[0])), nil
-		}), true
+		}, obj), true
 	default:
 		return NewNil(), false
 	}

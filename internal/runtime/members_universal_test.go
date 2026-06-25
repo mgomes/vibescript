@@ -563,6 +563,47 @@ end`)
 	})
 }
 
+// TestEqualityPredicateStoredBuiltinChargesReceiver confirms a stored bound
+// predicate is charged against the memory quota for the receiver it keeps alive.
+// Each iteration binds a probe to a distinct, growing string, so the retained
+// receivers accumulate well beyond the builtin slots alone. The quota sits above
+// the slots-only footprint (what treating builtins as free would charge) but
+// below the slots-plus-receivers footprint, so the run must trip the quota.
+func TestEqualityPredicateStoredBuiltinChargesReceiver(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 8192}, `def run
+  probes = []
+  big = ""
+  for i in 1..50
+    big = big + "abcdefghij"
+    probes = probes.push(big.eql?)
+  end
+  probes.size
+end`)
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
+}
+
+// TestEqualityPredicateLoopWithoutStoredBuiltinFits is the control for
+// TestEqualityPredicateStoredBuiltinChargesReceiver: the identical loop that
+// grows the same strings but does not retain any probe stays within the same
+// quota. This isolates the OOM to the retained receivers rather than the loop's
+// transient string allocations.
+func TestEqualityPredicateLoopWithoutStoredBuiltinFits(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 8192}, `def run
+  count = 0
+  big = ""
+  for i in 1..50
+    big = big + "abcdefghij"
+    count = count + 1
+  end
+  count
+end`)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("expected control loop to stay within quota, got %v", err)
+	}
+}
+
 // TestEqualityPredicateCallErrors confirms eql? and equal? reject the wrong
 // arity, keyword arguments, and blocks rather than silently coercing them.
 func TestEqualityPredicateCallErrors(t *testing.T) {

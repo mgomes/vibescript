@@ -630,6 +630,13 @@ type Builtin struct {
 	// keyword options hash just like `fn(...)`. Method and constructor wrappers
 	// leave this false to keep parenthesized keyword binding strict.
 	DirectCallAlias bool
+	// CapturedValues holds runtime values the builtin's Fn closes over and keeps
+	// alive for as long as the builtin is reachable. The memory estimator charges
+	// their payloads so a stored bound builtin (for example `probe = big.eql?`,
+	// which captures its receiver) cannot retain arbitrarily large structures
+	// outside the runtime memory quota. Builtins that close over no runtime values
+	// leave this nil and stay free, as before.
+	CapturedValues []Value
 }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.
@@ -674,6 +681,16 @@ func newBuiltin(name string, fn BuiltinFunc, autoInvoke bool) Value {
 
 // NewBuiltin returns a builtin function Value.
 func NewBuiltin(name string, fn BuiltinFunc) Value { return newBuiltin(name, fn, false) }
+
+// NewCapturingBuiltin returns a builtin function Value whose Fn closes over the
+// given runtime values. The captured values are recorded on the builtin so the
+// memory estimator charges their payloads while the builtin is reachable,
+// keeping closures such as a bound predicate's receiver inside the memory quota.
+func NewCapturingBuiltin(name string, fn BuiltinFunc, captured ...Value) Value {
+	val := newBuiltin(name, fn, false)
+	valueBuiltin(val).CapturedValues = captured
+	return val
+}
 
 // NewAutoBuiltin returns a builtin function Value that auto-invokes without parentheses.
 func NewAutoBuiltin(name string, fn BuiltinFunc) Value { return newBuiltin(name, fn, true) }

@@ -39,6 +39,7 @@ type memoryEstimator struct {
 	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
 	seenBlocks    map[*Block]struct{}
+	seenBuiltins  map[*Builtin]struct{}
 }
 
 type stringIdentity struct {
@@ -59,6 +60,7 @@ func (est *memoryEstimator) reset() {
 	clear(est.seenClasses)
 	clear(est.seenInstances)
 	clear(est.seenBlocks)
+	clear(est.seenBuiltins)
 }
 
 func (exec *Execution) memoryEstimatorForCheck() *memoryEstimator {
@@ -891,8 +893,31 @@ func (est *memoryEstimator) value(val Value) int {
 		}
 		size += estimatedStringHeaderBytes*3 + len(blk.moduleKey) + len(blk.modulePath) + len(blk.moduleRoot)
 		size += est.env(blk.Env)
-	case KindFunction, KindBuiltin:
-		// Functions and builtins are compile-time/static artifacts for memory quotas.
+	case KindFunction:
+		// Functions are compile-time/static artifacts for memory quotas.
+	case KindBuiltin:
+		// Builtins are otherwise static, but a builtin's Fn may close over
+		// runtime values it keeps alive (for example a bound `eql?`/`equal?`
+		// predicate captures its receiver). Charge those captured payloads so a
+		// stored probe cannot retain arbitrarily large structures outside the
+		// quota. Dedup by builtin pointer guards against revisiting the same
+		// builtin; recursing through est.value dedups each captured value against
+		// any independently reachable copy via the existing seen* maps, so a
+		// receiver that is also reachable elsewhere is charged only once.
+		builtin := valueBuiltin(val)
+		if builtin == nil || len(builtin.CapturedValues) == 0 {
+			return size
+		}
+		if _, seen := est.seenBuiltins[builtin]; seen {
+			return size
+		}
+		if est.seenBuiltins == nil {
+			est.seenBuiltins = make(map[*Builtin]struct{})
+		}
+		est.seenBuiltins[builtin] = struct{}{}
+		for _, captured := range builtin.CapturedValues {
+			size = saturatingAdd(size, est.valuePayload(captured))
+		}
 	}
 
 	return size

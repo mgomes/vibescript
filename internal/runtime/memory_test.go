@@ -75,6 +75,61 @@ func TestMemoryEstimatorResetAllowsReuse(t *testing.T) {
 	}
 }
 
+// TestMemoryEstimatorChargesBuiltinCapturedReceiver verifies that a bound
+// equality predicate (for example probe = big.eql?) is charged for the receiver
+// it keeps alive in its closure. Without this accounting an array of such probes
+// would retain arbitrarily large structures invisibly to the memory quota.
+func TestMemoryEstimatorChargesBuiltinCapturedReceiver(t *testing.T) {
+	t.Parallel()
+	payload := strings.Repeat("abcdefghij", 4096)
+	receiver := NewString(payload)
+
+	probe, ok := universalMember(receiver, "eql?")
+	if !ok {
+		t.Fatal("universalMember did not resolve eql?")
+	}
+
+	bare := newMemoryEstimator().value(NewBuiltin("noop", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewNil(), nil
+	}))
+	charged := newMemoryEstimator().value(probe)
+
+	if charged <= bare {
+		t.Fatalf("bound predicate estimate = %d, want greater than plain builtin %d (captured receiver uncharged)", charged, bare)
+	}
+	if charged < len(payload) {
+		t.Fatalf("bound predicate estimate = %d, want captured receiver payload included (>= %d)", charged, len(payload))
+	}
+}
+
+// TestMemoryEstimatorDoesNotDoubleChargeReachableReceiver confirms the captured
+// receiver payload is counted once when the receiver is also independently
+// reachable: a hash holding both the receiver and a probe bound to it costs no
+// more than the receiver alone plus the probe's static builtin slot.
+func TestMemoryEstimatorDoesNotDoubleChargeReachableReceiver(t *testing.T) {
+	t.Parallel()
+	payload := strings.Repeat("abcdefghij", 4096)
+	receiver := NewString(payload)
+
+	probe, ok := universalMember(receiver, "eql?")
+	if !ok {
+		t.Fatal("universalMember did not resolve eql?")
+	}
+
+	receiverOnly := newMemoryEstimator().value(NewHash(map[string]Value{"receiver": receiver}))
+	combined := newMemoryEstimator().value(NewHash(map[string]Value{
+		"receiver": receiver,
+		"probe":    probe,
+	}))
+
+	// The combined hash adds only structural slot cost for the extra entry, not a
+	// second copy of the receiver payload.
+	maxExtra := estimatedMapEntryStructuralBytes + estimatedStringHeaderBytes + len("probe") + estimatedValueBytes
+	if extra := combined - receiverOnly; extra > maxExtra {
+		t.Fatalf("combined estimate added %d bytes over receiver-only, want <= %d (receiver payload double-charged)", extra, maxExtra)
+	}
+}
+
 func TestEnvStaticBindingsAccountedWithoutWalk(t *testing.T) {
 	t.Parallel()
 	payload := strings.Repeat("a", 16384)
