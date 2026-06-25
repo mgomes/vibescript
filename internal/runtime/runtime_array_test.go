@@ -911,6 +911,18 @@ func TestArrayValuesAtRangeSelectors(t *testing.T) {
     def float_range(values)
       values.values_at(0.5..2.9)
     end
+
+    def max_int_singleton(values)
+      values.values_at(9223372036854775807..9223372036854775807)
+    end
+
+    def max_int_singleton_exclusive(values)
+      values.values_at(9223372036854775807...9223372036854775807)
+    end
+
+    def near_max_int_pair(values)
+      values.values_at(9223372036854775806..9223372036854775807)
+    end
     `)
 
 	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
@@ -936,6 +948,12 @@ func TestArrayValuesAtRangeSelectors(t *testing.T) {
 		{"full range via negative end", "full_via_negative_end", []Value{NewInt(10), NewInt(20), NewInt(30)}},
 		{"int and range interleaved flatten in order", "interleaved", []Value{NewInt(10), NewInt(20), NewInt(30), NewInt(30)}},
 		{"float range bounds truncate toward zero", "float_range", []Value{NewInt(10), NewInt(20), NewInt(30)}},
+		// An inclusive range ending at MaxInt64 must report its true (tiny) span
+		// rather than overflowing the exclusive-end calculation and rejecting the
+		// call. The selected position is far past the receiver, so it pads with nil.
+		{"max int singleton pads nil", "max_int_singleton", []Value{nilV}},
+		{"max int singleton exclusive is empty", "max_int_singleton_exclusive", []Value{}},
+		{"near max int inclusive pair pads nil", "near_max_int_pair", []Value{nilV, nilV}},
 	}
 
 	for _, tc := range cases {
@@ -987,6 +1005,24 @@ func TestArrayValuesAtRejectsNegativeBeginPastStart(t *testing.T) {
 	// Ruby rejects a negative begin past the start even when the window would be
 	// empty, so the begin check runs before any emptiness short-circuit.
 	requireCallErrorContains(t, script, "out_of_range_empty_window", []Value{values}, CallOptions{}, "array.values_at range -4..-5 out of range")
+}
+
+func TestArrayValuesAtRangeRejectsGenuinelyHugeMaxIntWindow(t *testing.T) {
+	t.Parallel()
+
+	// An inclusive range beginning at zero and ending at MaxInt64 spans one past
+	// the representable int64 maximum: its window genuinely cannot be materialized,
+	// so it must still be rejected even though the singleton MaxInt64..MaxInt64
+	// case now succeeds. This guards against a fix that simply stopped rejecting
+	// every MaxInt64 endpoint.
+	script := compileScript(t, `
+    def huge_inclusive(values)
+      values.values_at(0..9223372036854775807)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	requireCallErrorContains(t, script, "huge_inclusive", []Value{values}, CallOptions{}, "array.values_at window is too large")
 }
 
 func TestArrayValuesAtRangeTripsMemoryQuota(t *testing.T) {

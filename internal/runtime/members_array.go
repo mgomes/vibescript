@@ -1172,15 +1172,19 @@ const arrayValuesAtInitialCap = 4096
 // likewise counts back from the end but is never rejected: an end at or before
 // the start simply selects nothing. The window is not clamped to the receiver
 // length, so positions at or past the end pad with nil (values_at(0..5) on
-// [10,20,30] yields [10,20,30,nil,nil,nil]). Bound arithmetic stays in int64 so
-// a near-MaxInt64 inclusive range cannot wrap to a negative no-op window, and
-// the selected count is reserved against the memory quota up front so a huge
-// padded window (values_at(0..1_000_000_000)) fails fast; emit then charges a
-// step and re-checks the quota per position so the materialization stays
-// interruptible even when the up-front reservation passes under a large memory
-// quota. The reservation runs through the build accumulator so it is measured
-// against the same call-root baseline (including an ephemeral receiver) that emit
-// charges each appended slot against.
+// [10,20,30] yields [10,20,30,nil,nil,nil]). The selected count is derived by
+// subtracting the bounds (end - begin) rather than incrementing the inclusive
+// end into an exclusive bound, so a range ending at math.MaxInt64 reports its
+// true span instead of overflowing: values_at(MaxInt64..MaxInt64) selects a
+// single out-of-bounds position and pads it with nil rather than being rejected.
+// Only a window whose span genuinely exceeds the native int range, or the memory
+// quota, is rejected as too large. The selected count is reserved against the
+// memory quota up front so a huge padded window (values_at(0..1_000_000_000))
+// fails fast; emit then charges a step and re-checks the quota per position so
+// the materialization stays interruptible even when the up-front reservation
+// passes under a large memory quota. The reservation runs through the build
+// accumulator so it is measured against the same call-root baseline (including an
+// ephemeral receiver) that emit charges each appended slot against.
 func arrayValuesAtRange(acc *arrayBuildAccumulator, emittedSoFar int, arr []Value, rng Range, emit func(Value) error) error {
 	length := int64(len(arr))
 	begin := rng.Start
@@ -1190,37 +1194,54 @@ func arrayValuesAtRange(acc *arrayBuildAccumulator, emittedSoFar int, arr []Valu
 			return fmt.Errorf("array.values_at range %s out of range", NewRange(rng).String())
 		}
 	}
-	endExclusive := rng.End
-	if endExclusive < 0 {
-		endExclusive += length
+	end := rng.End
+	if end < 0 {
+		end += length
 	}
-	if !rng.Exclusive {
-		// An inclusive range's exclusive end is one past End; guard the increment so
-		// End == math.MaxInt64 cannot wrap to a negative no-op window.
-		if endExclusive == math.MaxInt64 {
-			return fmt.Errorf("array.values_at window is too large")
-		}
-		endExclusive++
-	}
-	if endExclusive <= begin {
+	if end < begin {
 		return nil
 	}
-	count := endExclusive - begin
-	if count > math.MaxInt {
+	// Derive the selected count from end - begin (then +1 for an inclusive end)
+	// rather than incrementing end into an exclusive bound. The subtraction never
+	// overflows because begin >= 0 and end <= math.MaxInt64, so an inclusive range
+	// ending at math.MaxInt64 reports its real span instead of wrapping to a
+	// negative no-op window.
+	span := end - begin
+	if !rng.Exclusive {
+		if span == math.MaxInt64 {
+			// begin == 0 && end == math.MaxInt64: the inclusive span is one past the
+			// representable int64 maximum and cannot be materialized.
+			return fmt.Errorf("array.values_at window is too large")
+		}
+		span++
+	}
+	if span == 0 {
+		return nil
+	}
+	if span > math.MaxInt {
 		return fmt.Errorf("array.values_at window is too large")
 	}
+	count := int(span)
 	// Fail fast when the window clearly exceeds the memory quota before emitting
 	// any element; emit re-checks per position as the backing array grows. The
 	// reservation projects the positions already emitted by earlier selectors plus
 	// this window's count against the call-root baseline, so a mixed
 	// values_at(0..big, 0..big) cannot slip a second huge window past the check.
-	if err := acc.reserveSlots(saturatingAdd(emittedSoFar, int(count))); err != nil {
+	if err := acc.reserveSlots(saturatingAdd(emittedSoFar, count)); err != nil {
 		return err
 	}
-	for index := begin; index < endExclusive; index++ {
+	// Positions in [begin, begin+inBounds) read from arr; the remainder pad with
+	// nil. inBounds is computed against the receiver length so the absolute index
+	// never needs begin + offset, which could overflow int64 when begin is near
+	// the maximum (a begin at or past length contributes only padding).
+	var inBounds int64
+	if begin < length {
+		inBounds = length - begin
+	}
+	for offset := range count {
 		selected := NewNil()
-		if index < length {
-			selected = arr[index]
+		if int64(offset) < inBounds {
+			selected = arr[begin+int64(offset)]
 		}
 		if err := emit(selected); err != nil {
 			return err
