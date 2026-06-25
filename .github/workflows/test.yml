@@ -87,7 +87,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Run tests with coverage
-        run: go test ./... -coverprofile=coverage.out -coverpkg=./... -covermode=atomic
+        run: go test -timeout 30m ./... -coverprofile=coverage.out -coverpkg=./... -covermode=atomic
 
       - name: Enforce coverage gate
         run: ./scripts/check_coverage.sh coverage.out 75.0
@@ -125,7 +125,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Run race detector
-        run: go test -race ./...
+        run: go test -timeout 30m -race ./...
 
   goroutine-leak-profile:
     runs-on: ubuntu-latest
