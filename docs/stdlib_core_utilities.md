@@ -258,6 +258,10 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `push(*values) -> array` – new array with `values` appended. Accepts zero
   values: bare `push` and `push()` are no-ops that return the array unchanged,
   matching Ruby.
+- `append(*values) -> array` – Ruby-style alias for `push`.
+- `prepend(*values) -> array` – new array with `values` inserted at the front in
+  order, so `[3].prepend(1, 2)` is `[1, 2, 3]`. Bare `prepend` and `prepend()`
+  return the array unchanged.
 - `pop(n = nil) -> hash` – returns `{ array:, popped: }`; bare `pop` pops one
   element (`popped` is the value or `nil`), `pop(n)` pops up to `n` elements
   (`popped` is an array).

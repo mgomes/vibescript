@@ -1105,7 +1105,9 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 	switch value := stmt.Value.(type) {
 	case *CallExpr:
 		member, ok := value.Callee.(*MemberExpr)
-		if !ok || member.Property != "push" || len(value.KwArgs) > 0 || value.Block != nil {
+		// append is a documented alias for push, so it shares the
+		// accumulator fast path that reuses the receiver's backing buffer.
+		if !ok || (member.Property != "push" && member.Property != "append") || len(value.KwArgs) > 0 || value.Block != nil {
 			return NewNil(), false, nil
 		}
 		receiver, ok := member.Object.(*Identifier)

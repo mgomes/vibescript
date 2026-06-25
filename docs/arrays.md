@@ -32,6 +32,8 @@ Common enumerable helpers include:
 - `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.
 - `transpose` to swap the rows and columns of a matrix of equal-length array rows; it raises when a row is not an array or the rows differ in length.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
+- `append(*values)` is a Ruby-style alias for `push`, returning a new array with the values added to the end in order.
+- `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`).
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays. No argument, `nil`, or a negative depth flattens fully; `0` returns a shallow copy; a positive depth flattens that many levels and a `Float` depth is truncated to an integer. A nonnumeric depth raises.
@@ -67,6 +69,8 @@ survive.
 [1, 2, 3, 4].window(3)      # [[1,2,3], [2,3,4]]
 [1, 2, 3].take(2)           # [1, 2]
 [1, 2, 3].drop(1)           # [2, 3]
+[1].append(2, 3)            # [1, 2, 3]
+[3].prepend(1, 2)           # [1, 2, 3]
 [1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 [[1, 2], [3, 4]].transpose  # [[1, 3], [2, 4]]
 [1, 2, 3].fill(0)           # [0, 0, 0]

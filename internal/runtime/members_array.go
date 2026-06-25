@@ -15,7 +15,7 @@ import (
 var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 	"take_while", "drop_while", "grep", "grep_v",
-	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
+	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
@@ -35,7 +35,7 @@ func arrayMemberBuiltin(property string) (Value, error) {
 	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
-	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
+	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -1713,15 +1713,33 @@ func arrayFillRangeSpan(rng Range, length int) (arrayFillSpan, error) {
 
 func arrayMemberTransforms(property string) (Value, error) {
 	switch property {
-	case "push":
-		return NewAutoBuiltin("array.push", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	case "push", "append":
+		// Ruby exposes Array#append as an alias for Array#push, appending the
+		// arguments (in order) to the end of the receiver. Vibescript's
+		// collections are non-mutating, so both return a new array.
+		name := "array." + property
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
-				return NewNil(), fmt.Errorf("array.push does not take keyword arguments")
+				return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
 			}
 			base := receiver.Array()
 			out := make([]Value, len(base)+len(args))
 			copy(out, base)
 			copy(out[len(base):], args)
+			return NewArray(out), nil
+		}), nil
+	case "prepend":
+		// Ruby's Array#prepend (alias unshift) inserts the arguments, in order,
+		// at the front of the array. Vibescript's collections are non-mutating,
+		// so this returns a new array.
+		return NewAutoBuiltin("array.prepend", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.prepend does not take keyword arguments")
+			}
+			base := receiver.Array()
+			out := make([]Value, len(args)+len(base))
+			copy(out, args)
+			copy(out[len(args):], base)
 			return NewArray(out), nil
 		}), nil
 	case "pop":

@@ -1040,3 +1040,156 @@ func TestArrayIndexFamilyErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestArrayAppendAndPrepend(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def append_call(values, a, b)
+      values.append(a, b)
+    end
+
+    def append_none(values)
+      values.append
+    end
+
+    def prepend_call(values, a, b)
+      values.prepend(a, b)
+    end
+
+    def prepend_one(values, a)
+      values.prepend(a)
+    end
+
+    def prepend_none(values)
+      values.prepend
+    end
+    `)
+
+	tests := []struct {
+		name     string
+		function string
+		args     []Value
+		want     []Value
+	}{
+		{
+			name:     "append adds values in order to the end",
+			function: "append_call",
+			args:     []Value{NewArray([]Value{NewInt(1)}), NewInt(2), NewInt(3)},
+			want:     []Value{NewInt(1), NewInt(2), NewInt(3)},
+		},
+		{
+			name:     "append with no values returns the array unchanged",
+			function: "append_none",
+			args:     []Value{NewArray([]Value{NewInt(1), NewInt(2)})},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+		{
+			name:     "prepend inserts values in order at the front",
+			function: "prepend_call",
+			args:     []Value{NewArray([]Value{NewInt(3)}), NewInt(1), NewInt(2)},
+			want:     []Value{NewInt(1), NewInt(2), NewInt(3)},
+		},
+		{
+			name:     "prepend a single value at the front",
+			function: "prepend_one",
+			args:     []Value{NewArray([]Value{NewInt(2)}), NewInt(1)},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+		{
+			name:     "prepend onto an empty array",
+			function: "prepend_call",
+			args:     []Value{NewArray([]Value{}), NewInt(1), NewInt(2)},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+		{
+			name:     "prepend with no values returns the array unchanged",
+			function: "prepend_none",
+			args:     []Value{NewArray([]Value{NewInt(1), NewInt(2)})},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compareArrays(t, callFunc(t, script, tt.function, tt.args), tt.want)
+		})
+	}
+}
+
+func TestArrayAppendIsNonMutating(t *testing.T) {
+	t.Parallel()
+	// append and prepend mirror push: they return a new array and leave the
+	// receiver untouched, matching Vibescript's non-mutating collection model.
+	script := compileScript(t, `
+    def append_preserves_source(values, extra)
+      appended = values.append(extra)
+      { source: values, appended: appended }
+    end
+
+    def prepend_preserves_source(values, extra)
+      prepended = values.prepend(extra)
+      { source: values, prepended: prepended }
+    end
+    `)
+
+	appended := callFunc(t, script, "append_preserves_source",
+		[]Value{NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(3)}).Hash()
+	compareArrays(t, appended["source"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, appended["appended"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+
+	prepended := callFunc(t, script, "prepend_preserves_source",
+		[]Value{NewArray([]Value{NewInt(2), NewInt(3)}), NewInt(1)}).Hash()
+	compareArrays(t, prepended["source"], []Value{NewInt(2), NewInt(3)})
+	compareArrays(t, prepended["prepended"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+}
+
+func TestArrayAppendPrependRejectKeywordArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def append_keyword(values)
+      values.append(foo: 1)
+    end
+
+    def prepend_keyword(values)
+      values.prepend(foo: 1)
+    end
+    `)
+
+	base := []Value{NewArray([]Value{NewInt(1), NewInt(2)})}
+	requireCallErrorContains(t, script, "append_keyword", base, CallOptions{},
+		"array.append does not take keyword arguments")
+	requireCallErrorContains(t, script, "prepend_keyword", base, CallOptions{},
+		"array.prepend does not take keyword arguments")
+}
+
+func TestArrayAppendAssignmentFastPath(t *testing.T) {
+	t.Parallel()
+	// append shares push's accumulator fast path that reuses the backing
+	// buffer, so x = x.append(i) must accumulate correctly and keep aliases
+	// isolated exactly like x = x.push(i).
+	script := compileScript(t, `
+    def append_accumulate(n)
+      out = []
+      for i in 1..n
+        out = out.append(i)
+      end
+      out
+    end
+
+    def append_alias()
+      a = [1]
+      b = a
+      a = a.append(2)
+      b[0] = 9
+      { a: a, b: b }
+    end
+    `)
+
+	want := []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5)}
+	compareArrays(t, callFunc(t, script, "append_accumulate", []Value{NewInt(5)}), want)
+
+	aliased := callFunc(t, script, "append_alias", nil).Hash()
+	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, aliased["b"], []Value{NewInt(9)})
+}
