@@ -916,25 +916,7 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "find_index":
 		return NewAutoBuiltin("array.find_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.find_index does not take arguments")
-			}
-			runner, err := newBlockCallRunner(exec, block, "array.find_index")
-			if err != nil {
-				return NewNil(), err
-			}
-			var blockArg [1]Value
-			for idx, item := range receiver.Array() {
-				blockArg[0] = item
-				match, err := runner.call(blockArg[:])
-				if err != nil {
-					return NewNil(), err
-				}
-				if match.Truthy() {
-					return NewInt(int64(idx)), nil
-				}
-			}
-			return NewNil(), nil
+			return arrayForwardIndex(exec, receiver, args, block, "array.find_index")
 		}), nil
 	case "reduce":
 		return NewAutoBuiltin("array.reduce", arrayReduce), nil
@@ -952,57 +934,11 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "index":
 		return NewAutoBuiltin("array.index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) < 1 || len(args) > 2 {
-				return NewNil(), fmt.Errorf("array.index expects value and optional offset")
-			}
-			offset := 0
-			if len(args) == 2 {
-				n, err := valueToInt(args[1])
-				if err != nil || n < 0 {
-					return NewNil(), fmt.Errorf("array.index offset must be non-negative integer")
-				}
-				offset = n
-			}
-			arr := receiver.Array()
-			if offset >= len(arr) {
-				return NewNil(), nil
-			}
-			for idx := offset; idx < len(arr); idx++ {
-				if arr[idx].Equal(args[0]) {
-					return NewInt(int64(idx)), nil
-				}
-			}
-			return NewNil(), nil
+			return arrayForwardIndex(exec, receiver, args, block, "array.index")
 		}), nil
 	case "rindex":
 		return NewAutoBuiltin("array.rindex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) < 1 || len(args) > 2 {
-				return NewNil(), fmt.Errorf("array.rindex expects value and optional offset")
-			}
-			offset := -1
-			if len(args) == 2 {
-				n, err := valueToInt(args[1])
-				if err != nil || n < 0 {
-					return NewNil(), fmt.Errorf("array.rindex offset must be non-negative integer")
-				}
-				offset = n
-			}
-			arr := receiver.Array()
-			if len(arr) == 0 {
-				return NewNil(), nil
-			}
-			if offset < 0 {
-				offset = len(arr) - 1
-			}
-			if offset >= len(arr) {
-				offset = len(arr) - 1
-			}
-			for idx := offset; idx >= 0; idx-- {
-				if arr[idx].Equal(args[0]) {
-					return NewInt(int64(idx)), nil
-				}
-			}
-			return NewNil(), nil
+			return arrayReverseIndex(exec, receiver, args, block)
 		}), nil
 	case "fetch":
 		return NewAutoBuiltin("array.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1162,6 +1098,119 @@ func arrayMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+// arrayForwardIndex implements the shared forward-scanning logic for
+// Array#index and Array#find_index. It mirrors Ruby's two calling conventions:
+//
+//	index(value)        # first index whose element equals value
+//	index { |item| ... } # first index whose block result is truthy
+//
+// The optional second positional argument is a Vibescript extension that starts
+// the value search at a non-negative offset. As in Ruby, a value and a block are
+// mutually exclusive, and the block form rejects positional arguments entirely.
+// A miss returns nil.
+func arrayForwardIndex(exec *Execution, receiver Value, args []Value, block Value, name string) (Value, error) {
+	if valueBlock(block) != nil {
+		if len(args) > 0 {
+			return NewNil(), fmt.Errorf("%s takes a value or a block, not both", name)
+		}
+		runner, err := newBlockCallRunner(exec, block, name)
+		if err != nil {
+			return NewNil(), err
+		}
+		var blockArg [1]Value
+		for idx, item := range receiver.Array() {
+			blockArg[0] = item
+			match, err := runner.call(blockArg[:])
+			if err != nil {
+				return NewNil(), err
+			}
+			if match.Truthy() {
+				return NewInt(int64(idx)), nil
+			}
+		}
+		return NewNil(), nil
+	}
+
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("%s expects a value (with optional offset) or a block", name)
+	}
+	offset := 0
+	if len(args) == 2 {
+		n, err := valueToInt(args[1])
+		if err != nil || n < 0 {
+			return NewNil(), fmt.Errorf("%s offset must be non-negative integer", name)
+		}
+		offset = n
+	}
+	arr := receiver.Array()
+	for idx := offset; idx < len(arr); idx++ {
+		if arr[idx].Equal(args[0]) {
+			return NewInt(int64(idx)), nil
+		}
+	}
+	return NewNil(), nil
+}
+
+// arrayReverseIndex implements Array#rindex, scanning from the end. It mirrors
+// Ruby's two calling conventions:
+//
+//	rindex(value)         # last index whose element equals value
+//	rindex { |item| ... } # last index whose block result is truthy
+//
+// The optional second positional argument is a Vibescript extension that caps
+// the value search at a non-negative offset and scans backward from there. As in
+// Ruby, a value and a block are mutually exclusive, and the block form rejects
+// positional arguments entirely. A miss returns nil.
+func arrayReverseIndex(exec *Execution, receiver Value, args []Value, block Value) (Value, error) {
+	const name = "array.rindex"
+	arr := receiver.Array()
+	if valueBlock(block) != nil {
+		if len(args) > 0 {
+			return NewNil(), fmt.Errorf("%s takes a value or a block, not both", name)
+		}
+		runner, err := newBlockCallRunner(exec, block, name)
+		if err != nil {
+			return NewNil(), err
+		}
+		var blockArg [1]Value
+		for idx := len(arr) - 1; idx >= 0; idx-- {
+			blockArg[0] = arr[idx]
+			match, err := runner.call(blockArg[:])
+			if err != nil {
+				return NewNil(), err
+			}
+			if match.Truthy() {
+				return NewInt(int64(idx)), nil
+			}
+		}
+		return NewNil(), nil
+	}
+
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("%s expects a value (with optional offset) or a block", name)
+	}
+	offset := -1
+	if len(args) == 2 {
+		n, err := valueToInt(args[1])
+		if err != nil || n < 0 {
+			return NewNil(), fmt.Errorf("%s offset must be non-negative integer", name)
+		}
+		offset = n
+	}
+	if len(arr) == 0 {
+		return NewNil(), nil
+	}
+	if offset < 0 || offset >= len(arr) {
+		offset = len(arr) - 1
+	}
+	for idx := offset; idx >= 0; idx-- {
+		if arr[idx].Equal(args[0]) {
+			return NewInt(int64(idx)), nil
+		}
+	}
+	return NewNil(), nil
 }
 
 // arrayReduce folds the receiver into a single value. It supports Ruby's three
@@ -1923,15 +1972,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(arr) == 0 {
 				return NewString(""), nil
 			}
-			// Use strings.Builder for efficient concatenation
+			// arrayJoin recursively joins nested arrays with the active separator,
+			// matching Ruby's Array#join, and guards against cyclic or pathologically
+			// deep structures the same way array.flatten does.
 			var b strings.Builder
-			for i, item := range arr {
-				if i > 0 {
-					b.WriteString(sep)
-				}
-				b.WriteString(item.String())
+			if err := arrayJoin(&b, arr, sep); err != nil {
+				return NewNil(), err
 			}
-			return NewString(b.String()), nil
+			result := NewString(b.String())
+			if err := exec.checkMemoryWith(result); err != nil {
+				return NewNil(), err
+			}
+			return result, nil
 		}), nil
 	case "reverse":
 		return NewAutoBuiltin("array.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

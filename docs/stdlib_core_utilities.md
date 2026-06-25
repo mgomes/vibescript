@@ -212,7 +212,9 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `grep_v(pattern) { |item| } -> array` – elements that do not match `pattern`,
   with the same matching rules and optional transform block as `grep`.
 - `find { |item| } -> value | nil` – first element matching the block.
-- `find_index { |item| } -> int | nil` – index of the first match.
+- `find_index(value) -> int | nil` / `find_index { |item| } -> int | nil` –
+  index of the first element equal to `value`, or the first index whose block is
+  truthy. Alias for `index`; pass a value or a block, never both.
 - `reduce(initial = nil) { |acc, item| } -> value` – fold left; without
   `initial` the first element seeds the accumulator. An empty array folds to
   `nil` when no `initial` is given, or to `initial` when one is.
@@ -232,10 +234,13 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 ### Membership and Counting
 
 - `include?(value) -> bool` – membership test using value equality.
-- `index(value, offset = 0) -> int | nil` – first index of `value` at or
-  after `offset`.
-- `rindex(value, offset = last_index) -> int | nil` – last index of `value`
-  at or before `offset`.
+- `index(value, offset = 0) -> int | nil` / `index { |item| } -> int | nil` –
+  first index of `value` at or after `offset`, or the first index whose block is
+  truthy. Pass a value or a block, never both.
+- `rindex(value, offset = last_index) -> int | nil` /
+  `rindex { |item| } -> int | nil` – last index of `value` at or before
+  `offset`, or the last index whose block is truthy. Pass a value or a block,
+  never both.
 - `fetch(index, default = nil) -> value` – element at `index`, or
   `default`/`nil` when out of bounds.
 - `count -> int` – element count.

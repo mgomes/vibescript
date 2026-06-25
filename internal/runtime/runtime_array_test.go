@@ -966,3 +966,77 @@ func TestArrayFirstLastArity(t *testing.T) {
 	requireCallErrorContains(t, script, "last_kwarg", nil, CallOptions{}, "array.last does not take keyword arguments")
 	requireCallErrorContains(t, script, "last_count_kwarg", nil, CallOptions{}, "array.last does not take keyword arguments")
 }
+
+// TestArrayIndexFamily covers the Ruby-aligned value and block forms of
+// Array#index, Array#find_index, and Array#rindex (issue #487).
+func TestArrayIndexFamily(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+		want Value
+	}{
+		// index(value): first matching index, with Vibescript's offset extension.
+		{name: "index value hit", expr: "[1, 2, 3, 2].index(2)", want: NewInt(1)},
+		{name: "index value miss", expr: "[1, 2, 3].index(9)", want: NewNil()},
+		{name: "index value offset", expr: "[1, 2, 3, 2].index(2, 2)", want: NewInt(3)},
+		// index { block }: first index whose block result is truthy.
+		{name: "index block hit", expr: "[1, 2, 3].index { |x| x > 1 }", want: NewInt(1)},
+		{name: "index block miss", expr: "[1, 2, 3].index { |x| x > 9 }", want: NewNil()},
+		{name: "index block empty", expr: "[].index { |x| x > 0 }", want: NewNil()},
+		// find_index mirrors index exactly.
+		{name: "find_index value hit", expr: "[1, 2, 3].find_index(2)", want: NewInt(1)},
+		{name: "find_index value miss", expr: "[1, 2, 3].find_index(9)", want: NewNil()},
+		{name: "find_index block hit", expr: "[1, 2, 3].find_index { |x| x > 1 }", want: NewInt(1)},
+		{name: "find_index block miss", expr: "[1, 2, 3].find_index { |x| x > 9 }", want: NewNil()},
+		// rindex(value): last matching index, scanning backward.
+		{name: "rindex value hit", expr: "[1, 2, 3, 2].rindex(2)", want: NewInt(3)},
+		{name: "rindex value miss", expr: "[1, 2, 3].rindex(9)", want: NewNil()},
+		{name: "rindex value offset", expr: "[1, 2, 3, 2].rindex(2, 2)", want: NewInt(1)},
+		// rindex { block }: last index whose block result is truthy.
+		{name: "rindex block hit", expr: "[1, 2, 3, 2].rindex { |x| x == 2 }", want: NewInt(3)},
+		{name: "rindex block miss", expr: "[1, 2, 3].rindex { |x| x > 9 }", want: NewNil()},
+		{name: "rindex block empty", expr: "[].rindex { |x| x > 0 }", want: NewNil()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() "+tt.expr+" end")
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(tt.want) {
+				t.Fatalf("%s = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestArrayIndexFamilyErrors covers the rejected argument shapes for the index
+// family: missing value/block, mixed value+block, and invalid offsets.
+func TestArrayIndexFamilyErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "index no args", expr: "[1, 2, 3].index", want: "array.index expects a value (with optional offset) or a block"},
+		{name: "index value and block", expr: "[1, 2, 3].index(2) { |x| x > 1 }", want: "array.index takes a value or a block, not both"},
+		{name: "index negative offset", expr: "[1, 2, 3].index(2, -1)", want: "array.index offset must be non-negative integer"},
+		{name: "find_index no args", expr: "[1, 2, 3].find_index", want: "array.find_index expects a value (with optional offset) or a block"},
+		{name: "find_index value and block", expr: "[1, 2, 3].find_index(2) { |x| x > 1 }", want: "array.find_index takes a value or a block, not both"},
+		{name: "rindex no args", expr: "[1, 2, 3].rindex", want: "array.rindex expects a value (with optional offset) or a block"},
+		{name: "rindex value and block", expr: "[1, 2, 3].rindex(2) { |x| x > 1 }", want: "array.rindex takes a value or a block, not both"},
+		{name: "rindex negative offset", expr: "[1, 2, 3].rindex(2, -1)", want: "array.rindex offset must be non-negative integer"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() "+tt.expr+" end")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
+		})
+	}
+}
