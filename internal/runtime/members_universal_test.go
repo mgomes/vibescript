@@ -2,6 +2,101 @@ package runtime
 
 import "testing"
 
+// TestEqualPredicateEnumClonedIdentity confirms equal? on enums and enum values
+// reports backing-storage identity, not the structural equivalence Equal uses.
+// A value cloned out to the host (for example, by a capability return) holds a
+// fresh backing pointer while keeping the same owner script and member name.
+// enumDefsEqual/enumValueDefsEqual treat such a clone as == (and eql?) to the
+// original, but equal? must report false because the two no longer share
+// storage. equal? against the same backing pointer still reports true.
+func TestEqualPredicateEnumClonedIdentity(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `enum Status
+  Draft
+  Published
+end`)
+
+	statusDraft := enumTestValue(t, script, "Status", "Draft")
+	clonedDraft := cloneValueForHost(statusDraft)
+	if clonedDraft.Kind() != KindEnumValue {
+		t.Fatalf("cloneValueForHost(Status::Draft) kind = %v, want enum value", clonedDraft.Kind())
+	}
+	if EnumValueOf(clonedDraft) == EnumValueOf(statusDraft) {
+		t.Fatal("cloneValueForHost(Status::Draft) shares the original backing pointer; test cannot observe the identity contract")
+	}
+	if !clonedDraft.Equal(statusDraft) {
+		t.Fatal("cloned enum value should remain == to the original")
+	}
+	if clonedDraft.Eql(statusDraft) != clonedDraft.Equal(statusDraft) {
+		t.Fatal("enum value eql? should match == (same kind and value)")
+	}
+	if clonedDraft.Identical(statusDraft) {
+		t.Fatal("cloned enum value must not be equal? to the original; it holds distinct storage")
+	}
+	if !statusDraft.Identical(statusDraft) {
+		t.Fatal("an enum value must be equal? to itself")
+	}
+
+	enumDef := NewEnum(script.enums["Status"])
+	clonedEnum := cloneValueForHost(enumDef)
+	if clonedEnum.Kind() != KindEnum {
+		t.Fatalf("cloneValueForHost(Status) kind = %v, want enum", clonedEnum.Kind())
+	}
+	if EnumOf(clonedEnum) == EnumOf(enumDef) {
+		t.Fatal("cloneValueForHost(Status) shares the original backing pointer; test cannot observe the identity contract")
+	}
+	if !clonedEnum.Equal(enumDef) {
+		t.Fatal("cloned enum should remain == to the original")
+	}
+	if clonedEnum.Identical(enumDef) {
+		t.Fatal("cloned enum must not be equal? to the original; it holds distinct storage")
+	}
+	if !enumDef.Identical(enumDef) {
+		t.Fatal("an enum must be equal? to itself")
+	}
+}
+
+// TestEqualPredicateEnumDispatchesIdentity confirms the universal equal?
+// predicate on enums and enum values routes through Value.Identical rather than
+// Value.Equal. The predicate builtin captures the receiver, so invoking it with
+// a host clone that is Equal-but-not-Identical to the receiver must report
+// false, while the receiver compared with itself reports true.
+func TestEqualPredicateEnumDispatchesIdentity(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `enum Status
+  Draft
+  Published
+end`)
+
+	statusDraft := enumTestValue(t, script, "Status", "Draft")
+	clonedDraft := cloneValueForHost(statusDraft)
+
+	probe, ok := universalMember(statusDraft, "equal?")
+	if !ok {
+		t.Fatal("universalMember did not resolve equal? for an enum value")
+	}
+	builtin := valueBuiltin(probe)
+	if builtin == nil {
+		t.Fatal("equal? did not resolve to a builtin")
+	}
+
+	got, err := builtin.Fn(nil, NewNil(), []Value{clonedDraft}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("equal? against host clone: %v", err)
+	}
+	if got.Bool() {
+		t.Fatal("equal? against a host clone returned true; it must dispatch to Identical and report false")
+	}
+
+	got, err = builtin.Fn(nil, NewNil(), []Value{statusDraft}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("equal? against self: %v", err)
+	}
+	if !got.Bool() {
+		t.Fatal("equal? against the same backing value returned false; it must report true")
+	}
+}
+
 // TestEqlPredicate exercises the universal eql? predicate across core value
 // kinds: it reports hash-key equality, so operands must share a kind and value.
 // An Int never eql-matches a Float even when their numeric values coincide,

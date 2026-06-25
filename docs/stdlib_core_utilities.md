@@ -41,9 +41,11 @@ override them with its own methods of the same name.
 - `equal?(other) -> bool` – object identity. Immutable scalars (`nil`, `bool`,
   `int`, `float`, `string`, `symbol`, money, duration, time, range) are
   identical when they share a kind and value, so `1.equal?(1)` is `true`.
-  Mutable composites (arrays, hashes) and script instances are identical only
-  when they refer to the same object, so two independently built arrays with
-  equal contents are not `equal?`.
+  Mutable composites (arrays, hashes), script instances, enums, and enum values
+  are identical only when they refer to the same backing object. Two enum values
+  that compare `==` (and `eql?`) because they share an owner and member name are
+  still not `equal?` when they hold distinct storage — for example, a value
+  cloned out to the host and handed back by a capability.
 
 ```vibe
 1 == 1        # true

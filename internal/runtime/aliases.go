@@ -792,7 +792,23 @@ func runtimeValueEqual(left, right Value) (bool, bool) {
 	return false, false
 }
 
+// runtimeValueIdentical compares enum and enum-value kinds by backing-pointer
+// identity, backing the Ruby-style equal? predicate. Their Equal comparison is
+// structural (same owner script and name), so two distinct clones can be Equal
+// without sharing storage; identity must instead require the same backing
+// pointer. Installed at init time on value.RuntimeIdenticaler.
+func runtimeValueIdentical(left, right Value) (bool, bool) {
+	switch left.Kind() {
+	case KindEnum:
+		return valueEnum(left) == valueEnum(right), true
+	case KindEnumValue:
+		return valueEnumValue(left) == valueEnumValue(right), true
+	}
+	return false, false
+}
+
 func init() {
 	value.RuntimeStringer = runtimeValueString
 	value.RuntimeEqualer = runtimeValueEqual
+	value.RuntimeIdenticaler = runtimeValueIdentical
 }

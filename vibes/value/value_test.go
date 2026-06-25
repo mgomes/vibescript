@@ -1605,12 +1605,13 @@ func TestValueEqualCyclicStructuresTerminate(t *testing.T) {
 }
 
 // TestRuntimeHooks intentionally runs without t.Parallel: it mutates the
-// package-level RuntimeStringer/RuntimeEqualer hooks, and Go defers all
-// parallel tests until sequential tests like this one have finished.
+// package-level RuntimeStringer/RuntimeEqualer/RuntimeIdenticaler hooks, and Go
+// defers all parallel tests until sequential tests like this one have finished.
 func TestRuntimeHooks(t *testing.T) {
 	t.Cleanup(func() {
 		value.RuntimeStringer = nil
 		value.RuntimeEqualer = nil
+		value.RuntimeIdenticaler = nil
 	})
 
 	value.RuntimeStringer = func(v value.Value) (string, bool) {
@@ -1625,6 +1626,12 @@ func TestRuntimeHooks(t *testing.T) {
 		}
 		return false, false
 	}
+	value.RuntimeIdenticaler = func(left, right value.Value) (bool, bool) {
+		if left.Kind() == value.KindEnum {
+			return false, true
+		}
+		return false, false
+	}
 
 	enum := value.NewValue(value.KindEnum, fakeEnum{})
 	if got := enum.String(); got != "<Enum Color>" {
@@ -1632,6 +1639,12 @@ func TestRuntimeHooks(t *testing.T) {
 	}
 	if !enum.Equal(value.NewValue(value.KindEnum, fakeEnum{})) {
 		t.Error("hooked enum Equal() = false, want true")
+	}
+	// Identical consults RuntimeIdenticaler, which here reports the enums as
+	// distinct storage even though Equal considers them equivalent. This is the
+	// crux of the enum equal? contract: structural equivalence is not identity.
+	if enum.Identical(value.NewValue(value.KindEnum, fakeEnum{})) {
+		t.Error("hooked enum Identical() = true, want false from RuntimeIdenticaler")
 	}
 
 	// A hook that declines (ok=false) falls back to the generic rendering

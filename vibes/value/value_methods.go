@@ -71,6 +71,16 @@ var RuntimeStringer func(v Value) (string, bool)
 // kinds falls back to pointer identity of the underlying payload.
 var RuntimeEqualer func(left, right Value) (bool, bool)
 
+// RuntimeIdenticaler is the hook used by Value.Identical to compare
+// runtime-only kinds by backing-storage identity. It differs from
+// RuntimeEqualer because some runtime kinds (notably enums and enum values)
+// define Equal as structural equivalence: two independently cloned enum
+// members that share an owner script and name compare Equal, yet they do not
+// share storage and so must not be Identical. The vibes package installs this
+// hook during initialization. If unset, identity for those kinds falls back to
+// the same comparison Value.Equal uses.
+var RuntimeIdenticaler func(left, right Value) (bool, bool)
+
 // String returns the string representation of v.
 func (v Value) String() string {
 	switch v.kind {
@@ -578,10 +588,22 @@ func (v Value) Identical(other Value) bool {
 		left := v.data.(map[string]Value)
 		right := other.data.(map[string]Value)
 		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer()
-	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance, KindEnum, KindEnumValue:
+	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
 		// These runtime kinds already compare by backing-pointer identity in
 		// Equal (via RuntimeEqualer), which is exactly the identity contract
 		// equal? wants, so delegating keeps the two predicates consistent.
+		return v.Equal(other)
+	case KindEnum, KindEnumValue:
+		// Enum and enum-value Equal is structural: two independently cloned
+		// members that share an owner script and name compare Equal even though
+		// they hold distinct backing storage (for example, a value cloned out to
+		// the host and returned by a capability). equal? must report identity,
+		// so consult RuntimeIdenticaler, which compares backing pointers.
+		if RuntimeIdenticaler != nil {
+			if result, ok := RuntimeIdenticaler(v, other); ok {
+				return result
+			}
+		}
 		return v.Equal(other)
 	default:
 		return v.Equal(other)
