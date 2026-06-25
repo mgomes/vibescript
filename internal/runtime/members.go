@@ -67,6 +67,8 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		return arrayMember(obj, property)
 	case KindString:
 		return stringMember(obj, property)
+	case KindSymbol:
+		return symbolMember(obj, property)
 	case KindEnumValue:
 		return exec.enumValueMember(obj, property, pos)
 	case KindClass:
@@ -238,6 +240,7 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 func MemberCompletionNames() map[string][]string {
 	return map[string][]string{
 		"string":   withUniversalMembers(stringMemberNames),
+		"symbol":   withUniversalMembers(symbolMemberNames),
 		"array":    withUniversalMembers(arrayMemberNames),
 		"hash":     withUniversalMembers(hashMemberNames),
 		"int":      withUniversalMembers(intMemberNames),
