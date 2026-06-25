@@ -19,6 +19,7 @@ const (
 	estimatedEnvBytes          = int(unsafe.Sizeof(Env{}))
 	estimatedInstanceBytes     = 16
 	estimatedBlockBytes        = 24
+	estimatedBuiltinBytes      = int(unsafe.Sizeof(Builtin{}))
 	estimatedCallFrameBytes    = 48
 	estimatedModuleContextSize = 24
 )
@@ -953,14 +954,19 @@ func (est *memoryEstimator) value(val Value) int {
 	case KindFunction:
 		// Functions are compile-time/static artifacts for memory quotas.
 	case KindBuiltin:
-		// Builtins are otherwise static, but a builtin's Fn may close over
-		// runtime values it keeps alive (for example a bound `eql?`/`equal?`
-		// predicate captures its receiver). Charge those captured payloads so a
-		// stored probe cannot retain arbitrarily large structures outside the
-		// quota. Dedup by builtin pointer guards against revisiting the same
-		// builtin; recursing through est.value dedups each captured value against
-		// any independently reachable copy via the existing seen* maps, so a
-		// receiver that is also reachable elsewhere is charged only once.
+		// Static stdlib builtins are singletons reachable once, so they stay
+		// free. A builtin that closes over runtime values, though, is a
+		// dynamically allocated probe a script can mint in a loop (for example
+		// pushing `1.eql?` or `obj.equal?` into an array): each member access
+		// allocates a fresh *Builtin plus its CapturedValues backing. Charge that
+		// per-probe structure — the Builtin struct and the slice backing — so the
+		// quota accounts for the allocation itself, not just its captured
+		// payloads (which are effectively zero for scalar receivers). Then charge
+		// the captured payloads on top. Dedup by builtin pointer guards against
+		// revisiting the same builtin; recursing through est.value dedups each
+		// captured value against any independently reachable copy via the existing
+		// seen* maps, so a receiver that is also reachable elsewhere is charged
+		// only once.
 		builtin := valueBuiltin(val)
 		if builtin == nil || len(builtin.CapturedValues) == 0 {
 			return size
@@ -972,6 +978,8 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenBuiltins = make(map[*Builtin]struct{})
 		}
 		est.seenBuiltins[builtin] = struct{}{}
+		size = saturatingAdd(size, estimatedBuiltinBytes)
+		size = saturatingAdd(size, sliceStructuralBytes(builtin.CapturedValues))
 		for _, captured := range builtin.CapturedValues {
 			size = saturatingAdd(size, est.valuePayload(captured))
 		}
