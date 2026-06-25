@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"math/bits"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -315,6 +316,65 @@ func flattenValuesWithState(values []Value, depth int, state *flattenState) ([]V
 		}
 	}
 	return out, nil
+}
+
+// joinState carries the cycle and depth guards for arrayJoin. It mirrors
+// flattenState so recursive joins are bounded the same way recursive flattening
+// is: a self-referential array fails rather than recursing forever, and an
+// array nested deeper than maxFlattenDepth is rejected before it can exhaust the
+// goroutine stack.
+type joinState struct {
+	arrays map[sliceIdentity]struct{}
+	depth  int
+}
+
+// arrayJoin renders values into b separated by sep, recursively joining nested
+// arrays with the same separator. This matches Ruby's Array#join, which flattens
+// nested arrays into the output using the active separator rather than rendering
+// their inspect form. Scalar elements use their Vibescript string form, so nil
+// contributes an empty segment exactly as Ruby's join does.
+func arrayJoin(b *strings.Builder, values []Value, sep string) error {
+	return arrayJoinWithState(b, values, sep, &joinState{
+		arrays: make(map[sliceIdentity]struct{}),
+	})
+}
+
+func arrayJoinWithState(b *strings.Builder, values []Value, sep string, state *joinState) error {
+	if state.depth >= maxFlattenDepth {
+		return fmt.Errorf("array.join exceeded maximum depth")
+	}
+
+	id := sliceIdentity{
+		Ptr: reflect.ValueOf(values).Pointer(),
+		Len: len(values),
+		Cap: cap(values),
+	}
+	if id.Ptr != 0 {
+		if _, visiting := state.arrays[id]; visiting {
+			return fmt.Errorf("array.join does not support cyclic structures")
+		}
+		state.arrays[id] = struct{}{}
+		defer delete(state.arrays, id)
+	}
+
+	state.depth++
+	defer func() {
+		state.depth--
+	}()
+
+	for i, v := range values {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		if v.Kind() == KindArray {
+			if err := arrayJoinWithState(b, v.Array(), sep, state); err != nil {
+				return err
+			}
+			continue
+		}
+		b.WriteString(v.String())
+	}
+	return nil
 }
 
 func floatToInt64Checked(v float64, method string) (int64, error) {
