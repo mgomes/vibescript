@@ -14,4 +14,10 @@
   `def f(opts: { previous: nil })`); the `name: { field: Type }` shape-type
   spelling stays a typed positional parameter, and a built-in generic container
   type (`def f(array, values: array<int>)`) is never shadowed by a value local
-  of the same name.
+  of the same name. A brace group whose field values all parse as types but whose
+  shape is structurally invalid (`def run(payload: { id: string, id: int })`)
+  surfaces its shape diagnostic instead of being silently reinterpreted as a hash
+  default. A keyword default is never evaluated when the call shape can never
+  bind: a missing required keyword or a leftover positional argument is reported
+  before any default runs, so a default's side effects, errors, or quota cost
+  cannot mask the real arity or keyword mismatch.
