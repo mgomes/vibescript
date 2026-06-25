@@ -230,6 +230,7 @@ type callFunctionRebinder struct {
 	seenInstances map[*Instance]Value
 	seenArrays    map[sliceIdentity]Value
 	seenMaps      map[uintptr]map[string]Value
+	seenBlocks    map[*Block]Value
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -311,6 +312,30 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		r.seenFunctions[fn] = clone
 		return NewFunction(clone)
+	case KindBlock:
+		// A block (e.g. a hash default proc) that escaped a prior call and is
+		// passed back in must resolve globals, capabilities, per-call function
+		// clones, and builtins against the live call root, not the stale snapshot
+		// captured when it escaped -- otherwise a missing-key lookup could read a
+		// previous call's globals or invoke a capability the current call never
+		// granted. Re-root its captured environment onto the current call, exactly
+		// as the KindFunction case re-roots an escaped function. Block parameters
+		// (e.g. the hash and key) bind at call time and are unaffected.
+		blk := valueBlock(val)
+		if blk == nil || blk.owner != r.script || blk.Env == r.root {
+			return val
+		}
+		if clone, ok := r.seenBlocks[blk]; ok {
+			return clone
+		}
+		clone := *blk
+		clone.Env = r.root
+		cloneVal := wrapBlock(&clone)
+		if r.seenBlocks == nil {
+			r.seenBlocks = make(map[*Block]Value)
+		}
+		r.seenBlocks[blk] = cloneVal
+		return cloneVal
 	case KindArray:
 		items := val.Array()
 		id := sliceIdentity{

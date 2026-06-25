@@ -338,6 +338,61 @@ func TestCloneTaskGlobalsPreservesHashDefaults(t *testing.T) {
 	})
 }
 
+// TestTaskDefaultProcRebindsToWorkerCall pins end-to-end that a task-inherited
+// global hash whose default proc reads ambient state runs that proc against the
+// worker's own call rather than the parent call where the hash was created. The
+// inbound rebinder had no KindBlock case, so a worker's missing-key lookup
+// executed the proc with the parent's captured environment and read the parent
+// call's globals and per-call function clones. Each worker's proc inserts into
+// its own isolated copy of the hash, so the parent's hash stays untouched.
+func TestTaskDefaultProcRebindsToWorkerCall(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def build()
+  Hash.new { |h, k| h[k] = prefix + "-" + k }
+end
+
+def touch(item)
+  # Missing-key lookup runs the default proc, which reads the global "prefix"
+  # and inserts the computed value. The proc must resolve "prefix" against the
+  # worker's own call and insert into the worker's isolated hash copy.
+  counts[item]
+end
+
+def run()
+  Tasks.map(["a", "b"], max: 2, with: :touch)
+end`)
+
+	// Build the proc-bearing hash from the same script so its default proc is not
+	// foreign and is re-rooted onto each worker's call. The build call's "prefix"
+	// global must not leak into the task workers.
+	procHash := callScript(t, context.Background(), script, "build", nil, CallOptions{
+		Globals: map[string]Value{"prefix": NewString("ignored")},
+	})
+
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{
+			"counts": procHash,
+			"prefix": NewString("p"),
+		},
+	})
+	if result.Kind() != KindArray || len(result.Array()) != 2 {
+		t.Fatalf("run result = %s, want a two-element array", result.String())
+	}
+	want := map[string]string{"a": "p-a", "b": "p-b"}
+	for i, key := range []string{"a", "b"} {
+		got := result.Array()[i]
+		if got.Kind() != KindString || got.String() != want[key] {
+			t.Fatalf("result[%d] = %#v, want %q from the worker call's global prefix", i, got, want[key])
+		}
+	}
+
+	// The parent's inherited hash copy must stay empty: each worker inserted into
+	// its own isolated copy, never the shared source.
+	if got := len(procHash.Hash()); got != 0 {
+		t.Fatalf("source proc hash gained %d entries, want 0 (each job mutates an isolated copy)", got)
+	}
+}
+
 // TestTaskInheritsGlobalHashDefault pins end-to-end that a task spawned from a
 // global hash carrying a Ruby-style default sees that default on a missing-key
 // lookup. The task-global cloner used to drop the default when isolating the

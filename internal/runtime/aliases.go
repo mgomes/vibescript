@@ -754,6 +754,13 @@ func NewBlock(params []Param, body []Statement, env *Env) Value {
 	return value.NewValue(KindBlock, &Block{Params: params, Body: body, Env: env})
 }
 
+// wrapBlock returns a block Value over an existing *Block, used by the inbound
+// rebinder to surface a re-rooted block clone without re-deriving the block's
+// module metadata.
+func wrapBlock(blk *Block) Value {
+	return value.NewValue(KindBlock, blk)
+}
+
 // NewEnum returns an enum definition Value.
 func NewEnum(def *EnumDef) Value { return value.NewValue(KindEnum, def) }
 

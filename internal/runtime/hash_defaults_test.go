@@ -602,3 +602,72 @@ end
 		t.Fatalf("echo(cyclic hash) = %v, want a hash returned without overflow", result.Kind())
 	}
 }
+
+// TestHashDefaultProcRebindsToCurrentCall pins that a hash default proc which
+// escapes one Script.Call and is passed back into another resolves globals
+// against the current call rather than the call where it was created. The inbound
+// rebinder had no KindBlock case, so the proc kept the captured environment of
+// the originating call and read its stale globals on a missing-key lookup.
+func TestHashDefaultProcRebindsToCurrentCall(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def export_hash()
+  Hash.new { |h, k| tenant + "-" + k }
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "export_hash", nil, CallOptions{
+		Globals: map[string]Value{"tenant": NewString("first")},
+	})
+	if exported.Kind() != KindHash {
+		t.Fatalf("export_hash returned %v, want a hash", exported.Kind())
+	}
+
+	got := callScript(t, context.Background(), script, "lookup",
+		[]Value{exported, NewString("key")},
+		CallOptions{Globals: map[string]Value{"tenant": NewString("second")}},
+	)
+	if got.Kind() != KindString || got.String() != "second-key" {
+		t.Fatalf("default proc lookup = %#v, want \"second-key\" from the current call's global", got)
+	}
+}
+
+// TestHashDefaultProcRebindResolvesCurrentCallFunctions pins that an escaped
+// default proc resolves a script function it calls against the current call's
+// per-call function clone rather than the originating call's, which the inbound
+// re-rooting onto the live call root guarantees.
+func TestHashDefaultProcRebindResolvesCurrentCallFunctions(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def export_hash()
+  Hash.new { |h, k| decorate(k) }
+end
+
+def decorate(k)
+  tenant + ":" + k
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "export_hash", nil,
+		CallOptions{Globals: map[string]Value{"tenant": NewString("first")}},
+	)
+
+	got := callScript(t, context.Background(), script, "lookup",
+		[]Value{exported, NewString("key")},
+		CallOptions{Globals: map[string]Value{"tenant": NewString("second")}},
+	)
+	// decorate resolves from the current call and reads the current call's global.
+	if got.Kind() != KindString || got.String() != "second:key" {
+		t.Fatalf("default proc lookup = %#v, want \"second:key\"", got)
+	}
+}

@@ -822,6 +822,15 @@ func (cloner *taskGlobalCloner) clone(val Value) Value {
 		}
 		return cloned
 	default:
+		// A KindBlock default proc is left as-is. Task globals are materialized per
+		// worker through the inbound rebinder (see materialize), which re-roots a
+		// same-script proc's captured environment onto the worker's own call before
+		// the proc ever runs, so its missing-key lookup reads the worker's globals,
+		// capabilities, and per-call function clones rather than the parent's.
+		// A foreign proc (from another script) keeps its own script's environment
+		// under both the rebinder and this cloner, matching cross-script
+		// containment. Cloning the captured environment here would be redundant
+		// with the re-rooting and could not produce a meaningful isolated copy.
 		return val
 	}
 }
