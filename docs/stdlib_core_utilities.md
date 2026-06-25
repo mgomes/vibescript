@@ -91,11 +91,16 @@ Unicode characters, not bytes, unless noted.
 
 ### Case and Ordering Transforms
 
-- `upcase -> string` – uppercase all characters (Unicode case mapping,
-  locale-insensitive).
-- `downcase -> string` – lowercase all characters.
-- `capitalize -> string` – uppercase the first character, lowercase the rest.
-- `swapcase -> string` – flip the case of each letter.
+- `upcase(mode = nil) -> string` – uppercase all characters using full Unicode
+  case mapping (locale-insensitive), so `"Straße".upcase` is `"STRASSE"`. Pass
+  `:ascii` to map only ASCII letters.
+- `downcase(mode = nil) -> string` – lowercase all characters using full Unicode
+  case mapping. Pass `:ascii` for ASCII-only mapping or `:fold` for Unicode case
+  folding (so `"Straße".downcase(:fold)` is `"strasse"`).
+- `capitalize(mode = nil) -> string` – titlecase the first character and
+  lowercase the rest. Pass `:ascii` to map only ASCII letters.
+- `swapcase(mode = nil) -> string` – flip the case of each letter. Pass `:ascii`
+  to map only ASCII letters.
 - `reverse -> string` – characters in reverse order.
 
 ### Whitespace and Affix Trimming

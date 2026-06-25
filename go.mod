@@ -8,6 +8,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/google/go-cmp v0.7.0
+	golang.org/x/text v0.34.0
 	pgregory.net/rapid v1.3.0
 )
 

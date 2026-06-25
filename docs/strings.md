@@ -194,19 +194,29 @@ point, not a single byte) is removed. An empty string is returned unchanged:
 
 ### `upcase`
 
-Converts the string to uppercase:
+Converts the string to uppercase using full Unicode case mapping, so
+characters expand where Unicode requires it:
 
 ```vibe
 def shout(message)
   message.upcase
 end
 
-shout("hello")  # "HELLO"
+shout("hello")   # "HELLO"
+"Straße".upcase  # "STRASSE"
+"ﬁle".upcase     # "FILE"
+```
+
+Pass `:ascii` to restrict mapping to ASCII letters and leave every other
+byte unchanged:
+
+```vibe
+"Straße".upcase(:ascii) # "STRAßE"
 ```
 
 ### `downcase`
 
-Converts the string to lowercase:
+Converts the string to lowercase using full Unicode case mapping:
 
 ```vibe
 def normalize(email)
@@ -214,23 +224,45 @@ def normalize(email)
 end
 
 normalize("USER@EXAMPLE.COM")  # "user@example.com"
+"İ".downcase                   # "i̇"
 ```
+
+Pass `:ascii` to restrict mapping to ASCII letters, or `:fold` to apply
+Unicode case folding (which normalizes additional forms for case-insensitive
+comparison, such as `ß` to `ss`):
+
+```vibe
+"STRAßE".downcase(:ascii) # "straße"
+"Straße".downcase(:fold)  # "strasse"
+```
+
+The `:fold` option is only available on `downcase`; other case methods raise
+an error if it is supplied.
 
 ### `capitalize`
 
-Uppercases the first character and lowercases the rest:
+Titlecases the first character and lowercases the rest using full Unicode
+case mapping:
 
 ```vibe
 "hÉLLo wORLD".capitalize # "Héllo world"
+"ǆenan".capitalize       # "ǅenan"
 ```
+
+Pass `:ascii` to restrict mapping to ASCII letters.
 
 ### `swapcase`
 
-Flips letter casing for each character:
+Flips letter casing for each character using full Unicode case mapping:
 
 ```vibe
 "Hello VIBE".swapcase # "hELLO vibe"
+"Straße".swapcase     # "sTRASSE"
 ```
+
+Pass `:ascii` to restrict mapping to ASCII letters. Titlecase digraph
+characters (such as `ǅ`) are lowercased rather than split into their component
+letters, which is a deliberate divergence from Ruby for those rare codepoints.
 
 ### `reverse`
 
@@ -303,9 +335,10 @@ otherwise, and `nil` when `other` is not a string:
 "abc".casecmp?(1)         # nil
 ```
 
-Folding uses Unicode simple case mapping, consistent with `upcase` and
-`downcase`. Full-fold expansions such as German `ß` matching `SS` are not
-applied, so `"ß".casecmp?("SS")` is `false` (Ruby returns `true`).
+Folding uses Unicode simple case folding. Full-fold expansions such as German
+`ß` matching `SS` are not applied, so `"ß".casecmp?("SS")` is `false` (Ruby
+returns `true`). To normalize those expansions for comparison, use
+`downcase(:fold)` on both operands first.
 
 When either operand contains invalid UTF-8, folding falls back to byte-wise
 ASCII case folding so that distinct byte sequences stay distinct. This mirrors
