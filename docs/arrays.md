@@ -104,7 +104,16 @@ and leaves the receiver untouched.
 - `count`, `count(value)`, or `count { ... }`. As in Ruby, a `value` argument
   takes precedence: `count(value) { ... }` counts elements equal to `value` and
   ignores the block.
+- `values_at(*indexes)` reads several elements at once, returning a new array in
+  the order the indexes were requested. Negative indexes count back from the end
+  and out-of-bounds indexes yield `nil`, so the result always has one entry per
+  argument. Float indexes truncate toward zero like Ruby (`1.9` reads index `1`);
+  a non-numeric index raises.
 - `any?`, `all?`, `none?` with optional blocks.
+
+```vibe
+[10, 20, 30].values_at(0, -1, 9)   # [10, 30, nil]
+```
 
 `index`, `find_index`, and `rindex` accept either a value or a block, never both;
 passing both raises an error. As a Vibescript extension, the value form also takes

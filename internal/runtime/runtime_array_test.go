@@ -653,6 +653,90 @@ func TestArrayConcatAndSubtract(t *testing.T) {
 	compareArrays(t, subtracted, []Value{NewInt(1)})
 }
 
+func TestArrayValuesAt(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def lookup(values)
+      values.values_at(0, -1, 9)
+    end
+
+    def lookup_negative(values)
+      values.values_at(-1, -2, -3)
+    end
+
+    def lookup_duplicates(values)
+      values.values_at(0, 0, 1, 1)
+    end
+
+    def lookup_empty(values)
+      values.values_at
+    end
+
+    def lookup_out_of_range(values)
+      values.values_at(3, -4)
+    end
+
+    def lookup_float(values)
+      values.values_at(1.5, -1.9)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+
+	t.Run("returns values in request order with nil for misses", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup", []Value{values})
+		compareArrays(t, got, []Value{NewInt(10), NewInt(30), NewNil()})
+	})
+
+	t.Run("negative indexes count from the end", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_negative", []Value{values})
+		compareArrays(t, got, []Value{NewInt(30), NewInt(20), NewInt(10)})
+	})
+
+	t.Run("duplicate indexes repeat their values", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_duplicates", []Value{values})
+		compareArrays(t, got, []Value{NewInt(10), NewInt(10), NewInt(20), NewInt(20)})
+	})
+
+	t.Run("no indexes returns empty array", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_empty", []Value{values})
+		compareArrays(t, got, []Value{})
+	})
+
+	t.Run("out-of-range indexes yield nil", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_out_of_range", []Value{values})
+		compareArrays(t, got, []Value{NewNil(), NewNil()})
+	})
+
+	t.Run("float indexes truncate toward zero like Ruby", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_float", []Value{values})
+		compareArrays(t, got, []Value{NewInt(20), NewInt(30)})
+	})
+}
+
+func TestArrayValuesAtRejectsNonIntegerArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def lookup_string(values)
+      values.values_at("0")
+    end
+
+    def lookup_keyword(values)
+      values.values_at(index: 0)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	requireCallErrorContains(t, script, "lookup_string", []Value{values}, CallOptions{}, "array.values_at index must be integer")
+	requireCallErrorContains(t, script, "lookup_keyword", []Value{values}, CallOptions{}, "array.values_at does not take keyword arguments")
+}
+
 func TestArrayUniqUsesScalarKeysAndCompositeFallback(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
