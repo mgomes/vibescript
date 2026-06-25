@@ -966,6 +966,60 @@ end`
 	}
 }
 
+// TestParserMissingShapeSeparatorSurfacesDiagnostic verifies that a brace group
+// whose type-valued fields lack a separator (`{ id: string name: int }`)
+// surfaces the shape diagnostic instead of being silently reinterpreted as a
+// hash-literal default. The parenless form is the load-bearing case: there the
+// fallback hash parse is line-limited and would accept `string name: int` as a
+// parenless call value, so without the missing-separator detection the malformed
+// shape-typed positional parameter would be reclassified as an optional keyword.
+func TestParserMissingShapeSeparatorSurfacesDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"parenless": `def run payload: { id: string name: int }
+  payload
+end`,
+		"parenthesized": `def run(payload: { id: string name: int })
+  payload
+end`,
+	}
+	for name, source := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, errs := parseSource(t, source)
+			if len(errs) == 0 {
+				t.Fatalf("parseSource(%q) errors = nil, want the shape diagnostic", source)
+			}
+			if got := errs[0].Error(); !strings.Contains(got, "expected }") {
+				t.Fatalf("parseSource(%q) first error = %q, want a missing shape separator diagnostic", source, got)
+			}
+		})
+	}
+}
+
+// TestParserMissingSeparatorLocalRefSurfacesDiagnostic verifies that a missing
+// field separator surfaces the shape diagnostic even when the prior field value
+// is a bare identifier naming an earlier keyword parameter. Unlike a duplicate
+// key (a valid hash literal in Ruby), `value label:` without a separator is
+// malformed in Ruby too, so the parenless `{ sum: a x: a }` must not silently
+// fall back to a keyword default that the line-limited hash parse would accept
+// as the parenless call `a(x: a)`.
+func TestParserMissingSeparatorLocalRefSurfacesDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	source := `def g a:, b: { sum: a x: a }
+  b
+end`
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want the shape diagnostic", source)
+	}
+	if got := errs[0].Error(); !strings.Contains(got, "expected }") {
+		t.Fatalf("parseSource(%q) first error = %q, want a missing shape separator diagnostic", source, got)
+	}
+}
+
 // TestParserDuplicateKeyLocalRefHashDefaultStillBinds verifies that a duplicate
 // key whose values are bare identifiers naming an earlier keyword parameter
 // stays a hash default rather than surfacing a shape diagnostic. The local-value
