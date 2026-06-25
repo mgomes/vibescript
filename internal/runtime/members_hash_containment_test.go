@@ -3032,6 +3032,203 @@ func TestHashEachDeepRestTargetDestructureReservesEveryDepth(t *testing.T) {
 	}
 }
 
+// mutatingNestedRestEachBlock builds a |(k, (head, *tail))| block whose body grows
+// a not-yet-visited entry of the receiver to a large array on the matching key. The
+// receiver is captured in the block's environment under receiverName so the body's
+// IndexExpr assignment mutates it in place, exactly as a script's
+// `data[growKey] = [...]` would. It backs the regression for the P2 finding on PR
+// #808: Hash#each's preflight reservation sizes the peak rest array from the
+// entries' values before the walk, so this block lets a value grow past that
+// reservation mid-walk and the iterator's per-entry projection must reject the
+// grown entry before AssignDestructure materializes its over-quota rest array.
+func mutatingNestedRestEachBlock(receiver Value, receiverName, growKey string, grownLen int) Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "k", Position: pos}},
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "head", Position: pos}},
+					{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+				},
+			}},
+		},
+	}
+	elems := make([]Expression, grownLen)
+	for i := range elems {
+		elems[i] = &IntegerLiteral{Value: int64(i), Position: pos}
+	}
+	body := []Statement{
+		&AssignStmt{
+			Target: &IndexExpr{
+				Object:   &Identifier{Name: receiverName, Position: pos},
+				Index:    &SymbolLiteral{Name: growKey, Position: pos},
+				Position: pos,
+			},
+			Value:    &ArrayLiteral{Elements: elems, Position: pos},
+			Position: pos,
+		},
+	}
+	env := newEnv(nil)
+	env.Define(receiverName, receiver)
+	return NewBlock([]Param{{Kind: ParamNormal, Target: target}}, body, env)
+}
+
+// twoSmallArrayEntryHash builds the {a: [1, 2], b: [1, 2]} receiver the mutation
+// regressions walk. Both values start small so the preflight reserves a tiny rest
+// array; the block then grows :b before the sorted walk reaches it.
+func twoSmallArrayEntryHash() Value {
+	return NewHash(map[string]Value{
+		"a": NewArray([]Value{NewInt(1), NewInt(2)}),
+		"b": NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+}
+
+// TestHashEachDestructureRestRejectsGrownEntryBeforeAllocating pins the P2 finding
+// on PR #808 (members_hash.go:346): Hash#each's preflight sizes its peak rest array
+// from the entries' values as they stand before the walk, but a destructuring block
+// with a rest target can mutate a not-yet-visited entry to a far larger value
+// (data[:b] = bigArray while binding :a). The sorted walk reaches :b only after the
+// mutation, so binding it makes AssignDestructure collect a tail rest array sized to
+// the grown value -- larger than the preflight reserved -- inside callBlock, before
+// the body's first in-block memory check runs. The per-entry live projection added
+// for this finding reprojects the grown value against the quota and rejects it
+// before that allocation. A quota that comfortably fits the body's grown-array
+// assignment but not the additional grown rest array must trip the walk.
+func TestHashEachDestructureRestRejectsGrownEntryBeforeAllocating(t *testing.T) {
+	t.Parallel()
+
+	const grownLen = 4096
+	grownArrayBytes := restArrayBytes(grownLen)
+
+	probeReceiver := twoSmallArrayEntryHash()
+	probeBlock := mutatingNestedRestEachBlock(probeReceiver, "__receiver__", "b", grownLen)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(probeReceiver, nil, nil, probeBlock)
+
+	// Room for the (still small) call roots plus the one grown array the body
+	// assigns, with generous headroom, so the mutation itself succeeds. It leaves
+	// no room for the grown receiver plus the equally large tail rest array binding
+	// :b would allocate, so the per-entry projection must reject before that
+	// allocation -- without it the rest array materializes and only a later in-body
+	// check catches the overflow.
+	rejectQuota := roots + grownArrayBytes + 64*1024
+
+	receiver := twoSmallArrayEntryHash()
+	block := mutatingNestedRestEachBlock(receiver, "__receiver__", "b", grownLen)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: rejectQuota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("each over a hash whose block grows :b past the reservation (quota %d) = %v, want errMemoryQuotaExceeded", rejectQuota, err)
+	}
+}
+
+// TestHashEachDestructureRestAdmitsGrownEntryWithinQuota is the safety twin of the
+// rejection regression: when the quota comfortably fits the grown receiver, the two
+// live pairs, and the grown tail rest array, the per-entry projection must admit the
+// walk. This proves the rejection above comes from the rest array exceeding the
+// quota and not from the new projection being categorically over-tight. It also
+// pins Ruby's read-the-live-value semantics: binding :b after the mutation must
+// destructure the grown value, so tail collects grownLen-1 elements rather than the
+// original one.
+func TestHashEachDestructureRestAdmitsGrownEntryWithinQuota(t *testing.T) {
+	t.Parallel()
+
+	const grownLen = 4096
+	grownArrayBytes := restArrayBytes(grownLen)
+
+	probeReceiver := twoSmallArrayEntryHash()
+	probeBlock := mutatingNestedRestEachBlock(probeReceiver, "__receiver__", "b", grownLen)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(probeReceiver, nil, nil, probeBlock)
+
+	// Generous room for the grown receiver, the transient grown array literal the
+	// body re-evaluates, the grown tail rest array, and per-iteration binding
+	// overhead. The walk must complete and leave :b grown to grownLen elements,
+	// proving the block bound the live (mutated) value.
+	admitQuota := roots + 4*grownArrayBytes + 512*1024
+
+	receiver := twoSmallArrayEntryHash()
+	block := mutatingNestedRestEachBlock(receiver, "__receiver__", "b", grownLen)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: admitQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each over the same mutating block at a roomy quota %d = %v, want success", admitQuota, err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("each returned %v, want the receiver hash", got.Kind())
+	}
+	grown := receiver.Hash()["b"]
+	if grown.Kind() != KindArray || len(grown.Array()) != grownLen {
+		t.Fatalf("entry :b after the walk = %v with %d elements, want a %d-element array (the block must bind and keep the live grown value)", grown.Kind(), len(grown.Array()), grownLen)
+	}
+}
+
+// TestCheckLiveCollapsedRestBytes pins the per-entry projection's contract in
+// isolation: it charges the call roots, the two live collapsed pairs, and the
+// supplied live rest footprint, rejecting only when their sum exceeds the quota and
+// no-opping when no quota is enforced. Hash#each calls it for any entry whose live
+// rest has grown past the preflight reservation (see members_hash.go), so this is
+// the guard the P2 finding required.
+func TestCheckLiveCollapsedRestBytes(t *testing.T) {
+	t.Parallel()
+
+	receiver := twoSmallArrayEntryHash()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, NewNil())
+
+	const liveRestBytes = 1 << 20
+	atLimit := saturatingAdd(roots, 2*collapsedPairBytes+liveRestBytes)
+
+	// No quota: the projection never rejects, however large the live rest.
+	noQuota := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	if err := noQuota.checkLiveCollapsedRestBytes(liveRestBytes, receiver, nil, nil, NewNil()); err != nil {
+		t.Fatalf("checkLiveCollapsedRestBytes with no memory quota = %v, want nil", err)
+	}
+
+	// A quota exactly equal to the projected peak admits it; one byte less rejects.
+	exact := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: atLimit}
+	if err := exact.checkLiveCollapsedRestBytes(liveRestBytes, receiver, nil, nil, NewNil()); err != nil {
+		t.Fatalf("checkLiveCollapsedRestBytes at the exact projected peak %d = %v, want nil", atLimit, err)
+	}
+	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: atLimit - 1}
+	if err := tight.checkLiveCollapsedRestBytes(liveRestBytes, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("checkLiveCollapsedRestBytes one byte below the projected peak %d = %v, want errMemoryQuotaExceeded", atLimit-1, err)
+	}
+}
+
+// TestDestructureTargetHasRest pins the gate Hash#each uses to skip the per-entry
+// live projection for destructures that never allocate a value-sized rest. Only a
+// target with a rest element at some depth grows its rest array with the value, so
+// fixed-arity shapes like |(k, v)| must report false while any rest-bearing shape
+// reports true.
+func TestDestructureTargetHasRest(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	fixed := &DestructureTarget{Position: pos, Elements: []DestructureElement{
+		{Target: &Identifier{Name: "k", Position: pos}},
+		{Target: &Identifier{Name: "v", Position: pos}},
+	}}
+	if destructureTargetHasRest(fixed) {
+		t.Fatal("destructureTargetHasRest(|(k, v)|) = true, want false (no rest element)")
+	}
+
+	topLevelRest := &DestructureTarget{Position: pos, Elements: []DestructureElement{
+		{Target: &Identifier{Name: "k", Position: pos}},
+		{Target: &Identifier{Name: "rest", Position: pos}, Rest: true},
+	}}
+	if !destructureTargetHasRest(topLevelRest) {
+		t.Fatal("destructureTargetHasRest(|(k, *rest)|) = false, want true")
+	}
+
+	nestedRest := valueBlock(nestedRestDestructureBlock()).Params[0].Target.(*DestructureTarget)
+	if !destructureTargetHasRest(nestedRest) {
+		t.Fatal("destructureTargetHasRest(|(k, (head, *tail))|) = false, want true (the rest is nested)")
+	}
+}
+
 // TestHashEachTwoParamReservesNoPair pins case 0 of the collapsed-pair model: a
 // two-parameter block |k, v| auto-splats into key and value separately, so the
 // iterator allocates no [key, value] pair array and must reserve zero per-entry
