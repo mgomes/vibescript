@@ -28,9 +28,57 @@ func NewString(s string) Value { return Value{kind: KindString, data: s} }
 // NewArray returns an array Value.
 func NewArray(a []Value) Value { return Value{kind: KindArray, data: a} }
 
-// NewHash returns a hash (map) Value.
+// hashData backs a KindHash value. It pairs the entry map with optional
+// Ruby-style default metadata consulted on missing-key lookup: either a default
+// value (returned without inserting) or a default proc (a KindBlock value the
+// runtime invokes with the hash and key). KindObject keeps a bare map because
+// objects never carry hash defaults.
+type hashData struct {
+	entries      map[string]Value
+	defaultValue Value
+	defaultProc  Value
+}
+
+// NewHash returns a hash (map) Value with no default.
 func NewHash(h map[string]Value) Value {
-	return Value{kind: KindHash, data: h}
+	return Value{kind: KindHash, data: &hashData{entries: h}}
+}
+
+// NewHashWithDefault returns a hash (map) Value carrying Ruby-style default
+// metadata. A non-nil defaultProc (a KindBlock value) takes precedence over
+// defaultValue on missing-key lookup; pass NewNil() for whichever is unused.
+func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Value {
+	return Value{kind: KindHash, data: &hashData{
+		entries:      h,
+		defaultValue: defaultValue,
+		defaultProc:  defaultProc,
+	}}
+}
+
+// HashDefaultValue returns the default value configured for a hash, or NewNil()
+// when v is not a hash or carries no default value. It is the plain-value
+// counterpart to HashDefaultProc.
+func HashDefaultValue(v Value) Value {
+	if v.kind != KindHash {
+		return NewNil()
+	}
+	if hd, ok := v.data.(*hashData); ok {
+		return hd.defaultValue
+	}
+	return NewNil()
+}
+
+// HashDefaultProc returns the default proc configured for a hash, or NewNil()
+// when v is not a hash or carries no default proc. The returned value, when
+// present, is the KindBlock the runtime invokes on missing-key lookup.
+func HashDefaultProc(v Value) Value {
+	if v.kind != KindHash {
+		return NewNil()
+	}
+	if hd, ok := v.data.(*hashData); ok {
+		return hd.defaultProc
+	}
+	return NewNil()
 }
 
 // NewMoney returns a money Value.

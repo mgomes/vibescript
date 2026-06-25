@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var hashMemberNames = []string{
-	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value",
+	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "default", "default_proc",
 	"merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 }
 
@@ -32,13 +32,51 @@ func hashMember(obj Value, property string) (Value, error) {
 
 func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value":
+	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "default", "default_proc":
 		return hashMemberQuery(property)
 	case "merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
 	}
+}
+
+// newHashPreservingDefault wraps out in a hash that carries the same default
+// metadata as receiver. Ruby's Hash#merge family copies the receiver's default
+// value and default proc onto the merged hash, so the immutable-style merge here
+// does the same. A receiver without a default produces a plain hash.
+func newHashPreservingDefault(receiver Value, out map[string]Value) Value {
+	defaultValue := hashDefaultValue(receiver)
+	defaultProc := hashDefaultProc(receiver)
+	if defaultValue.IsNil() && defaultProc.IsNil() {
+		return NewHash(out)
+	}
+	return NewHashWithDefault(out, defaultValue, defaultProc)
+}
+
+// hashDefaultForKey resolves a hash's Ruby-style default for a missing key. A
+// configured default proc takes precedence and is invoked with (hash, key) --
+// the receiver passes through unchanged so the proc can store into it via
+// hash[key] = ..., and key keeps its original symbol/string value. A default
+// proc never auto-inserts: only the proc body's own assignment, if any, mutates
+// the hash. With no proc, the default value is returned without inserting (Ruby
+// returns the same default object for every missing key). With neither, the
+// result is nil. It backs both missing-key [] access and Hash#default(key).
+func (exec *Execution) hashDefaultForKey(receiver, key Value) (Value, error) {
+	if proc := hashDefaultProc(receiver); !proc.IsNil() {
+		return exec.CallBlock(proc, []Value{receiver, key})
+	}
+	return hashDefaultValue(receiver), nil
+}
+
+// hashMissingKeyDefault resolves a missing-key [] access, wrapping any default
+// proc error with the index expression's position for a precise diagnostic.
+func (exec *Execution) hashMissingKeyDefault(receiver, key Value, pos Position) (Value, error) {
+	result, err := exec.hashDefaultForKey(receiver, key)
+	if err != nil {
+		return NewNil(), exec.errorAt(pos, "%s", err.Error())
+	}
+	return result, nil
 }
 
 // formatMissingHashKey renders a requested key for "key not found" errors,
@@ -203,6 +241,33 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			_, ok := receiver.Hash()[key]
 			return NewBool(ok), nil
+		}), nil
+	case "default":
+		return NewAutoBuiltin("hash.default", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.default does not accept keyword arguments")
+			}
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("hash.default expects at most one key")
+			}
+			// Ruby's Hash#default with no argument returns the configured default
+			// value, never invoking the default proc (so a proc-only hash reports
+			// nil). Given a key, it resolves the default the same way a missing-key
+			// [] access would: a default proc is invoked with (hash, key) -- which
+			// may store -- and otherwise the default value is returned.
+			if len(args) == 0 {
+				return hashDefaultValue(receiver), nil
+			}
+			return exec.hashDefaultForKey(receiver, args[0])
+		}), nil
+	case "default_proc":
+		return NewAutoBuiltin("hash.default_proc", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.default_proc does not take arguments")
+			}
+			// Returns the default proc (a block value) or nil, mirroring Ruby's
+			// Hash#default_proc.
+			return hashDefaultProc(receiver), nil
 		}), nil
 	case "value?", "has_value?":
 		name := property
@@ -715,8 +780,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				out[key] = val
 			}
 			if len(args) == 0 {
-				// Ruby's Hash#merge with no arguments returns a copy of self.
-				return NewHash(out), nil
+				// Ruby's Hash#merge with no arguments returns a copy of self,
+				// carrying the receiver's default metadata.
+				return newHashPreservingDefault(receiver, out), nil
 			}
 			// Multiple hashes are applied left to right, so later arguments win
 			// on conflicts, matching Ruby's Hash#merge(*others). The conflict
@@ -758,7 +824,8 @@ func hashMemberTransforms(property string) (Value, error) {
 					}
 				}
 			}
-			return NewHash(out), nil
+			// Ruby's Hash#merge copies the receiver's default onto the result.
+			return newHashPreservingDefault(receiver, out), nil
 		}), nil
 	case "replace":
 		return NewBuiltin("hash.replace", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

@@ -251,6 +251,19 @@ func NewArray(a []Value) Value { return value.NewArray(a) }
 // NewHash returns a hash (map) Value.
 func NewHash(h map[string]Value) Value { return value.NewHash(h) }
 
+// NewHashWithDefault returns a hash Value carrying Ruby-style default metadata
+// (a default value and/or a default proc consulted on missing-key lookup).
+func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Value {
+	return value.NewHashWithDefault(h, defaultValue, defaultProc)
+}
+
+// hashDefaultValue returns the default value configured for a hash, or nil.
+func hashDefaultValue(v Value) Value { return value.HashDefaultValue(v) }
+
+// hashDefaultProc returns the default proc (a KindBlock value) configured for a
+// hash, or nil.
+func hashDefaultProc(v Value) Value { return value.HashDefaultProc(v) }
+
 // NewSymbol returns a symbol Value.
 func NewSymbol(name string) Value { return value.NewSymbol(name) }
 
@@ -348,6 +361,13 @@ func compositeValueNeedsHostClone(val Value) bool {
 		}
 		return false
 	case KindHash, KindObject:
+		// A hash carrying a Ruby-style default proc (a block) or a clone-needing
+		// default value must be cloned even when its entries do not, so the proc
+		// closes over the cloned environment rather than the live one as it
+		// crosses the host boundary.
+		if val.Kind() == KindHash && hashDefaultNeedsHostClone(val) {
+			return true
+		}
 		entries := val.Hash()
 		if len(entries) == 0 {
 			return false
@@ -364,6 +384,19 @@ func compositeValueNeedsHostClone(val Value) bool {
 	default:
 		return valueNeedsHostClone(val)
 	}
+}
+
+// hashDefaultNeedsHostClone reports whether a hash's default metadata requires a
+// host clone: a default proc is always a block (clone-needed), and a default
+// value is clone-needed when it directly is or can contain a runtime value.
+func hashDefaultNeedsHostClone(val Value) bool {
+	if !hashDefaultProc(val).IsNil() {
+		return true
+	}
+	if def := hashDefaultValue(val); !def.IsNil() {
+		return valueNeedsHostClone(def)
+	}
+	return false
 }
 
 func valueNeedsHostCloneWithFreshState(val Value) bool {
@@ -416,6 +449,11 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 		}
 		return false
 	case KindHash, KindObject:
+		// A default proc or clone-needing default value forces a clone even when
+		// the entries do not need one; only KindHash carries defaults.
+		if val.Kind() == KindHash && hashDefaultNeedsHostClone(val) {
+			return true
+		}
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
 		if ptr != 0 {
@@ -470,7 +508,7 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		}
 		return cloned
 	case KindHash:
-		return cloneHostMapValue(val, state, NewHash)
+		return cloneHostHashValue(val, state)
 	case KindObject:
 		return cloneHostMapValue(val, state, NewObject)
 	case KindFunction:
@@ -586,6 +624,45 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 		clone.DefineStatic(name, cloneValueForHostWithState(val, state))
 	}
 	return clone
+}
+
+// cloneHostHashValue clones a KindHash value, preserving and deep-cloning its
+// Ruby-style default metadata (default value and default proc) so a hash that
+// crosses the host boundary keeps its missing-key behavior and its proc closes
+// over the cloned environment rather than the live one.
+func cloneHostHashValue(val Value, state hostValueCloneState) Value {
+	entries := val.Hash()
+	ptr := reflect.ValueOf(entries).Pointer()
+	if ptr != 0 {
+		if clone, ok := state.maps[ptr]; ok {
+			return rebuildHostHash(val, clone, state)
+		}
+	}
+	clonedEntries := make(map[string]Value, len(entries))
+	if ptr != 0 {
+		state.maps[ptr] = clonedEntries
+	}
+	for key, item := range entries {
+		clonedEntries[key] = cloneValueForHostWithState(item, state)
+	}
+	return rebuildHostHash(val, clonedEntries, state)
+}
+
+// rebuildHostHash wraps cloned entries in a hash carrying the cloned default
+// metadata of the source hash. A hash with no default produces a plain hash.
+func rebuildHostHash(src Value, clonedEntries map[string]Value, state hostValueCloneState) Value {
+	defaultValue := hashDefaultValue(src)
+	defaultProc := hashDefaultProc(src)
+	if defaultValue.IsNil() && defaultProc.IsNil() {
+		return NewHash(clonedEntries)
+	}
+	if !defaultValue.IsNil() {
+		defaultValue = cloneValueForHostWithState(defaultValue, state)
+	}
+	if !defaultProc.IsNil() {
+		defaultProc = cloneValueForHostWithState(defaultProc, state)
+	}
+	return NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
 }
 
 func cloneHostMapValue(val Value, state hostValueCloneState, construct func(map[string]Value) Value) Value {
