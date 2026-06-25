@@ -750,13 +750,48 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 }
 
 func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	if receiver.Kind() == KindNil && len(kwargs) == 0 && block.IsNil() {
-		if len(args) == 0 {
-			return nil
+	return exec.checkCallMemoryRootsWithCallee(NewNil(), receiver, args, kwargs, block)
+}
+
+// checkCallMemoryRootsWithCallee charges the live call roots — the callee,
+// receiver, arguments, keyword arguments, and block — against the memory quota
+// before the call runs.
+//
+// The callee is included because a bound predicate builtin captures its receiver
+// (see universalMember): the captured payload is reachable only through the
+// callee value, not through the call's own receiver. A stored probe such as
+// `probe = huge.eql?` is charged because the variable keeps the builtin in the
+// environment, but an immediately invoked temporary callee such as
+// `make_probe()(huge_arg)` lives only on the Go call stack, so without charging
+// it here the captured receiver plus the outer arguments could exceed the quota
+// unseen. Passing the callee through the same estimator deduplicates it against
+// the environment, so a callee that is also reachable from a variable is counted
+// once and the common static callee — a function, or a builtin with no captures —
+// adds nothing.
+func (exec *Execution) checkCallMemoryRootsWithCallee(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if !calleeCapturesRoots(callee) {
+		if receiver.Kind() == KindNil && len(kwargs) == 0 && block.IsNil() {
+			if len(args) == 0 {
+				return nil
+			}
+			return exec.checkMemoryWith(args...)
 		}
-		return exec.checkMemoryWith(args...)
+		return exec.checkMemoryWithCallRoots(NewNil(), receiver, args, kwargs, block)
 	}
-	return exec.checkMemoryWithCallRoots(receiver, args, kwargs, block)
+	return exec.checkMemoryWithCallRoots(callee, receiver, args, kwargs, block)
+}
+
+// calleeCapturesRoots reports whether a callee value carries captured runtime
+// values that the call roots must charge — that is, a bound builtin (such as a
+// stored or temporary eql?/equal? predicate) whose Fn closes over a receiver.
+// Static callees (functions, or builtins without captures) carry no extra
+// payload, so the common call path skips charging them.
+func calleeCapturesRoots(callee Value) bool {
+	if callee.Kind() != KindBuiltin {
+		return false
+	}
+	builtin := valueBuiltin(callee)
+	return builtin != nil && len(builtin.CapturedValues) > 0
 }
 
 func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
@@ -781,7 +816,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
+	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
 
@@ -837,7 +872,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
+	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
 

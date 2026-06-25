@@ -85,12 +85,12 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 	return nil
 }
 
-func (exec *Execution) checkMemoryWithCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	used := exec.estimateMemoryUsageForCallRoots(receiver, args, kwargs, block)
+	used := exec.estimateMemoryUsageForCallRoots(callee, receiver, args, kwargs, block)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
@@ -455,7 +455,7 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	// Measure the baseline through a throwaway estimator so the results-only
 	// estimator stays empty: the base must be counted, but the results estimator
 	// must not dedup later block results against the call roots it walked.
-	acc.base = exec.estimateMemoryUsageForCallRoots(receiver, args, kwargs, block)
+	acc.base = exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
 	// The output is a single map, so fold its empty-map overhead into the baseline;
 	// add then charges only the per-entry growth.
 	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes)
@@ -643,11 +643,14 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	return total
 }
 
-func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+func (exec *Execution) estimateMemoryUsageForCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
 	est := exec.memoryEstimatorForCheck()
 
 	total := exec.estimateMemoryUsageBase(est)
 
+	if callee.Kind() != KindNil {
+		total += est.value(callee)
+	}
 	if receiver.Kind() != KindNil {
 		total += est.value(receiver)
 	}

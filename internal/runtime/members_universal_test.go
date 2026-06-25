@@ -604,6 +604,51 @@ end`)
 	}
 }
 
+// TestEqualityPredicateTemporaryBuiltinChargesCapturedReceiver confirms a bound
+// predicate produced as an immediately invoked temporary callee charges its
+// captured receiver against the memory quota, just like a stored probe does.
+//
+// In `make_probe()(arg)` the inner call returns `big.eql?`, a builtin that
+// captures the large `big` string, and the outer call invokes it with a large
+// transient `arg` built inline. Neither `big` nor `arg` is reachable from any
+// environment at the outer call — `big` lives only inside the returned builtin's
+// capture and `arg` only on the Go call stack — so the environment-walking base
+// sees neither. Only charging the callee's captured payload alongside the outer
+// arguments accounts for the peak where both are live at once. The quota sits
+// above either operand alone but below their combination, so the run must trip
+// the quota; a regression that skipped charging the temporary callee would let
+// the combined footprint slip past.
+func TestEqualityPredicateTemporaryBuiltinChargesCapturedReceiver(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 7000}, `def make_probe
+  "abcdefghij".ljust(3000, "z").eql?
+end
+
+def run
+  make_probe()("y".ljust(3000, "w"))
+end`)
+	requireRunMemoryQuotaError(t, script, nil, CallOptions{})
+}
+
+// TestEqualityPredicateTemporaryBuiltinFitsUnderGenerousQuota is the control for
+// TestEqualityPredicateTemporaryBuiltinChargesCapturedReceiver: the identical
+// temporary-callee invocation succeeds once the quota comfortably exceeds the
+// captured receiver plus the transient argument. This isolates the rejection to
+// the combined peak rather than either operand on its own.
+func TestEqualityPredicateTemporaryBuiltinFitsUnderGenerousQuota(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 200000, MemoryQuotaBytes: 1 << 20}, `def make_probe
+  "abcdefghij".ljust(3000, "z").eql?
+end
+
+def run
+  make_probe()("y".ljust(3000, "w"))
+end`)
+	if _, err := script.Call(context.Background(), "run", nil, CallOptions{}); err != nil {
+		t.Fatalf("expected temporary-callee invocation to stay within a generous quota, got %v", err)
+	}
+}
+
 // TestEqualityPredicateCallErrors confirms eql? and equal? reject the wrong
 // arity, keyword arguments, and blocks rather than silently coercing them.
 func TestEqualityPredicateCallErrors(t *testing.T) {
