@@ -1321,8 +1321,10 @@ func arraySlice(exec *Execution, receiver Value, args []Value, kwargs map[string
 // outside the array; a start exactly equal to the length is in range and yields
 // an empty array (Ruby's [1, 2, 3].slice(3, n) is []). The length is clamped to
 // the remaining elements, so an oversized length returns the suffix from start.
-// The returned slice is a fresh copy so it never aliases the receiver's backing
-// array.
+// Clamping length to the remaining count before computing end keeps start+length
+// from overflowing int when length is near math.MaxInt64, which would otherwise
+// wrap to a negative window and panic make. The returned slice is a fresh copy
+// so it never aliases the receiver's backing array.
 func arraySliceStartLength(arr []Value, start, length int) ([]Value, bool) {
 	if length < 0 {
 		return nil, false
@@ -1336,12 +1338,12 @@ func arraySliceStartLength(arr []Value, start, length int) ([]Value, bool) {
 	if start > len(arr) {
 		return nil, false
 	}
-	end := start + length
-	if end > len(arr) {
-		end = len(arr)
+	remaining := len(arr) - start
+	if length > remaining {
+		length = remaining
 	}
-	out := make([]Value, end-start)
-	copy(out, arr[start:end])
+	out := make([]Value, length)
+	copy(out, arr[start:start+length])
 	return out, true
 }
 

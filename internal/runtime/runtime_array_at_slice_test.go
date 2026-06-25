@@ -142,6 +142,14 @@ func TestArraySliceStartLength(t *testing.T) {
 		{name: "negative length is nil", source: "def run() [10, 20, 30].slice(1, -1) end", isNil: true},
 		{name: "negative start past beginning is nil", source: "def run() [10, 20, 30].slice(-4, 1) end", isNil: true},
 		{name: "fractional length truncates", source: "def run() [10, 20, 30].slice(0, 2.9) end", want: []Value{NewInt(10), NewInt(20)}},
+		// Ruby: [1].slice(1, 9223372036854775807) => []. The near-MaxInt64 length
+		// must clamp to the suffix without overflowing start+length into a negative
+		// make size, which previously panicked and crashed the host.
+		{name: "near max length clamps to suffix", source: "def run() [1].slice(1, 9223372036854775807) end", want: []Value{}},
+		{name: "near max length from interior", source: "def run() [10, 20, 30].slice(1, 9223372036854775807) end", want: []Value{NewInt(20), NewInt(30)}},
+		// Ruby: [1, 2, 3].slice(9223372036854775807, 2) => nil. A near-MaxInt64 start
+		// lands far past the array and yields nil rather than overflowing.
+		{name: "near max start is nil", source: "def run() [1, 2, 3].slice(9223372036854775807, 2) end", isNil: true},
 	}
 
 	for _, tt := range tests {
@@ -181,6 +189,11 @@ func TestArraySliceRange(t *testing.T) {
 		{name: "end before begin yields empty", source: "def run() [1, 2, 3].slice(2..1) end", want: []Value{}},
 		{name: "begin past length is nil", source: "def run() [1, 2, 3].slice(4..5) end", isNil: true},
 		{name: "begin too negative is nil", source: "def run() [1, 2, 3].slice(-4..-1) end", isNil: true},
+		// Ruby: [10, 20, 30].slice(1..9223372036854775807) => [20, 30]. The inclusive
+		// end at math.MaxInt64 must clamp to the array length instead of wrapping the
+		// exclusive-end increment to a negative no-op window.
+		{name: "inclusive end at max clamps", source: "def run() [10, 20, 30].slice(1..9223372036854775807) end", want: []Value{NewInt(20), NewInt(30)}},
+		{name: "exclusive end at max clamps", source: "def run() [10, 20, 30].slice(1...9223372036854775807) end", want: []Value{NewInt(20), NewInt(30)}},
 	}
 
 	for _, tt := range tests {
