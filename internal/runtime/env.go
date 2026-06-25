@@ -38,6 +38,14 @@ type Env struct {
 	// assignments to names found here rebind in the nearest call-local
 	// scope instead, exactly as if the binding lived in the call root.
 	frozen bool
+
+	// callRoot marks the per-call ambient root: the scope that holds a
+	// Script.Call's globals, capabilities, and per-call function clones,
+	// chained beneath the engine-shared builtin proto. The inbound rebinder
+	// uses this marker to re-root an escaped closure's captured environment
+	// onto the live call. The marker is preserved when a closure is cloned
+	// across the host boundary so it survives re-entry.
+	callRoot bool
 }
 
 func newEnv(parent *Env) *Env {
@@ -75,6 +83,7 @@ func (e *Env) resetForBlockCall(parent *Env) {
 	e.arrayAppendBuffers = nil
 	e.assignBoundary = false
 	e.frozen = false
+	e.callRoot = false
 }
 
 // Get looks up a variable by name, traversing parent scopes if needed.
@@ -399,6 +408,12 @@ func (e *Env) rangeDynamicBindings(visit func(string, Value)) {
 		visit(binding.name, binding.value)
 	}
 	for name, val := range e.values {
+		visit(name, val)
+	}
+}
+
+func (e *Env) rangeStaticBindings(visit func(string, Value)) {
+	for name, val := range e.statics {
 		visit(name, val)
 	}
 }

@@ -249,7 +249,7 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		// than emit a result one byte over the cap.
 		return appendByteBounded(buf, ']', limit)
 	case KindHash:
-		entries := v.data.(map[string]Value)
+		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return appendBounded(buf, "{}", limit)
 		}
@@ -380,7 +380,7 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 		}
 		return total
 	case KindHash:
-		entries := v.data.(map[string]Value)
+		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose)
 		}
@@ -463,7 +463,7 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 		}
 		return total, nil
 	case KindHash:
-		entries := v.data.(map[string]Value)
+		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil
 		}
@@ -527,7 +527,7 @@ func (v Value) Truthy() bool {
 	case KindArray:
 		return len(v.data.([]Value)) > 0
 	case KindHash:
-		return len(v.data.(map[string]Value)) > 0
+		return len(v.hashEntries()) > 0
 	case KindEnum, KindEnumValue, KindClass, KindInstance:
 		return true
 	default:

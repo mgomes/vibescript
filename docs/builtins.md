@@ -183,6 +183,25 @@ Regex.replace("ID-12", "ID-([0-9]+)", "X-$1")            # "X-12"
 
 Regex helpers enforce input guards (max pattern size 16 KiB, max text size 1 MiB).
 
+## Hash
+
+### `Hash.new(default = nil)` / `Hash.new { |hash, key| ... }`
+
+Builds an empty hash with a Ruby-style default consulted on missing-key `[]`
+access. `Hash.new(default)` returns the default value without inserting it;
+`Hash.new { |hash, key| ... }` installs a default proc invoked with the hash and
+the missing key, which inserts an entry only if its body assigns one. The value
+and block forms are mutually exclusive, and bare `Hash.new` builds a hash whose
+default is `nil` (identical to a `{}` literal). See
+[Default values](hashes.md#default-values) for the full semantics, including how
+transforms preserve or drop the default.
+
+```vibe
+Hash.new(0)[:missing]                              # 0
+Hash.new { |hash, key| hash[key] = key }["a"]      # "a"
+Hash.new                                           # {} with a nil default
+```
+
 ## Module Loading
 
 ### `require(module_name, as: alias?)`

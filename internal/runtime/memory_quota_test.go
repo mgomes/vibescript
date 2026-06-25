@@ -1093,3 +1093,142 @@ func TestConcurrentCallsAndBuiltinRegistration(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestMemoryQuotaCountsHashDefaultPayloads pins that a hash's Ruby-style default
+// metadata counts toward the memory estimate. A default value and a default proc
+// are reachable hash state stored outside the entry map, so a script that retains
+// a large payload solely through Hash.new(big) or a closure-capturing default proc
+// must not see an empty, free hash. Before the fix the KindHash estimator charged
+// only the entry map, so the default payloads were invisible.
+func TestMemoryQuotaCountsHashDefaultPayloads(t *testing.T) {
+	t.Parallel()
+
+	payload := strings.Repeat("abcdefghij", 300)
+
+	t.Run("default value payload is charged", func(t *testing.T) {
+		t.Parallel()
+		plain := newMemoryEstimator().value(NewHash(map[string]Value{}))
+		withDefault := newMemoryEstimator().value(
+			NewHashWithDefault(map[string]Value{}, NewString(payload), NewNil()),
+		)
+		// The default value's string payload (deduplicated) is the only thing
+		// the two hashes differ by, so the gap must cover that payload.
+		if gap := withDefault - plain; gap < len(payload) {
+			t.Fatalf("default value payload not charged: gap=%d, want >= %d", gap, len(payload))
+		}
+	})
+
+	t.Run("default proc closure payload is charged", func(t *testing.T) {
+		t.Parallel()
+		env := newEnv(nil)
+		env.Define("retained", NewString(payload))
+		proc := NewBlock(nil, nil, env)
+
+		plain := newMemoryEstimator().value(NewHash(map[string]Value{}))
+		withProc := newMemoryEstimator().value(
+			NewHashWithDefault(map[string]Value{}, NewNil(), proc),
+		)
+		// The proc captures the large string in its environment, so the hash that
+		// carries it must charge at least that payload beyond an empty hash.
+		if gap := withProc - plain; gap < len(payload) {
+			t.Fatalf("default proc closure payload not charged: gap=%d, want >= %d", gap, len(payload))
+		}
+	})
+
+	t.Run("payload shared with an entry is not double-counted", func(t *testing.T) {
+		t.Parallel()
+		shared := NewString(payload)
+		hash := NewHashWithDefault(map[string]Value{"k": shared}, shared, NewNil())
+		// The same string object backs both an entry and the default value; the
+		// estimator deduplicates string payloads, so the hash costs about one
+		// payload, not two.
+		got := newMemoryEstimator().value(hash)
+		if got >= 2*len(payload) {
+			t.Fatalf("shared payload double-counted: got=%d, want < %d", got, 2*len(payload))
+		}
+		if got < len(payload) {
+			t.Fatalf("shared payload undercounted: got=%d, want >= %d", got, len(payload))
+		}
+	})
+}
+
+// TestMemoryQuotaCountsHashDataWrapper verifies the hashData wrapper every
+// KindHash allocates around its entry map is charged toward the memory estimate.
+// Since the value-representation change every hash carries a wrapper struct
+// (entry map pointer plus default value/proc slots) outside its entry map, so a
+// workload retaining many small empty hashes holds real per-hash memory the
+// entry-map and default-payload accounting alone would miss. Before the fix the
+// estimator charged only the entry map plus default payloads, leaving the
+// wrapper free, so an array of empty hashes could slip past a tight quota.
+func TestMemoryQuotaCountsHashDataWrapper(t *testing.T) {
+	t.Parallel()
+
+	const count = 500
+
+	t.Run("each distinct hash wrapper is charged", func(t *testing.T) {
+		t.Parallel()
+		hashes := make([]Value, count)
+		objects := make([]Value, count)
+		for i := range hashes {
+			hashes[i] = NewHash(map[string]Value{})
+			// An object carries the same empty entry map but no hashData wrapper,
+			// so an array of empty objects is exactly the wrapper-free baseline for
+			// the equivalent array of empty hashes. The estimator was charging this
+			// (entry map plus slots only) for hashes too before the fix.
+			objects[i] = NewObject(map[string]Value{})
+		}
+		hashArray := NewArray(hashes)
+
+		withWrappers := newMemoryEstimator().value(hashArray)
+		withoutWrappers := newMemoryEstimator().value(NewArray(objects))
+		// The two arrays are structurally identical except that each hash holds a
+		// hashData wrapper an object lacks, so the gap must be exactly one wrapper
+		// per hash. Before the fix the gap was zero and the array of empty hashes
+		// looked as cheap as the wrapper-free baseline.
+		if gap := withWrappers - withoutWrappers; gap != count*estimatedHashDataBytes {
+			t.Fatalf("hash wrappers mischarged: gap=%d, want %d", gap, count*estimatedHashDataBytes)
+		}
+
+		// A quota set to the wrapper-free baseline fit the array before the fix;
+		// only the wrapper cost pushes the real estimate over it now, so the check
+		// must reject at exactly that quota.
+		exec := &Execution{
+			quota:         10000,
+			memoryQuota:   withoutWrappers,
+			moduleLoading: make(map[string]bool),
+		}
+		env := newEnv(nil)
+		env.Define("hashes", hashArray)
+		exec.pushEnv(env)
+		defer exec.popEnv()
+		if err := exec.checkMemory(); err == nil {
+			t.Fatalf("expected memory quota error from %d uncharged hash wrappers at quota=%d", count, withoutWrappers)
+		} else {
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+		}
+	})
+
+	t.Run("shared wrapper is charged once", func(t *testing.T) {
+		t.Parallel()
+		distinct := make([]Value, count)
+		for i := range distinct {
+			distinct[i] = NewHash(map[string]Value{})
+		}
+		shared := NewHash(map[string]Value{})
+		aliased := make([]Value, count)
+		for i := range aliased {
+			aliased[i] = shared
+		}
+
+		distinctBytes := newMemoryEstimator().value(NewArray(distinct))
+		aliasedBytes := newMemoryEstimator().value(NewArray(aliased))
+		// The two arrays have identical slot and entry-map structure; they differ
+		// only in how many distinct wrappers (and entry maps) they retain. The
+		// distinct array holds count wrappers, the aliased array holds one, so the
+		// distinct array must cost about (count-1) extra wrappers. The wrapper is
+		// therefore deduplicated on its identity rather than charged per alias.
+		if gap := distinctBytes - aliasedBytes; gap < (count-1)*estimatedHashDataBytes {
+			t.Fatalf("shared wrapper double-counted or distinct wrappers undercounted: gap=%d, want >= %d", gap, (count-1)*estimatedHashDataBytes)
+		}
+	})
+}

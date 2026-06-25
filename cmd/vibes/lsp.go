@@ -39,6 +39,7 @@ var lspBuiltins = []string{
 	"to_float",
 	"to_int",
 	"uuid",
+	"Hash",
 	"JSON",
 	"Regex",
 	"Time",

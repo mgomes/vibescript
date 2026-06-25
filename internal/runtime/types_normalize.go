@@ -183,13 +183,42 @@ func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 		}
 	}
 
+	// A Ruby-style hash default is consulted on missing-key lookup, so it is part
+	// of the hash's value type: an empty Hash.new("oops") would otherwise satisfy
+	// hash<string, int> while result[:missing] yields a string. Validate (and
+	// carry through) the default value, and reject default procs whose result the
+	// type checker cannot inspect.
+	defaultProc := hashDefaultProc(val)
+	if !defaultProc.IsNil() {
+		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val) + " with a default proc"}
+	}
+	defaultValue := hashDefaultValue(val)
+	normalizedDefault := defaultValue
+	if !defaultValue.IsNil() {
+		converted, err := normalizeValueForType(defaultValue, valueType, ctx)
+		if err != nil {
+			var mismatch *typeMismatchError
+			if errorAsTypeMismatch(err, &mismatch) {
+				return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+			}
+			return NewNil(), err
+		}
+		normalizedDefault = converted
+		if !sameNormalizedValue(normalizedDefault, defaultValue) {
+			changed = true
+		}
+	}
+
 	if !changed {
 		return val, nil
 	}
 	if val.Kind() == KindObject {
 		return NewObject(out), nil
 	}
-	return NewHash(out), nil
+	if defaultValue.IsNil() {
+		return NewHash(out), nil
+	}
+	return NewHashWithDefault(out, normalizedDefault, NewNil()), nil
 }
 
 func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {

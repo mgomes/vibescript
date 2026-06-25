@@ -107,7 +107,16 @@ func (s *callableScanner) containsCallable(val value.Value) bool {
 		return slices.ContainsFunc(values, s.containsCallable)
 	case value.KindHash, value.KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// A KindHash's default metadata lives outside its entry map, so two
+		// wrappers can share one map yet carry different defaults. Key the
+		// seen-set on the whole hash wrapper (falling back to the entry-map
+		// pointer for objects, which never carry defaults) so a second wrapper's
+		// callable default is not hidden by an earlier plain wrapper marking the
+		// shared map seen.
+		ptr := value.HashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}
@@ -117,7 +126,15 @@ func (s *callableScanner) containsCallable(val value.Value) bool {
 				return true
 			}
 		}
-		return false
+		// A KindHash may carry Ruby-style default metadata outside its entry
+		// map: a default value (itself possibly a callable or a collection of
+		// callables) and a default proc (a KindBlock, always a callable). Scan
+		// both so Hash.new { ... } or Hash.new(some_proc) cannot smuggle a
+		// script callable past this data-only boundary.
+		if s.containsCallable(value.HashDefaultValue(val)) {
+			return true
+		}
+		return s.containsCallable(value.HashDefaultProc(val))
 	default:
 		return false
 	}
@@ -159,7 +176,13 @@ func (s *cycleScanner) containsCycle(val value.Value) bool {
 		return false
 	case value.KindHash, value.KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key on the whole hash wrapper (falling back to the entry-map pointer for
+		// objects) so default metadata is visited per wrapper, matching the
+		// callable scan above.
+		ptr := value.HashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}
@@ -171,6 +194,13 @@ func (s *cycleScanner) containsCycle(val value.Value) bool {
 			if s.containsCycle(item) {
 				return true
 			}
+		}
+		// A KindHash's default value/proc are reachable hash state and may
+		// themselves nest collections, so walk them for cycles too. They share
+		// the same visiting set, so a default that references its own hash is
+		// detected as a cycle like any other back-edge.
+		if s.containsCycle(value.HashDefaultValue(val)) || s.containsCycle(value.HashDefaultProc(val)) {
+			return true
 		}
 		delete(s.visitingMaps, ptr)
 		s.seenMaps[ptr] = struct{}{}
@@ -209,7 +239,17 @@ func deepClone(val value.Value) value.Value {
 		for k, v := range hash {
 			cloned[k] = deepClone(v)
 		}
-		return value.NewHash(cloned)
+		// Preserve the hash's Ruby-style default metadata so the isolated copy
+		// keeps the same missing-key behavior. The default value is deep-cloned
+		// like an entry; the default proc is a runtime-only block, rejected by
+		// validateDataOnly before reaching this clone, so it is copied by
+		// reference rather than dropped.
+		defaultProc := value.HashDefaultProc(val)
+		defaultValue := value.HashDefaultValue(val)
+		if defaultProc.Kind() == value.KindNil && defaultValue.Kind() == value.KindNil {
+			return value.NewHash(cloned)
+		}
+		return value.NewHashWithDefault(cloned, deepClone(defaultValue), defaultProc)
 	case value.KindObject:
 		obj := val.Hash()
 		cloned := make(map[string]value.Value, len(obj))

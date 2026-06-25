@@ -28,6 +28,16 @@ func cloneBuiltinSet(src map[*Builtin]struct{}) map[*Builtin]struct{} {
 	return out
 }
 
+// revokedCapabilityBuiltin returns a builtin that fails closed when invoked. The
+// inbound rebinder substitutes it for a per-call capability grant a re-entering
+// closure captured, so a closure that copied a capability into a local cannot
+// reach the originating call's capability from a call that never granted it.
+func revokedCapabilityBuiltin(name string) Value {
+	return NewBuiltin(name, func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), fmt.Errorf("capability %s was not granted to this call", name)
+	})
+}
+
 func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) (Value, error) {
 	switch val.Kind() {
 	case KindFunction:
@@ -230,6 +240,8 @@ type callFunctionRebinder struct {
 	seenInstances map[*Instance]Value
 	seenArrays    map[sliceIdentity]Value
 	seenMaps      map[uintptr]map[string]Value
+	seenBlocks    map[*Block]Value
+	seenEnvs      map[*Env]*Env
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -243,6 +255,20 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 
 func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	switch val.Kind() {
+	case KindBuiltin:
+		// A builtin captured by an escaped closure is preserved unchanged unless
+		// it is a per-call capability grant. A capability copied into a local (for
+		// example `cap = jobs` captured by a Hash.new default proc) would otherwise
+		// survive re-rooting and stay callable, letting a missing-key lookup invoke
+		// a capability the re-entering call never granted -- the ambient root is
+		// re-rooted but a local snapshot bypasses that lookup. Revoke the captured
+		// grant so invoking it fails closed; a free reference to the live capability
+		// global still resolves through the re-rooted ambient root.
+		builtin := valueBuiltin(val)
+		if builtin == nil || !builtin.Capability {
+			return val
+		}
+		return revokedCapabilityBuiltin(builtin.Name)
 	case KindInstance:
 		inst := valueInstance(val)
 		if inst == nil || inst.Class == nil || inst.Class.owner != r.script {
@@ -311,6 +337,32 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		r.seenFunctions[fn] = clone
 		return NewFunction(clone)
+	case KindBlock:
+		// A block (e.g. a hash default proc) that escaped a prior call and is
+		// passed back in must resolve globals, capabilities, per-call function
+		// clones, and builtins against the live call root, not the stale snapshot
+		// captured when it escaped -- otherwise a missing-key lookup could read a
+		// previous call's globals or invoke a capability the current call never
+		// granted. Re-root only the ambient root of its captured environment onto
+		// the current call, preserving any local frames the block legitimately
+		// closed over (e.g. a `prefix` parameter of the function that produced the
+		// hash). Block parameters (e.g. the hash and key) bind at call time and
+		// are unaffected.
+		blk := valueBlock(val)
+		if blk == nil || blk.owner != r.script || blk.Env == r.root {
+			return val
+		}
+		if clone, ok := r.seenBlocks[blk]; ok {
+			return clone
+		}
+		clone := *blk
+		clone.Env = r.rebindCapturedEnv(blk.Env)
+		cloneVal := wrapBlock(&clone)
+		if r.seenBlocks == nil {
+			r.seenBlocks = make(map[*Block]Value)
+		}
+		r.seenBlocks[blk] = cloneVal
+		return cloneVal
 	case KindArray:
 		items := val.Array()
 		id := sliceIdentity{
@@ -335,7 +387,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
 		if cloneMap, seen := r.seenMaps[ptr]; seen {
-			return NewHash(cloneMap)
+			return r.rebindHash(val, cloneMap)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
 		if r.seenMaps == nil {
@@ -345,7 +397,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
 		}
-		return NewHash(clonedEntries)
+		return r.rebindHash(val, clonedEntries)
 	case KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
@@ -364,6 +416,64 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	default:
 		return val
 	}
+}
+
+// rebindCapturedEnv re-roots the captured environment of an escaped closure onto
+// the current call. A closure that escaped a prior Script.Call captures a chain
+// of local frames (e.g. the parameters of the function that produced it) that
+// bottoms out in the originating call's ambient root (globals, capabilities,
+// per-call function clones). Only that ambient root is stale; the local frames
+// hold values the closure legitimately closed over and must be preserved. Each
+// local frame is cloned so the live call cannot mutate the escaped closure's
+// captured state, its bound values are rebound (they may reference per-call
+// functions, classes, or further escaped closures), and the deepest local
+// frame's parent is re-rooted onto the current call root. If the closure captured
+// the ambient root directly (no local frames), the current root replaces it.
+func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
+	// Re-root at the originating call's ambient root (and discard the builtin
+	// proto beneath it): the live call root carries the current globals,
+	// capabilities, per-call function clones, and chains to the live proto.
+	if env == nil || env.callRoot {
+		return r.root
+	}
+	if clone, ok := r.seenEnvs[env]; ok {
+		return clone
+	}
+	clone := newEnvWithCapacity(nil, env.dynamicLen())
+	clone.assignBoundary = env.assignBoundary
+	if r.seenEnvs == nil {
+		r.seenEnvs = make(map[*Env]*Env)
+	}
+	r.seenEnvs[env] = clone
+	clone.parent = r.rebindCapturedEnv(env.parent)
+	env.rangeDynamicBindings(func(name string, val Value) {
+		clone.Define(name, r.rebindValue(val))
+	})
+	env.rangeStaticBindings(func(name string, val Value) {
+		clone.DefineStatic(name, r.rebindValue(val))
+	})
+	return clone
+}
+
+// rebindHash wraps rebound entries in a hash that carries the rebound Ruby-style
+// default metadata of src. A default value and default proc are reachable hash
+// state (a host may pass NewHashWithDefault(..., NewInt(5), proc)), so they must
+// be rebound like entries rather than dropped, which would make missing-key
+// lookup return nil instead of the configured default. A hash with no default
+// produces a plain hash.
+func (r *callFunctionRebinder) rebindHash(src Value, clonedEntries map[string]Value) Value {
+	defaultValue := hashDefaultValue(src)
+	defaultProc := hashDefaultProc(src)
+	if defaultValue.IsNil() && defaultProc.IsNil() {
+		return NewHash(clonedEntries)
+	}
+	if !defaultValue.IsNil() {
+		defaultValue = r.rebindValue(defaultValue)
+	}
+	if !defaultProc.IsNil() {
+		defaultProc = r.rebindValue(defaultProc)
+	}
+	return NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
 }
 
 func (r *callFunctionRebinder) rebindValues(values []Value) []Value {
@@ -435,6 +545,12 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 			if len(scope.contracts) > 0 {
 				scope.roots = append(scope.roots, rebound)
 			}
+			// Mark every builtin this adapter exposes as a per-call capability
+			// grant. The marker lets the inbound rebinder revoke a captured grant
+			// when a closure (for example a Hash.new default proc that copied a
+			// capability into a local) escapes and re-enters a later call that did
+			// not grant the same capability.
+			markCapabilityBuiltins(rebound)
 			// Skip the ambient global chain (root + ancestors) when walking a
 			// capability-supplied closure's captured environment, matching the
 			// pre/post-call scanners above. Otherwise a contract method whose

@@ -59,7 +59,15 @@ func deepCloneValue(val Value) Value {
 		for k, v := range hash {
 			cloned[k] = deepCloneValue(v)
 		}
-		return NewHash(cloned)
+		// Preserve the hash's Ruby-style default metadata so the clone keeps the
+		// same missing-key behavior. The default value is deep-cloned like an
+		// entry; the default proc is a runtime-only block, copied by reference.
+		defaultProc := hashDefaultProc(val)
+		defaultValue := hashDefaultValue(val)
+		if defaultProc.IsNil() && defaultValue.IsNil() {
+			return NewHash(cloned)
+		}
+		return NewHashWithDefault(cloned, deepCloneValue(defaultValue), defaultProc)
 	case KindObject:
 		obj := val.Hash()
 		cloned := make(map[string]Value, len(obj))
@@ -262,7 +270,15 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 		return false
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key on the whole hash wrapper (or the entry-map pointer for objects,
+		// which never carry defaults) so two wrappers sharing one entry map but
+		// carrying distinct defaults are each walked: a second wrapper's default
+		// is not skipped at the seen check, and a data-only diamond of shared-map
+		// wrappers is not mistaken for a cycle.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}
@@ -274,6 +290,13 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 			if s.containsCycle(item) {
 				return true
 			}
+		}
+		// A KindHash's default value/proc are reachable hash state and may
+		// themselves nest collections, so walk them for cycles too. They share
+		// the same visiting set, so a default that references its own hash is
+		// detected as a cycle like any other back-edge.
+		if s.containsCycle(hashDefaultValue(val)) || s.containsCycle(hashDefaultProc(val)) {
+			return true
 		}
 		delete(s.visitingMaps, ptr)
 		s.seenMaps[ptr] = struct{}{}
@@ -301,7 +324,16 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 		return slices.ContainsFunc(values, s.containsCallable)
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// A KindHash's default metadata lives outside its entry map, so two
+		// wrappers can share one map yet carry different defaults. Key the
+		// seen-set on the whole hash wrapper (falling back to the entry-map
+		// pointer for objects, which never carry defaults) so a second wrapper's
+		// callable default is not hidden by an earlier plain wrapper marking the
+		// shared map seen.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}
@@ -311,7 +343,15 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 				return true
 			}
 		}
-		return false
+		// A KindHash may carry Ruby-style default metadata outside its entry
+		// map: a default value (itself possibly a callable or a collection of
+		// callables) and a default proc (a KindBlock, always a callable). Scan
+		// both so Hash.new { ... } or Hash.new(some_proc) cannot smuggle a
+		// script callable past a data-only boundary.
+		if s.containsCallable(hashDefaultValue(val)) {
+			return true
+		}
+		return s.containsCallable(hashDefaultProc(val))
 	default:
 		return false
 	}
@@ -388,7 +428,13 @@ func (s *capabilityContractScanner) bindContracts(
 		}
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key on the whole hash wrapper (or the entry-map pointer for objects) so
+		// a second wrapper sharing one entry map but carrying distinct defaults
+		// still has those defaults scanned for exposed builtins.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return
 		}
@@ -396,6 +442,10 @@ func (s *capabilityContractScanner) bindContracts(
 		for _, item := range entries {
 			s.bindContracts(item, scope, target, scopes)
 		}
+		// A KindHash's default value/proc are reachable hash state, so contracts
+		// must bind to any builtins they expose just as they do for entries.
+		s.bindContracts(hashDefaultValue(val), scope, target, scopes)
+		s.bindContracts(hashDefaultProc(val), scope, target, scopes)
 	case KindClass:
 		classDef := valueClass(val)
 		if classDef == nil {
@@ -458,7 +508,13 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key on the whole hash wrapper (or the entry-map pointer for objects) so
+		// a second wrapper sharing one entry map but carrying distinct defaults
+		// still has those defaults scanned for exposed builtins.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return
 		}
@@ -466,6 +522,11 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		for _, item := range entries {
 			s.collectBuiltins(item, out)
 		}
+		// A KindHash's default value/proc are reachable hash state, so any
+		// builtins they expose must be collected like entry builtins. The proc
+		// is a KindBlock whose captured env is walked by the KindBlock case.
+		s.collectBuiltins(hashDefaultValue(val), out)
+		s.collectBuiltins(hashDefaultProc(val), out)
 	case KindClass:
 		classDef := valueClass(val)
 		if classDef == nil {
@@ -508,6 +569,19 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 	}
 }
 
+// markCapabilityBuiltins flags every builtin reachable from a capability
+// adapter's bound globals as a per-call capability grant. The set is gathered
+// through the shared cycle-safe traversal so nested objects, hashes, arrays, and
+// closure environments an adapter may expose are all covered.
+func markCapabilityBuiltins(val Value) {
+	builtins := make(map[*Builtin]struct{})
+	scanner := newCapabilityContractScanner()
+	scanner.collectBuiltins(val, builtins)
+	for builtin := range builtins {
+		builtin.Capability = true
+	}
+}
+
 type strictGlobalsScanner struct {
 	seenArrays map[sliceIdentity]struct{}
 	seenMaps   map[uintptr]struct{}
@@ -547,7 +621,14 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 		return slices.ContainsFunc(values, s.containsCallable)
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key the seen-set on the whole hash wrapper (or the entry-map pointer for
+		// objects, which never carry defaults) so a second wrapper sharing the
+		// same entry map but carrying a callable default is still scanned rather
+		// than skipped at the seen check.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}
@@ -557,7 +638,14 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 				return true
 			}
 		}
-		return false
+		// A KindHash may carry Ruby-style default metadata outside its entry
+		// map: a default value and a default proc (a KindBlock callable). A
+		// strict global must be data-only, so scan both rather than admitting a
+		// Hash.new { ... } as an empty, callable-free hash.
+		if s.containsCallable(hashDefaultValue(val)) {
+			return true
+		}
+		return s.containsCallable(hashDefaultProc(val))
 	default:
 		return false
 	}
