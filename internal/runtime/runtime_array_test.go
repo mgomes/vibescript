@@ -1012,6 +1012,53 @@ func TestArrayValuesAtRangeTripsMemoryQuota(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestArrayValuesAtRangeTripsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	// A huge range selector pads positions past the receiver with nil one slot at
+	// a time. With the memory quota disabled the up-front projection passes, so the
+	// per-element step() is what bounds the materialization: a small step quota
+	// must abort the call instead of running through every padded position.
+	receiver := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1024, memoryQuota: 0}
+	hugeRange := NewRange(Range{Start: 0, End: 100_000_000})
+	_, err = builtin.Fn(exec, receiver, []Value{hugeRange}, nil, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+}
+
+func TestArrayValuesAtRangeHonorsCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	// step() polls cancellation on its first invocation, so a canceled context
+	// aborts the expansion before the huge padded window materializes, even with
+	// both quotas effectively disabled.
+	receiver := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
+	hugeRange := NewRange(Range{Start: 0, End: 100_000_000})
+	_, err = builtin.Fn(exec, receiver, []Value{hugeRange}, nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+}
+
 func TestArrayUniqUsesScalarKeysAndCompositeFallback(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

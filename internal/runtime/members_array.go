@@ -967,17 +967,44 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.values_at does not take keyword arguments")
 			}
 			arr := receiver.Array()
-			out := make([]Value, 0, len(args))
+
+			// Grow the result with append from a bounded initial capacity rather
+			// than reserving one slot per argument up front. A single range
+			// selector can expand to far more positions than there are arguments
+			// (values_at(0..1_000_000_000)), so the per-element step() and projected
+			// memory check below are what bound the actual allocation; bounding the
+			// initial capacity keeps it proportional to what the quotas allow,
+			// mirroring rangeMaterialize.
+			initialCap := len(args)
+			if initialCap > arrayValuesAtInitialCap {
+				initialCap = arrayValuesAtInitialCap
+			}
+			out := make([]Value, 0, initialCap)
+
+			// emit appends one selected element, charging a step and re-checking the
+			// backing array's growth against the memory quota before the next slot.
+			// Every position a range selector expands to (including nil pads past the
+			// receiver) flows through here, so a huge padded window cannot
+			// materialize without polling cancellation or the memory quota. The
+			// selected elements alias the receiver, whose payloads are already
+			// counted in the call-root base, so each slot adds only a Value slot,
+			// matching checkProjectedIntArrayBytes.
+			emit := func(val Value) error {
+				if err := exec.step(); err != nil {
+					return err
+				}
+				out = append(out, val)
+				return exec.checkProjectedIntArrayBytes(cap(out))
+			}
+
 			for _, arg := range args {
 				if arg.Kind() == KindRange {
 					// Range selectors expand to their selected positions in place,
 					// matching Ruby's Array#values_at(0..1) -> [a[0], a[1]] and the
 					// mixed form values_at(0..1, -1).
-					selected, err := arrayValuesAtRange(exec, arr, arg.Range())
-					if err != nil {
+					if err := arrayValuesAtRange(exec, arr, arg.Range(), emit); err != nil {
 						return NewNil(), err
 					}
-					out = append(out, selected...)
 					continue
 				}
 				// Floats truncate toward zero like Ruby's Array#values_at (1.5 -> 1,
@@ -989,10 +1016,12 @@ func arrayMemberQuery(property string) (Value, error) {
 				if index < 0 {
 					index += len(arr)
 				}
+				selected := NewNil()
 				if index >= 0 && index < len(arr) {
-					out = append(out, arr[index])
-				} else {
-					out = append(out, NewNil())
+					selected = arr[index]
+				}
+				if err := emit(selected); err != nil {
+					return NewNil(), err
 				}
 			}
 			return NewArray(out), nil
@@ -1102,26 +1131,35 @@ func arrayMemberQuery(property string) (Value, error) {
 	}
 }
 
-// arrayValuesAtRange expands a range selector for Array#values_at into the
-// elements it selects, matching Ruby's semantics. A negative start counts back
-// from the end; a start that remains negative after that adjustment is rejected
-// with an out-of-range error, exactly as Ruby raises a RangeError for
-// values_at(-4..-1) on a three-element array. A negative end likewise counts
-// back from the end but is never rejected: an end at or before the start simply
-// selects nothing. The window is not clamped to the receiver length, so
-// positions at or past the end pad with nil (values_at(0..5) on [10,20,30]
-// yields [10,20,30,nil,nil,nil]). Bound arithmetic stays in int64 so a
-// near-MaxInt64 inclusive range cannot wrap to a negative no-op window, and the
-// selected count is projected against the memory quota before the slice is built
-// so a huge padded window (values_at(0..1_000_000_000)) fails fast instead of
-// reserving an oversized backing array.
-func arrayValuesAtRange(exec *Execution, arr []Value, rng Range) ([]Value, error) {
+// arrayValuesAtInitialCap bounds the capacity Array#values_at reserves up front.
+// A single range selector can expand to far more positions than there are
+// arguments, so larger results grow the backing array via append while the
+// per-element step() and projected memory check bound the actual allocation. It
+// mirrors rangeMaterializeInitialCap.
+const arrayValuesAtInitialCap = 4096
+
+// arrayValuesAtRange expands a range selector for Array#values_at, passing each
+// selected element to emit in order. It matches Ruby's semantics. A negative
+// start counts back from the end; a start that remains negative after that
+// adjustment is rejected with an out-of-range error, exactly as Ruby raises a
+// RangeError for values_at(-4..-1) on a three-element array. A negative end
+// likewise counts back from the end but is never rejected: an end at or before
+// the start simply selects nothing. The window is not clamped to the receiver
+// length, so positions at or past the end pad with nil (values_at(0..5) on
+// [10,20,30] yields [10,20,30,nil,nil,nil]). Bound arithmetic stays in int64 so
+// a near-MaxInt64 inclusive range cannot wrap to a negative no-op window, and
+// the selected count is projected against the memory quota up front so a huge
+// padded window (values_at(0..1_000_000_000)) fails fast; emit then charges a
+// step and re-checks the quota per position so the materialization stays
+// interruptible even when the up-front projection passes under a large memory
+// quota.
+func arrayValuesAtRange(exec *Execution, arr []Value, rng Range, emit func(Value) error) error {
 	length := int64(len(arr))
 	begin := rng.Start
 	if begin < 0 {
 		begin += length
 		if begin < 0 {
-			return nil, fmt.Errorf("array.values_at range %s out of range", NewRange(rng).String())
+			return fmt.Errorf("array.values_at range %s out of range", NewRange(rng).String())
 		}
 	}
 	endExclusive := rng.End
@@ -1132,29 +1170,32 @@ func arrayValuesAtRange(exec *Execution, arr []Value, rng Range) ([]Value, error
 		// An inclusive range's exclusive end is one past End; guard the increment so
 		// End == math.MaxInt64 cannot wrap to a negative no-op window.
 		if endExclusive == math.MaxInt64 {
-			return nil, fmt.Errorf("array.values_at window is too large")
+			return fmt.Errorf("array.values_at window is too large")
 		}
 		endExclusive++
 	}
 	if endExclusive <= begin {
-		return nil, nil
+		return nil
 	}
 	count := endExclusive - begin
 	if count > math.MaxInt {
-		return nil, fmt.Errorf("array.values_at window is too large")
+		return fmt.Errorf("array.values_at window is too large")
 	}
+	// Fail fast when the window clearly exceeds the memory quota before emitting
+	// any element; emit re-checks per position as the backing array grows.
 	if err := exec.checkProjectedIntArrayBytes(int(count)); err != nil {
-		return nil, err
+		return err
 	}
-	out := make([]Value, 0, count)
 	for index := begin; index < endExclusive; index++ {
+		selected := NewNil()
 		if index < length {
-			out = append(out, arr[index])
-		} else {
-			out = append(out, NewNil())
+			selected = arr[index]
+		}
+		if err := emit(selected); err != nil {
+			return err
 		}
 	}
-	return out, nil
+	return nil
 }
 
 // arrayPredicateKind selects the quantifier evaluated by arrayPredicate.
