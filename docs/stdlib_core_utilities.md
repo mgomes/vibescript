@@ -91,6 +91,12 @@ Unicode characters, not bytes, unless noted.
 - `slice(index, length) -> string | nil` – substring of up to `length`
   characters starting at `index`.
 - `concat(*strings) -> string` – receiver with all arguments appended.
+- `prepend(*strings) -> string` – receiver with all arguments prepended, in
+  order.
+- `insert(index, string) -> string` – receiver with `string` inserted at a
+  character index. A non-negative index inserts before the character at that
+  position (the length appends); a negative index inserts after the character it
+  selects (`-1` appends). An out-of-range index raises an error.
 - `replace(replacement) -> string` – returns `replacement` (compatibility
   shim for Ruby's mutating `replace`).
 - `clear -> string` – returns `""`.

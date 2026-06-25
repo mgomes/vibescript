@@ -638,6 +638,34 @@ Appends one or more strings:
 "he".concat("llo", "!") # "hello!"
 ```
 
+### `prepend(*strings)`
+
+Prepends one or more strings, in order:
+
+```vibe
+"abc".prepend("z")      # "zabc"
+"abc".prepend("y", "z") # "yzabc"
+"abc".prepend           # "abc"
+```
+
+### `insert(index, string)`
+
+Inserts `string` into a copy of the receiver at a character index, matching
+Ruby's `String#insert`. A non-negative index inserts before the character at
+that position, so the valid range is `0` to the string's length (a value equal
+to the length appends). A negative index inserts after the character it selects,
+so `-1` appends and the valid range is `-1` down to `-(length + 1)`. The index
+counts characters, not bytes, so it works the same way for multibyte text. An
+out-of-range index raises an error.
+
+```vibe
+"abc".insert(1, "X")   # "aXbc"
+"abc".insert(3, "X")   # "abcX"
+"abc".insert(-1, "X")  # "abcX"
+"abc".insert(-2, "X")  # "abXc"
+"café".insert(2, "Z")  # "caZfé"
+```
+
 ### `replace(replacement)`
 
 Returns `replacement`:
