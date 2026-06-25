@@ -524,8 +524,10 @@ func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 // expression. A sign immediately adjacent to its operand at the start of a
 // fresh line (such as `-b` or `+b`) starts a new statement, while a sign with
 // an intervening space or a line break before its operand continues the prior
-// line. This mirrors Ruby's disambiguation of `a\n- b` (subtraction) versus
-// `a\n-b` (a new `-b` statement).
+// line. The flush case matches Ruby, which also treats `a\n-b` as a new `-b`
+// statement. The spaced case (`a\n- b`) is Vibescript's indented-continuation
+// rule and intentionally differs from Ruby, which would parse it as the two
+// statements `a` and `- b` rather than as subtraction.
 func (p *parser) signContinuesLine(tok ast.Token) bool {
 	if p.peekPeek.Type == ast.TokenEOF {
 		return false

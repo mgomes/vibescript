@@ -115,10 +115,12 @@ func TestParserBinaryPlusUnaffected(t *testing.T) {
 	}
 }
 
-// TestParserUnaryPlusLineDisambiguation mirrors Ruby's handling of a leading
-// `+`: when it sits flush against its operand at the start of a fresh line it
-// begins a new statement, but with an intervening space (or a trailing `+` on
-// the prior line) it continues the previous expression as binary addition.
+// TestParserUnaryPlusLineDisambiguation covers how a leading `+` at the start of
+// a fresh line is parsed. When it sits flush against its operand it begins a new
+// statement (matching Ruby). With an intervening space it continues the previous
+// expression as binary addition via Vibescript's indented-continuation rule;
+// this spaced form intentionally differs from Ruby, which would instead parse
+// the second line as a separate `+1` unary-plus statement.
 func TestParserUnaryPlusLineDisambiguation(t *testing.T) {
 	t.Parallel()
 
@@ -147,6 +149,37 @@ func TestParserUnaryPlusLineDisambiguation(t *testing.T) {
 				Left:     &ast.IntegerLiteral{Value: 5},
 				Operator: ast.TokenPlus,
 				Right:    &ast.IntegerLiteral{Value: 1},
+			},
+		},
+		{
+			// Pins the documented flush example `total\n+amount`: the leading
+			// `+` sits flush against `amount`, so the second line is its own
+			// `+amount` statement rather than continuing `total`. This matches
+			// Ruby, which also treats the flush form as a new statement.
+			name: "flush doc example parses as two statements",
+			source: `total
++amount`,
+			wantStmts: 2,
+			wantFirst: &ast.Identifier{Name: "total"},
+			wantSecond: &ast.UnaryExpr{
+				Operator: ast.TokenPlus,
+				Right:    &ast.Identifier{Name: "amount"},
+			},
+		},
+		{
+			// Pins the documented spaced example `total\n + amount`: the space
+			// before `amount` triggers Vibescript's indented-continuation rule,
+			// so the two lines join into binary addition. This intentionally
+			// differs from Ruby, which would parse the second line as a separate
+			// `+amount` statement.
+			name: "spaced doc example continues as binary addition",
+			source: `total
+ + amount`,
+			wantStmts: 1,
+			wantFirst: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "total"},
+				Operator: ast.TokenPlus,
+				Right:    &ast.Identifier{Name: "amount"},
 			},
 		},
 	}

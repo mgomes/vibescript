@@ -287,11 +287,18 @@ evaluate only the selected branch.
 
 Prefix `+` mirrors Ruby's unary plus: it returns integers, floats, and strings
 unchanged and raises on any other operand. Because Vibescript strings are
-immutable values, `+"x"` yields the same string value. Like unary `-`, a sign
-written flush against its operand at the start of a line begins a new statement
-(`total\n+amount` parses as two statements), while a sign with surrounding
-whitespace continues the previous line as a binary operator (`total\n + amount`
-is addition).
+immutable values, `+"x"` yields the same string value.
+
+A leading `+` or `-` at the start of a fresh line follows Vibescript's
+indented-continuation rule, which is shared with `-` and intentionally differs
+from Ruby. When the sign sits flush against its operand it begins a new
+statement (`total\n+amount` parses as two statements, matching Ruby). When the
+sign is separated from its operand by surrounding whitespace it continues the
+previous line as a binary operator (`total\n + amount` is addition). Ruby treats
+both forms as a new statement and would instead parse `total\n + amount` as the
+two statements `total` and `+amount`; Vibescript deliberately supports the
+spaced form as an explicit operator continuation so multi-line arithmetic can be
+indented under its first operand.
 
 ## Control Flow
 
