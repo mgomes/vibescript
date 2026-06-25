@@ -4,6 +4,7 @@ import (
 	"math"
 	"reflect"
 	"time"
+	"unsafe"
 )
 
 // NewNil returns a nil Value.
@@ -39,6 +40,12 @@ type hashData struct {
 	defaultValue Value
 	defaultProc  Value
 }
+
+// HashDataBytes is the heap footprint of the hashData wrapper every KindHash
+// value allocates, excluding the entry map and default payloads it points at.
+// Memory-quota accounting charges it once per distinct hash so an array of many
+// small hashes cannot retain the per-hash wrapper cost uncharged.
+const HashDataBytes = int(unsafe.Sizeof(hashData{}))
 
 // NewHash returns a hash (map) Value with no default.
 func NewHash(h map[string]Value) Value {
