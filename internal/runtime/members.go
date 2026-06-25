@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -20,9 +21,11 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 }
 
 // universalMemberNames lists members exposed on every value kind, regardless
-// of type. They are resolved by universalMember before the per-kind dispatch in
-// resolveMember, so they take precedence over same-named hash or object keys
-// just as Ruby's universal Object methods take precedence over data access.
+// of type. resolveMember resolves them as a fallback, after type-specific
+// members and user-defined instance/class methods, so a user-defined itself
+// overrides the builtin. They still take precedence over same-named hash or
+// object keys, mirroring Ruby where universal Object methods win over data
+// access.
 var universalMemberNames = []string{"itself"}
 
 // itselfMember is the shared builtin backing Ruby-style Object#itself. It closes
@@ -51,21 +54,31 @@ func universalMember(property string) (Value, bool) {
 // callerIsReceiver controls private-method visibility: only the current
 // receiver may resolve private methods, so external/public dispatch passes
 // false to keep privacy enforced regardless of which value is self.
+//
+// Universal members such as itself resolve as a fallback: type-specific
+// members and user-defined instance/class methods are tried first, so a
+// user-defined itself overrides the builtin in both the no-paren form
+// (probe = obj.itself) and the parenthesized form (obj.itself()). They still
+// win over data access (hash keys, object constants, instance ivars), matching
+// Ruby where {itself: 1}.itself returns the hash rather than the stored value.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
-	if member, ok := universalMember(property); ok {
-		return member, nil
-	}
 	switch obj.Kind() {
 	case KindHash:
 		member, err := hashMember(obj, property)
 		if err == nil {
 			return member, nil
 		}
+		if universal, ok := universalMember(property); ok {
+			return universal, nil
+		}
 		if val, ok := obj.Hash()[property]; ok {
 			return val, nil
 		}
 		return NewNil(), err
 	case KindObject:
+		if member, ok := universalMember(property); ok {
+			return member, nil
+		}
 		if val, ok := obj.Hash()[property]; ok {
 			return val, nil
 		}
@@ -75,32 +88,88 @@ func (exec *Execution) resolveMember(obj Value, property string, pos Position, c
 		}
 		return member, nil
 	case KindMoney:
-		return moneyMember(obj.Money(), property)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return moneyMember(obj.Money(), property)
+		})
 	case KindDuration:
-		return durationMember(obj.Duration(), property, pos)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return durationMember(obj.Duration(), property, pos)
+		})
 	case KindTime:
-		return timeMember(obj.Time(), property)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return timeMember(obj.Time(), property)
+		})
 	case KindArray:
-		return arrayMember(obj, property)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return arrayMember(obj, property)
+		})
 	case KindString:
-		return stringMember(obj, property)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return stringMember(obj, property)
+		})
+	case KindSymbol:
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return symbolMember(obj, property)
+		})
 	case KindEnumValue:
-		return exec.enumValueMember(obj, property, pos)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return exec.enumValueMember(obj, property, pos)
+		})
 	case KindClass:
-		return exec.classMember(obj, property, pos, callerIsReceiver)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return exec.classMember(obj, property, pos, callerIsReceiver)
+		})
 	case KindInstance:
-		return exec.instanceMember(obj, property, pos, callerIsReceiver)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return exec.instanceMember(obj, property, pos, callerIsReceiver)
+		})
 	case KindInt:
-		return exec.intMember(obj, property, pos)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return exec.intMember(obj, property, pos)
+		})
 	case KindFloat:
-		return exec.floatMember(obj, property, pos)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return exec.floatMember(obj, property, pos)
+		})
 	case KindRange:
-		return exec.rangeMember(obj, property, pos)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return exec.rangeMember(obj, property, pos)
+		})
 	case KindFunction:
-		return exec.functionMember(obj, property, pos)
+		return exec.resolveTypedMember(property, func() (Value, error) {
+			return exec.functionMember(obj, property, pos)
+		})
 	default:
+		if member, ok := universalMember(property); ok {
+			return member, nil
+		}
 		return NewNil(), exec.errorAt(pos, "unsupported member access on %s", obj.Kind())
 	}
+}
+
+// resolveTypedMember runs a value kind's per-type member dispatch and, only when
+// it reports the member as unknown, falls back to the universal members. This
+// ordering lets a user-defined instance or class method named itself override
+// the builtin while still exposing itself on kinds that define no such member.
+// The per-type error is preserved when no universal member matches, so unknown
+// members keep their kind-specific "did you mean" suggestions.
+//
+// A private-method denial is not a missing member: the method exists but the
+// caller may not reach it. Falling back to the universal member there would let
+// obj.itself silently bypass the privacy error that obj.itself() raises, so the
+// denial propagates unchanged and both call forms agree.
+func (exec *Execution) resolveTypedMember(property string, typed func() (Value, error)) (Value, error) {
+	member, err := typed()
+	if err == nil {
+		return member, nil
+	}
+	if errors.Is(err, errPrivateMember) {
+		return NewNil(), err
+	}
+	if universal, ok := universalMember(property); ok {
+		return universal, nil
+	}
+	return NewNil(), err
 }
 
 // functionMemberNames lists the members exposed on script function
@@ -147,7 +216,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 	}
 	if fn, ok := cl.ClassMethods[property]; ok {
 		if fn.Private && !callerIsReceiver {
-			return NewNil(), exec.errorAt(pos, "private method %s", property)
+			return NewNil(), exec.privateMemberErrorAt(pos, property)
 		}
 		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
@@ -172,7 +241,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 	}
 	if fn, ok := inst.Class.Methods[property]; ok {
 		if fn.Private && !callerIsReceiver {
-			return NewNil(), exec.errorAt(pos, "private method %s", property)
+			return NewNil(), exec.privateMemberErrorAt(pos, property)
 		}
 		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)

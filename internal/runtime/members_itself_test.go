@@ -192,6 +192,154 @@ func TestItselfRejectsArguments(t *testing.T) {
 	}
 }
 
+// TestItselfUserDefinedOverridesBuiltin guards member-resolution consistency:
+// a user-defined itself method must win over the universal builtin in both the
+// parenthesized form (obj.itself()) and the no-paren form (probe = obj.itself).
+// Resolving the universal member ahead of per-type dispatch silently shadowed
+// the user method in the no-paren form while the paren form ran it, so the two
+// call paths disagreed. The universal member now resolves only as a fallback,
+// after type-specific members and user-defined methods, in both paths.
+func TestItselfUserDefinedOverridesBuiltin(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    class Box
+      def initialize(value)
+        @value = value
+      end
+
+      def itself
+        @value
+      end
+    end
+
+    class Counter
+      @@total = 41
+
+      def self.itself
+        @@total
+      end
+    end
+
+    def instance_paren
+      Box.new(7).itself
+    end
+
+    def instance_no_paren
+      box = Box.new(9)
+      probe = box.itself
+      probe
+    end
+
+    def class_paren
+      Counter.itself
+    end
+
+    def class_no_paren
+      probe = Counter.itself
+      probe
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{name: "instance with parentheses", fn: "instance_paren", want: NewInt(7)},
+		{name: "instance without parentheses", fn: "instance_no_paren", want: NewInt(9)},
+		{name: "class method with parentheses", fn: "class_paren", want: NewInt(41)},
+		{name: "class method without parentheses", fn: "class_no_paren", want: NewInt(41)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := callFunc(t, script, tt.fn, nil); !got.Equal(tt.want) {
+				t.Fatalf("%s() = %#v, want %#v", tt.fn, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestItselfPrivateMethodNotMaskedByBuiltin guards that a private itself method
+// reports the same private-method error in both call forms. The universal
+// builtin must not be used as a fallback for a method that exists but is denied
+// for privacy, or obj.itself would silently bypass the error that obj.itself()
+// raises.
+func TestItselfPrivateMethodNotMaskedByBuiltin(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    class Vault
+      private def itself
+        :secret
+      end
+    end
+
+    def via_paren
+      Vault.new.itself()
+    end
+
+    def via_no_paren
+      vault = Vault.new
+      probe = vault.itself
+      probe
+    end
+    `)
+
+	for _, fn := range []string{"via_paren", "via_no_paren"} {
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+			requireCallErrorContains(t, script, fn, nil, CallOptions{}, "private method itself")
+		})
+	}
+}
+
+// TestItselfFallsBackForUndefinedMethod confirms the universal builtin still
+// resolves on script instances and classes that do not define their own itself,
+// returning the receiver unchanged in both call forms.
+func TestItselfFallsBackForUndefinedMethod(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    class Widget
+      def initialize(label)
+        @label = label
+      end
+
+      def label
+        @label
+      end
+    end
+
+    def instance_paren
+      Widget.new("a").itself.label
+    end
+
+    def instance_no_paren
+      widget = Widget.new("b")
+      probe = widget.itself
+      probe.label
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{name: "instance with parentheses", fn: "instance_paren", want: NewString("a")},
+		{name: "instance without parentheses", fn: "instance_no_paren", want: NewString("b")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := callFunc(t, script, tt.fn, nil); !got.Equal(tt.want) {
+				t.Fatalf("%s() = %#v, want %#v", tt.fn, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestItselfInMemberCompletion confirms itself is surfaced to editor tooling as
 // a universal member for every receiver type.
 func TestItselfInMemberCompletion(t *testing.T) {

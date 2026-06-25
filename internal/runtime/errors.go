@@ -50,7 +50,37 @@ var (
 	errLoopNext            = errors.New("loop next")
 	errStepQuotaExceeded   = errors.New("step quota exceeded")
 	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
+	// errPrivateMember marks a member-resolution failure caused by private-method
+	// visibility rather than an absent member. resolveMember inspects it so a
+	// universal member such as itself never masks an access-control denial: a
+	// private method named itself must report the same private-method error in
+	// both the no-paren and parenthesized call forms.
+	errPrivateMember = errors.New("private member")
 )
+
+// privateMemberError reports that member resolution found a method but denied it
+// for privacy. It renders identically to any other runtime error while wrapping
+// errPrivateMember so resolveMember can tell denial apart from a genuinely
+// missing member.
+type privateMemberError struct {
+	runtime error
+}
+
+func (e *privateMemberError) Error() string { return e.runtime.Error() }
+
+func (e *privateMemberError) Unwrap() error { return errPrivateMember }
+
+// As lets errors.As reach the embedded *RuntimeError, so error classification
+// keeps treating a private-method denial as a base runtime error.
+func (e *privateMemberError) As(target any) bool {
+	return errors.As(e.runtime, target)
+}
+
+// privateMemberErrorAt builds a private-method denial that renders like a normal
+// runtime error at pos but is detectable through errors.Is(err, errPrivateMember).
+func (exec *Execution) privateMemberErrorAt(pos Position, property string) error {
+	return &privateMemberError{runtime: exec.errorAt(pos, "private method %s", property)}
+}
 
 // Error returns the error message with a code frame and formatted stack trace.
 func (re *RuntimeError) Error() string {
