@@ -1693,112 +1693,123 @@ const stringScanInitialCap = 256
 // array of that match's captured substrings, with nil for groups that did not
 // participate in the match.
 //
-// Matches are streamed one at a time rather than collected up front with
-// FindAllStringSubmatchIndex(text, -1). That all-submatch call materializes two
-// ints per capture per match before any quota accounting runs, so a pattern made
-// of thousands of empty () capture groups (still under the pattern-size cap) over
-// a near-limit subject would request matches × groups index integers -- tens of
-// gigabytes -- and OOM the host before the runtime could charge a single byte.
-// Streaming holds only the current match's index slice (O(groups)) and charges
-// each match's result element against the memory quota as the result accumulates,
-// so a scan whose output would exceed the quota errors on the limit instead.
+// Matching is delegated to the regexp engine, which performs the non-overlapping,
+// left-to-right advancement (including empty-match suppression) over the FULL
+// subject. That is the only advancement that is both anchor-correct -- ^, $, \A,
+// \z, \b, and \B see the real surrounding characters -- and multi-rune-correct,
+// because the engine never detaches a suffix the way slicing text[pos:] would.
+// Two earlier hand-rolled advancements failed exactly here: substring slicing
+// made anchors fire at every slice boundary ("abc".scan("^") returning four
+// matches), and a one-rune look-back window dropped adjacent multi-rune matches
+// ("abcd".scan("..") returning ["ab"] instead of ["ab","cd"]). Letting the engine
+// advance avoids both.
 //
-// Crucially, the streaming advancement is anchor-correct: nextRegexScanSubmatchIndex
-// searches with a one-rune look-back window so anchors and zero-width assertions
-// (^, $, \b, \B, \A, \z) see the real character preceding each candidate start,
-// reproducing FindAllStringSubmatchIndex's match set exactly. (A prior variant
-// advanced by re-running the regex on detached text[pos:] substrings, which made
-// those assertions fire at every slice boundary and produced wrong results, e.g.
-// "abc".scan("^") yielding four matches instead of one.)
+// FindAllStringSubmatchIndex(text, -1) is the natural call, but it materializes
+// 2 + 2*groups ints per match before the runtime can charge anything; a pattern
+// of thousands of empty () groups (still under the pattern-size cap) over a
+// near-limit subject would request matches × groups index integers -- tens of
+// gigabytes -- and OOM the host. The number of matches the engine can return is
+// bounded by runeCount+1, so the worst-case index footprint is known up front. For
+// the overwhelming majority of patterns (few groups, or any pattern over a short
+// subject) that worst case already fits the memory quota, so the submatch call is
+// issued directly. Only when the worst case would exceed the quota -- the rare
+// many-capture-group-over-a-large-subject shape the reviewer flagged -- is the
+// exact match count learned first with FindAllStringIndex, whose allocation is two
+// ints per match and so is independent of the group count (the safe scaling the
+// pre-capture scan had). The exact count then drives a tight projection; the
+// group-multiplied submatch call runs only when it is provably within budget, and
+// because the projection uses the real count, a sparsely-matching pattern is never
+// rejected for a result that fits. This keeps the common path to a single engine
+// scan while still bounding the pathological allocation.
+//
+// The per-match RESULT elements are then built incrementally: each element is
+// appended and charged against the memory quota via the array-build accumulator
+// before the next match is processed, and one step is charged per match, so a
+// scan whose output would exceed the memory or step quota trips the limit as the
+// result accumulates rather than after the whole array is materialized.
 func stringScan(exec *Execution, re *regexp.Regexp, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	groups := re.NumSubexp()
-	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-	out := make([]Value, 0, stringScanInitialCap)
 
-	// Replicate regexp.allMatches' non-overlapping, left-to-right advancement
-	// (which Ruby's String#scan shares): after a non-empty match resume at its
-	// end; after an empty match step forward one rune, suppressing an empty match
-	// that lands exactly where the previous match ended.
-	pos := 0
-	prevMatchEnd := -1
-	for pos <= len(text) {
-		// Charge a step per match attempt so a pattern that produces a flood of
-		// matches (or empty matches over a long subject) cannot starve the step
-		// quota or cancellation checks while the result is assembled.
+	if err := guardRegexScanIndexFootprint(exec, re, text, groups); err != nil {
+		return NewNil(), err
+	}
+
+	allMatches := re.FindAllStringSubmatchIndex(text, -1)
+
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	out := make([]Value, 0, min(len(allMatches), stringScanInitialCap))
+	for _, loc := range allMatches {
+		// Charge a step per match so a pattern that produces a flood of matches
+		// cannot starve the step quota or cancellation checks while the result is
+		// assembled.
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
 
-		loc, found := nextRegexScanSubmatchIndex(re, text, pos)
-		if !found {
-			break
+		out = append(out, stringScanElement(text, loc, groups))
+		if err := acc.add(out[len(out)-1], cap(out)); err != nil {
+			return NewNil(), err
 		}
-
-		matchStart, matchEnd := loc[0], loc[1]
-		accept := matchEnd != matchStart || matchStart != prevMatchEnd
-		if accept {
-			out = append(out, stringScanElement(text, loc, groups))
-			if err := acc.add(out[len(out)-1], cap(out)); err != nil {
-				return NewNil(), err
-			}
-		}
-		prevMatchEnd = matchEnd
-
-		if matchEnd > matchStart {
-			pos = matchEnd
-			continue
-		}
-		if matchEnd >= len(text) {
-			break
-		}
-		_, width := utf8.DecodeRuneInString(text[matchEnd:])
-		if width <= 0 {
-			width = 1
-		}
-		pos = matchEnd + width
 	}
 
 	return NewArray(out), nil
 }
 
-// nextRegexScanSubmatchIndex returns the leftmost submatch of re that starts at or
-// after byte offset pos in text, with all indices relative to text, or (nil,
-// false) when none remains. Unlike FindStringSubmatchIndex(text[pos:]), which
-// detaches the suffix and lets anchors and zero-width assertions match at the
-// slice boundary, it searches from one rune before pos so the engine sees the real
-// preceding character and evaluates ^, $, \A, \z, \b, and \B exactly as
-// FindAllStringSubmatchIndex would over the whole subject.
-//
-// At most one match can begin inside the single-rune look-back window before pos,
-// so fetching two matches (FindAllStringSubmatchIndex(window, 2)) is enough to
-// skip that boundary artifact and return the first real match at or after pos. The
-// bounded count makes the regexp engine stop after those two matches rather than
-// scanning to the end, so each call allocates only O(groups) ints regardless of
-// how many matches the subject ultimately contains -- the property that keeps a
-// streaming scan's peak memory bounded.
-func nextRegexScanSubmatchIndex(re *regexp.Regexp, text string, pos int) ([]int, bool) {
-	if pos == 0 {
-		loc := re.FindStringSubmatchIndex(text)
-		return loc, loc != nil
+// guardRegexScanIndexFootprint rejects a scan whose FindAllStringSubmatchIndex
+// index slices would exceed the memory quota, before that group-multiplied call
+// runs. The engine returns at most runeCount+1 matches; when that worst-case
+// footprint fits the quota the submatch call is safe to issue directly, so the
+// guard returns without a second scan. Only when the worst case would overflow --
+// the many-capture-group-over-a-large-subject shape -- is the exact match count
+// resolved with the group-independent FindAllStringIndex and the projection
+// re-checked against that tight count, so a sparsely-matching pattern is not
+// rejected for a result that actually fits.
+func guardRegexScanIndexFootprint(exec *Execution, re *regexp.Regexp, text string, groups int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
 	}
 
-	_, width := utf8.DecodeLastRuneInString(text[:pos])
-	windowStart := pos - width
-	for _, loc := range re.FindAllStringSubmatchIndex(text[windowStart:], 2) {
-		if loc[0]+windowStart < pos {
-			// A match starting inside the look-back rune is the boundary artifact
-			// the window exists to expose; skip it and take the next real match.
-			continue
-		}
-		return offsetRegexSubmatchIndexInPlace(loc, windowStart), true
+	maxMatches := utf8.RuneCountInString(text) + 1
+	if checkProjectedRegexSubmatchIndexBytes(exec, maxMatches, groups) == nil {
+		return nil
 	}
-	return nil, false
+
+	matchCount := len(re.FindAllStringIndex(text, -1))
+	return checkProjectedRegexSubmatchIndexBytes(exec, matchCount, groups)
+}
+
+// checkProjectedRegexSubmatchIndexBytes reports whether materializing
+// FindAllStringSubmatchIndex's index slices for matchCount matches would exceed the
+// memory quota. Each match is one slice of 2 + 2*groups ints; charging that
+// footprint bounds the many-capture-group case where the all-submatch call would
+// otherwise allocate tens of gigabytes of index integers before any per-element
+// accounting ran.
+func checkProjectedRegexSubmatchIndexBytes(exec *Execution, matchCount, groups int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	intsPerMatch := saturatingAdd(2, saturatingMul(2, groups))
+	bytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
+	// Per match the engine allocates its own []int backing (one slice base) and
+	// stores a slice header for it in the outer [][]int (another slice-header-sized
+	// slot); charge both so the structural footprint is not understated.
+	bytesPerMatch = saturatingAdd(bytesPerMatch, saturatingMul(2, estimatedSliceBaseBytes))
+	projected := saturatingMul(matchCount, bytesPerMatch)
+
+	est := exec.memoryEstimatorForCheck()
+	used := saturatingAdd(exec.estimateMemoryUsageBase(est), projected)
+	est.reset()
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
 }
 
 // stringScanElement builds the per-match result element for String#scan: the full
 // match string when the pattern has no capture groups, otherwise an array holding
 // each captured substring with nil for groups that did not participate. loc is a
-// FindStringSubmatchIndex result already offset into text.
+// FindAllStringSubmatchIndex result element, indexed into text.
 func stringScanElement(text string, loc []int, groups int) Value {
 	if groups == 0 {
 		return NewString(text[loc[0]:loc[1]])

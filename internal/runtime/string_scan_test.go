@@ -79,14 +79,91 @@ func TestStringScanCaptureShape(t *testing.T) {
 	}
 }
 
+// TestStringScanAdjacentMultiRune pins the adjacent multi-rune cases to concrete,
+// Ruby-confirmed results rather than only to engine self-consistency. A prior
+// look-back-window advancement returned the leftmost match but failed to resume at
+// its end, dropping the second of two abutting matches: "abcd".scan("..") yielded
+// ["ab"] instead of ["ab", "cd"], and the multibyte "café".scan("..") yielded
+// ["ca"] instead of ["ca", "fé"]. These hardcoded expectations match MRI Ruby.
+func TestStringScanAdjacentMultiRune(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		text    string
+		pattern string
+		want    []Value
+	}{
+		{
+			name:    "two byte matches",
+			text:    "abcd",
+			pattern: "..",
+			want:    []Value{NewString("ab"), NewString("cd")},
+		},
+		{
+			name:    "multibyte runes pair up",
+			text:    "café",
+			pattern: "..",
+			want:    []Value{NewString("ca"), NewString("fé")},
+		},
+		{
+			name:    "diaeresis runes pair up",
+			text:    "naïve",
+			pattern: "..",
+			want:    []Value{NewString("na"), NewString("ïv")},
+		},
+		{
+			name:    "repeated ascii rune",
+			text:    "wwww",
+			pattern: "ww",
+			want:    []Value{NewString("ww"), NewString("ww")},
+		},
+		{
+			name:    "two captures abutting",
+			text:    "abcd",
+			pattern: "(.)(.)",
+			want: []Value{
+				NewArray([]Value{NewString("a"), NewString("b")}),
+				NewArray([]Value{NewString("c"), NewString("d")}),
+			},
+		},
+		{
+			name:    "optional second capture trails",
+			text:    "abc",
+			pattern: "(.)(.)?",
+			want: []Value{
+				NewArray([]Value{NewString("a"), NewString("b")}),
+				NewArray([]Value{NewString("c"), NewNil()}),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Cross-check the hardcoded expectation against the engine so a fixture
+			// typo cannot silently diverge from Go's own match set.
+			re := regexp.MustCompile(tt.pattern)
+			engine := scanWantFromRegexp(re, tt.text)
+			compareArrays(t, NewArray(engine), tt.want)
+
+			source := `def run(text) text.scan(` + goStringToVibescript(tt.pattern) + `) end`
+			script := compileScript(t, source)
+			got := callFunc(t, script, "run", []Value{NewString(tt.text)})
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
 // TestStringScanAnchoredZeroWidth verifies that String#scan evaluates anchors and
 // zero-width assertions against the full subject, matching Ruby and Go's own
-// FindAllStringSubmatchIndex. A streaming implementation that re-ran the regex on
-// text[pos:] substrings made these assertions fire at every slice boundary and
-// returned wrong results (e.g. "abc".scan("^") yielding four matches instead of
-// one). The expected counts below are confirmed against MRI Ruby; the test also
-// asserts the scan output equals what regexp.FindAllStringSubmatchIndex reports so
-// the regression cannot recur silently.
+// FindAllStringSubmatchIndex. A prior streaming implementation that re-ran the
+// regex on text[pos:] substrings made these assertions fire at every slice
+// boundary and returned wrong results (e.g. "abc".scan("^") yielding four matches
+// instead of one). The expected counts below are confirmed against MRI Ruby; the
+// test also asserts the scan output equals what regexp.FindAllStringSubmatchIndex
+// reports so the regression cannot recur silently.
 func TestStringScanAnchoredZeroWidth(t *testing.T) {
 	t.Parallel()
 
@@ -171,12 +248,13 @@ func goStringToVibescript(s string) string {
 	return b.String()
 }
 
-// TestStringScanMatchesFindAllParity pins String#scan's streaming match set to
+// TestStringScanMatchesFindAllParity pins String#scan's match set to
 // regexp.FindAllStringSubmatchIndex(text, -1) across a broad pattern/text matrix.
-// The streaming advancement and its one-rune look-back window must reproduce the
-// all-submatch API's match set byte for byte; this is the canary that fails if a
-// future change to either reintroduces the anchor regression (matching against a
-// detached suffix) or otherwise drifts from the engine's own iteration.
+// scan delegates advancement to that engine call, so the result must reproduce its
+// match set byte for byte; this is the canary that fails if a future change
+// reintroduces a hand-rolled advancement that drifts from the engine (the anchor
+// regression from matching against a detached suffix, or the dropped-adjacent-
+// match regression from a look-back window).
 func TestStringScanMatchesFindAllParity(t *testing.T) {
 	t.Parallel()
 
@@ -185,13 +263,18 @@ func TestStringScanMatchesFindAllParity(t *testing.T) {
 		`(a)`, `(\w)(\d)?`, `(x)(y)?(z*)`, `(\w)(-)?`,
 		`\b`, `\B`, `^`, `$`, `\A`, `\z`,
 		`\b\w+\b`, `\bcat\b`, `^\w`, `\w$`, `a*`, `x?`,
+		// Adjacent multi-rune patterns: a look-back-window advancement dropped the
+		// second of two abutting matches ("abcd".scan("..") -> ["ab"] not
+		// ["ab","cd"]). These exercise that exact shape, including multibyte runes.
+		`..`, `(.)(.)?`, `ww`, `\w\w`, `..(.)?`,
 		// Zero-width and alternation-with-empty-branch patterns exercise the
-		// empty-match suppression and the look-back window's boundary-artifact skip.
+		// empty-match suppression at every position.
 		``, `b*`, `(ab)*`, `a|`, `^|$`, `\b|x`, `a??`, `(?:)`,
 	}
 	texts := []string{
-		"", "a", "abc", "a1 b2 c3", "a-b-c", "the cat sat on a cataract",
+		"", "a", "abc", "abcd", "a1 b2 c3", "a-b-c", "the cat sat on a cataract",
 		"a b c", "  spaced  ", "line1\nline2\nline3", "über café",
+		"café", "naïve", "wwww", "wwwww", "ωωωω",
 		"fΩobar", "aaa", "x", "baaab", "abababc", ",,,",
 	}
 
@@ -252,11 +335,11 @@ func TestStringScanArgumentRejection(t *testing.T) {
 }
 
 // TestStringScanCaptureMemoryQuota verifies that a capture-aware scan whose
-// accumulated nested-array result would exceed the memory quota fails with the
-// limit error instead of materializing an unbounded array. Each match builds a
-// fresh nested array, so a subject that matches at every position produces one
-// nested array per character; under a tight quota the running accumulator must
-// trip before the whole result is built.
+// result would exceed the memory quota fails with the limit error instead of
+// materializing an unbounded array. The subject matches at every position, so the
+// projected submatch-index footprint (and the accumulated nested-array result that
+// follows) far exceeds the tight quota; the scan must trip the memory limit rather
+// than build the whole result.
 func TestStringScanCaptureMemoryQuota(t *testing.T) {
 	t.Parallel()
 
@@ -290,13 +373,14 @@ end`)
 }
 
 // TestStringScanManyGroupsPeakMemory exercises the reviewer's P1 scenario: a
-// pattern made of many empty () capture groups over a large subject. The old
-// implementation collected every match with FindAllStringSubmatchIndex(text, -1),
-// which materialized matches × 2(groups+1) index integers as one contiguous
-// allocation before any quota check ran. Streaming holds only the current match's
-// O(groups) index slice and charges each match's result against the quota as the
-// result accumulates, so the scan trips the memory limit cleanly. Reaching that
-// error (rather than crashing the test process) is the regression guard.
+// pattern made of many empty () capture groups over a large subject. Calling
+// FindAllStringSubmatchIndex(text, -1) here would materialize matches × 2(groups+1)
+// index integers as one contiguous allocation. scan first learns the match count
+// with the group-independent FindAllStringIndex, then projects the submatch call's
+// index footprint (matchCount slices of 2 + 2*groups ints) against the memory quota
+// and rejects when it would not fit, so the scan trips the memory limit cleanly.
+// Reaching that error (rather than crashing the test process) is the regression
+// guard.
 func TestStringScanManyGroupsPeakMemory(t *testing.T) {
 	t.Parallel()
 
@@ -311,9 +395,9 @@ func TestStringScanManyGroupsPeakMemory(t *testing.T) {
 
 // TestStringScanManyGroupsUnderAmpleMemory confirms the same many-groups pattern
 // scans correctly when the memory quota comfortably fits the result, proving the
-// streaming bound does not reject results that genuinely fit and that the
-// look-back streaming yields the right match count for an all-empty-groups
-// pattern (one empty match per position plus one at the end).
+// index projection does not reject results that genuinely fit and that scan yields
+// the right match count for an all-empty-groups pattern (one empty match per
+// position plus one at the end).
 func TestStringScanManyGroupsUnderAmpleMemory(t *testing.T) {
 	t.Parallel()
 
@@ -332,6 +416,88 @@ func TestStringScanManyGroupsUnderAmpleMemory(t *testing.T) {
 	if got.Kind() != KindInt || got.Int() != count+1 {
 		t.Fatalf("many-groups scan size = %v, want int %d", got, count+1)
 	}
+}
+
+// TestStringScanSparseMatchesNotOverRejected guards the memory bound against
+// over-rejection. The submatch-index footprint is projected from the EXACT match
+// count (learned via the group-independent FindAllStringIndex), not the worst-case
+// runeCount+1, so a pattern that matches sparsely over a long subject -- here a
+// digit pattern over a 1000-character all-letter string with zero matches -- must
+// scan cleanly and return an empty result, not trip the memory limit. A worst-case
+// projection would have charged ~runeCount*80 bytes here and falsely rejected the
+// call under the default 64 KiB quota.
+func TestStringScanSparseMatchesNotOverRejected(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 * 1024}, `def run(text)
+  text.scan("\\d+").size
+end`)
+
+	subject := NewString(strings.Repeat("a", 1000))
+	got, err := script.Call(context.Background(), "run", []Value{subject}, CallOptions{})
+	if err != nil {
+		t.Fatalf("sparse no-match scan = %v, want success (over-rejection regression)", err)
+	}
+	if got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("sparse no-match scan size = %v, want int 0", got)
+	}
+}
+
+// TestStringScanSparseManyGroupsNotOverRejected exercises the tiered guard's key
+// benefit: a many-group pattern whose worst-case index footprint (runeCount+1
+// matches) exceeds the quota but whose ACTUAL match count fits. The pattern matches
+// only runs of thirty 'x's, so over a long mostly-'a' subject it matches just twice.
+// The worst-case projection trips, forcing the guard to resolve the exact count via
+// the group-independent FindAllStringIndex; with only two matches the submatch
+// footprint fits, so the scan must succeed. A worst-case-only guard would have
+// falsely rejected this legitimate scan.
+func TestStringScanSparseManyGroupsNotOverRejected(t *testing.T) {
+	t.Parallel()
+
+	const groups = 30
+	pattern := strings.Repeat("(x)", groups)
+	source := `def run(text) text.scan("` + pattern + `").size end`
+	// Worst case ~ (runeCount+1) * ((2+2*groups)*8 + 48) bytes exceeds 512 KiB for a
+	// ~4060-rune subject, but the two real matches fit comfortably.
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 512 * 1024}, source)
+
+	run := strings.Repeat("x", groups)
+	subject := NewString(strings.Repeat("a", 2000) + run + strings.Repeat("a", 2000) + run)
+	got, err := script.Call(context.Background(), "run", []Value{subject}, CallOptions{})
+	if err != nil {
+		t.Fatalf("sparse many-group scan = %v, want success (over-rejection regression)", err)
+	}
+	if got.Kind() != KindInt || got.Int() != 2 {
+		t.Fatalf("sparse many-group scan size = %v, want int 2", got)
+	}
+}
+
+// TestStringScanThousandsOfGroupsRejectedBeforeScan is the direct regression for
+// the reviewer's P1: a pattern of thousands of empty () capture groups (still well
+// under the 16 KiB pattern cap). A literal FindAllStringSubmatchIndex(text, -1)
+// would request matches × 2(groups+1) index integers -- many gigabytes -- and OOM
+// the host before any per-element accounting ran. scan rejects this: the worst-case
+// projection trips, the exact count is resolved with the group-independent
+// FindAllStringIndex (two ints per match, no group multiplier), and the submatch
+// footprint from that count still dwarfs the quota, so the scan errors with the
+// memory limit and never makes the group-multiplied FindAllStringSubmatchIndex
+// call. Reaching that error (rather than exhausting host memory) is the guard, so
+// this test must stay fast and cheap.
+func TestStringScanThousandsOfGroupsRejectedBeforeScan(t *testing.T) {
+	t.Parallel()
+
+	const groups = 4_000
+	pattern := strings.Repeat("()", groups) // ~8 KiB, under the 16 KiB pattern cap.
+	source := `def run(text) text.scan("` + pattern + `") end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 * 1024}, source)
+
+	// 500 characters yield ~501 matches; each FindAllStringSubmatchIndex slice is
+	// 2 + 2*4000 = 8002 ints, so the projected index footprint (~32 MB) dwarfs the
+	// 64 KiB quota and the scan rejects after only the cheap, group-independent
+	// FindAllStringIndex count -- keeping the test fast while still exercising the
+	// many-group rejection path.
+	subject := NewString(strings.Repeat("a", 500))
+	requireRunMemoryQuotaError(t, script, []Value{subject}, CallOptions{})
 }
 
 // TestStringScanStepQuota verifies that scan charges a step per match attempt, so

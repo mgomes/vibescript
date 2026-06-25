@@ -9,6 +9,7 @@ import (
 
 const (
 	estimatedValueBytes        = int(unsafe.Sizeof(Value{}))
+	estimatedIntBytes          = int(unsafe.Sizeof(int(0)))
 	estimatedStringHeaderBytes = 16
 	estimatedSliceBaseBytes    = 24
 	estimatedMapBaseBytes      = 48
