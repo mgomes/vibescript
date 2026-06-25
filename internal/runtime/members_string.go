@@ -21,6 +21,7 @@ var stringMemberNames = []string{
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "codepoints", "each_char", "each_line", "each_byte", "each_codepoint", "template",
 	"center", "ljust", "rjust",
+	"inspect",
 	"to_sym", "intern",
 }
 
@@ -43,6 +44,8 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberTextOps(property)
 	case "center", "ljust", "rjust":
 		return stringMemberPadding(property)
+	case "inspect":
+		return newInspectBuiltin("string"), nil
 	case "to_sym", "intern":
 		return stringMemberConversions(property)
 	default:
