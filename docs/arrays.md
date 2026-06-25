@@ -108,6 +108,16 @@ and leaves the receiver untouched.
 - `count`, `count(value)`, or `count { ... }`. As in Ruby, a `value` argument
   takes precedence: `count(value) { ... }` counts elements equal to `value` and
   ignores the block.
+- `values_at(*selectors)` reads several elements at once, returning a new array
+  in the order the selectors were requested. An integer selector reads one
+  element: negative indexes count back from the end and out-of-bounds indexes
+  yield `nil`. A range selector reads a window and flattens its elements into the
+  result in place, so `values_at(0..1)` is `[a[0], a[1]]` and integer and range
+  selectors can be interleaved (`values_at(0..1, -1)`). A range whose end extends
+  past the array pads the missing positions with `nil`, matching Ruby; a range
+  whose negative start counts back before the beginning of the array raises.
+  Float indexes and float range bounds truncate toward zero like Ruby (`1.9`
+  reads index `1`); a non-numeric selector raises.
 - `dig(*path)` for nested lookup across arrays and hashes. Each path component
   descends one level: an integer index into an array, or a symbol/string key
   into a hash, so a single `dig` can walk JSON-shaped data. Missing keys and
@@ -127,6 +137,13 @@ and leaves the receiver untouched.
   argument takes precedence over an attached block, which is then ignored.
 - `one?` with an optional block; true only when exactly one element (or block
   result) is truthy.
+
+```vibe
+[10, 20, 30].values_at(0, -1, 9)   # [10, 30, nil]
+[10, 20, 30].values_at(0..1)       # [10, 20]
+[10, 20, 30].values_at(0..1, -1)   # [10, 20, 30]
+[10, 20, 30].values_at(0..5)       # [10, 20, 30, nil, nil, nil]
+```
 
 `index`, `find_index`, and `rindex` accept either a value or a block, never both;
 passing both raises an error. As a Vibescript extension, the value form also takes
