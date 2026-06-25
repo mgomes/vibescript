@@ -1618,10 +1618,31 @@ func stringMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), fmt.Errorf("string.scan invalid regex: %w", err)
 			}
-			matches := re.FindAllString(text, -1)
+			// Ruby's String#scan changes its result shape based on the number of
+			// capture groups: with no groups each element is the full match string,
+			// while with one or more groups each element is an array of that match's
+			// captured substrings (nil for groups that did not participate). We use
+			// FindAllStringSubmatchIndex so an unmatched optional group (index -1)
+			// is reported as nil rather than as an empty match.
+			matches := re.FindAllStringSubmatchIndex(text, -1)
+			groups := re.NumSubexp()
 			values := make([]Value, len(matches))
 			for i, m := range matches {
-				values[i] = NewString(m)
+				if groups == 0 {
+					values[i] = NewString(text[m[0]:m[1]])
+					continue
+				}
+				captures := make([]Value, groups)
+				for g := range groups {
+					start := m[(g+1)*2]
+					end := m[(g+1)*2+1]
+					if start < 0 || end < 0 {
+						captures[g] = NewNil()
+						continue
+					}
+					captures[g] = NewString(text[start:end])
+				}
+				values[i] = NewArray(captures)
 			}
 			return NewArray(values), nil
 		}), nil

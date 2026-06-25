@@ -409,10 +409,19 @@ the end of the string yields `false` rather than an error. Unlike Ruby,
 
 ### `scan(pattern)`
 
-Regex scan returning all full matches:
+Regex scan returning every non-overlapping match. As in Ruby, the result shape
+depends on the number of capture groups in `pattern`:
+
+- No groups: an array of the full match strings.
+- One or more groups: an array with one entry per match, each holding that
+  match's captured substrings. An optional group that did not participate in
+  the match becomes `nil`, distinct from a group that matched an empty string.
 
 ```vibe
-"ID-12 ID-34".scan("ID-[0-9]+") # ["ID-12", "ID-34"]
+"ID-12 ID-34".scan("ID-[0-9]+")  # ["ID-12", "ID-34"]
+"a1 b2".scan("([a-z])([0-9])")   # [["a", "1"], ["b", "2"]]
+"a-b-c".scan("(\\w)(-)?")        # [["a", "-"], ["b", "-"], ["c", nil]]
+"abc".scan("z")                   # []
 ```
 
 ### `index(substring, offset = 0)`

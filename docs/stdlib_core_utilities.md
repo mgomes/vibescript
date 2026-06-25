@@ -69,7 +69,10 @@ Unicode characters, not bytes, unless noted.
   `true` when `pattern` matches at or after the character `offset`, else
   `false`. Anchors keep the full-string context across the offset; an offset
   past the end yields `false`, and negative offsets are rejected.
-- `scan(pattern) -> array` – all non-overlapping full regex matches.
+- `scan(pattern) -> array` – every non-overlapping regex match. With no capture
+  groups the result is an array of full match strings; with one or more groups
+  each match contributes a nested array of its captured substrings (`nil` for an
+  optional group that did not participate), mirroring Ruby.
 
 `match`, `match?`, and `scan` treat `pattern` as a regex and enforce the
 [regex guard limits](#guard-limits).
