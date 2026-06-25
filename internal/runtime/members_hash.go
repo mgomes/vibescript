@@ -349,19 +349,35 @@ func hashMemberQuery(property string) (Value, error) {
 			// allocating it so a large receiver cannot escape the memory quota; the
 			// walk projection charges no output map this iterator never creates. When
 			// the block wants the collapsed pair, also reserve the [key, value] arrays
-			// the loop allocates per entry, bounded by the actual peak: a block that
-			// reuses its environment keeps the previous iteration's pair bound in
-			// runner.env until runner.call resets it, yet the next pair is allocated
-			// before that reset, so two pairs are briefly live at once. That overlap
-			// needs a previous iteration to exist, so it only happens with two or more
-			// entries; a single entry yields exactly one live pair, and an empty
-			// receiver allocates none. Reserving min(len(entries), 2) pairs bounds the
-			// peak without re-walking the receiver per entry or over-charging a
-			// single-entry hash.
-			perEntryBytes := 0
+			// the loop allocates per entry, bounded by the actual simultaneous peak.
+			//
+			// The peak number of live pair arrays depends on both the entry count and
+			// the block's parameter shape:
+			//
+			//   - 0 pairs: the block does not want a collapsed pair (each_key,
+			//     each_value, or a two-parameter |k, v| block), or the receiver is
+			//     empty so the loop never allocates a pair.
+			//   - 1 pair: a single entry leaves no previous iteration to overlap, or a
+			//     destructuring single parameter (|(k, v)|) unpacks the pair on bind
+			//     and never stores the pair array, so the previous pair is released
+			//     before the next is allocated.
+			//   - 2 pairs: a block that binds the whole pair to one identifier (|pair|)
+			//     over two or more entries keeps the previous iteration's pair
+			//     referenced in the reused environment until runner.call resets it,
+			//     while the next pair is already allocated, so two overlap briefly.
+			//
+			// Reserving this exact count up front bounds the peak without re-walking
+			// the receiver per entry or over-charging a destructuring or single-entry
+			// hash.
+			pairsLive := 0
 			if collapsePair {
-				perEntryBytes = min(len(entries), 2) * collapsedPairBytes
+				if runner.bindsWholePairToSingleIdentifier() {
+					pairsLive = min(len(entries), 2)
+				} else {
+					pairsLive = min(len(entries), 1)
+				}
 			}
+			perEntryBytes := pairsLive * collapsedPairBytes
 			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), perEntryBytes, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}

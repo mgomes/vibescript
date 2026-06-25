@@ -244,14 +244,16 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 // must not be charged an output map they never create. scratchBytes is the heap
 // footprint of that key list, and perEntryBytes is the fixed allocation the walk
 // holds live on top of the scratch -- the [key, value] pairs Hash#each
-// materializes for a single-parameter block (the caller reserves up to two
-// collapsedPairBytes, since a block reusing its environment can briefly keep the
-// previous pair and the next pair live at once, but only one pair for a
-// single-entry receiver and none when empty), or zero for the forms that bind
-// key and value directly. The caller charges the true simultaneous peak up front
-// rather than re-walking the receiver per entry. Charging a phantom empty map
-// here would falsely reject a quota that exactly fits the receiver, block,
-// scratch, and that live entry allocation.
+// materializes for a single-parameter block. The caller reserves the exact
+// simultaneous peak of pair arrays (see collapsedPairBytes): zero for the forms
+// that bind key and value directly or for an empty receiver, one for a single
+// entry or a destructuring single parameter that unpacks the pair on bind, and
+// two only when a block binds the whole pair to one identifier over two or more
+// entries and the reused environment briefly holds the previous pair and the next
+// pair live at once. The caller charges that peak up front rather than re-walking
+// the receiver per entry. Charging a phantom empty map here would falsely reject a
+// quota that exactly fits the receiver, block, scratch, and that live entry
+// allocation.
 func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes, perEntryBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
@@ -271,15 +273,19 @@ func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes, perEntryBytes i
 // the key and value the slots reference alias the receiver's own entries, already
 // counted in the call-root usage, so only this structure is charged on top.
 //
-// Up to two pairs are live at once: a block that reuses its environment keeps the
-// previous iteration's pair bound until runner.call resets that environment, but
-// the next pair is allocated before the reset, so the old and new pair overlap
-// briefly. That overlap needs a previous iteration to exist, so it only arises
-// with two or more entries. The iterator therefore reserves min(len(entries), 2)
-// pairs' footprint up front (see checkProjectedHashWalkBytes' extra argument)
-// rather than re-walking the receiver per entry, which would be O(n^2) on a large
-// hash: two pairs for two or more entries, one pair for a single entry, and none
-// for an empty receiver, which allocates no pair at all.
+// Up to two pairs are live at once, but only when the block binds the whole pair
+// to one identifier (|pair|): that named binding keeps the previous iteration's
+// pair referenced in the reused environment until runner.call resets it, while the
+// next pair is already allocated, so the old and new pair overlap briefly. That
+// overlap needs a previous iteration to exist, so it only arises with two or more
+// entries. A destructuring single parameter (|(k, v)|) instead unpacks the pair on
+// bind and never stores the pair array, so the previous pair is released before
+// the next is allocated and at most one pair is ever live. The iterator therefore
+// reserves the exact peak up front (see Hash#each's pairsLive) rather than
+// re-walking the receiver per entry, which would be O(n^2) on a large hash: two
+// pairs only for a whole-pair binding over two or more entries, one pair for a
+// single entry or any destructuring parameter, and none for an empty receiver,
+// which allocates no pair at all.
 const collapsedPairBytes = estimatedValueBytes + estimatedSliceBaseBytes + 2*estimatedValueBytes
 
 // arrayBuildAccumulator charges the memory of an array assembled element by

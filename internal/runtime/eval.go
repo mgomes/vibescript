@@ -653,6 +653,19 @@ func (runner *blockCallRunner) wantsCollapsedPair() bool {
 	return positional == 1
 }
 
+// bindsWholePairToSingleIdentifier reports whether the block's single positional
+// parameter binds the entire [key, value] pair array to one named identifier
+// (|pair|), as opposed to immediately destructuring it (|(k, v)|). It must only be
+// consulted when wantsCollapsedPair is true, so it assumes exactly one positional
+// parameter. A named binding keeps the pair array referenced in the reused block
+// environment until the next runner.call resets it, so the previous pair stays
+// live while the next is allocated; a destructuring parameter unpacks the pair
+// into its components (callBlock routes Target != nil through bindBlockParamTarget)
+// and never stores the pair array, so only one pair is ever live.
+func (runner *blockCallRunner) bindsWholePairToSingleIdentifier() bool {
+	return runner.blk.Params[0].Target == nil
+}
+
 // CallBlock invokes a block value with the provided arguments.
 // This is the public entry point for capability adapters that need to
 // call user-supplied blocks (e.g. db.each, db.tx).

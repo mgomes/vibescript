@@ -2362,3 +2362,197 @@ func TestHashEachSingleParamReservesTwoLivePairs(t *testing.T) {
 		t.Fatalf("single-parameter each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
 	}
 }
+
+// destructurePairBlock builds a block declaring a single destructuring parameter
+// |(k, v)|, the form Hash#each collapses each entry into and the block immediately
+// unpacks. The lone positional parameter makes wantsCollapsedPair true, but its
+// Target is a DestructureTarget rather than a named identifier, so callBlock routes
+// it through bindBlockParamTarget and never stores the pair array in the reused
+// env. Only one pair is ever live: the previous iteration's pair is released on
+// bind before the next is allocated. The body captures nothing, so blockCanReuseEnv
+// stays true, the same env-reuse regime the |pair| form exercises.
+func destructurePairBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "k", Position: pos}},
+			{Target: &Identifier{Name: "v", Position: pos}},
+		},
+	}
+	params := []Param{{Kind: ParamNormal, Target: target}}
+	body := []Statement{
+		&ExprStmt{Expr: &Identifier{Name: "k", Position: pos}, Position: pos},
+		&ExprStmt{Expr: &Identifier{Name: "v", Position: pos}, Position: pos},
+	}
+	return NewBlock(params, body, newEnv(nil))
+}
+
+// twoParamPairBlock builds a block declaring two positional parameters |k, v|, the
+// auto-splat form Hash#each yields key and value separately into. Two positional
+// parameters make wantsCollapsedPair false, so the iterator allocates no pair array
+// at all and must reserve zero per-entry bytes.
+func twoParamPairBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	params := []Param{
+		{Name: "k", Kind: ParamNormal},
+		{Name: "v", Kind: ParamNormal},
+	}
+	body := []Statement{
+		&ExprStmt{Expr: &Identifier{Name: "k", Position: pos}, Position: pos},
+		&ExprStmt{Expr: &Identifier{Name: "v", Position: pos}, Position: pos},
+	}
+	return NewBlock(params, body, newEnv(nil))
+}
+
+// singleParamKeyBlock builds a block declaring one positional parameter for the
+// each_key / each_value walks, which bind the key or value directly and never
+// collapse a pair. It mirrors singleParamPairBlock's shape so the iterator's arity
+// inspection sees a single positional parameter, proving those walks reserve no
+// pair bytes regardless.
+func singleParamKeyBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	params := []Param{{Name: "x", Kind: ParamNormal}}
+	body := []Statement{&ExprStmt{Expr: &Identifier{Name: "x", Position: pos}, Position: pos}}
+	return NewBlock(params, body, newEnv(nil))
+}
+
+// TestHashEachDestructureParamReservesOnePair pins the latest P2 finding on PR
+// #808: a single destructuring parameter |(k, v)| unpacks the collapsed pair on
+// bind and never stores the pair array in the reused env, so at most ONE pair is
+// live even over a multi-entry hash. The iterator must reserve one pair, not the
+// two it charges for the |pair| whole-pair binding. A quota one byte below the
+// roots-plus-scratch-plus-two-pairs reservation still leaves room for the real
+// single-pair peak, so the walk must succeed; before the fix the preflight charged
+// two pairs for any collapsing single parameter and rejected this quota up front.
+func TestHashEachDestructureParamReservesOnePair(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+	block := destructurePairBlock()
+	if valueBlock(block).Params[0].Target == nil {
+		t.Fatal("test setup expects a |(k, v)| destructuring parameter (non-nil Target)")
+	}
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects the destructuring block to reuse its environment")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	// One byte below the roots-plus-scratch-plus-two-pairs reservation. The buggy
+	// preflight reserved two pairs for any collapsing single parameter, so used ==
+	// roots+scratch+2*pair > this quota and it rejected. The fix reserves one pair for
+	// a destructuring parameter, and the real peak (one pair plus the block's small
+	// per-call binding overhead) fits well under roots+scratch+2*pair, so the walk must
+	// now succeed.
+	belowTwoPairQuota := roots + scratch + 2*collapsedPairBytes - 1
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: belowTwoPairQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("destructuring each one byte below the two-pair reservation (quota %d) = %v, want success", belowTwoPairQuota, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("destructuring each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
+	}
+
+	// Guard: a quota one byte below the roots, scratch, and the single pair the walk
+	// truly holds live still rejects, proving the success above is the one-pair peak
+	// fitting exactly and not an over-loose projection.
+	onePairFloor := roots + scratch + collapsedPairBytes
+	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: onePairFloor - 1}
+	if _, err := callHashMember(t, tight, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("destructuring each one byte below roots+scratch+one pair (quota %d) = %v, want errMemoryQuotaExceeded", onePairFloor-1, err)
+	}
+}
+
+// TestHashEachTwoParamReservesNoPair pins case 0 of the collapsed-pair model: a
+// two-parameter block |k, v| auto-splats into key and value separately, so the
+// iterator allocates no [key, value] pair array and must reserve zero per-entry
+// bytes. A quota sized to exactly the call roots plus the sorted-key scratch must
+// admit the walk over a multi-entry hash; charging even one collapsedPairBytes here
+// would wrongly reject the auto-splat form.
+func TestHashEachTwoParamReservesNoPair(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+	block := twoParamPairBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	// Exactly the roots and the scratch: no pair reservation. The two-parameter form
+	// allocates no pair, so this quota must fit; a quota that also charged one pair
+	// would push the projection over and reject.
+	noPairQuota := roots + scratch
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: noPairQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("two-parameter each at the roots-plus-scratch quota %d = %v, want success", noPairQuota, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("two-parameter each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
+	}
+
+	// Guard: one byte below the roots-plus-scratch baseline still rejects, proving the
+	// success above comes from that baseline fitting exactly and not from slack.
+	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: noPairQuota - 1}
+	if _, err := callHashMember(t, tight, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("two-parameter each one byte below roots+scratch (quota %d) = %v, want errMemoryQuotaExceeded", noPairQuota-1, err)
+	}
+}
+
+// TestHashEachKeyValueReserveNoPair pins case 0 for each_key and each_value: both
+// bind the key or value directly and never materialize a [key, value] pair, so they
+// must reserve zero per-entry bytes even when handed a single-parameter block. A
+// quota sized to exactly the call roots plus the sorted-key scratch must admit each
+// walk over a multi-entry hash.
+func TestHashEachKeyValueReserveNoPair(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"each_key", "each_value"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			const count = 50_000
+			receiver := largeHashReceiver(count)
+			block := singleParamKeyBlock()
+
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+			roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+			scratch := sortedKeyBufferBytes(count)
+			if scratch <= 0 {
+				t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+			}
+
+			// Exactly the roots and the scratch: no pair reservation. These walks bind the
+			// key or value directly, so this quota must fit; charging one pair would reject.
+			noPairQuota := roots + scratch
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: noPairQuota}
+			got, err := callHashMember(t, exec, receiver, name, nil, block)
+			if err != nil {
+				t.Fatalf("%s at the roots-plus-scratch quota %d = %v, want success", name, noPairQuota, err)
+			}
+			if got.Kind() != KindHash || len(got.Hash()) != count {
+				t.Fatalf("%s returned %v with %d entries, want the %d-entry receiver", name, got.Kind(), len(got.Hash()), count)
+			}
+
+			// Guard: one byte below the roots-plus-scratch baseline still rejects, proving
+			// the success comes from that baseline fitting exactly and not from slack.
+			tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: noPairQuota - 1}
+			if _, err := callHashMember(t, tight, receiver, name, nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+				t.Fatalf("%s one byte below roots+scratch (quota %d) = %v, want errMemoryQuotaExceeded", name, noPairQuota-1, err)
+			}
+		})
+	}
+}
