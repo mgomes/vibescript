@@ -104,7 +104,8 @@ and leaves the receiver untouched.
 - `count`, `count(value)`, or `count { ... }`. As in Ruby, a `value` argument
   takes precedence: `count(value) { ... }` counts elements equal to `value` and
   ignores the block.
-- `any?`, `all?`, `none?` with optional blocks.
+- `any?`, `all?`, `none?`, `one?` with optional blocks. `one?` is true only when
+  exactly one element (or block result) is truthy.
 
 `index`, `find_index`, and `rindex` accept either a value or a block, never both;
 passing both raises an error. As a Vibescript extension, the value form also takes

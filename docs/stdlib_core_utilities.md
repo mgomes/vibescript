@@ -252,6 +252,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   truthy.
 - `none? { |item| } -> bool` – true when no element (or block result) is
   truthy.
+- `one? { |item| } -> bool` – true when exactly one element (or block result)
+  is truthy.
 
 ### Building and Slicing
 
