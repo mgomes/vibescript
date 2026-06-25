@@ -54,7 +54,7 @@ Without an explicit `layout`, `Time.parse` accepts common formats such as RFC333
 
 ## Formatting
 
-Use Go layouts with `Time#format` (not `strftime`). Layouts are built from the reference time `Mon Jan 2 15:04:05 MST 2006`:
+`Time#format` uses Go layouts, built from the reference time `Mon Jan 2 15:04:05 MST 2006`:
 
 ```vibe
 def formatted_timestamp
@@ -66,6 +66,64 @@ def formatted_timestamp
   }
 end
 ```
+
+`Time#strftime` takes a Ruby-style percent format string, so Ruby formatting code runs unchanged:
+
+```vibe
+def strftime_timestamp
+  t = Time.utc(2024, 1, 2, 3, 4, 5)
+  {
+    iso:      t.strftime("%Y-%m-%d %H:%M:%S"), # "2024-01-02 03:04:05"
+    weekday:  t.strftime("%A, %B %e"),         # "Tuesday, January  2"
+    clock:    t.strftime("%I:%M %p"),          # "03:04 AM"
+    escaped:  t.strftime("100%% done")         # "100% done"
+  }
+end
+```
+
+Supported directives cover the common subset:
+
+| Directive | Meaning | Example |
+| --- | --- | --- |
+| `%Y` `%C` `%y` | Year (4+ digits), century, year-in-century | `2024` `20` `24` |
+| `%m` `%d` `%e` `%j` | Month, day (zero/blank padded), day of year | `01` `02` ` 2` `002` |
+| `%H` `%k` `%I` `%l` | Hour 24h/12h (zero/blank padded) | `03` ` 3` `03` ` 3` |
+| `%M` `%S` `%L` `%N` | Minute, second, milli/nanoseconds | `04` `05` `123` `123456789` |
+| `%p` `%P` | Meridian upper/lower | `AM` `am` |
+| `%A` `%a` `%B` `%b`/`%h` | Weekday/month names (English) | `Tuesday` `Tue` `January` `Jan` |
+| `%w` `%u` | Weekday number (Sunday 0 / Monday 1) | `2` `2` |
+| `%s` `%z` `%:z` `%::z` `%Z` | Epoch seconds, UTC offset, zone name | `1704164645` `+0530` `+05:30` `+05:30:00` `UTC` |
+| `%n` `%t` `%%` | Newline, tab, literal percent | `\n` `\t` `%` |
+| `%F` `%T`/`%X` `%R` `%D`/`%x` `%r` `%c` | Compound date/time shortcuts | `2024-01-02` `03:04:05` `03:04` `01/02/24` `03:04:05 AM` `Tue Jan  2 03:04:05 2024` |
+
+Directives accept Ruby's optional flags and width between the `%` and the directive letter, written as `%<flags><width><letter>`:
+
+| Flag | Effect | Example |
+| --- | --- | --- |
+| `-` | Omit padding | `%-d` → `2` |
+| `_` | Pad with spaces | `%_d` → ` 2` |
+| `0` | Pad with zeros (even for normally blank-padded directives) | `%0e` → `02` |
+| `^` | Uppercase the result | `%^B` → `JANUARY` |
+| `#` | Toggle case: lowercase an all-uppercase result, otherwise uppercase it | `%#p` → `am`, `%#B` → `JANUARY` |
+
+The width sets a minimum field width and applies to **every** numeric and name directive, not just `%N`:
+
+```vibe
+def strftime_flags
+  t = Time.utc(2024, 1, 2, 3, 4, 5)
+  {
+    day_no_pad:   t.strftime("%-d"),  # "2"
+    day_padded:   t.strftime("%03d"), # "002"
+    year_wide:    t.strftime("%6Y"),  # "002024"
+    month_upper:  t.strftime("%^B"),  # "JANUARY"
+    meridian_low: t.strftime("%#p")   # "am"
+  }
+end
+```
+
+`%N` and `%L` interpret the width as the number of fractional-second digits (`%3N`, `%6N`, `%9N`, …), truncating beyond nanosecond resolution and zero-padding past it. Compound directives expand a fixed sub-format: the `^` flag propagates into the expansion (`%^c` uppercases the nested names) while `#` does not, and a width pads the whole expansion as one field (`%12F` → `  2024-01-02`). The `%z` offset honors width with zero padding (`%6z` → `+00530`) but treats the `_` space-padding flag as a no-op, keeping the offset intact rather than reproducing Ruby's lossy space-padded form.
+
+`%Z` mirrors `Time#zone`, so a fixed-offset receiver renders its offset name (`+05:30`) rather than Ruby's empty string. Unknown directives are passed through verbatim (`%Q` stays `%Q`), matching Ruby, but a format whose trailing `%` has no directive (or a modifier such as `%6`/`%:` with no directive) raises a runtime error.
 
 `Time#to_s` uses RFC3339Nano. `Time#iso8601`, `Time#xmlschema`, and `Time#rfc3339` return RFC3339, defaulting to whole-second precision. `xmlschema` is an alias for `iso8601`.
 
@@ -112,7 +170,7 @@ end
 
 - Epoch: `to_i`/`tv_sec`, `to_f`, `to_r`
 - Zone conversion: `getutc`/`getgm`, `utc`/`gmtime`, and `getlocal(offset = nil)`/`localtime(offset = nil)`. With no argument the latter two convert to the host's local zone; passing a zone such as `"+05:30"`, `"-04:00"`, `"America/New_York"`, or `"UTC"` returns the same instant in that zone. They always return a new `Time` rather than mutating the receiver.
-- String: `to_s` (RFC3339Nano)
+- String: `to_s` (RFC3339Nano), `format(layout)` (Go layout), `strftime(format)` (Ruby percent format)
 - RFC3339 aliases: `iso8601(ndigits = 0)`, `xmlschema(ndigits = 0)`, `rfc3339(ndigits = 0)` (optional fractional-second precision)
 - HTTP/mail dates: `httpdate` (IMF-fixdate, always GMT), `rfc2822`/`rfc822` (RFC 2822 mail date, preserving the receiver's offset)
 - Tuple: `to_a` returns `[sec, min, hour, mday, month, year, wday, yday, isdst, zone]`, matching Ruby's positional field order. Field values reuse the individual accessors, so the result reflects the receiver's UTC/local/offset zone.

@@ -889,7 +889,7 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 		return NewNil(), err
 	}
 
-	result, err := callBuiltinMemberDirect(receiver, property, args, kwargs, block)
+	result, err := callBuiltinMemberDirect(exec, receiver, property, args, kwargs, block)
 	if err != nil {
 		if errors.Is(err, errLoopBreak) {
 			return NewNil(), exec.errorAt(call.Pos(), "break cannot cross call boundary")
@@ -916,12 +916,12 @@ func canCallBuiltinMemberDirect(receiver Value, property string) bool {
 	}
 }
 
-func callBuiltinMemberDirect(receiver Value, property string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+func callBuiltinMemberDirect(exec *Execution, receiver Value, property string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	switch receiver.Kind() {
 	case KindDuration:
 		return callDurationMemberDirect(receiver.Duration(), property, args, kwargs, block)
 	case KindTime:
-		return callTimeMemberDirect(receiver.Time(), property, args, kwargs, block)
+		return callTimeMemberDirect(exec, receiver.Time(), property, args, kwargs, block)
 	default:
 		return NewNil(), fmt.Errorf("unsupported member access on %s", receiver.Kind())
 	}
