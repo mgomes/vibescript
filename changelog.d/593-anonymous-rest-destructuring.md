@@ -7,3 +7,8 @@
   Assignments such as `first, *rest = []` or `first, *, last = [1]` now bind the
   rest target to an empty array (and missing fixed targets to `nil`) instead of
   crashing on an out-of-range slice.
+- **Fixed: trailing targets after a rest now bind left-to-right on short
+  inputs.** When the right-hand side is shorter than the fixed targets, the
+  targets after the rest fill from left to right and pad with `nil` on the
+  right, matching Ruby. For example, `a, *, y, z = [1, 2]` now yields `a = 1`,
+  `y = 2`, `z = nil` instead of reversing the trailing values.

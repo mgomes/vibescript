@@ -1068,11 +1068,11 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 		case i == restIndex:
 			val = NewArray(restValues)
 		default:
-			valueIndex := len(values) - trailing + i - restIndex - 1
-			if valueIndex < restIndex {
-				valueIndex = -1
-			}
-			val = valueAt(values, valueIndex)
+			// Trailing targets bind to the values immediately after the rest
+			// window, left-to-right. When the input is too short to fill them
+			// all, the remaining targets pad with nil on the right, matching
+			// Ruby (e.g. a, *, y, z = [1, 2] yields a=1, y=2, z=nil).
+			val = valueAt(values, restEnd+(i-restIndex-1))
 		}
 		if err := assignDestructureValue(element.Target, val, assign); err != nil {
 			return err

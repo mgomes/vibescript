@@ -130,6 +130,91 @@ func TestParallelAssignmentAnonymousRestTarget(t *testing.T) {
 	}
 }
 
+func TestParallelAssignmentRestTrailingTargetsBindLeftToRight(t *testing.T) {
+	t.Parallel()
+
+	// Each expectation was confirmed against the reference Ruby implementation.
+	// When the input is shorter than the fixed targets, the trailing targets
+	// after the rest must fill left-to-right with nil padding on the right
+	// rather than binding in reverse order.
+	tests := []struct {
+		name       string
+		assignment string
+		result     string
+		want       []Value
+	}{
+		{
+			name:       "anonymous rest two trailing short by one",
+			assignment: "a, *, y, z = [1, 2]",
+			result:     "[a, y, z]",
+			want:       []Value{NewInt(1), NewInt(2), NewNil()},
+		},
+		{
+			name:       "anonymous rest two trailing exact",
+			assignment: "a, *, y, z = [1, 2, 3]",
+			result:     "[a, y, z]",
+			want:       []Value{NewInt(1), NewInt(2), NewInt(3)},
+		},
+		{
+			name:       "anonymous rest two trailing surplus",
+			assignment: "a, *, y, z = [1, 2, 3, 4]",
+			result:     "[a, y, z]",
+			want:       []Value{NewInt(1), NewInt(3), NewInt(4)},
+		},
+		{
+			name:       "anonymous rest two trailing very short",
+			assignment: "a, *, y, z = [1]",
+			result:     "[a, y, z]",
+			want:       []Value{NewInt(1), NewNil(), NewNil()},
+		},
+		{
+			name:       "named rest two trailing short by one",
+			assignment: "a, *mid, y, z = [1, 2]",
+			result:     "[a, mid, y, z]",
+			want:       []Value{NewInt(1), NewArray(nil), NewInt(2), NewNil()},
+		},
+		{
+			name:       "named rest two trailing exact",
+			assignment: "a, *mid, y, z = [1, 2, 3]",
+			result:     "[a, mid, y, z]",
+			want:       []Value{NewInt(1), NewArray(nil), NewInt(2), NewInt(3)},
+		},
+		{
+			name:       "named rest two trailing very short",
+			assignment: "a, *mid, y, z = [1]",
+			result:     "[a, mid, y, z]",
+			want:       []Value{NewInt(1), NewArray(nil), NewNil(), NewNil()},
+		},
+		{
+			name:       "named rest two trailing surplus",
+			assignment: "a, *mid, y, z = [1, 2, 3, 4, 5]",
+			result:     "[a, mid, y, z]",
+			want: []Value{
+				NewInt(1),
+				NewArray([]Value{NewInt(2), NewInt(3)}),
+				NewInt(4),
+				NewInt(5),
+			},
+		},
+		{
+			name:       "leading rest two trailing short by one",
+			assignment: "*, x, y = [1]",
+			result:     "[x, y]",
+			want:       []Value{NewInt(1), NewNil()},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, "def run\n  "+tt.assignment+"\n  "+tt.result+"\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
 func TestParallelAssignmentNamedRestHandlesShortArrays(t *testing.T) {
 	t.Parallel()
 
