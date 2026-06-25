@@ -22,7 +22,22 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // callerIsReceiver controls private-method visibility: only the current
 // receiver may resolve private methods, so external/public dispatch passes
 // false to keep privacy enforced regardless of which value is self.
+//
+// The universal equality predicates eql? and equal? are resolved as a fallback
+// after the type-specific dispatch fails, so a value's own members and any
+// user-defined methods of the same name always take precedence, matching
+// Ruby's overridable Object#eql?/Object#equal?.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
+	member, err := exec.resolveTypedMember(obj, property, pos, callerIsReceiver)
+	if err != nil && isUniversalPredicate(property) {
+		if predicate, ok := universalMember(obj, property); ok {
+			return predicate, nil
+		}
+	}
+	return member, err
+}
+
+func (exec *Execution) resolveTypedMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	switch obj.Kind() {
 	case KindHash:
 		member, err := hashMember(obj, property)
@@ -217,18 +232,33 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 
 // MemberCompletionNames returns the builtin member-method names per
 // receiver type, for editor tooling such as LSP completion. The slices
-// are copies; callers may sort or mutate them freely.
+// are copies; callers may sort or mutate them freely. The universal equality
+// predicates eql? and equal? are appended to every type because resolveMember
+// answers them for all values, so completion surfaces them on each receiver.
 func MemberCompletionNames() map[string][]string {
 	return map[string][]string{
-		"string":   slices.Clone(stringMemberNames),
-		"array":    slices.Clone(arrayMemberNames),
-		"hash":     slices.Clone(hashMemberNames),
-		"int":      slices.Clone(intMemberNames),
-		"float":    slices.Clone(floatMemberNames),
-		"money":    slices.Clone(moneyMemberNames),
-		"duration": slices.Clone(durationMemberNames),
-		"time":     slices.Clone(timeMemberNames),
-		"range":    slices.Clone(rangeMemberNames),
-		"function": slices.Clone(functionMemberNames),
+		"string":   withUniversalMembers(stringMemberNames),
+		"array":    withUniversalMembers(arrayMemberNames),
+		"hash":     withUniversalMembers(hashMemberNames),
+		"int":      withUniversalMembers(intMemberNames),
+		"float":    withUniversalMembers(floatMemberNames),
+		"money":    withUniversalMembers(moneyMemberNames),
+		"duration": withUniversalMembers(durationMemberNames),
+		"time":     withUniversalMembers(timeMemberNames),
+		"range":    withUniversalMembers(rangeMemberNames),
+		"function": withUniversalMembers(functionMemberNames),
 	}
+}
+
+// withUniversalMembers returns a fresh slice holding names followed by the
+// universal equality predicates, skipping any a type already lists itself
+// (Duration and Time define their own eql?) so the result has no duplicates.
+func withUniversalMembers(names []string) []string {
+	out := slices.Clone(names)
+	for _, name := range universalMemberNames {
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }

@@ -29,6 +29,41 @@ in depth; this page favors compact signatures and one-line descriptions.
 "  hello ".strip! # "hello"
 ```
 
+## Universal Predicates
+
+Every value answers two equality predicates in addition to the `==` operator.
+They report `false` rather than raising when the kinds differ, and a class may
+override them with its own methods of the same name.
+
+- `eql?(other) -> bool` – hash-key equality. True only when both operands share
+  a kind and compare equal, so `1.eql?(1.0)` is `false` even though both are
+  numerically one. Composites (arrays, hashes) compare by content.
+- `equal?(other) -> bool` – object identity. Immutable scalars (`nil`, `bool`,
+  `int`, `float`, `string`, `symbol`, money, duration, time, range) are
+  identical when they share a kind and value, so `1.equal?(1)` is `true`.
+  Mutable composites (arrays, hashes) and script instances are identical only
+  when they refer to the same object, so two independently built arrays with
+  equal contents are not `equal?`.
+
+```vibe
+1 == 1        # true
+1.eql?(1)     # true
+1.eql?(1.0)   # false (Int never eql-matches a Float)
+1.equal?(1)   # true
+
+a = [1, 2, 3]
+b = a
+c = [1, 2, 3]
+a.eql?(c)     # true  (same contents)
+a.equal?(b)   # true  (same object)
+a.equal?(c)   # false (distinct objects)
+```
+
+Empty arrays are the one identity exception: an empty array has no element
+storage to alias, so all empty arrays report `equal?` to one another
+(`[].equal?([])` is `true`). Empty hashes remain distinct objects
+(`{}.equal?({})` is `false`).
+
 ## Strings
 
 See [strings.md](strings.md) for worked examples. Indexes and lengths count

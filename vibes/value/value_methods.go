@@ -535,6 +535,59 @@ func (v Value) Truthy() bool {
 	}
 }
 
+// Eql reports whether v and other are equal under hash-key semantics: they
+// must share the same kind and compare equal, so an Int never eql-matches a
+// Float even when their numeric values coincide. It backs the Ruby-style
+// `eql?` predicate. Because Equal already requires matching kinds (Vibescript
+// `==` performs no cross-kind numeric coercion), Eql currently coincides with
+// Equal; it exists as a distinct, documented contract aligned with hash-key
+// equality rather than with broad value equivalence.
+func (v Value) Eql(other Value) bool {
+	if v.kind != other.kind {
+		return false
+	}
+	return v.Equal(other)
+}
+
+// Identical reports whether v and other refer to the same object, backing the
+// Ruby-style `equal?` predicate. Immutable value kinds (nil, bool, int, float,
+// string, symbol, money, duration, time, range) are identical when they share
+// the same kind and value, since the language exposes no distinct identities
+// for equal immutables. Mutable composites (array, hash, object) and
+// runtime-only kinds (function, builtin, block, class, instance, enum, enum
+// value) are identical only when they share the same backing storage, so two
+// independently constructed composites with equal contents are not identical.
+//
+// Empty arrays are the one principled exception: Go gives every non-nil
+// zero-length slice the same backing pointer (its runtime zerobase), so two
+// empty arrays always report identical. This is harmless because an empty array
+// has no element storage to alias — appending to one never affects another — so
+// they behave as a single value-like empty rather than as distinct mutable
+// objects. Empty hashes do receive distinct backing maps and so stay distinct.
+func (v Value) Identical(other Value) bool {
+	if v.kind != other.kind {
+		return false
+	}
+	switch v.kind {
+	case KindArray:
+		left := v.data.([]Value)
+		right := other.data.([]Value)
+		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer() &&
+			len(left) == len(right) && cap(left) == cap(right)
+	case KindHash, KindObject:
+		left := v.data.(map[string]Value)
+		right := other.data.(map[string]Value)
+		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer()
+	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance, KindEnum, KindEnumValue:
+		// These runtime kinds already compare by backing-pointer identity in
+		// Equal (via RuntimeEqualer), which is exactly the identity contract
+		// equal? wants, so delegating keeps the two predicates consistent.
+		return v.Equal(other)
+	default:
+		return v.Equal(other)
+	}
+}
+
 // Equal reports whether v and other hold the same kind and value.
 func (v Value) Equal(other Value) bool {
 	return valuesEqual(v, other, make(map[valueEqualityPair]struct{}))

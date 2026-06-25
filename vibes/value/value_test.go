@@ -1486,6 +1486,91 @@ func TestValueEqual(t *testing.T) {
 	}
 }
 
+// TestValueEql checks the hash-key equality predicate: operands must share a
+// kind and value, so an Int never eql-matches a Float even when the numeric
+// values coincide, while composites still compare by content.
+func TestValueEql(t *testing.T) {
+	t.Parallel()
+
+	sharedSlice := []value.Value{value.NewInt(1)}
+
+	tests := []struct {
+		name  string
+		left  value.Value
+		right value.Value
+		want  bool
+	}{
+		{"ints", value.NewInt(1), value.NewInt(1), true},
+		{"int_vs_float", value.NewInt(1), value.NewFloat(1), false},
+		{"floats", value.NewFloat(1), value.NewFloat(1), true},
+		{"strings", value.NewString("a"), value.NewString("a"), true},
+		{"string_vs_symbol", value.NewString("a"), value.NewSymbol("a"), false},
+		{"nil_vs_bool", value.NewNil(), value.NewBool(false), false},
+		{"arrays_by_content", value.NewArray([]value.Value{value.NewInt(1)}), value.NewArray([]value.Value{value.NewInt(1)}), true},
+		{"arrays_shared", value.NewArray(sharedSlice), value.NewArray(sharedSlice), true},
+		{"hashes_by_content", value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.left.Eql(tc.right); got != tc.want {
+				t.Fatalf("Eql(%s, %s) = %t, want %t", tc.left, tc.right, got, tc.want)
+			}
+			if got := tc.right.Eql(tc.left); got != tc.want {
+				t.Fatalf("Eql is not symmetric for %s and %s", tc.left, tc.right)
+			}
+		})
+	}
+}
+
+// TestValueIdentical checks the identity predicate: immutable scalars are
+// identical when they share a kind and value, while mutable composites are
+// identical only when they share the same backing storage.
+func TestValueIdentical(t *testing.T) {
+	t.Parallel()
+
+	sharedSlice := []value.Value{value.NewInt(1)}
+	sharedMap := map[string]value.Value{"a": value.NewInt(1)}
+
+	tests := []struct {
+		name  string
+		left  value.Value
+		right value.Value
+		want  bool
+	}{
+		{"ints", value.NewInt(1), value.NewInt(1), true},
+		{"int_vs_float", value.NewInt(1), value.NewFloat(1), false},
+		{"floats", value.NewFloat(1.5), value.NewFloat(1.5), true},
+		{"strings_same_content", value.NewString("a"), value.NewString("a"), true},
+		{"strings_diff_content", value.NewString("a"), value.NewString("b"), false},
+		{"symbols", value.NewSymbol("a"), value.NewSymbol("a"), true},
+		{"nils", value.NewNil(), value.NewNil(), true},
+		{"ranges", value.NewRange(value.Range{Start: 1, End: 3}), value.NewRange(value.Range{Start: 1, End: 3}), true},
+		{"arrays_shared_backing", value.NewArray(sharedSlice), value.NewArray(sharedSlice), true},
+		{"arrays_distinct_backing", value.NewArray([]value.Value{value.NewInt(1)}), value.NewArray([]value.Value{value.NewInt(1)}), false},
+		// Non-nil empty slices all share Go's zerobase backing, and an empty
+		// array has no element storage to alias, so two empties report identical.
+		{"empty_arrays_share_zerobase", value.NewArray([]value.Value{}), value.NewArray([]value.Value{}), true},
+		{"hashes_shared_backing", value.NewHash(sharedMap), value.NewHash(sharedMap), true},
+		{"hashes_distinct_backing", value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), false},
+		// Empty maps each receive a distinct backing, unlike empty slices.
+		{"empty_hashes_distinct_backing", value.NewHash(map[string]value.Value{}), value.NewHash(map[string]value.Value{}), false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.left.Identical(tc.right); got != tc.want {
+				t.Fatalf("Identical(%s, %s) = %t, want %t", tc.left, tc.right, got, tc.want)
+			}
+			if got := tc.right.Identical(tc.left); got != tc.want {
+				t.Fatalf("Identical is not symmetric for %s and %s", tc.left, tc.right)
+			}
+		})
+	}
+}
+
 func TestValueEqualCyclicStructuresTerminate(t *testing.T) {
 	t.Parallel()
 

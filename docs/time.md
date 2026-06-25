@@ -119,7 +119,7 @@ end
 
 ## Comparisons and math
 
-- Compare: `<=>`, `eql?`. `<=>` returns `-1`/`0`/`1` for two `Time` values and `nil` when the other operand is not a `Time`, matching Ruby's spaceship contract; it raises only when given the wrong number of arguments. `eql?` is a predicate: it returns `true` only when both operands are equal `Time` values, returns `false` for an unequal `Time` or a non-`Time` operand (matching Ruby's `Time#eql?`), and raises only when given the wrong number of arguments.
+- Compare: `<=>`, `eql?`. `<=>` returns `-1`/`0`/`1` for two `Time` values and `nil` when the other operand is not a `Time`, matching Ruby's spaceship contract; it raises only when given the wrong number of arguments. `eql?` is a predicate: it returns `true` only when both operands are equal `Time` values, returns `false` for an unequal `Time` or a non-`Time` operand (matching Ruby's `Time#eql?`), and raises only when given the wrong number of arguments. Like every value, a `Time` also answers the universal `equal?` identity predicate, which matches `eql?` for an immutable time; see [Universal Predicates](stdlib_core_utilities.md#universal-predicates).
 - Add/sub durations: `time + duration`, `time - duration`
 - Add/sub seconds: `time + number`, `time - number`, where the number is interpreted as seconds (matching Ruby). Integers shift by whole seconds; floats carry sub-second precision down to the nanosecond, and negative values shift backward. The result is a new `Time`. Numeric addition commutes (`number + time`), but subtracting a `Time` from a number is undefined, just as in Ruby.
 - Difference of times: `time - time` → a `Float` number of seconds (matching Ruby's `Time#-`), preserving sub-second precision
