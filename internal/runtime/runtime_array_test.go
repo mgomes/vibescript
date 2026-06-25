@@ -578,14 +578,23 @@ func TestArrayPredicateValueArgument(t *testing.T) {
 		{name: "any empty", expr: "[].any?(1)", want: false},
 		{name: "any matches falsy element", expr: "[nil, false].any?(false)", want: true},
 		{name: "any cross type no match", expr: "[1, 2, 3].any?(\"2\")", want: false},
+		// Range patterns are matched with case equality (===), so the argument
+		// tests membership rather than object identity.
+		{name: "any range hit", expr: "[2].any?(1..3)", want: true},
+		{name: "any range miss", expr: "[5].any?(1..3)", want: false},
+		{name: "any range exclusive boundary", expr: "[3].any?(1...3)", want: false},
 		// all?(value): true when every element matches; empty is vacuously true.
 		{name: "all hit", expr: "[1, 1, 1].all?(1)", want: true},
 		{name: "all miss", expr: "[1, 2, 1].all?(1)", want: false},
 		{name: "all empty", expr: "[].all?(1)", want: true},
+		{name: "all range hit", expr: "[1, 2].all?(1..3)", want: true},
+		{name: "all range miss", expr: "[1, 4].all?(1..3)", want: false},
 		// none?(value): true when no element matches; empty is vacuously true.
 		{name: "none hit", expr: "[3, 4].none?(1)", want: true},
 		{name: "none miss", expr: "[1, 2].none?(1)", want: false},
 		{name: "none empty", expr: "[].none?(1)", want: true},
+		{name: "none range hit", expr: "[4, 5].none?(1..3)", want: true},
+		{name: "none range miss", expr: "[2, 5].none?(1..3)", want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -637,6 +646,27 @@ func TestArrayPredicateRejectsExtraArguments(t *testing.T) {
 		{name: "any?", expr: "[1, 2, 3].any?(1, 2)", want: "array.any? accepts at most one value argument"},
 		{name: "all?", expr: "[1, 2, 3].all?(1, 2)", want: "array.all? accepts at most one value argument"},
 		{name: "none?", expr: "[1, 2, 3].none?(1, 2)", want: "array.none? accepts at most one value argument"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+func TestArrayPredicateRejectsKeywordArguments(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "any?", expr: "[1].any?(1, unexpected: true)", want: "array.any? does not take keyword arguments"},
+		{name: "all?", expr: "[1].all?(1, unexpected: true)", want: "array.all? does not take keyword arguments"},
+		{name: "none?", expr: "[1].none?(1, unexpected: true)", want: "array.none? does not take keyword arguments"},
+		{name: "any? without value", expr: "[1].any?(unexpected: true)", want: "array.any? does not take keyword arguments"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

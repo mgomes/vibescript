@@ -1001,15 +1001,15 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "any?":
 		return NewAutoBuiltin("array.any?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return arrayPredicate(exec, receiver, args, block, arrayPredicateAny)
+			return arrayPredicate(exec, receiver, args, kwargs, block, arrayPredicateAny)
 		}), nil
 	case "all?":
 		return NewAutoBuiltin("array.all?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return arrayPredicate(exec, receiver, args, block, arrayPredicateAll)
+			return arrayPredicate(exec, receiver, args, kwargs, block, arrayPredicateAll)
 		}), nil
 	case "none?":
 		return NewAutoBuiltin("array.none?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			return arrayPredicate(exec, receiver, args, block, arrayPredicateNone)
+			return arrayPredicate(exec, receiver, args, kwargs, block, arrayPredicateNone)
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
@@ -1030,23 +1030,27 @@ const (
 //
 //	any?           # whether any element is truthy
 //	any? { |x| } # whether any block result is truthy
-//	any?(value)    # whether any element matches value
+//	any?(pattern)  # whether any element matches pattern via ===
 //
-// Ruby tests the value form with case equality (===). Until the broader
-// case-equality work lands, the scalar value form uses Vibescript's existing
-// value equality (Value.Equal), matching Array#count(value) and Array#include?.
-// As in Ruby's Array#count(value), an explicit value argument takes precedence
-// over any attached block, which is then ignored. The name of the originating
+// As in Ruby, the value form tests each element with case equality (===) via
+// caseCandidateMatches, so range patterns such as any?(1..3) test membership
+// rather than object identity. An explicit pattern argument takes precedence
+// over any attached block, which is then ignored, matching Array#count(value).
+// Keyword arguments are unsupported and rejected. The name of the originating
 // method is derived from the predicate kind for error messages.
-func arrayPredicate(exec *Execution, receiver Value, args []Value, block Value, kind arrayPredicateKind) (Value, error) {
+func arrayPredicate(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, kind arrayPredicateKind) (Value, error) {
 	name := arrayPredicateName(kind)
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
+	}
 	if len(args) > 1 {
 		return NewNil(), fmt.Errorf("%s accepts at most one value argument", name)
 	}
 	arr := receiver.Array()
 	if len(args) == 1 {
+		pattern := args[0]
 		return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
-			return item.Equal(args[0]), nil
+			return caseCandidateMatches(item, pattern), nil
 		})
 	}
 	if valueBlock(block) != nil {
