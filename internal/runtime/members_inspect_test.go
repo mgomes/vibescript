@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -161,6 +162,64 @@ func TestInspectLargeCompositeTripsMemoryQuota(t *testing.T) {
 	}
 	_, err := builtin.Fn(exec, NewArray(elems), nil, nil, NewNil())
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestInspectChargesReceiverFootprint confirms the projection counts the
+// receiver's own footprint, not just the inspected string. The receiver stays
+// live while inspect materializes its rendering, so an ephemeral receiver whose
+// structural footprint dwarfs its small rendering (here many empty strings, each
+// rendering as two bytes but costing a Value slot and string header) could slip
+// past a payload-only check while base+receiver+result actually exceeds the
+// quota. The quota is pinned to the exact payload-only projection: the old
+// behavior would have admitted it, the receiver-aware projection rejects it.
+func TestInspectChargesReceiverFootprint(t *testing.T) {
+	t.Parallel()
+
+	builtin := valueBuiltin(newInspectBuiltin("array"))
+
+	elems := make([]Value, 200)
+	for i := range elems {
+		elems[i] = NewString("")
+	}
+	receiver := NewArray(elems)
+
+	// Use a quota-disabled exec only to measure the projection terms with the
+	// same estimator the check uses; the assertion exec gets the pinned quota.
+	measure := &Execution{ctx: context.Background()}
+	base := measure.estimateMemoryUsage()
+	receiverFootprint := measure.estimateMemoryUsage(receiver) - base
+	if receiverFootprint <= 0 {
+		t.Fatalf("receiver footprint = %d, want > 0", receiverFootprint)
+	}
+
+	payload, err := receiver.InspectByteLenBounded(func() error { return nil })
+	if err != nil {
+		t.Fatalf("InspectByteLenBounded() error = %v", err)
+	}
+
+	// payloadOnly is what the old projection charged: base plus the result
+	// string's header and bytes, ignoring the still-live receiver.
+	payloadOnly := base + estimatedValueBytes + estimatedStringHeaderBytes + payload
+
+	// At quota == payloadOnly the payload-only check passes (used is not strictly
+	// greater) while the receiver-aware check exceeds it by the receiver's whole
+	// footprint, so inspect must now reject.
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: payloadOnly,
+	}
+	if _, err := builtin.Fn(exec, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("inspect at payload-only quota error = %v, want %v", err, errMemoryQuotaExceeded)
+	}
+
+	// Raising the quota to cover the receiver footprint too lets the same call
+	// succeed, proving the rejection above was the receiver charge and not an
+	// unrelated over-count.
+	exec.memoryQuota = payloadOnly + receiverFootprint
+	if _, err := builtin.Fn(exec, receiver, nil, nil, NewNil()); err != nil {
+		t.Fatalf("inspect at receiver-aware quota error = %v, want nil", err)
+	}
 }
 
 // TestInspectStepBudgetAbortsProjection confirms the projection walk charges the
