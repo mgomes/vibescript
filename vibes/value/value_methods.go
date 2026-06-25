@@ -568,6 +568,12 @@ func (v Value) Eql(other Value) bool {
 // value) are identical only when they share the same backing storage, so two
 // independently constructed composites with equal contents are not identical.
 //
+// NaN floats are the one immutable case where value equality is not enough:
+// IEEE NaN != NaN, so deferring to Equal would make x.equal?(x) false for a NaN
+// receiver and break reflexivity. Identity treats any two NaN floats as
+// identical, keeping equal? reflexive while matching the value-identity model
+// floats already follow.
+//
 // Empty arrays are the one principled exception: any two empty arrays report
 // identical regardless of their backing storage. This is harmless because an
 // empty array has no element storage to alias — appending to one never affects
@@ -584,6 +590,16 @@ func (v Value) Identical(other Value) bool {
 		return false
 	}
 	switch v.kind {
+	case KindFloat:
+		// Float identity is value identity in Vibescript: the language exposes no
+		// distinct object for two floats with the same value, so 1.5.equal?(1.5)
+		// is true. IEEE equality would break the identity contract's reflexivity
+		// for NaN (NaN == NaN is false), so treat any two NaN floats as identical;
+		// every other float defers to value equality.
+		if math.IsNaN(v.Float()) || math.IsNaN(other.Float()) {
+			return math.IsNaN(v.Float()) && math.IsNaN(other.Float())
+		}
+		return v.Float() == other.Float()
 	case KindArray:
 		left := v.data.([]Value)
 		right := other.data.([]Value)

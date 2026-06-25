@@ -66,6 +66,10 @@ storage to alias, so all empty arrays report `equal?` to one another
 (`[].equal?([])` is `true`). Empty hashes remain distinct objects
 (`{}.equal?({})` is `false`).
 
+A NaN float is `equal?` to itself even though `==` never holds for NaN. Because
+floats carry no distinct identity, any two NaN floats are also `equal?`, keeping
+the predicate reflexive (`x = 0.0 / 0.0; x.equal?(x)` is `true`).
+
 ## Debug Representation
 
 Every core value kind responds to `inspect`, returning a `string` debug

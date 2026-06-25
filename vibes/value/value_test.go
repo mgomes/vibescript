@@ -1546,6 +1546,11 @@ func TestValueIdentical(t *testing.T) {
 		{"ints", value.NewInt(1), value.NewInt(1), true},
 		{"int_vs_float", value.NewInt(1), value.NewFloat(1), false},
 		{"floats", value.NewFloat(1.5), value.NewFloat(1.5), true},
+		// IEEE NaN != NaN, so value equality alone would make a NaN receiver fail
+		// reflexivity (x.equal?(x) == false). Identity treats NaN floats as
+		// identical to keep equal? reflexive.
+		{"nan_floats_identical", value.NewFloat(math.NaN()), value.NewFloat(math.NaN()), true},
+		{"nan_vs_finite_float_distinct", value.NewFloat(math.NaN()), value.NewFloat(1.5), false},
 		{"strings_same_content", value.NewString("a"), value.NewString("a"), true},
 		{"strings_diff_content", value.NewString("a"), value.NewString("b"), false},
 		{"symbols", value.NewSymbol("a"), value.NewSymbol("a"), true},

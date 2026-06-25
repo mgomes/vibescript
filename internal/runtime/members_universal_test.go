@@ -183,6 +183,35 @@ func TestEqualPredicateImmutableValues(t *testing.T) {
 	}
 }
 
+// TestEqualPredicateNaNFloatReflexivity confirms equal? stays reflexive for a
+// NaN float receiver. IEEE NaN != NaN, so deferring identity to value equality
+// would make x.equal?(x) false and break the identity contract. A NaN bound to a
+// variable must be equal? to itself, and any two NaN floats report identical
+// because Vibescript exposes no distinct object for equal floats.
+func TestEqualPredicateNaNFloatReflexivity(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want Value
+	}{
+		{name: "nan reflexive", expr: "x = 0.0 / 0.0\n  x.equal?(x)", want: NewBool(true)},
+		{name: "nan equal to nan", expr: "(0.0 / 0.0).equal?(0.0 / 0.0)", want: NewBool(true)},
+		{name: "nan vs finite", expr: "(0.0 / 0.0).equal?(1.5)", want: NewBool(false)},
+		{name: "finite vs nan", expr: "1.5.equal?(0.0 / 0.0)", want: NewBool(false)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(tc.want) {
+				t.Fatalf("%s = %v, want %v", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestEqualPredicateReferenceIdentity confirms equal? on mutable composites and
 // script instances reports backing-storage identity: a value is identical to
 // itself and to an alias, but two independently constructed composites with the
