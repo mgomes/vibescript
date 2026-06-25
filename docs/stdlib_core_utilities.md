@@ -42,6 +42,12 @@ Unicode characters, not bytes, unless noted.
 - `empty? -> bool` – true when the string has no characters.
 - `ord -> int` – codepoint of the first character; errors on an empty string.
 - `chr -> string` – first character, or an empty string for an empty receiver.
+- `getbyte(index) -> int | nil` – byte at a byte offset (`0..255`); negative
+  offsets count from the end, and an out-of-range offset returns `nil`.
+- `byteslice(index) | byteslice(start, length) | byteslice(range) -> string |
+  nil` – substring by byte offset; negative offsets count from the end, an
+  out-of-range start or negative length returns `nil`, and bytes are returned
+  verbatim without UTF-8 normalization.
 - `hex -> int` – leading characters parsed as a hexadecimal integer (optional
   whitespace, sign, `0x` prefix, and underscore separators); `0` when no hex
   digit leads, and an `integer out of range` error past the `int64` bounds.
@@ -167,6 +173,9 @@ then truncated at a character boundary to fill the span.
   stay attached so `"\r\n"` endings round-trip.
 - `bytes -> array` – array of the string's bytes as integers in `0..255`
   (byte-level, so a multibyte character expands to one entry per UTF-8 byte).
+- `codepoints -> array` – array of the string's Unicode code points as integers
+  (rune-aware, so a multibyte character is one entry; the integer counterpart to
+  `chars`).
 - `template(context, strict: false) -> string` – interpolate `{{key.path}}`
   placeholders from a hash; `strict: true` errors on missing placeholders.
 
