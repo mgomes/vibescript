@@ -46,6 +46,63 @@ func valueToInt(val Value) (int, error) {
 	}
 }
 
+// digPath walks args as a nested lookup path, descending one level per path
+// component. It traverses hashes and objects by symbol/string key and arrays by
+// integer index, returning nil as soon as a key is absent or an index is out of
+// range. This mirrors Ruby's Hash#dig and Array#dig nil-for-missing semantics
+// while staying within Vibescript's symbol/string hash-key and non-negative
+// array-index model.
+//
+// Two behaviors are deliberate divergences from MRI Ruby:
+//
+//   - Indexing an array with a non-integer path component is a type error, like
+//     Ruby's "no implicit conversion into Integer" TypeError. A hash or object
+//     keyed by a non-symbol/string component instead returns nil, because such a
+//     value can never be a key under Vibescript's hash-key model, so it is simply
+//     absent (Ruby returns nil there too).
+//   - Continuing a path through a scalar (a non-collection that does not respond
+//     to dig) returns nil rather than raising. Vibescript has always done this
+//     for Hash#dig, and keeping it avoids surprising scripts that probe deeper
+//     than the data nests.
+//
+// name is the caller's method name (for example "array.dig") used in error
+// messages.
+func digPath(name string, current Value, args []Value) (Value, error) {
+	for _, arg := range args {
+		switch current.Kind() {
+		case KindHash, KindObject:
+			key, err := valueToHashKey(arg)
+			if err != nil {
+				return NewNil(), nil
+			}
+			next, ok := current.Hash()[key]
+			if !ok {
+				return NewNil(), nil
+			}
+			current = next
+		case KindArray:
+			if arg.Kind() != KindInt && arg.Kind() != KindFloat {
+				return NewNil(), fmt.Errorf("%s array index must be integer", name)
+			}
+			index, err := valueToInt(arg)
+			if err != nil {
+				return NewNil(), fmt.Errorf("%s array index must be integer", name)
+			}
+			if arg.Kind() == KindFloat && math.Trunc(arg.Float()) != arg.Float() {
+				return NewNil(), fmt.Errorf("%s array index must be integer", name)
+			}
+			arr := current.Array()
+			if index < 0 || index >= len(arr) {
+				return NewNil(), nil
+			}
+			current = arr[index]
+		default:
+			return NewNil(), nil
+		}
+	}
+	return current, nil
+}
+
 // errNegativeCount signals that a count argument was numeric but negative.
 // Callers detect it with errors.Is to emit a method-specific message.
 var errNegativeCount = errors.New("count must not be negative")
