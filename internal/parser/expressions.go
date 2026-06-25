@@ -1402,6 +1402,11 @@ func isBlockParameterTarget(target ast.Expression) bool {
 		return true
 	case *ast.DestructureTarget:
 		for _, element := range t.Elements {
+			// A rest element with no target is an anonymous (discard) rest
+			// ("*"), which is a valid block parameter that binds nothing.
+			if element.Rest && element.Target == nil {
+				continue
+			}
 			if !isBlockParameterTarget(element.Target) {
 				return false
 			}

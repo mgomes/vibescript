@@ -3,6 +3,11 @@
   without binding a name, as in `first, * = values`, `*, last = values`, and
   `first, *, last = values`. This matches Ruby's `*` discard target and joins
   the existing named `*rest` support.
+- **Fixed: anonymous rest targets now parse in block parameter
+  destructuring.** A bare `*` discard rest is accepted inside destructured block
+  parameters, as in `values.map do |(head, *)| ... end` and
+  `do |(head, *, tail)| ... end`, matching assignment destructuring instead of
+  being rejected as an invalid block parameter target.
 - **Fixed: rest destructuring no longer panics on short right-hand sides.**
   Assignments such as `first, *rest = []` or `first, *, last = [1]` now bind the
   rest target to an empty array (and missing fixed targets to `nil`) instead of
