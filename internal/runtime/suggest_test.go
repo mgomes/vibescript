@@ -203,14 +203,6 @@ func TestMemberSuggestionCandidatesResolve(t *testing.T) {
 			},
 		},
 		{
-			kind:  "symbol",
-			names: symbolMemberNames,
-			resolve: func(name string) error {
-				_, err := symbolMember(NewSymbol("vibe"), name)
-				return err
-			},
-		},
-		{
 			kind:  "array",
 			names: arrayMemberNames,
 			resolve: func(name string) error {
@@ -279,6 +271,30 @@ func TestMemberSuggestionCandidatesResolve(t *testing.T) {
 			names: rangeMemberNames,
 			resolve: func(name string) error {
 				_, err := (&Execution{}).rangeMember(NewRange(Range{Start: 1, End: 3}), name, Position{})
+				return err
+			},
+		},
+		{
+			kind:  "symbol",
+			names: symbolMemberNames,
+			resolve: func(name string) error {
+				_, err := (&Execution{}).symbolMember(NewSymbol("ok"), name, Position{})
+				return err
+			},
+		},
+		{
+			kind:  "nil",
+			names: nilMemberNames,
+			resolve: func(name string) error {
+				_, err := (&Execution{}).nilMember(NewNil(), name, Position{})
+				return err
+			},
+		},
+		{
+			kind:  "bool",
+			names: boolMemberNames,
+			resolve: func(name string) error {
+				_, err := (&Execution{}).boolMember(NewBool(true), name, Position{})
 				return err
 			},
 		},

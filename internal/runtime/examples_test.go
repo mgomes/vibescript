@@ -2189,6 +2189,8 @@ func TestExamples(t *testing.T) {
 				"math_log_base":     floatVal(3),
 				"math_pi_rounded":   floatVal(3.142),
 				"parsed_time":       strVal("2024-05-01T10:30:00Z"),
+				"inspect_string":    strVal("\"a\\tb\""),
+				"inspect_array":     strVal("[1, \"x\", nil]"),
 			}),
 		},
 	}

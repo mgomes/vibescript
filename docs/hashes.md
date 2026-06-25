@@ -345,4 +345,20 @@ def merge_defaults(player)
 end
 ```
 
+## Debug Representation
+
+`inspect` renders a hash as a parseable debug string using Vibescript's
+colon-label key form (not Ruby's unsupported hash-rocket syntax), inspecting each
+value recursively:
+
+```vibe
+{ a: 1, b: "x" }.inspect    # => "{a: 1, b: \"x\"}"
+{ "with space": 1 }.inspect # => "{\"with space\": 1}"
+```
+
+Because hashes iterate in Go's map order, the entry order of an inspected hash is
+not stable across calls. See
+[Debug Representation](stdlib_core_utilities.md#debug-representation) for the full
+per-kind contract.
+
 Review `examples/hashes/` for live scripts used by the tests.

@@ -15,6 +15,7 @@ import (
 var hashMemberNames = []string{
 	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "default", "default_proc",
 	"merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+	"inspect",
 }
 
 var hashBuiltinMembers = newMemberTable(hashMemberNames)
@@ -36,6 +37,8 @@ func hashMemberBuiltin(property string) (Value, error) {
 		return hashMemberQuery(property)
 	case "merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
+	case "inspect":
+		return newInspectBuiltin("hash"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
 	}

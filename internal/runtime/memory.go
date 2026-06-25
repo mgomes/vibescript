@@ -130,26 +130,28 @@ func (exec *Execution) checkProjectedStringBytes(payloadBytes int) error {
 	return nil
 }
 
-// checkProjectedInterpolatedValue rejects an interpolation step that would exceed
-// the memory quota before the rendered value is streamed into the builder. It
-// charges three things that are all live at the peak of the write: the
-// execution's reachable roots (the base), the interpolated value's own footprint,
-// and the string the rendering is being streamed into (its header plus
-// payloadBytes of rendered output).
+// checkProjectedValueRendering rejects a step that renders a value into a fresh
+// string (or streams it into a builder) before that string is built, when the
+// peak would exceed the memory quota. It charges three things that are all live at
+// the peak of the write: the execution's reachable roots (the base), the rendered
+// value's own footprint, and the result string (its header plus payloadBytes of
+// rendered output). It backs both string interpolation and the `inspect` builtin,
+// which share the shape "value stays live while its rendering materializes."
 //
-// The value's footprint matters because the interpolated expression may produce
-// a temporary that is not reachable from any environment — a function return, or
-// an array/hash literal constructed inline. Such a temporary lives only on the Go
-// call stack while WriteStringTo copies its rendering, so estimateMemoryUsageBase
-// never sees it, yet it is real memory held alongside the growing builder. Without
-// charging it, base+output and base+value could each fit the quota while
-// base+value+output exceeds it, letting a huge temporary stream past the limit.
+// The value's footprint matters because the rendered expression may produce a
+// temporary that is not reachable from any environment — a function return, an
+// array/hash literal constructed inline, or a receiver like `[big].inspect`. Such
+// a temporary lives only on the Go call stack while its rendering is copied, so
+// estimateMemoryUsageBase never sees it, yet it is real memory held alongside the
+// new string. Without charging it, base+output and base+value could each fit the
+// quota while base+value+output exceeds it, letting a huge temporary render past
+// the limit.
 //
 // val is charged through the same estimator that walks the base, so a value that
-// IS reachable from an environment (an existing variable interpolated directly) is
+// IS reachable from an environment (an existing variable rendered directly) is
 // deduplicated against the base and contributes only its already-counted footprint
-// once, leaving the small-interpolation fast path unchanged.
-func (exec *Execution) checkProjectedInterpolatedValue(val Value, payloadBytes int) error {
+// once, leaving the small-render fast path unchanged.
+func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
