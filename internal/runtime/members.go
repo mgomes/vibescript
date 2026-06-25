@@ -107,8 +107,6 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		return arrayMember(obj, property)
 	case KindString:
 		return stringMember(obj, property)
-	case KindSymbol:
-		return symbolMember(obj, property)
 	case KindEnumValue:
 		return exec.enumValueMember(obj, property, pos)
 	case KindClass:
@@ -123,6 +121,12 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		return exec.rangeMember(obj, property, pos)
 	case KindFunction:
 		return exec.functionMember(obj, property, pos)
+	case KindSymbol:
+		return exec.symbolMember(obj, property, pos)
+	case KindNil:
+		return exec.nilMember(obj, property, pos)
+	case KindBool:
+		return exec.boolMember(obj, property, pos)
 	default:
 		return NewNil(), exec.errorAt(pos, "unsupported member access on %s", obj.Kind())
 	}
@@ -302,6 +306,8 @@ func MemberCompletionNames() map[string][]string {
 		"time":     withUniversalMembers(timeMemberNames),
 		"range":    withUniversalMembers(rangeMemberNames),
 		"function": withUniversalMembers(functionMemberNames),
+		"nil":      withUniversalMembers(nilMemberNames),
+		"bool":     withUniversalMembers(boolMemberNames),
 	}
 }
 

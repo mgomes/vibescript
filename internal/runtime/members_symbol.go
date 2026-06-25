@@ -2,23 +2,26 @@ package runtime
 
 import "fmt"
 
-// symbolMemberNames mirrors the names dispatched by symbolMember and feeds
-// "did you mean" suggestions on the error path. Keep it in sync with the
-// switch below; TestMemberSuggestionCandidatesResolve enforces that every
-// listed name resolves.
-var symbolMemberNames = []string{"id2name", "to_s", "to_sym"}
+// symbolMemberNames mirrors the names dispatched by symbolMemberBuiltin and feeds
+// "did you mean" suggestions and editor completion. Keep it in sync with the
+// switch below; TestMemberSuggestionCandidatesResolve enforces that every listed
+// name resolves.
+var (
+	symbolMemberNames    = []string{"inspect", "id2name", "to_s", "to_sym"}
+	symbolBuiltinMembers = newMemberTable(symbolMemberNames)
+)
 
-var symbolBuiltinMembers = newMemberTable(symbolMemberNames)
-
-func symbolMember(sym Value, property string) (Value, error) {
+func (exec *Execution) symbolMember(obj Value, property string, pos Position) (Value, error) {
 	if member, ok := symbolBuiltinMembers.lookup(property, symbolMemberBuiltin); ok {
 		return member, nil
 	}
-	return NewNil(), fmt.Errorf("unknown symbol method %s%s", property, didYouMean(property, symbolMemberNames))
+	return NewNil(), exec.errorAt(pos, "unknown symbol method %s%s", property, didYouMean(property, symbolMemberNames))
 }
 
 func symbolMemberBuiltin(property string) (Value, error) {
 	switch property {
+	case "inspect":
+		return newInspectBuiltin("symbol"), nil
 	case "id2name", "to_s":
 		name := "symbol." + property
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
