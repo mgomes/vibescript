@@ -1164,7 +1164,17 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	if restEnd < restIndex {
 		restEnd = restIndex
 	}
-	restValues := append([]Value(nil), values[restIndex:restEnd]...)
+	// Allocate the rest backing with capacity exactly equal to the collected
+	// element count. append([]Value(nil), src...) (and slices.Clone, which wraps
+	// it) would let Go's growslice round the capacity up past len, so the memory
+	// estimator — which charges slice backings by cap — would see a larger array
+	// than the per-rest reservation (restArrayBytes, sized by the element count)
+	// charged at preflight. A make+copy keeps cap == len so the reserved and the
+	// actually allocated footprints agree, leaving no quota window admitted by the
+	// preflight that the in-body check would then exceed.
+	restSrc := values[restIndex:restEnd]
+	restValues := make([]Value, len(restSrc))
+	copy(restValues, restSrc)
 	for i, element := range target.Elements {
 		var val Value
 		switch {
