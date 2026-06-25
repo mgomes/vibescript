@@ -69,6 +69,11 @@ end
 endpoints follow the same `..` / `...` range semantics used by `for` loops.
 Non-range candidates still use value equality.
 
+The same logic is available directly through the case equality operator `===`,
+where the left operand is the matcher: `(80..99) === score` returns the same
+result the matching `when 80..99` clause would. See
+[Operators](language_reference.md#operators).
+
 Targetless `case` evaluates each `when` expression as a predicate in order.
 
 ## Range methods
