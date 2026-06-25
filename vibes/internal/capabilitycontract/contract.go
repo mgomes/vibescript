@@ -88,7 +88,16 @@ func DeepCloneValue(val value.Value) value.Value {
 		for k, v := range hash {
 			cloned[k] = DeepCloneValue(v)
 		}
-		return value.NewHash(cloned)
+		// Preserve the hash's Ruby-style default metadata so the isolated copy
+		// keeps the same missing-key behavior. The default value is deep-cloned
+		// like an entry; the default proc is a runtime-only block, copied by
+		// reference like blocks elsewhere in this clone.
+		defaultProc := value.HashDefaultProc(val)
+		defaultValue := value.HashDefaultValue(val)
+		if defaultProc.Kind() == value.KindNil && defaultValue.Kind() == value.KindNil {
+			return value.NewHash(cloned)
+		}
+		return value.NewHashWithDefault(cloned, DeepCloneValue(defaultValue), defaultProc)
 	case value.KindObject:
 		obj := val.Hash()
 		cloned := make(map[string]value.Value, len(obj))
@@ -289,6 +298,19 @@ func validateDataOnly(val value.Value, visiting, seen *seenSet) dataOnlyResult {
 				issue = dataOnlyCycle
 			}
 		}
+		// A KindHash may carry Ruby-style default metadata outside its entry
+		// map: a default value and a default proc (a KindBlock, always a
+		// callable). Validate both so a Hash.new { ... } default proc, or a
+		// default value that nests a callable, is rejected at a data-only
+		// boundary instead of slipping through as an empty hash.
+		for _, meta := range [...]value.Value{value.HashDefaultValue(val), value.HashDefaultProc(val)} {
+			switch result := validateDataOnly(meta, visiting, seen); result {
+			case dataOnlyCallable:
+				return dataOnlyCallable
+			case dataOnlyCycle:
+				issue = dataOnlyCycle
+			}
+		}
 		delete(visiting.maps, ptr)
 		seen.maps[ptr] = struct{}{}
 		return issue
@@ -327,12 +349,63 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet) (value.Value, dataOn
 		}
 		return value.NewArray(cloned), dataOnlyOK
 	case value.KindHash:
-		return cloneDataOnlyMap(val.Hash(), visiting, value.NewHash)
+		return cloneDataOnlyHash(val, visiting)
 	case value.KindObject:
 		return cloneDataOnlyMap(val.Hash(), visiting, value.NewObject)
 	default:
 		return val, dataOnlyOK
 	}
+}
+
+// cloneDataOnlyHash clones a KindHash, isolating its entries and its Ruby-style
+// default metadata. A default proc is a KindBlock callable, so a hash carrying
+// one is rejected just like any other embedded callable; a data-only default
+// value is cloned and preserved on the result so the isolated copy keeps the
+// same missing-key behavior.
+func cloneDataOnlyHash(val value.Value, visiting *seenSet) (value.Value, dataOnlyResult) {
+	entries := val.Hash()
+	ptr := reflect.ValueOf(entries).Pointer()
+	if _, ok := visiting.maps[ptr]; ok {
+		return value.NewNil(), dataOnlyCycle
+	}
+	visiting.maps[ptr] = struct{}{}
+	defer delete(visiting.maps, ptr)
+
+	cloned := make(map[string]value.Value, len(entries))
+	issue := dataOnlyOK
+	for key, item := range entries {
+		next, result := cloneDataOnlyValue(item, visiting)
+		switch result {
+		case dataOnlyCallable:
+			return value.NewNil(), dataOnlyCallable
+		case dataOnlyCycle:
+			issue = dataOnlyCycle
+		default:
+			cloned[key] = next
+		}
+	}
+
+	defaultProc := value.HashDefaultProc(val)
+	if defaultProc.Kind() != value.KindNil {
+		// The default proc is always a script block; a data-only copy cannot
+		// retain a callable.
+		return value.NewNil(), dataOnlyCallable
+	}
+	clonedDefault, result := cloneDataOnlyValue(value.HashDefaultValue(val), visiting)
+	switch result {
+	case dataOnlyCallable:
+		return value.NewNil(), dataOnlyCallable
+	case dataOnlyCycle:
+		issue = dataOnlyCycle
+	}
+
+	if issue != dataOnlyOK {
+		return value.NewNil(), issue
+	}
+	if clonedDefault.Kind() == value.KindNil {
+		return value.NewHash(cloned), dataOnlyOK
+	}
+	return value.NewHashWithDefault(cloned, clonedDefault, value.NewNil()), dataOnlyOK
 }
 
 func cloneDataOnlyMap(

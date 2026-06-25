@@ -59,7 +59,15 @@ func deepCloneValue(val Value) Value {
 		for k, v := range hash {
 			cloned[k] = deepCloneValue(v)
 		}
-		return NewHash(cloned)
+		// Preserve the hash's Ruby-style default metadata so the clone keeps the
+		// same missing-key behavior. The default value is deep-cloned like an
+		// entry; the default proc is a runtime-only block, copied by reference.
+		defaultProc := hashDefaultProc(val)
+		defaultValue := hashDefaultValue(val)
+		if defaultProc.IsNil() && defaultValue.IsNil() {
+			return NewHash(cloned)
+		}
+		return NewHashWithDefault(cloned, deepCloneValue(defaultValue), defaultProc)
 	case KindObject:
 		obj := val.Hash()
 		cloned := make(map[string]Value, len(obj))
@@ -275,6 +283,13 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 				return true
 			}
 		}
+		// A KindHash's default value/proc are reachable hash state and may
+		// themselves nest collections, so walk them for cycles too. They share
+		// the same visiting set, so a default that references its own hash is
+		// detected as a cycle like any other back-edge.
+		if s.containsCycle(hashDefaultValue(val)) || s.containsCycle(hashDefaultProc(val)) {
+			return true
+		}
 		delete(s.visitingMaps, ptr)
 		s.seenMaps[ptr] = struct{}{}
 		return false
@@ -311,7 +326,15 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 				return true
 			}
 		}
-		return false
+		// A KindHash may carry Ruby-style default metadata outside its entry
+		// map: a default value (itself possibly a callable or a collection of
+		// callables) and a default proc (a KindBlock, always a callable). Scan
+		// both so Hash.new { ... } or Hash.new(some_proc) cannot smuggle a
+		// script callable past a data-only boundary.
+		if s.containsCallable(hashDefaultValue(val)) {
+			return true
+		}
+		return s.containsCallable(hashDefaultProc(val))
 	default:
 		return false
 	}
@@ -396,6 +419,10 @@ func (s *capabilityContractScanner) bindContracts(
 		for _, item := range entries {
 			s.bindContracts(item, scope, target, scopes)
 		}
+		// A KindHash's default value/proc are reachable hash state, so contracts
+		// must bind to any builtins they expose just as they do for entries.
+		s.bindContracts(hashDefaultValue(val), scope, target, scopes)
+		s.bindContracts(hashDefaultProc(val), scope, target, scopes)
 	case KindClass:
 		classDef := valueClass(val)
 		if classDef == nil {
@@ -466,6 +493,11 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		for _, item := range entries {
 			s.collectBuiltins(item, out)
 		}
+		// A KindHash's default value/proc are reachable hash state, so any
+		// builtins they expose must be collected like entry builtins. The proc
+		// is a KindBlock whose captured env is walked by the KindBlock case.
+		s.collectBuiltins(hashDefaultValue(val), out)
+		s.collectBuiltins(hashDefaultProc(val), out)
 	case KindClass:
 		classDef := valueClass(val)
 		if classDef == nil {
@@ -557,7 +589,14 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 				return true
 			}
 		}
-		return false
+		// A KindHash may carry Ruby-style default metadata outside its entry
+		// map: a default value and a default proc (a KindBlock callable). A
+		// strict global must be data-only, so scan both rather than admitting a
+		// Hash.new { ... } as an empty, callable-free hash.
+		if s.containsCallable(hashDefaultValue(val)) {
+			return true
+		}
+		return s.containsCallable(hashDefaultProc(val))
 	default:
 		return false
 	}
