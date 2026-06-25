@@ -13,9 +13,9 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v",
-	"push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
+	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
@@ -33,10 +33,10 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "count", "any?", "all?", "none?",
+	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
-	case "push", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
+	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -964,6 +964,13 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			return NewNil(), nil
 		}), nil
+	case "dig":
+		return NewAutoBuiltin("array.dig", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) == 0 {
+				return NewNil(), fmt.Errorf("array.dig expects at least one index")
+			}
+			return digPath("array.dig", receiver, args)
+		}), nil
 	case "count":
 		return NewAutoBuiltin("array.count", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 1 {
@@ -1004,103 +1011,160 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "any?":
 		return NewAutoBuiltin("array.any?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.any? does not take arguments")
-			}
-			var runner *blockCallRunner
-			if valueBlock(block) != nil {
-				var err error
-				runner, err = newBlockCallRunner(exec, block, "array.any?")
-				if err != nil {
-					return NewNil(), err
-				}
-			}
-			var blockArg [1]Value
-			for _, item := range receiver.Array() {
-				if runner != nil {
-					blockArg[0] = item
-					val, err := runner.call(blockArg[:])
-					if err != nil {
-						return NewNil(), err
-					}
-					if val.Truthy() {
-						return NewBool(true), nil
-					}
-					continue
-				}
-				if item.Truthy() {
-					return NewBool(true), nil
-				}
-			}
-			return NewBool(false), nil
+			return arrayPredicate(exec, receiver, args, kwargs, block, arrayPredicateAny)
 		}), nil
 	case "all?":
 		return NewAutoBuiltin("array.all?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.all? does not take arguments")
-			}
-			var runner *blockCallRunner
-			if valueBlock(block) != nil {
-				var err error
-				runner, err = newBlockCallRunner(exec, block, "array.all?")
-				if err != nil {
-					return NewNil(), err
-				}
-			}
-			var blockArg [1]Value
-			for _, item := range receiver.Array() {
-				if runner != nil {
-					blockArg[0] = item
-					val, err := runner.call(blockArg[:])
-					if err != nil {
-						return NewNil(), err
-					}
-					if !val.Truthy() {
-						return NewBool(false), nil
-					}
-					continue
-				}
-				if !item.Truthy() {
-					return NewBool(false), nil
-				}
-			}
-			return NewBool(true), nil
+			return arrayPredicate(exec, receiver, args, kwargs, block, arrayPredicateAll)
 		}), nil
 	case "none?":
 		return NewAutoBuiltin("array.none?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return arrayPredicate(exec, receiver, args, kwargs, block, arrayPredicateNone)
+		}), nil
+	case "one?":
+		return NewAutoBuiltin("array.one?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.none? does not take arguments")
+				return NewNil(), fmt.Errorf("array.one? does not take arguments")
 			}
 			var runner *blockCallRunner
 			if valueBlock(block) != nil {
 				var err error
-				runner, err = newBlockCallRunner(exec, block, "array.none?")
+				runner, err = newBlockCallRunner(exec, block, "array.one?")
 				if err != nil {
 					return NewNil(), err
 				}
 			}
+			matched := false
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
+				truthy := item.Truthy()
 				if runner != nil {
+					// Charge a step per yield so an empty or trivial block body
+					// cannot starve the step quota or cancellation checks while
+					// traversing a large receiver; runner.call only charges steps
+					// for the statements it evaluates, and an empty block evaluates
+					// none.
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
 					blockArg[0] = item
 					val, err := runner.call(blockArg[:])
 					if err != nil {
 						return NewNil(), err
 					}
-					if val.Truthy() {
-						return NewBool(false), nil
-					}
+					truthy = val.Truthy()
+				}
+				if !truthy {
 					continue
 				}
-				if item.Truthy() {
+				if matched {
 					return NewBool(false), nil
 				}
+				matched = true
 			}
-			return NewBool(true), nil
+			return NewBool(matched), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+// arrayPredicateKind selects the quantifier evaluated by arrayPredicate.
+type arrayPredicateKind int
+
+const (
+	arrayPredicateAny arrayPredicateKind = iota
+	arrayPredicateAll
+	arrayPredicateNone
+)
+
+// arrayPredicate implements the shared scanning logic for Array#any?, Array#all?
+// and Array#none?. It mirrors Ruby's three calling conventions:
+//
+//	any?           # whether any element is truthy
+//	any? { |x| } # whether any block result is truthy
+//	any?(pattern)  # whether any element matches pattern via ===
+//
+// As in Ruby, the value form tests each element with case equality (===) via
+// caseCandidateMatches, so range patterns such as any?(1..3) test membership
+// rather than object identity. An explicit pattern argument takes precedence
+// over any attached block, which is then ignored, matching Array#count(value).
+// Keyword arguments are unsupported and rejected. The name of the originating
+// method is derived from the predicate kind for error messages.
+func arrayPredicate(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, kind arrayPredicateKind) (Value, error) {
+	name := arrayPredicateName(kind)
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
+	}
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("%s accepts at most one value argument", name)
+	}
+	arr := receiver.Array()
+	if len(args) == 1 {
+		pattern := args[0]
+		return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
+			return caseCandidateMatches(item, pattern), nil
+		})
+	}
+	if valueBlock(block) != nil {
+		runner, err := newBlockCallRunner(exec, block, name)
+		if err != nil {
+			return NewNil(), err
+		}
+		var blockArg [1]Value
+		return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
+			blockArg[0] = item
+			val, err := runner.call(blockArg[:])
+			if err != nil {
+				return false, err
+			}
+			return val.Truthy(), nil
+		})
+	}
+	return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
+		return item.Truthy(), nil
+	})
+}
+
+// arrayPredicateName returns the public method name used in error messages for a
+// predicate kind.
+func arrayPredicateName(kind arrayPredicateKind) string {
+	switch kind {
+	case arrayPredicateAll:
+		return "array.all?"
+	case arrayPredicateNone:
+		return "array.none?"
+	default:
+		return "array.any?"
+	}
+}
+
+// arrayPredicateResult applies match to every element until the quantifier can
+// short-circuit. any? returns true on the first match, all? returns false on the
+// first miss, and none? returns false on the first match; each falls through to
+// the vacuous result for an empty or fully scanned array.
+func arrayPredicateResult(kind arrayPredicateKind, arr []Value, match func(Value) (bool, error)) (Value, error) {
+	for _, item := range arr {
+		ok, err := match(item)
+		if err != nil {
+			return NewNil(), err
+		}
+		switch kind {
+		case arrayPredicateAny:
+			if ok {
+				return NewBool(true), nil
+			}
+		case arrayPredicateAll:
+			if !ok {
+				return NewBool(false), nil
+			}
+		case arrayPredicateNone:
+			if ok {
+				return NewBool(false), nil
+			}
+		}
+	}
+	return NewBool(kind != arrayPredicateAny), nil
 }
 
 // arrayForwardIndex implements the shared forward-scanning logic for
@@ -1716,15 +1780,33 @@ func arrayFillRangeSpan(rng Range, length int) (arrayFillSpan, error) {
 
 func arrayMemberTransforms(property string) (Value, error) {
 	switch property {
-	case "push":
-		return NewAutoBuiltin("array.push", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	case "push", "append":
+		// Ruby exposes Array#append as an alias for Array#push, appending the
+		// arguments (in order) to the end of the receiver. Vibescript's
+		// collections are non-mutating, so both return a new array.
+		name := "array." + property
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
-				return NewNil(), fmt.Errorf("array.push does not take keyword arguments")
+				return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
 			}
 			base := receiver.Array()
 			out := make([]Value, len(base)+len(args))
 			copy(out, base)
 			copy(out[len(base):], args)
+			return NewArray(out), nil
+		}), nil
+	case "prepend":
+		// Ruby's Array#prepend (alias unshift) inserts the arguments, in order,
+		// at the front of the array. Vibescript's collections are non-mutating,
+		// so this returns a new array.
+		return NewAutoBuiltin("array.prepend", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.prepend does not take keyword arguments")
+			}
+			base := receiver.Array()
+			out := make([]Value, len(args)+len(base))
+			copy(out, args)
+			copy(out[len(args):], base)
 			return NewArray(out), nil
 		}), nil
 	case "pop":
