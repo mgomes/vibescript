@@ -463,7 +463,7 @@ const (
 func infixParserKind(tt ast.TokenType) infixParseKind {
 	switch tt {
 	case ast.TokenPlus, ast.TokenMinus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent,
-		ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
+		ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
 		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
 		return infixParserInfixExpression
 	case ast.TokenQuestion:
@@ -510,7 +510,7 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
+	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
 		return true
 	case ast.TokenMinus:
 		return p.minusContinuesLine(tok)
