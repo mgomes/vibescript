@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -1618,33 +1619,7 @@ func stringMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), fmt.Errorf("string.scan invalid regex: %w", err)
 			}
-			// Ruby's String#scan changes its result shape based on the number of
-			// capture groups: with no groups each element is the full match string,
-			// while with one or more groups each element is an array of that match's
-			// captured substrings (nil for groups that did not participate). We use
-			// FindAllStringSubmatchIndex so an unmatched optional group (index -1)
-			// is reported as nil rather than as an empty match.
-			matches := re.FindAllStringSubmatchIndex(text, -1)
-			groups := re.NumSubexp()
-			values := make([]Value, len(matches))
-			for i, m := range matches {
-				if groups == 0 {
-					values[i] = NewString(text[m[0]:m[1]])
-					continue
-				}
-				captures := make([]Value, groups)
-				for g := range groups {
-					start := m[(g+1)*2]
-					end := m[(g+1)*2+1]
-					if start < 0 || end < 0 {
-						captures[g] = NewNil()
-						continue
-					}
-					captures[g] = NewString(text[start:end])
-				}
-				values[i] = NewArray(captures)
-			}
-			return NewArray(values), nil
+			return stringScan(exec, re, text, receiver, args, kwargs, block)
 		}), nil
 	case "index":
 		return NewAutoBuiltin("string.index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1703,6 +1678,104 @@ func stringMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
+}
+
+// stringScanInitialCap bounds the result slice's initial capacity so a subject
+// that yields few matches under a tight step or memory quota does not reserve a
+// large backing array before the per-match checks can reject the call. append
+// grows the backing as matches accumulate, keeping the live allocation
+// proportional to the matches the quotas actually permit.
+const stringScanInitialCap = 256
+
+// stringScan implements String#scan with Ruby's capture-aware result shape while
+// keeping its output bounded by the sandbox quotas. With no capture groups each
+// element is the full match string; with one or more groups each element is an
+// array of that match's captured substrings, with nil for groups that did not
+// participate in the match.
+//
+// Matches are streamed one at a time rather than collected up front with
+// FindAllStringSubmatchIndex(text, -1). A pattern containing thousands of
+// zero-width capture groups (still under the pattern-size cap) over a near-limit
+// subject would otherwise make FindAllStringSubmatchIndex materialize matches ×
+// groups index integers before the runtime could charge a single byte against
+// the memory quota, allocating many gigabytes and bypassing the sandbox guards.
+// Streaming charges a step and the growing result against the quota per match, so
+// a scan whose output would exceed the quota errors instead of exhausting memory.
+func stringScan(exec *Execution, re *regexp.Regexp, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	groups := re.NumSubexp()
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	out := make([]Value, 0, stringScanInitialCap)
+
+	// Replicate the non-overlapping, left-to-right advancement of regexp's own
+	// FindAll iteration (which Ruby's String#scan shares): after a non-empty
+	// match resume at its end, and after an empty match step forward one rune so
+	// the scan terminates, suppressing an empty match that immediately follows a
+	// previous match's end exactly as the engine does.
+	pos := 0
+	prevMatchEnd := -1
+	for pos <= len(text) {
+		// Charge a step per match attempt so a pattern that produces a flood of
+		// matches (or empty matches over a long subject) cannot starve the step
+		// quota or cancellation checks while the result is assembled.
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+
+		loc := re.FindStringSubmatchIndex(text[pos:])
+		if loc == nil {
+			break
+		}
+		offsetRegexSubmatchIndexInPlace(loc, pos)
+
+		matchStart, matchEnd := loc[0], loc[1]
+		// An empty match that lands exactly where the previous match ended is
+		// suppressed, matching the regexp engine's own FindAll advancement.
+		accept := matchEnd != matchStart || matchStart != prevMatchEnd
+
+		if accept {
+			out = append(out, stringScanElement(text, loc, groups))
+			if err := acc.add(out[len(out)-1], cap(out)); err != nil {
+				return NewNil(), err
+			}
+		}
+		prevMatchEnd = matchEnd
+
+		if matchEnd > matchStart {
+			pos = matchEnd
+			continue
+		}
+		if matchEnd >= len(text) {
+			break
+		}
+		_, width := utf8.DecodeRuneInString(text[matchEnd:])
+		if width <= 0 {
+			width = 1
+		}
+		pos = matchEnd + width
+	}
+
+	return NewArray(out), nil
+}
+
+// stringScanElement builds the per-match result element for String#scan: the full
+// match string when the pattern has no capture groups, otherwise an array holding
+// each captured substring with nil for groups that did not participate. loc is a
+// FindStringSubmatchIndex result already offset into text.
+func stringScanElement(text string, loc []int, groups int) Value {
+	if groups == 0 {
+		return NewString(text[loc[0]:loc[1]])
+	}
+	captures := make([]Value, groups)
+	for g := range groups {
+		start := loc[(g+1)*2]
+		end := loc[(g+1)*2+1]
+		if start < 0 || end < 0 {
+			captures[g] = NewNil()
+			continue
+		}
+		captures[g] = NewString(text[start:end])
+	}
+	return NewArray(captures)
 }
 
 func stringMemberTextOps(property string) (Value, error) {
