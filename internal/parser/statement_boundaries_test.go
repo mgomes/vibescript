@@ -375,6 +375,26 @@ func TestParserLineInitialSplatAssignmentStartsNewStatement(t *testing.T) {
 				{Target: &ast.IndexExpr{Object: &ast.Identifier{Name: "self"}, Index: &ast.IntegerLiteral{Value: 0}}},
 			}},
 		},
+		{
+			// "end" is a reserved-word label token, so the splat lookahead must
+			// accept the same member names the real member parser does after a
+			// ".". Without that, the prior line's RHS swallows "*rest" as a
+			// multiplication and parsing fails at the comma.
+			name:       "named rest before keyword member target",
+			assignment: "*rest, record.end = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "end"}},
+			}},
+		},
+		{
+			name:       "anonymous rest before keyword member target",
+			assignment: "*, record.begin = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "begin"}},
+			}},
+		},
 	}
 
 	for _, tt := range tests {

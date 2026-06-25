@@ -565,6 +565,7 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 	first := true
 	splatShaped := false
 	depth := 0
+	prev := ast.Token{}
 	for {
 		tok = scan.NextToken()
 		if tok.Type == ast.TokenEOF {
@@ -590,7 +591,7 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 			if tok.Type == ast.TokenAssign {
 				return true
 			}
-			if !splatAssignmentTopLevelToken(tok.Type) {
+			if !splatAssignmentTopLevelToken(tok, prev) {
 				return false
 			}
 		}
@@ -604,18 +605,31 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 		case ast.TokenSemicolon:
 			return false
 		}
+		prev = tok
 	}
 }
 
-// splatAssignmentTopLevelToken reports whether tt may appear at the top
+// splatAssignmentTopLevelToken reports whether tok may appear at the top
 // level of a destructuring-assignment left-hand side, between the leading
-// "*" and the terminating "=". Bracketed sub-targets are validated by depth
+// "*" and the terminating "=". prev is the preceding depth-zero token, used
+// to recognize member names: after a "." the token is a method name and after
+// "::" it is a scope name, so each may be any name the real member or scope
+// parser accepts (including reserved-word labels such as "end" in
+// "record.end = values"). Bracketed sub-targets are validated by depth
 // tracking in lineStartsSplatAssignment, so this only governs depth-zero
 // tokens. "self" is included because "self.member" and "self[index]" are
 // valid assignment targets, so a target list may legitimately begin one of
 // its elements with "self".
-func splatAssignmentTopLevelToken(tt ast.TokenType) bool {
-	switch tt {
+func splatAssignmentTopLevelToken(tok, prev ast.Token) bool {
+	switch prev.Type {
+	case ast.TokenDot:
+		// parseMemberExpression accepts any member-name token after ".".
+		return isMemberNameToken(tok)
+	case ast.TokenScope:
+		// parseScopeExpression accepts only identifiers and enum names after "::".
+		return tok.Type == ast.TokenIdent || tok.Type == ast.TokenEnum
+	}
+	switch tok.Type {
 	case ast.TokenIdent, ast.TokenIvar, ast.TokenClassVar, ast.TokenSelf, ast.TokenComma, ast.TokenAsterisk, ast.TokenDot, ast.TokenScope, ast.TokenLParen, ast.TokenRParen, ast.TokenLBracket, ast.TokenRBracket:
 		return true
 	default:
