@@ -157,6 +157,23 @@ Returns true when the string has no characters:
 "hello".empty? # false
 ```
 
+### `inspect`
+
+Returns a double-quoted, escaped debug rendering of the string, distinct from
+the raw text that interpolation emits. It escapes `\\`, `\"`, `\n`, `\t`, and the
+interpolation marker `\#{`; any other byte (including a carriage return) is
+written verbatim, since Vibescript's double-quoted literals have no `\r`, `\xNN`,
+or `\uNNNN` escapes. The result therefore round-trips as a Vibescript literal:
+
+```vibe
+"hello".inspect   # "\"hello\""
+"a\nb".inspect    # "\"a\\nb\""
+"say \"hi\"".inspect # "\"say \\\"hi\\\"\""
+```
+
+`inspect` is available on every core value kind; see
+[Debug Representation](stdlib_core_utilities.md#debug-representation).
+
 ### `to_sym` / `intern`
 
 Returns the symbol named by the string, mirroring Ruby's `String#to_sym` and its
