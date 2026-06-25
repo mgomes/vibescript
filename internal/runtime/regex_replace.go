@@ -7,6 +7,11 @@ import (
 	"unicode/utf8"
 )
 
+// errRegexOutputLimit reports that an expansion would push the result past the
+// shared regex output-size guard. Callers wrap it with their method name so the
+// surfaced message matches the rest of the regex output guards.
+var errRegexOutputLimit = fmt.Errorf("output exceeds limit %d bytes", maxRegexInputBytes)
+
 // rubyAppendReplacement expands a Ruby-style replacement template against a
 // single match and appends the result to dst, mirroring the substitution rules
 // of Ruby's String#sub and String#gsub. It is the Ruby counterpart to Go's
@@ -31,6 +36,11 @@ import (
 // an error, as is a "\k<" that is never closed, matching Ruby's
 // IndexError/RuntimeError on the same inputs.
 //
+// Every append is bounded by maxRegexInputBytes before it runs, so a hostile
+// template (for example many "\`"/"\'" escapes against a near-limit subject)
+// fails with errRegexOutputLimit instead of transiently allocating past the
+// guard.
+//
 // loc holds submatch byte indices in the form returned by
 // FindStringSubmatchIndex: loc[0:2] are the whole match, and loc[2*i:2*i+2] are
 // capture group i (negative when the group did not participate).
@@ -38,33 +48,65 @@ func rubyAppendReplacement(dst []byte, re *regexp.Regexp, template, src string, 
 	for i := 0; i < len(template); i++ {
 		c := template[i]
 		if c != '\\' {
-			dst = append(dst, c)
+			next, err := appendBounded(dst, template[i:i+1])
+			if err != nil {
+				return nil, err
+			}
+			dst = next
 			continue
 		}
 		if i+1 >= len(template) {
 			// Trailing backslash: Ruby keeps it literally.
-			dst = append(dst, '\\')
+			next, err := appendBounded(dst, "\\")
+			if err != nil {
+				return nil, err
+			}
+			dst = next
 			break
 		}
 		next := template[i+1]
 		switch {
 		case next >= '0' && next <= '9':
-			dst = appendRubySubmatch(dst, src, loc, int(next-'0'))
+			expanded, err := appendRubySubmatch(dst, src, loc, int(next-'0'))
+			if err != nil {
+				return nil, err
+			}
+			dst = expanded
 			i++
 		case next == '&':
-			dst = appendRubySubmatch(dst, src, loc, 0)
+			expanded, err := appendRubySubmatch(dst, src, loc, 0)
+			if err != nil {
+				return nil, err
+			}
+			dst = expanded
 			i++
 		case next == '`':
-			dst = append(dst, src[:loc[0]]...)
+			expanded, err := appendBounded(dst, src[:loc[0]])
+			if err != nil {
+				return nil, err
+			}
+			dst = expanded
 			i++
 		case next == '\'':
-			dst = append(dst, src[loc[1]:]...)
+			expanded, err := appendBounded(dst, src[loc[1]:])
+			if err != nil {
+				return nil, err
+			}
+			dst = expanded
 			i++
 		case next == '+':
-			dst = appendRubyLastGroup(dst, src, loc)
+			expanded, err := appendRubyLastGroup(dst, src, loc)
+			if err != nil {
+				return nil, err
+			}
+			dst = expanded
 			i++
 		case next == '\\':
-			dst = append(dst, '\\')
+			expanded, err := appendBounded(dst, "\\")
+			if err != nil {
+				return nil, err
+			}
+			dst = expanded
 			i++
 		case next == 'k' && i+2 < len(template) && template[i+2] == '<':
 			expanded, nameEnd, err := appendRubyNamedGroup(dst, re, src, loc, template[i+3:])
@@ -79,39 +121,57 @@ func rubyAppendReplacement(dst []byte, re *regexp.Regexp, template, src string, 
 		default:
 			// Unknown escape (including "\k" not followed by "<"): Ruby keeps the
 			// backslash and the following character literally.
-			dst = append(dst, '\\', next)
+			expanded, err := appendBounded(dst, template[i:i+2])
+			if err != nil {
+				return nil, err
+			}
+			dst = expanded
 			i++
 		}
 	}
 	return dst, nil
 }
 
+// appendBounded appends s to dst but first verifies the result stays within
+// maxRegexInputBytes, returning errRegexOutputLimit otherwise. It guards every
+// expansion in rubyAppendReplacement so no single match can over-allocate past
+// the shared regex output cap, even for escapes that copy large pre/post-match
+// segments.
+func appendBounded(dst []byte, s string) ([]byte, error) {
+	if len(s) > maxRegexInputBytes-len(dst) {
+		return nil, errRegexOutputLimit
+	}
+	return append(dst, s...), nil
+}
+
 // appendRubySubmatch appends submatch n (0 is the whole match) when it
 // participated in the match; otherwise it appends nothing. An out-of-range or
-// non-participating group expands to the empty string, as Ruby does.
-func appendRubySubmatch(dst []byte, src string, loc []int, n int) []byte {
+// non-participating group expands to the empty string, as Ruby does. The append
+// is bounded by the shared regex output guard.
+func appendRubySubmatch(dst []byte, src string, loc []int, n int) ([]byte, error) {
 	start := 2 * n
 	if start+1 >= len(loc) {
-		return dst
+		return dst, nil
 	}
 	lo, hi := loc[start], loc[start+1]
 	if lo < 0 || hi < 0 {
-		return dst
+		return dst, nil
 	}
-	return append(dst, src[lo:hi]...)
+	return appendBounded(dst, src[lo:hi])
 }
 
 // appendRubyLastGroup appends the highest-numbered capture group that
 // participated in the match, matching Ruby's "\+" replacement escape. With no
-// participating group it appends nothing.
-func appendRubyLastGroup(dst []byte, src string, loc []int) []byte {
+// participating group it appends nothing. The append is bounded by the shared
+// regex output guard.
+func appendRubyLastGroup(dst []byte, src string, loc []int) ([]byte, error) {
 	for n := len(loc)/2 - 1; n >= 1; n-- {
 		lo, hi := loc[2*n], loc[2*n+1]
 		if lo >= 0 && hi >= 0 {
-			return append(dst, src[lo:hi]...)
+			return appendBounded(dst, src[lo:hi])
 		}
 	}
-	return dst
+	return dst, nil
 }
 
 // appendRubyNamedGroup expands "\k<name>" given the template text immediately
@@ -119,18 +179,46 @@ func appendRubyLastGroup(dst []byte, src string, loc []int) []byte {
 // closing ">" within rest so the caller can advance past the reference. An
 // unterminated name or a name the pattern never defines is an error, matching
 // Ruby's RuntimeError and IndexError on the same templates.
+//
+// When the pattern reuses a name across alternatives (for example
+// "(?<x>foo)|(?<x>bar)"), Ruby expands the occurrence that actually
+// participated in the match. This resolves to the participating index, falling
+// back to the empty expansion only when no occurrence participated.
 func appendRubyNamedGroup(dst []byte, re *regexp.Regexp, src string, loc []int, rest string) ([]byte, int, error) {
 	end := strings.IndexByte(rest, '>')
 	if end < 0 {
 		return nil, 0, fmt.Errorf("invalid group name reference format")
 	}
 	name := rest[:end]
+	defined := false
+	firstIdx := -1
 	for idx, candidate := range re.SubexpNames() {
-		if candidate != "" && candidate == name {
-			return appendRubySubmatch(dst, src, loc, idx), end, nil
+		if candidate == "" || candidate != name {
+			continue
+		}
+		defined = true
+		if firstIdx < 0 {
+			firstIdx = idx
+		}
+		if 2*idx+1 < len(loc) && loc[2*idx] >= 0 && loc[2*idx+1] >= 0 {
+			expanded, err := appendRubySubmatch(dst, src, loc, idx)
+			if err != nil {
+				return nil, 0, err
+			}
+			return expanded, end, nil
 		}
 	}
-	return nil, 0, fmt.Errorf("undefined group name reference: %s", name)
+	if !defined {
+		return nil, 0, fmt.Errorf("undefined group name reference: %s", name)
+	}
+	// The name exists but no occurrence participated; Ruby expands to empty.
+	// appendRubySubmatch on the (non-participating) first index yields that
+	// empty expansion while keeping the bounded-append contract.
+	expanded, err := appendRubySubmatch(dst, src, loc, firstIdx)
+	if err != nil {
+		return nil, 0, err
+	}
+	return expanded, end, nil
 }
 
 // rubyRegexSub replaces the first match of re in src using the Ruby-style

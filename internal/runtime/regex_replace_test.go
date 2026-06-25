@@ -98,6 +98,26 @@ func TestStringRegexReplacementBackreferences(t *testing.T) {
 			want:   "Smith, John",
 		},
 		{
+			name:   "duplicate named group first alternative participates",
+			script: `def run() "hi".sub("(?<x>hi)|(?<x>bye)", "[\\k<x>]", regex: true) end`,
+			want:   "[hi]",
+		},
+		{
+			name:   "duplicate named group second alternative participates",
+			script: `def run() "bye".sub("(?<x>hi)|(?<x>bye)", "[\\k<x>]", regex: true) end`,
+			want:   "[bye]",
+		},
+		{
+			name:   "duplicate named group gsub picks participating occurrence",
+			script: `def run() "hi bye".gsub("(?<x>hi)|(?<x>bye)", "[\\k<x>]", regex: true) end`,
+			want:   "[hi] [bye]",
+		},
+		{
+			name:   "duplicate named group neither participates is empty",
+			script: `def run() "z".sub("((?<x>a)|(?<x>b))?z", "[\\k<x>]", regex: true) end`,
+			want:   "[]",
+		},
+		{
 			name:   "out of range group is empty",
 			script: `def run() "abc".sub("(b)", "\\2", regex: true) end`,
 			want:   "ac",
@@ -214,6 +234,82 @@ func TestStringRegexReplacementOutputLimit(t *testing.T) {
 		t.Fatalf("expected sub output limit error, got nil")
 	} else if !strings.Contains(err.Error(), "output exceeds limit") {
 		t.Fatalf("unexpected sub error: %v", err)
+	}
+}
+
+// TestStringRegexReplacementPrePostMatchOutputLimit verifies that pre-match
+// (\`) and post-match (\') escapes are bounded by the shared output guard while
+// they expand, rather than transiently allocating the full pre/post-match
+// segment past the cap before a later check. A template repeating these escapes
+// against a near-limit subject would otherwise build a multi-megabyte buffer
+// for a single match.
+func TestStringRegexReplacementPrePostMatchOutputLimit(t *testing.T) {
+	t.Parallel()
+
+	// Match the final byte so the pre-match is nearly the whole subject; two
+	// pre-match copies alone exceed maxRegexInputBytes.
+	re, err := compileCachedRegex("Z")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	src := strings.Repeat("a", maxRegexInputBytes-1) + "Z"
+
+	t.Run("prematch", func(t *testing.T) {
+		t.Parallel()
+		if _, err := rubyRegexSub(re, src, "\\`\\`", "string.sub"); err == nil {
+			t.Fatalf("expected output limit error, got nil")
+		} else if !strings.Contains(err.Error(), "output exceeds limit") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("postmatch", func(t *testing.T) {
+		t.Parallel()
+		// Match the first byte so the post-match is nearly the whole subject.
+		postRe, err := compileCachedRegex("a")
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		postSrc := "a" + strings.Repeat("b", maxRegexInputBytes-1)
+		if _, err := rubyRegexSub(postRe, postSrc, "\\'\\'", "string.sub"); err == nil {
+			t.Fatalf("expected output limit error, got nil")
+		} else if !strings.Contains(err.Error(), "output exceeds limit") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("gsub prematch", func(t *testing.T) {
+		t.Parallel()
+		if _, err := rubyRegexGSub(re, src, "\\`\\`", "string.gsub"); err == nil {
+			t.Fatalf("expected output limit error, got nil")
+		} else if !strings.Contains(err.Error(), "output exceeds limit") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestRubyAppendReplacementBoundsSingleSegment proves the expander refuses an
+// oversized pre-match segment before appending it, so a hostile single-match
+// template cannot allocate past maxRegexInputBytes even transiently.
+func TestRubyAppendReplacementBoundsSingleSegment(t *testing.T) {
+	t.Parallel()
+
+	re, err := compileCachedRegex("Z")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// Pre-match is maxRegexInputBytes bytes; a buffer already holding one byte
+	// leaves no room, so the very first append must fail.
+	src := strings.Repeat("a", maxRegexInputBytes) + "Z"
+	loc := re.FindStringSubmatchIndex(src)
+	if loc == nil {
+		t.Fatal("expected match")
+	}
+	dst := []byte{'x'}
+	if _, err := rubyAppendReplacement(dst, re, "\\`", src, loc); err == nil {
+		t.Fatal("expected output limit error, got nil")
+	} else if !strings.Contains(err.Error(), "output exceeds limit") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
