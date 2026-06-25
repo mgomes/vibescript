@@ -103,6 +103,16 @@ func TestCapabilityBindRejectsInvalidValues(t *testing.T) {
 			resolver: cyclicResolver,
 			wantErr:  "ctx capability value must not contain cyclic references",
 		},
+		{
+			// A hash carrying a default proc (a runtime-only block) outside its
+			// entry map must be rejected: the proc is a script callable that the
+			// data-only scan would miss if it walked only the entries.
+			name: "default_proc_value",
+			resolver: func(context.Context) (value.Value, error) {
+				return value.NewHashWithDefault(map[string]value.Value{}, value.NewNil(), value.NewValue(value.KindBlock, struct{}{})), nil
+			},
+			wantErr: "ctx capability value must be data-only",
+		},
 	}
 
 	for _, tc := range tests {
@@ -114,6 +124,31 @@ func TestCapabilityBindRejectsInvalidValues(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestCapabilityBindPreservesHashDefault(t *testing.T) {
+	t.Parallel()
+
+	// A resolver returning a hash with a Ruby-style default value must keep that
+	// default after the defensive clone, otherwise the script sees a plain hash
+	// that returns nil for missing keys instead of the configured default.
+	cap := MustNewCapability("ctx", func(context.Context) (value.Value, error) {
+		return value.NewHashWithDefault(
+			map[string]value.Value{"present": value.NewInt(1)},
+			value.NewInt(42),
+			value.NewNil(),
+		), nil
+	})
+
+	bound, err := cap.Bind(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := value.HashDefaultValue(bound["ctx"])
+	if got.Kind() != value.KindInt || got.Int() != 42 {
+		t.Fatalf("clone dropped hash default: got %s", got)
 	}
 }
 
