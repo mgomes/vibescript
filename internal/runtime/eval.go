@@ -711,11 +711,19 @@ func destructureRestAllocBytes(target *DestructureTarget, value Value) int {
 	}
 
 	trailing := len(target.Elements) - restIndex - 1
+	// Clamp the rest window exactly as AssignDestructure does. When the target has
+	// more fixed targets than the value provides, restIndex can exceed len(values),
+	// so the bare values[restIndex:restEnd] slice below would panic the host (a
+	// sandbox DoS) on a slice-out-of-range before any binding occurs. Mirroring the
+	// binder's restStart = min(restIndex, len(values)) keeps the reconstructed rest
+	// array within bounds and its length equal to the rest AssignDestructure boxes,
+	// so the reservation matches the real allocation for any nesting shape.
+	restStart := min(restIndex, len(values))
 	restEnd := len(values) - trailing
-	if restEnd < restIndex {
-		restEnd = restIndex
+	if restEnd < restStart {
+		restEnd = restStart
 	}
-	restCount := restEnd - restIndex
+	restCount := restEnd - restStart
 	total = saturatingAdd(total, restArrayBytes(restCount))
 	for i := range target.Elements {
 		var val Value
@@ -727,13 +735,13 @@ func destructureRestAllocBytes(target *DestructureTarget, value Value) int {
 			// A plain identifier holds it with no further allocation (already charged
 			// above), but when the target is itself a destructure that array is the
 			// value it recurses over, so a deeper rest collects from it. Reconstruct
-			// the array (the same restIndex:restEnd slice, len-matched as the recursion
+			// the array (the same restStart:restEnd slice, len-matched as the recursion
 			// only reads element values and length) only for the destructure case to
 			// charge those deeper rests without boxing a throwaway array otherwise.
 			if _, ok := target.Elements[i].Target.(*DestructureTarget); !ok {
 				continue
 			}
-			val = NewArray(values[restIndex:restEnd])
+			val = NewArray(values[restStart:restEnd])
 		default:
 			valueIndex := len(values) - trailing + i - restIndex - 1
 			if valueIndex < restIndex {
@@ -1049,6 +1057,7 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 	}
 
 	vars[property] = value
+	exec.noteMutation()
 	return nil
 }
 
@@ -1076,6 +1085,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 			return exec.errorAt(target.Pos(), "no instance context for ivar")
 		}
 		valueInstance(self).Ivars[t.Name] = value
+		exec.noteMutation()
 		return nil
 	case *ClassVarExpr:
 		self, ok := env.Get("self")
@@ -1085,9 +1095,11 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		switch self.Kind() {
 		case KindInstance:
 			valueInstance(self).Class.ClassVars[t.Name] = value
+			exec.noteMutation()
 			return nil
 		case KindClass:
 			valueClass(self).ClassVars[t.Name] = value
+			exec.noteMutation()
 			return nil
 		default:
 			return exec.errorAt(target.Pos(), "no class context for class var")
@@ -1117,6 +1129,7 @@ func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Va
 	switch obj.Kind() {
 	case KindHash, KindObject:
 		obj.Hash()[target.Property] = value
+		exec.noteMutation()
 		return nil
 	case KindInstance, KindClass:
 		return exec.assignToMember(obj, target.Property, value, target.Pos())
@@ -1137,6 +1150,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value
 			return exec.errorAt(target.Index.Pos(), "array index out of bounds")
 		}
 		arr[i] = value
+		exec.noteMutation()
 		return nil
 	case KindHash, KindObject:
 		key, err := valueToHashKey(idx)
@@ -1144,6 +1158,7 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value
 			return exec.errorAt(target.Index.Pos(), "%s", err.Error())
 		}
 		obj.Hash()[key] = value
+		exec.noteMutation()
 		return nil
 	default:
 		return exec.errorAt(target.Object.Pos(), "cannot index %s", obj.Kind())

@@ -979,6 +979,84 @@ func TestHashEachSingleParamPairChargedAgainstQuota(t *testing.T) {
 	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
 }
 
+// TestHashEachDestructureRestRechecksLaterGrownEntryEndToEnd exercises the P2 finding
+// on PR #808 from a compiled script. A destructuring block with a rest target
+// (|(k, (head, *tail))|) grows a not-yet-visited entry the walk reaches a later
+// iteration (h[:c] = big_array while binding :a, over sorted keys a < b < c). Binding
+// :c then makes AssignDestructure collect a tail rest array sized to the grown value
+// inside callBlock. The walk must not let that grown destructure escape the quota: a
+// quota that admits the single grow but not the additional equally large rest array
+// must trip by the time the walk binds :c, two iterations after the mutation. The
+// container-level tests (members_hash_containment_test.go) pin the per-iteration
+// live-rest recheck that rejects before the allocation; this end-to-end test pins the
+// observable script behavior -- rejection when the grown destructure cannot fit and a
+// completed read-the-live-value walk when it can.
+func TestHashEachDestructureRestRechecksLaterGrownEntryEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	// {a: [], b: [], c: []}: sorted keys let the :a iteration grow the later :c entry
+	// before the walk reaches and destructures it.
+	makeReceiver := func() Value {
+		return NewHash(map[string]Value{
+			"a": NewArray(nil),
+			"b": NewArray(nil),
+			"c": NewArray(nil),
+		})
+	}
+
+	source := `def run(h)
+		h.each do |(k, (head, *tail))|
+			if k == :a
+				h[:c] = (1..20000).to_a
+			end
+		end
+		h
+	end`
+
+	run := func(quota int) (Value, error) {
+		script := compileScriptWithConfig(t, Config{StepQuota: 5_000_000, MemoryQuotaBytes: quota}, source)
+		return script.Call(context.Background(), "run", []Value{makeReceiver()}, CallOptions{})
+	}
+
+	// Smallest quota that admits the whole walk (the grow plus the grown rest array
+	// :c's destructure later collects). Searching keeps the test robust to estimator
+	// constants rather than pinning a fragile byte value.
+	minQuota := 0
+	for quota := 50_000; quota <= 8_000_000; quota += 4096 {
+		if _, err := run(quota); err == nil {
+			minQuota = quota
+			break
+		}
+	}
+	if minQuota == 0 {
+		t.Fatal("walk never fit within the searched quota range")
+	}
+
+	// One rest-array's worth below that floor: the grow itself still fits (its own
+	// in-body check passed at the floor minus a rest array), but the later :c
+	// destructure's grown tail rest array no longer does, so the per-iteration recheck
+	// must reject when the walk reaches :c.
+	tight := minQuota - restArrayBytes(20000) - 1
+	_, err := run(tight)
+	requireErrorContains(t, err, "memory quota exceeded")
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+
+	// Safety twin: at the floor the walk completes and leaves :c grown, proving the
+	// rejection above is quota tightness, not an over-eager recheck, and that binding
+	// :c destructured the live (mutated) value.
+	got, err := run(minQuota)
+	if err != nil {
+		t.Fatalf("destructure-rest walk at its floor quota %d = %v, want success", minQuota, err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("walk returned %v, want the receiver hash", got.Kind())
+	}
+	grownC := got.Hash()["c"]
+	if grownC.Kind() != KindArray || len(grownC.Array()) != 20000 {
+		t.Fatalf("entry :c after the walk = %v with %d elements, want a 20000-element array", grownC.Kind(), len(grownC.Array()))
+	}
+}
+
 func TestHashFetchValues(t *testing.T) {
 	t.Parallel()
 

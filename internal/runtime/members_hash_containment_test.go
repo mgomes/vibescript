@@ -3165,6 +3165,136 @@ func TestHashEachDestructureRestAdmitsGrownEntryWithinQuota(t *testing.T) {
 	}
 }
 
+// threeSmallArrayEntryHash builds {a: [1, 2], b: [1, 2], c: [1, 2]}: three sorted
+// keys whose values all start small so the preflight reserves a tiny rest array.
+// The walk binds :a first and can grow :c -- visited two iterations later -- before
+// the sorted walk reaches it.
+func threeSmallArrayEntryHash() Value {
+	return NewHash(map[string]Value{
+		"a": NewArray([]Value{NewInt(1), NewInt(2)}),
+		"b": NewArray([]Value{NewInt(1), NewInt(2)}),
+		"c": NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+}
+
+// mutatingNestedRestEachBlockOnKey builds the nested-rest |(k, (head, *tail))| block
+// but grows growKey only while binding bindKey, so the mutation lands on one specific
+// iteration. Pointing bindKey at the first sorted key and growKey at the last makes
+// the grown entry visited two iterations after the mutation -- the shape a recheck
+// that fires only on the iteration immediately following a mutation would miss.
+func mutatingNestedRestEachBlockOnKey(receiver Value, receiverName, bindKey, growKey string, grownLen int) Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "k", Position: pos}},
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "head", Position: pos}},
+					{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+				},
+			}},
+		},
+	}
+	elems := make([]Expression, grownLen)
+	for i := range elems {
+		elems[i] = &IntegerLiteral{Value: int64(i), Position: pos}
+	}
+	// if k == :<bindKey> then receiver[:<growKey>] = [0, 1, ...] end
+	body := []Statement{
+		&IfStmt{
+			Position: pos,
+			Condition: &BinaryExpr{
+				Position: pos,
+				Operator: tokenEQ,
+				Left:     &Identifier{Name: "k", Position: pos},
+				Right:    &SymbolLiteral{Name: bindKey, Position: pos},
+			},
+			Consequent: []Statement{
+				&AssignStmt{
+					Target: &IndexExpr{
+						Object:   &Identifier{Name: receiverName, Position: pos},
+						Index:    &SymbolLiteral{Name: growKey, Position: pos},
+						Position: pos,
+					},
+					Value:    &ArrayLiteral{Elements: elems, Position: pos},
+					Position: pos,
+				},
+			},
+		},
+	}
+	env := newEnv(nil)
+	env.Define(receiverName, receiver)
+	return NewBlock([]Param{{Kind: ParamNormal, Target: target}}, body, env)
+}
+
+// threeEntryHashWithGrownKey builds {a: [1, 2], b: [1, 2], c: <grownLen-element>}:
+// the post-mutation receiver shape so a probe can measure the live call roots the
+// walk reprojects against once :c has grown. The values alias fresh arrays so the
+// estimator sizes the grown :c the same way the live walk does.
+func threeEntryHashWithGrownKey(grownKey string, grownLen int) Value {
+	grown := make([]Value, grownLen)
+	for i := range grown {
+		grown[i] = NewInt(int64(i))
+	}
+	entries := map[string]Value{
+		"a": NewArray([]Value{NewInt(1), NewInt(2)}),
+		"b": NewArray([]Value{NewInt(1), NewInt(2)}),
+		"c": NewArray([]Value{NewInt(1), NewInt(2)}),
+	}
+	entries[grownKey] = NewArray(grown)
+	return NewHash(entries)
+}
+
+// TestHashEachDestructureRestRejectsLaterGrownEntryBeforeAllocating pins the part of
+// the P2 finding that a mutation-epoch-only recheck would miss: a destructuring block
+// with a rest target grows a not-yet-visited entry the walk reaches two iterations
+// later (h[:c] = bigArray while binding :a, over sorted keys a < b < c). A recheck
+// that fired only on the single iteration right after a mutation would reproject :b
+// (still small) and then bind the grown :c with no recheck, letting AssignDestructure
+// collect an over-quota tail rest array inside callBlock. Because every iteration
+// sizes its own live rest against the reservation, the walk rejects when it reaches
+// :c no matter how many small entries sit between the mutation and the grown entry.
+//
+// The quota is set in the narrow window that isolates the per-iteration rest recheck
+// from the epoch's baseline recheck: it admits the grown receiver and the two live
+// pairs (so the post-mutation baseline recheck at :b passes), but leaves less than the
+// grown tail rest array binding :c would allocate on top. Only the per-iteration rest
+// recheck -- which adds that entry's live rest to the baseline -- can reject here; the
+// baseline-only recheck and the preflight both pass.
+func TestHashEachDestructureRestRejectsLaterGrownEntryBeforeAllocating(t *testing.T) {
+	t.Parallel()
+
+	const grownLen = 16384
+	// Binding :c destructures its grown value as (head, *tail), so tail collects all
+	// but the first element into a fresh rest array.
+	tailRestBytes := restArrayBytes(grownLen - 1)
+
+	// Probe the live call roots against the post-mutation receiver (with :c grown), so
+	// the quota is sized to the baseline the walk reprojects against at :b -- not the
+	// pre-walk snapshot, which would conflate the rest array with the grow itself.
+	probeReceiver := threeEntryHashWithGrownKey("c", grownLen)
+	probeBlock := mutatingNestedRestEachBlockOnKey(probeReceiver, "__receiver__", "a", "c", grownLen)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	grownRoots := probe.hashCallRootBytes(probeReceiver, nil, nil, probeBlock)
+	scratch := sortedKeyBufferBytes(len(probeReceiver.Hash()))
+
+	// Admit the grown baseline, the sorted-key scratch, and the two live pairs (so the
+	// baseline-only recheck at :b passes), plus half the tail rest array -- not the
+	// whole of it. The per-iteration rest recheck at :c adds the full tail rest on top
+	// of the baseline and must reject; without it AssignDestructure would materialize
+	// the over-quota rest array before any later check observed it.
+	rejectQuota := grownRoots + scratch + 2*collapsedPairBytes + tailRestBytes/2
+
+	receiver := threeSmallArrayEntryHash()
+	block := mutatingNestedRestEachBlockOnKey(receiver, "__receiver__", "a", "c", grownLen)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: rejectQuota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("each over a hash whose block grows the last-visited :c past the reservation (quota %d) = %v, want errMemoryQuotaExceeded", rejectQuota, err)
+	}
+}
+
 // TestCheckLiveCollapsedRestBytes pins the per-entry projection's contract in
 // isolation: it charges the call roots, the two live collapsed pairs, and the
 // supplied live rest footprint, rejecting only when their sum exceeds the quota and
@@ -3426,4 +3556,319 @@ func TestCollapsedPairReservation(t *testing.T) {
 			t.Fatalf("collapsedPairReservation(|pair|, empty) = %d, want 0 (no pair allocated)", got)
 		}
 	})
+}
+
+// overFixedNestedRestPairTarget builds the destructure target |(a, b, c, *(x))|:
+// three fixed elements followed by a rest target that is itself a destructure. Over
+// a collapsed two-element [key, value] pair the rest index (3) exceeds the value
+// count (2), the shape that made destructureRestAllocBytes slice values[restIndex:]
+// out of range and panic the host before the fix clamped the low bound.
+func overFixedNestedRestPairTarget() *DestructureTarget {
+	pos := Position{Line: 1, Column: 1}
+	return &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "a", Position: pos}},
+			{Target: &Identifier{Name: "b", Position: pos}},
+			{Target: &Identifier{Name: "c", Position: pos}},
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "x", Position: pos}},
+				},
+			}, Rest: true},
+		},
+	}
+}
+
+// TestDestructureRestAllocBytesClampsOverFixedRest pins the P1 host-crash finding on
+// PR #808: when a destructure has more fixed targets than the value provides plus a
+// nested rest target (|(a, b, c, *(x))| over a two-element pair), restIndex exceeds
+// the value count. The preflight helper reconstructs the rest slice as
+// values[restStart:restEnd]; without clamping the low bound to len(values) -- exactly
+// as AssignDestructure does -- that slice panics with a slice-bounds error before any
+// binding, a sandbox DoS. The helper must instead return a finite, non-negative byte
+// count: the missing fixed targets bind to nil and the rest collects nothing.
+func TestDestructureRestAllocBytesClampsOverFixedRest(t *testing.T) {
+	t.Parallel()
+
+	target := overFixedNestedRestPairTarget()
+	pair := NewArray([]Value{NewSymbol("k"), NewInt(1)})
+
+	got := destructureRestAllocBytes(target, pair)
+	if got < 0 {
+		t.Fatalf("destructureRestAllocBytes(|(a, b, c, *(x))|, 2-value pair) = %d, want a non-negative count", got)
+	}
+	// The rest spans no values (restStart is clamped to the value count and restEnd
+	// floors at restStart), and its nested target collects nothing, so the only
+	// charge is the empty outer rest array.
+	if want := restArrayBytes(0); got != want {
+		t.Fatalf("destructureRestAllocBytes(|(a, b, c, *(x))|, 2-value pair) = %d, want %d (one empty rest array)", got, want)
+	}
+}
+
+// overFixedNestedRestPairBlock builds an |(a, b, c, *(x))| block with an EMPTY body.
+// wantsCollapsedPair stays true (one positional parameter), so Hash#each collapses
+// each entry into a [key, value] pair and binds it through this over-fixed nested
+// rest shape -- the shape whose preflight rest reconstruction panicked the host.
+func overFixedNestedRestPairBlock() Value {
+	params := []Param{{Kind: ParamNormal, Target: overFixedNestedRestPairTarget()}}
+	return NewBlock(params, nil, newEnv(nil))
+}
+
+// TestHashEachOverFixedNestedRestDoesNotPanic is the end-to-end twin of the P1
+// regression: iterating a hash with an |(a, b, c, *(x))| block under a memory quota
+// must complete without panicking the host. Each entry's collapsed pair holds only
+// two values, fewer than the three fixed targets plus the nested rest, so the
+// preflight's rest reconstruction slices out of range unless its low bound is
+// clamped. The walk binds the missing fixed targets to nil and an empty rest, exactly
+// as AssignDestructure does, and returns the receiver.
+func TestHashEachOverFixedNestedRestDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{
+		"a": NewInt(1),
+		"b": NewInt(2),
+		"c": NewInt(3),
+	})
+	block := overFixedNestedRestPairBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(len(receiver.Hash()))
+
+	// A real but generous quota so the memory path -- including the preflight's rest
+	// reconstruction -- runs under enforcement rather than the no-quota short circuit.
+	quota := roots + scratch + 4*collapsedPairBytes + 64*1024
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each over |(a, b, c, *(x))| at quota %d = %v, want success without panicking", quota, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != len(receiver.Hash()) {
+		t.Fatalf("each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), len(receiver.Hash()))
+	}
+}
+
+// mutatingPairValueEachBlock builds a single-parameter |pair| block (no rest, no
+// destructuring) whose body grows a not-yet-visited entry of the receiver in place to
+// a large array on growKey. The receiver is captured under receiverName so the body's
+// `receiver[growKey] = [...]` mutates it exactly as a script would. The collapsed
+// pair this block binds is a fixed two-element array, so before the fix the iterator
+// reserved its peak only from the pre-walk snapshot and never rechecked it after a
+// mutation grew the receiver baseline -- the non-rest P2 gap this regression pins.
+func mutatingPairValueEachBlock(receiver Value, receiverName, growKey string, grownLen int) Value {
+	pos := Position{Line: 1, Column: 1}
+	elems := make([]Expression, grownLen)
+	for i := range elems {
+		elems[i] = &IntegerLiteral{Value: int64(i), Position: pos}
+	}
+	body := []Statement{
+		&AssignStmt{
+			Target: &IndexExpr{
+				Object:   &Identifier{Name: receiverName, Position: pos},
+				Index:    &SymbolLiteral{Name: growKey, Position: pos},
+				Position: pos,
+			},
+			Value:    &ArrayLiteral{Elements: elems, Position: pos},
+			Position: pos,
+		},
+	}
+	env := newEnv(nil)
+	env.Define(receiverName, receiver)
+	return NewBlock([]Param{{Name: "pair", Kind: ParamNormal}}, body, env)
+}
+
+// threeSmallEntryHash builds {a: 1, b: 1, c: 1}: three sorted keys so a block bound to
+// :a can grow a later key (:c) before the sorted walk allocates :c's pair.
+func threeSmallEntryHash() Value {
+	return NewHash(map[string]Value{
+		"a": NewInt(1),
+		"b": NewInt(1),
+		"c": NewInt(1),
+	})
+}
+
+// TestHashEachFixedPairRejectsGrownBaselineBeforeAllocating exercises the non-rest P2
+// finding on PR #808: a plain |pair| (or |(k, v)|) block allocates a fixed
+// two-element pair array whose peak the iterator reserves only from the pre-walk
+// snapshot. When an earlier iteration grows a not-yet-visited entry in place
+// (receiver[:c] = big_array while binding :a) the receiver baseline grows past that
+// snapshot, so a later iteration would allocate its pair on the grown baseline. The
+// mutation epoch makes the loop reproject the live pair peak against the grown roots
+// after the receiver changes, so the walk rejects a quota that fits the grown array
+// the body assigns but not the grown baseline plus the two live pairs. The pair
+// transient the epoch recheck pre-empts is bounded (two constant pair arrays) and is
+// also backstopped by the next iteration's in-body check; this test pins the walk's
+// observable rejection, while TestHashEachReadOnlyWalkNeverReprojects pins that the
+// recheck stays off the non-mutating fast path.
+func TestHashEachFixedPairRejectsGrownBaselineBeforeAllocating(t *testing.T) {
+	t.Parallel()
+
+	const grownLen = 8192
+	grownArrayBytes := restArrayBytes(grownLen)
+
+	probeReceiver := threeSmallEntryHash()
+	probeBlock := mutatingPairValueEachBlock(probeReceiver, "__receiver__", "c", grownLen)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(probeReceiver, nil, nil, probeBlock)
+	scratch := sortedKeyBufferBytes(len(probeReceiver.Hash()))
+
+	// Room for the small call roots, the scratch, the one grown array the body
+	// assigns to :c, and the two live pairs -- but nothing more. The first iteration
+	// (:a) assigns the grown array, leaving the live baseline at roughly roots +
+	// grownArrayBytes. The next iterations must reproject that grown baseline plus the
+	// two live pairs; with no headroom past the two pairs the projection trips,
+	// proving the post-mutation recheck guards the fixed-pair allocation.
+	rejectQuota := roots + scratch + grownArrayBytes + 2*collapsedPairBytes
+	receiver := threeSmallEntryHash()
+	block := mutatingPairValueEachBlock(receiver, "__receiver__", "c", grownLen)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: rejectQuota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("fixed-pair each whose block grows :c past the snapshot (quota %d) = %v, want errMemoryQuotaExceeded", rejectQuota, err)
+	}
+}
+
+// TestHashEachFixedPairAdmitsGrownBaselineWithinQuota is the safety twin of the
+// rejection regression: when the quota comfortably fits the grown receiver and the two
+// live pairs, the post-mutation reprojection must admit the walk rather than rejecting
+// categorically. This proves the rejection above comes from the quota being tight and
+// not from the recheck being over-eager, and that a read-the-live-value walk over a
+// fixed |pair| block completes after an in-place mutation.
+func TestHashEachFixedPairAdmitsGrownBaselineWithinQuota(t *testing.T) {
+	t.Parallel()
+
+	const grownLen = 8192
+	grownArrayBytes := restArrayBytes(grownLen)
+
+	probeReceiver := threeSmallEntryHash()
+	probeBlock := mutatingPairValueEachBlock(probeReceiver, "__receiver__", "c", grownLen)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(probeReceiver, nil, nil, probeBlock)
+	scratch := sortedKeyBufferBytes(len(probeReceiver.Hash()))
+
+	admitQuota := roots + scratch + 4*grownArrayBytes + 512*1024
+	receiver := threeSmallEntryHash()
+	block := mutatingPairValueEachBlock(receiver, "__receiver__", "c", grownLen)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: admitQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("fixed-pair each over the mutating block at a roomy quota %d = %v, want success", admitQuota, err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("each returned %v, want the receiver hash", got.Kind())
+	}
+	grown := receiver.Hash()["c"]
+	if grown.Kind() != KindArray || len(grown.Array()) != grownLen {
+		t.Fatalf("entry :c after the walk = %v with %d elements, want a %d-element array (the block must keep the live grown value)", grown.Kind(), len(grown.Array()), grownLen)
+	}
+}
+
+// TestHashEachReadOnlyWalkNeverReprojects pins the fast-path invariant the mutation
+// epoch protects: a read-only collapsed-pair walk advances no mutation epoch, so the
+// loop never triggers the O(receiver) reprojection. A quota sized to exactly the call
+// roots, the sorted-key scratch, and the two live pairs (the preflight reservation)
+// must admit a large read-only walk; were the loop reprojecting every entry on top of
+// the bound pair, the projection would charge more than the two reserved pairs and
+// reject this exact-fit quota.
+func TestHashEachReadOnlyWalkNeverReprojects(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+	block := singleParamPairBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	beforeEpoch := probe.mutationEpoch
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(count)
+
+	// The two reserved pairs plus a small slack for the interpreter's per-step checks.
+	// No reprojection fires, so no extra pair is charged beyond the reservation.
+	quota := roots + scratch + 2*collapsedPairBytes + 64*1024
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); err != nil {
+		t.Fatalf("read-only each at the two-pair quota %d = %v, want success (no reprojection on a non-mutating walk)", quota, err)
+	}
+	if exec.mutationEpoch != beforeEpoch {
+		t.Fatalf("read-only each advanced the mutation epoch from %d to %d, want it unchanged", beforeEpoch, exec.mutationEpoch)
+	}
+}
+
+// TestNoteMutationCoversEveryInPlaceAssignment pins the contract the mutation epoch
+// relies on: every assignment that writes into a live container advances the epoch,
+// while binding a plain local does not. Hash#each's post-mutation reprojection only
+// fires when the epoch changes, so a write that grew a not-yet-visited entry without
+// advancing the epoch would silently escape the recheck. The in-place kinds are index
+// (arr[i], h[k]), member (obj.prop), instance variable (@x), and class variable
+// (@@x); a bare local assignment rebinds the variable and grows no existing container.
+func TestNoteMutationCoversEveryInPlaceAssignment(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	class := &ClassDef{Name: "C", ClassVars: map[string]Value{}}
+	self := NewInstance(&Instance{Class: class, Ivars: map[string]Value{}})
+
+	newEnvWithSelf := func() *Env {
+		env := newEnv(nil)
+		env.Define("self", self)
+		env.Define("arr", NewArray([]Value{NewInt(0)}))
+		env.Define("h", NewHash(map[string]Value{"k": NewInt(0)}))
+		env.Define("obj", NewHash(map[string]Value{"prop": NewInt(0)}))
+		env.Define("local", NewInt(0))
+		return env
+	}
+
+	cases := []struct {
+		name        string
+		target      Expression
+		wantAdvance bool
+	}{
+		{
+			name:        "array index",
+			target:      &IndexExpr{Object: &Identifier{Name: "arr", Position: pos}, Index: &IntegerLiteral{Value: 0, Position: pos}, Position: pos},
+			wantAdvance: true,
+		},
+		{
+			name:        "hash key",
+			target:      &IndexExpr{Object: &Identifier{Name: "h", Position: pos}, Index: &SymbolLiteral{Name: "k", Position: pos}, Position: pos},
+			wantAdvance: true,
+		},
+		{
+			name:        "member property",
+			target:      &MemberExpr{Object: &Identifier{Name: "obj", Position: pos}, Property: "prop", Position: pos},
+			wantAdvance: true,
+		},
+		{
+			name:        "instance variable",
+			target:      &IvarExpr{Name: "x", Position: pos},
+			wantAdvance: true,
+		},
+		{
+			name:        "class variable",
+			target:      &ClassVarExpr{Name: "y", Position: pos},
+			wantAdvance: true,
+		},
+		{
+			name:        "plain local",
+			target:      &Identifier{Name: "local", Position: pos},
+			wantAdvance: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+			env := newEnvWithSelf()
+			before := exec.mutationEpoch
+			if err := exec.assign(tc.target, NewInt(1), env); err != nil {
+				t.Fatalf("assign %s = 1: %v", tc.name, err)
+			}
+			advanced := exec.mutationEpoch != before
+			if advanced != tc.wantAdvance {
+				t.Fatalf("assign %s advanced the mutation epoch = %t, want %t", tc.name, advanced, tc.wantAdvance)
+			}
+		})
+	}
 }
