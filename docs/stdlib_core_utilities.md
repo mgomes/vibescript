@@ -209,8 +209,20 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `find { |item| } -> value | nil` – first element matching the block.
 - `find_index { |item| } -> int | nil` – index of the first match.
 - `reduce(initial = nil) { |acc, item| } -> value` – fold left; without
-  `initial` the first element seeds the accumulator (errors on an empty
-  array).
+  `initial` the first element seeds the accumulator. An empty array folds to
+  `nil` when no `initial` is given, or to `initial` when one is.
+- `reduce(operation) -> value` and `reduce(initial, operation) -> value` –
+  fold by sending `operation` to the accumulator with each element, like Ruby's
+  `["a", "b"].reduce(:concat)`. `operation` is a symbol naming a method on the
+  accumulator (`["a", "b"].reduce(:concat)`) or a string naming either a method
+  or a binary operator (`[1, 2, 3].reduce("+")`, also `-`, `*`, `/`, `%`, `**`).
+  Operator-symbol literals such as `:+` are not yet accepted because the lexer
+  cannot tokenize them; use the string form (`reduce("+")`) for now. That
+  shorthand is tracked in [#801](https://github.com/mgomes/vibescript/issues/801).
+  With a block and a single argument, the block takes precedence and the lone
+  argument is treated as `initial`. With two arguments (`reduce(initial,
+  operation)`) the operation is always used and any block is ignored, matching
+  Ruby (`[1, 2, 3].reduce(10, :+) { |a, b| a * b }` folds with `+`).
 
 ### Membership and Counting
 
