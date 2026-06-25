@@ -213,12 +213,83 @@ func TestInspectChargesReceiverFootprint(t *testing.T) {
 		t.Fatalf("inspect at payload-only quota error = %v, want %v", err, errMemoryQuotaExceeded)
 	}
 
-	// Raising the quota to cover the receiver footprint too lets the same call
-	// succeed, proving the rejection above was the receiver charge and not an
-	// unrelated over-count.
-	exec.memoryQuota = payloadOnly + receiverFootprint
+	// Raising the quota to cover both the receiver footprint and the builder's
+	// rounded backing capacity (Grow reserves roundedAllocSize(payload), not the
+	// raw payload) lets the same call succeed, proving the rejection above was the
+	// receiver charge and not an unrelated over-count.
+	exec.memoryQuota = base + receiverFootprint + estimatedValueBytes + estimatedStringHeaderBytes + roundedAllocSize(payload)
 	if _, err := builtin.Fn(exec, receiver, nil, nil, NewNil()); err != nil {
 		t.Fatalf("inspect at receiver-aware quota error = %v, want nil", err)
+	}
+}
+
+// TestInspectChargesBuilderRoundedCapacity confirms the projection charges the
+// backing array Builder.Grow actually reserves, not just the payload byte count.
+// Grow rounds its reservation up to an allocator size class, so a payload that
+// sits just above a class boundary reserves a backing array meaningfully larger
+// than the payload. A payload-only quota check would admit such an inspect and
+// then let Grow allocate past the limit; charging projectedBuilderCap(payload)
+// rejects it. The quota is pinned to the exact payload-only projection so the
+// old, payload-only behavior would have admitted the call.
+func TestInspectChargesBuilderRoundedCapacity(t *testing.T) {
+	t.Parallel()
+
+	builtin := valueBuiltin(newInspectBuiltin("string"))
+
+	// A plain string of length 16383 renders (with surrounding quotes and no
+	// escapes) as a 16385-byte payload. Grow(16385) reserves the 18432-byte size
+	// class, a 2047-byte gap the payload-only projection would not have charged.
+	const bodyLen = 16383
+	receiver := NewString(strings.Repeat("x", bodyLen))
+
+	payload, err := receiver.InspectByteLenBounded(func() error { return nil })
+	if err != nil {
+		t.Fatalf("InspectByteLenBounded() error = %v", err)
+	}
+	if want := bodyLen + 2; payload != want {
+		t.Fatalf("payload = %d, want %d", payload, want)
+	}
+
+	rounded := roundedAllocSize(payload)
+	if rounded <= payload {
+		t.Fatalf("roundedAllocSize(%d) = %d, want a value larger than the payload so the rounding gap is exercised", payload, rounded)
+	}
+
+	// Measure the base and the receiver's footprint with the same estimator the
+	// check uses, then pin the quota to the payload-only projection: base plus the
+	// receiver footprint plus the result string's header and exact payload bytes.
+	measure := &Execution{ctx: context.Background()}
+	base := measure.estimateMemoryUsage()
+	receiverFootprint := measure.estimateMemoryUsage(receiver) - base
+	if receiverFootprint <= 0 {
+		t.Fatalf("receiver footprint = %d, want > 0", receiverFootprint)
+	}
+	payloadOnly := base + receiverFootprint + estimatedValueBytes + estimatedStringHeaderBytes + payload
+
+	// At the payload-only quota the rounded backing capacity exceeds the limit, so
+	// the rounding-aware projection must reject the call.
+	exec := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: payloadOnly,
+	}
+	if _, err := builtin.Fn(exec, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("inspect at payload-only quota error = %v, want %v", err, errMemoryQuotaExceeded)
+	}
+
+	// Raising the quota to cover the rounded backing capacity lets the same call
+	// succeed, proving the rejection above was the rounding gap and not an
+	// unrelated over-count. The result is the full quoted rendering.
+	exec.memoryQuota = base + receiverFootprint + estimatedValueBytes + estimatedStringHeaderBytes + rounded
+	got, err := builtin.Fn(exec, receiver, nil, nil, NewNil())
+	if err != nil {
+		t.Fatalf("inspect at rounding-aware quota error = %v, want nil", err)
+	}
+	if got.Kind() != KindString {
+		t.Fatalf("inspect kind = %v, want string", got.Kind())
+	}
+	if want := `"` + strings.Repeat("x", bodyLen) + `"`; got.String() != want {
+		t.Fatalf("inspect rendered %d bytes, want %d", len(got.String()), len(want))
 	}
 }
 

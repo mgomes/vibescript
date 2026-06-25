@@ -40,6 +40,19 @@ func (v Value) InspectBounded(limit int) (string, error) {
 	return buf.String(), nil
 }
 
+// WriteInspectTo streams the same bytes Inspect would return for v directly into
+// buf, without first materializing the rendered representation as a separate
+// string. It mirrors WriteStringTo: callers that have already bounded the
+// rendering against a quota (such as the sandbox's inspect memory guard, which
+// reserves the projected length before calling) use it to render straight into a
+// builder they grew to the projected size, so the peak allocation stays the
+// single backing array the quota already charged rather than the doubling growth
+// a fresh zero-capacity builder would take. It delegates to the unbounded inspect
+// renderer, so writing into a strings.Builder never fails.
+func (v Value) WriteInspectTo(buf *strings.Builder) {
+	_ = v.appendInspect(buf, newValueStringState(), 0)
+}
+
 // InspectByteLen returns the number of bytes Inspect would produce for v without
 // materializing the rendering, so callers can bound an allocation before it
 // happens. It walks composites with the same cycle detection Inspect uses.

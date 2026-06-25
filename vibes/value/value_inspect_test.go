@@ -303,3 +303,111 @@ func TestValueInspectByteLenBounded(t *testing.T) {
 		}
 	})
 }
+
+func TestValueWriteInspectTo(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		val  value.Value
+	}{
+		{"nil", value.NewNil()},
+		{"bool", value.NewBool(true)},
+		{"int", value.NewInt(-42)},
+		{"float", value.NewFloat(2.5)},
+		{"string_with_escapes", value.NewString("a\nb\t\"c\"")},
+		{"symbol_bare", value.NewSymbol("ok")},
+		{"symbol_quoted", value.NewSymbol("a b")},
+		{"money", value.NewMoney(mustMoney(t, 1999, "usd"))},
+		{"duration", value.NewDuration(value.DurationFromSeconds(90))},
+		{"empty_array", value.NewArray(nil)},
+		{
+			"nested_array",
+			value.NewArray([]value.Value{
+				value.NewInt(1),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+		},
+		{"empty_hash", value.NewHash(nil)},
+		{
+			"hash_value_recurses",
+			value.NewHash(map[string]value.Value{
+				"items": value.NewArray([]value.Value{value.NewInt(1), value.NewString("x")}),
+			}),
+		},
+		{"runtime_kind_fallback", value.NewValue(value.KindBlock, fakeBlock{})},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var sb strings.Builder
+			tc.val.WriteInspectTo(&sb)
+			if got, want := sb.String(), tc.val.Inspect(); got != want {
+				t.Fatalf("WriteInspectTo wrote %q, want Inspect() %q", got, want)
+			}
+		})
+	}
+}
+
+func TestValueWriteInspectToCycleDetection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("self_referential_array", func(t *testing.T) {
+		t.Parallel()
+		elems := make([]value.Value, 1)
+		arr := value.NewArray(elems)
+		elems[0] = arr
+		var sb strings.Builder
+		arr.WriteInspectTo(&sb)
+		if got, want := sb.String(), arr.Inspect(); got != want {
+			t.Fatalf("WriteInspectTo wrote %q, want Inspect() %q", got, want)
+		}
+	})
+
+	t.Run("shared_subtree_is_not_a_cycle", func(t *testing.T) {
+		t.Parallel()
+		shared := value.NewArray([]value.Value{value.NewString("x")})
+		outer := value.NewArray([]value.Value{shared, shared})
+		var sb strings.Builder
+		outer.WriteInspectTo(&sb)
+		if got, want := sb.String(), `[["x"], ["x"]]`; got != want {
+			t.Fatalf("WriteInspectTo wrote %q, want %q", got, want)
+		}
+	})
+}
+
+// TestValueWriteInspectToDoesNotMaterializeRendering confirms WriteInspectTo
+// streams straight into a pre-grown builder rather than rendering to a temporary
+// string and copying it in. The inspect memory guard relies on this: it reserves
+// the projected length before calling, so a second full copy would blow a quota
+// that the projected length already passed.
+func TestValueWriteInspectToDoesNotMaterializeRendering(t *testing.T) {
+	// Deliberately not parallel: this measures heap bytes via runtime.MemStats,
+	// which observes the whole process. A non-parallel top-level test runs while
+	// every parallel sibling is paused, so the only allocations during the
+	// measured window are this test's own.
+
+	const elementBytes = 8192
+	const elementCount = 64
+
+	large := value.NewString(strings.Repeat("x", elementBytes))
+	elems := make([]value.Value, elementCount)
+	for i := range elems {
+		elems[i] = large
+	}
+	arr := value.NewArray(elems)
+
+	rendered := len(arr.Inspect())
+
+	var sb strings.Builder
+	sb.Grow(rendered)
+	writeBytes := allocBytes(t, func() {
+		arr.WriteInspectTo(&sb)
+	})
+
+	if writeBytes >= uint64(rendered) {
+		t.Fatalf("WriteInspectTo allocated %d bytes, want well below the rendered %d", writeBytes, rendered)
+	}
+}
