@@ -85,6 +85,15 @@ func TestValueInspect(t *testing.T) {
 			value.NewHash(map[string]value.Value{"a b": value.NewInt(1)}),
 			`{"a b": 1}`,
 		},
+		{"empty_object", value.NewObject(nil), "{}"},
+		{
+			// Namespace and host objects share the hash member dispatch (keys,
+			// size, inspect, ...), so inspect renders their fields with the hash's
+			// composite form rather than the opaque "<object>" String returns.
+			"object_renders_fields_like_hash",
+			value.NewObject(map[string]value.Value{"name": value.NewString("acme")}),
+			`{name: "acme"}`,
+		},
 		{"runtime_kind_fallback", value.NewValue(value.KindBlock, fakeBlock{}), "<block>"},
 	}
 
@@ -122,6 +131,16 @@ func TestValueInspectCycleDetection(t *testing.T) {
 		hash := value.NewHash(entries)
 		entries["self"] = hash
 		if got := hash.Inspect(); got != "{self: <cycle>}" {
+			t.Fatalf("Inspect() = %q, want %q", got, "{self: <cycle>}")
+		}
+	})
+
+	t.Run("self_referential_object", func(t *testing.T) {
+		t.Parallel()
+		entries := make(map[string]value.Value)
+		obj := value.NewObject(entries)
+		entries["self"] = obj
+		if got := obj.Inspect(); got != "{self: <cycle>}" {
 			t.Fatalf("Inspect() = %q, want %q", got, "{self: <cycle>}")
 		}
 	})
@@ -335,6 +354,10 @@ func TestValueWriteInspectTo(t *testing.T) {
 			value.NewHash(map[string]value.Value{
 				"items": value.NewArray([]value.Value{value.NewInt(1), value.NewString("x")}),
 			}),
+		},
+		{
+			"object_renders_fields_like_hash",
+			value.NewObject(map[string]value.Value{"name": value.NewString("acme")}),
 		},
 		{"runtime_kind_fallback", value.NewValue(value.KindBlock, fakeBlock{})},
 	}

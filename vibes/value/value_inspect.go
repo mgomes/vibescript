@@ -84,7 +84,11 @@ func (v Value) appendInspect(buf *strings.Builder, state *valueStringState, limi
 		return appendBounded(buf, "nil", limit)
 	case KindArray:
 		return v.appendInspectArray(buf, state, limit)
-	case KindHash:
+	case KindHash, KindObject:
+		// Namespace and host objects back their fields with the same
+		// map[string]Value a hash uses and resolve the shared hashMember
+		// dispatch (keys, size, inspect, ...), so inspect renders them with the
+		// hash's composite form rather than the opaque "<object>" String gives.
 		return v.appendInspectHash(buf, state, limit)
 	default:
 		// Scalars without a distinct debug form (bool, int, float, money,
@@ -190,7 +194,7 @@ func (v Value) inspectByteLenWithState(state *valueStringState) int {
 			total += e.inspectByteLenWithState(state)
 		}
 		return total
-	case KindHash:
+	case KindHash, KindObject:
 		entries := v.data.(map[string]Value)
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose)
@@ -250,7 +254,7 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 			total += n
 		}
 		return total, nil
-	case KindHash:
+	case KindHash, KindObject:
 		entries := v.data.(map[string]Value)
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil

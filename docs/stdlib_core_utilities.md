@@ -39,7 +39,8 @@ Vibescript literal.
 
 - `inspect -> string` – available on `nil`, booleans, integers, floats,
   strings, symbols, arrays, and hashes (`inspect` takes no arguments and no
-  block).
+  block). Namespace and host objects share the hash member methods, so `inspect`
+  renders their fields with the same hash form.
 
 | Kind | `to_s` (interpolated) | `inspect` |
 | --- | --- | --- |

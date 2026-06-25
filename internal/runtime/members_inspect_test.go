@@ -317,6 +317,77 @@ func TestInspectStepBudgetAbortsProjection(t *testing.T) {
 	requireErrorIs(t, err, errStepQuotaExceeded)
 }
 
+// TestInspectObjectRendersFields confirms inspect on a namespace/host object
+// (KindObject) renders the object's fields with the hash composite form rather
+// than the opaque "<object>" String returns. KindObject resolves the shared
+// hashMember dispatch (keys, size, inspect, ...), so the inspect renderer must
+// treat it as a composite the same way the dispatch already does; otherwise the
+// auto-invoked inspect would fall through to String and report "<object>".
+func TestInspectObjectRendersFields(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background()}
+	receiver := NewObject(map[string]Value{"name": NewString("acme")})
+
+	member, err := hashMember(receiver, "inspect")
+	if err != nil {
+		t.Fatalf("hashMember(inspect) on object: %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("object inspect member is not a builtin")
+	}
+	got, err := builtin.Fn(exec, receiver, nil, nil, NewNil())
+	if err != nil {
+		t.Fatalf("object inspect error = %v", err)
+	}
+	if got.Kind() != KindString {
+		t.Fatalf("object inspect kind = %v, want string", got.Kind())
+	}
+	if want := `{name: "acme"}`; got.String() != want {
+		t.Fatalf("object inspect = %q, want %q", got.String(), want)
+	}
+}
+
+// TestInspectNamespaceObjectThroughResolveMember confirms the full member
+// resolution path: a namespace object resolves inspect through hashMember (it has
+// no stored "inspect" attribute) and renders its fields. This is the path the
+// review flagged, where an object falling through to the shared hash inspect
+// builtin would otherwise render "<object>".
+func TestInspectNamespaceObjectThroughResolveMember(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background()}
+	namespace := NewObject(map[string]Value{
+		"PI":  NewFloat(3.14),
+		"tau": NewFloat(6.28),
+	})
+
+	member, err := exec.getMember(namespace, "inspect", Position{})
+	if err != nil {
+		t.Fatalf("getMember(inspect) on namespace object: %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("namespace inspect member is not a builtin")
+	}
+	got, err := builtin.Fn(exec, namespace, nil, nil, NewNil())
+	if err != nil {
+		t.Fatalf("namespace inspect error = %v", err)
+	}
+	// Hash iteration order is non-deterministic, so assert the composite shape
+	// (both fields present, hash braces) rather than a fixed key order.
+	rendered := got.String()
+	if !strings.HasPrefix(rendered, "{") || !strings.HasSuffix(rendered, "}") {
+		t.Fatalf("namespace inspect = %q, want hash-style braces", rendered)
+	}
+	for _, want := range []string{"PI: 3.14", "tau: 6.28"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("namespace inspect = %q, want to contain %q", rendered, want)
+		}
+	}
+}
+
 // TestInspectReservedAsHashMethod confirms a stored key named "inspect" does not
 // shadow the method on dot access (the method wins, matching other reserved hash
 // method names), while index access still reaches the stored value.
