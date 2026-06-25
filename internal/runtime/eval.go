@@ -1387,6 +1387,42 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			}
 			last = val
 		}
+	case KindHash:
+		entries := iterable.Hash()
+		// Charge the sorted-key scratch buffer before allocating it so a large
+		// receiver cannot escape the memory quota; the entry payloads are already
+		// accounted for by checkMemoryWith(iterable) above.
+		if err := exec.checkMemoryWith(iterable); err != nil {
+			return NewNil(), false, err
+		}
+		var keyBuf [smallHashKeyBufferSize]string
+		for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+			if err := exec.step(); err != nil {
+				return NewNil(), false, exec.wrapError(err, stmt.Pos())
+			}
+			// Mirror Ruby's `for` over a hash, which iterates `each` and yields a
+			// two-element [key, value] pair. Hash keys round-trip as symbols, the
+			// same shape hash.each and hash.keys expose.
+			pair := NewArray([]Value{NewSymbol(key), entries[key]})
+			if err := exec.checkMemoryWith(pair); err != nil {
+				return NewNil(), false, err
+			}
+			env.Assign(stmt.Iterator, pair)
+			val, returned, err := exec.evalStatements(stmt.Body, env)
+			if err != nil {
+				if errors.Is(err, errLoopBreak) {
+					return last, false, nil
+				}
+				if errors.Is(err, errLoopNext) {
+					continue
+				}
+				return NewNil(), false, err
+			}
+			if returned {
+				return val, true, nil
+			}
+			last = val
+		}
 	case KindRange:
 		r := iterable.Range()
 		if r.Start <= r.End {
