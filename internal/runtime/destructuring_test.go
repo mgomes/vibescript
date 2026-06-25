@@ -376,6 +376,79 @@ end`)
 	compareArrays(t, got, []Value{NewInt(1), NewInt(2), NewInt(5), NewInt(6)})
 }
 
+func TestAssignDestructureAnonymousRestDoesNotCopyDiscardedSegment(t *testing.T) {
+	// testing.AllocsPerRun must not run under t.Parallel(), so this test stays
+	// sequential.
+
+	// An anonymous rest target ("*, last = huge") discards its window, so the
+	// interpreter must not allocate a second slice for the segment no binding
+	// reads. Drive AssignDestructure directly so we can measure allocations on
+	// just the destructure step, isolated from script setup.
+	last := &Identifier{Name: "last"}
+	target := &DestructureTarget{
+		Elements: []DestructureElement{
+			{Rest: true},   // anonymous "*"
+			{Target: last}, // trailing binding
+		},
+	}
+
+	const size = 4096
+	source := make([]Value, size)
+	for i := range source {
+		source[i] = NewInt(int64(i))
+	}
+	value := NewArray(source)
+
+	var bound Value
+	assign := func(expr Expression, v Value) error {
+		if expr == last {
+			bound = v
+		}
+		return nil
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if err := AssignDestructure(target, value, assign); err != nil {
+			t.Fatalf("AssignDestructure returned error: %v", err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("anonymous rest allocated %v times; expected 0 (discarded segment must not be copied)", allocs)
+	}
+	if bound.Kind() != KindInt || bound.Int() != size-1 {
+		t.Fatalf("trailing target bound to %v; want %d", bound, size-1)
+	}
+}
+
+func TestAssignDestructureNamedRestCopiesWindow(t *testing.T) {
+	t.Parallel()
+
+	// A named rest target must still receive a fresh array of its window, so the
+	// optimization for anonymous rest does not leak into the named path.
+	mid := &Identifier{Name: "mid"}
+	target := &DestructureTarget{
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "first"}},
+			{Target: mid, Rest: true},
+			{Target: &Identifier{Name: "last"}},
+		},
+	}
+
+	value := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
+
+	var bound Value
+	assign := func(expr Expression, v Value) error {
+		if expr == mid {
+			bound = v
+		}
+		return nil
+	}
+	if err := AssignDestructure(target, value, assign); err != nil {
+		t.Fatalf("AssignDestructure returned error: %v", err)
+	}
+	compareArrays(t, bound, []Value{NewInt(2), NewInt(3)})
+}
+
 func TestParallelAssignmentNestedTargets(t *testing.T) {
 	t.Parallel()
 

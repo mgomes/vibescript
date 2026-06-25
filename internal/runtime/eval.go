@@ -1072,14 +1072,21 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	// would panic the host (a sandbox DoS) on a slice-out-of-range.
 	restStart := min(restIndex, len(values))
 	restEnd := max(restStart, len(values)-trailing)
-	restValues := append([]Value(nil), values[restStart:restEnd]...)
+	// An anonymous rest target (bare "*") discards its window, so skip building
+	// the rest array entirely. Copying and wrapping values[restStart:restEnd]
+	// would otherwise allocate a full second slice and add O(n) work for a
+	// segment no binding will ever read (e.g. *, last = huge_array).
+	restAnonymous := target.Elements[restIndex].Target == nil
 	for i, element := range target.Elements {
 		var val Value
 		switch {
 		case i < restIndex:
 			val = valueAt(values, i)
 		case i == restIndex:
-			val = NewArray(restValues)
+			if restAnonymous {
+				continue
+			}
+			val = NewArray(append([]Value(nil), values[restStart:restEnd]...))
 		default:
 			// Trailing targets bind to the values immediately after the rest
 			// window, left-to-right. When the input is too short to fill them
