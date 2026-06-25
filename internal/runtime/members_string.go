@@ -7,6 +7,9 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 // stringMemberNames mirrors the names dispatched by stringMember and feeds
@@ -573,30 +576,202 @@ func normalizeInvalidUTF8(text string) string {
 	return string([]rune(text))
 }
 
-func stringCapitalize(text string) string {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return ""
+// caseMode selects how the case-mapping helpers (upcase, downcase, capitalize,
+// swapcase) transform their input. It mirrors Ruby's optional case-mapping
+// arguments: the default applies full Unicode mapping, :ascii restricts mapping
+// to ASCII letters, and :fold applies Unicode case folding (downcase only).
+type caseMode int
+
+const (
+	caseModeDefault caseMode = iota
+	caseModeASCII
+	caseModeFold
+)
+
+// parseCaseMode interprets the optional symbol argument shared by upcase,
+// downcase, capitalize, and swapcase. Ruby accepts at most one mode here (the
+// remaining locale options such as :turkic are out of scope), so more than one
+// argument or an argument that is not a recognized symbol is an error. The
+// allowFold flag is true only for downcase, matching Ruby's rule that :fold is
+// "only allowed for downcasing".
+func parseCaseMode(method string, args []Value, allowFold bool) (caseMode, error) {
+	if len(args) == 0 {
+		return caseModeDefault, nil
 	}
-	runes[0] = unicode.ToUpper(runes[0])
-	for i := range len(runes) - 1 {
-		runes[i+1] = unicode.ToLower(runes[i+1])
+	if len(args) > 1 {
+		return caseModeDefault, fmt.Errorf("string.%s accepts at most one case-mapping option", method)
 	}
-	return string(runes)
+	arg := args[0]
+	if arg.Kind() != KindSymbol {
+		return caseModeDefault, fmt.Errorf("string.%s option must be a symbol", method)
+	}
+	switch arg.String() {
+	case "ascii":
+		return caseModeASCII, nil
+	case "fold":
+		if !allowFold {
+			return caseModeDefault, fmt.Errorf("string.%s does not support the :fold option", method)
+		}
+		return caseModeFold, nil
+	default:
+		return caseModeDefault, fmt.Errorf("string.%s does not support the :%s option", method, arg.String())
+	}
 }
 
-func stringSwapCase(text string) string {
-	runes := []rune(text)
-	for i, r := range runes {
-		if unicode.IsUpper(r) {
-			runes[i] = unicode.ToLower(r)
-			continue
-		}
-		if unicode.IsLower(r) {
-			runes[i] = unicode.ToUpper(r)
+// stringUpcase converts text to uppercase. The default mode applies full Unicode
+// case mapping (so "ß" becomes "SS" and the "ﬁ" ligature becomes "FI"); the
+// :ascii mode and the invalid-UTF-8 fallback restrict mapping to ASCII letters,
+// matching Ruby's binary-string behavior.
+func stringUpcase(text string, mode caseMode) string {
+	if mode == caseModeASCII || !utf8.ValidString(text) {
+		return asciiUpcase(text)
+	}
+	return unicodeUpcase(text)
+}
+
+// stringDowncase converts text to lowercase. The default mode applies full
+// Unicode case mapping, :fold applies Unicode case folding (e.g. "ß" becomes
+// "ss"), and :ascii or invalid UTF-8 restrict mapping to ASCII letters.
+func stringDowncase(text string, mode caseMode) string {
+	switch {
+	case mode == caseModeASCII || !utf8.ValidString(text):
+		return asciiDowncase(text)
+	case mode == caseModeFold:
+		return cases.Fold().String(text)
+	default:
+		return unicodeDowncase(text)
+	}
+}
+
+// unicodeUpcase applies full Unicode uppercase mapping. A fresh Caser is built
+// per call because cases.Caser is not safe for concurrent use, and scripts may
+// run member methods from several goroutines via the task system.
+func unicodeUpcase(text string) string {
+	return cases.Upper(language.Und).String(text)
+}
+
+// unicodeDowncase applies full Unicode lowercase mapping without the Greek
+// final-sigma rule. Ruby's default downcase keeps a medial sigma everywhere
+// ("ΟΔΟΣ".downcase is "οδοσ", not "οδος"), so final-sigma handling is disabled.
+func unicodeDowncase(text string) string {
+	return cases.Lower(language.Und, cases.HandleFinalSigma(false)).String(text)
+}
+
+// unicodeTitleFirst titlecases a single leading grapheme using full Unicode
+// mapping. Ruby's capitalize uses the titlecase mapping for the first character
+// (so the "ǆ" digraph becomes "ǅ" rather than "Ǆ"), which differs from a plain
+// uppercase. NoLower keeps the call from also lowercasing trailing runes; the
+// caller is expected to pass only the first character.
+func unicodeTitleFirst(text string) string {
+	return cases.Title(language.Und, cases.NoLower).String(text)
+}
+
+func asciiUpcase(text string) string {
+	out := make([]byte, len(text))
+	for i := range len(text) {
+		out[i] = asciiUpper(text[i])
+	}
+	return string(out)
+}
+
+func asciiDowncase(text string) string {
+	out := make([]byte, len(text))
+	for i := range len(text) {
+		out[i] = asciiLower(text[i])
+	}
+	return string(out)
+}
+
+func asciiUpper(b byte) byte {
+	if b >= 'a' && b <= 'z' {
+		return b - ('a' - 'A')
+	}
+	return b
+}
+
+func stringCapitalize(text string, mode caseMode) string {
+	if text == "" {
+		return ""
+	}
+	if mode == caseModeASCII || !utf8.ValidString(text) {
+		return asciiCapitalize(text)
+	}
+	r, size := utf8.DecodeRuneInString(text)
+	return unicodeTitleFirst(string(r)) + unicodeDowncase(text[size:])
+}
+
+// asciiCapitalize uppercases the first byte and lowercases the rest, touching
+// only ASCII letters. Non-ASCII bytes (including the leading rune of a UTF-8
+// sequence) are left unchanged, matching Ruby's capitalize(:ascii).
+func asciiCapitalize(text string) string {
+	out := make([]byte, len(text))
+	out[0] = asciiUpper(text[0])
+	for i := 1; i < len(text); i++ {
+		out[i] = asciiLower(text[i])
+	}
+	return string(out)
+}
+
+func stringSwapCase(text string, mode caseMode) string {
+	if mode == caseModeASCII || !utf8.ValidString(text) {
+		return asciiSwapCase(text)
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case isUppercaseLike(r):
+			b.WriteString(unicodeDowncase(string(r)))
+		case isLowercaseLike(r):
+			b.WriteString(unicodeUpcase(string(r)))
+		default:
+			b.WriteRune(r)
 		}
 	}
-	return string(runes)
+	return b.String()
+}
+
+// isUppercaseLike reports whether a rune should be lowercased by swapcase. It
+// matches uppercase and titlecase letters (Lu/Lt) as well as cased symbols that
+// live outside the letter categories yet carry a distinct lowercase mapping,
+// such as circled Latin capitals ("Ⓐ") and uppercase Roman numerals ("Ⅰ"),
+// which the Is{Upper,Title} predicates miss.
+//
+// Titlecase digraphs (e.g. "ǅ") are downcased to a single rune ("ǆ"). Ruby
+// instead toggles each underlying letter component ("ǅ" -> "dŽ"); reproducing
+// that would require hand-encoding Unicode's full case-mapping table (the Greek
+// titlecase letters expand the iota subscript to a standalone capital iota), so
+// this deliberately diverges from Ruby for those rare codepoints in favor of a
+// clean lowercase.
+func isUppercaseLike(r rune) bool {
+	return unicode.IsUpper(r) || unicode.IsTitle(r) || unicode.ToLower(r) != r
+}
+
+// isLowercaseLike reports whether a rune should be uppercased by swapcase. It
+// matches lowercase letters (Ll), including those whose single-rune uppercase is
+// identical but whose full Unicode mapping expands ("ß" -> "SS"), as well as
+// cased symbols outside the letter categories with a distinct uppercase mapping,
+// such as circled Latin small letters ("ⓐ") and lowercase Roman numerals
+// ("ⅰ"). Uppercase-like runes are excluded by the caller checking
+// isUppercaseLike first.
+func isLowercaseLike(r rune) bool {
+	return unicode.IsLower(r) || unicode.ToUpper(r) != r
+}
+
+// asciiSwapCase toggles the case of ASCII letters only, leaving every other byte
+// (including multibyte UTF-8 sequences) unchanged. It backs Ruby's
+// swapcase(:ascii) and the invalid-UTF-8 fallback for swapcase.
+func asciiSwapCase(text string) string {
+	out := []byte(text)
+	for i, c := range out {
+		switch {
+		case c >= 'A' && c <= 'Z':
+			out[i] = c + ('a' - 'A')
+		case c >= 'a' && c <= 'z':
+			out[i] = c - ('a' - 'A')
+		}
+	}
+	return string(out)
 }
 
 func stringReverse(text string) string {
@@ -2114,63 +2289,71 @@ func stringMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "upcase":
 		return NewAutoBuiltin("string.upcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("string.upcase does not take arguments")
+			mode, err := parseCaseMode("upcase", args, false)
+			if err != nil {
+				return NewNil(), err
 			}
-			return NewString(strings.ToUpper(receiver.String())), nil
+			return NewString(stringUpcase(receiver.String(), mode)), nil
 		}), nil
 	case "upcase!":
 		return NewAutoBuiltin("string.upcase!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("string.upcase! does not take arguments")
+			mode, err := parseCaseMode("upcase!", args, false)
+			if err != nil {
+				return NewNil(), err
 			}
-			updated := strings.ToUpper(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return stringBangResult(original, stringUpcase(original, mode)), nil
 		}), nil
 	case "downcase":
 		return NewAutoBuiltin("string.downcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("string.downcase does not take arguments")
+			mode, err := parseCaseMode("downcase", args, true)
+			if err != nil {
+				return NewNil(), err
 			}
-			return NewString(strings.ToLower(receiver.String())), nil
+			return NewString(stringDowncase(receiver.String(), mode)), nil
 		}), nil
 	case "downcase!":
 		return NewAutoBuiltin("string.downcase!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("string.downcase! does not take arguments")
+			mode, err := parseCaseMode("downcase!", args, true)
+			if err != nil {
+				return NewNil(), err
 			}
-			updated := strings.ToLower(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return stringBangResult(original, stringDowncase(original, mode)), nil
 		}), nil
 	case "capitalize":
 		return NewAutoBuiltin("string.capitalize", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("string.capitalize does not take arguments")
+			mode, err := parseCaseMode("capitalize", args, false)
+			if err != nil {
+				return NewNil(), err
 			}
-			return NewString(stringCapitalize(receiver.String())), nil
+			return NewString(stringCapitalize(receiver.String(), mode)), nil
 		}), nil
 	case "capitalize!":
 		return NewAutoBuiltin("string.capitalize!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("string.capitalize! does not take arguments")
+			mode, err := parseCaseMode("capitalize!", args, false)
+			if err != nil {
+				return NewNil(), err
 			}
-			updated := stringCapitalize(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return stringBangResult(original, stringCapitalize(original, mode)), nil
 		}), nil
 	case "swapcase":
 		return NewAutoBuiltin("string.swapcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("string.swapcase does not take arguments")
+			mode, err := parseCaseMode("swapcase", args, false)
+			if err != nil {
+				return NewNil(), err
 			}
-			return NewString(stringSwapCase(receiver.String())), nil
+			return NewString(stringSwapCase(receiver.String(), mode)), nil
 		}), nil
 	case "swapcase!":
 		return NewAutoBuiltin("string.swapcase!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("string.swapcase! does not take arguments")
+			mode, err := parseCaseMode("swapcase!", args, false)
+			if err != nil {
+				return NewNil(), err
 			}
-			updated := stringSwapCase(receiver.String())
-			return stringBangResult(receiver.String(), updated), nil
+			original := receiver.String()
+			return stringBangResult(original, stringSwapCase(original, mode)), nil
 		}), nil
 	case "reverse":
 		return NewAutoBuiltin("string.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
