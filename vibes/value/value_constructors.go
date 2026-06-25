@@ -28,8 +28,15 @@ func NewString(s string) Value { return Value{kind: KindString, data: s} }
 // NewArray returns an array Value.
 func NewArray(a []Value) Value { return Value{kind: KindArray, data: a} }
 
-// NewHash returns a hash (map) Value.
+// NewHash returns a hash (map) Value. A nil map is replaced with a freshly
+// allocated empty map so that every hash has its own backing storage and thus a
+// distinct object identity. Without this, two independently constructed empty
+// hashes would share the nil map's zero pointer and wrongly report identical
+// under the Ruby-style equal? predicate.
 func NewHash(h map[string]Value) Value {
+	if h == nil {
+		h = map[string]Value{}
+	}
 	return Value{kind: KindHash, data: h}
 }
 
@@ -47,8 +54,13 @@ func NewTime(t time.Time) Value { return Value{kind: KindTime, data: t} }
 // NewSymbol returns a symbol Value.
 func NewSymbol(name string) Value { return Value{kind: KindSymbol, data: name} }
 
-// NewObject returns an object Value with the given attributes.
+// NewObject returns an object Value with the given attributes. A nil map is
+// replaced with a freshly allocated empty map so that every object has its own
+// backing storage and thus a distinct object identity, matching NewHash.
 func NewObject(attrs map[string]Value) Value {
+	if attrs == nil {
+		attrs = map[string]Value{}
+	}
 	return Value{kind: KindObject, data: attrs}
 }
 

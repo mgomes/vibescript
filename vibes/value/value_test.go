@@ -1532,6 +1532,10 @@ func TestValueIdentical(t *testing.T) {
 
 	sharedSlice := []value.Value{value.NewInt(1)}
 	sharedMap := map[string]value.Value{"a": value.NewInt(1)}
+	// A single empty hash must remain identical to itself even though its
+	// backing map is allocated from nil input; the fix must not break self
+	// identity while making independent empties distinct.
+	sameEmptyHash := value.NewHash(nil)
 
 	tests := []struct {
 		name  string
@@ -1556,6 +1560,12 @@ func TestValueIdentical(t *testing.T) {
 		{"hashes_distinct_backing", value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), false},
 		// Empty maps each receive a distinct backing, unlike empty slices.
 		{"empty_hashes_distinct_backing", value.NewHash(map[string]value.Value{}), value.NewHash(map[string]value.Value{}), false},
+		// Nil input must be normalized to a fresh backing map so that two empty
+		// hashes built the way the JSON parser builds {} stay distinct objects.
+		{"nil_backed_hashes_distinct", value.NewHash(nil), value.NewHash(nil), false},
+		{"nil_backed_objects_distinct", value.NewObject(nil), value.NewObject(nil), false},
+		{"empty_hash_vs_nil_backed_hash_distinct", value.NewHash(map[string]value.Value{}), value.NewHash(nil), false},
+		{"nil_backed_hash_identical_to_itself", sameEmptyHash, sameEmptyHash, true},
 	}
 
 	for _, tc := range tests {

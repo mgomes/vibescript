@@ -223,6 +223,29 @@ def run()
 end`,
 			want: []Value{NewBool(true), NewBool(false), NewBool(true), NewBool(false)},
 		},
+		{
+			// Empty hash literals build a fresh backing map per literal, so two
+			// {} are distinct objects but eql? by content, mirroring Ruby.
+			name: "empty hash literals",
+			script: `def run()
+  a = {}
+  b = a
+  c = {}
+  [a.equal?(b), a.equal?(c), a.eql?(c)]
+end`,
+			want: []Value{NewBool(true), NewBool(false), NewBool(true)},
+		},
+		{
+			// The JSON parser returns an empty hash for "{}". Two such parses must
+			// stay distinct objects, the regression the finding called out.
+			name: "json empty objects",
+			script: `def run()
+  a = JSON.parse("{}")
+  c = JSON.parse("{}")
+  [a.equal?(a), a.equal?(c), a.eql?(c)]
+end`,
+			want: []Value{NewBool(true), NewBool(false), NewBool(true)},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

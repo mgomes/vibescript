@@ -3,4 +3,6 @@
   (object identity, so `1.equal?(1)` is `true` while two independently built
   arrays with equal contents are not `equal?`). The predicates report `false`
   rather than raising when the operands' kinds differ, and a class may override
-  them with its own methods of the same name.
+  them with its own methods of the same name. Every empty hash and object now
+  carries its own backing storage, so two independently built empties (including
+  `{}` from `JSON.parse("{}")`) are distinct objects under `equal?`.

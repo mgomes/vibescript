@@ -573,7 +573,9 @@ func (v Value) Eql(other Value) bool {
 // empty arrays always report identical. This is harmless because an empty array
 // has no element storage to alias — appending to one never affects another — so
 // they behave as a single value-like empty rather than as distinct mutable
-// objects. Empty hashes do receive distinct backing maps and so stay distinct.
+// objects. Empty hashes and objects stay distinct because NewHash and NewObject
+// allocate a fresh backing map for nil input, so each empty composite carries
+// its own non-nil pointer rather than sharing the nil map's zero pointer.
 func (v Value) Identical(other Value) bool {
 	if v.kind != other.kind {
 		return false
