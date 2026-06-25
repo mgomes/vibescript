@@ -958,18 +958,22 @@ func (p *parser) peekEndsRequiredKeywordParam(options paramParseOptions) bool {
 //     start a type, so it begins a default value.
 //   - `nil` reads as a default value (`a: nil`), matching Ruby and the stdlib's
 //     documented optional keywords; a bare `nil` positional type is useless.
-//   - `{` reads as a shape type, preserving the `name: { field: Type }` form.
+//   - `{` opens either a shape type (`name: { field: Type }`) or a hash literal
+//     default (`name: { key: value }`). The two share a `{ name: X }` skeleton,
+//     so a bounded speculative parse decides: the brace group reads as a shape
+//     type only when it parses as one and is followed by a parameter boundary,
+//     otherwise it is a hash default.
 //   - A bare identifier is the genuinely ambiguous case. It reads as a type when
 //     it stands alone at a parameter boundary or continues as a type (`<` for
-//     generic arguments, `|` for a union). Otherwise the identifier begins an
-//     expression (`a + 1`, `helper(x)`, `obj.value`) and is treated as a
-//     default value.
+//     generic arguments on a container type, `|` for a union). Otherwise the
+//     identifier begins an expression (`a + 1`, `helper(x)`, `obj.value`) and is
+//     treated as a default value.
 func (p *parser) colonIntroducesKeywordDefault(options paramParseOptions) bool {
 	switch p.peekToken.Type {
 	case ast.TokenNil:
 		return true
 	case ast.TokenLBrace:
-		return false
+		return !p.bracedGroupIsShapeType(options)
 	case ast.TokenIdent:
 		return p.identAfterColonStartsExpression(options)
 	default:
@@ -977,19 +981,77 @@ func (p *parser) colonIntroducesKeywordDefault(options paramParseOptions) bool {
 	}
 }
 
+// bracedGroupIsShapeType reports whether the brace group beginning at
+// peekToken is a shape type rather than a hash literal default. The two
+// share a `{ field: X }` skeleton, so a bounded speculative parse decides:
+// the group is a shape type only when the whole group parses as one,
+// because a shape type's field values are themselves types all the way
+// down. `{ x: int }` parses as a shape, while `{ retry: 3 }` does not (an
+// integer is not a type) and `{ a: { b: 1 } }` does not (the nested
+// integer is not a type), so both are hash defaults.
+//
+// A clean shape parse is necessary but not sufficient: a hash default
+// whose values happen to be type names (`{ x: int }.merge(...)`) parses
+// as a shape but continues with a postfix expression. The group is a
+// shape type only when it also reaches a parameter boundary (`,` `)` `=`,
+// or the line-limited terminators), so a postfix continuation marks the
+// group as a hash default instead.
+//
+// The empty group `{}` is treated as a hash default rather than an empty
+// shape type. An empty shape type as a parameter annotation is degenerate
+// (it accepts only an empty hash), whereas `opts: {}` is the common
+// Ruby-style empty-hash default.
+//
+// The parser state is fully restored afterward regardless of the outcome,
+// leaving the real parse to proceed from the colon.
+func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
+	if p.peekPeek.Type == ast.TokenRBrace {
+		return false
+	}
+
+	saved := p.snapshot()
+	defer p.restore(saved)
+
+	p.nextToken()
+	shape := p.parseTypeExpr()
+	if shape == nil || len(p.errors) != saved.errorCount {
+		return false
+	}
+	return p.typeAnnotationBoundaryFollows(options)
+}
+
+// typeAnnotationBoundaryFollows reports whether peekToken terminates a
+// parameter's type annotation. Valid terminators are a comma or closing
+// paren (the next parameter or the list end), an `=` introducing a
+// `name: Type = default` positional default, and, for line-limited
+// parameter lists, the constructs that end such a list.
+func (p *parser) typeAnnotationBoundaryFollows(options paramParseOptions) bool {
+	switch p.peekToken.Type {
+	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign:
+		return true
+	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
+		return options.lineLimitedDefaults
+	default:
+		return options.lineLimitedDefaults && p.peekToken.Pos.Line != p.curToken.Pos.Line
+	}
+}
+
 // identAfterColonStartsExpression reports whether an identifier that follows a
 // parameter's `:` begins a default-value expression rather than a bare type
 // name. The token after the identifier decides: a parameter boundary keeps the
-// identifier a standalone type, `<` and `|` continue it as a type, and anything
-// else (binary operators, calls, member access, indexing) makes it the head of
-// an expression.
+// identifier a standalone type, `|` continues it as a union type, `<` is
+// disambiguated by identLessThanStartsExpression on whether the identifier is a
+// value, and anything else (other binary operators, calls, member access,
+// indexing) makes it the head of an expression.
 func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool {
 	switch p.peekPeek.Type {
-	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign, ast.TokenLT, ast.TokenPipe:
+	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign, ast.TokenPipe:
 		// A boundary (`,` `)`), an `=` introducing a `name: Type = default`
-		// positional default, or a type continuation (`<` generic arguments,
-		// `|` union) all keep the identifier a type name.
+		// positional default, or a `|` union continuation all keep the
+		// identifier a type name.
 		return false
+	case ast.TokenLT:
+		return p.identLessThanStartsExpression()
 	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
 		return !options.lineLimitedDefaults
 	default:
@@ -998,6 +1060,19 @@ func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool
 		}
 		return true
 	}
+}
+
+// identLessThanStartsExpression reports whether `ident <` (with ident at
+// peekToken) begins a default-value expression rather than continuing a
+// generic type annotation. The `<` is a comparison only when the
+// identifier names a value, i.e. a local already in scope such as an
+// earlier keyword parameter, so `def f(limit:, ok: limit < 10)` reads as
+// a default expression. Otherwise the identifier is a type name and `<`
+// opens its type arguments: a generic container (`array<int>`) parses,
+// while a scalar (`int<string>`) still produces the clear "does not
+// accept type arguments" diagnostic rather than a misparsed comparison.
+func (p *parser) identLessThanStartsExpression() bool {
+	return p.isLocalName(p.peekToken.Literal)
 }
 
 func parameterNameExpectation(kind ast.ParamKind) string {

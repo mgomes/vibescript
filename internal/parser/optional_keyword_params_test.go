@@ -326,3 +326,206 @@ end`
 		t.Fatalf("parseSource(%q) errors = %s, want a type-name diagnostic", source, got.String())
 	}
 }
+
+// TestParserOptionalKeywordHashDefault verifies that a `{ ... }` keyword
+// default is parsed as a hash literal default rather than a shape type when its
+// contents are values rather than types. A shape type's field values are
+// themselves types all the way down, so any non-type value (a number here, or a
+// nested non-type value) marks the brace group as a hash default.
+func TestParserOptionalKeywordHashDefault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   []ast.Param
+	}{
+		{
+			name: "hash_default",
+			source: `def f(opts: { retry: 3 })
+  opts
+end`,
+			want: []ast.Param{
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{Key: &ast.SymbolLiteral{Name: "retry"}, Value: &ast.IntegerLiteral{Value: 3}},
+					}},
+				},
+			},
+		},
+		{
+			name: "empty_hash_default",
+			source: `def f(opts: {})
+  opts
+end`,
+			want: []ast.Param{
+				{Name: "opts", Kind: ast.ParamKeyword, DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{}}},
+			},
+		},
+		{
+			name: "nested_hash_default",
+			source: `def f(opts: { a: { b: 1 } })
+  opts
+end`,
+			want: []ast.Param{
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key: &ast.SymbolLiteral{Name: "a"},
+							Value: &ast.HashLiteral{Pairs: []ast.HashPair{
+								{Key: &ast.SymbolLiteral{Name: "b"}, Value: &ast.IntegerLiteral{Value: 1}},
+							}},
+						},
+					}},
+				},
+			},
+		},
+		{
+			name: "hash_default_references_earlier_keyword",
+			source: `def g(a:, b: { sum: a + 1 })
+  b
+end`,
+			want: []ast.Param{
+				{Name: "a", Kind: ast.ParamKeyword},
+				{
+					Name: "b",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key: &ast.SymbolLiteral{Name: "sum"},
+							Value: &ast.BinaryExpr{
+								Left:     &ast.Identifier{Name: "a"},
+								Operator: ast.TokenPlus,
+								Right:    &ast.IntegerLiteral{Value: 1},
+							},
+						},
+					}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, errs := parseSource(t, tt.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tt.source, errs)
+			}
+			fn, ok := got.Statements[0].(*ast.FunctionStmt)
+			if !ok {
+				t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+			}
+			if diff := cmp.Diff(tt.want, fn.Params, astCmpOpts); diff != "" {
+				t.Fatalf("params mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestParserShapeTypeStillTypedPositional verifies that a `{ field: Type }`
+// brace group whose field values are types remains a typed positional parameter
+// with a shape type, even though `{ ... }` keyword defaults are now hash
+// literals. A trailing postfix continuation (such as a method call) instead
+// makes the group a hash default, since a shape type cannot carry one.
+func TestParserShapeTypeStillTypedPositional(t *testing.T) {
+	t.Parallel()
+
+	source := `def f(a: { x: int })
+  a
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	want := []ast.Param{
+		{
+			Name: "a",
+			Type: &ast.TypeExpr{
+				Kind:  ast.TypeShape,
+				Shape: map[string]*ast.TypeExpr{"x": {Name: "int", Kind: ast.TypeInt}},
+			},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserOptionalKeywordLessThanDefault verifies that a keyword default
+// whose expression starts with an earlier keyword parameter followed by `<` is
+// parsed as a less-than comparison rather than a generic type continuation. A
+// non-generic identifier (an earlier parameter) is a value, so `ok: limit < 10`
+// is a default expression rather than a malformed `limit<...>` type.
+func TestParserOptionalKeywordLessThanDefault(t *testing.T) {
+	t.Parallel()
+
+	source := `def f(limit:, ok: limit < 10)
+  ok
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	want := []ast.Param{
+		{Name: "limit", Kind: ast.ParamKeyword},
+		{
+			Name: "ok",
+			Kind: ast.ParamKeyword,
+			DefaultVal: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "limit"},
+				Operator: ast.TokenLT,
+				Right:    &ast.IntegerLiteral{Value: 10},
+			},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserGenericContainerTypeNotLessThan verifies that the less-than
+// disambiguation does not misclassify a genuine generic container type. `array`
+// is not a value, so `a: array<int>` remains a typed positional parameter with
+// the generic continuing the type rather than opening a comparison.
+func TestParserGenericContainerTypeNotLessThan(t *testing.T) {
+	t.Parallel()
+
+	source := `def f(a: array<int>)
+  a
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	want := []ast.Param{
+		{
+			Name: "a",
+			Type: &ast.TypeExpr{
+				Name:     "array",
+				Kind:     ast.TypeArray,
+				TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
+			},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}

@@ -141,6 +141,13 @@ spelling is the optional keyword default `nil`, matching Ruby and the stdlib's
 documented optional keywords. When a keyword default must reference another name
 on its own, wrap it in parentheses (`a: (other)`) so it parses as an expression.
 
+A keyword default may be a full expression, including one that references an
+earlier parameter with a comparison (`def f(limit:, ok: limit < 10)`). A `{ ... }`
+default is a hash literal whenever its contents are values rather than types, so
+`def f(opts: { retry: 3 })` and `def f(opts: {})` both declare hash defaults. The
+`name: { field: Type }` spelling, whose field values are themselves types, stays
+a typed positional parameter with a shape type.
+
 ### Function values
 
 A function referenced by name (without calling it) is a value that can be

@@ -5,6 +5,9 @@
   (`def g(a:, b: a + 1)`), keyword-only parameters still reject positional
   arguments, and `a: nil` reads as the keyword default `nil`. Defaults evaluate
   under the sandbox step and memory quotas. The token after the colon
-  disambiguates the forms: a bare type name (or `nil` used as a type) stays a
-  typed positional parameter, so wrap a bare-identifier default in parentheses
-  (`a: (other)`) to force the keyword form.
+  disambiguates the forms: a bare type name stays a typed positional parameter,
+  so wrap a bare-identifier default in parentheses (`a: (other)`) to force the
+  keyword form. Expression defaults are supported, including a comparison against
+  an earlier parameter (`def f(limit:, ok: limit < 10)`) and a hash literal
+  (`def f(opts: { retry: 3 })` or `def f(opts: {})`); the `name: { field: Type }`
+  shape-type spelling stays a typed positional parameter.

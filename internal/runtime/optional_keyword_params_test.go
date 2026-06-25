@@ -169,3 +169,85 @@ func TestOptionalKeywordParameterTypedPositionalUnaffected(t *testing.T) {
 		t.Fatalf("typed_default(9) = %#v, want 10", got)
 	}
 }
+
+// TestOptionalKeywordParameterHashDefault verifies that a `{ ... }` keyword
+// default is bound as a hash literal: the default hash applies when the keyword
+// is omitted, an explicit keyword overrides it, and a hash default may reference
+// an earlier keyword parameter.
+func TestOptionalKeywordParameterHashDefault(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def opts_default(opts: { retry: 3 })
+      opts[:retry]
+    end
+
+    def empty_default(opts: {})
+      opts.size
+    end
+
+    def chained_hash(a:, b: { sum: a + 1 })
+      b[:sum]
+    end
+    `)
+
+	t.Run("default_hash_applies_when_omitted", func(t *testing.T) {
+		t.Parallel()
+		if got := callFunc(t, script, "opts_default", nil); !got.Equal(NewInt(3)) {
+			t.Fatalf("opts_default() = %#v, want 3", got)
+		}
+	})
+
+	t.Run("explicit_hash_overrides_default", func(t *testing.T) {
+		t.Parallel()
+		got := callScript(t, context.Background(), script, "opts_default", nil, CallOptions{
+			Keywords: map[string]Value{"opts": NewHash(map[string]Value{"retry": NewInt(9)})},
+		})
+		if !got.Equal(NewInt(9)) {
+			t.Fatalf("opts_default(opts: {retry: 9}) = %#v, want 9", got)
+		}
+	})
+
+	t.Run("empty_hash_default", func(t *testing.T) {
+		t.Parallel()
+		if got := callFunc(t, script, "empty_default", nil); !got.Equal(NewInt(0)) {
+			t.Fatalf("empty_default() = %#v, want 0", got)
+		}
+	})
+
+	t.Run("hash_default_references_earlier_keyword", func(t *testing.T) {
+		t.Parallel()
+		got := callScript(t, context.Background(), script, "chained_hash", nil, CallOptions{
+			Keywords: map[string]Value{"a": NewInt(2)},
+		})
+		if !got.Equal(NewInt(3)) {
+			t.Fatalf("chained_hash(a: 2) = %#v, want 3", got)
+		}
+	})
+}
+
+// TestOptionalKeywordParameterLessThanDefault verifies that a keyword default
+// expression starting with an earlier keyword parameter followed by `<` is
+// evaluated as a comparison rather than a generic type continuation, so the
+// default reflects the prior parameter's value at call time.
+func TestOptionalKeywordParameterLessThanDefault(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def f(limit:, ok: limit < 10)
+      ok
+    end
+    `)
+
+	below := callScript(t, context.Background(), script, "f", nil, CallOptions{
+		Keywords: map[string]Value{"limit": NewInt(3)},
+	})
+	if !below.Equal(NewBool(true)) {
+		t.Fatalf("f(limit: 3) = %#v, want true", below)
+	}
+
+	above := callScript(t, context.Background(), script, "f", nil, CallOptions{
+		Keywords: map[string]Value{"limit": NewInt(30)},
+	})
+	if !above.Equal(NewBool(false)) {
+		t.Fatalf("f(limit: 30) = %#v, want false", above)
+	}
+}
