@@ -104,6 +104,43 @@ def charge(amount: int, currency: string = "USD") -> hash
 end
 ```
 
+### Parameter forms
+
+A parameter's spelling chooses how it receives a value. The token after the
+colon disambiguates the keyword and typed forms:
+
+| Form | Meaning |
+| --- | --- |
+| `name` | required positional parameter |
+| `name = default` | optional positional parameter |
+| `name: Type` | typed positional parameter |
+| `name: Type = default` | typed positional parameter with a default |
+| `name:` | required keyword-only parameter |
+| `name: default` | optional keyword-only parameter |
+| `*rest` | captures extra positional arguments |
+| `**rest` | captures extra keyword arguments |
+| `&block` | captures a passed block |
+
+A keyword-only parameter is bound only by a matching keyword label; it never
+accepts a positional argument. The optional form supplies its default when the
+label is omitted, and a later default may reference an earlier parameter:
+
+```vibe
+def connect(host:, port: 8080, scheme: "https", timeout: port * 2)
+  "#{scheme}://#{host}:#{port}"
+end
+
+connect(host: "example.com")            # uses port 8080, scheme "https"
+connect(host: "example.com", port: 443) # overrides port
+```
+
+Because `name: Type` declares a typed positional parameter, a bare identifier or
+`nil` after the colon resolves as a type name, not a keyword default: write
+`a: int` for a typed positional and `a: 0` for an optional keyword. The `name: nil`
+spelling is the optional keyword default `nil`, matching Ruby and the stdlib's
+documented optional keywords. When a keyword default must reference another name
+on its own, wrap it in parentheses (`a: (other)`) so it parses as an expression.
+
 ### Function values
 
 A function referenced by name (without calling it) is a value that can be

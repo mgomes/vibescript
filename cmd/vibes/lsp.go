@@ -1437,8 +1437,14 @@ func maskStringLiterals(runes []rune) []rune {
 }
 
 // paramLabel renders one parameter: its name, type annotation when
-// present, and a default marker when the parameter is optional.
+// present, and a default marker when the parameter is optional. An optional
+// keyword-only parameter spells its default directly after the colon
+// (`name: …`), matching its source form, whereas positional defaults use the
+// `= …` marker.
 func paramLabel(param ast.Param) string {
+	if param.Kind == ast.ParamKeyword && param.DefaultVal != nil && param.Type == nil {
+		return ast.FormatParamTarget(param) + " …"
+	}
 	label := ast.FormatParamTarget(param)
 	if param.Type != nil {
 		label += ": " + ast.FormatTypeExpr(param.Type)

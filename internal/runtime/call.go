@@ -985,13 +985,19 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 		var val Value
 		switch param.Kind {
 		case ParamKeyword:
-			kw, ok := kwargs[param.Name]
-			if !ok {
+			if kw, ok := kwargs[param.Name]; ok {
+				val = kw
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal != nil {
+				defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
+				if err != nil {
+					return err
+				}
+				val = defaultVal
+			} else {
 				return exec.errorAt(pos, "missing keyword argument %s", param.Name)
-			}
-			val = kw
-			if usedKw != nil {
-				usedKw[param.Name] = true
 			}
 		case ParamRest:
 			rest := append([]Value(nil), args[argIdx:]...)

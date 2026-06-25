@@ -888,6 +888,19 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 			param.Kind = ast.ParamKeyword
 			return param, pos, true
 		}
+		// `name: default` declares an optional keyword-only parameter, while
+		// `name: Type` declares a typed positional parameter. The token after
+		// the colon disambiguates the two forms; see colonIntroducesKeywordDefault.
+		if kind == ast.ParamNormal && !param.IsIvar && p.colonIntroducesKeywordDefault(options) {
+			param.Kind = ast.ParamKeyword
+			p.nextToken()
+			if options.lineLimitedDefaults {
+				param.DefaultVal = p.parseLineExpressionUntil(lowestPrec, ast.TokenComma)
+			} else {
+				param.DefaultVal = p.parseExpression(lowestPrec)
+			}
+			return param, pos, true
+		}
 		p.nextToken()
 		param.Type = p.parseTypeExpr()
 		if param.Type == nil {
@@ -927,6 +940,63 @@ func (p *parser) peekEndsRequiredKeywordParam(options paramParseOptions) bool {
 		return options.lineLimitedDefaults
 	default:
 		return options.lineLimitedDefaults && p.peekToken.Pos.Line != p.curToken.Pos.Line
+	}
+}
+
+// colonIntroducesKeywordDefault reports whether the token sequence following a
+// parameter's `:` introduces an optional keyword-only default value rather than
+// a type annotation. It is consulted only after peekEndsRequiredKeywordParam has
+// ruled out the bare `name:` required-keyword form, so the colon is always
+// followed by at least one more token here.
+//
+// Vibescript overloads the post-colon position: `name: Type` is a typed
+// positional parameter while `name: default` is an optional keyword-only
+// parameter. The decision rests on whether the colon is followed by something
+// that can begin a type annotation:
+//
+//   - A value-only token (a literal, prefix operator, grouping, etc.) cannot
+//     start a type, so it begins a default value.
+//   - `nil` reads as a default value (`a: nil`), matching Ruby and the stdlib's
+//     documented optional keywords; a bare `nil` positional type is useless.
+//   - `{` reads as a shape type, preserving the `name: { field: Type }` form.
+//   - A bare identifier is the genuinely ambiguous case. It reads as a type when
+//     it stands alone at a parameter boundary or continues as a type (`<` for
+//     generic arguments, `|` for a union). Otherwise the identifier begins an
+//     expression (`a + 1`, `helper(x)`, `obj.value`) and is treated as a
+//     default value.
+func (p *parser) colonIntroducesKeywordDefault(options paramParseOptions) bool {
+	switch p.peekToken.Type {
+	case ast.TokenNil:
+		return true
+	case ast.TokenLBrace:
+		return false
+	case ast.TokenIdent:
+		return p.identAfterColonStartsExpression(options)
+	default:
+		return prefixParserKind(p.peekToken.Type) != prefixParserNone
+	}
+}
+
+// identAfterColonStartsExpression reports whether an identifier that follows a
+// parameter's `:` begins a default-value expression rather than a bare type
+// name. The token after the identifier decides: a parameter boundary keeps the
+// identifier a standalone type, `<` and `|` continue it as a type, and anything
+// else (binary operators, calls, member access, indexing) makes it the head of
+// an expression.
+func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool {
+	switch p.peekPeek.Type {
+	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign, ast.TokenLT, ast.TokenPipe:
+		// A boundary (`,` `)`), an `=` introducing a `name: Type = default`
+		// positional default, or a type continuation (`<` generic arguments,
+		// `|` union) all keep the identifier a type name.
+		return false
+	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
+		return !options.lineLimitedDefaults
+	default:
+		if options.lineLimitedDefaults && p.peekPeek.Pos.Line != p.peekToken.Pos.Line {
+			return false
+		}
+		return true
 	}
 }
 
