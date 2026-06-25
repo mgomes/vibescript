@@ -1705,38 +1705,50 @@ const stringScanInitialCap = 256
 // advance avoids both.
 //
 // FindAllStringSubmatchIndex(text, -1) is the natural call, but it materializes
-// 2 + 2*groups ints per match before the runtime can charge anything; a pattern
-// of thousands of empty () groups (still under the pattern-size cap) over a
-// near-limit subject would request matches × groups index integers -- tens of
-// gigabytes -- and OOM the host. The number of matches the engine can return is
-// bounded by runeCount+1, so the worst-case index footprint is known up front. For
-// the overwhelming majority of patterns (few groups, or any pattern over a short
-// subject) that worst case already fits the memory quota, so the submatch call is
-// issued directly. Only when the worst case would exceed the quota -- the rare
-// many-capture-group-over-a-large-subject shape the reviewer flagged -- is the
-// exact match count learned first with FindAllStringIndex, whose allocation is two
-// ints per match and so is independent of the group count (the safe scaling the
-// pre-capture scan had). The exact count then drives a tight projection; the
-// group-multiplied submatch call runs only when it is provably within budget, and
-// because the projection uses the real count, a sparsely-matching pattern is never
-// rejected for a result that fits. This keeps the common path to a single engine
-// scan while still bounding the pathological allocation.
+// 2 + 2*groups ints per match as one [][]int table before the runtime can charge
+// anything; a pattern of thousands of empty () groups (still under the
+// pattern-size cap) over a near-limit subject would request matches × groups index
+// integers -- tens of gigabytes -- and OOM the host inside that call. The number
+// of matches the engine can return is bounded by runeCount+1, so the worst-case
+// index footprint is known up front from the pattern's group count and the
+// subject's rune count alone, WITHOUT running any match. The scan therefore
+// projects that worst case first and rejects before calling the engine at all when
+// it would overflow the quota; the engine is invoked only once the worst case is
+// provably within budget, so the OOM-inside-FindAll hole is closed without a
+// counting pre-scan. This conservatively over-rejects the pathological shape (many
+// capture groups over a large subject) even when the pattern would actually match
+// sparsely, which is sandbox-safe: the alternative -- a counting FindAll to learn
+// the real match count -- itself materializes a large index slice for empty or
+// near-empty patterns and reintroduces the very host-memory spike the guard exists
+// to prevent.
 //
-// The per-match RESULT elements are then built incrementally: each element is
-// appended and charged against the memory quota via the array-build accumulator
-// before the next match is processed, and one step is charged per match, so a
-// scan whose output would exceed the memory or step quota trips the limit as the
-// result accumulates rather than after the whole array is materialized.
+// Once the worst case fits, the engine table is materialized once and the per-match
+// RESULT elements are built incrementally against the array-build accumulator. The
+// engine's whole [][]int table stays live the entire time the result accumulates,
+// so the accumulator is SEEDED with that table's actual footprint via
+// reserveScratch before the first element is charged: the index table and the
+// growing result are then charged TOGETHER against the quota, bounding their
+// coexisting peak rather than letting each fit separately while their sum exceeds
+// the quota. One step is charged per match, so a scan whose output would exceed the
+// memory or step quota trips the limit as the result accumulates rather than after
+// the whole array is materialized.
 func stringScan(exec *Execution, re *regexp.Regexp, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	groups := re.NumSubexp()
 
-	if err := guardRegexScanIndexFootprint(exec, re, text, groups); err != nil {
+	if err := guardRegexScanIndexFootprint(exec, text, groups); err != nil {
 		return NewNil(), err
 	}
 
 	allMatches := re.FindAllStringSubmatchIndex(text, -1)
 
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	// The engine's index table stays live the whole time the result is built from
+	// it, so charge its actual footprint into the accumulator's baseline; the
+	// per-element checks then see index table + growing result together.
+	if err := acc.reserveScratch(projectedRegexSubmatchIndexBytes(len(allMatches), groups)); err != nil {
+		return NewNil(), err
+	}
+
 	out := make([]Value, 0, min(len(allMatches), stringScanInitialCap))
 	for _, loc := range allMatches {
 		// Charge a step per match so a pattern that produces a flood of matches
@@ -1756,46 +1768,23 @@ func stringScan(exec *Execution, re *regexp.Regexp, text string, receiver Value,
 }
 
 // guardRegexScanIndexFootprint rejects a scan whose FindAllStringSubmatchIndex
-// index slices would exceed the memory quota, before that group-multiplied call
-// runs. The engine returns at most runeCount+1 matches; when that worst-case
-// footprint fits the quota the submatch call is safe to issue directly, so the
-// guard returns without a second scan. Only when the worst case would overflow --
-// the many-capture-group-over-a-large-subject shape -- is the exact match count
-// resolved with the group-independent FindAllStringIndex and the projection
-// re-checked against that tight count, so a sparsely-matching pattern is not
-// rejected for a result that actually fits.
-func guardRegexScanIndexFootprint(exec *Execution, re *regexp.Regexp, text string, groups int) error {
+// index table could exceed the memory quota, BEFORE the engine runs. The engine
+// returns at most runeCount+1 matches, so the worst-case index footprint is
+// (runeCount+1) slices of 2 + 2*groups ints -- known from the rune count and group
+// count alone, without matching anything. When that worst case overflows the
+// quota the scan rejects here and never calls any FindAll variant, so the engine
+// cannot OOM the host materializing a huge index table for a many-capture-group
+// pattern over a large subject. This deliberately over-rejects that pathological
+// shape even when it would match sparsely: resolving the real count would require
+// a counting FindAll whose own index slice reintroduces the host-memory spike, so
+// the conservative up-front rejection is the sandbox-safe choice.
+func guardRegexScanIndexFootprint(exec *Execution, text string, groups int) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
 	maxMatches := utf8.RuneCountInString(text) + 1
-	if checkProjectedRegexSubmatchIndexBytes(exec, maxMatches, groups) == nil {
-		return nil
-	}
-
-	matchCount := len(re.FindAllStringIndex(text, -1))
-	return checkProjectedRegexSubmatchIndexBytes(exec, matchCount, groups)
-}
-
-// checkProjectedRegexSubmatchIndexBytes reports whether materializing
-// FindAllStringSubmatchIndex's index slices for matchCount matches would exceed the
-// memory quota. Each match is one slice of 2 + 2*groups ints; charging that
-// footprint bounds the many-capture-group case where the all-submatch call would
-// otherwise allocate tens of gigabytes of index integers before any per-element
-// accounting ran.
-func checkProjectedRegexSubmatchIndexBytes(exec *Execution, matchCount, groups int) error {
-	if exec.memoryQuota <= 0 {
-		return nil
-	}
-
-	intsPerMatch := saturatingAdd(2, saturatingMul(2, groups))
-	bytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
-	// Per match the engine allocates its own []int backing (one slice base) and
-	// stores a slice header for it in the outer [][]int (another slice-header-sized
-	// slot); charge both so the structural footprint is not understated.
-	bytesPerMatch = saturatingAdd(bytesPerMatch, saturatingMul(2, estimatedSliceBaseBytes))
-	projected := saturatingMul(matchCount, bytesPerMatch)
+	projected := projectedRegexSubmatchIndexBytes(maxMatches, groups)
 
 	est := exec.memoryEstimatorForCheck()
 	used := saturatingAdd(exec.estimateMemoryUsageBase(est), projected)
@@ -1804,6 +1793,23 @@ func checkProjectedRegexSubmatchIndexBytes(exec *Execution, matchCount, groups i
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
 	return nil
+}
+
+// projectedRegexSubmatchIndexBytes returns the index-integer footprint of the
+// [][]int table FindAllStringSubmatchIndex materializes for matchCount matches of a
+// pattern with the given group count: each match is one slice of 2 + 2*groups ints,
+// so the projection is matchCount * (2 + 2*groups) * estimatedIntBytes. The
+// per-match structural overhead (the inner slice's own base and its header slot in
+// the outer slice) is deliberately omitted: the int payload dominates the cases the
+// guard exists to reject -- a many-capture-group pattern's 2+2*groups ints swamp the
+// fixed slice overhead -- so charging only the integers keeps the bound simple while
+// still tripping every footprint large enough to threaten the host. The worst-case
+// guard and the accumulator seed share this projection so the up-front rejection and
+// the running budget reserve the same bytes.
+func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
+	intsPerMatch := saturatingAdd(2, saturatingMul(2, groups))
+	bytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
+	return saturatingMul(matchCount, bytesPerMatch)
 }
 
 // stringScanElement builds the per-match result element for String#scan: the full
