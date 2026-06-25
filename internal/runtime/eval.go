@@ -1407,6 +1407,15 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			}
 			last = val
 		}
+	case KindHash:
+		val, returned, err := exec.evalForHash(stmt, env, iterable, last)
+		if err != nil {
+			return NewNil(), false, err
+		}
+		if returned {
+			return val, true, nil
+		}
+		last = val
 	case KindRange:
 		r := iterable.Range()
 		if r.Start <= r.End {
@@ -1456,6 +1465,62 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "cannot iterate over %s", iterable.Kind())
 	}
 
+	return last, false, nil
+}
+
+// evalForHash runs a `for` loop over a hash, mirroring Ruby's `for` over a hash,
+// which iterates `each` and yields a two-element [key, value] pair. The returned
+// bool reports whether the body returned (propagating an explicit `return`), and
+// last seeds the loop's running value so the value of an empty loop matches the
+// enclosing statement's last value.
+//
+// Like hash.each, the loop builds no output map but materializes a sorted key
+// list to walk entries deterministically. The scratch slice is reserved against
+// the memory quota for the loop's entire lifetime via reserveLoopScratch, so it
+// is counted by every memory check inside the body -- not just preflighted once
+// before the loop. Without that reservation a body that allocates near the quota
+// could pass its own checks while the true peak (roots + scratch + body
+// allocation) exceeded the quota by the scratch size. The reservation is released
+// on every exit path through defer.
+func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value) (Value, bool, error) {
+	entries := iterable.Hash()
+	delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+	defer exec.releaseLoopScratch(delta)
+
+	// The scratch is now in the live baseline, so the preflight charges it through
+	// the call roots. The iterable plays the receiver role here, so an ephemeral
+	// hash literal is counted while a hash already bound to a variable is
+	// deduplicated against the live base.
+	if err := exec.checkProjectedHashWalkBytes(iterable, nil, nil, NewNil()); err != nil {
+		return NewNil(), false, err
+	}
+	var keyBuf [smallHashKeyBufferSize]string
+	for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+		if err := exec.step(); err != nil {
+			return NewNil(), false, exec.wrapError(err, stmt.Pos())
+		}
+		// Hash keys round-trip as symbols, the same shape hash.each and hash.keys
+		// expose.
+		pair := NewArray([]Value{NewSymbol(key), entries[key]})
+		if err := exec.checkMemoryWith(pair); err != nil {
+			return NewNil(), false, err
+		}
+		env.Assign(stmt.Iterator, pair)
+		val, returned, err := exec.evalStatements(stmt.Body, env)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return last, false, nil
+			}
+			if errors.Is(err, errLoopNext) {
+				continue
+			}
+			return NewNil(), false, err
+		}
+		if returned {
+			return val, true, nil
+		}
+		last = val
+	}
 	return last, false, nil
 }
 
