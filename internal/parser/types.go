@@ -82,6 +82,17 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 			p.addParseError(p.curToken.Pos, fmt.Sprintf("type %s does not accept type arguments", ty.Name))
 			return nil
 		}
+		// A nullable suffix on the container name (e.g. array?<int>) belongs
+		// after the type arguments. resolveType strips a trailing "?" and
+		// marks the type nullable, so detect that here and reject the
+		// misplaced spelling rather than silently accepting it.
+		if ty.Nullable {
+			base := strings.TrimSuffix(ty.Name, "?")
+			p.addParseError(p.curToken.Pos, fmt.Sprintf(
+				"nullable suffix on %s must follow its type arguments; write %s<...>? instead of %s?<...>",
+				base, base, base))
+			return nil
+		}
 		p.nextToken()
 		p.nextToken()
 		typeArgs := []*ast.TypeExpr{}

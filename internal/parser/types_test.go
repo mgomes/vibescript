@@ -210,6 +210,65 @@ end`
 	}
 }
 
+func TestParserNullableContainerWithoutTypeArgs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		source   string
+		wantType *ast.TypeExpr
+	}{
+		{
+			name: "array_nullable_no_args",
+			source: `def run(values: array?)
+  values
+end`,
+			wantType: &ast.TypeExpr{Name: "array?", Kind: ast.TypeArray, Nullable: true},
+		},
+		{
+			name: "hash_nullable_no_args",
+			source: `def run(values: hash?)
+  values
+end`,
+			wantType: &ast.TypeExpr{Name: "hash?", Kind: ast.TypeHash, Nullable: true},
+		},
+		{
+			name: "array_with_args_then_union_nil",
+			source: `def run(values: array<int> | nil)
+  values
+end`,
+			wantType: &ast.TypeExpr{
+				Name: "array<int> | nil",
+				Kind: ast.TypeUnion,
+				Union: []*ast.TypeExpr{
+					{
+						Name:     "array",
+						Kind:     ast.TypeArray,
+						TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
+					},
+					{Name: "nil", Kind: ast.TypeNil},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("expected no parse errors, got %v", errs)
+			}
+			fn, ok := got.Statements[0].(*ast.FunctionStmt)
+			if !ok {
+				t.Fatalf("expected function statement, got %T", got.Statements[0])
+			}
+			if diff := cmp.Diff(tc.wantType, fn.Params[0].Type, astCmpOpts); diff != "" {
+				t.Fatalf("param type mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestParserTypeErrorCases(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -251,6 +310,27 @@ end`,
   payload
 end`,
 			wantErr: "shape field name",
+		},
+		{
+			name: "nullable_suffix_before_array_args",
+			source: `def run(values: array?<int>)
+  values
+end`,
+			wantErr: "nullable suffix on array must follow its type arguments; write array<...>? instead of array?<...>",
+		},
+		{
+			name: "nullable_suffix_before_hash_args",
+			source: `def run(values: hash?<string, int>)
+  values
+end`,
+			wantErr: "nullable suffix on hash must follow its type arguments; write hash<...>? instead of hash?<...>",
+		},
+		{
+			name: "nullable_suffix_before_object_args",
+			source: `def run(values: object?<string, int>)
+  values
+end`,
+			wantErr: "nullable suffix on object must follow its type arguments; write object<...>? instead of object?<...>",
 		},
 	}
 
