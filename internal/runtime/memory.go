@@ -178,6 +178,22 @@ func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int)
 // count is the number of int values the array would hold; each int value
 // contributes only the base Value size.
 func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
+	return exec.checkProjectedIntArrayBytesWithLive(count, 0)
+}
+
+// checkProjectedIntArrayBytesWithLive is checkProjectedIntArrayBytes for a
+// projection that must also account for liveSlots int-value slots that are
+// already allocated but not reachable from any environment root, so
+// estimateMemoryUsageBase cannot see them. Destructuring assignment uses it when
+// it has snapshotted the right-hand side into a Go-local slice (held only on the
+// call stack) and is about to build a second array — such as a named rest's
+// captured window — while that snapshot is still live. Charging both the live
+// snapshot and the new array projects the true peak (base + snapshot + array),
+// which the per-statement check would otherwise miss because the snapshot is
+// gone by the time control returns from the assignment. The live-snapshot term
+// reserves the same slice-header-plus-slot-array footprint the snapshot's own
+// up-front charge reserved, so the two charges describe the same bytes.
+func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
@@ -186,6 +202,10 @@ func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
 	used := exec.estimateMemoryUsageBase(est)
 	est.reset()
 
+	if liveSlots > 0 {
+		used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
+		used = saturatingAdd(used, saturatingMul(liveSlots, estimatedValueBytes))
+	}
 	used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
 	used = saturatingAdd(used, saturatingMul(count, estimatedValueBytes))
 	if used > exec.memoryQuota {

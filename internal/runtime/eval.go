@@ -1055,27 +1055,39 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value
 // invokes assign for each concrete leaf target. It is the host-facing entry
 // point used by tools that walk destructuring targets without a sandboxed
 // Execution (such as the REPL extracting bound names from a result); it never
-// charges memory because it allocates only when a leaf assigns into an aliased
-// right-hand side array, which those callers do not do. Sandboxed evaluation
-// goes through Execution.assignDestructure, which charges the snapshot against
-// the memory quota.
+// charges memory because those callers run outside a quota. Sandboxed evaluation
+// goes through Execution.assignDestructure, which charges every fresh slot array
+// (the right-hand-side snapshot and any named rest window) against the memory
+// quota before it is allocated.
 func AssignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
-	return assignDestructure(target, value, assign, noopSnapshotCharge)
+	return assignDestructure(target, value, assign, destructureCharge{check: noopDestructureCheck})
 }
 
-// noopSnapshotCharge admits every snapshot. AssignDestructure's host callers run
-// outside a memory quota, so the source snapshot they may take is not metered.
-func noopSnapshotCharge(int) error { return nil }
+// destructureCharge meters the fresh int-value slot arrays a destructuring
+// assignment allocates (the right-hand-side snapshot and any named rest
+// window) against a memory quota before they materialize. liveSlots tracks the
+// snapshot slots that are already allocated but reachable only from a Go-local
+// slice on the call stack, so the memory estimator's root walk cannot see them;
+// the count threads down the recursion so a nested destructure charges its own
+// arrays on top of every enclosing level's still-live snapshot, projecting the
+// true peak rather than a single level's allocation.
+type destructureCharge struct {
+	check     func(count, liveSlots int) error
+	liveSlots int
+}
+
+// noopDestructureCheck admits every allocation. AssignDestructure's host callers
+// run outside a memory quota, so the arrays they may materialize are not metered.
+func noopDestructureCheck(int, int) error { return nil }
 
 // assignDestructure applies Vibescript's destructuring assignment rules and
-// invokes assign for each concrete leaf target. chargeSnapshot meters the source
-// snapshot's slot array against the caller's memory quota before it is
-// allocated.
+// invokes assign for each concrete leaf target. The returned charge meters every
+// fresh slot array against the caller's memory quota before it is allocated.
 func (exec *Execution) assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
-	return assignDestructure(target, value, assign, exec.checkProjectedIntArrayBytes)
+	return assignDestructure(target, value, assign, destructureCharge{check: exec.checkProjectedIntArrayBytesWithLive})
 }
 
-func assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error, chargeSnapshot func(int) error) error {
+func assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error, charge destructureCharge) error {
 	values := destructureValues(value)
 	// Ruby evaluates the whole right-hand side into an array before performing
 	// any assignment, so every target reads its original value regardless of
@@ -1090,10 +1102,14 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	// as does a write whose only followers discard their window (e.g.
 	// "values[0], * = values"), which reads nothing the write could corrupt.
 	if value.Kind() == KindArray && destructureWriteIsReadBack(target) {
-		if err := chargeSnapshot(len(values)); err != nil {
+		if err := charge.check(len(values), charge.liveSlots); err != nil {
 			return err
 		}
 		values = append([]Value(nil), values...)
+		// The snapshot stays live on this call's stack while every leaf (and any
+		// nested destructure) runs, so fold it into the running baseline the
+		// charge projects for the rest window and for nested snapshots.
+		charge.liveSlots += len(values)
 	}
 	restIndex := -1
 	for i, element := range target.Elements {
@@ -1105,7 +1121,7 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 
 	if restIndex == -1 {
 		for i, element := range target.Elements {
-			if err := assignDestructureValue(element.Target, valueAt(values, i), assign, chargeSnapshot); err != nil {
+			if err := assignDestructureValue(element.Target, valueAt(values, i), assign, charge); err != nil {
 				return err
 			}
 		}
@@ -1134,6 +1150,15 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 			if restAnonymous {
 				continue
 			}
+			// The rest window is a second fresh slot array that coexists with the
+			// snapshot above (charge.liveSlots already folds it in), so charge it
+			// against the quota before materializing it. Without this a quota that
+			// fits base+snapshot but not base+snapshot+rest would pass the snapshot
+			// check, allocate the window anyway, and the snapshot would be gone by
+			// the next per-statement check, letting execution exceed the quota.
+			if err := charge.check(restEnd-restStart, charge.liveSlots); err != nil {
+				return err
+			}
 			val = NewArray(append([]Value(nil), values[restStart:restEnd]...))
 		default:
 			// Trailing targets bind to the values immediately after the rest
@@ -1142,20 +1167,20 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 			// Ruby (e.g. a, *, y, z = [1, 2] yields a=1, y=2, z=nil).
 			val = valueAt(values, restEnd+(i-restIndex-1))
 		}
-		if err := assignDestructureValue(element.Target, val, assign, chargeSnapshot); err != nil {
+		if err := assignDestructureValue(element.Target, val, assign, charge); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func assignDestructureValue(target Expression, value Value, assign func(Expression, Value) error, chargeSnapshot func(int) error) error {
+func assignDestructureValue(target Expression, value Value, assign func(Expression, Value) error, charge destructureCharge) error {
 	if target == nil {
 		// Anonymous rest target ("*"): discard the captured values.
 		return nil
 	}
 	if nested, ok := target.(*DestructureTarget); ok {
-		return assignDestructure(nested, value, assign, chargeSnapshot)
+		return assignDestructure(nested, value, assign, charge)
 	}
 	return assign(target, value)
 }

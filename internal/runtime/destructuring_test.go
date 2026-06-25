@@ -714,17 +714,13 @@ func TestAssignDestructureChargesSnapshotAgainstMemoryQuota(t *testing.T) {
 	t.Parallel()
 
 	// "values[1], *rest = values" must snapshot the source so rest reads the
-	// original values, not the mutated array. That snapshot is a fresh slot array
-	// the post-assignment memory check would otherwise miss, so assignDestructure
-	// charges it up front and fails fast. A quota that fits the bare execution but
-	// not the snapshot's slot array must reject before the copy is allocated.
+	// original values, not the mutated array, and then materialize the rest
+	// window as a second fresh slot array that coexists with that snapshot. Both
+	// are allocations the post-assignment memory check would miss (the snapshot
+	// is gone, and nothing re-checks the rest window before the next statement),
+	// so assignDestructure charges each up front and fails fast. The true peak is
+	// base + snapshot + rest, not base + snapshot alone.
 	const size = 1024
-	backing := make([]Value, size)
-	for i := range backing {
-		backing[i] = NewInt(int64(i))
-	}
-	source := NewArray(backing)
-
 	index := &IndexExpr{}
 	rest := &Identifier{Name: "rest"}
 	target := &DestructureTarget{
@@ -733,45 +729,109 @@ func TestAssignDestructureChargesSnapshotAgainstMemoryQuota(t *testing.T) {
 			{Target: rest, Rest: true},
 		},
 	}
-	assign := func(expr Expression, v Value) error {
-		if expr == index {
-			source.Array()[1] = v
+
+	// Each run mutates source[1] through the index write, so build a fresh source
+	// per quota; sharing one across runs would let an earlier write corrupt the
+	// original values a later run's snapshot is meant to preserve. bound captures
+	// the rest target so the accept case can prove the snapshot was taken.
+	var bound Value
+	run := func(quota int) error {
+		bound = NewNil()
+		backing := make([]Value, size)
+		for i := range backing {
+			backing[i] = NewInt(int64(i))
 		}
-		return nil
+		source := NewArray(backing)
+		assign := func(expr Expression, v Value) error {
+			switch expr {
+			case index:
+				source.Array()[1] = v
+			case rest:
+				bound = v
+			}
+			return nil
+		}
+		exec := &Execution{ctx: context.Background(), memoryQuota: quota}
+		return exec.assignDestructure(target, source, assign)
 	}
 
 	probe := &Execution{ctx: context.Background()}
 	base := probe.estimateMemoryUsageBase(probe.memoryEstimatorForCheck())
 	snapshotBytes := estimatedValueBytes + estimatedSliceBaseBytes + size*estimatedValueBytes
+	// "values[1], *rest" leaves restStart=1 and restEnd=size, so the captured
+	// window is size-1 slots. It is charged on top of the still-live snapshot.
+	restBytes := estimatedValueBytes + estimatedSliceBaseBytes + (size-1)*estimatedValueBytes
+	peakBytes := snapshotBytes + restBytes
 
 	// One byte short of the snapshot's footprint: the source aliases fine, but the
 	// snapshot copy pushes the projection over the quota.
-	reject := &Execution{ctx: context.Background(), memoryQuota: base + snapshotBytes - 1}
-	if err := reject.assignDestructure(target, source, assign); !errors.Is(err, errMemoryQuotaExceeded) {
+	if err := run(base + snapshotBytes - 1); !errors.Is(err, errMemoryQuotaExceeded) {
 		t.Fatalf("assignDestructure under tight quota = %v; want errMemoryQuotaExceeded", err)
 	}
 
-	// Exactly enough room for the snapshot: the assignment succeeds and rest
-	// captures the original slot values, proving the snapshot was taken.
-	var bound Value
-	captureRest := func(expr Expression, v Value) error {
-		switch expr {
-		case index:
-			source.Array()[1] = v
-		case rest:
-			bound = v
-		}
-		return nil
+	// Room for the snapshot but not the rest window on top of it. This is the gap
+	// the finding flagged: the snapshot check passes, but materializing the rest
+	// array would push live memory past the quota, so it must reject before the
+	// window is allocated rather than overshooting and discovering it too late.
+	if err := run(base + peakBytes - 1); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("assignDestructure with room for the snapshot but not the rest window = %v; want errMemoryQuotaExceeded", err)
 	}
-	accept := &Execution{ctx: context.Background(), memoryQuota: base + snapshotBytes}
-	if err := accept.assignDestructure(target, source, captureRest); err != nil {
-		t.Fatalf("assignDestructure with room for the snapshot returned error: %v", err)
+
+	// Exactly enough room for the snapshot and the rest window together: the
+	// assignment succeeds and rest captures the original slot values, proving the
+	// snapshot was taken before the index write mutated source[1].
+	if err := run(base + peakBytes); err != nil {
+		t.Fatalf("assignDestructure with room for the snapshot and rest window returned error: %v", err)
 	}
 	if bound.Kind() != KindArray || len(bound.Array()) != size-1 {
 		t.Fatalf("rest bound to %v; want a %d-element array", bound, size-1)
 	}
 	if first := bound.Array()[0]; first.Kind() != KindInt || first.Int() != 1 {
 		t.Fatalf("rest[0] = %v; want 1 (original source[1], not the mutated value)", first)
+	}
+}
+
+func TestAssignDestructureChargesRestWindowWithoutSnapshot(t *testing.T) {
+	t.Parallel()
+
+	// "a, *rest = values" only binds names, so destructureWriteIsReadBack is
+	// false and the source aliases without a snapshot. The named rest window is
+	// still a fresh slot array, and nothing re-checks it before the next
+	// statement, so assignDestructure must charge it up front. A quota that fits
+	// the aliased source but not the rest window must reject before the window is
+	// allocated.
+	const size = 1024
+	backing := make([]Value, size)
+	for i := range backing {
+		backing[i] = NewInt(int64(i))
+	}
+	source := NewArray(backing)
+
+	first := &Identifier{Name: "a"}
+	rest := &Identifier{Name: "rest"}
+	target := &DestructureTarget{
+		Elements: []DestructureElement{
+			{Target: first},
+			{Target: rest, Rest: true},
+		},
+	}
+	assign := func(Expression, Value) error { return nil }
+
+	probe := &Execution{ctx: context.Background()}
+	base := probe.estimateMemoryUsageBase(probe.memoryEstimatorForCheck())
+	// "a, *rest" leaves restStart=1 and restEnd=size, so the window is size-1
+	// slots. No snapshot is taken, so the source aliases the live RHS already
+	// counted in base; only the rest window is charged on top.
+	restBytes := estimatedValueBytes + estimatedSliceBaseBytes + (size-1)*estimatedValueBytes
+
+	reject := &Execution{ctx: context.Background(), memoryQuota: base + restBytes - 1}
+	if err := reject.assignDestructure(target, source, assign); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("assignDestructure under tight quota = %v; want errMemoryQuotaExceeded", err)
+	}
+
+	accept := &Execution{ctx: context.Background(), memoryQuota: base + restBytes}
+	if err := accept.assignDestructure(target, source, assign); err != nil {
+		t.Fatalf("assignDestructure with room for the rest window returned error: %v", err)
 	}
 }
 
