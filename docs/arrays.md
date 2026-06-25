@@ -32,6 +32,8 @@ Common enumerable helpers include:
 - `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.
 - `transpose` to swap the rows and columns of a matrix of equal-length array rows; it raises when a row is not an array or the rows differ in length.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
+- `append(*values)` is a Ruby-style alias for `push`, returning a new array with the values added to the end in order.
+- `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`).
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays. No argument, `nil`, or a negative depth flattens fully; `0` returns a shallow copy; a positive depth flattens that many levels and a `Float` depth is truncated to an integer. A nonnumeric depth raises.
@@ -67,6 +69,8 @@ survive.
 [1, 2, 3, 4].window(3)      # [[1,2,3], [2,3,4]]
 [1, 2, 3].take(2)           # [1, 2]
 [1, 2, 3].drop(1)           # [2, 3]
+[1].append(2, 3)            # [1, 2, 3]
+[3].prepend(1, 2)           # [1, 2, 3]
 [1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 [[1, 2], [3, 4]].transpose  # [[1, 3], [2, 4]]
 [1, 2, 3].fill(0)           # [0, 0, 0]
@@ -104,7 +108,25 @@ and leaves the receiver untouched.
 - `count`, `count(value)`, or `count { ... }`. As in Ruby, a `value` argument
   takes precedence: `count(value) { ... }` counts elements equal to `value` and
   ignores the block.
-- `any?`, `all?`, `none?` with optional blocks.
+- `dig(*path)` for nested lookup across arrays and hashes. Each path component
+  descends one level: an integer index into an array, or a symbol/string key
+  into a hash, so a single `dig` can walk JSON-shaped data. Missing keys and
+  out-of-range indexes (including negative indexes, which arrays treat as out of
+  range) yield `nil` rather than raising. A non-integer array index raises, like
+  the index operator.
+- `any?`, `all?`, `none?` with an optional block or an optional `pattern`
+  argument. Without arguments they test element truthiness; the block form tests
+  each block result. The `pattern` form tests each element against the argument
+  with case equality (`===`), as in Ruby: `any?(pattern)` is true when any
+  element matches, `all?(pattern)` is true when every element matches, and
+  `none?(pattern)` is true when no element matches. Range patterns therefore test
+  membership rather than object identity, so `[2].any?(1..3)` is `true`;
+  non-range patterns fall back to value equality and do not coerce across types.
+  As with empty arrays elsewhere, `all?` and `none?` on an empty array are
+  vacuously `true` and `any?` is `false`. As with `count(value)`, a `pattern`
+  argument takes precedence over an attached block, which is then ignored.
+- `one?` with an optional block; true only when exactly one element (or block
+  result) is truthy.
 
 `index`, `find_index`, and `rindex` accept either a value or a block, never both;
 passing both raises an error. As a Vibescript extension, the value form also takes
@@ -121,6 +143,42 @@ def health_checks(values)
     all_non_negative: values.all? { |v| v >= 0 }
   }
 end
+
+[[1, 2], [3, 4]].dig(1, 0)             # 3
+[{ name: "x" }, { name: "y" }].dig(1, :name) # "y"
+[[1, 2]].dig(5, 0)                     # nil
+```
+
+## Indexed access
+
+- `at(index)` returns the single element at `index`, counting a negative index
+  back from the end. An out-of-range index returns `nil` rather than raising, so
+  it never goes out of bounds the way bracket access does. It agrees with
+  `[index]` for every in-range non-negative index.
+- `slice(index)` mirrors `at(index)`, returning the single element (or `nil`
+  out of range).
+- `slice(start, length)` returns a new subarray of up to `length` elements
+  starting at `start`. A negative `start` counts back from the end. A `start`
+  exactly equal to the length with a non-negative `length` yields `[]`, while a
+  `start` past the length or a negative `length` returns `nil`. An oversized
+  `length` is clamped to the remaining elements.
+- `slice(range)` returns a new subarray selected by the range bounds, aligning
+  with the range slicing already available for strings. Negative bounds count
+  back from the end, an exclusive range drops its end, an end before begin yields
+  `[]`, and a begin past the length returns `nil`.
+
+Indexes and lengths accept `Float` values, which are truncated toward zero like
+Ruby's `to_int`; any other type raises. The subarray forms always return a fresh
+copy, so mutating the result never touches the original array.
+
+```vibe
+[10, 20, 30].at(-1)         # 30
+[10, 20, 30].at(9)          # nil
+[10, 20, 30, 40].slice(1, 2) # [20, 30]
+[10, 20, 30].slice(3, 1)    # [] (start at the length)
+[10, 20, 30].slice(4, 0)    # nil (start past the length)
+[1, 2, 3, 4].slice(1..2)    # [2, 3]
+[1, 2, 3, 4].slice(-3..-1)  # [2, 3, 4]
 ```
 
 ## Prefix and pattern filtering

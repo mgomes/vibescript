@@ -337,6 +337,16 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 		default:
 			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary - operand")
 		}
+	case tokenPlus:
+		// Unary plus mirrors Ruby: it is the identity on numbers and strings.
+		// Vibescript strings are immutable values, so returning the same value
+		// matches Ruby's "unfrozen copy" semantics observably.
+		switch right.Kind() {
+		case KindInt, KindFloat, KindString:
+			return right, nil
+		default:
+			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary + operand")
+		}
 	case tokenBang, tokenNot:
 		return NewBool(!right.Truthy()), nil
 	default:
@@ -474,6 +484,12 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		result, err = moduloValues(left, right)
 	case tokenEQ:
 		return NewBool(left.Equal(right)), nil
+	case tokenCaseEQ:
+		// Ruby's case equality operator: the left operand acts as the matcher and
+		// the right operand is the value being tested. Ranges check membership;
+		// every other value falls back to `==`. This mirrors `when` clause
+		// matching, where the clause value is the matcher.
+		return NewBool(caseCandidateMatches(right, left)), nil
 	case tokenNotEQ:
 		return NewBool(!left.Equal(right)), nil
 	case tokenLT:
@@ -1105,6 +1121,12 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 	switch value := stmt.Value.(type) {
 	case *CallExpr:
 		member, ok := value.Callee.(*MemberExpr)
+		// Only push uses the accumulator fast path. That path reuses the
+		// receiver's hidden backing buffer across iterations, which is sound for
+		// push because it is the canonical accumulator pattern. append is a
+		// documented non-mutating helper: routing it through the shared buffer
+		// would let escaped aliases (b = a) observe later appends, so it stays on
+		// the normal copy path that always returns a fresh array.
 		if !ok || member.Property != "push" || len(value.KwArgs) > 0 || value.Block != nil {
 			return NewNil(), false, nil
 		}
@@ -1112,7 +1134,7 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 		if !ok || receiver.Name != target.Name {
 			return NewNil(), false, nil
 		}
-		return exec.evalArrayPushAppendAssignment(target.Name, value, env)
+		return exec.evalArrayPushAssignment(target.Name, value, env)
 	case *BinaryExpr:
 		if value.Operator != tokenPlus {
 			return NewNil(), false, nil
@@ -1131,7 +1153,7 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 	}
 }
 
-func (exec *Execution) evalArrayPushAppendAssignment(name string, call *CallExpr, env *Env) (Value, bool, error) {
+func (exec *Execution) evalArrayPushAssignment(name string, call *CallExpr, env *Env) (Value, bool, error) {
 	receiver, ok := env.Get(name)
 	if !ok || receiver.Kind() != KindArray {
 		return NewNil(), false, nil

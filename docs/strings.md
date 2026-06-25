@@ -62,6 +62,50 @@ returns an empty string:
 "".chr    # ""
 ```
 
+### `getbyte`
+
+Returns the byte at a byte offset as an integer in the range `0..255`, mirroring
+Ruby's `String#getbyte`. The offset is byte-level, not rune-aware, so a multibyte
+character occupies more than one offset. A negative offset counts back from the
+end, and an offset outside the string returns `nil`:
+
+```vibe
+"Aé".getbyte(0)   # 65
+"Aé".getbyte(1)   # 195 (first byte of é)
+"Aé".getbyte(-1)  # 169 (last byte of é)
+"Aé".getbyte(3)   # nil
+```
+
+### `byteslice`
+
+Returns a substring selected by byte offsets, mirroring Ruby's
+`String#byteslice`. Unlike [`slice`](#slice), offsets are byte-level rather than
+rune-aware. It accepts the same three shapes:
+
+- `byteslice(index)` returns the one-byte substring at `index`.
+- `byteslice(start, length)` returns up to `length` bytes starting at `start`.
+- `byteslice(range)` returns the bytes selected by a range.
+
+Negative offsets count back from the end. An out-of-range start, or a negative
+length, returns `nil`; a start exactly at the byte length with a length yields an
+empty string:
+
+```vibe
+"abc".byteslice(1)       # "b"
+"Aé".byteslice(1, 2)     # "é" (the two bytes of é)
+"abc".byteslice(1, 10)   # "bc" (length clamps to what is available)
+"abc".byteslice(1..3)    # "bc"
+"abc".byteslice(-2, 1)   # "b"
+"abc".byteslice(3, 2)    # ""
+"abc".byteslice(4, 1)    # nil
+"abc".byteslice(0, -1)   # nil
+```
+
+Because offsets are byte-level, slicing across a UTF-8 boundary returns the raw
+bytes verbatim without normalization (so `"Aé".byteslice(1, 1)` is the single
+byte `0xC3`, which is not valid UTF-8 on its own), matching Ruby's byte-oriented
+semantics.
+
 ### `hex`
 
 Interprets the leading characters as a hexadecimal integer, mirroring Ruby's
@@ -858,6 +902,20 @@ The raw bytes are returned verbatim. Strings carrying invalid UTF-8 (only
 reachable through host-provided values, since Vibescript literals cannot encode
 them) are not normalized, matching Ruby's `String#bytes`.
 
+### `codepoints`
+
+Returns an array of the string's Unicode code points as integers, mirroring
+Ruby's `String#codepoints`. This is rune-aware (the integer counterpart to
+[`chars`](#chars)): a multibyte character contributes a single code point, so
+`codepoints.size` equals [`length`](#length), not [`bytesize`](#bytesize):
+
+```vibe
+"abc".codepoints # [97, 98, 99]
+"Aé".codepoints  # [65, 233]
+"😀".codepoints   # [128512]
+"".codepoints    # []
+```
+
 ### `each_char`
 
 Yields each Unicode character to a block without first materializing an array,
@@ -890,6 +948,23 @@ out # [195, 169]
 
 As with `each_char`, a block is required; calling `each_byte` without a block
 reports `string.each_byte requires a block`.
+
+### `each_codepoint`
+
+Yields each Unicode code point as an integer without first materializing an
+array, the streaming counterpart to [`codepoints`](#codepoints). Iteration is
+rune-aware, so a multibyte character is yielded as a single code point. The
+block's return value is ignored, and `each_codepoint` returns the receiver
+string:
+
+```vibe
+out = []
+"Aé".each_codepoint { |c| out = out + [c] }
+out # [65, 233]
+```
+
+As with `each_char`, a block is required; calling `each_codepoint` without a
+block reports `string.each_codepoint requires a block`.
 
 ### `each_line`
 
