@@ -981,20 +981,30 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			out := make([]Value, 0, initialCap)
 
+			// The result aliases the receiver's elements, so charge its growth
+			// through an arrayBuildAccumulator whose baseline already includes the
+			// live call roots (receiver, args, block). When values_at runs on an
+			// ephemeral receiver — an array literal or capability result reachable
+			// only through the call roots, invisible to estimateMemoryUsageBase — the
+			// receiver's payload is already near the quota; without seeding it the
+			// per-slot check would let the result backing grow another full quota on
+			// top of it, with the excess only caught after materialization. The
+			// accumulator dedups elements that alias the receiver, so each selected
+			// slot adds only a Value slot while the receiver payload it points into
+			// is counted once, in the baseline.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+
 			// emit appends one selected element, charging a step and re-checking the
 			// backing array's growth against the memory quota before the next slot.
 			// Every position a range selector expands to (including nil pads past the
 			// receiver) flows through here, so a huge padded window cannot
-			// materialize without polling cancellation or the memory quota. The
-			// selected elements alias the receiver, whose payloads are already
-			// counted in the call-root base, so each slot adds only a Value slot,
-			// matching checkProjectedIntArrayBytes.
+			// materialize without polling cancellation or the memory quota.
 			emit := func(val Value) error {
 				if err := exec.step(); err != nil {
 					return err
 				}
 				out = append(out, val)
-				return exec.checkProjectedIntArrayBytes(cap(out))
+				return acc.add(val, cap(out))
 			}
 
 			for _, arg := range args {
@@ -1002,7 +1012,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					// Range selectors expand to their selected positions in place,
 					// matching Ruby's Array#values_at(0..1) -> [a[0], a[1]] and the
 					// mixed form values_at(0..1, -1).
-					if err := arrayValuesAtRange(exec, arr, arg.Range(), emit); err != nil {
+					if err := arrayValuesAtRange(acc, len(out), arr, arg.Range(), emit); err != nil {
 						return NewNil(), err
 					}
 					continue
@@ -1148,12 +1158,14 @@ const arrayValuesAtInitialCap = 4096
 // length, so positions at or past the end pad with nil (values_at(0..5) on
 // [10,20,30] yields [10,20,30,nil,nil,nil]). Bound arithmetic stays in int64 so
 // a near-MaxInt64 inclusive range cannot wrap to a negative no-op window, and
-// the selected count is projected against the memory quota up front so a huge
+// the selected count is reserved against the memory quota up front so a huge
 // padded window (values_at(0..1_000_000_000)) fails fast; emit then charges a
 // step and re-checks the quota per position so the materialization stays
-// interruptible even when the up-front projection passes under a large memory
-// quota.
-func arrayValuesAtRange(exec *Execution, arr []Value, rng Range, emit func(Value) error) error {
+// interruptible even when the up-front reservation passes under a large memory
+// quota. The reservation runs through the build accumulator so it is measured
+// against the same call-root baseline (including an ephemeral receiver) that emit
+// charges each appended slot against.
+func arrayValuesAtRange(acc *arrayBuildAccumulator, emittedSoFar int, arr []Value, rng Range, emit func(Value) error) error {
 	length := int64(len(arr))
 	begin := rng.Start
 	if begin < 0 {
@@ -1182,8 +1194,11 @@ func arrayValuesAtRange(exec *Execution, arr []Value, rng Range, emit func(Value
 		return fmt.Errorf("array.values_at window is too large")
 	}
 	// Fail fast when the window clearly exceeds the memory quota before emitting
-	// any element; emit re-checks per position as the backing array grows.
-	if err := exec.checkProjectedIntArrayBytes(int(count)); err != nil {
+	// any element; emit re-checks per position as the backing array grows. The
+	// reservation projects the positions already emitted by earlier selectors plus
+	// this window's count against the call-root baseline, so a mixed
+	// values_at(0..big, 0..big) cannot slip a second huge window past the check.
+	if err := acc.reserveSlots(saturatingAdd(emittedSoFar, int(count))); err != nil {
 		return err
 	}
 	for index := begin; index < endExclusive; index++ {

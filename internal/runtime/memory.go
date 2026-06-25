@@ -338,12 +338,39 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
 
-	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(backingCap, estimatedValueBytes))
-	used := saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
-	if used > acc.exec.memoryQuota {
+	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
+}
+
+// reserveSlots rejects the build up front when a backing slice of slotCount Value
+// slots would already overflow the quota on top of the baseline (exec's reachable
+// roots plus the call roots) and the payload accumulated so far. Builtins that can
+// derive a large lower bound on the result length before emitting it — such as a
+// range selector in Array#values_at expanding to a billion padded positions — use
+// it to fail fast instead of charging the same slots one append at a time. It
+// charges only the slot array, not per-element payloads (those are added by add as
+// each element is appended), so it never rejects a result add would accept.
+func (acc *arrayBuildAccumulator) reserveSlots(slotCount int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	if used := acc.projected(slotCount); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
+// projected returns the build's live footprint if its backing slice held slotCount
+// Value slots: the baseline (exec's reachable roots plus the call roots), the slot
+// array sized to slotCount, and the payloads accumulated so far. add and
+// reserveSlots share it so the per-append and up-front checks charge the slot array
+// identically.
+func (acc *arrayBuildAccumulator) projected(slotCount int) int {
+	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
+	return saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
 }
 
 // hashBuildAccumulator charges the memory of an output map assembled entry by

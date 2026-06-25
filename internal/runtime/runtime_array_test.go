@@ -1012,6 +1012,43 @@ func TestArrayValuesAtRangeTripsMemoryQuota(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestArrayValuesAtRangeChargesEphemeralReceiver(t *testing.T) {
+	t.Parallel()
+
+	// The receiver is reachable only through the call roots (an array literal or
+	// capability result invoked immediately), so its payload is invisible to
+	// estimateMemoryUsageBase. A range selector pads positions past the receiver
+	// with fresh nil slots, and the projected check must charge those slots on top
+	// of the live receiver: a quota that admits the result backing alone but not the
+	// receiver plus the backing has to be rejected before the padded window
+	// materializes. Without seeding the receiver into the projection's baseline the
+	// backing could grow another full quota beyond a receiver that already consumes
+	// most of it, with the excess only caught after materialization.
+	big := func() string { return string(make([]byte, 2000)) }
+	receiver := NewArray([]Value{
+		NewString(big()),
+		NewString(big()),
+		NewString(big()),
+		NewString(big()),
+	})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	// The receiver payload (~8.3 KB) fits under the quota, and the padded window's
+	// backing (~6.5 KB for 201 slots) fits under it too, but their sum does not.
+	// A projection that ignored the receiver would admit the backing and overrun.
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 12 * 1024}
+	paddedRange := NewRange(Range{Start: 0, End: 200})
+	_, err = builtin.Fn(exec, receiver, []Value{paddedRange}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestArrayValuesAtRangeTripsStepQuota(t *testing.T) {
 	t.Parallel()
 
