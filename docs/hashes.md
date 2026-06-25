@@ -112,12 +112,16 @@ Hash.new { |h, k| 1 }.default_proc  # the proc
 {}.default_proc                     # nil
 ```
 
-Only `[]` access consults the default. `fetch`, `dig`, and `values_at` ignore it,
-matching Ruby for `fetch` and `dig`:
+`[]` access, `dig`, and `values_at` all consult the default for a missing key,
+because each is a `[]` lookup in Ruby: `dig` consults the default at every hash
+level it walks, and `values_at` consults it once per missing key. A default proc
+runs (and may store) on each such miss. `fetch` is the exception: like Ruby, it
+ignores the hash default and uses only its own optional fallback.
 
 ```vibe
 Hash.new(0).fetch(:missing, 99) # 99 (fetch's own default, not the hash default)
-Hash.new(0).dig(:missing)       # nil
+Hash.new(0).dig(:missing)       # 0  (the default value)
+Hash.new(0).values_at(:a, :b)   # [0, 0]
 ```
 
 The default travels with the hash object: index assignment (`hash[key] = ...`)
@@ -174,12 +178,14 @@ content and integers do not match equal-looking floats.
   to compute a replacement for each missing key instead of raising.
 - `dig(*path)` for nested lookup. A path component descends one level: a
   symbol or string key into a hash, or an integer index into an array, so a
-  single `dig` can walk JSON-shaped data that mixes hashes and arrays. Missing
-  keys and out-of-range indexes yield `nil` rather than raising. Indexing an
-  array with a non-integer component raises, matching how arrays reject
-  non-integer indexes elsewhere.
-- `values_at(*keys)` to read several values at once, in requested key order, with
-  `nil` for missing keys.
+  single `dig` can walk JSON-shaped data that mixes hashes and arrays. Each hash
+  step is a `[]` lookup, so a missing key consults that hash's default (see
+  [Default values](#default-values)); plain hash literals and out-of-range array
+  indexes yield `nil`. Indexing an array with a non-integer component raises,
+  matching how arrays reject non-integer indexes elsewhere.
+- `values_at(*keys)` to read several values at once, in requested key order. Each
+  key is a `[]` lookup, so a missing key consults the hash default; a plain hash
+  literal yields `nil`.
 
 ```vibe
 def display_name_or_default(records, player_id)

@@ -324,9 +324,17 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				if value, ok := entries[key]; ok {
 					out[i] = value
-				} else {
-					out[i] = NewNil()
+					continue
 				}
+				// A missing key is a [] access: consult the hash's Ruby-style
+				// default (a default value, or a default proc invoked with the
+				// hash and key, which may store) rather than filling nil, matching
+				// MRI's Hash#values_at.
+				resolved, err := exec.hashDefaultForKey(receiver, arg)
+				if err != nil {
+					return NewNil(), err
+				}
+				out[i] = resolved
 			}
 			return NewArray(out), nil
 		}), nil
@@ -377,7 +385,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) == 0 {
 				return NewNil(), fmt.Errorf("hash.dig expects at least one key")
 			}
-			return digPath("hash.dig", receiver, args)
+			return exec.digPath("hash.dig", receiver, args)
 		}), nil
 	case "each":
 		return NewAutoBuiltin("hash.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

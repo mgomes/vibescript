@@ -966,7 +966,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) == 0 {
 				return NewNil(), fmt.Errorf("array.dig expects at least one index")
 			}
-			return digPath("array.dig", receiver, args)
+			return exec.digPath("array.dig", receiver, args)
 		}), nil
 	case "count":
 		return NewAutoBuiltin("array.count", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

@@ -84,9 +84,59 @@ def fetch_ignores_default()
   h.fetch(:missing, 99)
 end
 
-def dig_ignores_default()
+def dig_value_default()
   h = Hash.new(0)
   h.dig(:missing)
+end
+
+def dig_value_default_does_not_insert()
+  h = Hash.new(0)
+  dug = h.dig(:missing)
+  { dug: dug, size: h.size }
+end
+
+def dig_into_default_value()
+  h = Hash.new({ inner: 42 })
+  { top: h.dig(:missing), deep: h.dig(:missing, :inner) }
+end
+
+def dig_through_scalar_default()
+  h = Hash.new(0)
+  h.dig(:missing, :deeper)
+end
+
+def dig_proc_default_inserts()
+  h = Hash.new { |hash, key| hash[key] = "dug-" + key }
+  dug = h.dig("a")
+  { dug: dug, size: h.size, again: h["a"] }
+end
+
+def dig_nested_consults_inner_default()
+  inner = Hash.new(7)
+  outer = { a: inner }
+  outer.dig(:a, :missing)
+end
+
+def values_at_value_default()
+  h = Hash.new(0)
+  h.values_at(:a, :b)
+end
+
+def values_at_value_default_does_not_insert()
+  h = Hash.new(0)
+  vals = h.values_at(:a, :b)
+  { vals: vals, size: h.size }
+end
+
+def values_at_proc_default_inserts()
+  h = Hash.new { |hash, key| hash[key] = key.to_s.upcase }
+  vals = h.values_at(:a, :b)
+  { vals: vals, size: h.size }
+end
+
+def values_at_plain_literal()
+  h = { a: 1, b: 2 }
+  h.values_at(:b, :c, :a)
 end
 
 def default_proc_present()
@@ -261,7 +311,7 @@ func TestHashDefaultTransformPropagation(t *testing.T) {
 	}
 }
 
-func TestHashDefaultIgnoredByOtherAccessors(t *testing.T) {
+func TestHashDefaultAcrossAccessors(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, hashDefaultsScript)
 
@@ -276,6 +326,8 @@ func TestHashDefaultIgnoredByOtherAccessors(t *testing.T) {
 		}
 	})
 
+	// fetch is the one accessor that ignores the hash default, matching Ruby:
+	// it falls back only to its own optional argument.
 	t.Run("fetch uses its own default not the hash default", func(t *testing.T) {
 		t.Parallel()
 		got := callFunc(t, script, "fetch_ignores_default", nil)
@@ -283,12 +335,142 @@ func TestHashDefaultIgnoredByOtherAccessors(t *testing.T) {
 			t.Fatalf("fetch = %v, want 99 (hash default must not apply)", got.Int())
 		}
 	})
+}
 
-	t.Run("dig returns nil for missing key", func(t *testing.T) {
+// TestHashDefaultDig pins Hash#dig's Ruby-faithful default handling: each hash
+// step is a [] access, so a missing key consults that level's value default or
+// default proc (which may insert), and dig descends into whatever it resolves.
+func TestHashDefaultDig(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, hashDefaultsScript)
+
+	t.Run("value default returned for missing key", func(t *testing.T) {
 		t.Parallel()
-		got := callFunc(t, script, "dig_ignores_default", nil)
+		got := callFunc(t, script, "dig_value_default", nil)
+		if got.Int() != 0 {
+			t.Fatalf("dig of a missing key = %v, want 0 (the value default)", got.Kind())
+		}
+	})
+
+	t.Run("value default does not insert", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "dig_value_default_does_not_insert", nil)
+		if dug := hashDefaultsField(t, got, "dug"); dug.Int() != 0 {
+			t.Fatalf("dug = %v, want 0", dug.Int())
+		}
+		if size := hashDefaultsField(t, got, "size"); size.Int() != 0 {
+			t.Fatalf("size = %v, want 0 (a value default never inserts)", size.Int())
+		}
+	})
+
+	t.Run("dig descends into a hash default value", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "dig_into_default_value", nil)
+		top := hashDefaultsField(t, got, "top")
+		if top.Kind() != KindHash {
+			t.Fatalf("top = %v, want the default hash", top.Kind())
+		}
+		if deep := hashDefaultsField(t, got, "deep"); deep.Int() != 42 {
+			t.Fatalf("deep = %v, want 42 (dig into the default value)", deep.Int())
+		}
+	})
+
+	// Vibescript deliberately returns nil rather than raising when a path
+	// continues through a non-collection default (MRI raises a TypeError here).
+	t.Run("digging past a scalar default yields nil", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "dig_through_scalar_default", nil)
 		if got.Kind() != KindNil {
-			t.Fatalf("dig of a missing key = %v, want nil (hash default must not apply)", got.Kind())
+			t.Fatalf("dig past scalar default = %v, want nil", got.Kind())
+		}
+	})
+
+	t.Run("default proc fires per dig step and may insert", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "dig_proc_default_inserts", nil)
+		if dug := hashDefaultsField(t, got, "dug"); dug.String() != "dug-a" {
+			t.Fatalf("dug = %q, want dug-a", dug.String())
+		}
+		if size := hashDefaultsField(t, got, "size"); size.Int() != 1 {
+			t.Fatalf("size = %v, want 1 (proc inserted)", size.Int())
+		}
+		if again := hashDefaultsField(t, got, "again"); again.String() != "dug-a" {
+			t.Fatalf("again = %q, want dug-a (entry persisted)", again.String())
+		}
+	})
+
+	// Each dig level is its own [] access, so a missing key in a nested hash
+	// consults that inner hash's default, not the outer receiver's.
+	t.Run("nested step consults the inner hash default", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "dig_nested_consults_inner_default", nil)
+		if got.Int() != 7 {
+			t.Fatalf("dig nested missing key = %v, want 7 (inner default)", got.Kind())
+		}
+	})
+}
+
+// TestHashDefaultValuesAt pins Hash#values_at's Ruby-faithful default handling:
+// each key is a [] access, so a missing key consults the value default or fires
+// the default proc (which may insert), while a plain literal still yields nil.
+func TestHashDefaultValuesAt(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, hashDefaultsScript)
+
+	zeros := NewArray([]Value{NewInt(0), NewInt(0)})
+
+	t.Run("value default fills each missing key", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "values_at_value_default", nil)
+		if diff := valueDiff(zeros, got); diff != "" {
+			t.Fatalf("values_at mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("value default does not insert", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "values_at_value_default_does_not_insert", nil)
+		if diff := valueDiff(zeros, hashDefaultsField(t, got, "vals")); diff != "" {
+			t.Fatalf("values_at mismatch (-want +got):\n%s", diff)
+		}
+		if size := hashDefaultsField(t, got, "size"); size.Int() != 0 {
+			t.Fatalf("size = %v, want 0 (a value default never inserts)", size.Int())
+		}
+	})
+
+	t.Run("default proc fires per missing key and inserts", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "values_at_proc_default_inserts", nil)
+		vals := hashDefaultsField(t, got, "vals")
+		if vals.Kind() != KindArray || len(vals.Array()) != 2 {
+			t.Fatalf("vals = %v, want a two-element array", vals.Kind())
+		}
+		if first := vals.Array()[0]; first.String() != "A" {
+			t.Fatalf("vals[0] = %q, want A", first.String())
+		}
+		if second := vals.Array()[1]; second.String() != "B" {
+			t.Fatalf("vals[1] = %q, want B", second.String())
+		}
+		if size := hashDefaultsField(t, got, "size"); size.Int() != 2 {
+			t.Fatalf("size = %v, want 2 (proc inserted both keys)", size.Int())
+		}
+	})
+
+	t.Run("plain literal yields nil for missing keys", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "values_at_plain_literal", nil)
+		if got.Kind() != KindArray || len(got.Array()) != 3 {
+			t.Fatalf("values_at = %v, want a three-element array", got.Kind())
+		}
+		arr := got.Array()
+		if arr[0].Int() != 2 {
+			t.Fatalf("values_at[0] = %v, want 2", arr[0].Int())
+		}
+		if arr[1].Kind() != KindNil {
+			t.Fatalf("values_at[1] = %v, want nil (missing key in a plain literal)", arr[1].Kind())
+		}
+		if arr[2].Int() != 1 {
+			t.Fatalf("values_at[2] = %v, want 1", arr[2].Int())
 		}
 	})
 }
