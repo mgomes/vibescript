@@ -264,6 +264,10 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   never both.
 - `fetch(index, default = nil) -> value` – element at `index`, or
   `default`/`nil` when out of bounds.
+- `dig(*path) -> value | nil` – nested lookup following `path`. Each component
+  descends one level: an integer index into an array or a symbol/string key
+  into a hash, so a single `dig` can traverse mixed array/hash data. `nil` when
+  any step is missing or out of range; a non-integer array index raises.
 - `count -> int` – element count.
 - `count(value) -> int` – occurrences of `value`.
 - `count { |item| } -> int` – elements for which the block is truthy.
@@ -277,12 +281,18 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   against `pattern` with case equality (`===`), so range patterns test
   membership (`[2].any?(1..3)` is true). A `pattern` argument takes precedence
   over an attached block.
+- `one? { |item| } -> bool` – true when exactly one element (or block result)
+  is truthy.
 
 ### Building and Slicing
 
 - `push(*values) -> array` – new array with `values` appended. Accepts zero
   values: bare `push` and `push()` are no-ops that return the array unchanged,
   matching Ruby.
+- `append(*values) -> array` – Ruby-style alias for `push`.
+- `prepend(*values) -> array` – new array with `values` inserted at the front in
+  order, so `[3].prepend(1, 2)` is `[1, 2, 3]`. Bare `prepend` and `prepend()`
+  return the array unchanged.
 - `pop(n = nil) -> hash` – returns `{ array:, popped: }`; bare `pop` pops one
   element (`popped` is the value or `nil`), `pop(n)` pops up to `n` elements
   (`popped` is an array).
@@ -382,8 +392,10 @@ methods.
 - `fetch_values(*keys) { |key| } -> array` – values for `keys` in requested
   order. Raises `key not found` for any missing key; when a block is given it is
   called with each missing key and its result is used instead.
-- `dig(*keys) -> value | nil` – nested lookup following `keys`; `nil` when any
-  step is missing.
+- `dig(*path) -> value | nil` – nested lookup following `path`. Each component
+  descends one level: a symbol/string key into a hash or an integer index into
+  an array, so a single `dig` can traverse mixed hash/array data. `nil` when any
+  step is missing or out of range; a non-integer array index raises.
 - `keys -> array` – symbol keys in sorted order.
 - `values -> array` – values in sorted key order.
 
