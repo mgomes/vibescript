@@ -1923,15 +1923,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(arr) == 0 {
 				return NewString(""), nil
 			}
-			// Use strings.Builder for efficient concatenation
+			// arrayJoin recursively joins nested arrays with the active separator,
+			// matching Ruby's Array#join, and guards against cyclic or pathologically
+			// deep structures the same way array.flatten does.
 			var b strings.Builder
-			for i, item := range arr {
-				if i > 0 {
-					b.WriteString(sep)
-				}
-				b.WriteString(item.String())
+			if err := arrayJoin(&b, arr, sep); err != nil {
+				return NewNil(), err
 			}
-			return NewString(b.String()), nil
+			result := NewString(b.String())
+			if err := exec.checkMemoryWith(result); err != nil {
+				return NewNil(), err
+			}
+			return result, nil
 		}), nil
 	case "reverse":
 		return NewAutoBuiltin("array.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

@@ -37,7 +37,7 @@ Common enumerable helpers include:
 - `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
 - `chunk(size)` to split into fixed-size slices.
 - `window(size)` to build overlapping windows.
-- `join(sep = "")` to produce a string.
+- `join(sep = "")` to produce a string. Nested arrays are joined recursively with the same separator, so `[1, [2, 3], 4].join("-")` is `"1-2-3-4"`; `nil` elements contribute an empty segment (`[1, nil, "x"].join(",")` is `"1,,x"`); and an empty array joins to `""`. The separator must be a string.
 
 Example:
 
