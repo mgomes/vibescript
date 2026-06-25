@@ -238,29 +238,33 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 }
 
 // checkProjectedHashWalkBytes rejects a pure hash iterator (each, each_key,
-// each_value) before it allocates its sorted-key scratch buffer. These iterators
-// return the receiver and build no derived map, so their only allocation beyond
-// the live call roots is the scratch key list (see sortedKeyBufferBytes); they
-// must not be charged an output map they never create. scratchBytes is the heap
-// footprint of that key list, and perEntryBytes is the fixed allocation the walk
-// holds live on top of the scratch -- the [key, value] pairs Hash#each
-// materializes for a single-parameter block. The caller reserves the exact
-// simultaneous peak of pair arrays (see collapsedPairBytes): zero for the forms
-// that bind key and value directly or for an empty receiver, one for a single
-// entry or a destructuring single parameter that unpacks the pair on bind, and
-// two only when a block binds the whole pair to one identifier over two or more
-// entries and the reused environment briefly holds the previous pair and the next
-// pair live at once. The caller charges that peak up front rather than re-walking
-// the receiver per entry. Charging a phantom empty map here would falsely reject a
-// quota that exactly fits the receiver, block, scratch, and that live entry
-// allocation.
-func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes, perEntryBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+// each_value, and the `for k, v in hash` statement) before it walks the receiver.
+// These iterators return the receiver and build no derived map, so they must not
+// be charged an output map they never create; charging a phantom empty map here
+// would falsely reject a quota that exactly fits the receiver and block.
+//
+// The sorted-key scratch buffer these iterators materialize stays live while
+// their body runs, so callers reserve it through reserveLoopScratch before this
+// check rather than passing it here: the reservation folds the scratch into the
+// live baseline (hashCallRootBytes measures it), which both charges it at this
+// preflight and keeps every memory check inside the body aware of it.
+//
+// perEntryBytes is the simultaneous peak of the transient [key, value] pair
+// arrays (and any rest arrays a destructuring parameter collects) that Hash#each
+// allocates as Go locals while yielding a single-parameter block its collapsed
+// pair (see collapsedPairReservation). Unlike the scratch buffer, these are not
+// reserved into the live baseline: the reused block environment that briefly
+// holds them is invisible to estimateMemoryUsageBase, and folding them into the
+// baseline would double-count against the in-body check that walks the bound
+// pair. Charging them only here fails the walk fast when even the first entry's
+// pair would not fit, while leaving the in-body checks to charge the actual live
+// pair, which never exceeds this preflighted peak.
+func (exec *Execution) checkProjectedHashWalkBytes(perEntryBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), scratchBytes)
-	used = saturatingAdd(used, perEntryBytes)
+	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), perEntryBytes)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
@@ -273,19 +277,15 @@ func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes, perEntryBytes i
 // the key and value the slots reference alias the receiver's own entries, already
 // counted in the call-root usage, so only this structure is charged on top.
 //
-// Up to two pairs are live at once, but only when the block binds the whole pair
-// to one identifier (|pair|): that named binding keeps the previous iteration's
-// pair referenced in the reused environment until runner.call resets it, while the
-// next pair is already allocated, so the old and new pair overlap briefly. That
-// overlap needs a previous iteration to exist, so it only arises with two or more
-// entries. A destructuring single parameter (|(k, v)|) instead unpacks the pair on
-// bind and never stores the pair array, so the previous pair is released before
-// the next is allocated and at most one pair is ever live. The iterator therefore
-// reserves the exact peak up front (see Hash#each's pairsLive) rather than
-// re-walking the receiver per entry, which would be O(n^2) on a large hash: two
-// pairs only for a whole-pair binding over two or more entries, one pair for a
-// single entry or any destructuring parameter, and none for an empty receiver,
-// which allocates no pair at all.
+// Up to two pairs are live at once over two or more entries: the loop reuses a
+// single pairArg slot, so the next iteration allocates its NewArray while pairArg
+// still references the previous pair (the assignment overwrites the slot only
+// after the new array is built). That overlap needs a previous iteration to
+// exist, so a single entry holds just one pair, and an empty receiver none. The
+// overlap is independent of how the block binds the pair -- a whole-pair |pair|
+// binding and a destructuring |(k, v)| parameter both route through the same
+// reused slot -- so collapsedPairReservation reserves two pairs for any collapsing
+// shape over two or more entries rather than re-walking the receiver per entry.
 const collapsedPairElements = 2
 
 const collapsedPairBytes = estimatedValueBytes + estimatedSliceBaseBytes + collapsedPairElements*estimatedValueBytes
@@ -679,8 +679,37 @@ func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Va
 	return total
 }
 
+// reserveLoopScratch folds a Go-local scratch allocation into the live memory
+// baseline so it is charged by every memory check for as long as it is held,
+// then returns the bytes actually reserved so releaseLoopScratch can subtract
+// exactly that amount. A hash-walking loop (the `for k, v in hash` statement and
+// Hash#each / each_key / each_value) materializes a sorted-key scratch slice that
+// stays live on the Go stack while its body runs. The body executes arbitrary
+// code with its own memory checks, but those checks measure only exec's reachable
+// roots and so never see this scratch slice; without reserving it, a body that
+// allocates near the quota could pass its own checks while the true peak (roots +
+// scratch + body allocation) exceeds the quota by the scratch size. Folding the
+// scratch into estimateMemoryUsageBase for the loop's duration makes every check
+// inside the body account for it.
+//
+// The return value is the delta applied, which equals scratchBytes unless the
+// reservation saturates at math.MaxInt; releaseLoopScratch must be passed that
+// delta so nested reservations stay perfectly balanced even under saturation.
+func (exec *Execution) reserveLoopScratch(scratchBytes int) int {
+	reserved := saturatingAdd(exec.reservedScratchBytes, scratchBytes)
+	delta := reserved - exec.reservedScratchBytes
+	exec.reservedScratchBytes = reserved
+	return delta
+}
+
+// releaseLoopScratch returns reserved scratch bytes to the baseline once the loop
+// that held them has finished. delta is the value reserveLoopScratch returned.
+func (exec *Execution) releaseLoopScratch(delta int) {
+	exec.reservedScratchBytes -= delta
+}
+
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
-	total := 0
+	total := exec.reservedScratchBytes
 
 	total += est.env(exec.root)
 	for _, env := range exec.envStack {

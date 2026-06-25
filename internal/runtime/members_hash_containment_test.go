@@ -1838,6 +1838,179 @@ func TestHashSortedKeyBufferTripsMemoryQuota(t *testing.T) {
 	}
 }
 
+// TestForHashLoopSortedKeyBufferTripsMemoryQuota pins the scratch-buffer
+// accounting for `for pair in hash`. Like hash.each, a `for` over a hash builds no
+// output map but materializes a sorted []string key buffer (one header per entry)
+// to walk entries deterministically. That buffer must be charged before it is
+// allocated so a large iterable cannot allocate it past the sandbox limit; the
+// statement-level checkMemoryWith(iterable) only re-counts the already-resident
+// hash and never adds the scratch footprint. Before the fix the loop re-counted
+// only the iterable and admitted the buffer.
+func TestForHashLoopSortedKeyBufferTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 2_000
+	receiver := largeHashReceiver(count)
+
+	// The live baseline the loop holds: the hash bound to the run() parameter the
+	// loop iterates. `for` builds no output map, so its baseline is the call roots
+	// alone and its only extra allocation is the sorted key scratch buffer. The
+	// loop's runtime check (checkProjectedHashWalkBytes) charges the same shape:
+	// estimateMemoryUsageBase plus the iterable, deduplicated against the base.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	base := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, NewNil())
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	source := `def run(values)
+  for pair in values
+  end
+end`
+
+	// A quota above the live baseline (so the loop's roots fit) but below the
+	// baseline plus the scratch buffer (so the buffer must be rejected). Sit the
+	// quota midway so neither bound is grazed. An empty loop body charges no extra
+	// memory, leaving the scratch buffer as the sole over-budget allocation.
+	tight := base + scratch/2
+	if tight <= base || tight >= base+scratch {
+		t.Fatalf("test setup expects base (%d) < tight (%d) < base+scratch (%d)", base, tight, base+scratch)
+	}
+	tightScript := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: tight}, source)
+	requireCallRuntimeErrorType(t, tightScript, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
+
+	// Sanity: a quota that also fits the scratch buffer admits the loop, proving the
+	// rejection above comes from the buffer accounting and not an over-tight
+	// baseline. The empty body charges no per-iteration memory, so the scratch
+	// buffer the quota now covers is the loop's only allocation beyond the roots.
+	roomy := base + scratch + 64*1024
+	roomyScript := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: roomy}, source)
+	if _, err := roomyScript.Call(context.Background(), "run", []Value{receiver}, CallOptions{}); err != nil {
+		t.Fatalf("for loop under a quota that fits the key buffer = %v, want success", err)
+	}
+}
+
+// TestLoopScratchReservationChargesBodyChecks pins the core of the P2 finding on
+// PR #826: a hash-walking loop's sorted key scratch buffer stays live on the Go
+// stack while the loop body runs, yet the body's own memory checks measure only
+// the execution's reachable roots and so never see that scratch. reserveLoopScratch
+// folds the scratch into the baseline every later check observes, and
+// releaseLoopScratch removes it again, so a body allocation that breaches
+// roots+scratch+body is rejected even though roots+body alone would fit.
+func TestLoopScratchReservationChargesBodyChecks(t *testing.T) {
+	t.Parallel()
+
+	// The body's per-iteration allocation, modeled as a single value checked while
+	// the scratch is held. Sized so roots+body fits the quota but roots+scratch+body
+	// does not, isolating the scratch as the deciding term.
+	body := largeHashReceiver(4)
+	const scratch = 4096
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	bodyBytes := exec.estimateMemoryUsage(body)
+	exec.memoryQuota = bodyBytes + scratch/2
+
+	// Before any reservation the body allocation fits on its own.
+	if err := exec.checkMemoryWith(body); err != nil {
+		t.Fatalf("body allocation without held scratch = %v, want success", err)
+	}
+
+	// While the scratch is reserved the same check sees roots+scratch+body and
+	// rejects, exactly as a body check inside the loop now does.
+	delta := exec.reserveLoopScratch(scratch)
+	if err := exec.checkMemoryWith(body); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("body allocation while scratch held = %v, want errMemoryQuotaExceeded", err)
+	}
+
+	// Releasing the reservation restores the baseline so the body allocation fits
+	// again, proving the reservation is balanced and scoped to the loop's lifetime.
+	exec.releaseLoopScratch(delta)
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("reservedScratchBytes after release = %d, want 0", exec.reservedScratchBytes)
+	}
+	if err := exec.checkMemoryWith(body); err != nil {
+		t.Fatalf("body allocation after releasing scratch = %v, want success", err)
+	}
+}
+
+// TestForHashLoopHoldsScratchAcrossBody drives the P2 finding through the real
+// `for pair in hash` interpreter path. The sorted key scratch buffer must stay
+// reserved while the loop body runs, so a body allocation that is itself smaller
+// than the held scratch still overflows a quota tuned to exactly the empty-body
+// peak. Before the fix the body's own memory check did not see the scratch, so a
+// body smaller than the scratch slipped past and the true peak escaped the quota.
+func TestForHashLoopHoldsScratchAcrossBody(t *testing.T) {
+	t.Parallel()
+
+	// A receiver large enough that the sorted key buffer is a real heap allocation
+	// that dominates the small per-iteration body below.
+	const count = 4_000
+	receiver := largeHashReceiver(count)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	emptyBody := `def run(values)
+  for pair in values
+  end
+end`
+	// The body allocates a tiny two-element array each iteration -- far smaller than
+	// the held scratch buffer -- so only the scratch reservation can push a quota
+	// sized to the empty-body peak over the limit.
+	allocBody := `def run(values)
+  for pair in values
+    acc = [0, 0]
+    acc
+  end
+end`
+
+	// emptyPeak is the tightest quota that still admits the empty-body loop: the real
+	// resident roots plus the held scratch. Binary search avoids hand-computing every
+	// transient the interpreter holds across the iteration.
+	emptyPeak := tightestForHashQuota(t, emptyBody, receiver)
+
+	// At exactly that peak the body-allocating loop must overflow, because the tiny
+	// body array piles onto the already-maxed roots+scratch baseline. A body smaller
+	// than the scratch only trips the quota when the scratch is held through the body,
+	// which is the finding.
+	tight := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: emptyPeak}, allocBody)
+	requireCallRuntimeErrorType(t, tight, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
+
+	// Sanity: widening the quota past the body allocation admits the loop, proving the
+	// rejection came from the held scratch plus body and not an unrelated bound.
+	roomy := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: emptyPeak + scratch + 64*1024}, allocBody)
+	if _, err := roomy.Call(context.Background(), "run", []Value{receiver}, CallOptions{}); err != nil {
+		t.Fatalf("body-allocating loop under a roomy quota = %v, want success", err)
+	}
+}
+
+// tightestForHashQuota binary-searches the smallest MemoryQuotaBytes under which
+// run(receiver) still succeeds, so a test can pin a `for` loop's real live peak
+// without hand-computing every transient the interpreter holds.
+func tightestForHashQuota(t *testing.T, source string, receiver Value) int {
+	t.Helper()
+	admits := func(quota int) bool {
+		script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+		_, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
+		return err == nil
+	}
+	lo, hi := 0, 1<<22
+	if !admits(hi) {
+		t.Fatalf("upper bound quota %d did not admit the loop", hi)
+	}
+	for lo+1 < hi {
+		mid := (lo + hi) / 2
+		if admits(mid) {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	return hi
+}
+
 // TestHashSelectSortedKeyBufferTripsMemoryQuota pins the same scratch-buffer
 // accounting for a map-producing transform. select projects the full output map
 // plus the sorted key buffer; a quota sized to fit the live receiver and the
@@ -2367,9 +2540,10 @@ func TestHashEachSingleParamReservesTwoLivePairs(t *testing.T) {
 // |(k, v)|, the form Hash#each collapses each entry into and the block immediately
 // unpacks. The lone positional parameter makes wantsCollapsedPair true, but its
 // Target is a DestructureTarget rather than a named identifier, so callBlock routes
-// it through bindBlockParamTarget and never stores the pair array in the reused
-// env. Only one pair is ever live: the previous iteration's pair is released on
-// bind before the next is allocated. The body captures nothing, so blockCanReuseEnv
+// it through bindBlockParamTarget. Even though the bind stores no pair array in the
+// reused env, the loop reuses a single pairArg slot, so the next iteration's pair
+// is allocated while pairArg still holds the previous one: two pairs overlap just
+// as they do for the |pair| form. The body captures nothing, so blockCanReuseEnv
 // stays true, the same env-reuse regime the |pair| form exercises.
 func destructurePairBlock() Value {
 	pos := Position{Line: 1, Column: 1}
@@ -2483,15 +2657,16 @@ func singleParamKeyBlock() Value {
 	return NewBlock(params, body, newEnv(nil))
 }
 
-// TestHashEachDestructureParamReservesOnePair pins the latest P2 finding on PR
-// #808: a single destructuring parameter |(k, v)| unpacks the collapsed pair on
-// bind and never stores the pair array in the reused env, so at most ONE pair is
-// live even over a multi-entry hash. The iterator must reserve one pair, not the
-// two it charges for the |pair| whole-pair binding. A quota one byte below the
-// roots-plus-scratch-plus-two-pairs reservation still leaves room for the real
-// single-pair peak, so the walk must succeed; before the fix the preflight charged
-// two pairs for any collapsing single parameter and rejected this quota up front.
-func TestHashEachDestructureParamReservesOnePair(t *testing.T) {
+// TestHashEachDestructureParamReservesTwoLivePairs pins the P2 finding on PR
+// #808: a single destructuring parameter |(k, v)| collapses each entry into a pair
+// allocated through the loop's reused pairArg slot, so the next iteration's pair is
+// built while pairArg still references the previous one -- two pair arrays are
+// briefly live, exactly as for the |pair| whole-pair binding. An earlier fix
+// wrongly reserved only one pair for the destructuring shape on the theory that the
+// bind released the previous pair; the reused slot keeps two live regardless. A
+// quota sized to the call roots, the sorted-key scratch, and exactly ONE pair must
+// trip; a quota that also fits the second pair must admit the walk.
+func TestHashEachDestructureParamReservesTwoLivePairs(t *testing.T) {
 	t.Parallel()
 
 	const count = 50_000
@@ -2511,47 +2686,45 @@ func TestHashEachDestructureParamReservesOnePair(t *testing.T) {
 		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
 	}
 
-	// One byte below the roots-plus-scratch-plus-two-pairs reservation. The buggy
-	// preflight reserved two pairs for any collapsing single parameter, so used ==
-	// roots+scratch+2*pair > this quota and it rejected. The fix reserves one pair for
-	// a destructuring parameter, and the real peak (one pair plus the block's small
-	// per-call binding overhead) fits well under roots+scratch+2*pair, so the walk must
-	// now succeed.
-	belowTwoPairQuota := roots + scratch + 2*collapsedPairBytes - 1
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: belowTwoPairQuota}
+	// Room for the roots, the scratch, and exactly one pair. The reused pairArg slot
+	// keeps the old and new pair live simultaneously, so reserving two pairs rejects
+	// this one-pair quota up front. The earlier one-pair reservation wrongly admitted
+	// it even though two pairs overlap.
+	onePairQuota := roots + scratch + collapsedPairBytes
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: onePairQuota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("destructuring each at a one-pair quota %d = %v, want errMemoryQuotaExceeded (two pairs are briefly live)", onePairQuota, err)
+	}
+
+	// Room for both live pairs admits the walk, proving the rejection above comes from
+	// the two-pair reservation and not an over-tight baseline. The block body runs no
+	// allocating statement, so the two reserved pairs plus a small slack for the
+	// interpreter's own per-step checks bound the true peak.
+	twoPairQuota := roots + scratch + 2*collapsedPairBytes + 64*1024
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: twoPairQuota}
 	got, err := callHashMember(t, exec, receiver, "each", nil, block)
 	if err != nil {
-		t.Fatalf("destructuring each one byte below the two-pair reservation (quota %d) = %v, want success", belowTwoPairQuota, err)
+		t.Fatalf("destructuring each at a two-pair quota %d = %v, want success", twoPairQuota, err)
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != count {
 		t.Fatalf("destructuring each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
 	}
-
-	// Guard: a quota one byte below the roots, scratch, and the single pair the walk
-	// truly holds live still rejects, proving the success above is the one-pair peak
-	// fitting exactly and not an over-loose projection.
-	onePairFloor := roots + scratch + collapsedPairBytes
-	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: onePairFloor - 1}
-	if _, err := callHashMember(t, tight, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
-		t.Fatalf("destructuring each one byte below roots+scratch+one pair (quota %d) = %v, want errMemoryQuotaExceeded", onePairFloor-1, err)
-	}
 }
 
-// TestHashEachDestructureRestReservesRestArrays pins the P2 finding on PR #808's
-// latest review pass: a single destructuring parameter with a rest target
-// |(k, *rest)| makes AssignDestructure allocate a fresh array for the collected
-// elements, so that rest array is live memory the iterator must charge on top of
-// the [key, value] pair. The empty block body runs no allocating statement and
-// therefore no in-block memory check, so only the preflight reservation guards the
-// rest array. Crucially, the rest array is built inside callBlock, after
-// runner.call's resetForBlockCall has already cleared the previous iteration's rest
-// binding, so at most ONE rest array is ever live -- unlike a whole-pair binding,
-// the previous rest never overlaps the next one. A quota that admits the call
-// roots, the sorted-key scratch, and exactly the one live pair -- but not the rest
-// array -- must trip; a quota that fits one rest array (but not two) must admit the
-// walk. An earlier fix over-reserved a second rest array, so a quota sized to the
-// true one-rest peak was wrongly rejected; the second guard below catches that
-// over-reservation.
+// TestHashEachDestructureRestReservesRestArrays pins the P2 finding on PR #808:
+// a single destructuring parameter with a rest target |(k, *rest)| makes
+// AssignDestructure allocate a fresh array for the collected elements, so that rest
+// array is live memory the iterator must charge on top of the two [key, value]
+// pairs the reused pairArg slot keeps live. The empty block body runs no allocating
+// statement and therefore no in-block memory check, so only the preflight
+// reservation guards the rest array. The rest array is built inside callBlock,
+// after runner.call's resetForBlockCall has already cleared the previous
+// iteration's rest binding, so at most ONE rest array is ever live -- unlike the
+// pair arrays, the previous rest never overlaps the next one. A quota that admits
+// the call roots, the sorted-key scratch, and the two live pairs -- but not the
+// rest array -- must trip; a quota that fits one rest array (but not two) must
+// admit the walk. The second guard below catches an over-reserved second rest
+// array.
 func TestHashEachDestructureRestReservesRestArrays(t *testing.T) {
 	t.Parallel()
 
@@ -2583,29 +2756,27 @@ func TestHashEachDestructureRestReservesRestArrays(t *testing.T) {
 		t.Fatalf("rest reservation must be positive, got %d", oneRestBytes)
 	}
 
-	// A quota sized to the roots, the scratch, and exactly the one live pair, but not
-	// the rest array. Before the rest arrays were charged the preflight charged only the
-	// pair, so this quota wrongly admitted the walk while the rest allocation went
-	// uncharged. Reserving the rest array makes the projection exceed this quota and
-	// reject.
-	pairOnlyQuota := roots + scratch + collapsedPairBytes
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: pairOnlyQuota}
+	// A quota sized to the roots, the scratch, and the two live pairs, but not the
+	// rest array. Without charging the rest the preflight would reserve only the two
+	// pairs and wrongly admit the walk while the rest allocation went uncharged.
+	// Reserving the rest array makes the projection exceed this quota and reject.
+	pairsOnlyQuota := roots + scratch + 2*collapsedPairBytes
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: pairsOnlyQuota}
 	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
-		t.Fatalf("rest-destructuring each at a pair-only quota %d = %v, want errMemoryQuotaExceeded (the rest array is uncharged)", pairOnlyQuota, err)
+		t.Fatalf("rest-destructuring each at a pairs-only quota %d = %v, want errMemoryQuotaExceeded (the rest array is uncharged)", pairsOnlyQuota, err)
 	}
 
-	// Room for the roots, scratch, one pair, and exactly ONE rest array admits the walk,
-	// proving the rejection above comes from charging the rest array and not an
+	// Room for the roots, scratch, two pairs, and exactly ONE rest array admits the
+	// walk, proving the rejection above comes from charging the rest array and not an
 	// over-tight baseline. This quota is one byte below what a second rest array would
-	// need, so it would have been wrongly rejected while the preflight over-reserved two
-	// rest arrays. The empty block body runs no allocating statement, so the reserved
-	// pair plus one rest array bound the true peak; the quota carries no slack so a
-	// second reserved rest array would tip it over.
-	oneRestQuota := roots + scratch + collapsedPairBytes + oneRestBytes
+	// need, so a doubled rest reservation would wrongly reject it. The empty block body
+	// runs no allocating statement, so the two reserved pairs plus one rest array bound
+	// the true peak.
+	oneRestQuota := roots + scratch + 2*collapsedPairBytes + oneRestBytes
 	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: oneRestQuota}
 	got, err := callHashMember(t, exec, receiver, "each", nil, block)
 	if err != nil {
-		t.Fatalf("rest-destructuring each at a one-pair-one-rest quota %d = %v, want success (a second rest array must not be reserved)", oneRestQuota, err)
+		t.Fatalf("rest-destructuring each at a two-pair-one-rest quota %d = %v, want success (a second rest array must not be reserved)", oneRestQuota, err)
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != count {
 		t.Fatalf("rest-destructuring each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
@@ -2622,9 +2793,9 @@ func TestHashEachDestructureRestReservesRestArrays(t *testing.T) {
 // The fix sizes the reservation from the actual entries. As with a top-level rest,
 // the nested rest array is built inside callBlock after resetForBlockCall has
 // cleared the previous binding, so at most ONE nested rest array is live at a time.
-// A quota that fits the call roots, the sorted-key scratch, and exactly the one live
-// pair -- but not the nested rest array -- must trip; a quota that fits one nested
-// rest array (but not two) must admit the walk.
+// A quota that fits the call roots, the sorted-key scratch, and the two live pairs
+// the reused pairArg slot holds -- but not the nested rest array -- must trip; a
+// quota that fits one nested rest array (but not two) must admit the walk.
 func TestHashEachNestedDestructureRestReservesRestArrays(t *testing.T) {
 	t.Parallel()
 
@@ -2656,25 +2827,24 @@ func TestHashEachNestedDestructureRestReservesRestArrays(t *testing.T) {
 		t.Fatalf("nested rest reservation must be positive, got %d", oneRestBytes)
 	}
 
-	// A quota sized to the roots, the scratch, and exactly the one live pair, but not
-	// the nested rest array. Before the nested rest was charged the preflight reserved
-	// nothing for it, so this quota wrongly admitted the walk while the rest allocation
-	// went uncharged. Sizing the reservation from the entries makes the projection
-	// exceed this quota and reject.
-	pairOnlyQuota := roots + scratch + collapsedPairBytes
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: pairOnlyQuota}
+	// A quota sized to the roots, the scratch, and the two live pairs, but not the
+	// nested rest array. Without charging the nested rest the preflight would reserve
+	// only the pairs and wrongly admit the walk while the rest allocation went
+	// uncharged. Sizing the reservation from the entries makes the projection exceed
+	// this quota and reject.
+	pairsOnlyQuota := roots + scratch + 2*collapsedPairBytes
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: pairsOnlyQuota}
 	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
-		t.Fatalf("nested-rest each at a pair-only quota %d = %v, want errMemoryQuotaExceeded (the nested rest array is uncharged)", pairOnlyQuota, err)
+		t.Fatalf("nested-rest each at a pairs-only quota %d = %v, want errMemoryQuotaExceeded (the nested rest array is uncharged)", pairsOnlyQuota, err)
 	}
 
-	// Room for the roots, scratch, one pair, and exactly ONE nested rest array admits
+	// Room for the roots, scratch, two pairs, and exactly ONE nested rest array admits
 	// the walk, proving the rejection above comes from charging the nested rest array
 	// and not an over-tight baseline. This quota is one byte below what a second nested
-	// rest array would need, so it would have been wrongly rejected while the preflight
-	// over-reserved two rest arrays. The empty block body runs no allocating statement,
-	// so the reserved pair plus one rest array bound the true peak; the quota carries no
-	// slack so a second reserved rest array would tip it over.
-	oneRestQuota := roots + scratch + collapsedPairBytes + oneRestBytes
+	// rest array would need, so a doubled rest reservation would wrongly reject it. The
+	// empty block body runs no allocating statement, so the two reserved pairs plus one
+	// rest array bound the true peak.
+	oneRestQuota := roots + scratch + 2*collapsedPairBytes + oneRestBytes
 	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: oneRestQuota}
 	got, err := callHashMember(t, exec, receiver, "each", nil, block)
 	if err != nil {
@@ -2769,4 +2939,93 @@ func TestHashEachKeyValueReserveNoPair(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCollapsedPairReservation pins the per-shape peak collapsedPairReservation
+// sizes for Hash#each. The reservation is the contract the iterator's preflight
+// honors: over two or more entries the loop reuses one pairArg slot, so the next
+// iteration's NewArray is built while pairArg still references the previous pair,
+// leaving two pair arrays briefly live. That overlap is independent of how the
+// block binds the pair, so both a whole-pair |pair| binding and a destructuring
+// |(k, v)| parameter reserve two pairs; a single entry has no previous iteration
+// to overlap and reserves one, and an empty receiver reserves none.
+func TestCollapsedPairReservation(t *testing.T) {
+	t.Parallel()
+
+	multiEntry := largeHashReceiver(3)
+	singleEntry := largeHashReceiver(1)
+	emptyHash := NewHash(map[string]Value{})
+	arrayValues := largeArrayValueHashReceiver(3, 8)
+
+	runnerFor := func(t *testing.T, block Value) *blockCallRunner {
+		t.Helper()
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+		runner, err := newBlockCallRunner(exec, block, "hash.each")
+		if err != nil {
+			t.Fatalf("newBlockCallRunner = %v", err)
+		}
+		return runner
+	}
+
+	t.Run("whole-pair binding over multiple entries reserves two pairs", func(t *testing.T) {
+		t.Parallel()
+		runner := runnerFor(t, singleParamPairBlock())
+		got := collapsedPairReservation(runner, true, multiEntry.Hash())
+		if want := 2 * collapsedPairBytes; got != want {
+			t.Fatalf("collapsedPairReservation(|pair|, 3 entries) = %d, want %d (two live pairs)", got, want)
+		}
+	})
+
+	t.Run("whole-pair binding over one entry reserves one pair", func(t *testing.T) {
+		t.Parallel()
+		runner := runnerFor(t, singleParamPairBlock())
+		got := collapsedPairReservation(runner, true, singleEntry.Hash())
+		if want := collapsedPairBytes; got != want {
+			t.Fatalf("collapsedPairReservation(|pair|, 1 entry) = %d, want %d (no previous pair to overlap)", got, want)
+		}
+	})
+
+	t.Run("destructuring parameter over multiple entries also reserves two pairs", func(t *testing.T) {
+		t.Parallel()
+		runner := runnerFor(t, destructurePairBlock())
+		got := collapsedPairReservation(runner, true, multiEntry.Hash())
+		if want := 2 * collapsedPairBytes; got != want {
+			t.Fatalf("collapsedPairReservation(|(k, v)|, 3 entries) = %d, want %d (the reused pairArg slot still overlaps two pairs)", got, want)
+		}
+	})
+
+	t.Run("top-level rest reserves two pairs and one rest array", func(t *testing.T) {
+		t.Parallel()
+		runner := runnerFor(t, destructureRestPairBlock())
+		got := collapsedPairReservation(runner, true, multiEntry.Hash())
+		if want := 2*collapsedPairBytes + restArrayBytes(collapsedPairElements-1); got != want {
+			t.Fatalf("collapsedPairReservation(|(k, *rest)|, 3 entries) = %d, want %d (two pairs plus one rest array)", got, want)
+		}
+	})
+
+	t.Run("nested rest sizes the rest array from the value length", func(t *testing.T) {
+		t.Parallel()
+		runner := runnerFor(t, nestedRestDestructureBlock())
+		got := collapsedPairReservation(runner, true, arrayValues.Hash())
+		// Each value holds 8 elements; the nested rest collects all but head.
+		if want := 2*collapsedPairBytes + restArrayBytes(8-1); got != want {
+			t.Fatalf("collapsedPairReservation(|(k, (head, *tail))|, 8-element values) = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("two-parameter block reserves nothing", func(t *testing.T) {
+		t.Parallel()
+		runner := runnerFor(t, twoParamPairBlock())
+		if got := collapsedPairReservation(runner, false, multiEntry.Hash()); got != 0 {
+			t.Fatalf("collapsedPairReservation(|k, v|) = %d, want 0 (no collapsed pair)", got)
+		}
+	})
+
+	t.Run("empty receiver reserves nothing", func(t *testing.T) {
+		t.Parallel()
+		runner := runnerFor(t, singleParamPairBlock())
+		if got := collapsedPairReservation(runner, true, emptyHash.Hash()); got != 0 {
+			t.Fatalf("collapsedPairReservation(|pair|, empty) = %d, want 0 (no pair allocated)", got)
+		}
+	})
 }

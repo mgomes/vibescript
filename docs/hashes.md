@@ -251,6 +251,21 @@ end
 # entries == [[:a, 1], [:b, 2]]
 ```
 
+A `for` loop may also iterate a hash directly, mirroring Ruby's loop over
+`each`. Each iteration binds a two-element `[key, value]` pair (keys exposed as
+symbols), visited in the same sorted key order:
+
+```vibe
+def entries(hash)
+  out = []
+  for pair in hash
+    out = out + [pair]
+  end
+  out
+end
+# entries({ b: 2, a: 1 }) => [[:a, 1], [:b, 2]]
+```
+
 Example:
 
 ```vibe
