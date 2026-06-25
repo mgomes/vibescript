@@ -531,9 +531,12 @@ func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 // ahead with a throwaway lexer (leaving the parser's own lookahead
 // untouched) and accepts only the tokens that may form a destructuring
 // left-hand side at the top level, requiring a top-level "=" before the
-// line ends. Anything else - a multiplicand operand, a comparison, an
-// arithmetic operator - means the "*" is an ordinary multiplication
-// continuation, so it returns false.
+// line ends. The scan is confined to the "*" token's physical line: a
+// destructuring target list must complete before the next newline, so any
+// token that begins a fresh source line ends the lookahead. Anything other
+// than a completed target list - a multiplicand operand, a comparison, an
+// arithmetic operator, or a line break before the "=" - means the "*" is an
+// ordinary multiplication continuation, so it returns false.
 func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 	offset, ok := sourceOffsetForPosition(p.l.input, star.Pos)
 	if !ok {
@@ -551,6 +554,16 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 	depth := 0
 	for {
 		tok = scan.NextToken()
+		if tok.Type == ast.TokenEOF {
+			return false
+		}
+		// A destructuring left-hand side occupies a single logical line. The
+		// lexer skips newlines, so guard against scanning past the star's line
+		// (which would misclassify multiline multiplications such as
+		// "x = a" / "* b") by stopping at the first token on a later line.
+		if tok.Pos.Line > star.Pos.Line {
+			return false
+		}
 		if depth == 0 {
 			if tok.Type == ast.TokenAssign {
 				return true
@@ -566,7 +579,7 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 			if depth > 0 {
 				depth--
 			}
-		case ast.TokenEOF, ast.TokenSemicolon:
+		case ast.TokenSemicolon:
 			return false
 		}
 	}

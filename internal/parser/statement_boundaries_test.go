@@ -417,6 +417,52 @@ end`
 	}
 }
 
+func TestParserLineInitialAsteriskContinuesMultiplicationBeforeLaterAssignment(t *testing.T) {
+	t.Parallel()
+	// The splat-assignment lookahead must stop at the end of the "*" token's
+	// physical line. A later line that contains an assignment (such as
+	// "c = 5") must not pull the leading "*" into a destructuring target; the
+	// line continues the previous expression as a multiplication.
+	source := `def run
+  a = 3
+  b = 4
+  x = a
+  * b
+  c = 5
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "a"},
+			Value:  &ast.IntegerLiteral{Value: 3},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "b"},
+			Value:  &ast.IntegerLiteral{Value: 4},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "x"},
+			Value: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "a"},
+				Operator: ast.TokenAsterisk,
+				Right:    &ast.Identifier{Name: "b"},
+			},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "c"},
+			Value:  &ast.IntegerLiteral{Value: 5},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserAssignmentEqualsContinuesAcrossNewline(t *testing.T) {
 	t.Parallel()
 	source := `def run
