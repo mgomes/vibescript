@@ -671,3 +671,101 @@ end
 		t.Fatalf("default proc lookup = %#v, want \"second:key\"", got)
 	}
 }
+
+// TestHashDefaultProcRebindPreservesCapturedLocals pins that an escaped default
+// proc keeps the local frames it legitimately closed over (here the producing
+// function's `prefix` parameter) after re-entry through another Script.Call.
+// Re-rooting the captured environment must replace only the originating call's
+// ambient root, not the whole chain, or the captured local goes undefined.
+func TestHashDefaultProcRebindPreservesCapturedLocals(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def make(prefix)
+  Hash.new { |_, k| prefix + k }
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "make",
+		[]Value{NewString("pre-")}, CallOptions{})
+	if exported.Kind() != KindHash {
+		t.Fatalf("make returned %v, want a hash", exported.Kind())
+	}
+
+	got := callScript(t, context.Background(), script, "lookup",
+		[]Value{exported, NewString("key")}, CallOptions{})
+	if got.Kind() != KindString || got.String() != "pre-key" {
+		t.Fatalf("default proc lookup = %#v, want \"pre-key\" from the captured local", got)
+	}
+}
+
+// TestHashDefaultProcRebindMixesCapturedLocalsAndCurrentGlobals pins that an
+// escaped default proc resolves a captured local against its preserved frame and
+// a free global against the current call simultaneously: the local must come
+// from the producing call while the global must come from the re-entering call.
+func TestHashDefaultProcRebindMixesCapturedLocalsAndCurrentGlobals(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def make(prefix)
+  Hash.new { |_, k| prefix + tenant + k }
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "make",
+		[]Value{NewString("pre-")},
+		CallOptions{Globals: map[string]Value{"tenant": NewString("first")}},
+	)
+
+	got := callScript(t, context.Background(), script, "lookup",
+		[]Value{exported, NewString("key")},
+		CallOptions{Globals: map[string]Value{"tenant": NewString("second")}},
+	)
+	// "pre-" is the captured local from make; "second" is the current call's global.
+	if got.Kind() != KindString || got.String() != "pre-secondkey" {
+		t.Fatalf("default proc lookup = %#v, want \"pre-secondkey\"", got)
+	}
+}
+
+// TestHashDefaultProcRebindPreservesNestedCapturedLocals pins that a default proc
+// closing over more than one enclosing local frame keeps every frame after
+// re-entry. The hash literal sits inside an each block nested in the producing
+// function, so its default proc captures both the function's `prefix` parameter
+// and the block's `suffix` parameter; both must survive re-rooting.
+func TestHashDefaultProcRebindPreservesNestedCapturedLocals(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def make(prefix)
+  built = {}
+  ["-end"].each do |suffix|
+    built = Hash.new { |_, k| prefix + k + suffix }
+  end
+  built
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "make",
+		[]Value{NewString("pre-")}, CallOptions{})
+	if exported.Kind() != KindHash {
+		t.Fatalf("make returned %v, want a hash", exported.Kind())
+	}
+
+	got := callScript(t, context.Background(), script, "lookup",
+		[]Value{exported, NewString("key")}, CallOptions{})
+	if got.Kind() != KindString || got.String() != "pre-key-end" {
+		t.Fatalf("default proc lookup = %#v, want \"pre-key-end\"", got)
+	}
+}

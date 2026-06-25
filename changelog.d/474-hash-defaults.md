@@ -15,4 +15,6 @@
   passed back into another (as an argument, global, or task-inherited hash) is
   re-rooted onto the current call, so a missing-key lookup resolves globals,
   capabilities, and functions against the current invocation rather than the
-  stale environment it was created in.
+  stale environment it was created in, while still keeping any local variables
+  the proc legitimately closed over (such as a parameter of the function that
+  built the hash).

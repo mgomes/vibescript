@@ -639,6 +639,8 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 		return clone
 	}
 	clone := newEnvWithCapacity(nil, env.dynamicLen())
+	clone.assignBoundary = env.assignBoundary
+	clone.callRoot = env.callRoot
 	state.envs[env] = clone
 	clone.parent = cloneEnvForHost(env.parent, state)
 	env.rangeDynamicBindings(func(name string, val Value) {

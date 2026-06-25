@@ -237,6 +237,7 @@ func (e *Engine) builtinSnapshot() map[string]Value {
 
 // attachBuiltins chains root to the engine's frozen builtin proto env.
 func (e *Engine) attachBuiltins(root *Env, extraStatics int) {
+	root.callRoot = true
 	e.builtinsMu.RLock()
 	if e.builtinProto != nil {
 		defer e.builtinsMu.RUnlock()

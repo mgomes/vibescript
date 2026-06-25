@@ -231,6 +231,7 @@ type callFunctionRebinder struct {
 	seenArrays    map[sliceIdentity]Value
 	seenMaps      map[uintptr]map[string]Value
 	seenBlocks    map[*Block]Value
+	seenEnvs      map[*Env]*Env
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -318,9 +319,11 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		// clones, and builtins against the live call root, not the stale snapshot
 		// captured when it escaped -- otherwise a missing-key lookup could read a
 		// previous call's globals or invoke a capability the current call never
-		// granted. Re-root its captured environment onto the current call, exactly
-		// as the KindFunction case re-roots an escaped function. Block parameters
-		// (e.g. the hash and key) bind at call time and are unaffected.
+		// granted. Re-root only the ambient root of its captured environment onto
+		// the current call, preserving any local frames the block legitimately
+		// closed over (e.g. a `prefix` parameter of the function that produced the
+		// hash). Block parameters (e.g. the hash and key) bind at call time and
+		// are unaffected.
 		blk := valueBlock(val)
 		if blk == nil || blk.owner != r.script || blk.Env == r.root {
 			return val
@@ -329,7 +332,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			return clone
 		}
 		clone := *blk
-		clone.Env = r.root
+		clone.Env = r.rebindCapturedEnv(blk.Env)
 		cloneVal := wrapBlock(&clone)
 		if r.seenBlocks == nil {
 			r.seenBlocks = make(map[*Block]Value)
@@ -389,6 +392,43 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	default:
 		return val
 	}
+}
+
+// rebindCapturedEnv re-roots the captured environment of an escaped closure onto
+// the current call. A closure that escaped a prior Script.Call captures a chain
+// of local frames (e.g. the parameters of the function that produced it) that
+// bottoms out in the originating call's ambient root (globals, capabilities,
+// per-call function clones). Only that ambient root is stale; the local frames
+// hold values the closure legitimately closed over and must be preserved. Each
+// local frame is cloned so the live call cannot mutate the escaped closure's
+// captured state, its bound values are rebound (they may reference per-call
+// functions, classes, or further escaped closures), and the deepest local
+// frame's parent is re-rooted onto the current call root. If the closure captured
+// the ambient root directly (no local frames), the current root replaces it.
+func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
+	// Re-root at the originating call's ambient root (and discard the builtin
+	// proto beneath it): the live call root carries the current globals,
+	// capabilities, per-call function clones, and chains to the live proto.
+	if env == nil || env.callRoot {
+		return r.root
+	}
+	if clone, ok := r.seenEnvs[env]; ok {
+		return clone
+	}
+	clone := newEnvWithCapacity(nil, env.dynamicLen())
+	clone.assignBoundary = env.assignBoundary
+	if r.seenEnvs == nil {
+		r.seenEnvs = make(map[*Env]*Env)
+	}
+	r.seenEnvs[env] = clone
+	clone.parent = r.rebindCapturedEnv(env.parent)
+	env.rangeDynamicBindings(func(name string, val Value) {
+		clone.Define(name, r.rebindValue(val))
+	})
+	env.rangeStaticBindings(func(name string, val Value) {
+		clone.DefineStatic(name, r.rebindValue(val))
+	})
+	return clone
 }
 
 // rebindHash wraps rebound entries in a hash that carries the rebound Ruby-style
