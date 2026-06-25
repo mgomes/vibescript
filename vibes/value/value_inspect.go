@@ -64,9 +64,9 @@ func (v Value) InspectByteLenBounded(step func() error) (int, error) {
 func (v Value) appendInspect(buf *strings.Builder, state *valueStringState, limit int) error {
 	switch v.kind {
 	case KindString:
-		return appendBounded(buf, quoteString(v.data.(string)), limit)
+		return appendQuotedStringBounded(buf, v.data.(string), limit)
 	case KindSymbol:
-		return appendBounded(buf, inspectSymbol(v.data.(string)), limit)
+		return appendInspectSymbolBounded(buf, v.data.(string), limit)
 	case KindNil:
 		return appendBounded(buf, "nil", limit)
 	case KindArray:
@@ -136,7 +136,7 @@ func (v Value) appendInspectHash(buf *strings.Builder, state *valueStringState, 
 			}
 		}
 		first = false
-		if err := appendBounded(buf, inspectHashKey(k), limit); err != nil {
+		if err := appendInspectHashKeyBounded(buf, k, limit); err != nil {
 			return err
 		}
 		if err := appendBounded(buf, keyValueSeparator, limit); err != nil {
@@ -306,6 +306,50 @@ func quoteString(s string) string {
 	return b.String()
 }
 
+// appendQuotedStringBounded streams quoteString(s)'s output directly into buf,
+// escaping one byte at a time, so a hostile string never materializes its full
+// quoted form as a temporary before the budget can trip. When limit is positive
+// every fragment (the delimiters and each escape, all at most two bytes) routes
+// through appendBounded, so the first fragment that would exceed the budget stops
+// and returns ErrStringRenderTruncated without copying the rest of s. The escape
+// rules must stay in lockstep with quoteString; a non-positive limit writes the
+// whole quoted form.
+func appendQuotedStringBounded(buf *strings.Builder, s string, limit int) error {
+	if err := appendByteBounded(buf, '"', limit); err != nil {
+		return err
+	}
+	for i := range len(s) {
+		var frag string
+		switch c := s[i]; c {
+		case '\\':
+			frag = `\\`
+		case '"':
+			frag = `\"`
+		case '\n':
+			frag = `\n`
+		case '\t':
+			frag = `\t`
+		case '#':
+			// Escape only the interpolation marker (#{); a lone '#' is verbatim,
+			// matching quoteString.
+			if i+1 < len(s) && s[i+1] == '{' {
+				frag = `\#`
+			} else {
+				frag = "#"
+			}
+		default:
+			if err := appendByteBounded(buf, c, limit); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := appendBounded(buf, frag, limit); err != nil {
+			return err
+		}
+	}
+	return appendByteBounded(buf, '"', limit)
+}
+
 // quotedStringByteLen reports how many bytes quoteString(s) would produce
 // without allocating the quoted result. The byte-length projection used to bound
 // inspect allocations relies on this: measuring a quota-sized string by building
@@ -348,6 +392,22 @@ func inspectSymbol(name string) string {
 	return ":" + quoteString(name)
 }
 
+// appendInspectSymbolBounded streams inspectSymbol(name)'s output into buf
+// without first building the quoted body, mirroring appendQuotedStringBounded:
+// the leading colon and a bare identifier route through the bounded helpers, and
+// a name that must be quoted is escaped a byte at a time so a hostile symbol name
+// never materializes its full quoted form before the budget trips. The shape must
+// stay in lockstep with inspectSymbol.
+func appendInspectSymbolBounded(buf *strings.Builder, name string, limit int) error {
+	if err := appendByteBounded(buf, ':', limit); err != nil {
+		return err
+	}
+	if isBareIdentifier(name) {
+		return appendBounded(buf, name, limit)
+	}
+	return appendQuotedStringBounded(buf, name, limit)
+}
+
 // inspectSymbolByteLen reports the byte length of inspectSymbol(name) without
 // allocating the rendering, so the byte-length projection can measure a symbol's
 // debug form without building its quoted body. It mirrors inspectSymbol: a bare
@@ -371,6 +431,19 @@ func inspectHashKey(key string) string {
 		return key
 	}
 	return quoteString(key)
+}
+
+// appendInspectHashKeyBounded streams inspectHashKey(key)'s output into buf
+// without first building the quoted body, mirroring appendInspectSymbolBounded: a
+// bare-identifier key routes through the bounded helper, and any other key is
+// escaped a byte at a time so a hostile key never materializes its full quoted
+// form before the budget trips. The shape must stay in lockstep with
+// inspectHashKey.
+func appendInspectHashKeyBounded(buf *strings.Builder, key string, limit int) error {
+	if isBareIdentifier(key) {
+		return appendBounded(buf, key, limit)
+	}
+	return appendQuotedStringBounded(buf, key, limit)
 }
 
 // inspectHashKeyByteLen reports the byte length of inspectHashKey(key) without

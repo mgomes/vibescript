@@ -231,6 +231,48 @@ func TestValueInspectBounded(t *testing.T) {
 			t.Fatalf("partial scalar rendering = %d bytes, want <= 1024", len(got))
 		}
 	})
+
+	// A string whose every byte requires escaping has a quoted form roughly twice
+	// its length. The bounded inspect must trip the limit by streaming the escapes
+	// directly into the buffer rather than first materializing the full quoted
+	// temporary; the partial result must stay within the budget and be a byte-exact
+	// prefix of the full rendering. These cases exercise the scalar path plus the
+	// array, hash-value, symbol, and hash-key paths that all reach the same quoter.
+	const escapeLimit = 1024
+	escapeCases := []struct {
+		name string
+		val  value.Value
+	}{
+		{"escapable_scalar", value.NewString(strings.Repeat(`"`, 1<<16))},
+		{
+			"escapable_string_in_array",
+			value.NewArray([]value.Value{value.NewString(strings.Repeat("\n", 1<<16))}),
+		},
+		{
+			"escapable_string_in_hash_value",
+			value.NewHash(map[string]value.Value{"k": value.NewString(strings.Repeat(`\`, 1<<16))}),
+		},
+		{"escapable_symbol", value.NewSymbol(strings.Repeat(`"`, 1<<16))},
+		{
+			"escapable_hash_key",
+			value.NewHash(map[string]value.Value{strings.Repeat(`"`, 1<<16): value.NewInt(1)}),
+		},
+	}
+	for _, tc := range escapeCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := tc.val.InspectBounded(escapeLimit)
+			if !errors.Is(err, value.ErrStringRenderTruncated) {
+				t.Fatalf("InspectBounded() error = %v, want ErrStringRenderTruncated", err)
+			}
+			if len(got) > escapeLimit {
+				t.Fatalf("partial rendering = %d bytes, want <= %d", len(got), escapeLimit)
+			}
+			if full := tc.val.Inspect(); !strings.HasPrefix(full, got) {
+				t.Fatalf("partial rendering %q is not a prefix of the full inspect", got)
+			}
+		})
+	}
 }
 
 func TestValueInspectByteLenBounded(t *testing.T) {
