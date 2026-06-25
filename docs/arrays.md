@@ -123,6 +123,38 @@ def health_checks(values)
 end
 ```
 
+## Indexed access
+
+- `at(index)` returns the single element at `index`, counting a negative index
+  back from the end. An out-of-range index returns `nil` rather than raising, so
+  it never goes out of bounds the way bracket access does. It agrees with
+  `[index]` for every in-range non-negative index.
+- `slice(index)` mirrors `at(index)`, returning the single element (or `nil`
+  out of range).
+- `slice(start, length)` returns a new subarray of up to `length` elements
+  starting at `start`. A negative `start` counts back from the end. A `start`
+  exactly equal to the length with a non-negative `length` yields `[]`, while a
+  `start` past the length or a negative `length` returns `nil`. An oversized
+  `length` is clamped to the remaining elements.
+- `slice(range)` returns a new subarray selected by the range bounds, aligning
+  with the range slicing already available for strings. Negative bounds count
+  back from the end, an exclusive range drops its end, an end before begin yields
+  `[]`, and a begin past the length returns `nil`.
+
+Indexes and lengths accept `Float` values, which are truncated toward zero like
+Ruby's `to_int`; any other type raises. The subarray forms always return a fresh
+copy, so mutating the result never touches the original array.
+
+```vibe
+[10, 20, 30].at(-1)         # 30
+[10, 20, 30].at(9)          # nil
+[10, 20, 30, 40].slice(1, 2) # [20, 30]
+[10, 20, 30].slice(3, 1)    # [] (start at the length)
+[10, 20, 30].slice(4, 0)    # nil (start past the length)
+[1, 2, 3, 4].slice(1..2)    # [2, 3]
+[1, 2, 3, 4].slice(-3..-1)  # [2, 3, 4]
+```
+
 ## Prefix and pattern filtering
 
 - `take_while { ... }` keeps leading elements until the block first returns a
