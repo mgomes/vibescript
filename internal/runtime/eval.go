@@ -263,7 +263,7 @@ func projectedBuilderCap(sb *strings.Builder, n int) int {
 // live on the Go call stack while WriteStringTo copies its rendering. That
 // temporary is invisible to the env-reachable base, so charging only the output
 // would let base+value+output exceed the quota during the write even though
-// base+output passes. checkProjectedInterpolatedValue deduplicates val against the
+// base+output passes. checkProjectedValueRendering deduplicates val against the
 // base, so a value already reachable from an environment is not double counted and
 // the small-interpolation fast path is unchanged.
 //
@@ -301,7 +301,7 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	if err != nil {
 		return err
 	}
-	if err := exec.checkProjectedInterpolatedValue(val, projectedBuilderCap(sb, payload)); err != nil {
+	if err := exec.checkProjectedValueRendering(val, projectedBuilderCap(sb, payload)); err != nil {
 		return err
 	}
 	// Grow only on a positive payload: StringByteLen sums byte counts without
