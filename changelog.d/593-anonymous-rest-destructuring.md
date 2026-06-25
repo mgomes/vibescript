@@ -12,3 +12,9 @@
   targets after the rest fill from left to right and pad with `nil` on the
   right, matching Ruby. For example, `a, *, y, z = [1, 2]` now yields `a = 1`,
   `y = 2`, `z = nil` instead of reversing the trailing values.
+- **Fixed: a splat-assignment that begins a line after a continuable
+  expression now parses as its own statement.** A line that opens with `*` and
+  forms a destructuring left-hand side, such as `*, last = values` or
+  `*rest, last = values`, is no longer misread as a multiplication continuation
+  of the previous line. Genuine multiline multiplication (a line ending or
+  beginning with `*`) still continues as before.

@@ -320,6 +320,103 @@ end`
 	}
 }
 
+func TestParserLineInitialSplatAssignmentStartsNewStatement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		assignment string
+		wantTarget *ast.DestructureTarget
+	}{
+		{
+			name:       "anonymous rest",
+			assignment: "*, last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "named rest",
+			assignment: "*rest, last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "bare named rest",
+			assignment: "*rest = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := "def run\n  a = 3\n  " + tt.assignment + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.AssignStmt{
+					Target: &ast.Identifier{Name: "a"},
+					Value:  &ast.IntegerLiteral{Value: 3},
+				},
+				&ast.AssignStmt{
+					Target: tt.wantTarget,
+					Value:  &ast.Identifier{Name: "values"},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestParserLineInitialAsteriskContinuesMultiplication(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  a = 3
+  b = 4
+  x = a
+  * b
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "a"},
+			Value:  &ast.IntegerLiteral{Value: 3},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "b"},
+			Value:  &ast.IntegerLiteral{Value: 4},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "x"},
+			Value: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "a"},
+				Operator: ast.TokenAsterisk,
+				Right:    &ast.Identifier{Name: "b"},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserAssignmentEqualsContinuesAcrossNewline(t *testing.T) {
 	t.Parallel()
 	source := `def run

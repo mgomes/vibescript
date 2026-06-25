@@ -510,10 +510,77 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
+	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
 		return true
+	case ast.TokenAsterisk:
+		// A line that begins with "*" continues the previous expression as a
+		// multiplication, unless it opens a destructuring-assignment target
+		// list (such as "*, last = vals" or "*rest, last = vals"). In that
+		// case the statement boundary wins so the "*" parses as an anonymous
+		// or named rest target rather than a multiplication operator.
+		return !p.lineStartsSplatAssignment(tok)
 	case ast.TokenMinus:
 		return p.minusContinuesLine(tok)
+	default:
+		return false
+	}
+}
+
+// lineStartsSplatAssignment reports whether the leading "*" token begins a
+// destructuring-assignment target list on its own logical line. It scans
+// ahead with a throwaway lexer (leaving the parser's own lookahead
+// untouched) and accepts only the tokens that may form a destructuring
+// left-hand side at the top level, requiring a top-level "=" before the
+// line ends. Anything else - a multiplicand operand, a comparison, an
+// arithmetic operator - means the "*" is an ordinary multiplication
+// continuation, so it returns false.
+func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
+	offset, ok := sourceOffsetForPosition(p.l.input, star.Pos)
+	if !ok {
+		return false
+	}
+
+	scan := newLexer(p.l.input)
+	scan.seek(offset, ast.Token{})
+
+	tok := scan.NextToken()
+	if tok.Type != ast.TokenAsterisk {
+		return false
+	}
+
+	depth := 0
+	for {
+		tok = scan.NextToken()
+		if depth == 0 {
+			if tok.Type == ast.TokenAssign {
+				return true
+			}
+			if !splatAssignmentTopLevelToken(tok.Type) {
+				return false
+			}
+		}
+		switch tok.Type {
+		case ast.TokenLParen, ast.TokenLBracket:
+			depth++
+		case ast.TokenRParen, ast.TokenRBracket:
+			if depth > 0 {
+				depth--
+			}
+		case ast.TokenEOF, ast.TokenSemicolon:
+			return false
+		}
+	}
+}
+
+// splatAssignmentTopLevelToken reports whether tt may appear at the top
+// level of a destructuring-assignment left-hand side, between the leading
+// "*" and the terminating "=". Bracketed sub-targets are validated by depth
+// tracking in lineStartsSplatAssignment, so this only governs depth-zero
+// tokens.
+func splatAssignmentTopLevelToken(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TokenIdent, ast.TokenIvar, ast.TokenClassVar, ast.TokenComma, ast.TokenAsterisk, ast.TokenDot, ast.TokenScope, ast.TokenLParen, ast.TokenRParen, ast.TokenLBracket, ast.TokenRBracket:
+		return true
 	default:
 		return false
 	}

@@ -130,6 +130,92 @@ func TestParallelAssignmentAnonymousRestTarget(t *testing.T) {
 	}
 }
 
+func TestParallelAssignmentLineInitialSplatAfterAssignment(t *testing.T) {
+	t.Parallel()
+
+	// A splat-assignment whose target list begins with "*" must parse as its
+	// own statement even when it follows a line that could otherwise continue
+	// onto a leading "*" as a multiplication. Each result was confirmed
+	// against the reference Ruby implementation.
+	tests := []struct {
+		name   string
+		body   string
+		result string
+		want   []Value
+	}{
+		{
+			name:   "anonymous rest discards head",
+			body:   "a = 3\n  *, last = [1, 2]",
+			result: "[a, last]",
+			want:   []Value{NewInt(3), NewInt(2)},
+		},
+		{
+			name:   "named rest binds head",
+			body:   "a = 3\n  *rest, last = [1, 2, 3]",
+			result: "[a, rest, last]",
+			want:   []Value{NewInt(3), NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(3)},
+		},
+		{
+			name:   "named rest short array",
+			body:   "a = 3\n  *rest, last = [1]",
+			result: "[a, rest, last]",
+			want:   []Value{NewInt(3), NewArray(nil), NewInt(1)},
+		},
+		{
+			name:   "bare named rest",
+			body:   "a = 3\n  *rest = [1, 2]",
+			result: "[a, rest]",
+			want:   []Value{NewInt(3), NewArray([]Value{NewInt(1), NewInt(2)})},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, "def run\n  "+tt.body+"\n  "+tt.result+"\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
+func TestMultiplicationContinuesAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	// A line ending in "*" and a line beginning with "*" must both continue
+	// the previous expression as a multiplication; only a splat-assignment
+	// target list breaks the continuation.
+	tests := []struct {
+		name string
+		body string
+		want int64
+	}{
+		{
+			name: "trailing operator",
+			body: "a = 3\n  b = 4\n  x = a *\n  b",
+			want: 12,
+		},
+		{
+			name: "leading operator",
+			body: "a = 3\n  b = 4\n  x = a\n  * b",
+			want: 12,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, "def run\n  "+tt.body+"\n  x\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if !got.Equal(NewInt(tt.want)) {
+				t.Fatalf("run() = %v, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParallelAssignmentRestTrailingTargetsBindLeftToRight(t *testing.T) {
 	t.Parallel()
 
