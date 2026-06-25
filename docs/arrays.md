@@ -114,8 +114,19 @@ and leaves the receiver untouched.
   out-of-range indexes (including negative indexes, which arrays treat as out of
   range) yield `nil` rather than raising. A non-integer array index raises, like
   the index operator.
-- `any?`, `all?`, `none?`, `one?` with optional blocks. `one?` is true only when
-  exactly one element (or block result) is truthy.
+- `any?`, `all?`, `none?` with an optional block or an optional `pattern`
+  argument. Without arguments they test element truthiness; the block form tests
+  each block result. The `pattern` form tests each element against the argument
+  with case equality (`===`), as in Ruby: `any?(pattern)` is true when any
+  element matches, `all?(pattern)` is true when every element matches, and
+  `none?(pattern)` is true when no element matches. Range patterns therefore test
+  membership rather than object identity, so `[2].any?(1..3)` is `true`;
+  non-range patterns fall back to value equality and do not coerce across types.
+  As with empty arrays elsewhere, `all?` and `none?` on an empty array are
+  vacuously `true` and `any?` is `false`. As with `count(value)`, a `pattern`
+  argument takes precedence over an attached block, which is then ignored.
+- `one?` with an optional block; true only when exactly one element (or block
+  result) is truthy.
 
 `index`, `find_index`, and `rindex` accept either a value or a block, never both;
 passing both raises an error. As a Vibescript extension, the value form also takes

@@ -201,9 +201,9 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "index must be integer",
 		},
 		{
-			name:   "array.any? with argument",
-			script: `def run() [1].any?(1) end`,
-			errMsg: "array.any? does not take arguments",
+			name:   "array.any? with too many arguments",
+			script: `def run() [1].any?(1, 2) end`,
+			errMsg: "array.any? accepts at most one value argument",
 		},
 		{
 			name:   "array.sort with incomparable values",

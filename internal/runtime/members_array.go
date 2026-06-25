@@ -1008,99 +1008,15 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "any?":
 		return NewAutoBuiltin("array.any?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.any? does not take arguments")
-			}
-			var runner *blockCallRunner
-			if valueBlock(block) != nil {
-				var err error
-				runner, err = newBlockCallRunner(exec, block, "array.any?")
-				if err != nil {
-					return NewNil(), err
-				}
-			}
-			var blockArg [1]Value
-			for _, item := range receiver.Array() {
-				if runner != nil {
-					blockArg[0] = item
-					val, err := runner.call(blockArg[:])
-					if err != nil {
-						return NewNil(), err
-					}
-					if val.Truthy() {
-						return NewBool(true), nil
-					}
-					continue
-				}
-				if item.Truthy() {
-					return NewBool(true), nil
-				}
-			}
-			return NewBool(false), nil
+			return arrayPredicate(exec, receiver, args, kwargs, block, arrayPredicateAny)
 		}), nil
 	case "all?":
 		return NewAutoBuiltin("array.all?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.all? does not take arguments")
-			}
-			var runner *blockCallRunner
-			if valueBlock(block) != nil {
-				var err error
-				runner, err = newBlockCallRunner(exec, block, "array.all?")
-				if err != nil {
-					return NewNil(), err
-				}
-			}
-			var blockArg [1]Value
-			for _, item := range receiver.Array() {
-				if runner != nil {
-					blockArg[0] = item
-					val, err := runner.call(blockArg[:])
-					if err != nil {
-						return NewNil(), err
-					}
-					if !val.Truthy() {
-						return NewBool(false), nil
-					}
-					continue
-				}
-				if !item.Truthy() {
-					return NewBool(false), nil
-				}
-			}
-			return NewBool(true), nil
+			return arrayPredicate(exec, receiver, args, kwargs, block, arrayPredicateAll)
 		}), nil
 	case "none?":
 		return NewAutoBuiltin("array.none?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.none? does not take arguments")
-			}
-			var runner *blockCallRunner
-			if valueBlock(block) != nil {
-				var err error
-				runner, err = newBlockCallRunner(exec, block, "array.none?")
-				if err != nil {
-					return NewNil(), err
-				}
-			}
-			var blockArg [1]Value
-			for _, item := range receiver.Array() {
-				if runner != nil {
-					blockArg[0] = item
-					val, err := runner.call(blockArg[:])
-					if err != nil {
-						return NewNil(), err
-					}
-					if val.Truthy() {
-						return NewBool(false), nil
-					}
-					continue
-				}
-				if item.Truthy() {
-					return NewBool(false), nil
-				}
-			}
-			return NewBool(true), nil
+			return arrayPredicate(exec, receiver, args, kwargs, block, arrayPredicateNone)
 		}), nil
 	case "one?":
 		return NewAutoBuiltin("array.one?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1148,6 +1064,104 @@ func arrayMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+// arrayPredicateKind selects the quantifier evaluated by arrayPredicate.
+type arrayPredicateKind int
+
+const (
+	arrayPredicateAny arrayPredicateKind = iota
+	arrayPredicateAll
+	arrayPredicateNone
+)
+
+// arrayPredicate implements the shared scanning logic for Array#any?, Array#all?
+// and Array#none?. It mirrors Ruby's three calling conventions:
+//
+//	any?           # whether any element is truthy
+//	any? { |x| } # whether any block result is truthy
+//	any?(pattern)  # whether any element matches pattern via ===
+//
+// As in Ruby, the value form tests each element with case equality (===) via
+// caseCandidateMatches, so range patterns such as any?(1..3) test membership
+// rather than object identity. An explicit pattern argument takes precedence
+// over any attached block, which is then ignored, matching Array#count(value).
+// Keyword arguments are unsupported and rejected. The name of the originating
+// method is derived from the predicate kind for error messages.
+func arrayPredicate(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, kind arrayPredicateKind) (Value, error) {
+	name := arrayPredicateName(kind)
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
+	}
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("%s accepts at most one value argument", name)
+	}
+	arr := receiver.Array()
+	if len(args) == 1 {
+		pattern := args[0]
+		return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
+			return caseCandidateMatches(item, pattern), nil
+		})
+	}
+	if valueBlock(block) != nil {
+		runner, err := newBlockCallRunner(exec, block, name)
+		if err != nil {
+			return NewNil(), err
+		}
+		var blockArg [1]Value
+		return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
+			blockArg[0] = item
+			val, err := runner.call(blockArg[:])
+			if err != nil {
+				return false, err
+			}
+			return val.Truthy(), nil
+		})
+	}
+	return arrayPredicateResult(kind, arr, func(item Value) (bool, error) {
+		return item.Truthy(), nil
+	})
+}
+
+// arrayPredicateName returns the public method name used in error messages for a
+// predicate kind.
+func arrayPredicateName(kind arrayPredicateKind) string {
+	switch kind {
+	case arrayPredicateAll:
+		return "array.all?"
+	case arrayPredicateNone:
+		return "array.none?"
+	default:
+		return "array.any?"
+	}
+}
+
+// arrayPredicateResult applies match to every element until the quantifier can
+// short-circuit. any? returns true on the first match, all? returns false on the
+// first miss, and none? returns false on the first match; each falls through to
+// the vacuous result for an empty or fully scanned array.
+func arrayPredicateResult(kind arrayPredicateKind, arr []Value, match func(Value) (bool, error)) (Value, error) {
+	for _, item := range arr {
+		ok, err := match(item)
+		if err != nil {
+			return NewNil(), err
+		}
+		switch kind {
+		case arrayPredicateAny:
+			if ok {
+				return NewBool(true), nil
+			}
+		case arrayPredicateAll:
+			if !ok {
+				return NewBool(false), nil
+			}
+		case arrayPredicateNone:
+			if ok {
+				return NewBool(false), nil
+			}
+		}
+	}
+	return NewBool(kind != arrayPredicateAny), nil
 }
 
 // arrayForwardIndex implements the shared forward-scanning logic for

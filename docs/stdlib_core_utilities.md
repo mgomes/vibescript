@@ -277,6 +277,10 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   truthy.
 - `none? { |item| } -> bool` – true when no element (or block result) is
   truthy.
+- `any?(pattern)`, `all?(pattern)`, `none?(pattern) -> bool` – test each element
+  against `pattern` with case equality (`===`), so range patterns test
+  membership (`[2].any?(1..3)` is true). A `pattern` argument takes precedence
+  over an attached block.
 - `one? { |item| } -> bool` – true when exactly one element (or block result)
   is truthy.
 
