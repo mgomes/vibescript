@@ -510,6 +510,52 @@ end`,
 			},
 		},
 		{
+			// A bare identifier whose spelling matches a built-in type name
+			// (`time`) still references the earlier keyword parameter named
+			// `time`. The speculative shape parse resolves the field type to
+			// TypeTime, so the local-value check must inspect the name rather
+			// than the resolved kind to keep the group a hash default.
+			name: "builtin_named_ident_hash_default_references_earlier_keyword",
+			source: `def f(time:, opts: { start: time })
+  opts
+end`,
+			want: []ast.Param{
+				{Name: "time", Kind: ast.ParamKeyword},
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key:   &ast.SymbolLiteral{Name: "start"},
+							Value: &ast.Identifier{Name: "time"},
+						},
+					}},
+				},
+			},
+		},
+		{
+			// The container built-in names (`array`, `hash`) likewise resolve
+			// to their built-in kinds, yet a bare reference to an earlier
+			// parameter so named is a value reference, not a type.
+			name: "container_named_ident_hash_default_references_earlier_keyword",
+			source: `def f(array:, opts: { items: array })
+  opts
+end`,
+			want: []ast.Param{
+				{Name: "array", Kind: ast.ParamKeyword},
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key:   &ast.SymbolLiteral{Name: "items"},
+							Value: &ast.Identifier{Name: "array"},
+						},
+					}},
+				},
+			},
+		},
+		{
 			// The bare-identifier local-value check also looks through nested
 			// brace groups, so a nested hash value referencing an earlier
 			// parameter keeps the whole group a hash default.
@@ -582,6 +628,40 @@ end`
 			Type: &ast.TypeExpr{
 				Kind:  ast.TypeShape,
 				Shape: map[string]*ast.TypeExpr{"x": {Name: "int", Kind: ast.TypeInt}},
+			},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserBuiltinNamedShapeFieldStaysTyped verifies that a shape field whose
+// type is a built-in name remains a genuine type when no local of that name is
+// in scope. The local-value check inspects the field name, so it must not treat
+// a built-in spelling as a value reference unless an earlier parameter actually
+// declares that local. Here `start: time` is the built-in time type, keeping
+// `a` a typed positional parameter with a shape type.
+func TestParserBuiltinNamedShapeFieldStaysTyped(t *testing.T) {
+	t.Parallel()
+
+	source := `def f(a: { start: time })
+  a
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	want := []ast.Param{
+		{
+			Name: "a",
+			Type: &ast.TypeExpr{
+				Kind:  ast.TypeShape,
+				Shape: map[string]*ast.TypeExpr{"start": {Name: "time", Kind: ast.TypeTime}},
 			},
 		},
 	}

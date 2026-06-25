@@ -193,6 +193,10 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
       b[:sum]
     end
 
+    def builtin_named_chained_hash(string:, opts: { label: string })
+      opts[:label]
+    end
+
     def nil_field_default(opts: { previous: nil })
       opts[:previous] == nil
     end
@@ -243,6 +247,20 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
 		})
 		if !got.Equal(NewInt(2)) {
 			t.Fatalf("bare_chained_hash(a: 2) = %#v, want 2", got)
+		}
+	})
+
+	// A bare hash value naming an earlier keyword parameter whose spelling
+	// matches a built-in type (`string`) resolves to that built-in's kind during
+	// the speculative shape parse, yet it is a value reference. The group must
+	// still bind as a hash default referencing the prior parameter.
+	t.Run("builtin_named_hash_default_references_earlier_keyword", func(t *testing.T) {
+		t.Parallel()
+		got := callScript(t, context.Background(), script, "builtin_named_chained_hash", nil, CallOptions{
+			Keywords: map[string]Value{"string": NewString("hi")},
+		})
+		if !got.Equal(NewString("hi")) {
+			t.Fatalf("builtin_named_chained_hash(string: \"hi\") = %#v, want \"hi\"", got)
 		}
 	})
 

@@ -1037,8 +1037,8 @@ func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
 // identifier field type that names a local value in scope, looking through
 // nested shapes.
 //
-// A bare identifier field such as the `a` in `{ sum: a }` parses cleanly as an
-// enum type, so the speculative shape parse alone cannot tell `def f(opts: {
+// A bare identifier field such as the `a` in `{ sum: a }` parses cleanly as a
+// type atom, so the speculative shape parse alone cannot tell `def f(opts: {
 // status: pending })` (a shape whose `status` field is the `pending` enum type)
 // from `def g(a:, b: { sum: a })` (a hash default whose `sum` value references
 // the earlier keyword parameter `a`). When the identifier names a value already
@@ -1047,10 +1047,17 @@ func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
 // identLessThanStartsExpression, which already treat a bare identifier naming a
 // local value as the head of a default expression.
 //
-// The check targets bare enum atoms only. A union field (`{ x: a | b }`) stays
-// a type because `|` continues a type annotation, and an identifier appearing
-// as a generic type argument (`{ x: array<a> }`) is a genuine type, matching how
-// those forms are disambiguated outside shapes.
+// A bare identifier whose spelling matches a built-in type (such as the `time`
+// in `def f(time:, opts: { start: time })`) parses to that built-in's kind
+// (TypeTime here) while keeping the original literal in Name, so the check
+// inspects the name rather than the kind. This covers common parameter names
+// like time, string, int, hash, and array.
+//
+// The check targets bare atoms only. A union field (`{ x: a | b }`) stays a
+// type because `|` continues a type annotation; a nullable atom (`{ x: a? }`)
+// is type syntax; and an identifier appearing as a generic type argument
+// (`{ x: array<a> }`) is a genuine type, matching how those forms are
+// disambiguated outside shapes.
 func (p *parser) shapeFieldNamesLocalValue(ty *ast.TypeExpr) bool {
 	if ty == nil || ty.Kind != ast.TypeShape {
 		return false
@@ -1059,7 +1066,7 @@ func (p *parser) shapeFieldNamesLocalValue(ty *ast.TypeExpr) bool {
 		if fieldType == nil {
 			continue
 		}
-		if fieldType.Kind == ast.TypeEnum && p.isLocalName(fieldType.Name) {
+		if p.typeAtomNamesLocalValue(fieldType) {
 			return true
 		}
 		if p.shapeFieldNamesLocalValue(fieldType) {
@@ -1067,6 +1074,25 @@ func (p *parser) shapeFieldNamesLocalValue(ty *ast.TypeExpr) bool {
 		}
 	}
 	return false
+}
+
+// typeAtomNamesLocalValue reports whether ty is a bare named type atom whose
+// spelling names a local value in scope. A bare atom is a single identifier
+// with no type modifiers: it carries no generic arguments, is not nullable, and
+// is neither a shape nor a union (those forms are unambiguous type syntax). The
+// spelling is checked rather than the resolved kind so that an identifier
+// matching a built-in type name (resolved to that built-in's kind) is still
+// recognized as a value reference when it names a local.
+func (p *parser) typeAtomNamesLocalValue(ty *ast.TypeExpr) bool {
+	if ty == nil || ty.Name == "" || ty.Nullable || len(ty.TypeArgs) > 0 {
+		return false
+	}
+	switch ty.Kind {
+	case ast.TypeShape, ast.TypeUnion:
+		return false
+	default:
+		return p.isLocalName(ty.Name)
+	}
 }
 
 // shapeHasDegenerateNilField reports whether ty is a shape type with a field
