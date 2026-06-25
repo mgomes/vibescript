@@ -1307,12 +1307,14 @@ var reduceArithmeticOps = map[string]func(left, right Value) (Value, error){
 // accumulator with item as its argument. Operator names dispatch to the same
 // arithmetic helpers the corresponding operators use; any other name is treated
 // as a method invoked as `accumulator.operation(item)`, mirroring Ruby's
-// `accumulator.public_send(operation, item)`.
+// `accumulator.public_send(operation, item)`. Resolution is public-only, so an
+// accumulator that happens to be the current self cannot reach private methods,
+// matching public_send's privacy guarantee.
 func (exec *Execution) reduceSendOperation(accumulator Value, operation string, item Value) (Value, error) {
 	if op, ok := reduceArithmeticOps[operation]; ok {
 		return op(accumulator, item)
 	}
-	member, err := exec.getMember(accumulator, operation, Position{})
+	member, err := exec.getPublicMember(accumulator, operation, Position{})
 	if err != nil {
 		return NewNil(), fmt.Errorf("array.reduce cannot apply %q: %w", operation, err)
 	}

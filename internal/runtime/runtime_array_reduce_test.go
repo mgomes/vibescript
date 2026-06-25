@@ -222,6 +222,57 @@ func TestArrayReduceErrors(t *testing.T) {
 	}
 }
 
+// TestArrayReduceOperationRejectsPrivateMethods confirms the symbol/string
+// operation form resolves methods with public-only dispatch, matching its
+// documented `accumulator.public_send(operation, item)` contract. Even when the
+// accumulator is the current self inside an instance method, a private method
+// must not be reachable through reduce, while a public method still folds.
+func TestArrayReduceOperationRejectsPrivateMethods(t *testing.T) {
+	t.Parallel()
+
+	const source = `
+class Folder
+  private def secret(other)
+    self
+  end
+
+  def public_combine(other)
+    self
+  end
+
+  def fold_private(other)
+    [self, other].reduce(:secret)
+  end
+
+  def fold_public(other)
+    [self, other].reduce(:public_combine)
+  end
+end
+
+def fold_private
+  a = Folder.new
+  a.fold_private(Folder.new)
+end
+
+def fold_public
+  a = Folder.new
+  a.fold_public(Folder.new)
+end
+`
+
+	script := compileScript(t, source)
+
+	// reduce(:secret) on self must be rejected with the same privacy error a
+	// member-style call would raise, even though the accumulator is self.
+	requireCallErrorContains(t, script, "fold_private", nil, CallOptions{}, "private method secret")
+
+	// A public method still folds through the operation form.
+	got := callFunc(t, script, "fold_public", nil)
+	if got.Kind() != KindInstance {
+		t.Fatalf("fold_public via reduce(:public_combine) = %v, want an instance", got.Kind())
+	}
+}
+
 // TestArrayReduceOperationParticipatesInStepQuota confirms the operation form
 // charges a step per element so a tight step quota trips on a large receiver.
 func TestArrayReduceOperationParticipatesInStepQuota(t *testing.T) {
