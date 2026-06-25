@@ -657,32 +657,6 @@ func (runner *blockCallRunner) call(args []Value) (Value, error) {
 	return runner.exec.callBlock(runner.blk, args, runner.env)
 }
 
-// releaseReusableEnv clears the reusable block environment between calls so the
-// previous iteration's bindings -- which can include an arbitrarily large rest
-// array a destructuring parameter collected -- stop being referenced before the
-// next iteration's live-memory recheck and allocation run.
-//
-// call already resets the environment, but only at the moment it binds the next
-// call's parameters; between two calls the runner still holds the prior call's
-// bindings. The reused environment is a Go-local invisible to the memory
-// estimator (it lives off exec.envStack except while a block body runs), so a
-// caller that rechecks the live footprint before invoking call again (Hash#each's
-// collapsed-pair walk) would not see the lingering rest array and could allocate
-// the next entry's pair over quota while the previous huge rest is still live.
-// Calling this first makes that recheck observe an environment holding nothing
-// from the prior iteration, so the doc-comment invariant ("only one entry's rest
-// arrays are ever live") holds at the recheck point and not just inside call.
-//
-// It is a no-op when the runner allocates a fresh environment per call
-// (runner.env == nil): there the prior call's environment is an unreferenced
-// local that the next call never reuses, so no binding lingers across iterations.
-func (runner *blockCallRunner) releaseReusableEnv() {
-	if runner.env == nil {
-		return
-	}
-	runner.env.resetForBlockCall(runner.blk.Env)
-}
-
 // wantsCollapsedPair reports whether a hash iterator should yield each entry as a
 // single two-element [key, value] pair instead of two separate arguments. It
 // mirrors Ruby, where a block declaring exactly one positional parameter receives
@@ -701,101 +675,6 @@ func (runner *blockCallRunner) wantsCollapsedPair() bool {
 		}
 	}
 	return positional == 1
-}
-
-// destructureTarget returns the block's single positional parameter as a
-// destructuring target, or nil when the parameter binds a plain identifier. It
-// must only be consulted when wantsCollapsedPair is true, so it assumes exactly
-// one positional parameter.
-func (runner *blockCallRunner) destructureTarget() *DestructureTarget {
-	target, _ := runner.blk.Params[0].Target.(*DestructureTarget)
-	return target
-}
-
-// destructureRestAllocBytes returns the total heap bytes the fresh rest arrays
-// AssignDestructure allocates while binding value through target. Each rest
-// element (at any nesting depth) makes AssignDestructure collect the unclaimed
-// slice into a new array and box it (see AssignDestructure's restValues), so the
-// per-rest footprint is restArrayBytes of the collected element count. The walk
-// mirrors AssignDestructure's recursion exactly: every element target -- including
-// the rest target itself -- is rebound to the same value AssignDestructure would
-// pass, and a nested *DestructureTarget recurses into that value. Because the rest
-// target receives the freshly allocated rest array, a rest whose own target is a
-// destructure (for example |(*(head, *tail))|) collects from that array and
-// allocates a deeper rest, which this recursion now charges at every depth. The
-// result is that the reservation equals the sum of all rest allocations for any
-// nesting shape, so the iterator reserves the exact peak from the actual entries
-// rather than assuming the rest only ever spans the two-element pair.
-func destructureRestAllocBytes(target *DestructureTarget, value Value) int {
-	values := destructureValues(value)
-	restIndex := -1
-	for i := range target.Elements {
-		if target.Elements[i].Rest {
-			restIndex = i
-			break
-		}
-	}
-
-	total := 0
-	if restIndex == -1 {
-		for i := range target.Elements {
-			total = saturatingAdd(total, destructureElementRestBytes(target.Elements[i].Target, valueAt(values, i)))
-		}
-		return total
-	}
-
-	trailing := len(target.Elements) - restIndex - 1
-	// Clamp the rest window exactly as AssignDestructure does. When the target has
-	// more fixed targets than the value provides, restIndex can exceed len(values),
-	// so the bare values[restIndex:restEnd] slice below would panic the host (a
-	// sandbox DoS) on a slice-out-of-range before any binding occurs. Mirroring the
-	// binder's restStart = min(restIndex, len(values)) keeps the reconstructed rest
-	// array within bounds and its length equal to the rest AssignDestructure boxes,
-	// so the reservation matches the real allocation for any nesting shape.
-	restStart := min(restIndex, len(values))
-	restEnd := len(values) - trailing
-	if restEnd < restStart {
-		restEnd = restStart
-	}
-	restCount := restEnd - restStart
-	total = saturatingAdd(total, restArrayBytes(restCount))
-	for i := range target.Elements {
-		var val Value
-		switch {
-		case i < restIndex:
-			val = valueAt(values, i)
-		case i == restIndex:
-			// AssignDestructure binds the freshly allocated rest array to this target.
-			// A plain identifier holds it with no further allocation (already charged
-			// above), but when the target is itself a destructure that array is the
-			// value it recurses over, so a deeper rest collects from it. Reconstruct
-			// the array (the same restStart:restEnd slice, len-matched as the recursion
-			// only reads element values and length) only for the destructure case to
-			// charge those deeper rests without boxing a throwaway array otherwise.
-			if _, ok := target.Elements[i].Target.(*DestructureTarget); !ok {
-				continue
-			}
-			val = NewArray(values[restStart:restEnd])
-		default:
-			valueIndex := len(values) - trailing + i - restIndex - 1
-			if valueIndex < restIndex {
-				valueIndex = -1
-			}
-			val = valueAt(values, valueIndex)
-		}
-		total = saturatingAdd(total, destructureElementRestBytes(target.Elements[i].Target, val))
-	}
-	return total
-}
-
-// destructureElementRestBytes returns the rest-array bytes a single destructure
-// element allocates: zero for a plain identifier target, or the recursive total
-// for a nested destructure.
-func destructureElementRestBytes(target Expression, value Value) int {
-	if nested, ok := target.(*DestructureTarget); ok {
-		return destructureRestAllocBytes(nested, value)
-	}
-	return 0
 }
 
 // CallBlock invokes a block value with the provided arguments.
@@ -1227,11 +1106,9 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	// Allocate the rest backing with capacity exactly equal to the collected
 	// element count. append([]Value(nil), src...) (and slices.Clone, which wraps
 	// it) would let Go's growslice round the capacity up past len, so the memory
-	// estimator — which charges slice backings by cap — would see a larger array
-	// than the per-rest reservation (restArrayBytes, sized by the element count)
-	// charged at preflight. A make+copy keeps cap == len so the reserved and the
-	// actually allocated footprints agree, leaving no quota window admitted by the
-	// preflight that the in-body check would then exceed.
+	// estimator -- which charges slice backings by cap -- would see a larger array
+	// than the value's own length implies. A make+copy keeps cap == len so the
+	// rest array's charged footprint matches what its element count predicts.
 	restSrc := values[restStart:restEnd]
 	restValues := make([]Value, len(restSrc))
 	copy(restValues, restSrc)
@@ -1643,18 +1520,28 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 // could pass its own checks while the true peak (roots + scratch + body
 // allocation) exceeded the quota by the scratch size. The reservation is released
 // on every exit path through defer.
+//
+// The per-iteration [key, value] pair is reserved the same way: one constant pair
+// (collapsedPairBytes) is folded into the baseline for the loop's lifetime. The pair
+// the loop binds to the iterator stays in env (already counted by the env walk), and
+// the next pair overlaps it only for the instant before the assignment overwrites it,
+// so reserving one pair conservatively bounds the transient. Reserving it -- rather
+// than charging it through checkMemoryWith every iteration -- keeps the walk O(n) in
+// the receiver size instead of re-walking the receiver per entry.
 func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value) (Value, bool, error) {
 	entries := iterable.Hash()
-	delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+	scratch := sortedKeyBufferBytes(len(entries))
+	if len(entries) > 0 {
+		scratch = saturatingAdd(scratch, collapsedPairBytes)
+	}
+	delta := exec.reserveLoopScratch(scratch)
 	defer exec.releaseLoopScratch(delta)
 
-	// The scratch is now in the live baseline, so the preflight charges it through
-	// the call roots. The iterable plays the receiver role here, so an ephemeral
-	// hash literal is counted while a hash already bound to a variable is
-	// deduplicated against the live base. The loop allocates one [key, value] pair
-	// per iteration and charges it through checkMemoryWith in the body, so the
-	// preflight reserves no per-entry pair bytes.
-	if err := exec.checkProjectedHashWalkBytes(0, iterable, nil, nil, NewNil()); err != nil {
+	// The scratch and the reserved pair are now in the live baseline, so the preflight
+	// charges them through the call roots. The iterable plays the receiver role here,
+	// so an ephemeral hash literal is counted while a hash already bound to a variable
+	// is deduplicated against the live base.
+	if err := exec.checkProjectedHashWalkBytes(iterable, nil, nil, NewNil()); err != nil {
 		return NewNil(), false, err
 	}
 	var keyBuf [smallHashKeyBufferSize]string
@@ -1665,9 +1552,6 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 		// Hash keys round-trip as symbols, the same shape hash.each and hash.keys
 		// expose.
 		pair := NewArray([]Value{NewSymbol(key), entries[key]})
-		if err := exec.checkMemoryWith(pair); err != nil {
-			return NewNil(), false, err
-		}
 		env.Assign(stmt.Iterator, pair)
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {

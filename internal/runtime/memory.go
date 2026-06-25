@@ -258,111 +258,36 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 // be charged an output map they never create; charging a phantom empty map here
 // would falsely reject a quota that exactly fits the receiver and block.
 //
-// The sorted-key scratch buffer these iterators materialize stays live while
-// their body runs, so callers reserve it through reserveLoopScratch before this
-// check rather than passing it here: the reservation folds the scratch into the
-// live baseline (hashCallRootBytes measures it), which both charges it at this
-// preflight and keeps every memory check inside the body aware of it.
-//
-// perEntryBytes is the simultaneous peak of the transient [key, value] pair
-// arrays (and any rest arrays a destructuring parameter collects) that Hash#each
-// allocates as Go locals while yielding a single-parameter block its collapsed
-// pair (see collapsedPairReservation). Unlike the scratch buffer, these are not
-// reserved into the live baseline: the reused block environment that briefly
-// holds them is invisible to estimateMemoryUsageBase, and folding them into the
-// baseline would double-count against the in-body check that walks the bound
-// pair. Charging them only here fails the walk fast when even the first entry's
-// pair would not fit, while leaving the in-body checks to charge the actual live
-// pair, which never exceeds this preflighted peak.
-func (exec *Execution) checkProjectedHashWalkBytes(perEntryBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+// The scratch these iterators materialize stays live while their body runs, so
+// callers reserve it through reserveLoopScratch before this check rather than
+// passing it here: the reservation folds the scratch into the live baseline
+// (hashCallRootBytes measures it), which both charges it at this preflight and
+// keeps every memory check inside the body aware of it. A collapsed-pair walk
+// reserves one collapsedPairBytes the same way, so the transient [key, value] pair
+// it builds each entry is charged for the loop's lifetime without re-walking the
+// receiver per entry (the walk stays O(n) in the receiver size).
+func (exec *Execution) checkProjectedHashWalkBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), perEntryBytes)
-	if used > exec.memoryQuota {
-		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
-	}
-	return nil
-}
-
-// checkLiveCollapsedRestBytes reprojects the live heap footprint the collapsed-pair
-// Hash#each walk would reach while binding the current entry to a single-parameter
-// block. checkProjectedHashWalkBytes sizes its pair-and-rest reservation from the
-// entries' values as they stand before the walk begins, but the block can grow the
-// live baseline before a later iteration allocates its pair: an in-place mutation of
-// a not-yet-visited entry (h[:b] = bigger while binding :a) grows the receiver, and
-// an ordinary accumulating body (out = out.push(pair)) grows a captured outer local
-// through plain identifier assignment. Either lifts the call-root footprint every
-// pair allocates over, and a rest target additionally makes that entry's value-sized
-// rest array, which NewArray and AssignDestructure build inside callBlock before the
-// body's first in-block memory check runs. The walk calls this against the live
-// values just before yielding each entry, so it keeps both allocations bounded by the
-// quota no matter how the block grew the baseline, matching Ruby's read-the-live-value
-// iteration without snapshotting.
-//
-// livePairs is the number of [key, value] pair arrays simultaneously live when this
-// entry's pair is allocated: one on the first entry (no previous pair lingers) and two
-// afterward, because the reused pairArg slot still references the previous pair while
-// NewArray builds the next. It matches the preflight's min(len(entries), 2) bound so a
-// single-entry or first-iteration recheck charges exactly one pair rather than two.
-//
-// liveRestBytes is the footprint of the rest arrays this entry's current value makes
-// AssignDestructure allocate (destructureRestAllocBytes against the live pair), or
-// zero for a fixed |pair| or |(k, v)| binding that allocates no rest. The charged peak
-// mirrors the preflight: the call roots (which include the receiver, so a mutated value
-// is already counted, and the env stack, so a grown outer local is too), the live pair
-// arrays, and that one entry's live rest arrays. Only one entry's rest arrays are ever
-// live when this runs: the walk releases the runner's reusable block environment before
-// each recheck (runner.releaseReusableEnv), so the previous iteration's rest binding is
-// already cleared rather than lingering until the next runner.call rebinds parameters.
-// Without that release a reused environment -- which sits off exec.envStack between calls
-// and so is invisible to estimateMemoryUsageBase -- could still reference a huge prior
-// rest while this check charged only the current entry's smaller one.
-func (exec *Execution) checkLiveCollapsedRestBytes(livePairs, liveRestBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	if exec.memoryQuota <= 0 {
-		return nil
-	}
-
-	perEntryBytes := saturatingAdd(saturatingMul(livePairs, collapsedPairBytes), liveRestBytes)
-	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), perEntryBytes)
-	if used > exec.memoryQuota {
+	if exec.hashCallRootBytes(receiver, args, kwargs, block) > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
 	return nil
 }
 
 // collapsedPairBytes is the structural heap footprint of the fresh two-element
-// [key, value] array Hash#each allocates per entry when a single-parameter block
-// asks for the pair. The slice base plus two Value slots are new each iteration;
-// the key and value the slots reference alias the receiver's own entries, already
-// counted in the call-root usage, so only this structure is charged on top.
-//
-// Up to two pairs are live at once over two or more entries: the loop reuses a
-// single pairArg slot, so the next iteration allocates its NewArray while pairArg
-// still references the previous pair (the assignment overwrites the slot only
-// after the new array is built). That overlap needs a previous iteration to
-// exist, so a single entry holds just one pair, and an empty receiver none. The
-// overlap is independent of how the block binds the pair -- a whole-pair |pair|
-// binding and a destructuring |(k, v)| parameter both route through the same
-// reused slot -- so collapsedPairReservation reserves two pairs for any collapsing
-// shape over two or more entries rather than re-walking the receiver per entry.
-const collapsedPairElements = 2
-
-const collapsedPairBytes = estimatedValueBytes + estimatedSliceBaseBytes + collapsedPairElements*estimatedValueBytes
-
-// restArrayBytes is the structural heap footprint of the fresh array
-// AssignDestructure allocates for a rest target (|*rest|): the boxed Value
-// wrapper, the slice base, and one Value slot per collected element. slots is how
-// many elements that rest target collects. For a top-level rest over the collapsed
-// pair this is bounded by the two-element pair, but a nested rest collects from one
-// hash value and is bounded only by that value (see destructureRestAllocBytes,
-// which sums this across every rest in a destructure shape). The slots reference
-// values already counted in the call-root usage, so only this structure is charged
-// on top of the pair array itself.
-func restArrayBytes(slots int) int {
-	return saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slots, estimatedValueBytes))
-}
+// [key, value] array a collapsed-pair hash walk allocates per entry (Hash#each or
+// `for pair in hash` with a single-parameter block). The slice base plus two Value
+// slots are new each iteration; the key and value the slots reference alias the
+// receiver's own entries, already counted in the live baseline, so only this
+// constant structure is charged on top. Only one pair is live at a time -- the
+// previous iteration's pair is unreferenced once the next overwrites the slot -- so
+// reserving one pair for the walk's lifetime (reserveLoopScratch) conservatively
+// bounds the transient and lets every in-body check see it without re-walking the
+// receiver per entry.
+const collapsedPairBytes = estimatedValueBytes + estimatedSliceBaseBytes + 2*estimatedValueBytes
 
 // arrayBuildAccumulator charges the memory of an array assembled element by
 // element against the quota without re-walking the whole prefix on each append.

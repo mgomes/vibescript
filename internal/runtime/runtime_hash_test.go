@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -920,6 +921,43 @@ func TestHashEachRejectsArguments(t *testing.T) {
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "hash.each does not take arguments")
 }
 
+// TestHashEachEmptySingleParamFitsCallRoots pins that an empty receiver iterated by
+// a single-parameter block allocates no [key, value] pair, so a quota sized to the
+// bare call roots (an empty receiver heaps no sorted-key buffer) must admit the
+// walk. The collapsed-pair reservation must not charge a phantom pair for a hash the
+// loop never iterates.
+func TestHashEachEmptySingleParamFitsCallRoots(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{})
+	block := func() Value {
+		pos := Position{Line: 1, Column: 1}
+		params := []Param{{Name: "pair", Kind: ParamNormal}}
+		body := []Statement{&ExprStmt{Expr: &Identifier{Name: "pair", Position: pos}, Position: pos}}
+		return NewBlock(params, body, newEnv(nil))
+	}()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+
+	// At exactly the call roots the empty walk must fit (no pair is allocated). The
+	// probe and exec share the same (nil) root env, so the measured roots match the
+	// base the walk charges.
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); err != nil {
+		t.Fatalf("{}.each at the exact call-roots quota %d = %v, want success", roots, err)
+	}
+
+	// ...while one byte below the call roots still rejects, proving the success above
+	// is the roots fitting exactly and not an unbounded short circuit.
+	if roots > 0 {
+		tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots - 1}
+		if _, err := callHashMember(t, tight, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+			t.Fatalf("{}.each one byte below the call roots = %v, want errMemoryQuotaExceeded", err)
+		}
+	}
+}
+
 // TestHashEachSingleParamPairChargedAgainstQuota verifies that the [key, value]
 // pair Hash#each materializes for a single-parameter block is charged against the
 // memory quota. The single-parameter form allocates a fresh pair array per entry
@@ -979,19 +1017,16 @@ func TestHashEachSingleParamPairChargedAgainstQuota(t *testing.T) {
 	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
 }
 
-// TestHashEachDestructureRestRechecksLaterGrownEntryEndToEnd exercises the P2 finding
-// on PR #808 from a compiled script. A destructuring block with a rest target
-// (|(k, (head, *tail))|) grows a not-yet-visited entry the walk reaches a later
-// iteration (h[:c] = big_array while binding :a, over sorted keys a < b < c). Binding
-// :c then makes AssignDestructure collect a tail rest array sized to the grown value
-// inside callBlock. The walk must not let that grown destructure escape the quota: a
-// quota that admits the single grow but not the additional equally large rest array
-// must trip by the time the walk binds :c, two iterations after the mutation. The
-// container-level tests (members_hash_containment_test.go) pin the per-iteration
-// live-rest recheck that rejects before the allocation; this end-to-end test pins the
-// observable script behavior -- rejection when the grown destructure cannot fit and a
-// completed read-the-live-value walk when it can.
-func TestHashEachDestructureRestRechecksLaterGrownEntryEndToEnd(t *testing.T) {
+// TestHashEachDestructureRestGrownEntryBoundedByQuota exercises an end-to-end
+// destructure-rest walk under a memory quota. A destructuring block with a rest
+// target (|(k, (head, *tail))|) grows a not-yet-visited entry the walk reaches a
+// later iteration (h[:c] = big_array while binding :a, over sorted keys a < b < c).
+// Binding :c then makes AssignDestructure collect a tail rest array sized to the
+// grown value inside callBlock; while that binding is live the block body's memory
+// check charges it against the quota. The walk must therefore stay bounded: a quota
+// below the walk's true peak trips, and a quota at or above it completes and leaves
+// :c destructured from its live (mutated) value.
+func TestHashEachDestructureRestGrownEntryBoundedByQuota(t *testing.T) {
 	t.Parallel()
 
 	// {a: [], b: [], c: []}: sorted keys let the :a iteration grow the later :c entry
@@ -1018,31 +1053,36 @@ func TestHashEachDestructureRestRechecksLaterGrownEntryEndToEnd(t *testing.T) {
 		return script.Call(context.Background(), "run", []Value{makeReceiver()}, CallOptions{})
 	}
 
-	// Smallest quota that admits the whole walk (the grow plus the grown rest array
-	// :c's destructure later collects). Searching keeps the test robust to estimator
-	// constants rather than pinning a fragile byte value.
-	minQuota := 0
-	for quota := 50_000; quota <= 8_000_000; quota += 4096 {
-		if _, err := run(quota); err == nil {
-			minQuota = quota
-			break
+	// Binary-search the exact smallest quota that admits the whole walk (the grow plus
+	// the grown tail rest array :c's destructure later collects). Searching keeps the
+	// test robust to estimator constants rather than pinning a fragile byte value.
+	const lowReject, highAdmit = 50_000, 8_000_000
+	if _, err := run(lowReject); err == nil {
+		t.Fatalf("walk fit at the low search bound %d; lower the bound to bracket the threshold", lowReject)
+	}
+	if _, err := run(highAdmit); err != nil {
+		t.Fatalf("walk never fit by the high search bound %d: %v", highAdmit, err)
+	}
+	lo, hi := lowReject, highAdmit
+	for hi-lo > 1 {
+		mid := lo + (hi-lo)/2
+		if _, err := run(mid); err == nil {
+			hi = mid
+		} else {
+			lo = mid
 		}
 	}
-	if minQuota == 0 {
-		t.Fatal("walk never fit within the searched quota range")
-	}
+	minQuota := hi
 
-	// One rest-array's worth below that floor: the grow itself still fits (its own
-	// in-body check passed at the floor minus a rest array), but the later :c
-	// destructure's grown tail rest array no longer does, so the per-iteration recheck
-	// must reject when the walk reaches :c.
-	tight := minQuota - restArrayBytes(20000) - 1
-	_, err := run(tight)
+	// One byte below the exact threshold must reject: the walk's peak (the grown :c
+	// value plus the equally large tail rest array its destructure collects) no longer
+	// fits, so the in-body memory check trips while binding :c.
+	_, err := run(minQuota - 1)
 	requireErrorContains(t, err, "memory quota exceeded")
 	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
 
 	// Safety twin: at the floor the walk completes and leaves :c grown, proving the
-	// rejection above is quota tightness, not an over-eager recheck, and that binding
+	// rejection above is quota tightness, not a categorical failure, and that binding
 	// :c destructured the live (mutated) value.
 	got, err := run(minQuota)
 	if err != nil {

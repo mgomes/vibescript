@@ -411,50 +411,22 @@ func hashMemberQuery(property string) (Value, error) {
 			// memory quota and so every memory check inside the block body counts the
 			// live scratch; the walk projection charges no output map this iterator
 			// never creates. Reserving first means the projection adds no separate
-			// scratch bytes.
-			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+			// scratch bytes. A collapsed-pair walk also allocates a transient
+			// [key, value] pair each entry, so reserve one constant pair for the walk's
+			// lifetime: only one pair is ever live at a time, and reserving it (rather
+			// than rechecking per entry) charges it into the baseline every in-body
+			// check already sees, keeping the walk O(n) in the receiver size instead of
+			// re-walking the receiver to charge the pair on every iteration.
+			scratch := sortedKeyBufferBytes(len(entries))
+			if collapsePair && len(entries) > 0 {
+				scratch = saturatingAdd(scratch, collapsedPairBytes)
+			}
+			delta := exec.reserveLoopScratch(scratch)
 			defer exec.releaseLoopScratch(delta)
-			// When the block wants the collapsed pair, the loop allocates the
-			// [key, value] arrays each entry yields, plus any rest arrays a
-			// destructuring parameter collects. collapsedPairReservation sizes their
-			// simultaneous peak; the preflight charges it on top of the reserved
-			// scratch so the walk fails fast when even the first pair would not fit.
-			perEntryBytes := collapsedPairReservation(runner, collapsePair, entries)
-			if err := exec.checkProjectedHashWalkBytes(perEntryBytes, receiver, args, kwargs, block); err != nil {
+			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			// The preflight above sizes the collapsed-pair peak (the two live pair
-			// arrays and any rest arrays) from the entries' values as they stand
-			// before the walk. By the time a later iteration allocates its pair the live
-			// footprint can have grown past what the preflight reserved, and not only
-			// through an in-place mutation of a not-yet-visited entry (h[:b] = big_array
-			// while binding :a): an ordinary accumulating body like out = out.push(pair)
-			// grows an outer local through plain identifier assignment, leaving the
-			// receiver untouched while the live baseline the next pair allocates over
-			// climbs. Rather than try to distinguish which allocations advanced the
-			// baseline, reproject the live call roots before every collapsed-pair
-			// allocation. checkLiveCollapsedRestBytes sums the whole live footprint
-			// (every reachable root, the outer accumulator included) plus the two pair
-			// arrays and this entry's rest, so it rejects before NewArray (and
-			// AssignDestructure inside callBlock) can materialize an over-quota pair no
-			// matter how the body grew the baseline. A hash walk is already O(n) and each
-			// recheck is the codebase's reject-before-allocate norm, so this stays O(n)
-			// overall while being provably conservative.
-			//
-			// restTarget is the block's destructure target when the collapsed pair can
-			// allocate a value-sized rest, or nil when it cannot (a plain |pair|
-			// binding, |(k, v)| with no rest, each_key/each_value, or |k, v|). When set,
-			// each iteration sizes its entry's live rest (O(value length)) so the recheck
-			// charges the rest array AssignDestructure would allocate for the entry's
-			// current value, which a prior iteration's in-place mutation may have grown.
-			var restTarget *DestructureTarget
-			if collapsePair {
-				if target := runner.destructureTarget(); target != nil && destructureTargetHasRest(target) {
-					restTarget = target
-				}
-			}
 			var blockArgs [2]Value
-			var pairArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				// Charge a step per entry so an empty block still consumes the step
@@ -465,53 +437,14 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				if collapsePair {
-					// Clear the reusable block environment before sizing and rechecking
-					// this entry's live footprint. runner.call resets the environment only
-					// when it binds the next call's parameters, so between iterations the
-					// runner still references the previous entry's bindings -- including any
-					// rest array a destructuring parameter (|(k, (head, *tail))|) collected,
-					// which can be arbitrarily large. That environment is off exec.envStack
-					// between calls, so the live recheck below cannot see it; releasing it
-					// here ensures the recheck and the NewArray allocation observe only this
-					// entry's rest, never the previous entry's, keeping the peak bounded by
-					// the quota no matter how large the prior rest was.
-					runner.releaseReusableEnv()
-					liveRestBytes := 0
-					if restTarget != nil {
-						// Size this entry's live rest footprint (O(value length)) so the
-						// recheck below charges the rest array AssignDestructure would
-						// allocate for the value as it stands now, which a prior iteration's
-						// in-place mutation may have grown past the preflight's reservation.
-						pair := [collapsedPairElements]Value{NewSymbol(key), entries[key]}
-						liveRestBytes = destructureRestAllocBytes(restTarget, NewArray(pair[:]))
-					}
-					// The previous iteration's pair is still referenced by pairArg[0] while
-					// NewArray builds the next, so two pairs are briefly live -- except on the
-					// first entry, where pairArg[0] is still nil and only the new pair exists.
-					// Charge the live count so the recheck matches the preflight's
-					// min(len(entries), 2) bound rather than always demanding room for two pairs.
-					livePairs := 2
-					if pairArg[0].IsNil() {
-						livePairs = 1
-					}
-					// Reproject the live call roots plus the live pair arrays and this entry's
-					// rest before allocating the next pair, rejecting before NewArray (and
-					// AssignDestructure inside callBlock) can materialize an over-quota pair.
-					// Rechecking every pair keeps the bound conservative against both in-place
-					// receiver mutations and non-mutating outer-local growth the body
-					// accumulated since the last entry.
-					if err := exec.checkLiveCollapsedRestBytes(livePairs, liveRestBytes, receiver, args, kwargs, block); err != nil {
-						return NewNil(), err
-					}
-					// NewArray here evaluates and allocates the next pair before the
-					// assignment overwrites pairArg[0], so the previous iteration's pair
-					// is still referenced by pairArg[0] while the new array is built:
-					// two pair arrays are briefly live on the Go stack. This holds for
-					// every collapsing shape, destructuring included, so
-					// collapsedPairReservation reserves two pairs over two or more
-					// entries regardless of how the block binds them.
-					pairArg[0] = NewArray([]Value{NewSymbol(key), entries[key]})
-					if _, err := runner.call(pairArg[:]); err != nil {
+					// The pair's footprint is already reserved above for the walk's
+					// lifetime, so build and yield it directly. The yielded value is always
+					// a two-element array; any destructuring-parameter rest a block collects
+					// (|(k, *rest)| spans the pair; |(k, (head, *tail))| spans one hash
+					// value, itself already in the live baseline) is bound inside the call
+					// and charged by the body's own memory checks.
+					pair := NewArray([]Value{NewSymbol(key), entries[key]})
+					if _, err := runner.call([]Value{pair}); err != nil {
 						return NewNil(), err
 					}
 					continue
@@ -542,7 +475,7 @@ func hashMemberQuery(property string) (Value, error) {
 			// directly, so it allocates no per-entry pair.
 			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
 			defer exec.releaseLoopScratch(delta)
-			if err := exec.checkProjectedHashWalkBytes(0, receiver, args, kwargs, block); err != nil {
+			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
@@ -578,7 +511,7 @@ func hashMemberQuery(property string) (Value, error) {
 			// directly, so it allocates no per-entry pair.
 			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
 			defer exec.releaseLoopScratch(delta)
-			if err := exec.checkProjectedHashWalkBytes(0, receiver, args, kwargs, block); err != nil {
+			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
@@ -599,88 +532,6 @@ func hashMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
 	}
-}
-
-// collapsedPairReservation returns the simultaneous peak heap footprint of the
-// transient [key, value] pair arrays (and any rest arrays a destructuring
-// parameter collects) Hash#each allocates as Go locals while yielding a
-// single-parameter block its collapsed pair. The iterator preflights this peak so
-// the walk fails fast when the very first entry's pair would not fit, rather than
-// allocating it and only catching the overflow in the block body.
-//
-// The peak number of live pair arrays depends on the entry count, not on how the
-// block binds the pair:
-//
-//   - 0 pairs: the block does not want a collapsed pair (each_key, each_value, or
-//     a two-parameter |k, v| block), or the receiver is empty so the loop never
-//     allocates a pair.
-//   - 1 pair: a single entry leaves no previous iteration to overlap.
-//   - 2 pairs: over two or more entries the loop reuses a single pairArg slot, so
-//     the second iteration allocates its NewArray while pairArg still references
-//     the previous pair (the assignment overwrites the slot only after the new
-//     array is built). Two pair arrays are therefore briefly live regardless of
-//     whether the block binds the whole pair (|pair|) or destructures it
-//     (|(k, v)|): both shapes route through the same reused slot, so the prior
-//     pair overlaps the next while it is allocated.
-//
-// A destructuring parameter with a rest target also makes AssignDestructure
-// allocate a fresh array for the collected elements. The walk releases the reused
-// block environment before each iteration's recheck and allocation
-// (runner.releaseReusableEnv), so the previous entry's rest binding is cleared
-// before the next entry's rest is built and at most one rest array is ever live. A
-// top-level rest (|(k, *rest)|) collects only from the two-element pair, but a
-// nested rest (|(k, (head, *tail))|) collects an arbitrarily large slice of the
-// hash value it destructures, so the per-entry footprint cannot be bounded by the
-// pair alone. The entries are walked once to size the largest rest allocation any
-// single pair would trigger, reserving exactly that one peak rest array.
-func collapsedPairReservation(runner *blockCallRunner, collapsePair bool, entries map[string]Value) int {
-	if !collapsePair {
-		return 0
-	}
-
-	reservation := min(len(entries), 2) * collapsedPairBytes
-
-	if target := runner.destructureTarget(); target != nil {
-		maxRestBytes := maxEntryRestAllocBytes(target, entries)
-		reservation = saturatingAdd(reservation, saturatingMul(min(len(entries), 1), maxRestBytes))
-	}
-
-	return reservation
-}
-
-// maxEntryRestAllocBytes returns the largest rest-array footprint
-// AssignDestructure would allocate while binding any single entry's collapsed
-// [key, value] pair through target. collapsedPairReservation reserves this peak so
-// the preflight covers the one rest array that is ever live at a time. The walk
-// itself rechecks each entry's live rest footprint per pair (see hash.each), so a
-// block mutation that grows an entry past this snapshot is caught by that recheck
-// rather than by comparing against this reserved peak.
-func maxEntryRestAllocBytes(target *DestructureTarget, entries map[string]Value) int {
-	maxRestBytes := 0
-	var pairBuf [collapsedPairElements]Value
-	for key, value := range entries {
-		pairBuf[0] = NewSymbol(key)
-		pairBuf[1] = value
-		maxRestBytes = max(maxRestBytes, destructureRestAllocBytes(target, NewArray(pairBuf[:])))
-	}
-	return maxRestBytes
-}
-
-// destructureTargetHasRest reports whether target -- or any destructure nested
-// within it -- declares a rest element. Only such targets make AssignDestructure
-// allocate a value-sized rest array, so Hash#each consults this to skip the
-// per-entry live-rest projection entirely for fixed-arity destructures like
-// |(k, v)|, whose pair footprint never depends on the value's length.
-func destructureTargetHasRest(target *DestructureTarget) bool {
-	for i := range target.Elements {
-		if target.Elements[i].Rest {
-			return true
-		}
-		if nested, ok := target.Elements[i].Target.(*DestructureTarget); ok && destructureTargetHasRest(nested) {
-			return true
-		}
-	}
-	return false
 }
 
 // looseMergedKeyUpperBound returns a non-allocating upper bound on the number of
