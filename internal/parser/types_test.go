@@ -210,6 +210,65 @@ end`
 	}
 }
 
+func TestParserNullableContainerWithoutTypeArgs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		source   string
+		wantType *ast.TypeExpr
+	}{
+		{
+			name: "array_nullable_no_args",
+			source: `def run(values: array?)
+  values
+end`,
+			wantType: &ast.TypeExpr{Name: "array?", Kind: ast.TypeArray, Nullable: true},
+		},
+		{
+			name: "hash_nullable_no_args",
+			source: `def run(values: hash?)
+  values
+end`,
+			wantType: &ast.TypeExpr{Name: "hash?", Kind: ast.TypeHash, Nullable: true},
+		},
+		{
+			name: "array_with_args_then_union_nil",
+			source: `def run(values: array<int> | nil)
+  values
+end`,
+			wantType: &ast.TypeExpr{
+				Name: "array<int> | nil",
+				Kind: ast.TypeUnion,
+				Union: []*ast.TypeExpr{
+					{
+						Name:     "array",
+						Kind:     ast.TypeArray,
+						TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
+					},
+					{Name: "nil", Kind: ast.TypeNil},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("expected no parse errors, got %v", errs)
+			}
+			fn, ok := got.Statements[0].(*ast.FunctionStmt)
+			if !ok {
+				t.Fatalf("expected function statement, got %T", got.Statements[0])
+			}
+			if diff := cmp.Diff(tc.wantType, fn.Params[0].Type, astCmpOpts); diff != "" {
+				t.Fatalf("param type mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestParserTypeErrorCases(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -252,6 +311,27 @@ end`,
 end`,
 			wantErr: "shape field name",
 		},
+		{
+			name: "nullable_suffix_before_array_args",
+			source: `def run(values: array?<int>)
+  values
+end`,
+			wantErr: "nullable suffix on array is misplaced; write the nullable container as a union, e.g. array<...> | nil, instead of array?<...>",
+		},
+		{
+			name: "nullable_suffix_before_hash_args",
+			source: `def run(values: hash?<string, int>)
+  values
+end`,
+			wantErr: "nullable suffix on hash is misplaced; write the nullable container as a union, e.g. hash<...> | nil, instead of hash?<...>",
+		},
+		{
+			name: "nullable_suffix_before_object_args",
+			source: `def run(values: object?<string, int>)
+  values
+end`,
+			wantErr: "nullable suffix on object is misplaced; write the nullable container as a union, e.g. object<...> | nil, instead of object?<...>",
+		},
 	}
 
 	for _, tc := range tests {
@@ -263,6 +343,31 @@ end`,
 			}
 			if got := errs[0].Error(); !strings.Contains(got, tc.wantErr) {
 				t.Errorf("got error %q, want substring %q", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestParserNullableSuffixSuggestionParses guards against the diagnostic for a
+// misplaced nullable suffix pointing users at syntax the parser cannot accept.
+// The error message suggests the union form (e.g. array<int> | nil), so the
+// suggested spelling must itself parse without errors.
+func TestParserNullableSuffixSuggestionParses(t *testing.T) {
+	t.Parallel()
+
+	suggestions := []string{
+		"array<int> | nil",
+		"hash<string, int> | nil",
+		"object<string, int> | nil",
+	}
+
+	for _, suggestion := range suggestions {
+		t.Run(suggestion, func(t *testing.T) {
+			t.Parallel()
+			source := "def run(values: " + suggestion + ")\n  values\nend"
+			_, errs := parseSource(t, source)
+			if len(errs) != 0 {
+				t.Fatalf("suggested nullable spelling %q failed to parse: %v", suggestion, errs)
 			}
 		})
 	}

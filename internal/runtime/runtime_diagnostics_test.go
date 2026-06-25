@@ -312,9 +312,9 @@ end`,
 			errMsg: "length must be integer",
 		},
 		{
-			name:   "string.capitalize with argument",
+			name:   "string.capitalize with non-symbol argument",
 			script: `def run() "hello".capitalize(1) end`,
-			errMsg: "string.capitalize does not take arguments",
+			errMsg: "string.capitalize option must be a symbol",
 		},
 		{
 			name:   "string.sub with non-string replacement",

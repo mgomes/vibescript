@@ -1306,8 +1306,11 @@ func TestLocaleSensitiveOperationsDeterministic(t *testing.T) {
 	if !out["up_i"].Equal(NewString("I")) {
 		t.Fatalf("up_i mismatch: %v", out["up_i"])
 	}
-	if !out["down_i_dot"].Equal(NewString("i")) {
-		t.Fatalf("down_i_dot mismatch: %v", out["down_i_dot"])
+	// Full Unicode case mapping lowercases the dotted capital I (U+0130) to
+	// "i" plus a combining dot above (U+0307), matching Ruby. The result is
+	// the same regardless of host locale, which is what this test guards.
+	if !out["down_i_dot"].Equal(NewString("i̇")) {
+		t.Fatalf("down_i_dot mismatch: %q", out["down_i_dot"].String())
 	}
 	compareArrays(t, out["sorted_words"], []Value{NewString("a"), NewString("z"), NewString("ä")})
 	compareArrays(t, out["sorted_case"], []Value{NewString("A"), NewString("a"), NewString("b")})
