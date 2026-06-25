@@ -2266,6 +2266,54 @@ func TestHashEachEmptySingleParamFitsCallRoots(t *testing.T) {
 	}
 }
 
+// TestHashEachSingleEntrySingleParamReservesOnePair pins the P2 finding on PR
+// #808's second review pass: the two-live-pairs overlap needs a previous iteration
+// to exist, so a single-entry receiver yields exactly ONE live pair and the
+// iterator's preflight must reserve one pair, not two. A quota one byte below the
+// roots-plus-two-pairs reservation still leaves room for the real single-pair peak,
+// so the walk must succeed; before the fix the preflight always reserved two pairs
+// for any non-empty receiver and rejected this quota up front even though execution
+// fits comfortably.
+func TestHashEachSingleEntrySingleParamReservesOnePair(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{"k0": NewInt(0)})
+	block := singleParamPairBlock()
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects the single-parameter block to reuse its environment")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	if scratch := sortedKeyBufferBytes(1); scratch != 0 {
+		t.Fatalf("single-entry receiver expects no heap sorted-key buffer, got %d bytes", scratch)
+	}
+
+	// One byte below the roots-plus-two-pairs reservation. The old preflight reserved
+	// two pairs for any non-empty receiver, so used == roots+2*pair > this quota and
+	// it rejected. The fix reserves one pair for a single entry, and the real peak
+	// (one pair plus the block's small per-call binding overhead) fits well under
+	// roots+2*pair, so the walk must now succeed.
+	belowTwoPairQuota := roots + 2*collapsedPairBytes - 1
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: belowTwoPairQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("single-entry each one byte below the two-pair reservation (quota %d) = %v, want success", belowTwoPairQuota, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 1 {
+		t.Fatalf("single-entry each returned %v with %d entries, want the one-entry receiver", got.Kind(), len(got.Hash()))
+	}
+
+	// Guard: a quota below even the single-entry call roots still rejects, proving the
+	// success above is not an unbounded short circuit in the projection.
+	if roots > 0 {
+		tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots - 1}
+		if _, err := callHashMember(t, tight, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+			t.Fatalf("single-entry each one byte below the call roots = %v, want errMemoryQuotaExceeded", err)
+		}
+	}
+}
+
 // TestHashEachSingleParamReservesTwoLivePairs pins the second P2 finding on PR
 // #808: a single-parameter block that reuses its environment briefly holds two
 // [key, value] pairs live at once -- the previous iteration's pair stays bound in

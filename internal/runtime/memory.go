@@ -244,9 +244,10 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 // must not be charged an output map they never create. scratchBytes is the heap
 // footprint of that key list, and perEntryBytes is the fixed allocation the walk
 // holds live on top of the scratch -- the [key, value] pairs Hash#each
-// materializes for a single-parameter block (the caller reserves two
+// materializes for a single-parameter block (the caller reserves up to two
 // collapsedPairBytes, since a block reusing its environment can briefly keep the
-// previous pair and the next pair live at once), or zero for the forms that bind
+// previous pair and the next pair live at once, but only one pair for a
+// single-entry receiver and none when empty), or zero for the forms that bind
 // key and value directly. The caller charges the true simultaneous peak up front
 // rather than re-walking the receiver per entry. Charging a phantom empty map
 // here would falsely reject a quota that exactly fits the receiver, block,
@@ -273,10 +274,12 @@ func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes, perEntryBytes i
 // Up to two pairs are live at once: a block that reuses its environment keeps the
 // previous iteration's pair bound until runner.call resets that environment, but
 // the next pair is allocated before the reset, so the old and new pair overlap
-// briefly. The iterator therefore reserves two pairs' footprint up front (see
-// checkProjectedHashWalkBytes' extra argument) rather than re-walking the receiver
-// per entry, which would be O(n^2) on a large hash. An empty receiver allocates
-// no pair, so the iterator reserves nothing in that case.
+// briefly. That overlap needs a previous iteration to exist, so it only arises
+// with two or more entries. The iterator therefore reserves min(len(entries), 2)
+// pairs' footprint up front (see checkProjectedHashWalkBytes' extra argument)
+// rather than re-walking the receiver per entry, which would be O(n^2) on a large
+// hash: two pairs for two or more entries, one pair for a single entry, and none
+// for an empty receiver, which allocates no pair at all.
 const collapsedPairBytes = estimatedValueBytes + estimatedSliceBaseBytes + 2*estimatedValueBytes
 
 // arrayBuildAccumulator charges the memory of an array assembled element by
