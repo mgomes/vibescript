@@ -2612,6 +2612,63 @@ func nestedRestDestructureBlock() Value {
 	return NewBlock(params, nil, newEnv(nil))
 }
 
+// restTargetDestructureBlock builds a block whose single destructuring parameter is
+// a one-element list whose only element is a rest target that is ITSELF a destructure
+// with its own rest |(*(head, *tail))| and an EMPTY body. AssignDestructure first
+// collects the unclaimed slice into a fresh outer rest array, then -- because the
+// rest target is a destructure -- recurses into that array and allocates a SECOND,
+// nested tail rest array. A reservation that charges only the outer rest array (the
+// pre-fix behavior, which skipped the rest target) under-counts by that nested array;
+// with an empty body no in-block check guards it, so the nested allocation would
+// escape the hash-walk bound. This shape is the 2-deep nested-rest case the P2
+// finding flagged.
+func restTargetDestructureBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "head", Position: pos}},
+					{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+				},
+			}, Rest: true},
+		},
+	}
+	params := []Param{{Kind: ParamNormal, Target: target}}
+	return NewBlock(params, nil, newEnv(nil))
+}
+
+// deepRestTargetDestructureBlock builds a block whose single destructuring parameter
+// nests a rest target that is a destructure whose own rest target is again a
+// destructure |(*(*(a, *b)))| with an EMPTY body. AssignDestructure allocates a rest
+// array at all three depths, so a reservation that stops short of the deepest rest
+// under-counts by the innermost array. This is the 3-deep nested-rest case proving the
+// accounting is recursive over arbitrary depth, not patched per shape.
+func deepRestTargetDestructureBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &DestructureTarget{
+						Position: pos,
+						Elements: []DestructureElement{
+							{Target: &Identifier{Name: "a", Position: pos}},
+							{Target: &Identifier{Name: "b", Position: pos}, Rest: true},
+						},
+					}, Rest: true},
+				},
+			}, Rest: true},
+		},
+	}
+	params := []Param{{Kind: ParamNormal, Target: target}}
+	return NewBlock(params, nil, newEnv(nil))
+}
+
 // largeArrayValueHashReceiver builds a hash with count entries whose values are
 // arrays of valueLen ints. It backs the nested-rest memory test: destructuring the
 // value with a rest target collects valueLen-1 of those ints into a fresh array,
@@ -2855,6 +2912,126 @@ func TestHashEachNestedDestructureRestReservesRestArrays(t *testing.T) {
 	}
 }
 
+// TestHashEachRestTargetDestructureReservesNestedRestArrays pins the deeper P2
+// finding on PR #808: when the rest TARGET is itself a destructure with its own rest
+// |(*(head, *tail))|, AssignDestructure does not merely bind the already-charged
+// outer rest array -- it recurses into that target and allocates a SECOND, nested
+// rest array. The earlier preflight charged only the outer rest array and skipped the
+// rest target, so a quota that fits the outer rest but not the nested one wrongly
+// admitted the walk and the nested allocation escaped the hash-walk bound (the empty
+// body runs no in-block check). The fix makes the rest-allocation accounting fully
+// recursive over arbitrary destructure nesting, so a rest target that is a destructure
+// charges a rest array at every depth. As with the other rest forms, only ONE nested
+// rest array is live at a time: resetForBlockCall clears the previous binding before
+// the next is allocated. A quota that fits the call roots, the sorted-key scratch, the
+// two live pairs, and the outer rest array -- but not the nested one -- must trip; a
+// quota that additionally fits the nested rest array must admit the walk.
+func TestHashEachRestTargetDestructureReservesNestedRestArrays(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+	block := restTargetDestructureBlock()
+	if valueBlock(block).Params[0].Target == nil {
+		t.Fatal("test setup expects a |(*(head, *tail))| destructuring parameter (non-nil Target)")
+	}
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects the rest-target-destructure block to reuse its environment")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	// The outer rest collects the whole two-element pair; recursing into its
+	// destructure target binds head to the first element and collects the remaining
+	// one into the nested tail array.
+	outerRestBytes := restArrayBytes(collapsedPairElements)
+	nestedRestBytes := restArrayBytes(collapsedPairElements - 1)
+	if outerRestBytes <= 0 || nestedRestBytes <= 0 {
+		t.Fatalf("rest reservations must be positive, got outer=%d nested=%d", outerRestBytes, nestedRestBytes)
+	}
+
+	// A quota sized to the roots, scratch, two pairs, and only the OUTER rest array --
+	// the pre-fix reservation, which skipped the rest target. With the nested rest
+	// array now charged the projection exceeds this quota and rejects; before the fix
+	// it was wrongly admitted and the nested allocation escaped.
+	outerRestOnlyQuota := roots + scratch + 2*collapsedPairBytes + outerRestBytes
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: outerRestOnlyQuota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("rest-target-destructure each at an outer-rest-only quota %d = %v, want errMemoryQuotaExceeded (the nested rest array is uncharged)", outerRestOnlyQuota, err)
+	}
+
+	// Room for the roots, scratch, two pairs, and BOTH the outer and nested rest arrays
+	// admits the walk, proving the rejection above comes from charging the nested rest
+	// array and not an over-tight baseline. This quota is one byte below what a second
+	// copy of either rest array would need, so over-reserving would wrongly reject it.
+	bothRestQuota := roots + scratch + 2*collapsedPairBytes + outerRestBytes + nestedRestBytes
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: bothRestQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("rest-target-destructure each at a two-pair-both-rest quota %d = %v, want success (a second rest array must not be reserved)", bothRestQuota, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("rest-target-destructure each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
+	}
+}
+
+// TestHashEachDeepRestTargetDestructureReservesEveryDepth extends the rest-target P2
+// regression one level deeper: a rest target whose own rest target is again a
+// destructure |(*(*(a, *b)))| forces AssignDestructure to allocate a rest array at
+// three depths. It proves the accounting is recursive over arbitrary nesting rather
+// than patched per shape: a quota that fits the outer and middle rest arrays but not
+// the innermost must trip, and a quota that fits all three must admit the walk.
+func TestHashEachDeepRestTargetDestructureReservesEveryDepth(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+	block := deepRestTargetDestructureBlock()
+	if valueBlock(block).Params[0].Target == nil {
+		t.Fatal("test setup expects a |(*(*(a, *b)))| destructuring parameter (non-nil Target)")
+	}
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects the deep rest-target block to reuse its environment")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	// The outer rest collects the two-element pair, the middle rest collects that
+	// two-element array, and the innermost rest collects the one element after a.
+	outerRestBytes := restArrayBytes(collapsedPairElements)
+	middleRestBytes := restArrayBytes(collapsedPairElements)
+	innerRestBytes := restArrayBytes(collapsedPairElements - 1)
+
+	// A quota fitting roots, scratch, two pairs, and only the outer and middle rest
+	// arrays -- but not the innermost -- must reject once the deepest rest is charged.
+	withoutInnerQuota := roots + scratch + 2*collapsedPairBytes + outerRestBytes + middleRestBytes
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: withoutInnerQuota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("deep rest-target each missing the innermost rest (quota %d) = %v, want errMemoryQuotaExceeded", withoutInnerQuota, err)
+	}
+
+	// Room for all three nested rest arrays admits the walk.
+	allRestQuota := roots + scratch + 2*collapsedPairBytes + outerRestBytes + middleRestBytes + innerRestBytes
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: allRestQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("deep rest-target each at a quota fitting all three rest arrays %d = %v, want success", allRestQuota, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("deep rest-target each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
+	}
+}
+
 // TestHashEachTwoParamReservesNoPair pins case 0 of the collapsed-pair model: a
 // two-parameter block |k, v| auto-splats into key and value separately, so the
 // iterator allocates no [key, value] pair array and must reserve zero per-entry
@@ -3010,6 +3187,30 @@ func TestCollapsedPairReservation(t *testing.T) {
 		// Each value holds 8 elements; the nested rest collects all but head.
 		if want := 2*collapsedPairBytes + restArrayBytes(8-1); got != want {
 			t.Fatalf("collapsedPairReservation(|(k, (head, *tail))|, 8-element values) = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("rest target that is a destructure charges its nested rest array", func(t *testing.T) {
+		t.Parallel()
+		runner := runnerFor(t, restTargetDestructureBlock())
+		got := collapsedPairReservation(runner, true, multiEntry.Hash())
+		// |(*(head, *tail))|: the outer rest collects the two-element pair, then its
+		// destructure rest target recurses and allocates a second rest array holding
+		// the one element after head. Both must be charged, not just the outer rest.
+		if want := 2*collapsedPairBytes + restArrayBytes(collapsedPairElements) + restArrayBytes(collapsedPairElements-1); got != want {
+			t.Fatalf("collapsedPairReservation(|(*(head, *tail))|, 3 entries) = %d, want %d (two pairs plus the outer and nested rest arrays)", got, want)
+		}
+	})
+
+	t.Run("three-deep rest targets charge a rest array at every depth", func(t *testing.T) {
+		t.Parallel()
+		runner := runnerFor(t, deepRestTargetDestructureBlock())
+		got := collapsedPairReservation(runner, true, multiEntry.Hash())
+		// |(*(*(a, *b)))|: the outer rest collects the pair, the middle rest collects
+		// that two-element array, and the innermost rest collects the one element
+		// after a. The accounting must sum a rest array at all three depths.
+		if want := 2*collapsedPairBytes + restArrayBytes(collapsedPairElements) + restArrayBytes(collapsedPairElements) + restArrayBytes(collapsedPairElements-1); got != want {
+			t.Fatalf("collapsedPairReservation(|(*(*(a, *b)))|, 3 entries) = %d, want %d (two pairs plus three nested rest arrays)", got, want)
 		}
 	})
 

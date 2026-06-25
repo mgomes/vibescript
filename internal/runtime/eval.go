@@ -682,12 +682,16 @@ func (runner *blockCallRunner) destructureTarget() *DestructureTarget {
 // AssignDestructure allocates while binding value through target. Each rest
 // element (at any nesting depth) makes AssignDestructure collect the unclaimed
 // slice into a new array and box it (see AssignDestructure's restValues), so the
-// per-rest footprint is restArrayBytes of the collected element count. Nested
-// destructure elements recurse into their own slice of value, where a deeper rest
-// can collect an arbitrarily large slice of that component -- the case a fixed
-// pair-sized reservation cannot bound. Mirroring the allocation here lets the
-// iterator reserve the exact peak from the actual entries rather than assuming the
-// rest only ever spans the two-element pair.
+// per-rest footprint is restArrayBytes of the collected element count. The walk
+// mirrors AssignDestructure's recursion exactly: every element target -- including
+// the rest target itself -- is rebound to the same value AssignDestructure would
+// pass, and a nested *DestructureTarget recurses into that value. Because the rest
+// target receives the freshly allocated rest array, a rest whose own target is a
+// destructure (for example |(*(head, *tail))|) collects from that array and
+// allocates a deeper rest, which this recursion now charges at every depth. The
+// result is that the reservation equals the sum of all rest allocations for any
+// nesting shape, so the iterator reserves the exact peak from the actual entries
+// rather than assuming the rest only ever spans the two-element pair.
 func destructureRestAllocBytes(target *DestructureTarget, value Value) int {
 	values := destructureValues(value)
 	restIndex := -1
@@ -719,9 +723,17 @@ func destructureRestAllocBytes(target *DestructureTarget, value Value) int {
 		case i < restIndex:
 			val = valueAt(values, i)
 		case i == restIndex:
-			// The rest element binds the freshly allocated array, already charged
-			// above; its target is a plain identifier with no further allocation.
-			continue
+			// AssignDestructure binds the freshly allocated rest array to this target.
+			// A plain identifier holds it with no further allocation (already charged
+			// above), but when the target is itself a destructure that array is the
+			// value it recurses over, so a deeper rest collects from it. Reconstruct
+			// the array (the same restIndex:restEnd slice, len-matched as the recursion
+			// only reads element values and length) only for the destructure case to
+			// charge those deeper rests without boxing a throwaway array otherwise.
+			if _, ok := target.Elements[i].Target.(*DestructureTarget); !ok {
+				continue
+			}
+			val = NewArray(values[restIndex:restEnd])
 		default:
 			valueIndex := len(values) - trailing + i - restIndex - 1
 			if valueIndex < restIndex {
