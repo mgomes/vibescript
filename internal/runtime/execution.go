@@ -64,7 +64,6 @@ type Execution struct {
 	validatedCapabilityArgs   []string
 	memoryEst                 memoryEstimator
 	reservedScratchBytes      int
-	mutationEpoch             uint64
 
 	// Inline backing storage for the always-used per-call stacks, so a
 	// fresh Execution costs one allocation instead of one per stack.
@@ -98,20 +97,6 @@ type callFrame struct {
 	Pos            Position
 	callSiteScript *Script
 	functionScript *Script
-}
-
-// noteMutation records that an in-place container or object mutation occurred.
-// Vibescript's collection helpers are all non-mutating, so the only operations that
-// grow an existing value's footprint in place are assignments that write into a live
-// container: index (arr[i] = x, h[k] = x), member (obj.prop = x), instance variable
-// (@x = v), and class variable (@@x = v). Every such assignment calls this so
-// iterators that reserved a per-entry memory budget from a pre-walk snapshot can
-// tell, in O(1), whether a block they invoked may have grown a not-yet-visited entry
-// past that reservation and thus needs to reproject against the live footprint (see
-// Hash#each). A read-only walk never advances the epoch, so the reprojection -- which
-// costs an O(receiver) re-walk -- never fires on it.
-func (exec *Execution) noteMutation() {
-	exec.mutationEpoch++
 }
 
 func (exec *Execution) pushReceiver(v Value) {

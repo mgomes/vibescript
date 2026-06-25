@@ -3296,11 +3296,11 @@ func TestHashEachDestructureRestRejectsLaterGrownEntryBeforeAllocating(t *testin
 }
 
 // TestCheckLiveCollapsedRestBytes pins the per-entry projection's contract in
-// isolation: it charges the call roots, the two live collapsed pairs, and the
-// supplied live rest footprint, rejecting only when their sum exceeds the quota and
-// no-opping when no quota is enforced. Hash#each calls it for any entry whose live
-// rest has grown past the preflight reservation (see members_hash.go), so this is
-// the guard the P2 finding required.
+// isolation: it charges the call roots, the supplied number of live collapsed pairs,
+// and the supplied live rest footprint, rejecting only when their sum exceeds the
+// quota and no-opping when no quota is enforced. Hash#each calls it before every
+// collapsed-pair allocation (see members_hash.go), so this is the guard the P1/P2
+// findings required.
 func TestCheckLiveCollapsedRestBytes(t *testing.T) {
 	t.Parallel()
 
@@ -3309,22 +3309,32 @@ func TestCheckLiveCollapsedRestBytes(t *testing.T) {
 	roots := probe.hashCallRootBytes(receiver, nil, nil, NewNil())
 
 	const liveRestBytes = 1 << 20
-	atLimit := saturatingAdd(roots, 2*collapsedPairBytes+liveRestBytes)
+	const livePairs = 2
+	atLimit := saturatingAdd(roots, livePairs*collapsedPairBytes+liveRestBytes)
 
 	// No quota: the projection never rejects, however large the live rest.
 	noQuota := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	if err := noQuota.checkLiveCollapsedRestBytes(liveRestBytes, receiver, nil, nil, NewNil()); err != nil {
+	if err := noQuota.checkLiveCollapsedRestBytes(livePairs, liveRestBytes, receiver, nil, nil, NewNil()); err != nil {
 		t.Fatalf("checkLiveCollapsedRestBytes with no memory quota = %v, want nil", err)
 	}
 
 	// A quota exactly equal to the projected peak admits it; one byte less rejects.
 	exact := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: atLimit}
-	if err := exact.checkLiveCollapsedRestBytes(liveRestBytes, receiver, nil, nil, NewNil()); err != nil {
+	if err := exact.checkLiveCollapsedRestBytes(livePairs, liveRestBytes, receiver, nil, nil, NewNil()); err != nil {
 		t.Fatalf("checkLiveCollapsedRestBytes at the exact projected peak %d = %v, want nil", atLimit, err)
 	}
 	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: atLimit - 1}
-	if err := tight.checkLiveCollapsedRestBytes(liveRestBytes, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
+	if err := tight.checkLiveCollapsedRestBytes(livePairs, liveRestBytes, receiver, nil, nil, NewNil()); !errors.Is(err, errMemoryQuotaExceeded) {
 		t.Fatalf("checkLiveCollapsedRestBytes one byte below the projected peak %d = %v, want errMemoryQuotaExceeded", atLimit-1, err)
+	}
+
+	// One live pair (the first entry, no previous pair lingers) charges one fewer pair,
+	// so a quota that fits one pair but not two admits it -- proving livePairs threads
+	// through to the charge rather than being hardcoded to two.
+	oneLimit := saturatingAdd(roots, collapsedPairBytes+liveRestBytes)
+	onePair := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: oneLimit}
+	if err := onePair.checkLiveCollapsedRestBytes(1, liveRestBytes, receiver, nil, nil, NewNil()); err != nil {
+		t.Fatalf("checkLiveCollapsedRestBytes for one live pair at the one-pair peak %d = %v, want nil", oneLimit, err)
 	}
 }
 
@@ -3695,13 +3705,13 @@ func threeSmallEntryHash() Value {
 // snapshot. When an earlier iteration grows a not-yet-visited entry in place
 // (receiver[:c] = big_array while binding :a) the receiver baseline grows past that
 // snapshot, so a later iteration would allocate its pair on the grown baseline. The
-// mutation epoch makes the loop reproject the live pair peak against the grown roots
-// after the receiver changes, so the walk rejects a quota that fits the grown array
-// the body assigns but not the grown baseline plus the two live pairs. The pair
-// transient the epoch recheck pre-empts is bounded (two constant pair arrays) and is
-// also backstopped by the next iteration's in-body check; this test pins the walk's
-// observable rejection, while TestHashEachReadOnlyWalkNeverReprojects pins that the
-// recheck stays off the non-mutating fast path.
+// per-pair live recheck reprojects the live pair peak against the grown roots before
+// every collapsed-pair allocation, so the walk rejects a quota that fits the grown
+// array the body assigns but not the grown baseline plus the two live pairs. The pair
+// transient the recheck pre-empts is bounded (two constant pair arrays) and is also
+// backstopped by the next iteration's in-body check; this test pins the walk's
+// observable rejection, while TestHashEachReadOnlyWalkChargesExactlyTwoPairs pins that
+// the recheck charges no more than the reservation on a non-mutating walk.
 func TestHashEachFixedPairRejectsGrownBaselineBeforeAllocating(t *testing.T) {
 	t.Parallel()
 
@@ -3764,14 +3774,109 @@ func TestHashEachFixedPairAdmitsGrownBaselineWithinQuota(t *testing.T) {
 	}
 }
 
-// TestHashEachReadOnlyWalkNeverReprojects pins the fast-path invariant the mutation
-// epoch protects: a read-only collapsed-pair walk advances no mutation epoch, so the
-// loop never triggers the O(receiver) reprojection. A quota sized to exactly the call
-// roots, the sorted-key scratch, and the two live pairs (the preflight reservation)
-// must admit a large read-only walk; were the loop reprojecting every entry on top of
-// the bound pair, the projection would charge more than the two reserved pairs and
-// reject this exact-fit quota.
-func TestHashEachReadOnlyWalkNeverReprojects(t *testing.T) {
+// accumulatingOuterLocalEachBlock builds a single-parameter |pair| block whose body
+// grows an outer local through a plain identifier assignment (acc = [big array]),
+// the way Ruby's idiomatic accumulators do (out = out.push(pair)). The assignment
+// rebinds a captured local and touches no live container, so it is exactly the
+// non-mutating growth the original PR #808 finding called out: an iterator gating its
+// per-pair recheck on in-place mutations alone would miss it and let the next pair
+// allocate on a larger baseline than the preflight reserved. The grown value lives in
+// the block's captured env, which persists across the walk's iterations.
+func accumulatingOuterLocalEachBlock(accName string, grownLen int) Value {
+	pos := Position{Line: 1, Column: 1}
+	elems := make([]Expression, grownLen)
+	for i := range elems {
+		elems[i] = &IntegerLiteral{Value: int64(i), Position: pos}
+	}
+	body := []Statement{
+		&AssignStmt{
+			Target:   &Identifier{Name: accName, Position: pos},
+			Value:    &ArrayLiteral{Elements: elems, Position: pos},
+			Position: pos,
+		},
+	}
+	env := newEnv(nil)
+	// Seed the accumulator as nil so the body's assignment rebinds an existing outer
+	// local rather than defining a fresh one, mirroring out = out.push(pair).
+	env.Define(accName, NewNil())
+	return NewBlock([]Param{{Name: "pair", Kind: ParamNormal}}, body, env)
+}
+
+// TestHashEachRejectsNonMutatingOuterLocalGrowthBeforeAllocating is the regression
+// for the P1 finding on PR #808: a single-parameter each body that accumulates into
+// an outer local (out = out.push(pair)) grows the live baseline through a plain
+// identifier assignment, which performs no in-place container mutation. The earlier
+// epoch-gated recheck only reprojected after a mutation advanced the epoch, so this
+// growth left projectedEpoch unchanged and the next pair allocated on the larger
+// baseline before any check ran -- transiently exceeding the quota. The per-pair live
+// recheck reprojects the whole live footprint (the captured accumulator included)
+// before every collapsed-pair allocation, so the walk must reject once the grown
+// accumulator plus the two live pairs no longer fit.
+func TestHashEachRejectsNonMutatingOuterLocalGrowthBeforeAllocating(t *testing.T) {
+	t.Parallel()
+
+	const grownLen = 8192
+	grownArrayBytes := restArrayBytes(grownLen)
+
+	receiver := threeSmallEntryHash()
+	probeBlock := accumulatingOuterLocalEachBlock("acc", grownLen)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, probeBlock)
+	scratch := sortedKeyBufferBytes(len(receiver.Hash()))
+
+	// Room for the call roots, the scratch, the one grown accumulator array the first
+	// iteration assigns, and the two live pairs -- but nothing more. Binding :a runs
+	// acc = [grown], lifting the live baseline by grownArrayBytes. The next pair (:b)
+	// must reproject that grown baseline plus the two live pairs; with no headroom past
+	// the two pairs the projection trips before NewArray allocates, proving the recheck
+	// catches non-mutating outer-local growth and not only in-place mutations.
+	rejectQuota := roots + scratch + grownArrayBytes + 2*collapsedPairBytes
+	block := accumulatingOuterLocalEachBlock("acc", grownLen)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: rejectQuota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("each whose block accumulates into an outer local (quota %d) = %v, want errMemoryQuotaExceeded", rejectQuota, err)
+	}
+}
+
+// TestHashEachAdmitsNonMutatingOuterLocalGrowthWithinQuota is the safety twin of the
+// non-mutating-growth rejection: when the quota comfortably fits the grown
+// accumulator and the two live pairs, the per-pair recheck must admit the walk rather
+// than rejecting categorically. This proves the rejection above comes from the quota
+// being tight, not from the recheck being over-eager about outer-local growth.
+func TestHashEachAdmitsNonMutatingOuterLocalGrowthWithinQuota(t *testing.T) {
+	t.Parallel()
+
+	const grownLen = 8192
+	grownArrayBytes := restArrayBytes(grownLen)
+
+	receiver := threeSmallEntryHash()
+	probeBlock := accumulatingOuterLocalEachBlock("acc", grownLen)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, probeBlock)
+	scratch := sortedKeyBufferBytes(len(receiver.Hash()))
+
+	admitQuota := roots + scratch + 4*grownArrayBytes + 512*1024
+	block := accumulatingOuterLocalEachBlock("acc", grownLen)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: admitQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each accumulating into an outer local at a roomy quota %d = %v, want success", admitQuota, err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("each returned %v, want the receiver hash", got.Kind())
+	}
+}
+
+// TestHashEachReadOnlyWalkChargesExactlyTwoPairs pins that the per-pair live
+// recheck charges no more than the preflight reserved on a non-mutating walk: a
+// quota sized to exactly the call roots, the sorted-key scratch, and the two live
+// pairs (the preflight reservation) must admit a large read-only walk. The recheck
+// reprojects the live call roots plus the two pair arrays every entry, but a
+// read-only block grows no live state, so every reprojection charges the same two
+// pairs and this exact-fit quota holds across all entries. Were the recheck
+// over-charging (a third pair, the bound pair counted twice), this quota would
+// reject mid-walk.
+func TestHashEachReadOnlyWalkChargesExactlyTwoPairs(t *testing.T) {
 	t.Parallel()
 
 	const count = 50_000
@@ -3779,96 +3884,15 @@ func TestHashEachReadOnlyWalkNeverReprojects(t *testing.T) {
 	block := singleParamPairBlock()
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	beforeEpoch := probe.mutationEpoch
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
 	scratch := sortedKeyBufferBytes(count)
 
 	// The two reserved pairs plus a small slack for the interpreter's per-step checks.
-	// No reprojection fires, so no extra pair is charged beyond the reservation.
+	// A non-mutating walk grows no live state, so the per-pair recheck charges no
+	// more than these two pairs at any entry.
 	quota := roots + scratch + 2*collapsedPairBytes + 64*1024
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	if _, err := callHashMember(t, exec, receiver, "each", nil, block); err != nil {
-		t.Fatalf("read-only each at the two-pair quota %d = %v, want success (no reprojection on a non-mutating walk)", quota, err)
-	}
-	if exec.mutationEpoch != beforeEpoch {
-		t.Fatalf("read-only each advanced the mutation epoch from %d to %d, want it unchanged", beforeEpoch, exec.mutationEpoch)
-	}
-}
-
-// TestNoteMutationCoversEveryInPlaceAssignment pins the contract the mutation epoch
-// relies on: every assignment that writes into a live container advances the epoch,
-// while binding a plain local does not. Hash#each's post-mutation reprojection only
-// fires when the epoch changes, so a write that grew a not-yet-visited entry without
-// advancing the epoch would silently escape the recheck. The in-place kinds are index
-// (arr[i], h[k]), member (obj.prop), instance variable (@x), and class variable
-// (@@x); a bare local assignment rebinds the variable and grows no existing container.
-func TestNoteMutationCoversEveryInPlaceAssignment(t *testing.T) {
-	t.Parallel()
-
-	pos := Position{Line: 1, Column: 1}
-	class := &ClassDef{Name: "C", ClassVars: map[string]Value{}}
-	self := NewInstance(&Instance{Class: class, Ivars: map[string]Value{}})
-
-	newEnvWithSelf := func() *Env {
-		env := newEnv(nil)
-		env.Define("self", self)
-		env.Define("arr", NewArray([]Value{NewInt(0)}))
-		env.Define("h", NewHash(map[string]Value{"k": NewInt(0)}))
-		env.Define("obj", NewHash(map[string]Value{"prop": NewInt(0)}))
-		env.Define("local", NewInt(0))
-		return env
-	}
-
-	cases := []struct {
-		name        string
-		target      Expression
-		wantAdvance bool
-	}{
-		{
-			name:        "array index",
-			target:      &IndexExpr{Object: &Identifier{Name: "arr", Position: pos}, Index: &IntegerLiteral{Value: 0, Position: pos}, Position: pos},
-			wantAdvance: true,
-		},
-		{
-			name:        "hash key",
-			target:      &IndexExpr{Object: &Identifier{Name: "h", Position: pos}, Index: &SymbolLiteral{Name: "k", Position: pos}, Position: pos},
-			wantAdvance: true,
-		},
-		{
-			name:        "member property",
-			target:      &MemberExpr{Object: &Identifier{Name: "obj", Position: pos}, Property: "prop", Position: pos},
-			wantAdvance: true,
-		},
-		{
-			name:        "instance variable",
-			target:      &IvarExpr{Name: "x", Position: pos},
-			wantAdvance: true,
-		},
-		{
-			name:        "class variable",
-			target:      &ClassVarExpr{Name: "y", Position: pos},
-			wantAdvance: true,
-		},
-		{
-			name:        "plain local",
-			target:      &Identifier{Name: "local", Position: pos},
-			wantAdvance: false,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			exec := &Execution{ctx: context.Background(), quota: 1 << 30}
-			env := newEnvWithSelf()
-			before := exec.mutationEpoch
-			if err := exec.assign(tc.target, NewInt(1), env); err != nil {
-				t.Fatalf("assign %s = 1: %v", tc.name, err)
-			}
-			advanced := exec.mutationEpoch != before
-			if advanced != tc.wantAdvance {
-				t.Fatalf("assign %s advanced the mutation epoch = %t, want %t", tc.name, advanced, tc.wantAdvance)
-			}
-		})
+		t.Fatalf("read-only each at the two-pair quota %d = %v, want success (the per-pair recheck charges no more than two pairs on a non-mutating walk)", quota, err)
 	}
 }

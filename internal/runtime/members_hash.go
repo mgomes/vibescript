@@ -349,47 +349,34 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			// The preflight above sizes the collapsed-pair peak (the two live pair
 			// arrays and any rest arrays) from the entries' values as they stand
-			// before the walk. A block can mutate a not-yet-visited entry in place
-			// (h[:b] = big_array while binding :a) and so grow, before a later
-			// iteration's allocation runs and before that iteration's body reaches its
-			// first in-block memory check, either of two distinct footprints past what
-			// the preflight reserved:
-			//
-			//   - the receiver's whole footprint, which every iteration's two fixed
-			//     pair arrays allocate on top of. This is constant-size per pair but
-			//     sits on the grown live baseline (the receiver is a call root), so it
-			//     must be rechecked against the live roots after any in-place mutation.
-			//   - the grown entry's own rest array (only when the block destructures
-			//     with a rest target), which AssignDestructure materializes value-sized
-			//     inside callBlock. This must be rechecked on the iteration that visits
-			//     the grown entry, whenever that is, against the reserved rest peak.
-			//
-			// projectedEpoch records the mutation epoch at which the live baseline was
-			// last validated. The only operations that grow a value in place advance
-			// exec.mutationEpoch (see noteMutation), so an unchanged epoch means the
-			// baseline still fits and the constant-size pair needs no recheck -- a
-			// read-only walk never reprojects and stays O(n) total. After an in-place
-			// mutation the loop reprojects the two-pair peak once against the live roots
-			// and records the new epoch; the constant pair size makes that one recheck
-			// bound every later pair until the next mutation re-advances the epoch.
+			// before the walk. By the time a later iteration allocates its pair the live
+			// footprint can have grown past what the preflight reserved, and not only
+			// through an in-place mutation of a not-yet-visited entry (h[:b] = big_array
+			// while binding :a): an ordinary accumulating body like out = out.push(pair)
+			// grows an outer local through plain identifier assignment, leaving the
+			// receiver untouched while the live baseline the next pair allocates over
+			// climbs. Rather than try to distinguish which allocations advanced the
+			// baseline, reproject the live call roots before every collapsed-pair
+			// allocation. checkLiveCollapsedRestBytes sums the whole live footprint
+			// (every reachable root, the outer accumulator included) plus the two pair
+			// arrays and this entry's rest, so it rejects before NewArray (and
+			// AssignDestructure inside callBlock) can materialize an over-quota pair no
+			// matter how the body grew the baseline. A hash walk is already O(n) and each
+			// recheck is the codebase's reject-before-allocate norm, so this stays O(n)
+			// overall while being provably conservative.
 			//
 			// restTarget is the block's destructure target when the collapsed pair can
 			// allocate a value-sized rest, or nil when it cannot (a plain |pair|
 			// binding, |(k, v)| with no rest, each_key/each_value, or |k, v|). When set,
-			// reservedRestBytes is the peak single-entry rest the preflight charged, and
-			// every iteration sizes its entry's live rest (O(value length)) and
-			// reprojects only when it exceeds that peak -- a comparison, not the epoch,
-			// because a mutation can grow an entry the walk visits many iterations
-			// later, after the epoch's one baseline recheck has already passed.
+			// each iteration sizes its entry's live rest (O(value length)) so the recheck
+			// charges the rest array AssignDestructure would allocate for the entry's
+			// current value, which a prior iteration's in-place mutation may have grown.
 			var restTarget *DestructureTarget
-			reservedRestBytes := 0
 			if collapsePair {
 				if target := runner.destructureTarget(); target != nil && destructureTargetHasRest(target) {
 					restTarget = target
-					reservedRestBytes = maxEntryRestAllocBytes(target, entries)
 				}
 			}
-			projectedEpoch := exec.mutationEpoch
 			var blockArgs [2]Value
 			var pairArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -402,37 +389,32 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				if collapsePair {
-					if exec.mutationEpoch != projectedEpoch {
-						// A prior iteration mutated the receiver in place, so the live
-						// baseline the next two fixed pair arrays allocate over may exceed
-						// what the preflight reserved. Reproject the two live pairs against
-						// the live call roots once per mutation, rejecting before NewArray
-						// can materialize an over-quota pair inside callBlock. The pair
-						// size is constant, so this single recheck bounds every later pair
-						// until another mutation re-advances the epoch.
-						if err := exec.checkLiveCollapsedRestBytes(0, receiver, args, kwargs, block); err != nil {
-							return NewNil(), err
-						}
-						projectedEpoch = exec.mutationEpoch
-					}
+					liveRestBytes := 0
 					if restTarget != nil {
-						// Size this entry's live rest footprint (O(value length)) and
-						// reproject -- including this entry's rest on top of the two pairs
-						// and live roots -- only when it exceeds what the preflight
-						// reserved. A value can only have grown past the reservation via a
-						// prior iteration's mutation, so the expensive reprojection never
-						// fires on a non-mutating walk (an empty or read-only block stays
-						// O(n) total). The comparison runs every iteration rather than only
-						// after the epoch advances, because the mutation may grow an entry
-						// the walk visits many iterations later. Rejecting here stops
-						// AssignDestructure from materializing an over-quota rest array
-						// inside callBlock.
+						// Size this entry's live rest footprint (O(value length)) so the
+						// recheck below charges the rest array AssignDestructure would
+						// allocate for the value as it stands now, which a prior iteration's
+						// in-place mutation may have grown past the preflight's reservation.
 						pair := [collapsedPairElements]Value{NewSymbol(key), entries[key]}
-						if liveRestBytes := destructureRestAllocBytes(restTarget, NewArray(pair[:])); liveRestBytes > reservedRestBytes {
-							if err := exec.checkLiveCollapsedRestBytes(liveRestBytes, receiver, args, kwargs, block); err != nil {
-								return NewNil(), err
-							}
-						}
+						liveRestBytes = destructureRestAllocBytes(restTarget, NewArray(pair[:]))
+					}
+					// The previous iteration's pair is still referenced by pairArg[0] while
+					// NewArray builds the next, so two pairs are briefly live -- except on the
+					// first entry, where pairArg[0] is still nil and only the new pair exists.
+					// Charge the live count so the recheck matches the preflight's
+					// min(len(entries), 2) bound rather than always demanding room for two pairs.
+					livePairs := 2
+					if pairArg[0].IsNil() {
+						livePairs = 1
+					}
+					// Reproject the live call roots plus the live pair arrays and this entry's
+					// rest before allocating the next pair, rejecting before NewArray (and
+					// AssignDestructure inside callBlock) can materialize an over-quota pair.
+					// Rechecking every pair keeps the bound conservative against both in-place
+					// receiver mutations and non-mutating outer-local growth the body
+					// accumulated since the last entry.
+					if err := exec.checkLiveCollapsedRestBytes(livePairs, liveRestBytes, receiver, args, kwargs, block); err != nil {
+						return NewNil(), err
 					}
 					// NewArray here evaluates and allocates the next pair before the
 					// assignment overwrites pairArg[0], so the previous iteration's pair
@@ -581,10 +563,10 @@ func collapsedPairReservation(runner *blockCallRunner, collapsePair bool, entrie
 // maxEntryRestAllocBytes returns the largest rest-array footprint
 // AssignDestructure would allocate while binding any single entry's collapsed
 // [key, value] pair through target. collapsedPairReservation reserves this peak so
-// the preflight covers the one rest array that is ever live at a time, and the
-// Hash#each walk compares each live value's rest footprint against it to decide
-// whether a block mutation has grown the entry past the reservation and a fresh
-// per-entry projection is required.
+// the preflight covers the one rest array that is ever live at a time. The walk
+// itself rechecks each entry's live rest footprint per pair (see hash.each), so a
+// block mutation that grows an entry past this snapshot is caught by that recheck
+// rather than by comparing against this reserved peak.
 func maxEntryRestAllocBytes(target *DestructureTarget, entries map[string]Value) int {
 	maxRestBytes := 0
 	var pairBuf [collapsedPairElements]Value

@@ -274,32 +274,38 @@ func (exec *Execution) checkProjectedHashWalkBytes(perEntryBytes int, receiver V
 // checkLiveCollapsedRestBytes reprojects the live heap footprint the collapsed-pair
 // Hash#each walk would reach while binding the current entry to a single-parameter
 // block. checkProjectedHashWalkBytes sizes its pair-and-rest reservation from the
-// entries' values as they stand before the walk begins, but the block may mutate a
-// not-yet-visited entry in place (h[:b] = bigger while binding :a), growing past the
-// preflight either the receiver baseline every iteration's two fixed pair arrays
-// allocate over, or -- for a rest target -- that entry's value-sized rest array,
-// which NewArray and AssignDestructure build inside callBlock before the body's
-// first in-block memory check runs. The walk calls this against the live values just
-// before yielding the entry, so it keeps both allocations bounded by the quota no
-// matter how the block mutated the receiver, matching Ruby's read-the-live-value
+// entries' values as they stand before the walk begins, but the block can grow the
+// live baseline before a later iteration allocates its pair: an in-place mutation of
+// a not-yet-visited entry (h[:b] = bigger while binding :a) grows the receiver, and
+// an ordinary accumulating body (out = out.push(pair)) grows a captured outer local
+// through plain identifier assignment. Either lifts the call-root footprint every
+// pair allocates over, and a rest target additionally makes that entry's value-sized
+// rest array, which NewArray and AssignDestructure build inside callBlock before the
+// body's first in-block memory check runs. The walk calls this against the live
+// values just before yielding each entry, so it keeps both allocations bounded by the
+// quota no matter how the block grew the baseline, matching Ruby's read-the-live-value
 // iteration without snapshotting.
+//
+// livePairs is the number of [key, value] pair arrays simultaneously live when this
+// entry's pair is allocated: one on the first entry (no previous pair lingers) and two
+// afterward, because the reused pairArg slot still references the previous pair while
+// NewArray builds the next. It matches the preflight's min(len(entries), 2) bound so a
+// single-entry or first-iteration recheck charges exactly one pair rather than two.
 //
 // liveRestBytes is the footprint of the rest arrays this entry's current value makes
 // AssignDestructure allocate (destructureRestAllocBytes against the live pair), or
-// zero when only the baseline is being rechecked (a fixed |pair| or |(k, v)| binding
-// allocates no rest, and the per-mutation baseline recheck passes zero even for a
-// rest target). The charged peak mirrors the preflight: the call roots (which
-// include the receiver, so the mutated value is already counted), the two pair
-// arrays the reused pairArg slot holds live across iterations, and that one entry's
-// live rest arrays. Only one entry's rest arrays are ever live, because
-// resetForBlockCall clears the previous iteration's rest binding before the next is
-// built.
-func (exec *Execution) checkLiveCollapsedRestBytes(liveRestBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+// zero for a fixed |pair| or |(k, v)| binding that allocates no rest. The charged peak
+// mirrors the preflight: the call roots (which include the receiver, so a mutated value
+// is already counted, and the env stack, so a grown outer local is too), the live pair
+// arrays, and that one entry's live rest arrays. Only one entry's rest arrays are ever
+// live, because resetForBlockCall clears the previous iteration's rest binding before
+// the next is built.
+func (exec *Execution) checkLiveCollapsedRestBytes(livePairs, liveRestBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	perEntryBytes := saturatingAdd(2*collapsedPairBytes, liveRestBytes)
+	perEntryBytes := saturatingAdd(saturatingMul(livePairs, collapsedPairBytes), liveRestBytes)
 	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), perEntryBytes)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)

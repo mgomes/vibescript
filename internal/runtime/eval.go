@@ -1057,7 +1057,6 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 	}
 
 	vars[property] = value
-	exec.noteMutation()
 	return nil
 }
 
@@ -1085,7 +1084,6 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 			return exec.errorAt(target.Pos(), "no instance context for ivar")
 		}
 		valueInstance(self).Ivars[t.Name] = value
-		exec.noteMutation()
 		return nil
 	case *ClassVarExpr:
 		self, ok := env.Get("self")
@@ -1095,11 +1093,9 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		switch self.Kind() {
 		case KindInstance:
 			valueInstance(self).Class.ClassVars[t.Name] = value
-			exec.noteMutation()
 			return nil
 		case KindClass:
 			valueClass(self).ClassVars[t.Name] = value
-			exec.noteMutation()
 			return nil
 		default:
 			return exec.errorAt(target.Pos(), "no class context for class var")
@@ -1129,7 +1125,6 @@ func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Va
 	switch obj.Kind() {
 	case KindHash, KindObject:
 		obj.Hash()[target.Property] = value
-		exec.noteMutation()
 		return nil
 	case KindInstance, KindClass:
 		return exec.assignToMember(obj, target.Property, value, target.Pos())
@@ -1150,7 +1145,6 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value
 			return exec.errorAt(target.Index.Pos(), "array index out of bounds")
 		}
 		arr[i] = value
-		exec.noteMutation()
 		return nil
 	case KindHash, KindObject:
 		key, err := valueToHashKey(idx)
@@ -1158,7 +1152,6 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value
 			return exec.errorAt(target.Index.Pos(), "%s", err.Error())
 		}
 		obj.Hash()[key] = value
-		exec.noteMutation()
 		return nil
 	default:
 		return exec.errorAt(target.Object.Pos(), "cannot index %s", obj.Kind())
