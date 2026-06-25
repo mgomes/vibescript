@@ -63,6 +63,23 @@ func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Val
 	}}
 }
 
+// SetHashDefaults overwrites the Ruby-style default metadata of an existing hash
+// wrapper in place. It exists so a deep clone can register the destination
+// wrapper in its seen-set before it walks the default value/proc: a default that
+// reaches the hash itself (e.g. Hash.new { |_, _| h }) then dedups against the
+// already-registered wrapper instead of cloning a second one whose defaults
+// would close over the wrong object. v must be a hash whose wrapper is not yet
+// shared; mutating a hash that other Values observe would change their defaults.
+func (v Value) SetHashDefaults(defaultValue, defaultProc Value) {
+	if v.kind != KindHash {
+		return
+	}
+	if hd, ok := v.data.(*hashData); ok {
+		hd.defaultValue = defaultValue
+		hd.defaultProc = defaultProc
+	}
+}
+
 // HashDefaultValue returns the default value configured for a hash, or NewNil()
 // when v is not a hash or carries no default value. It is the plain-value
 // counterpart to HashDefaultProc.

@@ -692,35 +692,37 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 	}
 	entries := val.Hash()
 	clonedEntries := make(map[string]Value, len(entries))
-	cloned := rebuildHostHash(val, clonedEntries, state)
-	// Register the wrapper before populating entries so a hash that contains
-	// itself dedups against this clone rather than recursing forever.
+	defaultValue := hashDefaultValue(val)
+	defaultProc := hashDefaultProc(val)
+	hasDefault := !defaultValue.IsNil() || !defaultProc.IsNil()
+	var cloned Value
+	if hasDefault {
+		cloned = NewHashWithDefault(clonedEntries, NewNil(), NewNil())
+	} else {
+		cloned = NewHash(clonedEntries)
+	}
+	// Register the wrapper before cloning defaults or entries so a hash that
+	// contains itself -- whether through an entry or through a default that
+	// reaches the hash (e.g. Hash.new { |_, _| h }) -- dedups against this clone
+	// rather than recursing forever or cloning a second wrapper.
 	if id != 0 {
 		state.hashes[id] = cloned
+	}
+	if hasDefault {
+		clonedDefaultValue := NewNil()
+		clonedDefaultProc := NewNil()
+		if !defaultValue.IsNil() {
+			clonedDefaultValue = cloneValueForHostWithState(defaultValue, state)
+		}
+		if !defaultProc.IsNil() {
+			clonedDefaultProc = cloneValueForHostWithState(defaultProc, state)
+		}
+		cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
 	}
 	for key, item := range entries {
 		clonedEntries[key] = cloneValueForHostWithState(item, state)
 	}
 	return cloned
-}
-
-// rebuildHostHash wraps the cloned entry map in a hash carrying the cloned
-// default metadata of the source hash. The entry map is populated by the caller
-// after this returns, so this only fixes the wrapper and its defaults. A hash
-// with no default produces a plain hash.
-func rebuildHostHash(src Value, clonedEntries map[string]Value, state hostValueCloneState) Value {
-	defaultValue := hashDefaultValue(src)
-	defaultProc := hashDefaultProc(src)
-	if defaultValue.IsNil() && defaultProc.IsNil() {
-		return NewHash(clonedEntries)
-	}
-	if !defaultValue.IsNil() {
-		defaultValue = cloneValueForHostWithState(defaultValue, state)
-	}
-	if !defaultProc.IsNil() {
-		defaultProc = cloneValueForHostWithState(defaultProc, state)
-	}
-	return NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
 }
 
 func cloneHostMapValue(val Value, state hostValueCloneState, construct func(map[string]Value) Value) Value {

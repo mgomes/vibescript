@@ -412,14 +412,35 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		entries := val.Hash()
 		clonedEntries := make(map[string]Value, len(entries))
-		cloned := r.rebindHash(val, clonedEntries)
-		// Register the wrapper before populating entries so a hash that contains
-		// itself rebinds against this clone rather than recursing forever.
+		defaultValue := hashDefaultValue(val)
+		defaultProc := hashDefaultProc(val)
+		hasDefault := !defaultValue.IsNil() || !defaultProc.IsNil()
+		var cloned Value
+		if hasDefault {
+			cloned = NewHashWithDefault(clonedEntries, NewNil(), NewNil())
+		} else {
+			cloned = NewHash(clonedEntries)
+		}
+		// Register the wrapper before rebinding defaults or entries so a hash that
+		// contains itself -- whether through an entry or through a default that
+		// reaches the hash (e.g. Hash.new { |_, _| h }) -- rebinds against this
+		// clone rather than recursing forever or rebinding a second wrapper.
 		if id != 0 {
 			if r.seenHashes == nil {
 				r.seenHashes = make(map[uintptr]Value)
 			}
 			r.seenHashes[id] = cloned
+		}
+		if hasDefault {
+			clonedDefaultValue := NewNil()
+			clonedDefaultProc := NewNil()
+			if !defaultValue.IsNil() {
+				clonedDefaultValue = r.rebindValue(defaultValue)
+			}
+			if !defaultProc.IsNil() {
+				clonedDefaultProc = r.rebindValue(defaultProc)
+			}
+			cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
 		}
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
@@ -480,27 +501,6 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 		clone.DefineStatic(name, r.rebindValue(val))
 	})
 	return clone
-}
-
-// rebindHash wraps rebound entries in a hash that carries the rebound Ruby-style
-// default metadata of src. A default value and default proc are reachable hash
-// state (a host may pass NewHashWithDefault(..., NewInt(5), proc)), so they must
-// be rebound like entries rather than dropped, which would make missing-key
-// lookup return nil instead of the configured default. A hash with no default
-// produces a plain hash.
-func (r *callFunctionRebinder) rebindHash(src Value, clonedEntries map[string]Value) Value {
-	defaultValue := hashDefaultValue(src)
-	defaultProc := hashDefaultProc(src)
-	if defaultValue.IsNil() && defaultProc.IsNil() {
-		return NewHash(clonedEntries)
-	}
-	if !defaultValue.IsNil() {
-		defaultValue = r.rebindValue(defaultValue)
-	}
-	if !defaultProc.IsNil() {
-		defaultProc = r.rebindValue(defaultProc)
-	}
-	return NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
 }
 
 func (r *callFunctionRebinder) rebindValues(values []Value) []Value {
