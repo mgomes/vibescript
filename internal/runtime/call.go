@@ -243,12 +243,20 @@ type callFunctionRebinder struct {
 	// identity. A hash reachable through several paths in the inbound graph rebinds
 	// to one wrapper and keeps its identity, so a bound predicate rebound to that
 	// same wrapper still reports identity against the rebound receiver. Keying on
-	// the entry map (as seenMaps does for objects) would rebuild a fresh wrapper
-	// per path and break identity, since hash identity is the wrapper.
+	// the entry map alone would rebuild a fresh wrapper per path and break identity,
+	// since hash identity is the wrapper.
 	seenHashes map[uintptr]Value
-	seenMaps   map[uintptr]map[string]Value
-	seenBlocks map[*Block]Value
-	seenEnvs   map[*Env]*Env
+	// seenHashEntries caches the rebound entry map keyed on the source hash's entry
+	// map pointer. Two distinct hash wrappers may intentionally share one mutable
+	// entry map (a host can build `a := NewHash(shared); b := NewHash(shared)`);
+	// index assignment mutates that map in place, so a callee that does `a[:x] = 1`
+	// must see the write through b. The wrapper cache cannot preserve this -- the
+	// two wrappers have distinct identities -- so the entry-map cache lets both
+	// rebound wrappers point at one cloned entry map and keep the aliasing.
+	seenHashEntries map[uintptr]map[string]Value
+	seenMaps        map[uintptr]map[string]Value
+	seenBlocks      map[*Block]Value
+	seenEnvs        map[*Env]*Env
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -411,7 +419,17 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			}
 		}
 		entries := val.Hash()
-		clonedEntries := make(map[string]Value, len(entries))
+		entriesPtr := reflect.ValueOf(entries).Pointer()
+		// A distinct wrapper that shares this entry map already cloned it; reuse
+		// that cloned map so both rebound wrappers mutate one map in place and the
+		// host's intentional aliasing survives rebinding. The shared map is already
+		// fully populated, so skip the fill loop -- only a fresh wrapper (with this
+		// wrapper's own rebound defaults) is built around it.
+		sharedEntries, sharedSeen := r.seenHashEntries[entriesPtr]
+		clonedEntries := sharedEntries
+		if !sharedSeen {
+			clonedEntries = make(map[string]Value, len(entries))
+		}
 		defaultValue := hashDefaultValue(val)
 		defaultProc := hashDefaultProc(val)
 		hasDefault := !defaultValue.IsNil() || !defaultProc.IsNil()
@@ -431,6 +449,12 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			}
 			r.seenHashes[id] = cloned
 		}
+		if !sharedSeen && entriesPtr != 0 {
+			if r.seenHashEntries == nil {
+				r.seenHashEntries = make(map[uintptr]map[string]Value)
+			}
+			r.seenHashEntries[entriesPtr] = clonedEntries
+		}
 		if hasDefault {
 			clonedDefaultValue := NewNil()
 			clonedDefaultProc := NewNil()
@@ -442,8 +466,10 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 			}
 			cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
 		}
-		for key, item := range entries {
-			clonedEntries[key] = r.rebindValue(item)
+		if !sharedSeen {
+			for key, item := range entries {
+				clonedEntries[key] = r.rebindValue(item)
+			}
 		}
 		return cloned
 	case KindObject:

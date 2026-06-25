@@ -3,8 +3,20 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 )
+
+// entryMapPtr returns the identity of a hash entry map for comparing whether two
+// hashes share the same backing storage.
+func entryMapPtr(entries map[string]Value) uintptr {
+	return reflect.ValueOf(entries).Pointer()
+}
+
+// hashEntryMapPtr returns the identity of a hash value's entry map.
+func hashEntryMapPtr(v Value) uintptr {
+	return entryMapPtr(v.Hash())
+}
 
 // TestEqualPredicateEnumClonedIdentity confirms equal? on enums and enum values
 // reports backing-storage identity, not the structural equivalence Equal uses.
@@ -201,6 +213,80 @@ func TestHostCloneHashPreservesSharedIdentity(t *testing.T) {
 	}
 	if items[0].Identical(shared) {
 		t.Fatal("cloned hash shares identity with the original; test cannot observe the clone")
+	}
+}
+
+// TestHostCloneHashPreservesSharedEntryMap confirms two distinct hash wrappers
+// that intentionally share one mutable entry map clone to wrappers that still
+// share a single (cloned) entry map. A host may build such a pair --
+// a := NewHash(shared); b := NewHash(shared) -- and rely on index assignment
+// mutating that map in place so a[:x] = 1 is visible through b. Caching the clone
+// only on the wrapper identity would give each wrapper its own cloned map and
+// silently break that aliasing.
+func TestHostCloneHashPreservesSharedEntryMap(t *testing.T) {
+	t.Parallel()
+
+	sharedEntries := map[string]Value{"a": NewInt(1)}
+	a := NewHash(sharedEntries)
+	b := NewHash(sharedEntries)
+	if hashIdentity(a) == hashIdentity(b) {
+		t.Fatal("the two wrappers share identity; test cannot observe distinct wrappers over one map")
+	}
+
+	cloned := cloneValueForHost(NewArray([]Value{a, b}))
+	items := cloned.Array()
+	clonedA, clonedB := items[0], items[1]
+
+	if clonedA.Identical(clonedB) {
+		t.Fatal("distinct wrappers cloned to one wrapper; they must stay distinct objects")
+	}
+	if hashEntryMapPtr(clonedA) != hashEntryMapPtr(clonedB) {
+		t.Fatal("cloned wrappers no longer share an entry map; in-place mutation aliasing was lost")
+	}
+	if hashEntryMapPtr(clonedA) == entryMapPtr(sharedEntries) {
+		t.Fatal("cloned entry map shares storage with the original; test cannot observe the clone")
+	}
+
+	// A write through one cloned wrapper's entry map must be visible through the
+	// other, exactly as a[:x] = 1 would be visible through b.
+	clonedA.Hash()["x"] = NewInt(2)
+	if got, ok := clonedB.Hash()["x"]; !ok || !got.Equal(NewInt(2)) {
+		t.Fatalf("write through one cloned wrapper not visible through the other: got %v ok=%v", got, ok)
+	}
+}
+
+// TestCallRebindHashPreservesSharedEntryMap is the inbound counterpart to
+// TestHostCloneHashPreservesSharedEntryMap: Script.Call rebinds incoming
+// arguments through callFunctionRebinder, which must likewise preserve the
+// aliasing of two distinct wrappers that share one mutable entry map.
+func TestCallRebindHashPreservesSharedEntryMap(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, "def run()\n  nil\nend")
+	root := newEnv(nil)
+	rebinder := newCallFunctionRebinder(script, root, map[string]*ClassDef{}, map[string]*EnumDef{})
+
+	sharedEntries := map[string]Value{"a": NewInt(1)}
+	a := NewHash(sharedEntries)
+	b := NewHash(sharedEntries)
+
+	rebound := rebinder.rebindValue(NewArray([]Value{a, b}))
+	items := rebound.Array()
+	reboundA, reboundB := items[0], items[1]
+
+	if reboundA.Identical(reboundB) {
+		t.Fatal("distinct wrappers rebound to one wrapper; they must stay distinct objects")
+	}
+	if hashEntryMapPtr(reboundA) != hashEntryMapPtr(reboundB) {
+		t.Fatal("rebound wrappers no longer share an entry map; in-place mutation aliasing was lost")
+	}
+	if hashEntryMapPtr(reboundA) == entryMapPtr(sharedEntries) {
+		t.Fatal("rebound entry map shares storage with the original; test cannot observe the rebind")
+	}
+
+	reboundA.Hash()["x"] = NewInt(2)
+	if got, ok := reboundB.Hash()["x"]; !ok || !got.Equal(NewInt(2)) {
+		t.Fatalf("write through one rebound wrapper not visible through the other: got %v ok=%v", got, ok)
 	}
 }
 

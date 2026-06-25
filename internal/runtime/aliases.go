@@ -334,14 +334,20 @@ type hostValueCloneState struct {
 	// hashes caches cloned KindHash values keyed on the source hash's wrapper
 	// identity, so a hash reachable through several paths in the returned graph
 	// clones to one wrapper and keeps its identity. Caching only the entry map
-	// (as maps does for objects) would rebuild a fresh wrapper per path, and
-	// since hash identity is the wrapper, the clones would wrongly compare
-	// not-identical. This also dedups a hash that contains itself.
-	hashes    map[uintptr]Value
-	maps      map[uintptr]map[string]Value
-	instances map[*Instance]Value
-	classes   map[*ClassDef]*ClassDef
-	envs      map[*Env]*Env
+	// would rebuild a fresh wrapper per path, and since hash identity is the
+	// wrapper, the clones would wrongly compare not-identical. This also dedups a
+	// hash that contains itself.
+	hashes map[uintptr]Value
+	// hashEntries caches the cloned entry map keyed on the source hash's entry map
+	// pointer. Two distinct hash wrappers may intentionally share one mutable entry
+	// map; index assignment mutates that map in place, so both cloned wrappers must
+	// point at one cloned entry map to keep the host's aliasing. The wrapper cache
+	// cannot do this because the wrappers have distinct identities.
+	hashEntries map[uintptr]map[string]Value
+	maps        map[uintptr]map[string]Value
+	instances   map[*Instance]Value
+	classes     map[*ClassDef]*ClassDef
+	envs        map[*Env]*Env
 }
 
 type hostValueScanState struct {
@@ -506,12 +512,13 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 
 func cloneValueForHost(val Value) Value {
 	state := hostValueCloneState{
-		arrays:    make(map[sliceIdentity]Value),
-		hashes:    make(map[uintptr]Value),
-		maps:      make(map[uintptr]map[string]Value),
-		instances: make(map[*Instance]Value),
-		classes:   make(map[*ClassDef]*ClassDef),
-		envs:      make(map[*Env]*Env),
+		arrays:      make(map[sliceIdentity]Value),
+		hashes:      make(map[uintptr]Value),
+		hashEntries: make(map[uintptr]map[string]Value),
+		maps:        make(map[uintptr]map[string]Value),
+		instances:   make(map[*Instance]Value),
+		classes:     make(map[*ClassDef]*ClassDef),
+		envs:        make(map[*Env]*Env),
 	}
 	return cloneValueForHostWithState(val, state)
 }
@@ -691,7 +698,17 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 		}
 	}
 	entries := val.Hash()
-	clonedEntries := make(map[string]Value, len(entries))
+	entriesPtr := reflect.ValueOf(entries).Pointer()
+	// A distinct wrapper that shares this entry map already cloned it; reuse that
+	// cloned map so both cloned wrappers mutate one map in place and the host's
+	// intentional aliasing survives the boundary. The shared map is already fully
+	// populated, so skip the fill loop -- only a fresh wrapper (with this wrapper's
+	// own cloned defaults) is built around it.
+	sharedEntries, sharedSeen := state.hashEntries[entriesPtr]
+	clonedEntries := sharedEntries
+	if !sharedSeen {
+		clonedEntries = make(map[string]Value, len(entries))
+	}
 	defaultValue := hashDefaultValue(val)
 	defaultProc := hashDefaultProc(val)
 	hasDefault := !defaultValue.IsNil() || !defaultProc.IsNil()
@@ -708,6 +725,9 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 	if id != 0 {
 		state.hashes[id] = cloned
 	}
+	if !sharedSeen && entriesPtr != 0 {
+		state.hashEntries[entriesPtr] = clonedEntries
+	}
 	if hasDefault {
 		clonedDefaultValue := NewNil()
 		clonedDefaultProc := NewNil()
@@ -719,8 +739,10 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 		}
 		cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
 	}
-	for key, item := range entries {
-		clonedEntries[key] = cloneValueForHostWithState(item, state)
+	if !sharedSeen {
+		for key, item := range entries {
+			clonedEntries[key] = cloneValueForHostWithState(item, state)
+		}
 	}
 	return cloned
 }
