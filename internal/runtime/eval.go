@@ -337,6 +337,16 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 		default:
 			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary - operand")
 		}
+	case tokenPlus:
+		// Unary plus mirrors Ruby: it is the identity on numbers and strings.
+		// Vibescript strings are immutable values, so returning the same value
+		// matches Ruby's "unfrozen copy" semantics observably.
+		switch right.Kind() {
+		case KindInt, KindFloat, KindString:
+			return right, nil
+		default:
+			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary + operand")
+		}
 	case tokenBang, tokenNot:
 		return NewBool(!right.Truthy()), nil
 	default:
