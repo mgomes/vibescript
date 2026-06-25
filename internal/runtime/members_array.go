@@ -984,19 +984,6 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 
-			// Grow the result with append from a bounded initial capacity rather
-			// than reserving one slot per argument up front. A single range
-			// selector can expand to far more positions than there are arguments
-			// (values_at(0..1_000_000_000)), so the per-element step() and projected
-			// memory check below are what bound the actual allocation; bounding the
-			// initial capacity keeps it proportional to what the quotas allow,
-			// mirroring rangeMaterialize.
-			initialCap := len(args)
-			if initialCap > arrayValuesAtInitialCap {
-				initialCap = arrayValuesAtInitialCap
-			}
-			out := make([]Value, 0, initialCap)
-
 			// The result aliases the receiver's elements, so charge its growth
 			// through an arrayBuildAccumulator whose baseline already includes the
 			// live call roots (receiver, args, block). When values_at runs on an
@@ -1009,6 +996,29 @@ func arrayMemberQuery(property string) (Value, error) {
 			// slot adds only a Value slot while the receiver payload it points into
 			// is counted once, in the baseline.
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+
+			// Grow the result with append from a bounded initial capacity rather
+			// than reserving one slot per argument up front. A single range
+			// selector can expand to far more positions than there are arguments
+			// (values_at(0..1_000_000_000)), so the per-element step() and projected
+			// memory check below are what bound the actual allocation; bounding the
+			// initial capacity keeps it proportional to what the quotas allow,
+			// mirroring rangeMaterialize.
+			initialCap := len(args)
+			if initialCap > arrayValuesAtInitialCap {
+				initialCap = arrayValuesAtInitialCap
+			}
+			// Reject the build before reserving the backing slice when that capacity
+			// alone already overflows the quota. Charging it through the accumulator
+			// uses the same call-root baseline emit charges each slot against, mirroring
+			// rangeMaterialize's up-front checkProjectedIntArrayBytes. Without it a tight
+			// MemoryQuotaBytes paired with many selectors could let make reserve up to
+			// arrayValuesAtInitialCap Value slots transiently before the first emit
+			// reported the overrun.
+			if err := acc.reserveSlots(initialCap); err != nil {
+				return NewNil(), err
+			}
+			out := make([]Value, 0, initialCap)
 
 			// emit appends one selected element, charging a step and re-checking the
 			// backing array's growth against the memory quota before the next slot.

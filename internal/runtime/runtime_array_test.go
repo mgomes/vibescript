@@ -1048,6 +1048,44 @@ func TestArrayValuesAtRangeTripsMemoryQuota(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestArrayValuesAtScalarSelectorsReserveBackingUpFront(t *testing.T) {
+	t.Parallel()
+
+	// Many scalar selectors size the result's initial backing slice to their count
+	// (bounded by arrayValuesAtInitialCap). When that slot array alone overflows the
+	// quota, the build must be rejected before make reserves the backing rather than
+	// letting make transiently allocate it and the first emit report the overrun
+	// afterward. The empty receiver makes every selected element nil with no payload,
+	// so only the reserved slot array can trip the quota, isolating the up-front
+	// reservation as the cause.
+	receiver := NewArray([]Value{})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	args := make([]Value, 200)
+	for i := range args {
+		args[i] = NewInt(0)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 4096}
+	_, err = builtin.Fn(exec, receiver, args, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	// step() runs once per emitted element, so a zero step count proves the build was
+	// rejected by the up-front reserveSlots before make allocated the backing and
+	// before any element was appended. A reservation deferred until the first emit
+	// would have stepped once over the already-allocated slot array.
+	if exec.steps != 0 {
+		t.Fatalf("values_at stepped %d times before rejecting the backing reservation; want 0 (reservation must precede make)", exec.steps)
+	}
+}
+
 func TestArrayValuesAtRangeChargesEphemeralReceiver(t *testing.T) {
 	t.Parallel()
 
