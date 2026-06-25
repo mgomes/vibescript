@@ -28,6 +28,16 @@ func cloneBuiltinSet(src map[*Builtin]struct{}) map[*Builtin]struct{} {
 	return out
 }
 
+// revokedCapabilityBuiltin returns a builtin that fails closed when invoked. The
+// inbound rebinder substitutes it for a per-call capability grant a re-entering
+// closure captured, so a closure that copied a capability into a local cannot
+// reach the originating call's capability from a call that never granted it.
+func revokedCapabilityBuiltin(name string) Value {
+	return NewBuiltin(name, func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), fmt.Errorf("capability %s was not granted to this call", name)
+	})
+}
+
 func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) (Value, error) {
 	switch val.Kind() {
 	case KindFunction:
@@ -245,6 +255,20 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 
 func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	switch val.Kind() {
+	case KindBuiltin:
+		// A builtin captured by an escaped closure is preserved unchanged unless
+		// it is a per-call capability grant. A capability copied into a local (for
+		// example `cap = jobs` captured by a Hash.new default proc) would otherwise
+		// survive re-rooting and stay callable, letting a missing-key lookup invoke
+		// a capability the re-entering call never granted -- the ambient root is
+		// re-rooted but a local snapshot bypasses that lookup. Revoke the captured
+		// grant so invoking it fails closed; a free reference to the live capability
+		// global still resolves through the re-rooted ambient root.
+		builtin := valueBuiltin(val)
+		if builtin == nil || !builtin.Capability {
+			return val
+		}
+		return revokedCapabilityBuiltin(builtin.Name)
 	case KindInstance:
 		inst := valueInstance(val)
 		if inst == nil || inst.Class == nil || inst.Class.owner != r.script {
@@ -521,6 +545,12 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 			if len(scope.contracts) > 0 {
 				scope.roots = append(scope.roots, rebound)
 			}
+			// Mark every builtin this adapter exposes as a per-call capability
+			// grant. The marker lets the inbound rebinder revoke a captured grant
+			// when a closure (for example a Hash.new default proc that copied a
+			// capability into a local) escapes and re-enters a later call that did
+			// not grant the same capability.
+			markCapabilityBuiltins(rebound)
 			// Skip the ambient global chain (root + ancestors) when walking a
 			// capability-supplied closure's captured environment, matching the
 			// pre/post-call scanners above. Otherwise a contract method whose

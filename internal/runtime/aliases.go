@@ -733,6 +733,13 @@ type Builtin struct {
 	// keyword options hash just like `fn(...)`. Method and constructor wrappers
 	// leave this false to keep parenthesized keyword binding strict.
 	DirectCallAlias bool
+	// Capability marks a builtin a capability adapter exposed for a single
+	// Script.Call. Capability grants are per call: when a closure that captured
+	// one (for example a `Hash.new { ... }` default proc copying a capability
+	// into a local) escapes and re-enters a later call, the inbound rebinder
+	// revokes the captured grant so a missing-key lookup cannot invoke a
+	// capability the re-entering call never granted.
+	Capability bool
 }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.

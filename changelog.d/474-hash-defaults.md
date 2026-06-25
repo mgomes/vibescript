@@ -17,7 +17,11 @@
   capabilities, and functions against the current invocation rather than the
   stale environment it was created in, while still keeping any local variables
   the proc legitimately closed over (such as a parameter of the function that
-  built the hash). Because a missing-key lookup returns the default, the default
+  built the hash). A capability copied into a local that the proc captured (for
+  example `cap = jobs`) is revoked on re-entry rather than preserved, so a
+  missing-key lookup cannot invoke a capability the re-entering call never
+  granted; a free reference to the live capability global still resolves through
+  the re-rooted ambient root. Because a missing-key lookup returns the default, the default
   is part of a typed hash's value type: validating a hash against
   `hash<key, value>` requires the default value to match `value` (the validated
   default travels with the normalized hash) and rejects a hash carrying a default

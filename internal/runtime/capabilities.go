@@ -569,6 +569,19 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 	}
 }
 
+// markCapabilityBuiltins flags every builtin reachable from a capability
+// adapter's bound globals as a per-call capability grant. The set is gathered
+// through the shared cycle-safe traversal so nested objects, hashes, arrays, and
+// closure environments an adapter may expose are all covered.
+func markCapabilityBuiltins(val Value) {
+	builtins := make(map[*Builtin]struct{})
+	scanner := newCapabilityContractScanner()
+	scanner.collectBuiltins(val, builtins)
+	for builtin := range builtins {
+		builtin.Capability = true
+	}
+}
+
 type strictGlobalsScanner struct {
 	seenArrays map[sliceIdentity]struct{}
 	seenMaps   map[uintptr]struct{}

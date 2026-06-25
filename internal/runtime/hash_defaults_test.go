@@ -769,3 +769,124 @@ end
 		t.Fatalf("default proc lookup = %#v, want \"pre-key-end\"", got)
 	}
 }
+
+// TestHashDefaultProcRevokesCapturedCapabilityOnReentry pins that a capability
+// copied into a local and captured by a default proc is revoked when the hash
+// re-enters a call that granted no capabilities. Re-rooting replaces only the
+// ambient root, so without revocation a missing-key lookup would still invoke
+// the originating call's capability through the preserved local frame, bypassing
+// the per-call grant (CWE-862). The lookup must fail closed and the host queue
+// must never be touched.
+func TestHashDefaultProcRevokesCapturedCapabilityOnReentry(t *testing.T) {
+	t.Parallel()
+
+	stub := &jobQueueStub{}
+	script := compileScriptDefault(t, `
+def build(cap)
+  Hash.new { |_, k| cap.enqueue("demo", { key: k }) }
+end
+
+def make()
+  build(jobs)
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "make", nil,
+		callOptionsWithCapabilities(MustNewJobQueueCapability("jobs", stub)),
+	)
+	if exported.Kind() != KindHash {
+		t.Fatalf("make returned %v, want a hash", exported.Kind())
+	}
+
+	err := callScriptErr(t, context.Background(), script, "lookup",
+		[]Value{exported, NewString("k1")}, CallOptions{})
+	requireErrorContains(t, err, "capability jobs.enqueue was not granted to this call")
+	if len(stub.enqueueCalls) != 0 {
+		t.Fatalf("capability invoked %d times from a call that granted no capabilities", len(stub.enqueueCalls))
+	}
+}
+
+// TestHashDefaultProcRevokesCapturedCapabilityEvenWhenReentryGrantsIt pins that
+// the captured local snapshot is revoked even when the re-entering call grants
+// the same-named capability: a local copy belongs to the call that made it, so a
+// closure that wants the live capability must reference the global, which the
+// re-rooted ambient root resolves. Revoking the snapshot keeps grants per call
+// regardless of name overlap. The lookup must fail closed and the re-entering
+// call's queue must stay untouched.
+func TestHashDefaultProcRevokesCapturedCapabilityEvenWhenReentryGrantsIt(t *testing.T) {
+	t.Parallel()
+
+	makeStub := &jobQueueStub{}
+	lookupStub := &jobQueueStub{}
+	script := compileScriptDefault(t, `
+def build(cap)
+  Hash.new { |_, k| cap.enqueue("demo", { key: k }) }
+end
+
+def make()
+  build(jobs)
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "make", nil,
+		callOptionsWithCapabilities(MustNewJobQueueCapability("jobs", makeStub)),
+	)
+
+	err := callScriptErr(t, context.Background(), script, "lookup",
+		[]Value{exported, NewString("k1")},
+		callOptionsWithCapabilities(MustNewJobQueueCapability("jobs", lookupStub)),
+	)
+	requireErrorContains(t, err, "capability jobs.enqueue was not granted to this call")
+	if len(makeStub.enqueueCalls) != 0 {
+		t.Fatalf("originating call's queue invoked %d times on re-entry", len(makeStub.enqueueCalls))
+	}
+	if len(lookupStub.enqueueCalls) != 0 {
+		t.Fatalf("re-entering call's queue invoked %d times via a stale captured local", len(lookupStub.enqueueCalls))
+	}
+}
+
+// TestHashDefaultProcResolvesLiveCapabilityGlobalOnReentry pins the legitimate
+// counterpart: a default proc that references the capability global directly
+// (not a captured local copy) resolves it through the re-rooted ambient root, so
+// a missing-key lookup invokes the re-entering call's live grant.
+func TestHashDefaultProcResolvesLiveCapabilityGlobalOnReentry(t *testing.T) {
+	t.Parallel()
+
+	makeStub := &jobQueueStub{}
+	lookupStub := &jobQueueStub{}
+	script := compileScriptDefault(t, `
+def make()
+  Hash.new { |_, k| jobs.enqueue("demo", { key: k }) }
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "make", nil,
+		callOptionsWithCapabilities(MustNewJobQueueCapability("jobs", makeStub)),
+	)
+
+	got := callScript(t, context.Background(), script, "lookup",
+		[]Value{exported, NewString("k1")},
+		callOptionsWithCapabilities(MustNewJobQueueCapability("jobs", lookupStub)),
+	)
+	if got.Kind() != KindString || got.String() != "queued" {
+		t.Fatalf("default proc lookup = %#v, want \"queued\" from the live grant", got)
+	}
+	if len(makeStub.enqueueCalls) != 0 {
+		t.Fatalf("originating call's queue invoked %d times on re-entry", len(makeStub.enqueueCalls))
+	}
+	if len(lookupStub.enqueueCalls) != 1 {
+		t.Fatalf("re-entering call's queue invoked %d times, want 1", len(lookupStub.enqueueCalls))
+	}
+}
