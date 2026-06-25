@@ -346,7 +346,13 @@ func hashMemberQuery(property string) (Value, error) {
 			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			// Match Ruby: a block declaring a single positional parameter receives
+			// each entry as a two-element [key, value] pair, while a block with two
+			// or more parameters auto-splats into key and value (extra parameters get
+			// nil). wantsCollapsedPair inspects the block's arity to pick the shape.
+			collapsePair := runner.wantsCollapsedPair()
 			var blockArgs [2]Value
+			var pairArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
 				// Charge a step per entry so an empty block still consumes the step
@@ -355,6 +361,13 @@ func hashMemberQuery(property string) (Value, error) {
 				// the whole hash uncharged.
 				if err := exec.step(); err != nil {
 					return NewNil(), err
+				}
+				if collapsePair {
+					pairArg[0] = NewArray([]Value{NewSymbol(key), entries[key]})
+					if _, err := runner.call(pairArg[:]); err != nil {
+						return NewNil(), err
+					}
+					continue
 				}
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]

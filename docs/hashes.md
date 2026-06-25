@@ -223,6 +223,26 @@ end
 `keys`, `values`, `flatten`, and block-based hash iteration process entries in
 sorted key order for deterministic behavior.
 
+`each` yields each entry following Ruby's block-argument rules. A block with a
+single parameter receives the entry as a two-element `[key, value]` pair, while a
+block with two parameters receives the key and value separately. Extra parameters
+receive `nil`, and a single destructuring parameter such as `|(key, value)|`
+unpacks the pair:
+
+```vibe
+pairs = []
+{ a: 1, b: 2 }.each do |pair|
+  pairs = pairs.push(pair)
+end
+# pairs == [[:a, 1], [:b, 2]]
+
+entries = []
+{ a: 1, b: 2 }.each do |key, value|
+  entries = entries.push([key, value])
+end
+# entries == [[:a, 1], [:b, 2]]
+```
+
 Example:
 
 ```vibe

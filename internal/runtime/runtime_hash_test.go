@@ -820,6 +820,97 @@ func TestHashExpandedHelpers(t *testing.T) {
 	compareHash(t, collision.Hash(), map[string]Value{"same": NewInt(2)})
 }
 
+func TestHashEachBlockArgumentShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		params string
+		body   string
+		want   []Value
+	}{
+		{
+			name:   "single parameter receives the key/value pair",
+			params: "|pair|",
+			body:   `out = out.push(pair)`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			},
+		},
+		{
+			name:   "destructuring single parameter unpacks the pair",
+			params: "|(k, v)|",
+			body:   `out = out.push([k, v])`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			},
+		},
+		{
+			name:   "two parameters receive key and value",
+			params: "|key, value|",
+			body:   `out = out.push([key, value])`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			},
+		},
+		{
+			name:   "extra parameters receive nil",
+			params: "|key, value, extra|",
+			body:   `out = out.push([key, value, extra])`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1), NewNil()}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2), NewNil()}),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+				def run()
+					out = []
+					{ a: 1, b: 2 }.each do `+tt.params+`
+						`+tt.body+`
+					end
+					out
+				end
+			`)
+			got := callFunc(t, script, "run", nil)
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
+func TestHashEachReturnsReceiver(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+		def run()
+			source = { a: 1, b: 2 }
+			source.each do |pair|
+			end
+		end
+	`)
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("each return = %v, want hash receiver", got.Kind())
+	}
+	compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+}
+
+func TestHashEachRejectsArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+		def run()
+			{ a: 1 }.each(:extra) do |pair|
+			end
+		end
+	`)
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "hash.each does not take arguments")
+}
+
 func TestHashFetchValues(t *testing.T) {
 	t.Parallel()
 

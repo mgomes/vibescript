@@ -633,6 +633,26 @@ func (runner *blockCallRunner) call(args []Value) (Value, error) {
 	return runner.exec.callBlock(runner.blk, args, runner.env)
 }
 
+// wantsCollapsedPair reports whether a hash iterator should yield each entry as a
+// single two-element [key, value] pair instead of two separate arguments. It
+// mirrors Ruby, where a block declaring exactly one positional parameter receives
+// the pair while a block with two or more positional parameters auto-splats into
+// key and value. A lone destructuring parameter such as |(k, v)| still counts as
+// one parameter, so it receives the pair and unpacks it. Any rest or keyword
+// parameter opts out so the iterator keeps yielding key and value separately.
+func (runner *blockCallRunner) wantsCollapsedPair() bool {
+	positional := 0
+	for i := range runner.blk.Params {
+		switch runner.blk.Params[i].Kind {
+		case ParamNormal:
+			positional++
+		default:
+			return false
+		}
+	}
+	return positional == 1
+}
+
 // CallBlock invokes a block value with the provided arguments.
 // This is the public entry point for capability adapters that need to
 // call user-supplied blocks (e.g. db.each, db.tx).
