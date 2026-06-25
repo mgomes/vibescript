@@ -77,9 +77,9 @@ func TestSplitOnASCIIWhitespace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := splitOnASCIIWhitespace(tt.in)
+			got := splitOnASCIIWhitespaceLimit(tt.in, 0)
 			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Fatalf("splitOnASCIIWhitespace(%q) mismatch (-want +got):\n%s", tt.in, diff)
+				t.Fatalf("splitOnASCIIWhitespaceLimit(%q, 0) mismatch (-want +got):\n%s", tt.in, diff)
 			}
 		})
 	}
@@ -163,6 +163,236 @@ func TestStringSplitNilSeparator(t *testing.T) {
 	}
 }
 
+func TestStringSplitLimit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		script string
+		want   []Value
+	}{
+		// Positive limit caps the field count, leaving the remainder unsplit in
+		// the final field.
+		{
+			name:   "positive limit caps fields",
+			script: `def go() "a,b,".split(",", 2) end`,
+			want:   []Value{NewString("a"), NewString("b,")},
+		},
+		{
+			name:   "positive limit keeps remainder",
+			script: `def go() "a,b,c,d".split(",", 3) end`,
+			want:   []Value{NewString("a"), NewString("b"), NewString("c,d")},
+		},
+		{
+			name:   "limit one returns whole string",
+			script: `def go() "a,b,c".split(",", 1) end`,
+			want:   []Value{NewString("a,b,c")},
+		},
+		{
+			name:   "positive limit larger than fields drops trailing empty",
+			script: `def go() "a,b,".split(",", 5) end`,
+			want:   []Value{NewString("a"), NewString("b"), NewString("")},
+		},
+		// Negative limit preserves trailing empty fields.
+		{
+			name:   "negative limit keeps trailing empty",
+			script: `def go() "a,b,".split(",", -1) end`,
+			want:   []Value{NewString("a"), NewString("b"), NewString("")},
+		},
+		{
+			name:   "negative limit keeps many trailing empties",
+			script: `def go() "a,b,,,".split(",", -1) end`,
+			want: []Value{
+				NewString("a"), NewString("b"),
+				NewString(""), NewString(""), NewString(""),
+			},
+		},
+		// Zero/default limit trims trailing empty fields, matching Ruby.
+		{
+			name:   "zero limit trims trailing empties",
+			script: `def go() "a,b,,,".split(",", 0) end`,
+			want:   []Value{NewString("a"), NewString("b")},
+		},
+		{
+			name:   "default trims trailing empties",
+			script: `def go() "a,b,".split(",") end`,
+			want:   []Value{NewString("a"), NewString("b")},
+		},
+		{
+			name:   "only separators trims to empty",
+			script: `def go() ",,".split(",") end`,
+			want:   nil,
+		},
+		{
+			name:   "only separators negative keeps empties",
+			script: `def go() ",,".split(",", -1) end`,
+			want:   []Value{NewString(""), NewString(""), NewString("")},
+		},
+		{
+			name:   "leading separator kept",
+			script: `def go() ",a,b".split(",", 2) end`,
+			want:   []Value{NewString(""), NewString("a,b")},
+		},
+		// Empty string always yields no fields, regardless of limit.
+		{
+			name:   "empty string default",
+			script: `def go() "".split(",") end`,
+			want:   nil,
+		},
+		{
+			name:   "empty string negative",
+			script: `def go() "".split(",", -1) end`,
+			want:   nil,
+		},
+		// Empty separator splits into characters and honors the limit.
+		{
+			name:   "empty separator splits chars",
+			script: `def go() "abc".split("") end`,
+			want:   []Value{NewString("a"), NewString("b"), NewString("c")},
+		},
+		{
+			name:   "empty separator positive limit",
+			script: `def go() "abc".split("", 2) end`,
+			want:   []Value{NewString("a"), NewString("bc")},
+		},
+		{
+			name:   "empty separator negative limit appends empty",
+			script: `def go() "abc".split("", -1) end`,
+			want: []Value{
+				NewString("a"), NewString("b"), NewString("c"), NewString(""),
+			},
+		},
+		{
+			name:   "empty separator limit one",
+			script: `def go() "abc".split("", 1) end`,
+			want:   []Value{NewString("abc")},
+		},
+		{
+			name:   "empty separator limit larger than chars appends empty",
+			script: `def go() "abc".split("", 5) end`,
+			want: []Value{
+				NewString("a"), NewString("b"), NewString("c"), NewString(""),
+			},
+		},
+		{
+			name:   "empty separator on empty string",
+			script: `def go() "".split("") end`,
+			want:   nil,
+		},
+		{
+			// The é is spliced in via an explicit escape so the multibyte rune
+			// reaches the runtime; the lexer only decodes \n, \t, \", and \\.
+			name:   "empty separator splits runes not bytes",
+			script: "def go() \"héllo\".split(\"\", 2) end",
+			want:   []Value{NewString("h"), NewString("éllo")},
+		},
+		// Default whitespace splitting honors the limit too.
+		{
+			name:   "whitespace positive limit keeps remainder",
+			script: `def go() "  a b c  ".split(nil, 2) end`,
+			want:   []Value{NewString("a"), NewString("b c  ")},
+		},
+		{
+			name:   "whitespace negative limit keeps trailing empty",
+			script: `def go() "  a b c  ".split(nil, -1) end`,
+			want: []Value{
+				NewString("a"), NewString("b"), NewString("c"), NewString(""),
+			},
+		},
+		{
+			name:   "whitespace default trims trailing whitespace",
+			script: `def go() "  a b c  ".split(nil, 0) end`,
+			want:   []Value{NewString("a"), NewString("b"), NewString("c")},
+		},
+		{
+			name:   "whitespace limit one keeps string intact",
+			script: `def go() "  a b c  ".split(nil, 1) end`,
+			want:   []Value{NewString("  a b c  ")},
+		},
+		{
+			name:   "whitespace positive limit no trailing whitespace",
+			script: `def go() "a b c".split(nil, 4) end`,
+			want:   []Value{NewString("a"), NewString("b"), NewString("c")},
+		},
+		{
+			name:   "whitespace positive limit trailing whitespace adds empty",
+			script: `def go() "a b c ".split(nil, 4) end`,
+			want: []Value{
+				NewString("a"), NewString("b"), NewString("c"), NewString(""),
+			},
+		},
+		{
+			name:   "blank string negative limit yields single empty",
+			script: `def go() "   ".split(nil, -1) end`,
+			want:   []Value{NewString("")},
+		},
+		{
+			name:   "blank string default yields empty",
+			script: `def go() "   ".split(nil, 0) end`,
+			want:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.script)
+			got := callFunc(t, script, "go", nil)
+			if got.Kind() != KindArray {
+				t.Fatalf("expected array, got %v", got.Kind())
+			}
+			if diff := valuesDiff(tt.want, got.Array()); diff != "" {
+				t.Fatalf("split limit mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestSplitHelpers(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		mode  string
+		text  string
+		sep   string
+		limit int
+		want  []string
+	}{
+		{name: "ws default trims", mode: "ws", text: " a  b ", limit: 0, want: []string{"a", "b"}},
+		{name: "ws negative keeps trailing empty", mode: "ws", text: " a  b ", limit: -1, want: []string{"a", "b", ""}},
+		{name: "ws positive remainder", mode: "ws", text: "a b c d", limit: 2, want: []string{"a", "b c d"}},
+		{name: "ws limit one whole string", mode: "ws", text: "  a b  ", limit: 1, want: []string{"  a b  "}},
+		{name: "ws blank negative", mode: "ws", text: "   ", limit: -1, want: []string{""}},
+		{name: "ws empty", mode: "ws", text: "", limit: -1, want: nil},
+		{name: "empty sep chars", mode: "empty", text: "abc", limit: 0, want: []string{"a", "b", "c"}},
+		{name: "empty sep positive", mode: "empty", text: "abc", limit: 2, want: []string{"a", "bc"}},
+		{name: "empty sep negative", mode: "empty", text: "abc", limit: -1, want: []string{"a", "b", "c", ""}},
+		{name: "empty sep limit one", mode: "empty", text: "abc", limit: 1, want: []string{"abc"}},
+		{name: "empty sep empty string", mode: "empty", text: "", limit: -1, want: nil},
+		{name: "sep default trims", mode: "sep", text: "a,b,", sep: ",", limit: 0, want: []string{"a", "b"}},
+		{name: "sep negative keeps", mode: "sep", text: "a,b,", sep: ",", limit: -1, want: []string{"a", "b", ""}},
+		{name: "sep positive remainder", mode: "sep", text: "a,b,c", sep: ",", limit: 2, want: []string{"a", "b,c"}},
+		{name: "sep empty string", mode: "sep", text: "", sep: ",", limit: -1, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var got []string
+			switch tt.mode {
+			case "ws":
+				got = splitOnASCIIWhitespaceLimit(tt.text, tt.limit)
+			case "empty":
+				got = splitEmptySeparator(tt.text, tt.limit)
+			case "sep":
+				got = splitWithSeparator(tt.text, tt.sep, tt.limit)
+			default:
+				t.Fatalf("unknown mode %q", tt.mode)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Fatalf("split helper mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestStringSplitRejectsInvalidSeparator(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -181,9 +411,24 @@ func TestStringSplitRejectsInvalidSeparator(t *testing.T) {
 			want:   "string.split separator must be string or nil",
 		},
 		{
-			name:   "too many separators",
+			name:   "string limit",
 			script: `def run() "a,b".split(",", "-") end`,
-			want:   "string.split accepts at most one separator",
+			want:   "string.split limit must be integer",
+		},
+		{
+			name:   "nil limit",
+			script: `def run() "a,b".split(",", nil) end`,
+			want:   "string.split limit must be integer",
+		},
+		{
+			name:   "array limit",
+			script: `def run() "a,b".split(",", [2]) end`,
+			want:   "string.split limit must be integer",
+		},
+		{
+			name:   "too many arguments",
+			script: `def run() "a,b".split(",", 2, 3) end`,
+			want:   "string.split accepts at most a separator and a limit",
 		},
 	}
 	for _, tt := range tests {

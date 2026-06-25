@@ -140,32 +140,123 @@ func isRubyASCIISpace(b byte) bool {
 	}
 }
 
-// splitOnASCIIWhitespace splits text on runs of ASCII whitespace, mirroring
-// Ruby's default (AWK-style) String#split. Leading and trailing whitespace is
-// discarded and consecutive whitespace collapses, so " a  b " yields ["a",
-// "b"] and a blank string yields no fields. Only the bytes recognized by
+// splitOnASCIIWhitespaceLimit performs Ruby's default (AWK-style) String#split
+// while honoring the optional limit argument. Only the bytes recognized by
 // isRubyASCIISpace separate fields; wider Unicode whitespace is preserved
 // inside the surrounding field rather than acting as a delimiter, matching Ruby
-// instead of Go's strings.Fields Unicode whitespace table.
-func splitOnASCIIWhitespace(text string) []string {
-	var fields []string
-	start := -1
-	for i := range len(text) {
-		if isRubyASCIISpace(text[i]) {
-			if start >= 0 {
-				fields = append(fields, text[start:i])
-				start = -1
-			}
-			continue
-		}
-		if start < 0 {
-			start = i
-		}
+// instead of Go's strings.Fields Unicode whitespace table. With the default
+// limit of 0 leading and trailing whitespace is discarded and consecutive
+// whitespace collapses, so " a  b " yields ["a", "b"]. The limit cases extend
+// that behavior:
+//
+//   - limit == 1 returns the whole string as a single field, leaving any
+//     leading or trailing whitespace intact, exactly like Ruby.
+//   - a positive limit caps the result at that many fields; once limit-1 fields
+//     have been collected the remainder of the string (including the whitespace
+//     that would normally separate fields) becomes the final field.
+//   - any limit other than 0 preserves a single trailing empty field when the
+//     string ends in whitespace, so "a b ".split(nil, -1) yields ["a", "b", ""].
+//
+// An empty string always yields no fields, matching Ruby.
+func splitOnASCIIWhitespaceLimit(text string, limit int) []string {
+	if text == "" {
+		return nil
 	}
-	if start >= 0 {
-		fields = append(fields, text[start:])
+	if limit == 1 {
+		return []string{text}
+	}
+	var fields []string
+	i := 0
+	n := len(text)
+	for i < n {
+		for i < n && isRubyASCIISpace(text[i]) {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		if limit > 0 && len(fields) == limit-1 {
+			fields = append(fields, text[i:])
+			return fields
+		}
+		start := i
+		for i < n && !isRubyASCIISpace(text[i]) {
+			i++
+		}
+		fields = append(fields, text[start:i])
+	}
+	// A trailing run of whitespace yields exactly one empty field whenever the
+	// limit is not the default 0; a fully blank string therefore yields [""].
+	if limit != 0 && isRubyASCIISpace(text[n-1]) {
+		fields = append(fields, "")
 	}
 	return fields
+}
+
+// splitEmptySeparator implements Ruby's String#split("") which splits a string
+// into its individual characters (runes). The limit argument matches Ruby:
+//
+//   - limit == 1 returns the whole string as a single field.
+//   - a positive limit keeps the first limit-1 characters as single-character
+//     fields and groups the remaining characters into the final field; if the
+//     limit exceeds the character count a single trailing empty field is added.
+//   - limit == 0 drops the trailing empty field, while a negative limit (and any
+//     positive limit large enough to exhaust the characters) keeps it, so
+//     "abc".split("", -1) yields ["a", "b", "c", ""].
+//
+// An empty string always yields no fields, matching Ruby.
+func splitEmptySeparator(text string, limit int) []string {
+	if text == "" {
+		return nil
+	}
+	if limit == 1 {
+		return []string{text}
+	}
+	runes := []rune(text)
+	if limit > 1 && limit-1 < len(runes) {
+		fields := make([]string, limit)
+		for i := range limit - 1 {
+			fields[i] = string(runes[i])
+		}
+		fields[limit-1] = string(runes[limit-1:])
+		return fields
+	}
+	fields := make([]string, 0, len(runes)+1)
+	for _, r := range runes {
+		fields = append(fields, string(r))
+	}
+	if limit != 0 {
+		fields = append(fields, "")
+	}
+	return fields
+}
+
+// splitWithSeparator implements Ruby's String#split(sep, limit) for a non-empty
+// string separator. The limit argument matches Ruby:
+//
+//   - a positive limit caps the result at that many fields, leaving the
+//     remainder unsplit in the final field.
+//   - limit == 0 (the default) drops trailing empty fields.
+//   - a negative limit preserves every field, including trailing empties.
+//
+// An empty string always yields no fields, matching Ruby.
+func splitWithSeparator(text, sep string, limit int) []string {
+	if text == "" {
+		return nil
+	}
+	switch {
+	case limit > 0:
+		return strings.SplitN(text, sep, limit)
+	case limit < 0:
+		return strings.Split(text, sep)
+	default:
+		parts := strings.Split(text, sep)
+		end := len(parts)
+		for end > 0 && parts[end-1] == "" {
+			end--
+		}
+		return parts[:end]
+	}
 }
 
 func chompDefault(text string) string {
@@ -1845,21 +1936,35 @@ func stringMemberTextOps(property string) (Value, error) {
 		}), nil
 	case "split":
 		return NewAutoBuiltin("string.split", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 1 {
-				return NewNil(), fmt.Errorf("string.split accepts at most one separator")
+			if len(args) > 2 {
+				return NewNil(), fmt.Errorf("string.split accepts at most a separator and a limit")
+			}
+			// The optional second argument is Ruby's limit. limit == 0 is the
+			// default and trims trailing empty fields, a positive limit caps the
+			// field count with the remainder unsplit in the final field, and a
+			// negative limit preserves trailing empty fields.
+			limit := 0
+			if len(args) == 2 {
+				parsed, err := valueToInt(args[1])
+				if err != nil {
+					return NewNil(), fmt.Errorf("string.split limit must be integer")
+				}
+				limit = parsed
 			}
 			text := receiver.String()
 			var parts []string
+			switch {
 			// An explicit nil separator behaves like the no-argument form,
 			// splitting on runs of ASCII whitespace, matching Ruby's
 			// String#split(nil).
-			if len(args) == 0 || args[0].IsNil() {
-				parts = splitOnASCIIWhitespace(text)
-			} else {
-				if args[0].Kind() != KindString {
-					return NewNil(), fmt.Errorf("string.split separator must be string or nil")
-				}
-				parts = strings.Split(text, args[0].String())
+			case len(args) == 0 || args[0].IsNil():
+				parts = splitOnASCIIWhitespaceLimit(text, limit)
+			case args[0].Kind() != KindString:
+				return NewNil(), fmt.Errorf("string.split separator must be string or nil")
+			case args[0].String() == "":
+				parts = splitEmptySeparator(text, limit)
+			default:
+				parts = splitWithSeparator(text, args[0].String(), limit)
 			}
 			values := make([]Value, len(parts))
 			for i, part := range parts {
