@@ -118,6 +118,26 @@ func TestStringRegexReplacementBackreferences(t *testing.T) {
 			want:   "[]",
 		},
 		{
+			name:   "duplicate named group both participate uses last",
+			script: `def run() "ab".sub("(?<x>a)(?<x>b)", "[\\k<x>]", regex: true) end`,
+			want:   "[b]",
+		},
+		{
+			name:   "duplicate named group last occurrence absent uses earlier",
+			script: `def run() "ac".sub("(?<x>a)(?<x>b)?(?<x>c)", "[\\k<x>]", regex: true) end`,
+			want:   "[c]",
+		},
+		{
+			name:   "duplicate named group trailing optional absent uses last participating",
+			script: `def run() "ab".sub("(?<x>a)(?<x>b)(?<x>c)?", "[\\k<x>]", regex: true) end`,
+			want:   "[b]",
+		},
+		{
+			name:   "duplicate named group gsub uses last per match",
+			script: `def run() "ab cd".gsub("(?<x>\\w)(?<x>\\w)", "[\\k<x>]", regex: true) end`,
+			want:   "[b] [d]",
+		},
+		{
 			name:   "out of range group is empty",
 			script: `def run() "abc".sub("(b)", "\\2", regex: true) end`,
 			want:   "ac",

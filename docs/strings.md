@@ -483,6 +483,13 @@ character (so `\z` stays `\z`). Numbered or `\+` references to groups that did
 not participate expand to the empty string. A `\k<name>` that names a group the
 pattern never defines raises an error, as does an unterminated `\k<name`.
 
+When a pattern reuses a group name (for example `(?<x>a)(?<x>b)` or
+`(?<x>foo)|(?<x>bar)`), `\k<name>` expands to the last occurrence that
+participated in the match, matching Ruby: `(?<x>a)(?<x>b)` over `"ab"` expands
+`\k<x>` to `"b"`, and `(?<x>a)(?<x>b)?(?<x>c)` over `"ac"` expands it to `"c"`.
+If the name exists but no occurrence participated, the reference expands to the
+empty string.
+
 ```vibe
 "abc".sub("b", "<\\&>", regex: true)   # "a<b>c"
 "abc".sub("b", "<$&>", regex: true)    # "a<$&>c" ($& is literal)

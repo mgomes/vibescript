@@ -180,10 +180,12 @@ func appendRubyLastGroup(dst []byte, src string, loc []int) ([]byte, error) {
 // unterminated name or a name the pattern never defines is an error, matching
 // Ruby's RuntimeError and IndexError on the same templates.
 //
-// When the pattern reuses a name across alternatives (for example
-// "(?<x>foo)|(?<x>bar)"), Ruby expands the occurrence that actually
-// participated in the match. This resolves to the participating index, falling
-// back to the empty expansion only when no occurrence participated.
+// When the pattern reuses a name (for example "(?<x>a)(?<x>b)" or
+// "(?<x>foo)|(?<x>bar)"), Ruby resolves the reference to the *last*
+// participating occurrence, matching MatchData[:name]: "(?<x>a)(?<x>b)" over
+// "ab" expands to "b", and "(?<x>a)(?<x>b)?(?<x>c)" over "ac" expands to "c".
+// When the name exists but no occurrence participated, Ruby expands to the
+// empty string. An undefined name is an error.
 func appendRubyNamedGroup(dst []byte, re *regexp.Regexp, src string, loc []int, rest string) ([]byte, int, error) {
 	end := strings.IndexByte(rest, '>')
 	if end < 0 {
@@ -191,30 +193,24 @@ func appendRubyNamedGroup(dst []byte, re *regexp.Regexp, src string, loc []int, 
 	}
 	name := rest[:end]
 	defined := false
-	firstIdx := -1
+	lastParticipating := -1
 	for idx, candidate := range re.SubexpNames() {
 		if candidate == "" || candidate != name {
 			continue
 		}
 		defined = true
-		if firstIdx < 0 {
-			firstIdx = idx
-		}
 		if 2*idx+1 < len(loc) && loc[2*idx] >= 0 && loc[2*idx+1] >= 0 {
-			expanded, err := appendRubySubmatch(dst, src, loc, idx)
-			if err != nil {
-				return nil, 0, err
-			}
-			return expanded, end, nil
+			lastParticipating = idx
 		}
 	}
 	if !defined {
 		return nil, 0, fmt.Errorf("undefined group name reference: %s", name)
 	}
-	// The name exists but no occurrence participated; Ruby expands to empty.
-	// appendRubySubmatch on the (non-participating) first index yields that
-	// empty expansion while keeping the bounded-append contract.
-	expanded, err := appendRubySubmatch(dst, src, loc, firstIdx)
+	if lastParticipating < 0 {
+		// The name exists but no occurrence participated; Ruby expands to empty.
+		return dst, end, nil
+	}
+	expanded, err := appendRubySubmatch(dst, src, loc, lastParticipating)
 	if err != nil {
 		return nil, 0, err
 	}
