@@ -257,6 +257,7 @@ func MemberCompletionNames() map[string][]string {
 	}
 	return map[string][]string{
 		"string":   withUniversal(stringMemberNames),
+		"symbol":   withUniversal(symbolMemberNames),
 		"array":    withUniversal(arrayMemberNames),
 		"hash":     withUniversal(hashMemberNames),
 		"int":      withUniversal(intMemberNames),
