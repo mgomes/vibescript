@@ -1172,9 +1172,15 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	}
 
 	trailing := len(target.Elements) - restIndex - 1
+	// Clamp the rest window to the available values. When the target has more
+	// fixed targets than the value provides, restIndex can exceed len(values);
+	// the missing fixed targets bind to nil (via valueAt) and the rest is empty,
+	// matching Ruby. Without clamping the low bound, values[restIndex:restEnd]
+	// would panic the host (a sandbox DoS) on a slice-out-of-range.
+	restStart := min(restIndex, len(values))
 	restEnd := len(values) - trailing
-	if restEnd < restIndex {
-		restEnd = restIndex
+	if restEnd < restStart {
+		restEnd = restStart
 	}
 	// Allocate the rest backing with capacity exactly equal to the collected
 	// element count. append([]Value(nil), src...) (and slices.Clone, which wraps
@@ -1184,7 +1190,7 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	// charged at preflight. A make+copy keeps cap == len so the reserved and the
 	// actually allocated footprints agree, leaving no quota window admitted by the
 	// preflight that the in-body check would then exceed.
-	restSrc := values[restIndex:restEnd]
+	restSrc := values[restStart:restEnd]
 	restValues := make([]Value, len(restSrc))
 	copy(restValues, restSrc)
 	for i, element := range target.Elements {
