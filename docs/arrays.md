@@ -25,7 +25,7 @@ Common enumerable helpers include:
 - `reject` to keep items the block rejects (the inverse of `select`).
 - `find` / `find_index` to locate the first matching item.
 - `reduce` to accumulate values.
-- `first(n)` / `last(n)` to slice without mutating.
+- `first` / `last` to read an end element, or `first(n)` / `last(n)` to slice without mutating. The optional count is the only argument they accept; passing more than one positional argument or any keyword argument raises.
 - `take(n)` / `drop(n)` to keep or skip a prefix; both reject negative counts.
 - `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.
 - `transpose` to swap the rows and columns of a matrix of equal-length array rows; it raises when a row is not an array or the rows differ in length.

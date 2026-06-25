@@ -1622,12 +1622,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "first":
 		return NewAutoBuiltin("array.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.first does not take keyword arguments")
+			}
 			arr := receiver.Array()
 			if len(args) == 0 {
 				if len(arr) == 0 {
 					return NewNil(), nil
 				}
 				return arr[0], nil
+			}
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.first accepts at most one count")
 			}
 			n, err := valueToInt(args[0])
 			if err != nil || n < 0 {
@@ -1642,12 +1648,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "last":
 		return NewAutoBuiltin("array.last", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.last does not take keyword arguments")
+			}
 			arr := receiver.Array()
 			if len(args) == 0 {
 				if len(arr) == 0 {
 					return NewNil(), nil
 				}
 				return arr[len(arr)-1], nil
+			}
+			if len(args) > 1 {
+				return NewNil(), fmt.Errorf("array.last accepts at most one count")
 			}
 			n, err := valueToInt(args[0])
 			if err != nil || n < 0 {
