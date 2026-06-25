@@ -85,6 +85,51 @@ func TestSplitOnASCIIWhitespace(t *testing.T) {
 	}
 }
 
+func TestSplitEmptySeparator(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		in    string
+		limit int
+		want  []string
+	}{
+		{name: "empty", in: "", limit: 0, want: nil},
+		{name: "ascii", in: "abc", limit: 0, want: []string{"a", "b", "c"}},
+		{name: "ascii negative keeps empty", in: "abc", limit: -1, want: []string{"a", "b", "c", ""}},
+		{name: "limit one whole string", in: "abc", limit: 1, want: []string{"abc"}},
+		{name: "positive limit groups remainder", in: "abcd", limit: 2, want: []string{"a", "bcd"}},
+		{name: "positive limit larger than chars", in: "ab", limit: 5, want: []string{"a", "b", ""}},
+		{name: "multibyte runes preserved", in: "héllo", limit: 0, want: []string{"h", "é", "l", "l", "o"}},
+		{name: "multibyte positive limit", in: "héllo", limit: 2, want: []string{"h", "éllo"}},
+		// Invalid UTF-8 bytes in a binary receiver must be preserved as
+		// single-byte fields rather than collapsed to U+FFFD, matching Ruby's
+		// "a\xffb".force_encoding("ASCII-8BIT").split("") => ["a", "\xff", "b"].
+		{name: "invalid byte preserved", in: "a\xffb", limit: 0, want: []string{"a", "\xff", "b"}},
+		{name: "invalid byte positive limit", in: "a\xffb", limit: 2, want: []string{"a", "\xffb"}},
+		{name: "invalid byte negative limit", in: "a\xffb", limit: -1, want: []string{"a", "\xff", "b", ""}},
+		{name: "leading invalid byte", in: "\xffab", limit: 0, want: []string{"\xff", "a", "b"}},
+		{name: "consecutive invalid bytes", in: "\xff\xfe", limit: 0, want: []string{"\xff", "\xfe"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := splitEmptySeparator(tt.in, tt.limit)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Fatalf("splitEmptySeparator(%q, %d) mismatch (-want +got):\n%s", tt.in, tt.limit, diff)
+			}
+		})
+	}
+}
+
+func TestStringSplitEmptyPreservesHostBytes(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `def go(s) s.split("") end`)
+	got := callFunc(t, script, "go", []Value{NewString("a\xffb")})
+	compareArrays(t, got, []Value{
+		NewString("a"), NewString("\xff"), NewString("b"),
+	})
+}
+
 func TestStringSplitDefaultWhitespace(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

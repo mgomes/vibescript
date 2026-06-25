@@ -204,7 +204,11 @@ func splitOnASCIIWhitespaceLimit(text string, limit int) []string {
 //     positive limit large enough to exhaust the characters) keeps it, so
 //     "abc".split("", -1) yields ["a", "b", "c", ""].
 //
-// An empty string always yields no fields, matching Ruby.
+// An empty string always yields no fields, matching Ruby. Splitting walks the
+// string by UTF-8 character boundaries rather than materializing a []rune so
+// that invalid bytes in a binary receiver are preserved as single-byte fields
+// (matching Ruby's "a\xffb".split("") => ["a", "\xff", "b"]) instead of being
+// rewritten as the U+FFFD replacement character.
 func splitEmptySeparator(text string, limit int) []string {
 	if text == "" {
 		return nil
@@ -212,18 +216,29 @@ func splitEmptySeparator(text string, limit int) []string {
 	if limit == 1 {
 		return []string{text}
 	}
-	runes := []rune(text)
-	if limit > 1 && limit-1 < len(runes) {
+	// offsets holds the byte index where each character begins, so a positive
+	// limit can slice the original text without losing raw bytes.
+	offsets := make([]int, 0, len(text)+1)
+	for i := 0; i < len(text); {
+		offsets = append(offsets, i)
+		_, width := utf8.DecodeRuneInString(text[i:])
+		i += width
+	}
+	if limit > 1 && limit-1 < len(offsets) {
 		fields := make([]string, limit)
 		for i := range limit - 1 {
-			fields[i] = string(runes[i])
+			fields[i] = text[offsets[i]:offsets[i+1]]
 		}
-		fields[limit-1] = string(runes[limit-1:])
+		fields[limit-1] = text[offsets[limit-1]:]
 		return fields
 	}
-	fields := make([]string, 0, len(runes)+1)
-	for _, r := range runes {
-		fields = append(fields, string(r))
+	fields := make([]string, 0, len(offsets)+1)
+	for i, start := range offsets {
+		end := len(text)
+		if i+1 < len(offsets) {
+			end = offsets[i+1]
+		}
+		fields = append(fields, text[start:end])
 	}
 	if limit != 0 {
 		fields = append(fields, "")

@@ -4,7 +4,10 @@
   limit of `1` returns the whole string), and a negative limit preserves every
   field including trailing empties. The limit applies to every separator mode,
   including the whitespace default and the empty separator that splits a string
-  into its characters. A non-integer limit is rejected.
+  into its characters. Splitting on the empty separator walks UTF-8 character
+  boundaries, so invalid bytes in a binary string are preserved as single-byte
+  fields rather than rewritten as the U+FFFD replacement character. A
+  non-integer limit is rejected.
 - **Changed: `String#split` now trims trailing empty fields by default.** With
   the default limit of `0`, `"a,b,".split(",")` returns `["a", "b"]` instead of
   `["a", "b", ""]`, matching Ruby. Use a negative limit to keep trailing empty
