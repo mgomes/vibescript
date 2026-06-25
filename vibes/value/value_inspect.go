@@ -152,9 +152,9 @@ func (v Value) appendInspectHash(buf *strings.Builder, state *valueStringState, 
 func (v Value) inspectByteLenWithState(state *valueStringState) int {
 	switch v.kind {
 	case KindString:
-		return len(quoteString(v.data.(string)))
+		return quotedStringByteLen(v.data.(string))
 	case KindSymbol:
-		return len(inspectSymbol(v.data.(string)))
+		return inspectSymbolByteLen(v.data.(string))
 	case KindNil:
 		return len("nil")
 	case KindArray:
@@ -193,7 +193,7 @@ func (v Value) inspectByteLenWithState(state *valueStringState) int {
 		total := len(hashOpen) + len(hashClose)
 		total += separatorBytes(len(entries))
 		for k, val := range entries {
-			total += len(inspectHashKey(k)) + len(keyValueSeparator)
+			total += inspectHashKeyByteLen(k) + len(keyValueSeparator)
 			total += val.inspectByteLenWithState(state)
 		}
 		return total
@@ -208,9 +208,9 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 	}
 	switch v.kind {
 	case KindString:
-		return len(quoteString(v.data.(string))), nil
+		return quotedStringByteLen(v.data.(string)), nil
 	case KindSymbol:
-		return len(inspectSymbol(v.data.(string))), nil
+		return inspectSymbolByteLen(v.data.(string)), nil
 	case KindNil:
 		return len("nil"), nil
 	case KindArray:
@@ -253,7 +253,7 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 		total := len(hashOpen) + len(hashClose)
 		total += separatorBytes(len(entries))
 		for k, val := range entries {
-			total += len(inspectHashKey(k)) + len(keyValueSeparator)
+			total += inspectHashKeyByteLen(k) + len(keyValueSeparator)
 			n, err := val.inspectByteLenBoundedWithState(state, step)
 			if err != nil {
 				return 0, err
@@ -306,6 +306,33 @@ func quoteString(s string) string {
 	return b.String()
 }
 
+// quotedStringByteLen reports how many bytes quoteString(s) would produce
+// without allocating the quoted result. The byte-length projection used to bound
+// inspect allocations relies on this: measuring a quota-sized string by building
+// its (potentially larger) escaped form would defeat the guard, allocating the
+// oversized buffer before the quota check that is meant to reject it. The escape
+// rules here must stay in lockstep with quoteString.
+func quotedStringByteLen(s string) int {
+	total := 2 // opening and closing quote
+	for i := range len(s) {
+		switch c := s[i]; c {
+		case '\\', '"', '\n', '\t':
+			total += 2
+		case '#':
+			// Only the interpolation marker (#{) is escaped to \#; a lone '#' is
+			// written verbatim, matching quoteString.
+			if i+1 < len(s) && s[i+1] == '{' {
+				total += 2
+			} else {
+				total++
+			}
+		default:
+			total++
+		}
+	}
+	return total
+}
+
 // inspectSymbol renders a symbol's debug form. A symbol whose name is a bare
 // identifier renders as :name; any other name (containing spaces, punctuation,
 // or empty) is quoted as :"name" with the same escaping strings use, matching
@@ -321,6 +348,18 @@ func inspectSymbol(name string) string {
 	return ":" + quoteString(name)
 }
 
+// inspectSymbolByteLen reports the byte length of inspectSymbol(name) without
+// allocating the rendering, so the byte-length projection can measure a symbol's
+// debug form without building its quoted body. It mirrors inspectSymbol: a bare
+// identifier costs the leading colon plus its bytes, and any other name costs the
+// colon plus its quoted length.
+func inspectSymbolByteLen(name string) int {
+	if isBareIdentifier(name) {
+		return 1 + len(name)
+	}
+	return 1 + quotedStringByteLen(name)
+}
+
 // inspectHashKey renders a hash key label for Inspect, without the trailing
 // colon (the caller supplies keyValueSeparator, ": "). Vibescript hash keys are
 // symbols, so a bare-identifier key renders as the colon-label shorthand
@@ -332,6 +371,17 @@ func inspectHashKey(key string) string {
 		return key
 	}
 	return quoteString(key)
+}
+
+// inspectHashKeyByteLen reports the byte length of inspectHashKey(key) without
+// allocating the rendering, so the byte-length projection can measure a quoted
+// key without building it. It mirrors inspectHashKey: a bare identifier costs its
+// own bytes and any other key costs its quoted length.
+func inspectHashKeyByteLen(key string) int {
+	if isBareIdentifier(key) {
+		return len(key)
+	}
+	return quotedStringByteLen(key)
 }
 
 // isBareIdentifier reports whether s is a non-empty Vibescript identifier: it
