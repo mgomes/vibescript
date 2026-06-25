@@ -487,6 +487,89 @@ end`
 	}
 }
 
+func TestParserLineInitialSplatAssignmentContinuesEqualsAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		assignment string
+		wantTarget *ast.DestructureTarget
+	}{
+		{
+			name:       "named rest",
+			assignment: "*rest\n    = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+			}},
+		},
+		{
+			name:       "anonymous rest before target",
+			assignment: "*, last\n    = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "named rest before target",
+			assignment: "*rest, last\n    = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A continuable previous expression ("a = 3") makes the leading "*"
+			// look like a multiplication continuation; the newline-before-"="
+			// rule must still complete the splat destructuring assignment.
+			source := "def run\n  a = 3\n  " + tt.assignment + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.AssignStmt{
+					Target: &ast.Identifier{Name: "a"},
+					Value:  &ast.IntegerLiteral{Value: 3},
+				},
+				&ast.AssignStmt{
+					Target: tt.wantTarget,
+					Value:  &ast.Identifier{Name: "values"},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestParserLineInitialSpacedAsteriskRejectsEqualsAcrossNewline(t *testing.T) {
+	t.Parallel()
+	// A spaced "*" ("* b") is a multiplication operator, not a splat target, so
+	// the newline-before-"=" continuation must not pull it into a destructuring
+	// assignment ("*b = c"). The line continues "x = a" as a multiplication and
+	// the dangling "=" then errors.
+	source := `def run
+  a = 3
+  b = 4
+  x = a
+  * b
+    = [1, 2]
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want dangling '=' diagnostic", source)
+	}
+}
+
 func TestParserAssignmentEqualsContinuesAcrossNewline(t *testing.T) {
 	t.Parallel()
 	source := `def run

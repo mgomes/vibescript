@@ -527,16 +527,26 @@ func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 }
 
 // lineStartsSplatAssignment reports whether the leading "*" token begins a
-// destructuring-assignment target list on its own logical line. It scans
-// ahead with a throwaway lexer (leaving the parser's own lookahead
-// untouched) and accepts only the tokens that may form a destructuring
-// left-hand side at the top level, requiring a top-level "=" before the
-// line ends. The scan is confined to the "*" token's physical line: a
-// destructuring target list must complete before the next newline, so any
-// token that begins a fresh source line ends the lookahead. Anything other
-// than a completed target list - a multiplicand operand, a comparison, an
-// arithmetic operator, or a line break before the "=" - means the "*" is an
-// ordinary multiplication continuation, so it returns false.
+// destructuring-assignment target list rather than continuing the previous
+// line as a multiplication. It scans ahead with a throwaway lexer (leaving
+// the parser's own lookahead untouched) and accepts only the tokens that may
+// form a destructuring left-hand side at the top level, requiring a top-level
+// "=" to terminate the list.
+//
+// The target portion of the list occupies the "*" token's physical line. The
+// terminating "=" may sit on the same line, or on a later line via
+// Vibescript's newline-before-"=" continuation (the same rule that lets
+// "x\n  = 1" parse as an assignment). To keep that continuation from
+// reviving the multiplication ambiguity, a later-line "=" only completes a
+// splat assignment when the leading "*" is shaped like a splat target: bare
+// (immediately followed by a terminator such as "," or "=") or flush against
+// its operand ("*rest"). A spaced "*" ("* b") is a multiplication operator,
+// so "x = a" / "* b" / "= c" stays a multiplication followed by a dangling
+// "=" rather than becoming "*b = c".
+//
+// Anything else - a multiplicand operand, a comparison, an arithmetic
+// operator, or a non-"=" token on a later line - means the "*" is an ordinary
+// multiplication continuation, so it returns false.
 func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 	offset, ok := sourceOffsetForPosition(p.l.input, star.Pos)
 	if !ok {
@@ -550,19 +560,31 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 	if tok.Type != ast.TokenAsterisk {
 		return false
 	}
+	starEnd := tok.End
 
+	first := true
+	splatShaped := false
 	depth := 0
 	for {
 		tok = scan.NextToken()
 		if tok.Type == ast.TokenEOF {
 			return false
 		}
-		// A destructuring left-hand side occupies a single logical line. The
-		// lexer skips newlines, so guard against scanning past the star's line
-		// (which would misclassify multiline multiplications such as
-		// "x = a" / "* b") by stopping at the first token on a later line.
+		if first {
+			// The "*" is splat-shaped when it is bare (a terminator follows) or
+			// flush against its operand, distinguishing the splat target "*rest"
+			// from the multiplication operator "* b".
+			splatShaped = isAnonymousRestTerminator(tok.Type) ||
+				(tok.Pos.Line == starEnd.Line && tok.Pos.Column == starEnd.Column)
+			first = false
+		}
+		// A destructuring target list occupies the "*" token's physical line. A
+		// token on a later line only continues the list when it is the
+		// newline-before-"=" assignment and the "*" is splat-shaped; otherwise
+		// the leading "*" is a multiplication continuation (such as "x = a" /
+		// "* b") and the lookahead stops.
 		if tok.Pos.Line > star.Pos.Line {
-			return false
+			return depth == 0 && tok.Type == ast.TokenAssign && splatShaped
 		}
 		if depth == 0 {
 			if tok.Type == ast.TokenAssign {

@@ -16,5 +16,7 @@
   expression now parses as its own statement.** A line that opens with `*` and
   forms a destructuring left-hand side, such as `*, last = values` or
   `*rest, last = values`, is no longer misread as a multiplication continuation
-  of the previous line. Genuine multiline multiplication (a line ending or
-  beginning with `*`) still continues as before.
+  of the previous line. This holds even when the `=` lands on the next line via
+  the newline-before-`=` continuation (for example `*rest` followed by an
+  indented `= values`). Genuine multiline multiplication (a line ending or
+  beginning with a spaced `*`) still continues as before.

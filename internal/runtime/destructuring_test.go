@@ -180,6 +180,50 @@ func TestParallelAssignmentLineInitialSplatAfterAssignment(t *testing.T) {
 	}
 }
 
+func TestParallelAssignmentLineInitialSplatContinuesEqualsAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	// A splat-assignment whose target list begins with "*" and whose "=" sits
+	// on the following line (Vibescript's newline-before-"=" continuation) must
+	// still parse as its own destructuring statement even when it follows a line
+	// that could otherwise continue onto a leading "*" as a multiplication.
+	tests := []struct {
+		name   string
+		body   string
+		result string
+		want   []Value
+	}{
+		{
+			name:   "bare named rest",
+			body:   "a = 3\n  *rest\n    = [1, 2, 3]",
+			result: "[a, rest]",
+			want:   []Value{NewInt(3), NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})},
+		},
+		{
+			name:   "anonymous rest discards head",
+			body:   "a = 3\n  *, last\n    = [1, 2, 3]",
+			result: "[a, last]",
+			want:   []Value{NewInt(3), NewInt(3)},
+		},
+		{
+			name:   "named rest binds head",
+			body:   "a = 3\n  *rest, last\n    = [1, 2, 3]",
+			result: "[a, rest, last]",
+			want:   []Value{NewInt(3), NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(3)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, "def run\n  "+tt.body+"\n  "+tt.result+"\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
 func TestMultiplicationContinuesAcrossNewline(t *testing.T) {
 	t.Parallel()
 
