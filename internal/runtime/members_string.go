@@ -686,6 +686,77 @@ func regexMatchFromRuneOffsetWithCache(cache *regexCache, method, text, pattern 
 	return re.MatchString(text[ctxStart:]), nil
 }
 
+// regexSubmatchFromRuneOffset returns the submatch indices of the leftmost match
+// of pattern in text that starts at or after the given rune offset, mirroring
+// Ruby's String#match(str, pos). The result is a flat slice of byte index pairs
+// in text laid out exactly like regexp.Regexp.FindStringSubmatchIndex: element 0
+// is the whole match (Ruby's group 0), and each subsequent pair is a capture
+// group, with -1/-1 for groups that did not participate. A nil result means no
+// match begins at or after the offset, which callers translate into Ruby's nil.
+//
+// The offset is a rune (codepoint) position. As with regexMatchFromRuneOffset,
+// the search begins one rune before the offset so anchors such as ^, \b, and \B
+// still observe the real preceding character, while \A correctly fails because
+// the searched view does not start at the absolute beginning of text. The
+// wrapper groups the user pattern in a capturing group so its boundaries and the
+// capture indices can be recovered without embedding the subject prefix, keeping
+// the compiled pattern small regardless of the offset.
+func regexSubmatchFromRuneOffset(method, text, pattern string, offset int) ([]int, error) {
+	return regexSubmatchFromRuneOffsetWithCache(compiledRegexps, method, text, pattern, offset)
+}
+
+// regexSubmatchFromRuneOffsetWithCache implements regexSubmatchFromRuneOffset
+// against an explicit regex cache so tests can assert that the offset wrapper
+// never stores an oversized, prefix-bearing pattern.
+func regexSubmatchFromRuneOffsetWithCache(cache *regexCache, method, text, pattern string, offset int) ([]int, error) {
+	// Compile (and validate) the user pattern first so an invalid regex is always
+	// reported, even when the offset lands past the end of the string. The offset
+	// must only decide the match result, never whether a bad pattern is accepted.
+	re, err := cache.compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("%s invalid regex: %w", method, err)
+	}
+	if offset == 0 {
+		return re.FindStringSubmatchIndex(text), nil
+	}
+	byteOffset, ok := stringByteIndexForRuneOffset(text, offset)
+	if !ok {
+		// The offset lands past the final rune, so no match can begin there.
+		return nil, nil
+	}
+	// Search a view that begins one rune before the offset, capturing the user
+	// pattern so its real boundaries survive the leading-context skip. The leading
+	// [\s\S] consumes the real preceding rune so \b, \B, and ^ evaluate against it,
+	// while \A correctly fails (the view does not start at the absolute string
+	// start). The lazy [\s\S]*? then advances to the first candidate start at or
+	// after the offset. The wrapper is independent of the prefix length, so it
+	// stays small even for offsets deep into a megabyte subject.
+	_, ctxSize := utf8.DecodeLastRuneInString(text[:byteOffset])
+	ctxStart := byteOffset - ctxSize
+	wrapped := `\A[\s\S][\s\S]*?(` + pattern + `)`
+	wrappedRe, err := cache.compile(wrapped)
+	if err != nil {
+		return nil, fmt.Errorf("%s invalid regex: %w", method, err)
+	}
+	indices := wrappedRe.FindStringSubmatchIndex(text[ctxStart:])
+	if indices == nil {
+		return nil, nil
+	}
+	// Drop the wrapper's whole-match pair (the leading context plus the user
+	// match) and re-base the remaining pairs onto text. The wrapper's group 1 is
+	// the user's whole match (Ruby's group 0); each later pair is a user capture.
+	userIndices := indices[2:]
+	rebased := make([]int, len(userIndices))
+	for i, idx := range userIndices {
+		if idx < 0 {
+			rebased[i] = idx
+			continue
+		}
+		rebased[i] = idx + ctxStart
+	}
+	return rebased, nil
+}
+
 func validateRegexReplacement(method, replacement string) error {
 	if len(replacement) > maxRegexInputBytes {
 		return fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
@@ -1272,8 +1343,8 @@ func stringMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.match does not accept keyword arguments")
 			}
-			if len(args) != 1 {
-				return NewNil(), fmt.Errorf("string.match expects exactly one pattern")
+			if len(args) < 1 || len(args) > 2 {
+				return NewNil(), fmt.Errorf("string.match expects a pattern and optional offset")
 			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.match pattern must be string")
@@ -1283,11 +1354,39 @@ func stringMemberQuery(property string) (Value, error) {
 			if err := validateRegexTextPattern("string.match", text, pattern); err != nil {
 				return NewNil(), err
 			}
-			re, err := compileCachedRegex(pattern)
-			if err != nil {
-				return NewNil(), fmt.Errorf("string.match invalid regex: %w", err)
+			// Ruby counts a negative offset back from the end of the string; an
+			// offset that falls before the start yields nil. The regex is still
+			// compiled in that branch so an invalid pattern is rejected regardless
+			// of the offset, mirroring the in-range path: the offset only decides
+			// the match result, never whether a bad regex is accepted.
+			//
+			// Unlike String#match?, a positive offset that runs past the end is
+			// clamped to the length rather than rejected: Ruby still starts the
+			// search at the end, so a zero-width-capable pattern matches the empty
+			// string there while a pattern that needs a character returns nil. The
+			// regex engine decides the outcome from the clamped end position.
+			offset := 0
+			if len(args) == 2 {
+				raw, err := valueToInt(args[1])
+				if err != nil {
+					return NewNil(), fmt.Errorf("string.match offset must be integer")
+				}
+				effective, ok := stringEffectiveOffset(text, raw)
+				if !ok {
+					if _, compileErr := compileCachedRegex(pattern); compileErr != nil {
+						return NewNil(), fmt.Errorf("string.match invalid regex: %w", compileErr)
+					}
+					return NewNil(), nil
+				}
+				if runeLen := stringRuneLen(text); effective > runeLen {
+					effective = runeLen
+				}
+				offset = effective
 			}
-			indices := re.FindStringSubmatchIndex(text)
+			indices, err := regexSubmatchFromRuneOffset("string.match", text, pattern, offset)
+			if err != nil {
+				return NewNil(), err
+			}
 			if indices == nil {
 				return NewNil(), nil
 			}

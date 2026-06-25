@@ -312,13 +312,43 @@ ASCII case folding so that distinct byte sequences stay distinct. This mirrors
 Ruby's binary-string path and preserves byte identity, where the Unicode path
 would otherwise treat every invalid byte as the same replacement character.
 
-### `match(pattern)`
+### `match(pattern, offset = 0)`
 
-Regex match returning `[full, capture1, ...]` or `nil`:
+Regex match returning `[full, capture1, ...]` or `nil`. Captures that did not
+participate are `nil`:
 
 ```vibe
 "ID-12 ID-34".match("ID-([0-9]+)") # ["ID-12", "12"]
 ```
+
+The optional `offset` is a character (codepoint) position to begin searching
+from, so callers can scan from a known point without slicing the receiver first:
+
+```vibe
+"hello".match("l", 3)  # ["l"]
+"hello".match("l", 4)  # nil
+"hello".match("o*", 6) # [""] (clamped to the end; zero-width pattern matches)
+```
+
+Offsets behave like Ruby's `String#match`:
+
+- a non-negative offset searches for the first match starting at or after that
+  character position;
+- a negative offset counts back from the end of the string (so `-1` starts at
+  the last character); an offset that lands before the start returns `nil`;
+- a positive offset greater than the receiver length is clamped to the length and
+  the search runs from the end, matching Ruby: a zero-width-capable pattern (such
+  as `o*`, `.*`, `$`, or `\z`) matches the empty string there, while a pattern
+  that needs a character to consume returns `nil`. (This is where `match` differs
+  from `match?`, which instead returns `false` for an offset past the length.)
+- `^`, `\b`, and `\B` keep the full-string context across the offset (the
+  characters before the offset still count toward boundary checks), and `\A`
+  only matches at the absolute start, so it fails once the offset is past
+  position zero.
+
+The offset accepts an integer or a float (truncated toward zero, as in Ruby);
+any other type is rejected. An invalid regex is reported regardless of the
+offset, and the same regex engine and size guards as `match?` apply.
 
 ### `match?(pattern, offset = 0)`
 
