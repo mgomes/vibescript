@@ -1113,6 +1113,14 @@ func arrayMemberQuery(property string) (Value, error) {
 			for _, item := range receiver.Array() {
 				truthy := item.Truthy()
 				if runner != nil {
+					// Charge a step per yield so an empty or trivial block body
+					// cannot starve the step quota or cancellation checks while
+					// traversing a large receiver; runner.call only charges steps
+					// for the statements it evaluates, and an empty block evaluates
+					// none.
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
 					blockArg[0] = item
 					val, err := runner.call(blockArg[:])
 					if err != nil {

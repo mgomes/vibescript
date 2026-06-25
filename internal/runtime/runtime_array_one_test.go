@@ -91,3 +91,24 @@ end`
 	}
 	requireCallRuntimeErrorType(t, script, "run", []Value{NewArray(items)}, CallOptions{}, runtimeErrorTypeLimit)
 }
+
+// TestArrayOneEmptyBlockHonorsStepQuota guards the no-op block case. An empty
+// block evaluates no statements, so runner.call charges no steps; without a
+// per-element step charge one? could scan the whole receiver and ignore the step
+// quota (and, by the same path, context cancellation). The block never yields a
+// truthy value, forcing a full scan, so the tight quota must still trip.
+func TestArrayOneEmptyBlockHonorsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(values)
+  values.one? do |v|
+  end
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 40, MemoryQuotaBytes: 64 << 20}, source)
+
+	items := make([]Value, 2000)
+	for i := range items {
+		items[i] = NewInt(int64(i + 1))
+	}
+	requireCallRuntimeErrorType(t, script, "run", []Value{NewArray(items)}, CallOptions{}, runtimeErrorTypeLimit)
+}
