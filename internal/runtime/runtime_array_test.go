@@ -885,3 +885,84 @@ func TestArrayAndHashHelpers(t *testing.T) {
 	requireCallErrorContains(t, script, "bad_deep_transform", nil, CallOptions{}, "hash.deep_transform_keys block must return symbol or string")
 	requireCallErrorContains(t, script, "bad_deep_transform_cycle", nil, CallOptions{}, "hash.deep_transform_keys does not support cyclic structures")
 }
+
+// TestArrayFirstLastArity confirms first and last keep their zero-argument and
+// single-count behavior while rejecting extra positional arguments and any
+// keyword arguments, matching Ruby's Array#first/Array#last arity of 0..1.
+func TestArrayFirstLastArity(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def first_default()
+      [1, 2, 3].first
+    end
+
+    def first_count(n)
+      [1, 2, 3].first(n)
+    end
+
+    def first_extra()
+      [1, 2, 3].first(1, 2)
+    end
+
+    def first_kwarg()
+      [1, 2, 3].first(n: 2)
+    end
+
+    def first_count_kwarg()
+      [1, 2, 3].first(1, n: 2)
+    end
+
+    def last_default()
+      [1, 2, 3].last
+    end
+
+    def last_count(n)
+      [1, 2, 3].last(n)
+    end
+
+    def last_extra()
+      [1, 2, 3].last(1, 2)
+    end
+
+    def last_kwarg()
+      [1, 2, 3].last(n: 2)
+    end
+
+    def last_count_kwarg()
+      [1, 2, 3].last(1, n: 2)
+    end
+    `)
+
+	if got := callFunc(t, script, "first_default", nil); !got.Equal(NewInt(1)) {
+		t.Fatalf("first (no args) mismatch: want 1, got %#v", got)
+	}
+	if got := callFunc(t, script, "last_default", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("last (no args) mismatch: want 3, got %#v", got)
+	}
+
+	countCases := []struct {
+		name string
+		fn   string
+		arg  int64
+		want []Value
+	}{
+		{name: "first zero count", fn: "first_count", arg: 0, want: nil},
+		{name: "first single count", fn: "first_count", arg: 2, want: []Value{NewInt(1), NewInt(2)}},
+		{name: "last zero count", fn: "last_count", arg: 0, want: nil},
+		{name: "last single count", fn: "last_count", arg: 2, want: []Value{NewInt(2), NewInt(3)}},
+	}
+	for _, tc := range countCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, []Value{NewInt(tc.arg)})
+			compareArrays(t, got, tc.want)
+		})
+	}
+
+	requireCallErrorContains(t, script, "first_extra", nil, CallOptions{}, "array.first accepts at most one count")
+	requireCallErrorContains(t, script, "last_extra", nil, CallOptions{}, "array.last accepts at most one count")
+	requireCallErrorContains(t, script, "first_kwarg", nil, CallOptions{}, "array.first does not take keyword arguments")
+	requireCallErrorContains(t, script, "first_count_kwarg", nil, CallOptions{}, "array.first does not take keyword arguments")
+	requireCallErrorContains(t, script, "last_kwarg", nil, CallOptions{}, "array.last does not take keyword arguments")
+	requireCallErrorContains(t, script, "last_count_kwarg", nil, CallOptions{}, "array.last does not take keyword arguments")
+}
