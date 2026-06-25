@@ -327,3 +327,45 @@ func TestOptionalKeywordParameterLessThanDefault(t *testing.T) {
 		t.Fatalf("f(limit: 30) = %#v, want false", above)
 	}
 }
+
+// TestOptionalKeywordParameterDefaultNotEvaluatedOnInvalidCall verifies that a
+// keyword default is never evaluated when the call shape can never bind. A
+// default may raise, have side effects, or consume the step quota, so a missing
+// required keyword or a leftover positional argument must surface first rather
+// than being masked by the default. The defaults here divide by zero, so any
+// evaluation would replace the shape error with a division error.
+func TestOptionalKeywordParameterDefaultNotEvaluatedOnInvalidCall(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def missing_required(a: (1 / 0), b:)
+      a + b
+    end
+
+    def extra_positional(a: (1 / 0))
+      a
+    end
+
+    def unknown_keyword(a: (1 / 0))
+      a
+    end
+    `)
+
+	t.Run("default_before_missing_required_keyword", func(t *testing.T) {
+		t.Parallel()
+		requireCallErrorContains(t, script, "missing_required", nil, CallOptions{},
+			"missing keyword argument b")
+	})
+
+	t.Run("default_before_extra_positional", func(t *testing.T) {
+		t.Parallel()
+		requireCallErrorContains(t, script, "extra_positional", []Value{NewInt(1)}, CallOptions{},
+			"unexpected positional arguments")
+	})
+
+	t.Run("default_before_unknown_keyword", func(t *testing.T) {
+		t.Parallel()
+		requireCallErrorContains(t, script, "unknown_keyword", nil, CallOptions{
+			Keywords: map[string]Value{"z": NewInt(1)},
+		}, "unexpected keyword argument z")
+	})
+}
