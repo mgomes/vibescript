@@ -214,8 +214,10 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   Operator-symbol literals such as `:+` are not yet accepted because the lexer
   cannot tokenize them; use the string form (`reduce("+")`) for now. That
   shorthand is tracked in [#801](https://github.com/mgomes/vibescript/issues/801).
-  A block, when supplied, always takes precedence, so a lone argument alongside
-  a block is treated as `initial`.
+  With a block and a single argument, the block takes precedence and the lone
+  argument is treated as `initial`. With two arguments (`reduce(initial,
+  operation)`) the operation is always used and any block is ignored, matching
+  Ruby (`[1, 2, 3].reduce(10, :+) { |a, b| a * b }` folds with `+`).
 
 ### Membership and Counting
 
