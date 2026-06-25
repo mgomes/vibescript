@@ -1111,16 +1111,20 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 	switch value := stmt.Value.(type) {
 	case *CallExpr:
 		member, ok := value.Callee.(*MemberExpr)
-		// append is a documented alias for push, so it shares the
-		// accumulator fast path that reuses the receiver's backing buffer.
-		if !ok || (member.Property != "push" && member.Property != "append") || len(value.KwArgs) > 0 || value.Block != nil {
+		// Only push uses the accumulator fast path. That path reuses the
+		// receiver's hidden backing buffer across iterations, which is sound for
+		// push because it is the canonical accumulator pattern. append is a
+		// documented non-mutating helper: routing it through the shared buffer
+		// would let escaped aliases (b = a) observe later appends, so it stays on
+		// the normal copy path that always returns a fresh array.
+		if !ok || member.Property != "push" || len(value.KwArgs) > 0 || value.Block != nil {
 			return NewNil(), false, nil
 		}
 		receiver, ok := member.Object.(*Identifier)
 		if !ok || receiver.Name != target.Name {
 			return NewNil(), false, nil
 		}
-		return exec.evalArrayPushAppendAssignment(target.Name, value, env)
+		return exec.evalArrayPushAssignment(target.Name, value, env)
 	case *BinaryExpr:
 		if value.Operator != tokenPlus {
 			return NewNil(), false, nil
@@ -1139,7 +1143,7 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 	}
 }
 
-func (exec *Execution) evalArrayPushAppendAssignment(name string, call *CallExpr, env *Env) (Value, bool, error) {
+func (exec *Execution) evalArrayPushAssignment(name string, call *CallExpr, env *Env) (Value, bool, error) {
 	receiver, ok := env.Get(name)
 	if !ok || receiver.Kind() != KindArray {
 		return NewNil(), false, nil

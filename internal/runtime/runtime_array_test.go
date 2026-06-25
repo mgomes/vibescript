@@ -1163,11 +1163,13 @@ func TestArrayAppendPrependRejectKeywordArguments(t *testing.T) {
 		"array.prepend does not take keyword arguments")
 }
 
-func TestArrayAppendAssignmentFastPath(t *testing.T) {
+func TestArrayAppendAssignmentReturnsFreshArray(t *testing.T) {
 	t.Parallel()
-	// append shares push's accumulator fast path that reuses the backing
-	// buffer, so x = x.append(i) must accumulate correctly and keep aliases
-	// isolated exactly like x = x.push(i).
+	// append is a documented non-mutating helper. Unlike push, x = x.append(i)
+	// must not route through the accumulator fast path that reuses a hidden
+	// backing buffer: every append has to return a fresh array so escaped
+	// aliases never observe later appends. Accumulation in a loop still works
+	// because each iteration starts from the previous (independent) result.
 	script := compileScript(t, `
     def append_accumulate(n)
       out = []
@@ -1184,6 +1186,17 @@ func TestArrayAppendAssignmentFastPath(t *testing.T) {
       b[0] = 9
       { a: a, b: b }
     end
+
+    def repeated_append_alias()
+      a = []
+      a = a.append(1)
+      a = a.append(2)
+      a = a.append(3)
+      b = a
+      a = a.append(4)
+      b[0] = 9
+      { a: a, b: b }
+    end
     `)
 
 	want := []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5)}
@@ -1192,4 +1205,62 @@ func TestArrayAppendAssignmentFastPath(t *testing.T) {
 	aliased := callFunc(t, script, "append_alias", nil).Hash()
 	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
 	compareArrays(t, aliased["b"], []Value{NewInt(9)})
+
+	// Several appends grow the result past its exact length before b escapes via
+	// b = a, then a appends once more. b must retain [9, 2, 3] and a [1, 2, 3, 4]:
+	// append never lets an escaped alias observe a later append.
+	repeated := callFunc(t, script, "repeated_append_alias", nil).Hash()
+	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
+	compareArrays(t, repeated["b"], []Value{NewInt(9), NewInt(2), NewInt(3)})
+}
+
+// TestArrayAppendAssignmentStaysOffPushFastPath pins the routing contract behind
+// append's non-mutating guarantee. push is the accumulator pattern, so
+// x = x.push(i) is allowed to retain a hidden backing buffer on x and reuse it
+// for the next push. append is documented non-mutating: routing x = x.append(i)
+// through that shared buffer would make the optimization's correctness depend on
+// the read-escape guard that drops the buffer whenever x is read elsewhere.
+// Excluding append from the fast path removes that dependency, so append must
+// never leave a retained append buffer behind. This white-box check fails if
+// append is ever re-added to evalArrayAppendAssignment's fast path.
+func TestArrayAppendAssignmentStaysOffPushFastPath(t *testing.T) {
+	t.Parallel()
+
+	retainedBufferAfter := func(t *testing.T, method string) bool {
+		t.Helper()
+		script := compileScriptDefault(t, "def run()\n  nil\nend")
+		root := newEnv(nil)
+		exec := newExecutionForCall(script, context.Background(), root, CallOptions{})
+		env := newEnv(root)
+		env.Define("a", NewArray([]Value{NewInt(1)}))
+
+		// a = a.<method>(2), driven through the real statement dispatcher so the
+		// fast path and its normal-evaluation fallback both behave as in scripts.
+		stmt := &AssignStmt{
+			Target: &Identifier{Name: "a"},
+			Value: &CallExpr{
+				Callee: &MemberExpr{
+					Object:   &Identifier{Name: "a"},
+					Property: method,
+				},
+				Args: []Expression{&IntegerLiteral{Value: 2}},
+			},
+		}
+
+		if _, _, err := exec.evalStatement(stmt, env); err != nil {
+			t.Fatalf("evalStatement(a = a.%s(2)): %v", method, err)
+		}
+		got, _ := env.Get("a")
+		compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
+
+		_, retained := env.arrayAppendBuffer("a")
+		return retained
+	}
+
+	if !retainedBufferAfter(t, "push") {
+		t.Fatal("push must retain a backing buffer for the accumulator fast path")
+	}
+	if retainedBufferAfter(t, "append") {
+		t.Fatal("append must not retain a fast-path backing buffer; it must return a fresh array")
+	}
 }
