@@ -568,12 +568,15 @@ func (v Value) Eql(other Value) bool {
 // value) are identical only when they share the same backing storage, so two
 // independently constructed composites with equal contents are not identical.
 //
-// Empty arrays are the one principled exception: Go gives every non-nil
-// zero-length slice the same backing pointer (its runtime zerobase), so two
-// empty arrays always report identical. This is harmless because an empty array
-// has no element storage to alias — appending to one never affects another — so
-// they behave as a single value-like empty rather than as distinct mutable
-// objects. Empty hashes and objects stay distinct because NewHash and NewObject
+// Empty arrays are the one principled exception: any two empty arrays report
+// identical regardless of their backing storage. This is harmless because an
+// empty array has no element storage to alias — appending to one never affects
+// another — so they behave as a single value-like empty rather than as distinct
+// mutable objects. Backing pointers alone cannot establish this, because an
+// empty result preallocated with spare capacity (for example array.select
+// starting from make([]Value, 0, len(arr))) carries its own non-zerobase pointer
+// and a different capacity than a literal []; only a length check captures the
+// contract. Empty hashes and objects stay distinct because NewHash and NewObject
 // allocate a fresh backing map for nil input, so each empty composite carries
 // its own non-nil pointer rather than sharing the nil map's zero pointer.
 func (v Value) Identical(other Value) bool {
@@ -584,6 +587,15 @@ func (v Value) Identical(other Value) bool {
 	case KindArray:
 		left := v.data.([]Value)
 		right := other.data.([]Value)
+		// All empty arrays are identical: an empty array has no element storage
+		// to alias, so appending to one never affects another, and they behave as
+		// a single value-like empty. Comparing backing pointers is not enough,
+		// because an empty result preallocated with spare capacity (for example
+		// array.select starting from make([]Value, 0, len(arr))) carries its own
+		// non-zerobase pointer and a different capacity than a literal [].
+		if len(left) == 0 && len(right) == 0 {
+			return true
+		}
 		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer() &&
 			len(left) == len(right) && cap(left) == cap(right)
 	case KindHash, KindObject:

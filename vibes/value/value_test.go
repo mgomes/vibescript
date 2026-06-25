@@ -1553,9 +1553,19 @@ func TestValueIdentical(t *testing.T) {
 		{"ranges", value.NewRange(value.Range{Start: 1, End: 3}), value.NewRange(value.Range{Start: 1, End: 3}), true},
 		{"arrays_shared_backing", value.NewArray(sharedSlice), value.NewArray(sharedSlice), true},
 		{"arrays_distinct_backing", value.NewArray([]value.Value{value.NewInt(1)}), value.NewArray([]value.Value{value.NewInt(1)}), false},
-		// Non-nil empty slices all share Go's zerobase backing, and an empty
-		// array has no element storage to alias, so two empties report identical.
-		{"empty_arrays_share_zerobase", value.NewArray([]value.Value{}), value.NewArray([]value.Value{}), true},
+		// An empty array has no element storage to alias, so two empties report
+		// identical regardless of their backing storage.
+		{"empty_arrays_identical", value.NewArray([]value.Value{}), value.NewArray([]value.Value{}), true},
+		// An empty array produced with spare capacity (the way array.select and
+		// peers preallocate via make([]Value, 0, len(arr))) carries a distinct,
+		// non-zerobase backing pointer and a non-zero capacity, yet it must still
+		// be identical to a literal empty array under the all-empties-alike
+		// contract.
+		{"empty_array_with_spare_cap_identical", value.NewArray(make([]value.Value, 0, 4)), value.NewArray([]value.Value{}), true},
+		{"empty_arrays_distinct_spare_cap_identical", value.NewArray(make([]value.Value, 0, 4)), value.NewArray(make([]value.Value, 0, 8)), true},
+		// A non-empty array is never identical to an empty one even though the
+		// empty case short-circuits before comparing backing storage.
+		{"empty_array_vs_nonempty_distinct", value.NewArray([]value.Value{}), value.NewArray([]value.Value{value.NewInt(1)}), false},
 		{"hashes_shared_backing", value.NewHash(sharedMap), value.NewHash(sharedMap), true},
 		{"hashes_distinct_backing", value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), false},
 		// Empty maps each receive a distinct backing, unlike empty slices.

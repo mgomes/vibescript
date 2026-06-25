@@ -5,4 +5,7 @@
   rather than raising when the operands' kinds differ, and a class may override
   them with its own methods of the same name. Every empty hash and object now
   carries its own backing storage, so two independently built empties (including
-  `{}` from `JSON.parse("{}")`) are distinct objects under `equal?`.
+  `{}` from `JSON.parse("{}")`) are distinct objects under `equal?`. Empty arrays
+  are the one exception: any two empty arrays are `equal?` regardless of how they
+  were produced, so `[1].select { |x| false }.equal?([])` is `true` even though
+  `select` preallocates its result with spare capacity.

@@ -246,6 +246,18 @@ end`,
 end`,
 			want: []Value{NewBool(true), NewBool(false), NewBool(true)},
 		},
+		{
+			// All empty arrays are equal? to one another. array.select preallocates
+			// its result with make([]Value, 0, len(arr)), so filtering everything
+			// out yields an empty array with spare capacity and a non-zerobase
+			// backing pointer; it must still be equal? to a literal empty array.
+			name: "empty array from select",
+			script: `def run()
+  a = [1].select { |x| false }
+  [a.equal?([]), a.eql?([]), [].equal?([])]
+end`,
+			want: []Value{NewBool(true), NewBool(true), NewBool(true)},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
