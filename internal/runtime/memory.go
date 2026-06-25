@@ -11,6 +11,7 @@ import (
 
 const (
 	estimatedValueBytes        = int(unsafe.Sizeof(Value{}))
+	estimatedIntBytes          = int(unsafe.Sizeof(int(0)))
 	estimatedStringHeaderBytes = 16
 	estimatedSliceBaseBytes    = 24
 	estimatedMapBaseBytes      = 48
@@ -339,6 +340,27 @@ func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwa
 	return acc
 }
 
+// reserveScratch folds a fixed scratch allocation into the baseline so it is held
+// against the quota for the build's entire lifetime, and rejects the build if the
+// reservation alone already overflows. Builders that keep a Go-local scratch
+// buffer live while the result accumulates (String#scan holds the engine's whole
+// [][]int match table the entire time it materializes per-match result elements
+// from it) reserve that buffer here so its bytes coexist with every accumulated
+// element at peak. Without the reservation a build could keep both the scratch and
+// the growing result live and exceed the quota by the scratch size before the
+// per-element check observed it. scratchBytes is the heap footprint of that live
+// buffer.
+func (acc *arrayBuildAccumulator) reserveScratch(scratchBytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, scratchBytes)
+	if acc.base > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // add charges a newly appended element and rejects the build if the result's
 // projected memory exceeds the quota. backingCap is the capacity of the result's
 // backing slice after the append; its slot array is charged from that capacity
@@ -348,7 +370,9 @@ func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwa
 // Elements aliased by a baseline root (for example filter_map returning an
 // element of its receiver unchanged) are deduplicated by the persistent
 // estimator, so their backing is charged once, exactly as the post-call check
-// would.
+// would. Scratch buffers held live for the build's duration are charged via
+// reserveScratch, which folds them into the baseline so they are counted
+// alongside the growing result rather than separately.
 func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil

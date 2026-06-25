@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
+	"regexp/syntax"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -1925,12 +1927,7 @@ func stringMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), fmt.Errorf("string.scan invalid regex: %w", err)
 			}
-			matches := re.FindAllString(text, -1)
-			values := make([]Value, len(matches))
-			for i, m := range matches {
-				values[i] = NewString(m)
-			}
-			return NewArray(values), nil
+			return stringScan(exec, re, pattern, text, receiver, args, kwargs, block)
 		}), nil
 	case "index":
 		return NewAutoBuiltin("string.index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1989,6 +1986,271 @@ func stringMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
+}
+
+// stringScanInitialCap bounds the result slice's initial capacity so a subject
+// that yields few matches under a tight step or memory quota does not reserve a
+// large backing array before the per-match checks can reject the call. append
+// grows the backing as matches accumulate, keeping the live allocation
+// proportional to the matches the quotas actually permit.
+const stringScanInitialCap = 256
+
+// stringScan implements String#scan with Ruby's capture-aware result shape while
+// keeping its memory bounded by the sandbox quotas. With no capture groups each
+// element is the full match string; with one or more groups each element is an
+// array of that match's captured substrings, with nil for groups that did not
+// participate in the match.
+//
+// Matching is delegated to the regexp engine, which performs the non-overlapping,
+// left-to-right advancement (including empty-match suppression) over the FULL
+// subject. That is the only advancement that is both anchor-correct -- ^, $, \A,
+// \z, \b, and \B see the real surrounding characters -- and multi-rune-correct,
+// because the engine never detaches a suffix the way slicing text[pos:] would.
+// Two earlier hand-rolled advancements failed exactly here: substring slicing
+// made anchors fire at every slice boundary ("abc".scan("^") returning four
+// matches), and a one-rune look-back window dropped adjacent multi-rune matches
+// ("abcd".scan("..") returning ["ab"] instead of ["ab","cd"]). Letting the engine
+// advance avoids both.
+//
+// FindAllStringSubmatchIndex(text, -1) is the natural call, but it materializes
+// 2 + 2*groups ints per match as one [][]int table before the runtime can charge
+// anything; a pattern of thousands of empty () groups (still under the
+// pattern-size cap) over a near-limit subject would request matches × groups index
+// integers -- tens of gigabytes -- and OOM the host inside that call. The number of
+// matches the engine can return is bounded by the subject's rune count and the
+// pattern's minimum match length (regexScanMaxMatches), so the worst-case index
+// footprint is known up front from the pattern and subject alone, WITHOUT running
+// any match. guardRegexScanIndexFootprint projects that worst case and rejects
+// before calling the engine when it would exceed the FIXED host cap
+// (maxRegexScanIndexBytes), closing the OOM-inside-FindAll hole without a counting
+// pre-scan. That host cap is independent of the configurable memory quota: it bounds
+// only the transient host-side table, so a sparse scan whose real result is empty is
+// never rejected up front on a pessimistic worst case.
+//
+// Once the worst case fits, one step is charged BEFORE the engine table is
+// materialized: FindAllStringSubmatchIndex is the scan's expensive phase (a
+// zero-width pattern allocates a match slot per position over the whole subject),
+// so an already-canceled context or an exhausted step quota must abort before that
+// cost is paid rather than after. The per-match step charges that follow run only
+// once the table exists, so without this pre-step a tiny step quota or a canceled
+// context would still pay the full materialization cost first.
+//
+// The table is then built into the per-match RESULT elements incrementally against
+// the array-build accumulator. The engine's whole [][]int table stays live the
+// entire time the result accumulates, so the accumulator is SEEDED with that table's
+// actual footprint via reserveScratch before the first element is charged: the index
+// table and the growing result are then charged TOGETHER against the quota, bounding
+// their coexisting peak rather than letting each fit separately while their sum
+// exceeds the quota. One step is charged per match, so a scan whose output would
+// exceed the memory or step quota trips the limit as the result accumulates rather
+// than after the whole array is materialized.
+func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	groups := re.NumSubexp()
+
+	if err := guardRegexScanIndexFootprint(pattern, text, groups); err != nil {
+		return NewNil(), err
+	}
+
+	// Charge a step BEFORE materializing the match table. FindAllStringSubmatchIndex
+	// is the expensive part of a scan -- for a zero-width pattern over a near-limit
+	// subject it allocates a slot per position -- and the per-match charges below run
+	// only after it completes. Stepping here means an already-canceled context or an
+	// exhausted step quota aborts the scan before that work runs rather than paying
+	// its full CPU and allocation cost first; step() polls cancellation on its very
+	// first invocation, so even an empty subject observes a canceled context here.
+	if err := exec.step(); err != nil {
+		return NewNil(), err
+	}
+
+	allMatches := re.FindAllStringSubmatchIndex(text, -1)
+
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	// The engine's index table stays live the whole time the result is built from
+	// it, so charge its actual footprint into the accumulator's baseline; the
+	// per-element checks then see index table + growing result together.
+	if err := acc.reserveScratch(projectedRegexSubmatchIndexBytes(len(allMatches), groups)); err != nil {
+		return NewNil(), err
+	}
+
+	out := make([]Value, 0, min(len(allMatches), stringScanInitialCap))
+	for _, loc := range allMatches {
+		// Charge a step per match so a pattern that produces a flood of matches
+		// cannot starve the step quota or cancellation checks while the result is
+		// assembled.
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+
+		out = append(out, stringScanElement(text, loc, groups))
+		if err := acc.add(out[len(out)-1], cap(out)); err != nil {
+			return NewNil(), err
+		}
+	}
+
+	return NewArray(out), nil
+}
+
+// guardRegexScanIndexFootprint rejects a scan whose worst-case
+// FindAllStringSubmatchIndex index table would exceed the fixed host cap
+// (maxRegexScanIndexBytes), BEFORE the engine runs. That call allocates the whole
+// [][]int table -- maxMatches slices of 2 + 2*groups ints -- in one contiguous block
+// before any interpreter accounting can run, so a pattern of thousands of empty
+// capture groups over a large subject would request tens of gigabytes and OOM the
+// host inside the call. The worst-case table is known from the subject's rune count,
+// the pattern's minimum match length, and the group count alone (see
+// regexScanMaxMatches), without matching anything, so the scan rejects here and never
+// calls any FindAll variant when that worst case overflows the host cap.
+//
+// The guard deliberately checks the FIXED host cap, not the configurable memory
+// quota. The memory quota bounds the script-visible RESULT and is enforced
+// incrementally as that result accumulates (stringScan seeds the actual index
+// footprint and charges each element against it); applying the worst-case projection
+// to a small memory quota up front would reject ordinary sparse scans -- a plain "z"
+// over a few-KB subject that matches nothing -- whose real result is empty and fits
+// any quota. Separating the two keeps the host safe from the transient index table
+// while letting the quota govern the result the script actually holds.
+//
+// maxMatches is bounded by regexScanMaxMatches: a pattern whose every match consumes
+// at least minRunes runes yields at most runeCount/minRunes non-overlapping matches,
+// far fewer than the runeCount+1 a zero-width pattern can produce, so a sparse
+// non-zero-width many-group pattern is no longer rejected on a zero-width worst case
+// it cannot reach. Only patterns that can match the empty string (minRunes == 0) fall
+// back to the runeCount+1 worst case.
+func guardRegexScanIndexFootprint(pattern, text string, groups int) error {
+	maxMatches := regexScanMaxMatches(pattern, text)
+	if projectedRegexSubmatchIndexBytes(maxMatches, groups) > maxRegexScanIndexBytes {
+		return fmt.Errorf("string.scan match table exceeds limit %d bytes", maxRegexScanIndexBytes)
+	}
+	return nil
+}
+
+// regexScanMaxMatches returns an upper bound on the number of non-overlapping
+// matches FindAllStringSubmatchIndex can produce for pattern over text, without
+// running the engine. FindAll advances past every match, so when each match consumes
+// at least minRunes runes the subject admits at most runeCount/minRunes of them -- a
+// non-empty match cannot also yield the trailing empty match a zero-width pattern can,
+// so no +1 is added here. A pattern that can match the empty string (minRunes == 0)
+// can match at every position plus once at the end, so its bound is the runeCount+1
+// zero-width worst case.
+//
+// The bound stays correct even when pattern fails to parse here: regexScanMinMatchRunes
+// reports 0 (zero-width) for anything it cannot prove consumes input, so an
+// unparseable pattern -- which cannot happen for a scan whose regexp already compiled,
+// but is handled defensively -- falls back to the runeCount+1 worst case rather than
+// underestimating.
+func regexScanMaxMatches(pattern, text string) int {
+	runeCount := utf8.RuneCountInString(text)
+	minRunes := regexScanMinMatchRunes(pattern)
+	if minRunes <= 0 {
+		return runeCount + 1
+	}
+	return runeCount / minRunes
+}
+
+// regexScanMinMatchRunes returns a lower bound on the number of runes any single
+// match of pattern must consume, or 0 when the pattern can match the empty string
+// (or cannot be analyzed). It parses pattern with the same flags regexp.Compile uses
+// (syntax.Perl) so the bound matches the engine actually run for the scan.
+//
+// The result MUST never exceed the true minimum match length: regexScanMaxMatches
+// divides the subject's rune count by it, so an over-estimate would under-bound the
+// match count and could let the engine materialize a table larger than the quota
+// admits. Every uncertain case therefore collapses to 0 (treat as zero-width), which
+// over-rejects rather than under-rejects. A parse failure -- impossible for a scan
+// whose pattern already compiled, but guarded for defensively -- returns 0 for the
+// same reason.
+func regexScanMinMatchRunes(pattern string) int {
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return 0
+	}
+	return regexpMinMatchRunes(re)
+}
+
+// regexpMinMatchRunes walks a parsed regular expression and returns a lower bound on
+// the runes any single match must consume. Literals and single-rune classes consume
+// their runes; concatenation sums its parts; alternation takes the smallest branch;
+// a capture is transparent. Constructs that can match empty -- Star, Quest, anchors,
+// word boundaries, the empty match -- contribute 0, as does any operator not proven
+// to consume input, keeping the bound a safe under-estimate (see regexScanMinMatchRunes).
+func regexpMinMatchRunes(re *syntax.Regexp) int {
+	switch re.Op {
+	case syntax.OpLiteral:
+		return len(re.Rune)
+	case syntax.OpCharClass, syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		return 1
+	case syntax.OpCapture:
+		return regexpMinMatchRunes(re.Sub[0])
+	case syntax.OpConcat:
+		total := 0
+		for _, sub := range re.Sub {
+			total = saturatingAdd(total, regexpMinMatchRunes(sub))
+		}
+		return total
+	case syntax.OpAlternate:
+		minBranch := -1
+		for _, sub := range re.Sub {
+			branch := regexpMinMatchRunes(sub)
+			if minBranch < 0 || branch < minBranch {
+				minBranch = branch
+			}
+		}
+		if minBranch < 0 {
+			return 0
+		}
+		return minBranch
+	case syntax.OpPlus:
+		return regexpMinMatchRunes(re.Sub[0])
+	case syntax.OpRepeat:
+		return saturatingMul(re.Min, regexpMinMatchRunes(re.Sub[0]))
+	default:
+		// OpStar, OpQuest, the anchors, word boundaries, OpEmptyMatch, OpNoMatch, and
+		// anything unrecognized can match without consuming a rune: treat as zero-width.
+		return 0
+	}
+}
+
+// projectedRegexSubmatchIndexBytes returns the heap footprint of the [][]int table
+// FindAllStringSubmatchIndex materializes for matchCount matches of a pattern with
+// the given group count. Two costs accrue per match: the 2 + 2*groups index ints
+// the engine writes, and the structural overhead of the inner slice that holds them
+// -- a []int slice header occupying one slot in the outer [][]int backing array
+// (estimatedSliceBaseBytes, exactly unsafe.Sizeof([]int{})). Both are charged so the
+// projection is matchCount * ((2 + 2*groups) * estimatedIntBytes + estimatedSliceBaseBytes).
+//
+// The per-match slice overhead matters precisely for the low-capture shapes the int
+// payload alone undercounts: a no-capture zero-width or one-byte pattern writes only
+// 2 ints (16 bytes) per match yet still pays the 24-byte slice header, so omitting it
+// would under-report the table by more than half for every match. Counting it keeps
+// the worst-case guard and the accumulator seed -- which share this projection so the
+// up-front rejection and the running budget reserve the same bytes -- honest about
+// the table's true coexisting footprint rather than just its integer payload.
+func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
+	intsPerMatch := saturatingAdd(2, saturatingMul(2, groups))
+	indexBytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
+	bytesPerMatch := saturatingAdd(indexBytesPerMatch, estimatedSliceBaseBytes)
+	return saturatingMul(matchCount, bytesPerMatch)
+}
+
+// stringScanElement builds the per-match result element for String#scan: the full
+// match string when the pattern has no capture groups, otherwise an array holding
+// each captured substring with nil for groups that did not participate. loc is a
+// FindAllStringSubmatchIndex result element, indexed into text.
+func stringScanElement(text string, loc []int, groups int) Value {
+	if groups == 0 {
+		return NewString(text[loc[0]:loc[1]])
+	}
+	captures := make([]Value, groups)
+	for g := range groups {
+		start := loc[(g+1)*2]
+		end := loc[(g+1)*2+1]
+		if start < 0 || end < 0 {
+			captures[g] = NewNil()
+			continue
+		}
+		captures[g] = NewString(text[start:end])
+	}
+	return NewArray(captures)
 }
 
 func stringMemberTextOps(property string) (Value, error) {
