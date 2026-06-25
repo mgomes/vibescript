@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "dig", "count", "any?", "all?", "none?",
+	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
@@ -32,7 +32,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "dig", "count", "any?", "all?", "none?",
+	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
@@ -1101,6 +1101,49 @@ func arrayMemberQuery(property string) (Value, error) {
 				}
 			}
 			return NewBool(true), nil
+		}), nil
+	case "one?":
+		return NewAutoBuiltin("array.one?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.one? does not take arguments")
+			}
+			var runner *blockCallRunner
+			if valueBlock(block) != nil {
+				var err error
+				runner, err = newBlockCallRunner(exec, block, "array.one?")
+				if err != nil {
+					return NewNil(), err
+				}
+			}
+			matched := false
+			var blockArg [1]Value
+			for _, item := range receiver.Array() {
+				truthy := item.Truthy()
+				if runner != nil {
+					// Charge a step per yield so an empty or trivial block body
+					// cannot starve the step quota or cancellation checks while
+					// traversing a large receiver; runner.call only charges steps
+					// for the statements it evaluates, and an empty block evaluates
+					// none.
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					blockArg[0] = item
+					val, err := runner.call(blockArg[:])
+					if err != nil {
+						return NewNil(), err
+					}
+					truthy = val.Truthy()
+				}
+				if !truthy {
+					continue
+				}
+				if matched {
+					return NewBool(false), nil
+				}
+				matched = true
+			}
+			return NewBool(matched), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)

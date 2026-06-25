@@ -114,7 +114,8 @@ and leaves the receiver untouched.
   out-of-range indexes (including negative indexes, which arrays treat as out of
   range) yield `nil` rather than raising. A non-integer array index raises, like
   the index operator.
-- `any?`, `all?`, `none?` with optional blocks.
+- `any?`, `all?`, `none?`, `one?` with optional blocks. `one?` is true only when
+  exactly one element (or block result) is truthy.
 
 `index`, `find_index`, and `rindex` accept either a value or a block, never both;
 passing both raises an error. As a Vibescript extension, the value form also takes
