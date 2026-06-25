@@ -377,22 +377,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) == 0 {
 				return NewNil(), fmt.Errorf("hash.dig expects at least one key")
 			}
-			current := receiver
-			for _, arg := range args {
-				key, err := valueToHashKey(arg)
-				if err != nil {
-					return NewNil(), fmt.Errorf("hash.dig path keys must be symbol or string")
-				}
-				if current.Kind() != KindHash && current.Kind() != KindObject {
-					return NewNil(), nil
-				}
-				next, ok := current.Hash()[key]
-				if !ok {
-					return NewNil(), nil
-				}
-				current = next
-			}
-			return current, nil
+			return digPath("hash.dig", receiver, args)
 		}), nil
 	case "each":
 		return NewAutoBuiltin("hash.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
