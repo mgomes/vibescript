@@ -1942,14 +1942,15 @@ func stringMemberTextOps(property string) (Value, error) {
 			// The optional second argument is Ruby's limit. limit == 0 is the
 			// default and trims trailing empty fields, a positive limit caps the
 			// field count with the remainder unsplit in the final field, and a
-			// negative limit preserves trailing empty fields.
+			// negative limit preserves trailing empty fields. The limit must be a
+			// genuine integer: a Float (even one with no fractional part) is
+			// rejected so a computed numeric limit is never silently truncated.
 			limit := 0
 			if len(args) == 2 {
-				parsed, err := valueToInt(args[1])
-				if err != nil {
+				if args[1].Kind() != KindInt {
 					return NewNil(), fmt.Errorf("string.split limit must be integer")
 				}
-				limit = parsed
+				limit = int(args[1].Int())
 			}
 			text := receiver.String()
 			var parts []string

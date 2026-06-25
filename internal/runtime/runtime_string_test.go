@@ -425,6 +425,21 @@ func TestStringSplitRejectsInvalidSeparator(t *testing.T) {
 			script: `def run() "a,b".split(",", [2]) end`,
 			want:   "string.split limit must be integer",
 		},
+		// A Float limit is rejected even though it has a fractional part that
+		// could be truncated, so a computed numeric limit is never silently
+		// coerced into a different field count.
+		{
+			name:   "fractional float limit",
+			script: `def run() "a,b".split(",", 1.9) end`,
+			want:   "string.split limit must be integer",
+		},
+		// A whole-number Float is still a Float, not an Integer, so it is
+		// rejected too rather than being treated as its truncated value.
+		{
+			name:   "whole-number float limit",
+			script: `def run() "a,b".split(",", 2.0) end`,
+			want:   "string.split limit must be integer",
+		},
 		{
 			name:   "too many arguments",
 			script: `def run() "a,b".split(",", 2, 3) end`,
