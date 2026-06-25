@@ -480,6 +480,13 @@ Replaces the first occurrence of `pattern`:
 "ID-12 ID-34".sub("ID-[0-9]+", "X", regex: true) # "X ID-34"
 ```
 
+With `regex: true`, the replacement string uses Ruby-style backreferences (see
+[Replacement backreferences](#replacement-backreferences)):
+
+```vibe
+"abc123".sub("([a-z]+)([0-9]+)", "\\2-\\1", regex: true) # "123-abc"
+```
+
 ### `gsub(pattern, replacement, regex: false)`
 
 Replaces all occurrences of `pattern`:
@@ -487,6 +494,50 @@ Replaces all occurrences of `pattern`:
 ```vibe
 "bananas".gsub("na", "NA") # "baNANAs"
 "ID-12 ID-34".gsub("ID-[0-9]+", "X", regex: true) # "X X"
+"a1b2".gsub("([a-z])([0-9])", "\\2\\1", regex: true) # "1a2b"
+```
+
+#### Replacement backreferences
+
+For `sub`, `sub!`, `gsub`, and `gsub!` with `regex: true`, the replacement
+string follows Ruby's substitution syntax. A backslash introduces a
+backreference; every other character (including `$`) is copied verbatim, so
+`$1` and `$&` are literal text rather than group references:
+
+| Sequence   | Expands to                                            |
+| ---------- | ----------------------------------------------------- |
+| `\0`, `\&` | the entire match                                      |
+| `\1`–`\9`  | the matching capture group (single digit only)        |
+| `` \` ``   | the text before the match (pre-match)                 |
+| `\'`       | the text after the match (post-match)                 |
+| `\+`       | the last capture group that participated in the match |
+| `\k<name>` | the named capture group `name`                        |
+| `\\`       | a literal backslash                                   |
+
+A backslash followed by anything else is kept literally together with that
+character (so `\z` stays `\z`). Numbered or `\+` references to groups that did
+not participate expand to the empty string. A `\k<name>` that names a group the
+pattern never defines raises an error, as does an unterminated `\k<name`.
+
+As in Ruby, once a pattern defines any named capture group the numbered
+references `\1`–`\9` are disabled and expand to the empty string, even for
+groups that participated; reach those groups with `\k<name>` instead. The
+whole-match (`\0`, `\&`), pre/post-match (`` \` ``, `\'`), and `\k<name>`
+references keep working in that mode. For example
+`"John Smith".sub("(?<first>\\w+) (?<last>\\w+)", "\\2, \\1", regex: true)`
+yields `", "`.
+
+When a pattern reuses a group name (for example `(?<x>a)(?<x>b)` or
+`(?<x>foo)|(?<x>bar)`), `\k<name>` expands to the last occurrence that
+participated in the match, matching Ruby: `(?<x>a)(?<x>b)` over `"ab"` expands
+`\k<x>` to `"b"`, and `(?<x>a)(?<x>b)?(?<x>c)` over `"ac"` expands it to `"c"`.
+If the name exists but no occurrence participated, the reference expands to the
+empty string.
+
+```vibe
+"abc".sub("b", "<\\&>", regex: true)   # "a<b>c"
+"abc".sub("b", "<$&>", regex: true)    # "a<$&>c" ($& is literal)
+"John Smith".sub("(?<first>\\w+) (?<last>\\w+)", "\\k<last>, \\k<first>", regex: true) # "Smith, John"
 ```
 
 ### `delete_prefix(prefix)`

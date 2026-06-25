@@ -158,9 +158,13 @@ then truncated at a character boundary to fill the span.
 - `template(context, strict: false) -> string` – interpolate `{{key.path}}`
   placeholders from a hash; `strict: true` errors on missing placeholders.
 
-With `regex: true`, `sub`/`gsub` compile `pattern` as a regex, support `$1`
-style group expansion in `replacement`, and enforce the
-[regex guard limits](#guard-limits).
+With `regex: true`, `sub`/`gsub` compile `pattern` as a regex and expand
+Ruby-style backreferences in `replacement`: `\1`–`\9` insert capture groups,
+`\&` (or `\0`) the whole match, `` \` `` and `\'` the pre/post-match, `\+` the
+last participating group, `\k<name>` a named group, and `\\` a literal
+backslash. `$1` and `$&` are literal text, matching Ruby. See
+[String#sub replacement backreferences](strings.md#replacement-backreferences)
+for the full table. The regex [guard limits](#guard-limits) still apply.
 
 ### Bang Variants
 
