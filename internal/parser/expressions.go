@@ -219,7 +219,7 @@ func (p *parser) peekStartsPercentArrayArgument(callee ast.Expression) bool {
 
 func isParenlessArgumentStart(tt ast.TokenType) bool {
 	switch tt {
-	case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace, ast.TokenMinus:
+	case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace, ast.TokenMinus, ast.TokenPlus:
 		return false
 	case ast.TokenAmpersand:
 		return true
@@ -386,7 +386,7 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserArrayLiteral
 	case ast.TokenLBrace:
 		return prefixParserHashLiteral
-	case ast.TokenBang, ast.TokenNot, ast.TokenMinus:
+	case ast.TokenBang, ast.TokenNot, ast.TokenMinus, ast.TokenPlus:
 		return prefixParserPrefixExpression
 	case ast.TokenYield:
 		return prefixParserYieldExpression
@@ -510,16 +510,23 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenPlus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
+	case ast.TokenDot, ast.TokenScope, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
 		return true
-	case ast.TokenMinus:
-		return p.minusContinuesLine(tok)
+	case ast.TokenPlus, ast.TokenMinus:
+		return p.signContinuesLine(tok)
 	default:
 		return false
 	}
 }
 
-func (p *parser) minusContinuesLine(tok ast.Token) bool {
+// signContinuesLine reports whether a leading `+` or `-` continues the
+// previous line as a binary operator rather than beginning a new unary
+// expression. A sign immediately adjacent to its operand at the start of a
+// fresh line (such as `-b` or `+b`) starts a new statement, while a sign with
+// an intervening space or a line break before its operand continues the prior
+// line. This mirrors Ruby's disambiguation of `a\n- b` (subtraction) versus
+// `a\n-b` (a new `-b` statement).
+func (p *parser) signContinuesLine(tok ast.Token) bool {
 	if p.peekPeek.Type == ast.TokenEOF {
 		return false
 	}

@@ -251,6 +251,8 @@ Core operator families:
 - Arithmetic: `+`, `-`, `*`, `/`, `%`, `**`
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
+- Unary sign: prefix `-` negates a number; prefix `+` is the identity on
+  numbers and strings
 - Conditional: `condition ? when_true : when_false`
 
 The spaceship operator `<=>` returns `-1`, `0`, or `1` for ordered operands and
@@ -272,6 +274,14 @@ Inspect those special values with `Float#nan?`, `Float#infinite?`, and
 precedence as `&&`, and `or` has the same precedence as `||`. Ternary
 conditionals have lower precedence than `or`, associate to the right, and
 evaluate only the selected branch.
+
+Prefix `+` mirrors Ruby's unary plus: it returns integers, floats, and strings
+unchanged and raises on any other operand. Because Vibescript strings are
+immutable values, `+"x"` yields the same string value. Like unary `-`, a sign
+written flush against its operand at the start of a line begins a new statement
+(`total\n+amount` parses as two statements), while a sign with surrounding
+whitespace continues the previous line as a binary operator (`total\n + amount`
+is addition).
 
 ## Control Flow
 
