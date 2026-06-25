@@ -85,6 +85,30 @@ end`)
 	compareArrays(t, got, []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5), NewNil(), NewNil()})
 }
 
+func TestBlockParamDestructureMoreFixedTargetsThanValues(t *testing.T) {
+	t.Parallel()
+
+	// A destructuring block parameter with more fixed targets than the element
+	// provides plus a rest target previously panicked the host with a slice
+	// out-of-range (a sandbox DoS). The missing fixed targets must bind to nil
+	// and the rest must be empty, matching Ruby.
+	script := compileScript(t, `def run
+  over = [[1, 2]].map do |(a, b, c, *rest)|
+    [a, b, c, rest]
+  end
+  empty = [[]].map do |(k, *rest)|
+    [k, rest]
+  end
+  [over[0], empty[0]]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewArray([]Value{NewInt(1), NewInt(2), NewNil(), NewArray(nil)}),
+		NewArray([]Value{NewNil(), NewArray(nil)}),
+	})
+}
+
 func TestParallelAssignmentSupportsMutableTargetsAndEvaluatesRHSOnce(t *testing.T) {
 	t.Parallel()
 
