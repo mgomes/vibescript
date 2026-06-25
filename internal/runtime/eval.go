@@ -1395,10 +1395,14 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 		}
 	case KindHash:
 		entries := iterable.Hash()
-		// Charge the sorted-key scratch buffer before allocating it so a large
-		// receiver cannot escape the memory quota; the entry payloads are already
-		// accounted for by checkMemoryWith(iterable) above.
-		if err := exec.checkMemoryWith(iterable); err != nil {
+		// Like hash.each, a `for` over a hash builds no output map but materializes
+		// a sorted key list to walk entries deterministically. Charge that scratch
+		// buffer before allocating it so a large iterable cannot escape the memory
+		// quota; the statement-level checkMemoryWith only re-counts the resident
+		// hash and never adds the scratch footprint. The iterable plays the receiver
+		// role here, so an ephemeral hash literal is counted while a hash already
+		// bound to a variable is deduplicated against the live base.
+		if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), iterable, nil, nil, NewNil()); err != nil {
 			return NewNil(), false, err
 		}
 		var keyBuf [smallHashKeyBufferSize]string
