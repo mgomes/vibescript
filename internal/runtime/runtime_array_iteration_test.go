@@ -413,3 +413,52 @@ func TestArrayIterationHelpersIsolateYieldedSlices(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "slice_isolation", nil), []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
 	compareArrays(t, callFunc(t, script, "cons_isolation", nil), []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
 }
+
+// TestArrayEachNestedRestEmptyBodyTripsMemoryQuota mirrors the Hash#each nested-rest
+// escape on the array side: a |(head, *tail)| block over an array whose elements are
+// themselves arrays binds tail to a fresh, source-sized copy of each element. With an
+// EMPTY block body the body's own memory checks never run, and the receiver -- driven
+// directly into the builtin here -- lives only on the Go call stack, invisible to
+// estimateMemoryUsageBase. Without the per-call bind charge the array and hash
+// iterators now share, the fresh copy would escape the quota; the charge counts it
+// against the live call roots so a quota that fits the receiver but not the tail copy
+// must reject the walk. This is the array-side twin of
+// TestHashEachEmptyBodyNestedRestTripsMemoryQuota and likewise fails without the fix.
+func TestArrayEachNestedRestEmptyBodyTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	// |(head, *tail)| with an empty body: only the bind charge can observe the fresh
+	// tail copy each element yields.
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	block := NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil))
+
+	// One element whose payload dwarfs the headroom: binding its tail copies the whole
+	// element into a fresh backing the quota cannot hold.
+	const elementLen = 200_000
+	element := make([]Value, elementLen)
+	for i := range element {
+		element[i] = NewInt(int64(i))
+	}
+	receiver := NewArray([]Value{NewArray(element)})
+
+	// Size the quota to admit the live roots (receiver plus block) and a little
+	// headroom, but not the fresh tail copy the rest collects.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	quota := roots + 16*1024
+
+	member, err := arrayMember(receiver, "each")
+	if err != nil {
+		t.Fatalf("arrayMember(each): %v", err)
+	}
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err = valueBuiltin(member).Fn(exec, receiver, nil, nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}

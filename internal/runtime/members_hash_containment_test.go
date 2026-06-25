@@ -2551,3 +2551,161 @@ func TestHashEachBindsEachEntryOwnRest(t *testing.T) {
 		}
 	}
 }
+
+// emptyNestedRestEachBlock builds an EMPTY-body |(k, (head, *tail))| block. The
+// block defines and captures nothing, so it keeps its reusable environment and runs
+// no body statements -- the case where the body's own per-statement memory checks
+// never observe the freshly bound tail.
+func emptyNestedRestEachBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "k", Position: pos}},
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "head", Position: pos}},
+					{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+				},
+			}},
+		},
+	}
+	return NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil))
+}
+
+// nestedRestTailChargeBytes returns the bytes the per-call bind charge attributes to
+// the fresh tail a |(k, (head, *tail))| block binds over a [key, value] pair whose
+// value is valueArray. It mirrors blockBindCharge exactly: seed a fresh estimator
+// with the yielded pair (so payloads shared with the value deduplicate), then charge
+// the genuinely fresh rest backing of valueArray[1:]. Tests size quotas from this so
+// they track the estimator's real accounting rather than a hand-derived structure
+// that could drift from how arrays are charged.
+func nestedRestTailChargeBytes(valueArray Value) int {
+	pair := NewArray([]Value{NewSymbol("a"), valueArray})
+	tail := NewArray(slicesClone(valueArray.Array()[1:]))
+	est := newMemoryEstimator()
+	est.value(pair)
+	return est.value(tail)
+}
+
+// slicesClone copies src into a fresh backing of capacity exactly len(src), matching
+// the make+copy AssignDestructure uses for a rest backing so the charged footprint is
+// identical to the runtime path.
+func slicesClone(src []Value) []Value {
+	out := make([]Value, len(src))
+	copy(out, src)
+	return out
+}
+
+// TestHashEachEmptyBodyNestedRestTripsMemoryQuota is the core regression for the
+// nested-rest sandbox escape on PR #808. Hash#each yields each entry as a bounded
+// two-element [key, value] pair, but |(k, (head, *tail))| binds tail to a FRESH
+// copy of the whole hash value -- a backing sized to the value, not to the pair.
+// With an EMPTY block body the body's own memory checks never run, and the receiver
+// lives only on the Go call stack (invisible to estimateMemoryUsageBase), so the
+// fresh tail copy could escape the quota entirely. The per-call bind charge counts
+// that copy against the live call roots (including the receiver), so a quota that
+// admits the receiver and the bounded pair but NOT the fresh tail copy must reject
+// the walk. Without the charge this test fails: the empty body binds the huge tail
+// and returns without ever tripping.
+func TestHashEachEmptyBodyNestedRestTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// One entry whose value is a large array, so the rest copy AssignDestructure
+	// allocates dwarfs the bounded pair the iterator reserves.
+	const valueLen = 200_000
+	value := arrayValue(valueLen)
+	receiver := NewHash(map[string]Value{"a": value})
+	block := emptyNestedRestEachBlock()
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects a reusable-env block so the empty-body rebind path is exercised")
+	}
+
+	// Size the quota to admit the live call roots (which include the receiver and so
+	// the value array) plus the reserved [key, value] pair and a little headroom, but
+	// NOT the fresh tail copy the nested rest allocates.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	tailCharge := nestedRestTailChargeBytes(value)
+	const headroom = 16 * 1024
+	quota := roots + collapsedPairBytes + headroom
+
+	// Sanity: the fresh tail copy genuinely exceeds the headroom the quota leaves
+	// above the receiver, so its omission -- not an incidentally tight quota -- is
+	// what would let the walk escape.
+	if tailCharge <= headroom+collapsedPairBytes {
+		t.Fatalf("test setup expects the tail charge (%d) to exceed the headroom above the roots (%d)", tailCharge, headroom+collapsedPairBytes)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "each", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashEachNestedRestFitsWhenTailFitsQuota pins the other side of the bind
+// charge: it must not over-reject a nested-rest walk whose fresh tail copy genuinely
+// fits. A quota generously above the receiver, the pair, and the tail copy admits
+// the empty-body walk and returns the receiver, proving the charge bounds only the
+// fresh backing rather than rejecting every rest-collecting block.
+func TestHashEachNestedRestFitsWhenTailFitsQuota(t *testing.T) {
+	t.Parallel()
+
+	const valueLen = 50_000
+	value := arrayValue(valueLen)
+	receiver := NewHash(map[string]Value{"a": value})
+	block := emptyNestedRestEachBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	tailCharge := nestedRestTailChargeBytes(value)
+	quota := roots + collapsedPairBytes + tailCharge + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each over a nested-rest block whose tail fits the quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 1 {
+		t.Fatalf("each returned %v with %d entries, want the 1-entry receiver", got.Kind(), len(got.Hash()))
+	}
+}
+
+// TestHashEachNestedRestAccumulatorTripsMemoryQuota covers the live-footprint shape
+// the Codex thread on PR #808 raised: a block body that grows an outer accumulator
+// from each bound tail keeps earlier tails live, so binding a later entry's tail
+// allocates on top of every prior tail still referenced. With the receiver bound to a
+// script parameter (so it is reachable from the call env, not just the Go stack), the
+// body's own per-statement memory checks see both the growing accumulator and the
+// freshly bound tail in the reused/captured env chain, so the retained tails must
+// trip the quota partway through the walk rather than after the whole hash is
+// processed. This guards that retaining bound rests is bounded over the iteration,
+// not just per entry.
+func TestHashEachNestedRestAccumulatorTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// acc = acc + [tail] retains every bound tail through the outer accumulator, so
+	// the live footprint climbs by each entry's tail as the walk proceeds. The block
+	// captures acc, so it does not reuse its env, mirroring real closure-bearing
+	// blocks where the bound rest persists.
+	source := `def run(values)
+  acc = []
+  values.each do |(k, (head, *tail))|
+    acc = acc + [tail]
+  end
+  acc
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 16 << 20}, source)
+
+	// Several entries each carrying a sizable value, so the accumulator's retained
+	// tails climb past the 16 MiB quota partway through the walk.
+	const entries = 64
+	const valueLen = 20_000
+	receiverEntries := make(map[string]Value, entries)
+	for i := range entries {
+		receiverEntries["k"+strconv.Itoa(i)] = arrayValue(valueLen)
+	}
+	receiver := NewHash(receiverEntries)
+
+	requireCallRuntimeErrorType(t, script, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
+}

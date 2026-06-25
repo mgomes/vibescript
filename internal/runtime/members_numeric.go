@@ -124,7 +124,7 @@ func intMemberBuiltin(property string) (Value, error) {
 			if count > int64(math.MaxInt) {
 				return NewNil(), fmt.Errorf("int.times value too large")
 			}
-			runner, err := newBlockCallRunner(exec, block, "int.times")
+			runner, err := newBlockCallRunner(exec, block, "int.times", receiver, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}

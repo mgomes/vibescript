@@ -632,17 +632,27 @@ func ensureBlock(block Value, name string) error {
 }
 
 type blockCallRunner struct {
-	exec *Execution
-	blk  *Block
-	env  *Env
+	exec   *Execution
+	blk    *Block
+	env    *Env
+	charge *blockBindCharge
 }
 
-func newBlockCallRunner(exec *Execution, block Value, name string) (*blockCallRunner, error) {
+// newBlockCallRunner builds a runner for repeatedly invoking a block from an
+// iterator. receiver and kwargs are the iterator's call roots: they seed the
+// per-call bind charge that bounds the fresh backing a rest-collecting destructure
+// parameter (|(k, *tail)|) allocates, so the receiver -- live only on the Go stack
+// during the loop -- is counted alongside that backing.
+func newBlockCallRunner(exec *Execution, block Value, name string, receiver Value, kwargs map[string]Value) (*blockCallRunner, error) {
 	if err := ensureBlock(block, name); err != nil {
 		return nil, err
 	}
 	blk := valueBlock(block)
-	runner := &blockCallRunner{exec: exec, blk: blk}
+	runner := &blockCallRunner{
+		exec:   exec,
+		blk:    blk,
+		charge: newBlockBindCharge(exec, blk, receiver, kwargs, block),
+	}
 	if blockCanReuseEnv(blk) {
 		runner.env = newEnv(blk.Env)
 	}
@@ -650,11 +660,13 @@ func newBlockCallRunner(exec *Execution, block Value, name string) (*blockCallRu
 }
 
 func (runner *blockCallRunner) call(args []Value) (Value, error) {
-	if runner.env == nil {
-		return runner.exec.callBlock(runner.blk, args, newEnv(runner.blk.Env))
+	env := runner.env
+	if env == nil {
+		env = newEnv(runner.blk.Env)
+	} else {
+		env.resetForBlockCall(runner.blk.Env)
 	}
-	runner.env.resetForBlockCall(runner.blk.Env)
-	return runner.exec.callBlock(runner.blk, args, runner.env)
+	return runner.exec.callBlock(runner.blk, args, env, runner.charge)
 }
 
 // wantsCollapsedPair reports whether a hash iterator should yield each entry as a
@@ -685,10 +697,14 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		return NewNil(), err
 	}
 	blk := valueBlock(block)
-	return exec.callBlock(blk, args, newEnv(blk.Env))
+	// Capability adapters drive blocks with host-supplied arguments and no
+	// receiver, so charge any rest-collecting destructure binding against a
+	// baseline seeded with those arguments alone.
+	charge := newBlockBindCharge(exec, blk, NewNil(), nil, block)
+	return exec.callBlock(blk, args, newEnv(blk.Env), charge)
 }
 
-func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env) (Value, error) {
+func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge) (Value, error) {
 	exec.pushModuleContext(moduleContext{
 		key:    blk.moduleKey,
 		path:   blk.modulePath,
@@ -697,6 +713,7 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env) (Value
 	})
 	defer exec.popModuleContext()
 
+	charge.begin(args)
 	for i, param := range blk.Params {
 		var val Value
 		if i < len(args) {
@@ -716,7 +733,7 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env) (Value
 			val = normalized
 		}
 		if param.Target != nil {
-			if err := exec.bindBlockParamTarget(blockEnv, param.Target, val); err != nil {
+			if err := exec.bindBlockParamTarget(blockEnv, param.Target, val, charge); err != nil {
 				return NewNil(), err
 			}
 			continue
@@ -895,14 +912,18 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 	}
 }
 
-func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value) error {
+func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value, charge *blockBindCharge) error {
 	switch t := target.(type) {
 	case *Identifier:
 		env.Define(t.Name, value)
-		return nil
+		// Charge the bound leaf so a fresh rest backing a destructure collected
+		// (the only binding that allocates beyond the call roots) counts toward the
+		// quota even when the block body is empty. Pass-through bindings dedup
+		// against the seeded arguments and charge essentially nothing.
+		return charge.charge(value)
 	case *DestructureTarget:
 		return AssignDestructure(t, value, func(target Expression, value Value) error {
-			return exec.bindBlockParamTarget(env, target, value)
+			return exec.bindBlockParamTarget(env, target, value, charge)
 		})
 	default:
 		return exec.errorAt(target.Pos(), "invalid block parameter target")

@@ -621,6 +621,134 @@ func (acc *hashBuildAccumulator) checkQuota() error {
 	return nil
 }
 
+// blockBindCharge charges the fresh memory a block's destructuring parameters
+// allocate when they are bound. A destructuring parameter that collects a rest
+// (|(k, *tail)|, or the nested |(k, (head, *tail))|) makes AssignDestructure copy
+// the collected window into a fresh backing slice (make+copy) before binding it.
+// That copy is sized to the SOURCE, not to anything the iterator preflighted: over
+// a hash whose values are arrays, |(k, (head, *tail))| binds tail to a fresh copy
+// of the whole value array, a backing the per-entry [key, value] pair reservation
+// does not bound. With an empty (or trivial) block body the body's own memory
+// checks never observe that backing, and the iterator's receiver lives only on the
+// Go call stack (invisible to estimateMemoryUsageBase), so the fresh copy could
+// escape the sandbox quota entirely. This charge closes that gap in the one place
+// every block iterator shares (the param-binding path), so it covers Hash#each,
+// array.each/map/select, and any other block call alike.
+//
+// baseline is a single snapshot of the live call roots (exec's reachable roots
+// plus the receiver, kwargs, and block), measured ONCE when the runner is built --
+// the same footprint the iterator's preflight charged, including the receiver the
+// in-body checks cannot see. It is NOT remeasured per entry: re-walking the
+// receiver or the env stack on every iteration is the O(n^2) trap that previously
+// dominated CI runtime. Per-entry growth in outer scope is still caught by the
+// body's own per-statement checks, which walk the live env (the bound rest
+// included) on each statement.
+//
+// The snapshot baseline and the body's per-statement checks together cover the live
+// footprint: the snapshot accounts for the receiver (which the body checks cannot
+// see) plus the freshly bound rest, while the body checks account for any state the
+// body grows in outer scope (which the snapshot, taken before the loop, does not
+// see). The one shape neither view alone bounds is an ephemeral receiver (reachable
+// only through the builtin's Go frame) paired with a non-empty body that copies each
+// bound rest into a retained outer accumulator: there the body checks miss the
+// receiver and the snapshot misses the accumulator. Closing that corner would
+// require re-walking the receiver against the current outer state on every entry --
+// the O(n^2) walk this design deliberately avoids -- so it is left to the per-entry
+// body checks, which still bound the accumulator's own growth.
+//
+// Each call seeds a fresh estimator with that call's arguments (the [key, value]
+// pair for Hash#each, or the destructured element for array iterators), so a fresh
+// rest backing whose ELEMENTS alias the receiver's data deduplicates those payloads
+// to zero and only the backing's genuinely new slots are charged. The estimator is
+// reset every call so its seen-set never grows across a long loop, keeping the
+// charge O(the data bound this entry) and the whole walk O(total data).
+type blockBindCharge struct {
+	exec     *Execution
+	est      *memoryEstimator
+	baseline int
+	built    int
+}
+
+// newBlockBindCharge snapshots the live call roots as the baseline for charging a
+// block's destructured bindings, or returns nil when no charge is needed: either no
+// memory quota is enforced or the block has no rest-collecting destructure
+// parameter (the only binding shape that allocates a fresh, source-sized backing).
+// A plain or non-rest destructure parameter binds references already counted in the
+// call roots, so it allocates nothing fresh and needs no charge.
+func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, kwargs map[string]Value, block Value) *blockBindCharge {
+	if exec.memoryQuota <= 0 || !blockBindsRest(blk) {
+		return nil
+	}
+	return &blockBindCharge{
+		exec:     exec,
+		est:      newMemoryEstimator(),
+		baseline: exec.estimateMemoryUsageForCallRoots(receiver, nil, kwargs, block),
+	}
+}
+
+// begin prepares the charge for one block call: it resets the estimator and seeds
+// it with the call's arguments so any payload a freshly bound rest backing shares
+// with them (the receiver's own data, reached through the yielded pair or element)
+// deduplicates to zero. Only the backing's new slots remain to be charged. Seeding
+// walks just this call's arguments, never the whole receiver, so it stays O(the
+// data this entry yields).
+func (c *blockBindCharge) begin(args []Value) {
+	if c == nil {
+		return
+	}
+	c.est.reset()
+	c.built = 0
+	for _, arg := range args {
+		c.est.value(arg)
+	}
+}
+
+// charge adds a freshly bound leaf value to the running estimate and rejects the
+// call when the live baseline plus every value bound so far this call exceeds the
+// quota. The estimator returns each leaf's marginal footprint -- a value that
+// aliases the seeded arguments contributes only its structural slots, since its
+// payload deduplicates against the seed -- so a rest backing is charged its real
+// fresh footprint while a pass-through binding charges essentially nothing.
+func (c *blockBindCharge) charge(value Value) error {
+	if c == nil {
+		return nil
+	}
+	c.built = saturatingAdd(c.built, c.est.value(value))
+	if saturatingAdd(c.baseline, c.built) > c.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+	}
+	return nil
+}
+
+// blockBindsRest reports whether any of the block's parameters destructure a value
+// and collect a rest, the only binding shape AssignDestructure materializes into a
+// fresh, source-sized backing slice. Used to skip the per-call bind charge for the
+// common parameter shapes that allocate nothing fresh.
+func blockBindsRest(blk *Block) bool {
+	for i := range blk.Params {
+		if targetCollectsRest(blk.Params[i].Target) {
+			return true
+		}
+	}
+	return false
+}
+
+func targetCollectsRest(target Expression) bool {
+	destructure, ok := target.(*DestructureTarget)
+	if !ok {
+		return false
+	}
+	for _, element := range destructure.Elements {
+		if element.Rest {
+			return true
+		}
+		if targetCollectsRest(element.Target) {
+			return true
+		}
+	}
+	return false
+}
+
 // hashCallRootBytes estimates the live footprint a hash transform holds before it
 // reserves any output: exec's reachable roots plus the call roots (receiver,
 // args, kwargs, block). It excludes the output map's overhead so callers that
