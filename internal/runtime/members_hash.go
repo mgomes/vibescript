@@ -339,18 +339,25 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// each builds no output map, but it materializes a sorted key list to
-			// walk entries deterministically. Charge that scratch buffer before
-			// allocating it so a large receiver cannot escape the memory quota; the
-			// walk projection charges no output map this iterator never creates.
-			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
-				return NewNil(), err
-			}
 			// Match Ruby: a block declaring a single positional parameter receives
 			// each entry as a two-element [key, value] pair, while a block with two
 			// or more parameters auto-splats into key and value (extra parameters get
 			// nil). wantsCollapsedPair inspects the block's arity to pick the shape.
 			collapsePair := runner.wantsCollapsedPair()
+			// each builds no output map, but it materializes a sorted key list to
+			// walk entries deterministically. Charge that scratch buffer before
+			// allocating it so a large receiver cannot escape the memory quota; the
+			// walk projection charges no output map this iterator never creates. When
+			// the block wants the collapsed pair, also reserve the single [key, value]
+			// array the loop allocates per entry -- only one is live at a time, so a
+			// single pair's footprint bounds the peak.
+			perEntryBytes := 0
+			if collapsePair {
+				perEntryBytes = collapsedPairBytes
+			}
+			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), perEntryBytes, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			var blockArgs [2]Value
 			var pairArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -389,8 +396,9 @@ func hashMemberQuery(property string) (Value, error) {
 			entries := receiver.Hash()
 			// Charge the sorted key scratch buffer before allocating it; each_key
 			// builds no output map but walks a materialized key list, so the walk
-			// projection charges no output map.
-			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// projection charges no output map and no per-entry pair (it binds the
+			// key directly).
+			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), 0, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
@@ -420,8 +428,9 @@ func hashMemberQuery(property string) (Value, error) {
 			entries := receiver.Hash()
 			// Charge the sorted key scratch buffer before allocating it; each_value
 			// builds no output map but walks a materialized key list, so the walk
-			// projection charges no output map.
-			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// projection charges no output map and no per-entry pair (it binds the
+			// value directly).
+			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), 0, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value

@@ -242,19 +242,38 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 // return the receiver and build no derived map, so their only allocation beyond
 // the live call roots is the scratch key list (see sortedKeyBufferBytes); they
 // must not be charged an output map they never create. scratchBytes is the heap
-// footprint of that key list. Charging a phantom empty map here would falsely
-// reject a quota that exactly fits the receiver, block, and scratch.
-func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+// footprint of that key list, and perEntryBytes is any fixed allocation the walk
+// holds live for one entry at a time on top of the scratch -- the [key, value]
+// pair Hash#each materializes for a single-parameter block (collapsedPairBytes),
+// or zero for the forms that bind key and value directly. Only one such entry
+// allocation is live at a time, so charging a single one bounds the true peak
+// without re-walking the receiver per entry. Charging a phantom empty map here
+// would falsely reject a quota that exactly fits the receiver, block, scratch,
+// and that one entry allocation.
+func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes, perEntryBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
 	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), scratchBytes)
+	used = saturatingAdd(used, perEntryBytes)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
 	return nil
 }
+
+// collapsedPairBytes is the structural heap footprint of the fresh two-element
+// [key, value] array Hash#each allocates per entry when a single-parameter block
+// asks for the pair. The slice base plus two Value slots are new each iteration;
+// the key and value the slots reference alias the receiver's own entries, already
+// counted in the call-root usage, so only this structure is charged on top.
+//
+// Only one pair is live at a time -- the prior pair becomes unreachable once the
+// block call returns -- so the iterator reserves a single pair's footprint up
+// front (see checkProjectedHashWalkBytes' extra arguments) rather than re-walking
+// the receiver per entry, which would be O(n^2) on a large hash.
+const collapsedPairBytes = estimatedValueBytes + estimatedSliceBaseBytes + 2*estimatedValueBytes
 
 // arrayBuildAccumulator charges the memory of an array assembled element by
 // element against the quota without re-walking the whole prefix on each append.

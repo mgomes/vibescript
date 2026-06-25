@@ -911,6 +911,65 @@ func TestHashEachRejectsArguments(t *testing.T) {
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "hash.each does not take arguments")
 }
 
+// TestHashEachSingleParamPairChargedAgainstQuota verifies that the [key, value]
+// pair Hash#each materializes for a single-parameter block is charged against the
+// memory quota. The single-parameter form allocates a fresh pair array per entry
+// while the two-parameter form binds the key and value directly and allocates
+// nothing extra, so at a quota that exactly admits the two-parameter walk the
+// single-parameter walk must trip the limit by the pair's footprint. Without that
+// charge a large receiver could yield many uncharged pair arrays and escape the
+// sandbox memory bound.
+func TestHashEachSingleParamPairChargedAgainstQuota(t *testing.T) {
+	t.Parallel()
+
+	entries := make(map[string]Value, 200)
+	for i := range 200 {
+		entries["k"+string(rune('a'+i%26))+string(rune('a'+i/26))] = NewInt(int64(i))
+	}
+	receiver := NewHash(entries)
+
+	runEach := func(params string, quota int) error {
+		source := `def run(h)
+			acc = 0
+			h.each do ` + params + `
+				acc = acc + 1
+			end
+			acc
+		end`
+		script := compileScriptWithConfig(t, Config{StepQuota: 5_000_000, MemoryQuotaBytes: quota}, source)
+		_, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
+		return err
+	}
+
+	// Find the smallest quota that admits the two-parameter walk (no pair
+	// allocation). Searching keeps the test robust to changes in the estimator
+	// constants rather than pinning a fragile byte value.
+	minTwoParamQuota := 0
+	for quota := 5_000; quota <= 200_000; quota++ {
+		if runEach("|key, value|", quota) == nil {
+			minTwoParamQuota = quota
+			break
+		}
+	}
+	if minTwoParamQuota == 0 {
+		t.Fatal("two-parameter hash.each never fit within the searched quota range")
+	}
+
+	// The two-parameter form passes at its minimum quota...
+	if err := runEach("|key, value|", minTwoParamQuota); err != nil {
+		t.Fatalf("two-parameter hash.each = %v, want success at quota %d", err, minTwoParamQuota)
+	}
+
+	// ...while the single-parameter form, which allocates a pair per entry, must
+	// trip the memory limit at that same quota.
+	err := runEach("|pair|", minTwoParamQuota)
+	if err == nil {
+		t.Fatalf("single-parameter hash.each unexpectedly fit within quota %d; pair array not charged", minTwoParamQuota)
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+}
+
 func TestHashFetchValues(t *testing.T) {
 	t.Parallel()
 
