@@ -201,9 +201,9 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "index must be integer",
 		},
 		{
-			name:   "array.any? with argument",
-			script: `def run() [1].any?(1) end`,
-			errMsg: "array.any? does not take arguments",
+			name:   "array.any? with too many arguments",
+			script: `def run() [1].any?(1, 2) end`,
+			errMsg: "array.any? accepts at most one value argument",
 		},
 		{
 			name:   "array.sort with incomparable values",
@@ -447,9 +447,9 @@ end`,
 			errMsg: "expects at least one key",
 		},
 		{
-			name:   "hash.dig with unsupported key type",
-			script: `def run() {a: 1}.dig(1) end`,
-			errMsg: "path keys must be symbol or string",
+			name:   "hash.dig with non-integer array index",
+			script: `def run() {a: [1]}.dig(:a, "0") end`,
+			errMsg: "hash.dig array index must be integer",
 		},
 		{
 			name:   "hash.each without block",

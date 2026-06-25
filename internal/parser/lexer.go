@@ -278,6 +278,16 @@ func (l *lexer) scanToken() ast.Token {
 	case '=':
 		switch l.peekRune() {
 		case '=':
+			if l.peekRuneN(1) == '=' {
+				start := ast.Position{Line: l.line, Column: l.column}
+				first := l.ch
+				l.readRune()
+				second := l.ch
+				l.readRune()
+				tok = ast.Token{Type: ast.TokenCaseEQ, Literal: string(first) + string(second) + string(l.ch), Pos: start}
+				l.readRune()
+				break
+			}
 			first := l.ch
 			l.readRune()
 			tok = l.makeToken(ast.TokenEQ, string(first)+string(l.ch))
