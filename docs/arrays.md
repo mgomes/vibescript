@@ -24,7 +24,8 @@ Common enumerable helpers include:
 - `select` to keep items the block accepts.
 - `reject` to keep items the block rejects (the inverse of `select`).
 - `find` / `find_index` to locate the first matching item.
-- `reduce` to accumulate values.
+- `reduce` to accumulate values, either with a block or with a symbol/string
+  operation shorthand (`[1, 2, 3].reduce("+")`, `["a", "b"].reduce(:concat)`).
 - `first` / `last` to read an end element, or `first(n)` / `last(n)` to slice without mutating. The optional count is the only argument they accept; passing more than one positional argument or any keyword argument raises.
 - `take(n)` / `drop(n)` to keep or skip a prefix; both reject negative counts.
 - `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.

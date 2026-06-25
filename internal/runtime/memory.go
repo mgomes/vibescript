@@ -912,12 +912,16 @@ func (est *memoryEstimator) slice(values []Value) int {
 	}
 
 	// Deduplicate aliased backings — including empty slices that retained
-	// capacity, whose cap*estimatedValueBytes backing is real memory and must
-	// be counted only once across aliases (e.g. a partition's empty result side
-	// shared with another binding). sliceBackingIdentity reads the data pointer
-	// directly via unsafe.SliceData, so the identity is stable even under
-	// coverage instrumentation; the earlier re-slice form &values[:1][0]
-	// intermittently failed to dedup empty slices in the coverage CI job.
+	// capacity, whose cap*estimatedValueBytes backing is real memory worth
+	// counting only once across aliases (e.g. a partition's empty result side
+	// shared with another binding). This dedup is best-effort: a non-empty
+	// slice's backing pointer (via sliceBackingIdentity/unsafe.SliceData) is
+	// stable and reliably deduplicates, but a ZERO-LENGTH slice's backing
+	// identity is not reproducible across Go build configurations (observed
+	// flaking under coverage, race, and goroutine-leak-profile builds). When an
+	// empty slice's identity is unstable the dedup simply does not fire and the
+	// backing is counted again — an over-count that is conservative and
+	// sandbox-safe (it never under-counts, so the memory bound still holds).
 	id := sliceBackingIdentity(values)
 	if id != 0 {
 		if _, seen := est.seenSlices[id]; seen {
