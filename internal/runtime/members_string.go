@@ -778,16 +778,7 @@ func stringSub(method, text, pattern, replacement string, regex bool) (string, e
 	if err != nil {
 		return "", fmt.Errorf("%s invalid regex: %w", method, err)
 	}
-	loc := re.FindStringSubmatchIndex(text)
-	if loc == nil {
-		return text, nil
-	}
-	replaced := re.ExpandString(nil, replacement, text, loc)
-	outputLen := len(text) - (loc[1] - loc[0]) + len(replaced)
-	if outputLen > maxRegexInputBytes {
-		return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
-	}
-	return text[:loc[0]] + string(replaced) + text[loc[1]:], nil
+	return rubyRegexSub(re, text, replacement, method)
 }
 
 func stringGSub(method, text, pattern, replacement string, regex bool) (string, error) {
@@ -804,7 +795,7 @@ func stringGSub(method, text, pattern, replacement string, regex bool) (string, 
 	if err != nil {
 		return "", fmt.Errorf("%s invalid regex: %w", method, err)
 	}
-	return regexReplaceAllWithLimit(re, text, replacement, method)
+	return rubyRegexGSub(re, text, replacement, method)
 }
 
 func stringBangResult(original, updated string) Value {
