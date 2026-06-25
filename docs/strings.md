@@ -519,6 +519,14 @@ character (so `\z` stays `\z`). Numbered or `\+` references to groups that did
 not participate expand to the empty string. A `\k<name>` that names a group the
 pattern never defines raises an error, as does an unterminated `\k<name`.
 
+As in Ruby, once a pattern defines any named capture group the numbered
+references `\1`–`\9` are disabled and expand to the empty string, even for
+groups that participated; reach those groups with `\k<name>` instead. The
+whole-match (`\0`, `\&`), pre/post-match (`` \` ``, `\'`), and `\k<name>`
+references keep working in that mode. For example
+`"John Smith".sub("(?<first>\\w+) (?<last>\\w+)", "\\2, \\1", regex: true)`
+yields `", "`.
+
 When a pattern reuses a group name (for example `(?<x>a)(?<x>b)` or
 `(?<x>foo)|(?<x>bar)`), `\k<name>` expands to the last occurrence that
 participated in the match, matching Ruby: `(?<x>a)(?<x>b)` over `"ab"` expands

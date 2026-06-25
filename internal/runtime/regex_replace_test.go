@@ -138,6 +138,51 @@ func TestStringRegexReplacementBackreferences(t *testing.T) {
 			want:   "[b] [d]",
 		},
 		{
+			// Ruby 2.6.10: numbered refs go empty once any name is defined.
+			name:   "numbered refs empty when pattern has named captures",
+			script: `def run() "John Smith".sub("(?<first>\\w+) (?<last>\\w+)", "\\2, \\1", regex: true) end`,
+			want:   ", ",
+		},
+		{
+			// Ruby 2.6.10: every numbered ref empties even mixing named and
+			// unnamed groups.
+			name:   "numbered refs empty with mixed named and unnamed captures",
+			script: `def run() "abc".sub("(?<x>a)(b)(c)", "[\\1][\\2][\\3]", regex: true) end`,
+			want:   "[][][]",
+		},
+		{
+			// Whole-match refs keep working alongside named captures.
+			name:   "whole match ref works with named captures",
+			script: `def run() "John Smith".sub("(?<first>\\w+) (?<last>\\w+)", "<\\0>", regex: true) end`,
+			want:   "<John Smith>",
+		},
+		{
+			// \& whole-match ref also keeps working alongside named captures.
+			name:   "ampersand ref works with named captures",
+			script: `def run() "John Smith".sub("(?<first>\\w+) (?<last>\\w+)", "<\\&>", regex: true) end`,
+			want:   "<John Smith>",
+		},
+		{
+			// Named refs keep working even though numbered refs are suppressed.
+			name:   "named ref works while numbered refs suppressed",
+			script: `def run() "John Smith".sub("(?<first>\\w+) (?<last>\\w+)", "\\k<last>, \\k<first>", regex: true) end`,
+			want:   "Smith, John",
+		},
+		{
+			// Pre/post-match refs keep working alongside named captures. The
+			// pattern matches "xx John" (greedy \w+ from the start), so the
+			// pre-match is empty and the post-match is " Smith yy" (Ruby 2.6.10).
+			name:   "prematch and postmatch refs work with named captures",
+			script: "def run() \"xx John Smith yy\".sub(\"(?<first>\\\\w+) (?<last>\\\\w+)\", \"[\\\\`][\\\\']\", regex: true) end",
+			want:   "[][ Smith yy] Smith yy",
+		},
+		{
+			// gsub suppresses numbered refs per match when names are present.
+			name:   "gsub numbered refs empty with named captures",
+			script: `def run() "ab cd".gsub("(?<x>\\w)(\\w)", "[\\1\\2]", regex: true) end`,
+			want:   "[] []",
+		},
+		{
 			name:   "out of range group is empty",
 			script: `def run() "abc".sub("(b)", "\\2", regex: true) end`,
 			want:   "ac",

@@ -36,6 +36,14 @@ var errRegexOutputLimit = fmt.Errorf("output exceeds limit %d bytes", maxRegexIn
 // an error, as is a "\k<" that is never closed, matching Ruby's
 // IndexError/RuntimeError on the same inputs.
 //
+// Ruby disables numbered backreferences (\1 .. \9) once the pattern defines any
+// named capture group: with names present they always expand to the empty
+// string, even for groups that did participate. For example
+// "John Smith".sub(/(?<first>\w+) (?<last>\w+)/, "\\2, \\1") yields ", " in
+// Ruby. The whole-match refs (\0, \&), the pre/post-match refs (\`, \'), and
+// the named ref (\k<name>) keep working in that mode; only the numbered group
+// refs go empty. With no named captures, numbered refs work normally.
+//
 // Every append is bounded by maxRegexInputBytes before it runs, so a hostile
 // template (for example many "\`"/"\'" escapes against a near-limit subject)
 // fails with errRegexOutputLimit instead of transiently allocating past the
@@ -45,6 +53,9 @@ var errRegexOutputLimit = fmt.Errorf("output exceeds limit %d bytes", maxRegexIn
 // FindStringSubmatchIndex: loc[0:2] are the whole match, and loc[2*i:2*i+2] are
 // capture group i (negative when the group did not participate).
 func rubyAppendReplacement(dst []byte, re *regexp.Regexp, template, src string, loc []int) ([]byte, error) {
+	// Ruby suppresses numbered backreferences (\1 .. \9) whenever the pattern
+	// defines any named capture, expanding them to the empty string instead.
+	hasNamed := regexHasNamedCapture(re)
 	for i := 0; i < len(template); i++ {
 		c := template[i]
 		if c != '\\' {
@@ -66,8 +77,20 @@ func rubyAppendReplacement(dst []byte, re *regexp.Regexp, template, src string, 
 		}
 		next := template[i+1]
 		switch {
-		case next >= '0' && next <= '9':
-			expanded, err := appendRubySubmatch(dst, src, loc, int(next-'0'))
+		case next >= '1' && next <= '9':
+			// Numbered group ref. Ruby leaves these empty when the pattern has
+			// any named capture; otherwise they expand to the indexed submatch.
+			if !hasNamed {
+				expanded, err := appendRubySubmatch(dst, src, loc, int(next-'0'))
+				if err != nil {
+					return nil, err
+				}
+				dst = expanded
+			}
+			i++
+		case next == '0':
+			// \0 is the whole match and keeps working even with named captures.
+			expanded, err := appendRubySubmatch(dst, src, loc, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -172,6 +195,19 @@ func appendRubyLastGroup(dst []byte, src string, loc []int) ([]byte, error) {
 		}
 	}
 	return dst, nil
+}
+
+// regexHasNamedCapture reports whether re defines at least one named capture
+// group. Go's SubexpNames returns one entry per subexpression, "" for the whole
+// match and for unnamed groups, so any non-empty entry means a named group is
+// present. Ruby keys its "numbered refs go empty" behavior off exactly this.
+func regexHasNamedCapture(re *regexp.Regexp) bool {
+	for _, name := range re.SubexpNames() {
+		if name != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // appendRubyNamedGroup expands "\k<name>" given the template text immediately
