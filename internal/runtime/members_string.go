@@ -21,6 +21,7 @@ var stringMemberNames = []string{
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "each_char", "each_line", "each_byte", "template",
 	"center", "ljust", "rjust",
+	"to_sym", "intern",
 }
 
 var stringBuiltinMembers = newMemberTable(stringMemberNames)
@@ -42,6 +43,27 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberTextOps(property)
 	case "center", "ljust", "rjust":
 		return stringMemberPadding(property)
+	case "to_sym", "intern":
+		return stringMemberConversions(property)
+	default:
+		return NewNil(), fmt.Errorf("unknown string method %s", property)
+	}
+}
+
+// stringMemberConversions builds the string-to-symbol conversion members.
+// Ruby's String#to_sym and its alias String#intern both return the symbol
+// whose name is the receiver, so any string contents (including empty) yield a
+// symbol verbatim without further validation.
+func stringMemberConversions(property string) (Value, error) {
+	switch property {
+	case "to_sym", "intern":
+		name := "string." + property
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			}
+			return NewSymbol(receiver.String()), nil
+		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}

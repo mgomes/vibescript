@@ -203,6 +203,14 @@ func TestMemberSuggestionCandidatesResolve(t *testing.T) {
 			},
 		},
 		{
+			kind:  "symbol",
+			names: symbolMemberNames,
+			resolve: func(name string) error {
+				_, err := symbolMember(NewSymbol("vibe"), name)
+				return err
+			},
+		},
+		{
 			kind:  "array",
 			names: arrayMemberNames,
 			resolve: func(name string) error {

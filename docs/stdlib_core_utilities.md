@@ -49,6 +49,12 @@ Unicode characters, not bytes, unless noted.
   `0x`/`0b`/`0o`/`0d` prefix (octal by default); same lenient parsing,
   zero-on-failure, and `int64` overflow behavior as `hex`.
 
+### Conversion
+
+- `to_sym -> symbol` – the symbol named by the string. Any contents are
+  accepted verbatim, including whitespace, punctuation, and the empty string.
+- `intern -> symbol` – alias for `to_sym`.
+
 ### Search and Matching
 
 - `start_with?(*prefixes) -> bool` – true when the string begins with any of
@@ -694,6 +700,21 @@ formatting. Times also support `time + duration`, `time - duration`,
   non-negative `Integer`; other values raise an error.
 - `floor -> time` – truncate to the whole second.
 - `ceil -> time` – round up to the next whole second.
+
+## Symbols
+
+Symbols (`:name`) expose the Ruby string/symbol conversion helpers:
+
+- `id2name -> string` – the symbol's name as a string.
+- `to_s -> string` – alias for `id2name`.
+- `to_sym -> symbol` – returns the receiver unchanged.
+
+`"name".to_sym` and `:name.to_s` round-trip between the two representations.
+Vibescript collapses symbol and string hash keys onto their shared underlying
+name, so a hash keyed with `:name` is reachable with `"name".to_sym` and with
+the plain string `"name"`. This differs from Ruby, where `:name` and `"name"`
+are distinct keys. Symbol and string equality, however, remains kind-sensitive:
+`:name == "name"` is `false`.
 
 ## Enum Values
 
