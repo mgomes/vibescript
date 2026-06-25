@@ -24,12 +24,15 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // false to keep privacy enforced regardless of which value is self.
 //
 // The universal equality predicates eql? and equal? are resolved as a fallback
-// after the type-specific dispatch fails, so a value's own members and any
-// user-defined methods of the same name always take precedence, matching
-// Ruby's overridable Object#eql?/Object#equal?.
+// after the type-specific dispatch reports the member as unknown, so a value's
+// own members and any user-defined methods of the same name always take
+// precedence, matching Ruby's overridable Object#eql?/Object#equal?. A private
+// override is not "unknown": resolveTypedMember reports it with a private-member
+// error, which suppresses the fallback so the privacy block still raises rather
+// than silently resolving the builtin.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	member, err := exec.resolveTypedMember(obj, property, pos, callerIsReceiver)
-	if err != nil && isUniversalPredicate(property) {
+	if err != nil && !isPrivateMemberError(err) && isUniversalPredicate(property) {
 		if predicate, ok := universalMember(obj, property); ok {
 			return predicate, nil
 		}
@@ -44,13 +47,22 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		if err == nil {
 			return member, nil
 		}
-		if val, ok := obj.Hash()[property]; ok {
-			return val, nil
+		// Universal predicates are not stored data: a hash entry keyed "eql?"
+		// or "equal?" must not shadow the Object-level predicate, so leave the
+		// lookup to fall through to the universal fallback in resolveMember.
+		if !isUniversalPredicate(property) {
+			if val, ok := obj.Hash()[property]; ok {
+				return val, nil
+			}
 		}
 		return NewNil(), err
 	case KindObject:
-		if val, ok := obj.Hash()[property]; ok {
-			return val, nil
+		// Same precedence as KindHash: a stored "eql?"/"equal?" entry is data,
+		// not a member, so it must not preempt the universal predicate.
+		if !isUniversalPredicate(property) {
+			if val, ok := obj.Hash()[property]; ok {
+				return val, nil
+			}
 		}
 		member, err := hashMember(obj, property)
 		if err != nil {
@@ -132,7 +144,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 	}
 	if fn, ok := cl.ClassMethods[property]; ok {
 		if fn.Private && !callerIsReceiver {
-			return NewNil(), exec.errorAt(pos, "private method %s", property)
+			return NewNil(), privateMemberAccess(exec.errorAt(pos, "private method %s", property))
 		}
 		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
@@ -157,7 +169,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 	}
 	if fn, ok := inst.Class.Methods[property]; ok {
 		if fn.Private && !callerIsReceiver {
-			return NewNil(), exec.errorAt(pos, "private method %s", property)
+			return NewNil(), privateMemberAccess(exec.errorAt(pos, "private method %s", property))
 		}
 		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)

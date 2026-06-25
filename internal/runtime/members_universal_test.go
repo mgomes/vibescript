@@ -171,6 +171,136 @@ end`)
 	}
 }
 
+// TestEqualityPredicateNotShadowedByStoredKeys confirms a hash or namespace
+// object entry keyed "eql?" or "equal?" is treated as data, not a member, so it
+// never preempts the universal equality predicate. Member dispatch (h.eql?)
+// resolves the predicate while index access (h["eql?"]) still reads the stored
+// value, matching Ruby's separation of method calls from element lookup.
+func TestEqualityPredicateNotShadowedByStoredKeys(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		script string
+		want   []Value
+	}{
+		{
+			name: "hash eql key",
+			script: `def run()
+  h = { "eql?": "data" }
+  [h.eql?(h), h.eql?({ x: 1 }), h["eql?"]]
+end`,
+			want: []Value{NewBool(true), NewBool(false), NewString("data")},
+		},
+		{
+			name: "hash equal key",
+			script: `def run()
+  h = { "equal?": 99 }
+  alias = h
+  [h.equal?(alias), h.equal?({}), h["equal?"]]
+end`,
+			want: []Value{NewBool(true), NewBool(false), NewInt(99)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			compareArrays(t, result, tc.want)
+		})
+	}
+}
+
+// TestEqualityPredicatePrivateOverrideRaises confirms a private eql?/equal?
+// override is not silently bypassed by the universal fallback. External lookup
+// paths — a bound member probe and the reduce(:op) shorthand — must raise the
+// private-method error rather than resolving the builtin predicate.
+func TestEqualityPredicatePrivateOverrideRaises(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		script string
+		fn     string
+		want   string
+	}{
+		{
+			name: "bound probe of private eql",
+			script: `class Tag
+  private def eql?(other)
+    true
+  end
+end
+
+def run()
+  probe = Tag.new.eql?
+  probe(Tag.new)
+end`,
+			fn:   "run",
+			want: "private method eql?",
+		},
+		{
+			name: "direct call of private equal",
+			script: `class Tag
+  private def equal?(other)
+    true
+  end
+end
+
+def run()
+  Tag.new.equal?(Tag.new)
+end`,
+			fn:   "run",
+			want: "private method equal?",
+		},
+		{
+			name: "reduce sends private eql",
+			script: `class Tag
+  private def eql?(other)
+    true
+  end
+end
+
+def run()
+  [Tag.new, Tag.new].reduce(:eql?)
+end`,
+			fn:   "run",
+			want: "private method eql?",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			requireCallErrorContains(t, script, tc.fn, nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+// TestEqualityPredicatePrivateMethodInternalAccess confirms the private-member
+// suppression only blocks external callers: the receiver itself may still invoke
+// its private eql?/equal? override, so the universal fallback never masks a
+// legitimately reachable private method.
+func TestEqualityPredicatePrivateMethodInternalAccess(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `class Tag
+  private def eql?(other)
+    "internal"
+  end
+
+  def probe(other)
+    eql?(other)
+  end
+end
+
+def run()
+  Tag.new.probe(Tag.new)
+end`)
+	got := callFunc(t, script, "run", nil)
+	if !got.Equal(NewString("internal")) {
+		t.Fatalf("internal private eql? call = %v, want internal", got)
+	}
+}
+
 // TestEqualityPredicateStoredBuiltin confirms the stored-member-call path, where
 // the bound predicate builtin is invoked separately from the receiver, follows
 // the same contract as a direct call.
