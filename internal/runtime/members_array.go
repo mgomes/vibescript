@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
+	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
@@ -33,7 +33,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
+	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
@@ -980,6 +980,91 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			return NewNil(), nil
 		}), nil
+	case "values_at":
+		return NewAutoBuiltin("array.values_at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.values_at does not take keyword arguments")
+			}
+			arr := receiver.Array()
+
+			// The result aliases the receiver's elements, so charge its growth
+			// through an arrayBuildAccumulator whose baseline already includes the
+			// live call roots (receiver, args, block). When values_at runs on an
+			// ephemeral receiver — an array literal or capability result reachable
+			// only through the call roots, invisible to estimateMemoryUsageBase — the
+			// receiver's payload is already near the quota; without seeding it the
+			// per-slot check would let the result backing grow another full quota on
+			// top of it, with the excess only caught after materialization. The
+			// accumulator dedups elements that alias the receiver, so each selected
+			// slot adds only a Value slot while the receiver payload it points into
+			// is counted once, in the baseline.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+
+			// Grow the result with append from a bounded initial capacity rather
+			// than reserving one slot per argument up front. A single range
+			// selector can expand to far more positions than there are arguments
+			// (values_at(0..1_000_000_000)), so the per-element step() and projected
+			// memory check below are what bound the actual allocation; bounding the
+			// initial capacity keeps it proportional to what the quotas allow,
+			// mirroring rangeMaterialize.
+			initialCap := len(args)
+			if initialCap > arrayValuesAtInitialCap {
+				initialCap = arrayValuesAtInitialCap
+			}
+			// Reject the build before reserving the backing slice when that capacity
+			// alone already overflows the quota. Charging it through the accumulator
+			// uses the same call-root baseline emit charges each slot against, mirroring
+			// rangeMaterialize's up-front checkProjectedIntArrayBytes. Without it a tight
+			// MemoryQuotaBytes paired with many selectors could let make reserve up to
+			// arrayValuesAtInitialCap Value slots transiently before the first emit
+			// reported the overrun.
+			if err := acc.reserveSlots(initialCap); err != nil {
+				return NewNil(), err
+			}
+			out := make([]Value, 0, initialCap)
+
+			// emit appends one selected element, charging a step and re-checking the
+			// backing array's growth against the memory quota before the next slot.
+			// Every position a range selector expands to (including nil pads past the
+			// receiver) flows through here, so a huge padded window cannot
+			// materialize without polling cancellation or the memory quota.
+			emit := func(val Value) error {
+				if err := exec.step(); err != nil {
+					return err
+				}
+				out = append(out, val)
+				return acc.add(val, cap(out))
+			}
+
+			for _, arg := range args {
+				if arg.Kind() == KindRange {
+					// Range selectors expand to their selected positions in place,
+					// matching Ruby's Array#values_at(0..1) -> [a[0], a[1]] and the
+					// mixed form values_at(0..1, -1).
+					if err := arrayValuesAtRange(acc, len(out), arr, arg.Range(), emit); err != nil {
+						return NewNil(), err
+					}
+					continue
+				}
+				// Floats truncate toward zero like Ruby's Array#values_at (1.5 -> 1,
+				// -1.9 -> -1); non-numeric arguments are rejected.
+				index, err := valueToInt(arg)
+				if err != nil {
+					return NewNil(), fmt.Errorf("array.values_at index must be integer")
+				}
+				if index < 0 {
+					index += len(arr)
+				}
+				selected := NewNil()
+				if index >= 0 && index < len(arr) {
+					selected = arr[index]
+				}
+				if err := emit(selected); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewArray(out), nil
+		}), nil
 	case "dig":
 		return NewAutoBuiltin("array.dig", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) == 0 {
@@ -1083,6 +1168,99 @@ func arrayMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+// arrayValuesAtInitialCap bounds the capacity Array#values_at reserves up front.
+// A single range selector can expand to far more positions than there are
+// arguments, so larger results grow the backing array via append while the
+// per-element step() and projected memory check bound the actual allocation. It
+// mirrors rangeMaterializeInitialCap.
+const arrayValuesAtInitialCap = 4096
+
+// arrayValuesAtRange expands a range selector for Array#values_at, passing each
+// selected element to emit in order. It matches Ruby's semantics. A negative
+// start counts back from the end; a start that remains negative after that
+// adjustment is rejected with an out-of-range error, exactly as Ruby raises a
+// RangeError for values_at(-4..-1) on a three-element array. A negative end
+// likewise counts back from the end but is never rejected: an end at or before
+// the start simply selects nothing. The window is not clamped to the receiver
+// length, so positions at or past the end pad with nil (values_at(0..5) on
+// [10,20,30] yields [10,20,30,nil,nil,nil]). The selected count is derived by
+// subtracting the bounds (end - begin) rather than incrementing the inclusive
+// end into an exclusive bound, so a range ending at math.MaxInt64 reports its
+// true span instead of overflowing: values_at(MaxInt64..MaxInt64) selects a
+// single out-of-bounds position and pads it with nil rather than being rejected.
+// Only a window whose span genuinely exceeds the native int range, or the memory
+// quota, is rejected as too large. The selected count is reserved against the
+// memory quota up front so a huge padded window (values_at(0..1_000_000_000))
+// fails fast; emit then charges a step and re-checks the quota per position so
+// the materialization stays interruptible even when the up-front reservation
+// passes under a large memory quota. The reservation runs through the build
+// accumulator so it is measured against the same call-root baseline (including an
+// ephemeral receiver) that emit charges each appended slot against.
+func arrayValuesAtRange(acc *arrayBuildAccumulator, emittedSoFar int, arr []Value, rng Range, emit func(Value) error) error {
+	length := int64(len(arr))
+	begin := rng.Start
+	if begin < 0 {
+		begin += length
+		if begin < 0 {
+			return fmt.Errorf("array.values_at range %s out of range", NewRange(rng).String())
+		}
+	}
+	end := rng.End
+	if end < 0 {
+		end += length
+	}
+	if end < begin {
+		return nil
+	}
+	// Derive the selected count from end - begin (then +1 for an inclusive end)
+	// rather than incrementing end into an exclusive bound. The subtraction never
+	// overflows because begin >= 0 and end <= math.MaxInt64, so an inclusive range
+	// ending at math.MaxInt64 reports its real span instead of wrapping to a
+	// negative no-op window.
+	span := end - begin
+	if !rng.Exclusive {
+		if span == math.MaxInt64 {
+			// begin == 0 && end == math.MaxInt64: the inclusive span is one past the
+			// representable int64 maximum and cannot be materialized.
+			return fmt.Errorf("array.values_at window is too large")
+		}
+		span++
+	}
+	if span == 0 {
+		return nil
+	}
+	if span > math.MaxInt {
+		return fmt.Errorf("array.values_at window is too large")
+	}
+	count := int(span)
+	// Fail fast when the window clearly exceeds the memory quota before emitting
+	// any element; emit re-checks per position as the backing array grows. The
+	// reservation projects the positions already emitted by earlier selectors plus
+	// this window's count against the call-root baseline, so a mixed
+	// values_at(0..big, 0..big) cannot slip a second huge window past the check.
+	if err := acc.reserveSlots(saturatingAdd(emittedSoFar, count)); err != nil {
+		return err
+	}
+	// Positions in [begin, begin+inBounds) read from arr; the remainder pad with
+	// nil. inBounds is computed against the receiver length so the absolute index
+	// never needs begin + offset, which could overflow int64 when begin is near
+	// the maximum (a begin at or past length contributes only padding).
+	var inBounds int64
+	if begin < length {
+		inBounds = length - begin
+	}
+	for offset := range count {
+		selected := NewNil()
+		if int64(offset) < inBounds {
+			selected = arr[begin+int64(offset)]
+		}
+		if err := emit(selected); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // arrayPredicateKind selects the quantifier evaluated by arrayPredicate.

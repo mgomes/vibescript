@@ -748,7 +748,7 @@ When there is no change, bang methods return `nil`.
 
 ## Splitting
 
-### `split(separator = nil)`
+### `split(separator = nil, limit = 0)`
 
 Splits a string into an array of strings.
 
@@ -771,11 +771,21 @@ full Unicode whitespace table as delimiters:
 "a b".split  # ["a b"] (non-breaking space is preserved)
 ```
 
-**With separator:** Splits on the specified string:
+**With separator:** Splits on the specified string. By default trailing empty
+fields are removed, matching Ruby's default `String#split`:
 
 ```vibe
 "a,b,c".split(",")        # ["a", "b", "c"]
 "path/to/file".split("/") # ["path", "to", "file"]
+"a,b,".split(",")         # ["a", "b"] (trailing empty removed)
+```
+
+**With an empty separator:** Splits the string into its individual characters
+(runes), matching Ruby's `String#split("")`:
+
+```vibe
+"abc".split("")   # ["a", "b", "c"]
+"héllo".split("") # ["h", "é", "l", "l", "o"]
 ```
 
 **With an explicit `nil` separator:** Behaves exactly like the no-argument
@@ -786,7 +796,46 @@ form, splitting on runs of ASCII whitespace, matching Ruby's
 " a  b ".split(nil) # ["a", "b"]
 ```
 
+**With a single space separator:** A separator of exactly `" "` is Ruby's AWK
+whitespace mode rather than a literal split on the space character. It collapses
+runs of ASCII whitespace, discards leading whitespace, and honors the limit just
+like the `nil` form, so it never produces a leading empty field:
+
+```vibe
+" a  b ".split(" ")    # ["a", "b"]
+" a  b ".split(" ", 2) # ["a", "b "]
+```
+
 Any other non-string separator raises an error.
+
+**With a `limit`:** The optional second argument controls how many fields are
+returned and whether trailing empty fields are kept, matching Ruby:
+
+- A **positive** limit returns at most that many fields, leaving the remainder
+  unsplit in the final field. A limit of `1` returns the whole string unchanged.
+- The default **`0`** removes trailing empty fields.
+- A **negative** limit preserves every field, including trailing empties.
+
+```vibe
+"a,b,c,d".split(",", 2)  # ["a", "b,c,d"]
+"a,b,c".split(",", 1)    # ["a,b,c"]
+"a,b,".split(",", -1)    # ["a", "b", ""]
+"a,b,".split(",", 0)     # ["a", "b"]
+```
+
+The limit applies to every separator mode. With the whitespace default a
+positive limit keeps the unsplit remainder in the final field, and a non-zero
+limit preserves a single trailing empty field when the string ends in
+whitespace:
+
+```vibe
+"  a b c  ".split(nil, 2)  # ["a", "b c  "]
+"  a b c  ".split(nil, -1) # ["a", "b", "c", ""]
+"abc".split("", -1)        # ["a", "b", "c", ""]
+```
+
+An empty string always yields an empty array, regardless of the limit. A
+non-integer limit raises an error.
 
 ### `partition(separator)`
 
