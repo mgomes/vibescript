@@ -672,36 +672,79 @@ func (runner *blockCallRunner) bindsWholePairToSingleIdentifier() bool {
 	return runner.blk.Params[0].Target == nil
 }
 
-// destructureRestSlots reports how many [key, value] pair elements the block's
-// single destructuring parameter binds to a rest target, or -1 when the parameter
-// is not a destructure with a top-level rest element. It must only be consulted
-// when wantsCollapsedPair is true, so it assumes exactly one positional parameter.
-//
-// A rest target such as |(k, *rest)| makes AssignDestructure allocate a fresh
-// array for the collected elements and bind it into the reused block environment,
-// so that array is live memory the iterator must charge on top of the pair. The
-// collapsed pair always has exactly two elements (key and value), so the rest
-// array holds at most the elements not claimed by fixed targets: two minus the
-// non-rest element count, clamped at zero. A nested destructure target is treated
-// as a single fixed element here; it binds a component of the pair, not the rest.
-func (runner *blockCallRunner) destructureRestSlots() int {
-	target, ok := runner.blk.Params[0].Target.(*DestructureTarget)
-	if !ok {
-		return -1
-	}
-	fixed := 0
-	hasRest := false
+// destructureTarget returns the block's single positional parameter as a
+// destructuring target, or nil when the parameter binds a plain identifier. It
+// must only be consulted when wantsCollapsedPair is true, so it assumes exactly
+// one positional parameter.
+func (runner *blockCallRunner) destructureTarget() *DestructureTarget {
+	target, _ := runner.blk.Params[0].Target.(*DestructureTarget)
+	return target
+}
+
+// destructureRestAllocBytes returns the total heap bytes the fresh rest arrays
+// AssignDestructure allocates while binding value through target. Each rest
+// element (at any nesting depth) makes AssignDestructure collect the unclaimed
+// slice into a new array and box it (see AssignDestructure's restValues), so the
+// per-rest footprint is restArrayBytes of the collected element count. Nested
+// destructure elements recurse into their own slice of value, where a deeper rest
+// can collect an arbitrarily large slice of that component -- the case a fixed
+// pair-sized reservation cannot bound. Mirroring the allocation here lets the
+// iterator reserve the exact peak from the actual entries rather than assuming the
+// rest only ever spans the two-element pair.
+func destructureRestAllocBytes(target *DestructureTarget, value Value) int {
+	values := destructureValues(value)
+	restIndex := -1
 	for i := range target.Elements {
 		if target.Elements[i].Rest {
-			hasRest = true
-			continue
+			restIndex = i
+			break
 		}
-		fixed++
 	}
-	if !hasRest {
-		return -1
+
+	total := 0
+	if restIndex == -1 {
+		for i := range target.Elements {
+			total = saturatingAdd(total, destructureElementRestBytes(target.Elements[i].Target, valueAt(values, i)))
+		}
+		return total
 	}
-	return max(collapsedPairElements-fixed, 0)
+
+	trailing := len(target.Elements) - restIndex - 1
+	restEnd := len(values) - trailing
+	if restEnd < restIndex {
+		restEnd = restIndex
+	}
+	restCount := restEnd - restIndex
+	total = saturatingAdd(total, restArrayBytes(restCount))
+	for i := range target.Elements {
+		var val Value
+		switch {
+		case i < restIndex:
+			val = valueAt(values, i)
+		case i == restIndex:
+			// The rest element binds the freshly allocated array, already charged
+			// above; its target is a plain identifier with no further allocation.
+			continue
+		default:
+			valueIndex := len(values) - trailing + i - restIndex - 1
+			if valueIndex < restIndex {
+				valueIndex = -1
+			}
+			val = valueAt(values, valueIndex)
+		}
+		total = saturatingAdd(total, destructureElementRestBytes(target.Elements[i].Target, val))
+	}
+	return total
+}
+
+// destructureElementRestBytes returns the rest-array bytes a single destructure
+// element allocates: zero for a plain identifier target, or the recursive total
+// for a nested destructure.
+func destructureElementRestBytes(target Expression, value Value) int {
+	if nested, ok := target.(*DestructureTarget); ok {
+		return destructureRestAllocBytes(nested, value)
+	}
+	return 0
 }
 
 // CallBlock invokes a block value with the provided arguments.

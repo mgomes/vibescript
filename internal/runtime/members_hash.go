@@ -363,18 +363,29 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 			}
 			perEntryBytes := pairsLive * collapsedPairBytes
-			// A single destructuring parameter with a rest target (|(k, *rest)|)
-			// makes AssignDestructure allocate a fresh array for the collected
-			// elements and bind it into the reused environment, so it lives there
-			// until the next runner.call resets it -- overlapping across iterations
-			// exactly like a whole-pair binding. Reserve that rest array at the same
-			// peak the pair uses: two over two or more entries, one for a single
-			// entry, none for an empty receiver. An empty block body runs no in-block
-			// memory check, so without this the rest array allocation would go
-			// uncharged.
+			// A destructuring parameter with a rest target makes AssignDestructure
+			// allocate a fresh array for the collected elements and bind it into the
+			// reused environment, so it lives there until the next runner.call resets
+			// it -- overlapping across iterations exactly like a whole-pair binding.
+			// A top-level rest (|(k, *rest)|) collects only from the two-element pair,
+			// but a nested rest (|(k, (head, *tail))|) collects an arbitrarily large
+			// slice of the hash value it destructures, so the peak cannot be bounded by
+			// the pair alone. Walk the entries once to size the largest rest allocation
+			// any single pair would trigger, then reserve it at the same peak the pair
+			// uses: two over two or more entries, one for a single entry, none for an
+			// empty receiver. evalStatements runs a final memory check even for an empty
+			// block body, but reserving up front fails fast before the rest array is
+			// materialized rather than after the allocation already happened.
 			if collapsePair {
-				if slots := runner.destructureRestSlots(); slots >= 0 {
-					perEntryBytes += min(len(entries), 2) * restArrayBytes(slots)
+				if target := runner.destructureTarget(); target != nil {
+					maxRestBytes := 0
+					var pairBuf [collapsedPairElements]Value
+					for key, value := range entries {
+						pairBuf[0] = NewSymbol(key)
+						pairBuf[1] = value
+						maxRestBytes = max(maxRestBytes, destructureRestAllocBytes(target, NewArray(pairBuf[:])))
+					}
+					perEntryBytes = saturatingAdd(perEntryBytes, saturatingMul(min(len(entries), 2), maxRestBytes))
 				}
 			}
 			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), perEntryBytes, receiver, args, kwargs, block); err != nil {

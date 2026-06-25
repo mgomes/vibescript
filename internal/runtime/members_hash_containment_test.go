@@ -2409,6 +2409,51 @@ func destructureRestPairBlock() Value {
 	return NewBlock(params, nil, newEnv(nil))
 }
 
+// nestedRestDestructureBlock builds a block declaring a single destructuring
+// parameter whose second element is itself a destructure with a rest target
+// |(k, (head, *tail))| and an EMPTY body. Over a hash whose values are arrays, the
+// collapsed [key, value] pair binds k to the key and destructures the value array
+// into head and tail, so AssignDestructure allocates a fresh rest array holding all
+// but the first value element. That rest is bounded by the value's length, not the
+// two-element pair, so a fixed pair-sized reservation cannot charge it. The empty
+// body runs no allocating statement, so only the iterator's preflight reservation
+// guards the rest array before it is materialized -- the regime the nested-rest P2
+// finding flagged.
+func nestedRestDestructureBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "k", Position: pos}},
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "head", Position: pos}},
+					{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+				},
+			}},
+		},
+	}
+	params := []Param{{Kind: ParamNormal, Target: target}}
+	return NewBlock(params, nil, newEnv(nil))
+}
+
+// largeArrayValueHashReceiver builds a hash with count entries whose values are
+// arrays of valueLen ints. It backs the nested-rest memory test: destructuring the
+// value with a rest target collects valueLen-1 of those ints into a fresh array,
+// giving the preflight a rest allocation bounded by valueLen rather than the pair.
+func largeArrayValueHashReceiver(count, valueLen int) Value {
+	entries := make(map[string]Value, count)
+	for i := range count {
+		elems := make([]Value, valueLen)
+		for j := range valueLen {
+			elems[j] = NewInt(int64(j))
+		}
+		entries["k"+strconv.Itoa(i)] = NewArray(elems)
+	}
+	return NewHash(entries)
+}
+
 // twoParamPairBlock builds a block declaring two positional parameters |k, v|, the
 // auto-splat form Hash#each yields key and value separately into. Two positional
 // parameters make wantsCollapsedPair false, so the iterator allocates no pair array
@@ -2557,6 +2602,74 @@ func TestHashEachDestructureRestReservesRestArrays(t *testing.T) {
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != count {
 		t.Fatalf("rest-destructuring each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
+	}
+}
+
+// TestHashEachNestedDestructureRestReservesRestArrays pins the nested-rest P2
+// finding on PR #808: a single destructuring parameter whose nested element has a
+// rest target |(k, (head, *tail))| collects an arbitrarily large slice of the hash
+// value it destructures, not just the two-element pair. The earlier preflight only
+// scanned top-level elements, treated the nested destructure as one fixed slot, and
+// reserved nothing for the nested rest, so a pair-sized quota wrongly admitted the
+// walk and the rest arrays went uncharged until evalStatements' post-bind check.
+// The fix sizes the reservation from the actual entries: a quota that fits the call
+// roots, the sorted-key scratch, and exactly the one live pair -- but not the nested
+// rest arrays -- must trip; a quota that also fits the nested rest reservation must
+// admit the walk.
+func TestHashEachNestedDestructureRestReservesRestArrays(t *testing.T) {
+	t.Parallel()
+
+	const count = 20_000
+	const valueLen = 64
+	receiver := largeArrayValueHashReceiver(count, valueLen)
+	block := nestedRestDestructureBlock()
+	if valueBlock(block).Params[0].Target == nil {
+		t.Fatal("test setup expects a |(k, (head, *tail))| destructuring parameter (non-nil Target)")
+	}
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects the nested-rest block to reuse its environment")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	// The nested destructure binds head to the first value element and collects the
+	// remaining valueLen-1 into tail's fresh array. Up to two such rest arrays overlap
+	// over a multi-entry hash, exactly like a whole-pair binding.
+	restSlots := valueLen - 1
+	restReservation := min(count, 2) * restArrayBytes(restSlots)
+	if restReservation <= 0 {
+		t.Fatalf("nested rest reservation must be positive, got %d", restReservation)
+	}
+
+	// A quota sized to the roots, the scratch, and exactly the one live pair, but not
+	// the nested rest arrays. Before the fix the preflight reserved nothing for the
+	// nested rest, so this quota wrongly admitted the walk while the rest allocation
+	// went uncharged. The fix sizes the reservation from the entries, so the projection
+	// exceeds this quota and rejects.
+	pairOnlyQuota := roots + scratch + collapsedPairBytes
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: pairOnlyQuota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("nested-rest each at a pair-only quota %d = %v, want errMemoryQuotaExceeded (the nested rest arrays are uncharged)", pairOnlyQuota, err)
+	}
+
+	// Room for the roots, scratch, one pair, and the nested rest reservation admits the
+	// walk, proving the rejection above comes from charging the nested rest arrays and
+	// not an over-tight baseline. The empty block body runs no allocating statement, so
+	// the reserved pair plus rest arrays bound the true peak; a small slack covers the
+	// interpreter's own per-step checks.
+	pairAndRestQuota := roots + scratch + collapsedPairBytes + restReservation + 64*1024
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: pairAndRestQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("nested-rest each at a pair-plus-rest quota %d = %v, want success", pairAndRestQuota, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("nested-rest each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
 	}
 }
 
