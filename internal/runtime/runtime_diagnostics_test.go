@@ -151,9 +151,19 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "array.find requires a block",
 		},
 		{
-			name:   "array.find_index with argument",
-			script: `def run() [1, 2, 3].find_index(1) end`,
-			errMsg: "array.find_index does not take arguments",
+			name:   "array.find_index with no value or block",
+			script: `def run() [1, 2, 3].find_index end`,
+			errMsg: "array.find_index expects a value (with optional offset) or a block",
+		},
+		{
+			name:   "array.find_index with both value and block",
+			script: "def run() [1, 2, 3].find_index(2) { |x| x > 1 } end",
+			errMsg: "array.find_index takes a value or a block, not both",
+		},
+		{
+			name:   "array.index with both value and block",
+			script: "def run() [1, 2, 3].index(2) { |x| x > 1 } end",
+			errMsg: "array.index takes a value or a block, not both",
 		},
 		{
 			name:   "array.index with invalid offset",
@@ -161,9 +171,14 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "offset must be non-negative integer",
 		},
 		{
+			name:   "array.rindex with both value and block",
+			script: "def run() [1, 2, 3].rindex(2) { |x| x > 1 } end",
+			errMsg: "array.rindex takes a value or a block, not both",
+		},
+		{
 			name:   "array.rindex with too many args",
 			script: `def run() [1, 2, 3].rindex(2, 1, 0) end`,
-			errMsg: "expects value and optional offset",
+			errMsg: "expects a value (with optional offset) or a block",
 		},
 		{
 			name:   "array.rindex validates offset on empty array",

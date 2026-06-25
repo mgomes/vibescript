@@ -23,7 +23,8 @@ Common enumerable helpers include:
   truthiness filter).
 - `select` to keep items the block accepts.
 - `reject` to keep items the block rejects (the inverse of `select`).
-- `find` / `find_index` to locate the first matching item.
+- `find` to locate the first matching item.
+- `find_index(value)` / `find_index { ... }` to locate the first matching index.
 - `reduce` to accumulate values, either with a block or with a symbol/string
   operation shorthand (`[1, 2, 3].reduce("+")`, `["a", "b"].reduce(:concat)`).
 - `first` / `last` to read an end element, or `first(n)` / `last(n)` to slice without mutating. The optional count is the only argument they accept; passing more than one positional argument or any keyword argument raises.
@@ -37,7 +38,7 @@ Common enumerable helpers include:
 - `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
 - `chunk(size)` to split into fixed-size slices.
 - `window(size)` to build overlapping windows.
-- `join(sep = "")` to produce a string.
+- `join(sep = "")` to produce a string. Nested arrays are joined recursively with the same separator, so `[1, [2, 3], 4].join("-")` is `"1-2-3-4"`; `nil` elements contribute an empty segment (`[1, nil, "x"].join(",")` is `"1,,x"`); and an empty array joins to `""`. The separator must be a string.
 
 Example:
 
@@ -95,17 +96,28 @@ and leaves the receiver untouched.
 ## Search and predicates
 
 - `include?(value)` for membership checks.
-- `index(value, offset = 0)` / `rindex(value, offset = last_index)` for positional lookup.
+- `index(value)` / `index { ... }` returns the first matching index, or `nil` on
+  a miss. The block form returns the first index whose block result is truthy.
+  `find_index` is an alias with the same value and block forms.
+- `rindex(value)` / `rindex { ... }` returns the last matching index, scanning
+  from the end, or `nil` on a miss.
 - `count`, `count(value)`, or `count { ... }`. As in Ruby, a `value` argument
   takes precedence: `count(value) { ... }` counts elements equal to `value` and
   ignores the block.
 - `any?`, `all?`, `none?` with optional blocks.
+
+`index`, `find_index`, and `rindex` accept either a value or a block, never both;
+passing both raises an error. As a Vibescript extension, the value form also takes
+an optional non-negative offset to start (`index`/`find_index`) or cap (`rindex`)
+the search: `index(value, offset)` / `rindex(value, offset)`.
 
 ```vibe
 def health_checks(values)
   {
     has_zero: values.include?(0),
     first_large_idx: values.index(100),
+    first_negative_idx: values.index { |v| v < 0 },
+    last_negative_idx: values.rindex { |v| v < 0 },
     all_non_negative: values.all? { |v| v >= 0 }
   }
 end
