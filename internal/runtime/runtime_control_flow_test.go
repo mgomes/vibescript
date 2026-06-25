@@ -248,6 +248,140 @@ func TestForRangeLoops(t *testing.T) {
 	}
 }
 
+func TestForHashLoops(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def pairs()
+      out = []
+      for pair in { b: 2, a: 1, c: 3 }
+        out = out + [pair]
+      end
+      out
+    end
+
+    def keys()
+      out = []
+      for pair in { b: 2, a: 1 }
+        out = out + [pair[0]]
+      end
+      out
+    end
+
+    def values()
+      out = []
+      for pair in { b: 2, a: 1 }
+        out = out + [pair[1]]
+      end
+      out
+    end
+
+    def empty_hash()
+      count = 0
+      for pair in {}
+        count = count + 1
+      end
+      count
+    end
+
+    def break_at_b()
+      out = []
+      for pair in { a: 1, b: 2, c: 3 }
+        if pair[0] == :b
+          break
+        end
+        out = out + [pair]
+      end
+      out
+    end
+
+    def next_skips_b()
+      out = []
+      for pair in { a: 1, b: 2, c: 3 }
+        if pair[0] == :b
+          next
+        end
+        out = out + [pair]
+      end
+      out
+    end
+
+    def last_pair()
+      for pair in { a: 1, b: 2 }
+        pair
+      end
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{
+			name: "yields_sorted_key_value_pairs",
+			fn:   "pairs",
+			want: NewArray([]Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
+			}),
+		},
+		{
+			name: "first_element_is_symbol_key",
+			fn:   "keys",
+			want: NewArray([]Value{NewSymbol("a"), NewSymbol("b")}),
+		},
+		{
+			name: "second_element_is_value",
+			fn:   "values",
+			want: NewArray([]Value{NewInt(1), NewInt(2)}),
+		},
+		{
+			name: "empty_hash_runs_zero_iterations",
+			fn:   "empty_hash",
+			want: NewInt(0),
+		},
+		{
+			name: "break_stops_iteration",
+			fn:   "break_at_b",
+			want: NewArray([]Value{NewArray([]Value{NewSymbol("a"), NewInt(1)})}),
+		},
+		{
+			name: "next_skips_entry",
+			fn:   "next_skips_b",
+			want: NewArray([]Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("c"), NewInt(3)}),
+			}),
+		},
+		{
+			name: "loop_returns_last_body_value",
+			fn:   "last_pair",
+			want: NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, nil)
+			if diff := valueDiff(tc.want, got); diff != "" {
+				t.Fatalf("%s mismatch (-want +got):\n%s", tc.fn, diff)
+			}
+		})
+	}
+}
+
+func TestForHashLoopConsumesStepQuota(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 2}, `def run()
+  for pair in { a: 1, b: 2, c: 3, d: 4, e: 5 }
+  end
+end`)
+	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+}
+
 func TestForLoopConsumesStepQuota(t *testing.T) {
 	t.Parallel()
 
