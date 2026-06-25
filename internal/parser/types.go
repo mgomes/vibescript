@@ -140,6 +140,7 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 func (p *parser) parseTypeShape() *ast.TypeExpr {
 	pos := p.curToken.Pos
 	fields := make(map[string]*ast.TypeExpr)
+	p.shapeStructurallyInvalid = false
 
 	if p.peekToken.Type == ast.TokenRBrace {
 		p.nextToken()
@@ -166,7 +167,18 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 		if fieldType == nil {
 			return nil
 		}
-		if _, exists := fields[key]; exists {
+		if prior, exists := fields[key]; exists {
+			// A repeated key reaches here only after both field values parsed as
+			// complete type expressions ending at a `,` or `}` boundary, so the
+			// brace group is clearly a shape annotation rather than a hash
+			// literal. Mark it as a structural shape error worth surfacing,
+			// unless either repeated value is a bare identifier naming a local
+			// value: such a reference is a hash default (mirroring the
+			// shapeFieldNamesLocalValue disambiguation), so leave the flag clear
+			// and let the group fall back to a hash default.
+			if !p.typeAtomNamesLocalValue(prior) && !p.typeAtomNamesLocalValue(fieldType) {
+				p.shapeStructurallyInvalid = true
+			}
 			p.addParseError(p.curToken.Pos, fmt.Sprintf("duplicate shape field %s", key))
 			return nil
 		}
@@ -178,6 +190,11 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 			continue
 		}
 		if p.peekToken.Type != ast.TokenRBrace {
+			// A complete field value followed by something other than `,` or `}`
+			// does not prove a malformed shape: in the speculative parameter-list
+			// parse it usually means the value was an expression that stopped at
+			// an operator (`{ sum: a + 1 }`), so leave shapeStructurallyInvalid
+			// clear and let the group fall back to a hash default.
 			p.errorExpected(p.peekToken, "}")
 			return nil
 		}

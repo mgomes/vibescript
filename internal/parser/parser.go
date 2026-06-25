@@ -24,6 +24,14 @@ type parser struct {
 	statementNesting int
 	typeDepth        int
 	localScopes      []localScope
+
+	// shapeStructurallyInvalid records that the most recent parseTypeShape
+	// rejected a brace group whose field values all parsed as types but whose
+	// shape structure was malformed (a duplicate field or a missing field
+	// separator). It lets the parameter-list speculation in
+	// bracedGroupIsShapeType keep such a clearly-shape-like diagnostic instead
+	// of silently reinterpreting the braces as a hash-literal default.
+	shapeStructurallyInvalid bool
 }
 
 // localScope records the local names declared within a single lexical

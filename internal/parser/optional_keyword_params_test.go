@@ -867,3 +867,136 @@ end`
 		t.Fatalf("params mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestParserMalformedShapeSurfacesDiagnostic verifies that a brace group whose
+// field values all parse as types but whose shape is structurally invalid
+// surfaces the shape diagnostic instead of being silently reinterpreted as a
+// hash-literal default. Treating `def run(payload: { id: string, id: int })` as
+// an optional keyword default with a hash value would discard the duplicate
+// field error and turn a typed positional parameter into a keyword parameter,
+// so later positional calls would fail with a confusing message instead.
+func TestParserMalformedShapeSurfacesDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(payload: { id: string, id: int })
+  payload
+end`
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want the shape diagnostic", source)
+	}
+	if got := errs[0].Error(); !strings.Contains(got, "duplicate shape field id") {
+		t.Fatalf("parseSource(%q) first error = %q, want a duplicate shape field diagnostic", source, got)
+	}
+}
+
+// TestParserDuplicateKeyHashDefaultStillBinds verifies that a brace group whose
+// field values are not types keeps falling back to a hash-literal default even
+// when it has a duplicate key. A duplicate among non-type values such as
+// `{ retry: 3, retry: 4 }` is a hash literal (Ruby allows duplicate keys), so it
+// must not be reclassified as a malformed shape; the structural shape diagnostic
+// is reserved for groups whose field values all parse as types.
+func TestParserDuplicateKeyHashDefaultStillBinds(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(opts: { retry: 3, retry: 4 })
+  opts
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	want := []ast.Param{
+		{
+			Name: "opts",
+			Kind: ast.ParamKeyword,
+			DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+				{Key: &ast.SymbolLiteral{Name: "retry"}, Value: &ast.IntegerLiteral{Value: 3}},
+				{Key: &ast.SymbolLiteral{Name: "retry"}, Value: &ast.IntegerLiteral{Value: 4}},
+			}},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserHashDefaultExpressionValueStillBinds verifies that the structural
+// shape check does not misfire on a hash default whose value is an expression
+// that merely begins with a type-like atom. `{ sum: a + 1 }` parses the value
+// `a` as a type atom, then stops at `+`, which continues an expression rather
+// than marking a malformed shape, so the group stays a hash default.
+func TestParserHashDefaultExpressionValueStillBinds(t *testing.T) {
+	t.Parallel()
+
+	source := `def g(a:, b: { sum: a + 1 })
+  b
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	want := []ast.Param{
+		{Name: "a", Kind: ast.ParamKeyword},
+		{
+			Name: "b",
+			Kind: ast.ParamKeyword,
+			DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+				{
+					Key: &ast.SymbolLiteral{Name: "sum"},
+					Value: &ast.BinaryExpr{
+						Left:     &ast.Identifier{Name: "a"},
+						Operator: ast.TokenPlus,
+						Right:    &ast.IntegerLiteral{Value: 1},
+					},
+				},
+			}},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserDuplicateKeyLocalRefHashDefaultStillBinds verifies that a duplicate
+// key whose values are bare identifiers naming an earlier keyword parameter
+// stays a hash default rather than surfacing a shape diagnostic. The local-value
+// guard on the structural shape check mirrors shapeFieldNamesLocalValue, so a
+// repeated value reference like `{ x: a, x: a }` remains a hash literal.
+func TestParserDuplicateKeyLocalRefHashDefaultStillBinds(t *testing.T) {
+	t.Parallel()
+
+	source := `def g(a:, b: { x: a, x: a })
+  b
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	want := []ast.Param{
+		{Name: "a", Kind: ast.ParamKeyword},
+		{
+			Name: "b",
+			Kind: ast.ParamKeyword,
+			DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+				{Key: &ast.SymbolLiteral{Name: "x"}, Value: &ast.Identifier{Name: "a"}},
+				{Key: &ast.SymbolLiteral{Name: "x"}, Value: &ast.Identifier{Name: "a"}},
+			}},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}

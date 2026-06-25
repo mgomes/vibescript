@@ -1025,7 +1025,16 @@ func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
 
 	p.nextToken()
 	shape := p.parseTypeExpr()
-	if shape == nil || len(p.errors) != saved.errorCount {
+	if shape == nil {
+		// A clean failure where the contents were not types (`{ retry: 3 }`)
+		// is a hash default. A structural shape error (`{ id: string, id: int }`)
+		// instead has field values that all parsed as types, so the braces are a
+		// malformed shape annotation, not a hash default: route them to the type
+		// path so the real parse re-emits the shape diagnostic rather than
+		// silently turning a typed positional parameter into a keyword default.
+		return p.shapeStructurallyInvalid
+	}
+	if len(p.errors) != saved.errorCount {
 		return false
 	}
 	if shapeHasDegenerateNilField(shape) {
