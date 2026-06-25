@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 )
@@ -18,11 +19,42 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 	return exec.resolveMember(obj, property, pos, false)
 }
 
+// universalMemberNames lists members exposed on every value kind, regardless
+// of type. They are resolved by universalMember before the per-kind dispatch in
+// resolveMember, so they take precedence over same-named hash or object keys
+// just as Ruby's universal Object methods take precedence over data access.
+var universalMemberNames = []string{"itself"}
+
+// itselfMember is the shared builtin backing Ruby-style Object#itself. It closes
+// over no receiver: it returns the receiver passed at call time, so identity is
+// preserved without copying and existing value ownership and host-boundary
+// isolation semantics stay intact. Because it carries no per-call state, a
+// single instance is reused for every value.
+var itselfMember = NewAutoBuiltin("object.itself", func(_ *Execution, receiver Value, args []Value, kwargs map[string]Value, _ Value) (Value, error) {
+	if len(args) > 0 || len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("itself does not take arguments")
+	}
+	return receiver, nil
+})
+
+// universalMember resolves a member available on every value kind. It returns
+// ok=false when property names no universal member, letting resolveMember fall
+// through to per-kind dispatch.
+func universalMember(property string) (Value, bool) {
+	if property != "itself" {
+		return NewNil(), false
+	}
+	return itselfMember, true
+}
+
 // resolveMember performs member resolution for getMember and getPublicMember.
 // callerIsReceiver controls private-method visibility: only the current
 // receiver may resolve private methods, so external/public dispatch passes
 // false to keep privacy enforced regardless of which value is self.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
+	if member, ok := universalMember(property); ok {
+		return member, nil
+	}
 	switch obj.Kind() {
 	case KindHash:
 		member, err := hashMember(obj, property)
@@ -216,19 +248,23 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 }
 
 // MemberCompletionNames returns the builtin member-method names per
-// receiver type, for editor tooling such as LSP completion. The slices
-// are copies; callers may sort or mutate them freely.
+// receiver type, for editor tooling such as LSP completion. Each list
+// includes the universal members (such as itself) available on every value
+// kind. The slices are copies; callers may sort or mutate them freely.
 func MemberCompletionNames() map[string][]string {
+	withUniversal := func(names []string) []string {
+		return append(slices.Clone(names), universalMemberNames...)
+	}
 	return map[string][]string{
-		"string":   slices.Clone(stringMemberNames),
-		"array":    slices.Clone(arrayMemberNames),
-		"hash":     slices.Clone(hashMemberNames),
-		"int":      slices.Clone(intMemberNames),
-		"float":    slices.Clone(floatMemberNames),
-		"money":    slices.Clone(moneyMemberNames),
-		"duration": slices.Clone(durationMemberNames),
-		"time":     slices.Clone(timeMemberNames),
-		"range":    slices.Clone(rangeMemberNames),
-		"function": slices.Clone(functionMemberNames),
+		"string":   withUniversal(stringMemberNames),
+		"array":    withUniversal(arrayMemberNames),
+		"hash":     withUniversal(hashMemberNames),
+		"int":      withUniversal(intMemberNames),
+		"float":    withUniversal(floatMemberNames),
+		"money":    withUniversal(moneyMemberNames),
+		"duration": withUniversal(durationMemberNames),
+		"time":     withUniversal(timeMemberNames),
+		"range":    withUniversal(rangeMemberNames),
+		"function": withUniversal(functionMemberNames),
 	}
 }
