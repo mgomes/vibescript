@@ -675,14 +675,25 @@ type blockBindCharge struct {
 // parameter (the only binding shape that allocates a fresh, source-sized backing).
 // A plain or non-rest destructure parameter binds references already counted in the
 // call roots, so it allocates nothing fresh and needs no charge.
-func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, kwargs map[string]Value, block Value) *blockBindCharge {
+//
+// callArgs are the iterator's POSITIONAL call roots (for example the other hashes a
+// block-driven hash.merge folds in, or the host-supplied arguments a capability
+// CallBlock drives a block with). Like the receiver, they live only on the Go call
+// stack during the loop, invisible to estimateMemoryUsageBase, so they must be
+// snapshotted into the baseline here: charging only the fresh rest copy against a
+// baseline that omits them lets a quota fit (roots + rest) and (receiver + rest)
+// separately while the real peak (receiver + args + rest) exceeds it. They are NOT
+// the per-entry yielded values begin seeds the estimator with -- those vary per
+// call and are seeded fresh each entry for dedup, whereas these are the fixed
+// backings held for the whole loop.
+func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []Value, kwargs map[string]Value, block Value) *blockBindCharge {
 	if exec.memoryQuota <= 0 || !blockBindsRest(blk) {
 		return nil
 	}
 	return &blockBindCharge{
 		exec:     exec,
 		est:      newMemoryEstimator(),
-		baseline: exec.estimateMemoryUsageForCallRoots(receiver, nil, kwargs, block),
+		baseline: exec.estimateMemoryUsageForCallRoots(receiver, callArgs, kwargs, block),
 	}
 }
 

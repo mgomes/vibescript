@@ -2709,3 +2709,87 @@ end`
 
 	requireCallRuntimeErrorType(t, script, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
 }
+
+// emptyMergeConflictNestedRestBlock builds the three-parameter conflict block a
+// block-driven Hash#merge yields (key, old_value, new_value) to, with the third
+// parameter destructuring new_value into a nested rest |k, old, (head, *tail)| and an
+// EMPTY body. Binding tail copies the conflicting argument value into a fresh,
+// source-sized backing; the empty body means only the per-call bind charge can
+// observe that copy.
+func emptyMergeConflictNestedRestBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	newValueTarget := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	params := []Param{
+		{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}},
+		{Kind: ParamNormal, Name: "old", Target: &Identifier{Name: "old", Position: pos}},
+		{Kind: ParamNormal, Target: newValueTarget},
+	}
+	return NewBlock(params, nil, newEnv(nil))
+}
+
+// TestHashMergeConflictArgNestedRestTripsMemoryQuota is the regression for the
+// positional-call-root gap the Codex thread on PR #808 raised. A block-driven
+// Hash#merge holds its argument hashes only on the Go call stack while the conflict
+// loop runs; binding a conflicting new_value into a rest-collecting destructure
+// (|k, old, (head, *tail)|) copies that argument value into a fresh, source-sized
+// backing. With an EMPTY block body only the per-call bind charge observes the copy,
+// and that charge must measure it against a baseline that counts the argument hash it
+// was copied from. The quota here is sized to admit the argument hash and the fresh
+// tail copy SEPARATELY (the buggy baseline, which omitted the positional roots, so
+// charged only receiver + tail) but NOT the real peak (receiver + argument + tail).
+// Before the fix the buggy baseline let the merge complete and escape the quota; the
+// fix counts the argument root so the combined peak is rejected.
+func TestHashMergeConflictArgNestedRestTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// The receiver and the argument share key "a" so the conflict block fires. The
+	// argument's value is the large array whose tail the nested rest copies; the
+	// receiver's value is tiny so the receiver alone leaves ample headroom.
+	const valueLen = 200_000
+	argValue := arrayValue(valueLen)
+	receiver := NewHash(map[string]Value{"a": NewArray([]Value{NewInt(0)})})
+	other := NewHash(map[string]Value{"a": argValue})
+	args := []Value{other}
+	block := emptyMergeConflictNestedRestBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	// The buggy baseline omitted the positional argument roots, so it charged the
+	// fresh tail against receiver + block alone. Size the quota to clear that buggy
+	// peak with headroom so the bug would have let the merge complete.
+	buggyRoots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	tailCharge := mergeConflictTailChargeBytes(argValue)
+	const headroom = 16 * 1024
+	quota := buggyRoots + tailCharge + headroom
+
+	// The real peak counts the argument hash too. It must exceed the quota, so the
+	// only thing standing between a passing and a rejected merge is whether the bind
+	// charge includes the positional argument root.
+	correctRoots := probe.estimateMemoryUsageForCallRoots(receiver, args, nil, block)
+	if correctRoots+tailCharge <= quota {
+		t.Fatalf("test setup expects the argument-inclusive peak (%d) to exceed the quota (%d); the argument footprint must dwarf the headroom", correctRoots+tailCharge, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "merge", args, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// mergeConflictTailChargeBytes returns the bytes the per-call bind charge attributes
+// to the fresh tail a |k, old, (head, *tail)| conflict block binds when new_value is
+// valueArray. It mirrors blockBindCharge.begin/charge: seed a fresh estimator with
+// the yielded (key, old_value, new_value) arguments (so payloads shared with new_value
+// deduplicate), then charge the genuinely fresh rest backing of valueArray[1:].
+func mergeConflictTailChargeBytes(valueArray Value) int {
+	est := newMemoryEstimator()
+	est.value(NewSymbol("a"))
+	est.value(NewArray([]Value{NewInt(0)}))
+	est.value(valueArray)
+	tail := NewArray(slicesClone(valueArray.Array()[1:]))
+	return est.value(tail)
+}

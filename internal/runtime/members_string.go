@@ -2473,7 +2473,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_char does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "string.each_char", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "string.each_char", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2491,7 +2491,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_byte does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "string.each_byte", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "string.each_byte", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2510,7 +2510,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_codepoint does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "string.each_codepoint", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "string.each_codepoint", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2528,7 +2528,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_line does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "string.each_line", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "string.each_line", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}

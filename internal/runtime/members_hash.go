@@ -395,7 +395,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "hash.each", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -466,7 +466,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_key does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each_key", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "hash.each_key", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -502,7 +502,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_value does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each_value", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "hash.each_value", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -759,7 +759,14 @@ func hashMemberTransforms(property string) (Value, error) {
 				// present on only one side are copied without invoking the block.
 				// Conflicting keys are visited in sorted order so block side
 				// effects are deterministic, mirroring the other hash helpers.
-				r, err := newBlockCallRunner(exec, block, "hash."+name, receiver, kwargs)
+				//
+				// The argument hashes being merged in (args) live on the Go call stack
+				// for the whole conflict loop, so pass them as the runner's positional
+				// call roots: a conflict block that destructures a new_value into a
+				// rest-collecting parameter copies part of an argument into a fresh
+				// backing, and that copy must be charged against a baseline that already
+				// counts the arguments it was copied from.
+				r, err := newBlockCallRunner(exec, block, "hash."+name, receiver, args, kwargs)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1092,7 +1099,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.select does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.select", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "hash.select", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -1132,7 +1139,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.reject does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.reject", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "hash.reject", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -1172,7 +1179,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_keys does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.transform_keys", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "hash.transform_keys", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -1283,7 +1290,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_values does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.transform_values", receiver, kwargs)
+			runner, err := newBlockCallRunner(exec, block, "hash.transform_values", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}

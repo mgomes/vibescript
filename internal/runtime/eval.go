@@ -639,11 +639,14 @@ type blockCallRunner struct {
 }
 
 // newBlockCallRunner builds a runner for repeatedly invoking a block from an
-// iterator. receiver and kwargs are the iterator's call roots: they seed the
-// per-call bind charge that bounds the fresh backing a rest-collecting destructure
-// parameter (|(k, *tail)|) allocates, so the receiver -- live only on the Go stack
-// during the loop -- is counted alongside that backing.
-func newBlockCallRunner(exec *Execution, block Value, name string, receiver Value, kwargs map[string]Value) (*blockCallRunner, error) {
+// iterator. receiver, callArgs, and kwargs are the iterator's call roots: they seed
+// the per-call bind charge that bounds the fresh backing a rest-collecting
+// destructure parameter (|(k, *tail)|) allocates, so those roots -- live only on the
+// Go stack during the loop -- are counted alongside that backing. callArgs are the
+// iterator's POSITIONAL roots (the other hashes a block-driven hash.merge holds, for
+// example); pass nil for the pure iterators that reject positional arguments and so
+// hold only the receiver.
+func newBlockCallRunner(exec *Execution, block Value, name string, receiver Value, callArgs []Value, kwargs map[string]Value) (*blockCallRunner, error) {
 	if err := ensureBlock(block, name); err != nil {
 		return nil, err
 	}
@@ -651,7 +654,7 @@ func newBlockCallRunner(exec *Execution, block Value, name string, receiver Valu
 	runner := &blockCallRunner{
 		exec:   exec,
 		blk:    blk,
-		charge: newBlockBindCharge(exec, blk, receiver, kwargs, block),
+		charge: newBlockBindCharge(exec, blk, receiver, callArgs, kwargs, block),
 	}
 	if blockCanReuseEnv(blk) {
 		runner.env = newEnv(blk.Env)
@@ -698,9 +701,13 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	}
 	blk := valueBlock(block)
 	// Capability adapters drive blocks with host-supplied arguments and no
-	// receiver, so charge any rest-collecting destructure binding against a
-	// baseline seeded with those arguments alone.
-	charge := newBlockBindCharge(exec, blk, NewNil(), nil, block)
+	// receiver. Those arguments live only on the Go call stack for the duration of
+	// the call, so include them in the bind-charge baseline: a rest-collecting
+	// destructure parameter copying part of a large argument into a fresh backing
+	// would otherwise be charged that copy against a baseline that omits the
+	// argument it was copied from, letting (args) and (rest) each fit the quota
+	// while the real peak (args + rest) exceeds it.
+	charge := newBlockBindCharge(exec, blk, NewNil(), args, nil, block)
 	return exec.callBlock(blk, args, newEnv(blk.Env), charge)
 }
 

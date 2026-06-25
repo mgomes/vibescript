@@ -462,3 +462,53 @@ func TestArrayEachNestedRestEmptyBodyTripsMemoryQuota(t *testing.T) {
 	_, err = valueBuiltin(member).Fn(exec, receiver, nil, nil, block)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
+
+// TestCallBlockNestedRestArgTripsMemoryQuota covers the capability-adapter side of
+// the positional-call-root gap the Codex thread on PR #808 raised. A host capability
+// drives a user block through exec.CallBlock with arguments that live only on the Go
+// call stack; a |(head, *tail)| block binds tail to a fresh, source-sized copy of the
+// argument array. With an EMPTY block body only the per-call bind charge observes the
+// copy, and that charge must count the argument it was copied from. The quota admits
+// the fresh tail copy charged against an empty baseline (the buggy path, which omitted
+// the host arguments) plus headroom, but NOT the real peak (argument + tail). Before
+// the fix the buggy baseline let CallBlock complete and escape the quota.
+func TestCallBlockNestedRestArgTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	block := NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil))
+
+	const argLen = 200_000
+	argValue := arrayValue(argLen)
+	args := []Value{argValue}
+
+	// begin seeds the estimator with the host arguments, so the fresh tail copy's
+	// shared int payloads deduplicate and only its genuinely new backing slots are
+	// charged. Mirror that to size the quota from the estimator's real accounting.
+	est := newMemoryEstimator()
+	est.value(argValue)
+	tail := NewArray(slicesClone(argValue.Array()[1:]))
+	tailCharge := est.value(tail)
+	const headroom = 16 * 1024
+	// The buggy baseline omitted the host arguments entirely (CallBlock passes no
+	// receiver), so it charged only the fresh tail. A quota that clears that buggy
+	// peak with headroom would have let the call complete.
+	quota := tailCharge + headroom
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	correctRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), args, nil, block)
+	if correctRoots+tailCharge <= quota {
+		t.Fatalf("test setup expects the argument-inclusive peak (%d) to exceed the quota (%d)", correctRoots+tailCharge, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := exec.CallBlock(block, args)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
