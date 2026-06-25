@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
+	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
@@ -32,7 +32,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
+	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
@@ -940,6 +940,22 @@ func arrayMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("array.rindex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return arrayReverseIndex(exec, receiver, args, block)
 		}), nil
+	case "at":
+		return NewAutoBuiltin("array.at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.at does not take keyword arguments")
+			}
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("array.at expects exactly one index")
+			}
+			index, err := arraySliceIndex(args[0], "array.at")
+			if err != nil {
+				return NewNil(), err
+			}
+			return arrayElementAt(receiver.Array(), index), nil
+		}), nil
+	case "slice":
+		return NewAutoBuiltin("array.slice", arraySlice), nil
 	case "fetch":
 		return NewAutoBuiltin("array.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
@@ -1275,6 +1291,165 @@ func arrayReverseIndex(exec *Execution, receiver Value, args []Value, block Valu
 		}
 	}
 	return NewNil(), nil
+}
+
+// arraySliceIndex validates a single index argument shared by Array#at and the
+// single-index form of Array#slice. It accepts integers and fractional floats
+// (truncated toward zero like Ruby's to_int), rejecting other kinds and any
+// non-finite or out-of-range float with a method-specific error.
+func arraySliceIndex(value Value, method string) (int, error) {
+	switch value.Kind() {
+	case KindInt, KindFloat:
+		index, err := valueToInt(value)
+		if err != nil {
+			return 0, fmt.Errorf("%s index must be integer", method)
+		}
+		return index, nil
+	default:
+		return 0, fmt.Errorf("%s index must be integer", method)
+	}
+}
+
+// arrayElementAt returns the element at index, counting a negative index back
+// from the end. An index outside the array (after normalization) yields nil,
+// matching Ruby's Array#at and Array#[] single-index access, which never raise
+// for out-of-range integer indexes.
+func arrayElementAt(arr []Value, index int) Value {
+	if index < 0 {
+		index += len(arr)
+	}
+	if index < 0 || index >= len(arr) {
+		return NewNil()
+	}
+	return arr[index]
+}
+
+// arraySlice implements Array#slice across the three argument shapes Vibescript
+// can represent: a single integer index, an integer start with a length, and a
+// range. It mirrors Ruby's extraction semantics, returning nil for selectors
+// that fall outside the array rather than raising.
+//
+//	slice(index)         # the single element at index (negative counts from end)
+//	slice(start, length) # a subarray of up to length elements starting at start
+//	slice(range)         # a subarray selected by the range bounds
+//
+// The single-index form returns the element itself (like Array#at and Array#[]),
+// while the start/length and range forms return a new subarray. An out-of-range
+// single index, a start beyond the array, or a negative length yields nil; a
+// start exactly at the length with a non-negative length yields an empty array,
+// matching Ruby ([1, 2, 3].slice(3, 1) is [] while [1, 2, 3].slice(3) is nil).
+func arraySlice(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.slice does not take keyword arguments")
+	}
+	arr := receiver.Array()
+	switch len(args) {
+	case 1:
+		if args[0].Kind() == KindRange {
+			sub, ok := arraySliceRange(arr, args[0].Range())
+			if !ok {
+				return NewNil(), nil
+			}
+			return NewArray(sub), nil
+		}
+		index, err := arraySliceIndex(args[0], "array.slice")
+		if err != nil {
+			return NewNil(), err
+		}
+		return arrayElementAt(arr, index), nil
+	case 2:
+		start, err := arraySliceIndex(args[0], "array.slice")
+		if err != nil {
+			return NewNil(), err
+		}
+		length, err := valueToInt(args[1])
+		if err != nil {
+			return NewNil(), fmt.Errorf("array.slice length must be integer")
+		}
+		if args[1].Kind() != KindInt && args[1].Kind() != KindFloat {
+			return NewNil(), fmt.Errorf("array.slice length must be integer")
+		}
+		sub, ok := arraySliceStartLength(arr, start, length)
+		if !ok {
+			return NewNil(), nil
+		}
+		return NewArray(sub), nil
+	default:
+		return NewNil(), fmt.Errorf("array.slice expects an index, a start and length, or a range")
+	}
+}
+
+// arraySliceStartLength extracts at most length elements starting at start,
+// matching Ruby's Array#slice(start, length). A negative start counts back from
+// the end. It returns ok=false when length is negative or when start lands
+// outside the array; a start exactly equal to the length is in range and yields
+// an empty array (Ruby's [1, 2, 3].slice(3, n) is []). The length is clamped to
+// the remaining elements, so an oversized length returns the suffix from start.
+// Clamping length to the remaining count before computing end keeps start+length
+// from overflowing int when length is near math.MaxInt64, which would otherwise
+// wrap to a negative window and panic make. The returned slice is a fresh copy
+// so it never aliases the receiver's backing array.
+func arraySliceStartLength(arr []Value, start, length int) ([]Value, bool) {
+	if length < 0 {
+		return nil, false
+	}
+	if start < 0 {
+		start += len(arr)
+		if start < 0 {
+			return nil, false
+		}
+	}
+	if start > len(arr) {
+		return nil, false
+	}
+	remaining := len(arr) - start
+	if length > remaining {
+		length = remaining
+	}
+	out := make([]Value, length)
+	copy(out, arr[start:start+length])
+	return out, true
+}
+
+// arraySliceRange extracts the elements selected by a range, matching Ruby's
+// Array#slice(range). Negative bounds count back from the end. A begin bound
+// before the start of the array (after normalization) or past its length returns
+// ok=false (nil); a begin exactly at the length yields an empty array. The end
+// bound is clamped to the array length, and an end before begin yields an empty
+// array. Bound arithmetic stays in int64 so a near-MaxInt64 inclusive range
+// cannot silently overflow into a no-op. The returned slice is a fresh copy so
+// it never aliases the receiver's backing array.
+func arraySliceRange(arr []Value, rng Range) ([]Value, bool) {
+	length := int64(len(arr))
+	begin := rng.Start
+	if begin < 0 {
+		begin += length
+	}
+	if begin < 0 || begin > length {
+		return nil, false
+	}
+	end := rng.End
+	if end < 0 {
+		end += length
+	}
+	if !rng.Exclusive {
+		// An inclusive range's exclusive end is one past End; guard the increment so
+		// End == math.MaxInt64 cannot wrap to a negative no-op window.
+		if end == math.MaxInt64 {
+			end = length
+		} else {
+			end++
+		}
+	}
+	if end > length {
+		end = length
+	}
+	if end < begin {
+		end = begin
+	}
+	out := make([]Value, end-begin)
+	copy(out, arr[begin:end])
+	return out, true
 }
 
 // arrayReduce folds the receiver into a single value. It supports Ruby's three
