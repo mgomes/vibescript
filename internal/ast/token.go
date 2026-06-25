@@ -56,6 +56,7 @@ const (
 	TokenGTE            TokenType = ">="
 	TokenSpaceship      TokenType = "<=>"
 	TokenEQ             TokenType = "=="
+	TokenCaseEQ         TokenType = "==="
 	TokenNotEQ          TokenType = "!="
 	TokenAnd            TokenType = "&&"
 	TokenOr             TokenType = "||"
