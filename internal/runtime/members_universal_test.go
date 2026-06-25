@@ -1,6 +1,10 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"testing"
+)
 
 // TestEqualPredicateEnumClonedIdentity confirms equal? on enums and enum values
 // reports backing-storage identity, not the structural equivalence Equal uses.
@@ -267,6 +271,64 @@ end`,
 			compareArrays(t, result, tc.want)
 		})
 	}
+}
+
+// TestEqualityPredicateHashResolutionIsConstantWork confirms resolving the
+// universal eql?/equal? predicates on hash and object receivers stays O(1) in the
+// number of stored keys. The predicates always win over stored entries for these
+// kinds, so resolveMember answers them before typed dispatch; it must not route
+// through hashMember's miss path, which materializes did-you-mean candidates from
+// every key. A regression that reinstated that walk would scale per-call work and
+// allocations with the receiver size, so resolving on a large receiver must stay
+// far below the key count rather than allocating once per key.
+func TestEqualityPredicateHashResolutionIsConstantWork(t *testing.T) {
+	// testing.AllocsPerRun forbids running under t.Parallel, so this test and its
+	// subtests run serially.
+	const receiverKeys = 4096
+
+	// constantWorkAllocCeiling bounds the per-call allocations the fixed path may
+	// make. It is a small constant independent of receiverKeys, so it tolerates the
+	// few extra allocations the race detector adds while still failing decisively
+	// if resolution reverts to allocating per stored key (which would land in the
+	// thousands for a receiverKeys-sized receiver).
+	const constantWorkAllocCeiling = 64
+
+	cases := []struct {
+		name     string
+		make     func(map[string]Value) Value
+		property string
+	}{
+		{name: "hash eql?", make: NewHash, property: "eql?"},
+		{name: "hash equal?", make: NewHash, property: "equal?"},
+		{name: "object eql?", make: NewObject, property: "eql?"},
+		{name: "object equal?", make: NewObject, property: "equal?"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := compileScript(t, "def run()\n  nil\nend")
+			exec := newExecutionForCall(script, context.Background(), newEnv(nil), CallOptions{})
+
+			receiver := tc.make(buildKeyedEntries(receiverKeys))
+			allocs := testing.AllocsPerRun(100, func() {
+				if _, err := exec.resolveMember(receiver, tc.property, Position{}, false); err != nil {
+					t.Fatalf("resolveMember(%s) on %s: %v", tc.property, receiver.Kind(), err)
+				}
+			})
+			if allocs > constantWorkAllocCeiling {
+				t.Fatalf("resolving %s on a %d-key receiver allocated %.0f times (ceiling %d); resolution must not scale with key count", tc.property, receiverKeys, allocs, constantWorkAllocCeiling)
+			}
+		})
+	}
+}
+
+// buildKeyedEntries returns a map of count distinct string keys for sizing a
+// hash or object receiver in allocation regression tests.
+func buildKeyedEntries(count int) map[string]Value {
+	entries := make(map[string]Value, count)
+	for i := range count {
+		entries[fmt.Sprintf("key_%d", i)] = NewInt(int64(i))
+	}
+	return entries
 }
 
 // TestEqualityPredicateUserOverride confirms a class may define its own eql? or

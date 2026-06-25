@@ -30,7 +30,19 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // override is not "unknown": resolveTypedMember reports it with a private-member
 // error, which suppresses the fallback so the privacy block still raises rather
 // than silently resolving the builtin.
+//
+// Hash and object receivers are the exception: their typed dispatch can never
+// own an eql?/equal? member (a stored entry of that name is data, not a method),
+// so the universal predicate always wins for them. Resolving it before typed
+// dispatch keeps identity O(1): it skips hashMember's miss path, which would
+// otherwise materialize did-you-mean candidates from every stored key only for
+// resolveMember to discard that error in favor of the universal builtin.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
+	if isUniversalPredicate(property) && universalPredicateAlwaysWins(obj.Kind()) {
+		if predicate, ok := universalMember(obj, property); ok {
+			return predicate, nil
+		}
+	}
 	member, err := exec.resolveTypedMember(obj, property, pos, callerIsReceiver)
 	if err != nil && !isPrivateMemberError(err) && isUniversalPredicate(property) {
 		if predicate, ok := universalMember(obj, property); ok {
@@ -38,6 +50,22 @@ func (exec *Execution) resolveMember(obj Value, property string, pos Position, c
 		}
 	}
 	return member, err
+}
+
+// universalPredicateAlwaysWins reports whether a receiver kind has no typed
+// member or user-defined method that could shadow the universal eql?/equal?
+// predicates, so they may be resolved before typed dispatch. Only hash and
+// object receivers qualify: hashMember exposes no eql?/equal? builtin and their
+// stored entries are treated as data rather than methods, so the universal
+// predicate is the sole resolution and resolving it first avoids hashMember's
+// expensive miss path.
+func universalPredicateAlwaysWins(kind ValueKind) bool {
+	switch kind {
+	case KindHash, KindObject:
+		return true
+	default:
+		return false
+	}
 }
 
 func (exec *Execution) resolveTypedMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
