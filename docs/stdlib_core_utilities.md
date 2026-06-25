@@ -42,12 +42,24 @@ Unicode characters, not bytes, unless noted.
 - `empty? -> bool` – true when the string has no characters.
 - `ord -> int` – codepoint of the first character; errors on an empty string.
 - `chr -> string` – first character, or an empty string for an empty receiver.
+- `getbyte(index) -> int | nil` – byte at a byte offset (`0..255`); negative
+  offsets count from the end, and an out-of-range offset returns `nil`.
+- `byteslice(index) | byteslice(start, length) | byteslice(range) -> string |
+  nil` – substring by byte offset; negative offsets count from the end, an
+  out-of-range start or negative length returns `nil`, and bytes are returned
+  verbatim without UTF-8 normalization.
 - `hex -> int` – leading characters parsed as a hexadecimal integer (optional
   whitespace, sign, `0x` prefix, and underscore separators); `0` when no hex
   digit leads, and an `integer out of range` error past the `int64` bounds.
 - `oct -> int` – leading characters parsed using a base inferred from a
   `0x`/`0b`/`0o`/`0d` prefix (octal by default); same lenient parsing,
   zero-on-failure, and `int64` overflow behavior as `hex`.
+
+### Conversion
+
+- `to_sym -> symbol` – the symbol named by the string. Any contents are
+  accepted verbatim, including whitespace, punctuation, and the empty string.
+- `intern -> symbol` – alias for `to_sym`.
 
 ### Search and Matching
 
@@ -85,6 +97,12 @@ Unicode characters, not bytes, unless noted.
 - `slice(index, length) -> string | nil` – substring of up to `length`
   characters starting at `index`.
 - `concat(*strings) -> string` – receiver with all arguments appended.
+- `prepend(*strings) -> string` – receiver with all arguments prepended, in
+  order.
+- `insert(index, string) -> string` – receiver with `string` inserted at a
+  character index. A non-negative index inserts before the character at that
+  position (the length appends); a negative index inserts after the character it
+  selects (`-1` appends). An out-of-range index raises an error.
 - `replace(replacement) -> string` – returns `replacement` (compatibility
   shim for Ruby's mutating `replace`).
 - `clear -> string` – returns `""`.
@@ -155,6 +173,9 @@ then truncated at a character boundary to fill the span.
   stay attached so `"\r\n"` endings round-trip.
 - `bytes -> array` – array of the string's bytes as integers in `0..255`
   (byte-level, so a multibyte character expands to one entry per UTF-8 byte).
+- `codepoints -> array` – array of the string's Unicode code points as integers
+  (rune-aware, so a multibyte character is one entry; the integer counterpart to
+  `chars`).
 - `template(context, strict: false) -> string` – interpolate `{{key.path}}`
   placeholders from a hash; `strict: true` errors on missing placeholders.
 
@@ -690,6 +711,21 @@ formatting. Times also support `time + duration`, `time - duration`,
   non-negative `Integer`; other values raise an error.
 - `floor -> time` – truncate to the whole second.
 - `ceil -> time` – round up to the next whole second.
+
+## Symbols
+
+Symbols (`:name`) expose the Ruby string/symbol conversion helpers:
+
+- `id2name -> string` – the symbol's name as a string.
+- `to_s -> string` – alias for `id2name`.
+- `to_sym -> symbol` – returns the receiver unchanged.
+
+`"name".to_sym` and `:name.to_s` round-trip between the two representations.
+Vibescript collapses symbol and string hash keys onto their shared underlying
+name, so a hash keyed with `:name` is reachable with `"name".to_sym` and with
+the plain string `"name"`. This differs from Ruby, where `:name` and `"name"`
+are distinct keys. Symbol and string equality, however, remains kind-sensitive:
+`:name == "name"` is `false`.
 
 ## Enum Values
 
