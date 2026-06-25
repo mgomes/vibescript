@@ -170,6 +170,29 @@ func TestOptionalKeywordParameterTypedPositionalUnaffected(t *testing.T) {
 	}
 }
 
+// TestOptionalKeywordParameterNilLeadingUnionTypedPositional verifies that a
+// nil-leading union annotation (`a: nil | int`) binds as a typed positional
+// parameter rather than a `nil` keyword default. The `|` continuation after
+// `nil` must keep the colon a type annotation, so the parameter accepts a
+// positional nil or int and rejects values outside the union.
+func TestOptionalKeywordParameterNilLeadingUnionTypedPositional(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def f(a: nil | int)
+      a
+    end
+    `)
+
+	if got := callFunc(t, script, "f", []Value{NewNil()}); !got.Equal(NewNil()) {
+		t.Fatalf("f(nil) = %#v, want nil", got)
+	}
+	if got := callFunc(t, script, "f", []Value{NewInt(3)}); !got.Equal(NewInt(3)) {
+		t.Fatalf("f(3) = %#v, want 3", got)
+	}
+	requireCallErrorContains(t, script, "f", []Value{NewString("x")}, CallOptions{},
+		"argument a expected nil | int, got string")
+}
+
 // TestOptionalKeywordParameterHashDefault verifies that a `{ ... }` keyword
 // default is bound as a hash literal: the default hash applies when the keyword
 // is omitted, an explicit keyword overrides it, and a hash default may reference

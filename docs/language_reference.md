@@ -139,8 +139,11 @@ after the colon resolves as a type name, not a keyword default: write `a: int`
 for a typed positional and `a: 0` for an optional keyword. The `name: nil`
 spelling is the optional keyword default `nil`, matching Ruby and the stdlib's
 documented optional keywords; a bare `nil` positional type would be useless.
-When a keyword default must reference another name on its own, wrap it in
-parentheses (`a: (other)`) so it parses as an expression.
+A nil-leading union annotation (`a: nil | int`) is the exception: the `|`
+continuation keeps the colon a type, so it declares a typed positional
+parameter rather than a `nil` keyword default. When a keyword default must
+reference another name on its own, wrap it in parentheses (`a: (other)`) so it
+parses as an expression.
 
 A keyword default may be a full expression, including one that references an
 earlier parameter with a comparison (`def f(limit:, ok: limit < 10)`). A `{ ... }`

@@ -958,6 +958,8 @@ func (p *parser) peekEndsRequiredKeywordParam(options paramParseOptions) bool {
 //     start a type, so it begins a default value.
 //   - `nil` reads as a default value (`a: nil`), matching Ruby and the stdlib's
 //     documented optional keywords; a bare `nil` positional type is useless.
+//     A `|` continuation keeps it a type, so a nil-leading union annotation
+//     (`a: nil | int`) parses as the union rather than a `nil` default.
 //   - `{` opens either a shape type (`name: { field: Type }`) or a hash literal
 //     default (`name: { key: value }`). The two share a `{ name: X }` skeleton,
 //     so a bounded speculative parse decides: the brace group reads as a shape
@@ -971,7 +973,9 @@ func (p *parser) peekEndsRequiredKeywordParam(options paramParseOptions) bool {
 func (p *parser) colonIntroducesKeywordDefault(options paramParseOptions) bool {
 	switch p.peekToken.Type {
 	case ast.TokenNil:
-		return true
+		// A bare `nil` is a default value, but a `|` continuation makes it the
+		// head of a nil-leading union type annotation (`a: nil | int`).
+		return p.peekPeek.Type != ast.TokenPipe
 	case ast.TokenLBrace:
 		return !p.bracedGroupIsShapeType(options)
 	case ast.TokenIdent:

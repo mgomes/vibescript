@@ -299,6 +299,28 @@ end`,
 			},
 		},
 		{
+			// A nil-leading union annotation (`a: nil | int`) is a typed
+			// positional parameter, not a `nil` keyword default. The `|`
+			// continuation after `nil` keeps the colon a type annotation.
+			name: "nil_leading_union_type",
+			source: `def f(a: nil | int)
+  a
+end`,
+			want: []ast.Param{
+				{
+					Name: "a",
+					Type: &ast.TypeExpr{
+						Name: "nil | int",
+						Kind: ast.TypeUnion,
+						Union: []*ast.TypeExpr{
+							{Name: "nil", Kind: ast.TypeNil, Nullable: false},
+							{Name: "int", Kind: ast.TypeInt},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "shape_type_with_nullable_union_field",
 			source: `def f(a: { x: int | nil })
   a
