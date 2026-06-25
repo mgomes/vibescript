@@ -1175,7 +1175,8 @@ func destructureValues(value Value) []Value {
 // the snapshot AssignDestructure would otherwise take unconditionally.
 //
 // A write whose only successors discard their window (e.g. "values[0], * =
-// values", where the trailing anonymous rest reads nothing) is safe to alias:
+// values", where the trailing anonymous rest reads nothing, or "values[0], (*)
+// = values", where the nested follower destructures nothing) is safe to alias:
 // no surviving read can observe the mutation, so snapshotting it would copy the
 // whole backing slice for no observable effect. Plain identifiers, ivars, and
 // class vars write to environment or instance slots that never alias the RHS
@@ -1195,10 +1196,24 @@ func destructureWriteIsReadBack(target *DestructureTarget) bool {
 }
 
 // destructureElementReads reports whether an element binds at least one value
-// out of the right-hand side. Every element reads except the anonymous rest
-// ("*"), whose nil target discards its window without observing any value.
+// out of the right-hand side. The anonymous rest ("*") has a nil target and
+// discards its window without observing any value, so it never reads. A nested
+// destructure target reads only if at least one of its own elements reads:
+// an all-discard pattern such as "(*)" binds nothing, so it must be treated
+// like the anonymous rest and not force a defensive snapshot of the RHS.
 func destructureElementReads(element DestructureElement) bool {
-	return element.Target != nil
+	if element.Target == nil {
+		return false
+	}
+	if nested, ok := element.Target.(*DestructureTarget); ok {
+		for _, inner := range nested.Elements {
+			if destructureElementReads(inner) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // destructureElementWrites reports whether a leaf (or any nested leaf) assigns

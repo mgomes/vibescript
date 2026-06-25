@@ -662,6 +662,54 @@ func TestAssignDestructureSkipsSnapshotWhenWriteHasNoReadBack(t *testing.T) {
 	}
 }
 
+func TestAssignDestructureSkipsSnapshotWhenFollowerOnlyDiscards(t *testing.T) {
+	// testing.AllocsPerRun must not run under t.Parallel(), so this test stays
+	// sequential.
+
+	// "values[0], (*) = values" writes the first slot and then follows it with a
+	// nested destructure pattern that only discards. No binding in that follower
+	// reads the array, so it must be treated like a bare anonymous rest: the
+	// source aliases instead of taking a full snapshot. The recursion in
+	// destructureElementReads is what makes the all-discard nested pattern count
+	// as a non-read; without it the whole backing slice would be copied for a
+	// mutation no binding can observe.
+	index := &IndexExpr{}
+	target := &DestructureTarget{
+		Elements: []DestructureElement{
+			{Target: index}, // "values[0]"
+			{Target: &DestructureTarget{ // nested "(*)"
+				Elements: []DestructureElement{{Rest: true}},
+			}},
+		},
+	}
+
+	const size = 4096
+	backing := make([]Value, size)
+	for i := range backing {
+		backing[i] = NewInt(int64(i))
+	}
+	source := NewArray(backing)
+
+	assign := func(expr Expression, v Value) error {
+		if expr == index {
+			source.Array()[0] = v
+		}
+		return nil
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if err := AssignDestructure(target, source, assign); err != nil {
+			t.Fatalf("AssignDestructure returned error: %v", err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("write-then-nested-discard allocated %v times; expected 0 (all-discard follower means no snapshot)", allocs)
+	}
+	if got := source.Array()[0]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("source[0] = %v; want 0 (idempotent self-write)", got)
+	}
+}
+
 func TestAssignDestructureChargesSnapshotAgainstMemoryQuota(t *testing.T) {
 	t.Parallel()
 
@@ -757,6 +805,58 @@ func TestParallelAssignmentDiscardedRestAfterIndexWrite(t *testing.T) {
 			t.Parallel()
 
 			script := compileScript(t, "def run\n  "+tt.body+"\n  v\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
+func TestParallelAssignmentNestedDiscardFollowerAfterIndexWrite(t *testing.T) {
+	t.Parallel()
+
+	// A nested destructure follower that only discards, "(*)", reads nothing,
+	// so a preceding index write has no surviving observer and the source can be
+	// aliased without a snapshot. A nested follower that binds a value, "(b, *)",
+	// must still snapshot so its read sees the original element, not the mutated
+	// slot. Each expectation was confirmed against the reference Ruby
+	// implementation:
+	//   v=[10,20,30,40]; v[0], (*) = v     -> v == [10, 20, 30, 40]
+	//   v=[10,20,30,40]; v[1], (*) = v     -> v == [10, 10, 30, 40]
+	//   v=[10,20,30,40]; v[1], (b, *) = v  -> v == [10, 10, 30, 40], b == 20
+	tests := []struct {
+		name   string
+		body   string
+		result string
+		want   []Value
+	}{
+		{
+			name:   "nested discard follower idempotent write",
+			body:   "v = [10, 20, 30, 40]\n  v[0], (*) = v",
+			result: "v",
+			want:   []Value{NewInt(10), NewInt(20), NewInt(30), NewInt(40)},
+		},
+		{
+			name:   "nested discard follower middle write",
+			body:   "v = [10, 20, 30, 40]\n  v[1], (*) = v",
+			result: "v",
+			want:   []Value{NewInt(10), NewInt(10), NewInt(30), NewInt(40)},
+		},
+		{
+			name:   "nested reading follower snapshots before write",
+			body:   "v = [10, 20, 30, 40]\n  v[1], (b, *) = v",
+			result: "[v, b]",
+			want: []Value{
+				NewArray([]Value{NewInt(10), NewInt(10), NewInt(30), NewInt(40)}),
+				NewInt(20),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, "def run\n  "+tt.body+"\n  "+tt.result+"\nend")
 			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 			compareArrays(t, got, tt.want)
 		})
