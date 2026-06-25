@@ -57,15 +57,38 @@ func cyclicArrayThroughHash() value.Value {
 	return arr
 }
 
-// cyclicHashThroughDefault builds a cycle that runs through a hash's Ruby-style
-// default value rather than its entries: the default value is an array holding a
-// hash that wraps the same entry map, so the walk re-enters the map it is already
-// visiting. Cycle detection keys on the entry map pointer, so the back-reference
-// is observed as a cycle the same as an entry-level one.
+// cyclicHashThroughDefault builds a genuine cycle that runs through a hash's
+// Ruby-style default value rather than its entries: the default value is an array
+// that holds the hash itself, so the walk re-enters the wrapper it is already
+// visiting. Cycle detection keys on the hash wrapper, so the back-reference is
+// observed as a cycle the same as an entry-level one. NewArray aliases its
+// backing slice, so writing the wrapper back into the slice closes the cycle.
 func cyclicHashThroughDefault() value.Value {
-	entries := map[string]value.Value{}
-	defaultArr := value.NewArray([]value.Value{value.NewHash(entries)})
-	return value.NewHashWithDefault(entries, defaultArr, value.NewNil())
+	defaultElems := make([]value.Value, 1)
+	hash := value.NewHashWithDefault(
+		map[string]value.Value{},
+		value.NewArray(defaultElems),
+		value.NewNil(),
+	)
+	defaultElems[0] = hash
+	return hash
+}
+
+// sharedEntryMapCallableDefaultBehindPlain builds two hash wrappers over one
+// entry map: a plain data-only wrapper followed by one whose default proc is a
+// callable. The plain wrapper is visited first, so a scanner that keys its
+// seen-set on the entry-map pointer alone would mark the map seen and skip the
+// callable-carrying wrapper. Keying on the whole hash wrapper keeps the callable
+// default visible.
+func sharedEntryMapCallableDefaultBehindPlain() value.Value {
+	sharedEntries := map[string]value.Value{"k": value.NewInt(1)}
+	plain := value.NewHashWithDefault(sharedEntries, value.NewInt(0), value.NewNil())
+	withCallableDefault := value.NewHashWithDefault(
+		sharedEntries,
+		value.NewNil(),
+		runtimeKind(value.KindBlock),
+	)
+	return value.NewArray([]value.Value{plain, withCallableDefault})
 }
 
 func TestNameArg(t *testing.T) {
@@ -660,6 +683,11 @@ func TestValidateDataOnlyValue(t *testing.T) {
 			name:    "cycle_through_default_value",
 			val:     cyclicHashThroughDefault(),
 			wantErr: "payload must not contain cyclic references",
+		},
+		{
+			name:    "callable_default_behind_shared_entry_map",
+			val:     sharedEntryMapCallableDefaultBehindPlain(),
+			wantErr: "payload must be data-only",
 		},
 		{
 			name: "class_deeply_nested",

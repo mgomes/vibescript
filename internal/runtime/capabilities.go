@@ -270,7 +270,15 @@ func (s *capabilityCycleScanner) containsCycle(val Value) bool {
 		return false
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key on the whole hash wrapper (or the entry-map pointer for objects,
+		// which never carry defaults) so two wrappers sharing one entry map but
+		// carrying distinct defaults are each walked: a second wrapper's default
+		// is not skipped at the seen check, and a data-only diamond of shared-map
+		// wrappers is not mistaken for a cycle.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}
@@ -316,7 +324,16 @@ func (s *capabilityContractScanner) containsCallable(val Value) bool {
 		return slices.ContainsFunc(values, s.containsCallable)
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// A KindHash's default metadata lives outside its entry map, so two
+		// wrappers can share one map yet carry different defaults. Key the
+		// seen-set on the whole hash wrapper (falling back to the entry-map
+		// pointer for objects, which never carry defaults) so a second wrapper's
+		// callable default is not hidden by an earlier plain wrapper marking the
+		// shared map seen.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}
@@ -411,7 +428,13 @@ func (s *capabilityContractScanner) bindContracts(
 		}
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key on the whole hash wrapper (or the entry-map pointer for objects) so
+		// a second wrapper sharing one entry map but carrying distinct defaults
+		// still has those defaults scanned for exposed builtins.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return
 		}
@@ -485,7 +508,13 @@ func (s *capabilityContractScanner) collectBuiltins(val Value, out map[*Builtin]
 		}
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key on the whole hash wrapper (or the entry-map pointer for objects) so
+		// a second wrapper sharing one entry map but carrying distinct defaults
+		// still has those defaults scanned for exposed builtins.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return
 		}
@@ -579,7 +608,14 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 		return slices.ContainsFunc(values, s.containsCallable)
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key the seen-set on the whole hash wrapper (or the entry-map pointer for
+		// objects, which never carry defaults) so a second wrapper sharing the
+		// same entry map but carrying a callable default is still scanned rather
+		// than skipped at the seen check.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, seen := s.seenMaps[ptr]; seen {
 			return false
 		}

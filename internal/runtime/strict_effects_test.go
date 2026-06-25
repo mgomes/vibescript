@@ -151,3 +151,39 @@ func TestCapabilityDataOnlyRejectsHashDefaultProc(t *testing.T) {
 		t.Fatalf("validateCapabilityDataOnlyValue with a data-only default = %v, want nil", err)
 	}
 }
+
+// TestDataOnlyScanSharedEntryMapDistinctDefaults pins that two hash wrappers
+// sharing one entry map are scanned independently. The callable-existence scans
+// used to key their seen-set on the entry-map pointer alone, so visiting a plain
+// wrapper first marked the shared map seen and a second wrapper carrying a
+// callable default slipped past data-only/strict validation. The seen identity
+// must cover the whole hash wrapper (entries plus defaults), so the second
+// wrapper is still rejected.
+func TestDataOnlyScanSharedEntryMapDistinctDefaults(t *testing.T) {
+	t.Parallel()
+
+	sharedEntries := map[string]Value{"k": NewInt(1)}
+	plain := NewHashWithDefault(sharedEntries, NewInt(0), NewNil())
+	withCallableDefault := NewHashWithDefault(
+		sharedEntries,
+		NewNil(),
+		NewBlock(nil, nil, newEnv(nil)),
+	)
+	// Order matters: the plain wrapper is scanned first so it marks the shared
+	// entry map seen before the callable-carrying wrapper is reached.
+	container := NewArray([]Value{plain, withCallableDefault})
+
+	t.Run("capability data-only boundary", func(t *testing.T) {
+		t.Parallel()
+		if err := validateCapabilityDataOnlyValue("payload", container); err == nil {
+			t.Fatal("validateCapabilityDataOnlyValue admitted a callable default behind a shared entry map")
+		}
+	})
+
+	t.Run("strict globals scan", func(t *testing.T) {
+		t.Parallel()
+		if err := validateStrictGlobals(map[string]Value{"g": container}); err == nil {
+			t.Fatal("validateStrictGlobals admitted a callable default behind a shared entry map")
+		}
+	})
+}

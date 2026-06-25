@@ -264,6 +264,11 @@ func hashDefaultValue(v Value) Value { return value.HashDefaultValue(v) }
 // hash, or nil.
 func hashDefaultProc(v Value) Value { return value.HashDefaultProc(v) }
 
+// hashIdentity returns a stable identity for a hash wrapper (entries plus
+// default metadata), or 0 when v is not a hash. Scanners that must also visit
+// hash defaults key their seen-set on this rather than the bare entry map.
+func hashIdentity(v Value) uintptr { return value.HashIdentity(v) }
+
 // NewSymbol returns a symbol Value.
 func NewSymbol(name string) Value { return value.NewSymbol(name) }
 
@@ -361,12 +366,19 @@ func compositeValueNeedsHostClone(val Value) bool {
 		}
 		return false
 	case KindHash, KindObject:
-		// A hash carrying a Ruby-style default proc (a block) or a clone-needing
-		// default value must be cloned even when its entries do not, so the proc
-		// closes over the cloned environment rather than the live one as it
-		// crosses the host boundary.
-		if val.Kind() == KindHash && hashDefaultNeedsHostClone(val) {
-			return true
+		// A hash carrying a Ruby-style default proc (a block) must be cloned even
+		// when its entries do not, so the proc closes over the cloned environment
+		// rather than the live one as it crosses the host boundary. A default
+		// value may itself be (or reach) a clone-needing value through an
+		// arbitrarily deep, possibly cyclic graph, so escalate to the stateful
+		// scan rather than recursing without shared state here.
+		if val.Kind() == KindHash {
+			if !hashDefaultProc(val).IsNil() {
+				return true
+			}
+			if !hashDefaultValue(val).IsNil() {
+				return valueNeedsHostCloneWithFreshState(val)
+			}
 		}
 		entries := val.Hash()
 		if len(entries) == 0 {
@@ -388,13 +400,16 @@ func compositeValueNeedsHostClone(val Value) bool {
 
 // hashDefaultNeedsHostClone reports whether a hash's default metadata requires a
 // host clone: a default proc is always a block (clone-needed), and a default
-// value is clone-needed when it directly is or can contain a runtime value.
-func hashDefaultNeedsHostClone(val Value) bool {
+// value is clone-needed when it directly is or can contain a runtime value. It
+// threads the caller's scan state so a default value that cycles back to its own
+// hash (e.g. d = {}; h = Hash.new(d); d[:h] = h) terminates instead of
+// recursing forever.
+func hashDefaultNeedsHostClone(val Value, state hostValueScanState) bool {
 	if !hashDefaultProc(val).IsNil() {
 		return true
 	}
 	if def := hashDefaultValue(val); !def.IsNil() {
-		return valueNeedsHostClone(def)
+		return valueNeedsHostCloneWithState(def, state)
 	}
 	return false
 }
@@ -449,18 +464,27 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 		}
 		return false
 	case KindHash, KindObject:
-		// A default proc or clone-needing default value forces a clone even when
-		// the entries do not need one; only KindHash carries defaults.
-		if val.Kind() == KindHash && hashDefaultNeedsHostClone(val) {
-			return true
-		}
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key on the whole hash wrapper (or the entry-map pointer for objects) so
+		// two wrappers sharing an entry map but carrying distinct defaults are each
+		// scanned: a second wrapper's clone-needing default is not skipped, and a
+		// default cycling back to this wrapper terminates at the seen check.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if ptr != 0 {
 			if _, ok := state.maps[ptr]; ok {
 				return false
 			}
 			state.maps[ptr] = struct{}{}
+		}
+		// A default proc or clone-needing default value forces a clone even when
+		// the entries do not need one; only KindHash carries defaults. The wrapper
+		// is marked seen above first, so a default value cycling back to this hash
+		// terminates at the seen check.
+		if val.Kind() == KindHash && hashDefaultNeedsHostClone(val, state) {
+			return true
 		}
 		for _, item := range entries {
 			if valueNeedsHostCloneWithState(item, state) {

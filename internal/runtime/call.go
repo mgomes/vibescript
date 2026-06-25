@@ -335,7 +335,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
 		if cloneMap, seen := r.seenMaps[ptr]; seen {
-			return NewHash(cloneMap)
+			return r.rebindHash(val, cloneMap)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
 		if r.seenMaps == nil {
@@ -345,7 +345,7 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		for key, item := range entries {
 			clonedEntries[key] = r.rebindValue(item)
 		}
-		return NewHash(clonedEntries)
+		return r.rebindHash(val, clonedEntries)
 	case KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
@@ -364,6 +364,27 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	default:
 		return val
 	}
+}
+
+// rebindHash wraps rebound entries in a hash that carries the rebound Ruby-style
+// default metadata of src. A default value and default proc are reachable hash
+// state (a host may pass NewHashWithDefault(..., NewInt(5), proc)), so they must
+// be rebound like entries rather than dropped, which would make missing-key
+// lookup return nil instead of the configured default. A hash with no default
+// produces a plain hash.
+func (r *callFunctionRebinder) rebindHash(src Value, clonedEntries map[string]Value) Value {
+	defaultValue := hashDefaultValue(src)
+	defaultProc := hashDefaultProc(src)
+	if defaultValue.IsNil() && defaultProc.IsNil() {
+		return NewHash(clonedEntries)
+	}
+	if !defaultValue.IsNil() {
+		defaultValue = r.rebindValue(defaultValue)
+	}
+	if !defaultProc.IsNil() {
+		defaultProc = r.rebindValue(defaultProc)
+	}
+	return NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
 }
 
 func (r *callFunctionRebinder) rebindValues(values []Value) []Value {

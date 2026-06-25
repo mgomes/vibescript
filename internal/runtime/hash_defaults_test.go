@@ -532,3 +532,73 @@ end
 		t.Fatalf("cloned hash default = %v, want 5", got.Int())
 	}
 }
+
+// TestHashDefaultSurvivesInboundRebind pins that a host-supplied hash carrying a
+// Ruby-style default keeps it when bound as an argument or global. The inbound
+// rebinder used to rebuild every KindHash with NewHash(entries), dropping the
+// default, so a missing-key lookup inside the script returned nil instead of the
+// configured default.
+func TestHashDefaultSurvivesInboundRebind(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def from_arg(h)
+  h[:missing]
+end
+
+def from_global()
+  config[:missing]
+end
+`)
+
+	t.Run("argument hash default applied", func(t *testing.T) {
+		t.Parallel()
+		arg := NewHashWithDefault(map[string]Value{}, NewInt(5), NewNil())
+		got := callScript(t, context.Background(), script, "from_arg", []Value{arg}, CallOptions{})
+		if got.Kind() != KindInt || got.Int() != 5 {
+			t.Fatalf("from_arg missing-key lookup = %#v, want int 5 from the inbound default", got)
+		}
+	})
+
+	t.Run("global hash default applied", func(t *testing.T) {
+		t.Parallel()
+		global := NewHashWithDefault(map[string]Value{}, NewInt(9), NewNil())
+		got := callScript(t, context.Background(), script, "from_global", nil, CallOptions{
+			Globals: map[string]Value{"config": global},
+		})
+		if got.Kind() != KindInt || got.Int() != 9 {
+			t.Fatalf("from_global missing-key lookup = %#v, want int 9 from the inbound default", got)
+		}
+	})
+}
+
+// TestHostCloneScanTerminatesOnDefaultCycle pins that the host-return clone scan
+// threads its cycle state through a hash's default value. A default that points
+// back to its own hash through another collection (d = {}; h = Hash.new(d);
+// d[:h] = h) used to restart the scan with fresh state for each default, so the
+// h.default -> d[:h] -> h back-edge was never recorded and Script.Call recursed
+// until the stack overflowed while deciding whether the return value needed a
+// host clone. The call must terminate and return the cyclic structure.
+func TestHostCloneScanTerminatesOnDefaultCycle(t *testing.T) {
+	t.Parallel()
+
+	// d is a plain hash; h is Hash.new(d) so h's default value is d. Closing
+	// d[:h] = h forms the cycle h.default(=d) -> d[:h](=h) -> h.
+	dEntries := map[string]Value{}
+	d := NewHash(dEntries)
+	h := NewHashWithDefault(map[string]Value{}, d, NewNil())
+	dEntries["h"] = h
+
+	script := compileScript(t, `
+def echo(value)
+  value
+end
+`)
+
+	// Before the fix this call recursed without bound and overflowed the stack;
+	// now the shared scan state records the back-edge and the call returns.
+	result := callScript(t, context.Background(), script, "echo", []Value{h}, CallOptions{})
+	if result.Kind() != KindHash {
+		t.Fatalf("echo(cyclic hash) = %v, want a hash returned without overflow", result.Kind())
+	}
+}

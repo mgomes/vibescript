@@ -281,7 +281,15 @@ func validateDataOnly(val value.Value, visiting, seen *seenSet) dataOnlyResult {
 		return issue
 	case value.KindHash, value.KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// A KindHash's default metadata lives outside its entry map, so two
+		// wrappers can share one map yet carry different defaults. Key the
+		// seen/visiting sets on the whole hash wrapper (or the entry-map pointer
+		// for objects, which never carry defaults) so a second wrapper's callable
+		// default is not hidden by an earlier wrapper marking the shared map seen.
+		ptr := value.HashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if _, ok := seen.maps[ptr]; ok {
 			return dataOnlyOK
 		}
@@ -364,7 +372,13 @@ func cloneDataOnlyValue(val value.Value, visiting *seenSet) (value.Value, dataOn
 // same missing-key behavior.
 func cloneDataOnlyHash(val value.Value, visiting *seenSet) (value.Value, dataOnlyResult) {
 	entries := val.Hash()
-	ptr := reflect.ValueOf(entries).Pointer()
+	// Track the whole hash wrapper, not just the entry map: two wrappers can
+	// share one entry map yet carry distinct defaults, and the cycle check must
+	// follow each wrapper's own default graph.
+	ptr := value.HashIdentity(val)
+	if ptr == 0 {
+		ptr = reflect.ValueOf(entries).Pointer()
+	}
 	if _, ok := visiting.maps[ptr]; ok {
 		return value.NewNil(), dataOnlyCycle
 	}

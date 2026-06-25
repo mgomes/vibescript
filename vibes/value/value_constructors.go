@@ -2,6 +2,7 @@ package value
 
 import (
 	"math"
+	"reflect"
 	"time"
 )
 
@@ -79,6 +80,22 @@ func HashDefaultProc(v Value) Value {
 		return hd.defaultProc
 	}
 	return NewNil()
+}
+
+// HashIdentity returns a stable identity for a hash wrapper, or 0 when v is not
+// a hash. Unlike the entry-map pointer, this identifies the whole hashData
+// wrapper, so two KindHash values that share an entry map but carry different
+// default metadata are distinct. Cycle-detecting scanners that must also visit
+// hash defaults key their seen-set on this value rather than the bare entry map,
+// which would otherwise hide a second wrapper's distinct default payload.
+func HashIdentity(v Value) uintptr {
+	if v.kind != KindHash {
+		return 0
+	}
+	if hd, ok := v.data.(*hashData); ok {
+		return reflect.ValueOf(hd).Pointer()
+	}
+	return 0
 }
 
 // NewMoney returns a money Value.
