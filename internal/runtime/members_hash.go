@@ -378,6 +378,20 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 			}
 			perEntryBytes := pairsLive * collapsedPairBytes
+			// A single destructuring parameter with a rest target (|(k, *rest)|)
+			// makes AssignDestructure allocate a fresh array for the collected
+			// elements and bind it into the reused environment, so it lives there
+			// until the next runner.call resets it -- overlapping across iterations
+			// exactly like a whole-pair binding. Reserve that rest array at the same
+			// peak the pair uses: two over two or more entries, one for a single
+			// entry, none for an empty receiver. An empty block body runs no in-block
+			// memory check, so without this the rest array allocation would go
+			// uncharged.
+			if collapsePair {
+				if slots := runner.destructureRestSlots(); slots >= 0 {
+					perEntryBytes += min(len(entries), 2) * restArrayBytes(slots)
+				}
+			}
 			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), perEntryBytes, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}

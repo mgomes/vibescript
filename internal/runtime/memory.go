@@ -286,7 +286,21 @@ func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes, perEntryBytes i
 // pairs only for a whole-pair binding over two or more entries, one pair for a
 // single entry or any destructuring parameter, and none for an empty receiver,
 // which allocates no pair at all.
-const collapsedPairBytes = estimatedValueBytes + estimatedSliceBaseBytes + 2*estimatedValueBytes
+const collapsedPairElements = 2
+
+const collapsedPairBytes = estimatedValueBytes + estimatedSliceBaseBytes + collapsedPairElements*estimatedValueBytes
+
+// restArrayBytes is the structural heap footprint of the fresh array
+// AssignDestructure allocates when a single destructuring block parameter has a
+// rest target (|(k, *rest)|): the boxed Value wrapper, the slice base, and one
+// Value slot per collected element. slots is how many of the collapsed pair's
+// elements the rest target binds (see blockCallRunner.destructureRestSlots),
+// bounded by the two-element pair. The slots reference the receiver's own key and
+// value, already counted in the call-root usage, so only this structure is charged
+// on top of the pair array itself.
+func restArrayBytes(slots int) int {
+	return saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slots, estimatedValueBytes))
+}
 
 // arrayBuildAccumulator charges the memory of an array assembled element by
 // element against the quota without re-walking the whole prefix on each append.

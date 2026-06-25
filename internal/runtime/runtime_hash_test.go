@@ -847,6 +847,15 @@ func TestHashEachBlockArgumentShape(t *testing.T) {
 			},
 		},
 		{
+			name:   "destructuring rest collects the value into an array",
+			params: "|(k, *rest)|",
+			body:   `out = out.push([k, rest])`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewArray([]Value{NewInt(1)})}),
+				NewArray([]Value{NewSymbol("b"), NewArray([]Value{NewInt(2)})}),
+			},
+		},
+		{
 			name:   "two parameters receive key and value",
 			params: "|key, value|",
 			body:   `out = out.push([key, value])`,

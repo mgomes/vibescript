@@ -666,6 +666,38 @@ func (runner *blockCallRunner) bindsWholePairToSingleIdentifier() bool {
 	return runner.blk.Params[0].Target == nil
 }
 
+// destructureRestSlots reports how many [key, value] pair elements the block's
+// single destructuring parameter binds to a rest target, or -1 when the parameter
+// is not a destructure with a top-level rest element. It must only be consulted
+// when wantsCollapsedPair is true, so it assumes exactly one positional parameter.
+//
+// A rest target such as |(k, *rest)| makes AssignDestructure allocate a fresh
+// array for the collected elements and bind it into the reused block environment,
+// so that array is live memory the iterator must charge on top of the pair. The
+// collapsed pair always has exactly two elements (key and value), so the rest
+// array holds at most the elements not claimed by fixed targets: two minus the
+// non-rest element count, clamped at zero. A nested destructure target is treated
+// as a single fixed element here; it binds a component of the pair, not the rest.
+func (runner *blockCallRunner) destructureRestSlots() int {
+	target, ok := runner.blk.Params[0].Target.(*DestructureTarget)
+	if !ok {
+		return -1
+	}
+	fixed := 0
+	hasRest := false
+	for i := range target.Elements {
+		if target.Elements[i].Rest {
+			hasRest = true
+			continue
+		}
+		fixed++
+	}
+	if !hasRest {
+		return -1
+	}
+	return max(collapsedPairElements-fixed, 0)
+}
+
 // CallBlock invokes a block value with the provided arguments.
 // This is the public entry point for capability adapters that need to
 // call user-supplied blocks (e.g. db.each, db.tx).
