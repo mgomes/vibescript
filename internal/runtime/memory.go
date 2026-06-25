@@ -300,8 +300,12 @@ func (exec *Execution) checkProjectedHashWalkBytes(perEntryBytes int, receiver V
 // mirrors the preflight: the call roots (which include the receiver, so a mutated value
 // is already counted, and the env stack, so a grown outer local is too), the live pair
 // arrays, and that one entry's live rest arrays. Only one entry's rest arrays are ever
-// live, because resetForBlockCall clears the previous iteration's rest binding before
-// the next is built.
+// live when this runs: the walk releases the runner's reusable block environment before
+// each recheck (runner.releaseReusableEnv), so the previous iteration's rest binding is
+// already cleared rather than lingering until the next runner.call rebinds parameters.
+// Without that release a reused environment -- which sits off exec.envStack between calls
+// and so is invisible to estimateMemoryUsageBase -- could still reference a huge prior
+// rest while this check charged only the current entry's smaller one.
 func (exec *Execution) checkLiveCollapsedRestBytes(livePairs, liveRestBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil

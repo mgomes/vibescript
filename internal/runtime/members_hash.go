@@ -392,6 +392,17 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				if collapsePair {
+					// Clear the reusable block environment before sizing and rechecking
+					// this entry's live footprint. runner.call resets the environment only
+					// when it binds the next call's parameters, so between iterations the
+					// runner still references the previous entry's bindings -- including any
+					// rest array a destructuring parameter (|(k, (head, *tail))|) collected,
+					// which can be arbitrarily large. That environment is off exec.envStack
+					// between calls, so the live recheck below cannot see it; releasing it
+					// here ensures the recheck and the NewArray allocation observe only this
+					// entry's rest, never the previous entry's, keeping the peak bounded by
+					// the quota no matter how large the prior rest was.
+					runner.releaseReusableEnv()
 					liveRestBytes := 0
 					if restTarget != nil {
 						// Size this entry's live rest footprint (O(value length)) so the
@@ -540,9 +551,10 @@ func hashMemberQuery(property string) (Value, error) {
 //     pair overlaps the next while it is allocated.
 //
 // A destructuring parameter with a rest target also makes AssignDestructure
-// allocate a fresh array for the collected elements. That rest array is built
-// inside callBlock, after runner.call's resetForBlockCall has cleared the
-// previous iteration's rest binding, so at most one rest array is ever live. A
+// allocate a fresh array for the collected elements. The walk releases the reused
+// block environment before each iteration's recheck and allocation
+// (runner.releaseReusableEnv), so the previous entry's rest binding is cleared
+// before the next entry's rest is built and at most one rest array is ever live. A
 // top-level rest (|(k, *rest)|) collects only from the two-element pair, but a
 // nested rest (|(k, (head, *tail))|) collects an arbitrarily large slice of the
 // hash value it destructures, so the per-entry footprint cannot be bounded by the

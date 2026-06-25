@@ -3896,3 +3896,175 @@ func TestHashEachReadOnlyWalkChargesExactlyTwoPairs(t *testing.T) {
 		t.Fatalf("read-only each at the two-pair quota %d = %v, want success (the per-pair recheck charges no more than two pairs on a non-mutating walk)", quota, err)
 	}
 }
+
+// arrayValue builds an array of length ints for the reusable-env rest tests.
+func arrayValue(length int) Value {
+	elems := make([]Value, length)
+	for i := range elems {
+		elems[i] = NewInt(int64(i))
+	}
+	return NewArray(elems)
+}
+
+// TestBlockCallRunnerReleaseReusableEnvClearsLingeringRest pins the mechanism the
+// fix for the P2 finding on PR #808 relies on. A reusable block environment holds
+// the previous call's bindings -- including an arbitrarily large rest array a
+// destructuring parameter (|(k, (head, *tail))|) collected -- until the next call's
+// resetForBlockCall rebinds parameters. Between two calls that environment sits off
+// exec.envStack, so the live-memory estimator never sees it; a caller that rechecks
+// the live footprint before invoking the runner again (Hash#each's collapsed-pair
+// walk) would not observe the lingering rest and could allocate the next entry's
+// pair over quota while the previous huge rest is still live.
+//
+// releaseReusableEnv clears that environment eagerly. This test binds a huge tail
+// through call, measures the environment's footprint (it must reflect the huge rest),
+// then releases it and measures again (the rest must be gone). Measuring with the
+// memory estimator -- the same machinery the quota checks use -- proves the release
+// removes exactly the lingering footprint that would otherwise escape the bound.
+func TestBlockCallRunnerReleaseReusableEnvClearsLingeringRest(t *testing.T) {
+	t.Parallel()
+
+	const tailLen = 200_000
+
+	block := nestedRestDestructureBlock()
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects a reusable-env block; nestedRestDestructureBlock has an empty body")
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	runner, err := newBlockCallRunner(exec, block, "test")
+	if err != nil {
+		t.Fatalf("newBlockCallRunner: %v", err)
+	}
+	if runner.env == nil {
+		t.Fatal("reusable-env runner expected a non-nil env for the lingering-rest path")
+	}
+
+	// Bind a huge value whose nested destructure collects tailLen-1 elements into a
+	// fresh tail rest array, leaving that array referenced by runner.env.
+	pair := NewArray([]Value{NewSymbol("a"), arrayValue(tailLen)})
+	if _, err := runner.call([]Value{pair}); err != nil {
+		t.Fatalf("runner.call binding the huge pair: %v", err)
+	}
+
+	bound, ok := runner.env.getOwn("tail")
+	if !ok {
+		t.Fatal("runner.env did not bind tail after the call; the destructure shape is wrong")
+	}
+	if bound.Kind() != KindArray || len(bound.Array()) != tailLen-1 {
+		t.Fatalf("tail binding = %v with %d elements, want a %d-element rest array", bound.Kind(), len(bound.Array()), tailLen-1)
+	}
+
+	measure := func() int {
+		est := exec.memoryEstimatorForCheck()
+		size := est.env(runner.env)
+		est.reset()
+		return size
+	}
+
+	withRest := measure()
+
+	runner.releaseReusableEnv()
+
+	if _, stillBound := runner.env.getOwn("tail"); stillBound {
+		t.Fatal("releaseReusableEnv left tail bound; the lingering rest was not cleared")
+	}
+	if runner.env.parent != valueBlock(block).Env {
+		t.Fatal("releaseReusableEnv did not reparent the env to the block's defining scope")
+	}
+
+	cleared := measure()
+
+	freed := withRest - cleared
+	tailFootprint := restArrayBytes(tailLen - 1)
+	// The release must free at least the tail rest array's footprint. Measuring
+	// against the estimator's own sizing keeps this robust to constant changes
+	// rather than pinning an exact byte count.
+	if freed < tailFootprint {
+		t.Fatalf("releaseReusableEnv freed %d bytes, want at least the tail rest array footprint %d", freed, tailFootprint)
+	}
+}
+
+// recordingRestEachBlock builds the nested-rest |(k, (head, *tail))| block whose
+// body records the bound tail's length into the given slice on every call. The body
+// references only the parameter binding and a captured recorder (no definitions or
+// closures over the current env), so the block keeps its reusable environment, the
+// path on which the previous iteration's rest binding can linger.
+func recordingRestEachBlock(recorder *[]int) Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "k", Position: pos}},
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "head", Position: pos}},
+					{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+				},
+			}},
+		},
+	}
+	record := NewBuiltin("test.record_tail", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		*recorder = append(*recorder, len(args[0].Array()))
+		return NewNil(), nil
+	})
+	env := newEnv(nil)
+	env.Define("__record__", record)
+	body := []Statement{
+		&ExprStmt{Position: pos, Expr: &CallExpr{
+			Position: pos,
+			Callee:   &Identifier{Name: "__record__", Position: pos},
+			Args:     []Expression{&Identifier{Name: "tail", Position: pos}},
+		}},
+	}
+	return NewBlock([]Param{{Kind: ParamNormal, Target: target}}, body, env)
+}
+
+// TestHashEachReleasesPreviousRestAcrossIterations proves the eager release the P2
+// fix adds does not corrupt iteration: each entry's block call still binds and sees
+// that entry's own live rest, never a stale one from the previous iteration. The
+// reusable-env path (the block defines nothing and captures nothing, so
+// blockCanReuseEnv holds) is exactly where the previous call's tail binding would
+// otherwise linger; clearing it before the next call must leave each call binding its
+// own value. The walk records each bound tail's length and the recorded lengths must
+// equal each entry's value length minus one (the head), in sorted-key order.
+func TestHashEachReleasesPreviousRestAcrossIterations(t *testing.T) {
+	t.Parallel()
+
+	const hugeTailLen = 50_000
+
+	receiver := NewHash(map[string]Value{
+		"a": arrayValue(hugeTailLen),
+		"b": NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
+		"c": NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+
+	var recorded []int
+	block := recordingRestEachBlock(&recorded)
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects a reusable-env block so the lingering-rest path is exercised")
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each over the recording nested-rest block = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 3 {
+		t.Fatalf("each returned %v with %d entries, want the 3-entry receiver", got.Kind(), len(got.Hash()))
+	}
+
+	// Sorted-key order a < b < c; each tail is its value length minus the head. If the
+	// release dropped a binding the body still needed, or left a stale tail in place,
+	// these lengths would not match each entry's own live value.
+	want := []int{hugeTailLen - 1, 2, 1}
+	if len(recorded) != len(want) {
+		t.Fatalf("recorded %d tail lengths %v, want %d (%v)", len(recorded), recorded, len(want), want)
+	}
+	for i := range want {
+		if recorded[i] != want[i] {
+			t.Fatalf("recorded tail lengths = %v, want %v (entry %d bound the wrong tail)", recorded, want, i)
+		}
+	}
+}

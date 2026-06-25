@@ -649,6 +649,32 @@ func (runner *blockCallRunner) call(args []Value) (Value, error) {
 	return runner.exec.callBlock(runner.blk, args, runner.env)
 }
 
+// releaseReusableEnv clears the reusable block environment between calls so the
+// previous iteration's bindings -- which can include an arbitrarily large rest
+// array a destructuring parameter collected -- stop being referenced before the
+// next iteration's live-memory recheck and allocation run.
+//
+// call already resets the environment, but only at the moment it binds the next
+// call's parameters; between two calls the runner still holds the prior call's
+// bindings. The reused environment is a Go-local invisible to the memory
+// estimator (it lives off exec.envStack except while a block body runs), so a
+// caller that rechecks the live footprint before invoking call again (Hash#each's
+// collapsed-pair walk) would not see the lingering rest array and could allocate
+// the next entry's pair over quota while the previous huge rest is still live.
+// Calling this first makes that recheck observe an environment holding nothing
+// from the prior iteration, so the doc-comment invariant ("only one entry's rest
+// arrays are ever live") holds at the recheck point and not just inside call.
+//
+// It is a no-op when the runner allocates a fresh environment per call
+// (runner.env == nil): there the prior call's environment is an unreferenced
+// local that the next call never reuses, so no binding lingers across iterations.
+func (runner *blockCallRunner) releaseReusableEnv() {
+	if runner.env == nil {
+		return
+	}
+	runner.env.resetForBlockCall(runner.blk.Env)
+}
+
 // wantsCollapsedPair reports whether a hash iterator should yield each entry as a
 // single two-element [key, value] pair instead of two separate arguments. It
 // mirrors Ruby, where a block declaring exactly one positional parameter receives
