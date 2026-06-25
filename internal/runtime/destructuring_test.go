@@ -72,6 +72,95 @@ end`)
 	})
 }
 
+func TestParallelAssignmentAnonymousRestTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		assignment string
+		result     string
+		want       []Value
+	}{
+		{
+			name:       "trailing discards tail",
+			assignment: "first, * = [1, 2, 3]",
+			result:     "[first]",
+			want:       []Value{NewInt(1)},
+		},
+		{
+			name:       "leading discards head",
+			assignment: "*, last = [1, 2, 3]",
+			result:     "[last]",
+			want:       []Value{NewInt(3)},
+		},
+		{
+			name:       "middle discards interior",
+			assignment: "first, *, last = [1, 2, 3, 4]",
+			result:     "[first, last]",
+			want:       []Value{NewInt(1), NewInt(4)},
+		},
+		{
+			name:       "middle with short array",
+			assignment: "first, *, last = [1]",
+			result:     "[first, last]",
+			want:       []Value{NewInt(1), NewNil()},
+		},
+		{
+			name:       "trailing with empty array",
+			assignment: "first, * = []",
+			result:     "[first]",
+			want:       []Value{NewNil()},
+		},
+		{
+			name:       "scalar right-hand side",
+			assignment: "first, * = 9",
+			result:     "[first]",
+			want:       []Value{NewInt(9)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, "def run\n  "+tt.assignment+"\n  "+tt.result+"\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
+func TestParallelAssignmentNamedRestHandlesShortArrays(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  first, *rest = []
+  a, *middle, last = [1]
+  [first, rest, a, middle, last]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewNil(),
+		NewArray(nil),
+		NewInt(1),
+		NewArray(nil),
+		NewNil(),
+	})
+}
+
+func TestParallelAssignmentNestedAnonymousRestTarget(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  a, (b, *, c), d = [1, [2, 3, 4, 5], 6]
+  [a, b, c, d]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2), NewInt(5), NewInt(6)})
+}
+
 func TestParallelAssignmentNestedTargets(t *testing.T) {
 	t.Parallel()
 

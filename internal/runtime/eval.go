@@ -1055,11 +1055,11 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	}
 
 	trailing := len(target.Elements) - restIndex - 1
-	restEnd := len(values) - trailing
-	if restEnd < restIndex {
-		restEnd = restIndex
-	}
-	restValues := append([]Value(nil), values[restIndex:restEnd]...)
+	// Clamp the rest window to the available values so short inputs (fewer
+	// values than fixed targets) collect an empty rest instead of panicking.
+	restStart := min(restIndex, len(values))
+	restEnd := max(restStart, len(values)-trailing)
+	restValues := append([]Value(nil), values[restStart:restEnd]...)
 	for i, element := range target.Elements {
 		var val Value
 		switch {
@@ -1082,6 +1082,10 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 }
 
 func assignDestructureValue(target Expression, value Value, assign func(Expression, Value) error) error {
+	if target == nil {
+		// Anonymous rest target ("*"): discard the captured values.
+		return nil
+	}
 	if nested, ok := target.(*DestructureTarget); ok {
 		return AssignDestructure(nested, value, assign)
 	}
