@@ -104,7 +104,18 @@ and leaves the receiver untouched.
 - `count`, `count(value)`, or `count { ... }`. As in Ruby, a `value` argument
   takes precedence: `count(value) { ... }` counts elements equal to `value` and
   ignores the block.
-- `any?`, `all?`, `none?` with optional blocks.
+- `any?`, `all?`, `none?` with an optional block or an optional `value` argument.
+  Without arguments they test element truthiness; the block form tests each block
+  result. The `value` form tests each element against the argument:
+  `any?(value)` is true when any element equals `value`, `all?(value)` is true
+  when every element equals `value`, and `none?(value)` is true when no element
+  equals `value`. As with empty arrays elsewhere, `all?` and `none?` on an empty
+  array are vacuously `true` and `any?` is `false`. Ruby tests these arguments
+  with case equality (`===`); until the broader case-equality work lands the
+  `value` form uses Vibescript's value equality (the same matcher as
+  `count(value)` and `include?`), so it compares scalars exactly and does not
+  coerce across types. As with `count(value)`, a `value` argument takes
+  precedence over an attached block, which is then ignored.
 
 `index`, `find_index`, and `rindex` accept either a value or a block, never both;
 passing both raises an error. As a Vibescript extension, the value form also takes

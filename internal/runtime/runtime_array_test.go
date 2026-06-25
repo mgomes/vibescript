@@ -565,6 +565,88 @@ func TestArrayCountValueIgnoresBlock(t *testing.T) {
 	}
 }
 
+func TestArrayPredicateValueArgument(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		// any?(value): true when at least one element matches; empty is false.
+		{name: "any hit", expr: "[1, 2, 3].any?(2)", want: true},
+		{name: "any miss", expr: "[1, 2, 3].any?(9)", want: false},
+		{name: "any empty", expr: "[].any?(1)", want: false},
+		{name: "any matches falsy element", expr: "[nil, false].any?(false)", want: true},
+		{name: "any cross type no match", expr: "[1, 2, 3].any?(\"2\")", want: false},
+		// all?(value): true when every element matches; empty is vacuously true.
+		{name: "all hit", expr: "[1, 1, 1].all?(1)", want: true},
+		{name: "all miss", expr: "[1, 2, 1].all?(1)", want: false},
+		{name: "all empty", expr: "[].all?(1)", want: true},
+		// none?(value): true when no element matches; empty is vacuously true.
+		{name: "none hit", expr: "[3, 4].none?(1)", want: true},
+		{name: "none miss", expr: "[1, 2].none?(1)", want: false},
+		{name: "none empty", expr: "[].none?(1)", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			got := callFunc(t, script, "run", nil)
+			if got.Kind() != KindBool {
+				t.Fatalf("%s expected bool, got %v", tc.expr, got.Kind())
+			}
+			if got.Bool() != tc.want {
+				t.Fatalf("%s = %v, want %v", tc.expr, got.Bool(), tc.want)
+			}
+		})
+	}
+}
+
+func TestArrayPredicateValueArgumentIgnoresBlock(t *testing.T) {
+	t.Parallel()
+	// As in Ruby, an explicit value argument takes precedence over an attached
+	// block: the call succeeds and the block is never invoked.
+	cases := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		{name: "any?", expr: "[1, 2, 1, 3].any?(1) do |v| raise \"block must not run\" end", want: true},
+		{name: "all?", expr: "[1, 1].all?(1) do |v| raise \"block must not run\" end", want: true},
+		{name: "none?", expr: "[3, 4].none?(1) do |v| raise \"block must not run\" end", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			got := callFunc(t, script, "run", nil)
+			if got.Kind() != KindBool || got.Bool() != tc.want {
+				t.Fatalf("%s = %#v, want %v", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestArrayPredicateRejectsExtraArguments(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "any?", expr: "[1, 2, 3].any?(1, 2)", want: "array.any? accepts at most one value argument"},
+		{name: "all?", expr: "[1, 2, 3].all?(1, 2)", want: "array.all? accepts at most one value argument"},
+		{name: "none?", expr: "[1, 2, 3].none?(1, 2)", want: "array.none? accepts at most one value argument"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestArrayFlattenDepthArguments(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
