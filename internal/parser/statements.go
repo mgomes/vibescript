@@ -1002,6 +1002,13 @@ func (p *parser) colonIntroducesKeywordDefault(options paramParseOptions) bool {
 // (it accepts only an empty hash), whereas `opts: {}` is the common
 // Ruby-style empty-hash default.
 //
+// A clean shape parse with a bare `nil` field type is likewise degenerate:
+// `{ previous: nil }` reads as a shape whose `previous` field accepts only
+// nil, but the Ruby-style intent is the hash default
+// `def f(opts: { previous: nil })`. shapeHasDegenerateNilField marks such
+// groups as hash defaults; a nullable union field (`{ previous: int | nil }`)
+// is a legitimate shape and is left untouched.
+//
 // The parser state is fully restored afterward regardless of the outcome,
 // leaving the real parse to proceed from the colon.
 func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
@@ -1017,7 +1024,33 @@ func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
 	if shape == nil || len(p.errors) != saved.errorCount {
 		return false
 	}
+	if shapeHasDegenerateNilField(shape) {
+		return false
+	}
 	return p.typeAnnotationBoundaryFollows(options)
+}
+
+// shapeHasDegenerateNilField reports whether ty is a shape type with a field
+// whose type is the bare `nil` atom, looking through nested shapes.
+//
+// A `nil`-only field type accepts solely the value nil, which is degenerate as
+// a positional annotation, so a group like `{ previous: nil }` is the common
+// Ruby-style hash default (`def f(opts: { previous: nil })`) rather than a
+// shape type. The check targets the bare atom only: a nullable union such as
+// `{ previous: int | nil }` is a legitimate shape field and is left untouched.
+func shapeHasDegenerateNilField(ty *ast.TypeExpr) bool {
+	if ty == nil || ty.Kind != ast.TypeShape {
+		return false
+	}
+	for _, fieldType := range ty.Shape {
+		if fieldType == nil {
+			continue
+		}
+		if fieldType.Kind == ast.TypeNil || shapeHasDegenerateNilField(fieldType) {
+			return true
+		}
+	}
+	return false
 }
 
 // typeAnnotationBoundaryFollows reports whether peekToken terminates a
@@ -1064,15 +1097,35 @@ func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool
 
 // identLessThanStartsExpression reports whether `ident <` (with ident at
 // peekToken) begins a default-value expression rather than continuing a
-// generic type annotation. The `<` is a comparison only when the
-// identifier names a value, i.e. a local already in scope such as an
-// earlier keyword parameter, so `def f(limit:, ok: limit < 10)` reads as
-// a default expression. Otherwise the identifier is a type name and `<`
-// opens its type arguments: a generic container (`array<int>`) parses,
-// while a scalar (`int<string>`) still produces the clear "does not
-// accept type arguments" diagnostic rather than a misparsed comparison.
+// generic type annotation.
+//
+// A built-in generic container name (`array`, `hash`, `object`) always
+// continues as a type: `<` opens its type arguments and nothing else can.
+// This takes precedence over any value local that shadows the name, so
+// `def f(array, values: array<int>)` keeps `array<int>` a generic type
+// even though an earlier parameter is named `array`. Built-in generic
+// type parsing is never shadowed by value locals.
+//
+// Otherwise the `<` is a comparison only when the identifier names a
+// value, i.e. a local already in scope such as an earlier keyword
+// parameter, so `def f(limit:, ok: limit < 10)` reads as a default
+// expression. Failing both, the identifier is a (scalar or enum) type
+// name and `<` produces the clear "does not accept type arguments"
+// diagnostic rather than a misparsed comparison.
 func (p *parser) identLessThanStartsExpression() bool {
+	if isGenericContainerTypeName(p.peekToken.Literal) {
+		return false
+	}
 	return p.isLocalName(p.peekToken.Literal)
+}
+
+// isGenericContainerTypeName reports whether name resolves to a built-in
+// container type that accepts angle-bracket type arguments (`array<...>`,
+// `hash<...>`, `object<...>`). These are the only types parseTypeAtom lets
+// carry type arguments, so a following `<` always continues the type.
+func isGenericContainerTypeName(name string) bool {
+	kind, _ := resolveType(name)
+	return kind == ast.TypeArray || kind == ast.TypeHash
 }
 
 func parameterNameExpectation(kind ast.ParamKind) string {

@@ -9,5 +9,8 @@
   so wrap a bare-identifier default in parentheses (`a: (other)`) to force the
   keyword form. Expression defaults are supported, including a comparison against
   an earlier parameter (`def f(limit:, ok: limit < 10)`) and a hash literal
-  (`def f(opts: { retry: 3 })` or `def f(opts: {})`); the `name: { field: Type }`
-  shape-type spelling stays a typed positional parameter.
+  (`def f(opts: { retry: 3 })`, `def f(opts: {})`, or one with `nil` values like
+  `def f(opts: { previous: nil })`); the `name: { field: Type }` shape-type
+  spelling stays a typed positional parameter, and a built-in generic container
+  type (`def f(array, values: array<int>)`) is never shadowed by a value local
+  of the same name.

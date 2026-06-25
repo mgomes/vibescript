@@ -279,6 +279,30 @@ end`,
 				},
 			},
 		},
+		{
+			name: "shape_type_with_nullable_union_field",
+			source: `def f(a: { x: int | nil })
+  a
+end`,
+			want: []ast.Param{
+				{
+					Name: "a",
+					Type: &ast.TypeExpr{
+						Kind: ast.TypeShape,
+						Shape: map[string]*ast.TypeExpr{
+							"x": {
+								Name: "int | nil",
+								Kind: ast.TypeUnion,
+								Union: []*ast.TypeExpr{
+									{Name: "int", Kind: ast.TypeInt},
+									{Name: "nil", Kind: ast.TypeNil, Nullable: false},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -378,6 +402,41 @@ end`,
 							Key: &ast.SymbolLiteral{Name: "a"},
 							Value: &ast.HashLiteral{Pairs: []ast.HashPair{
 								{Key: &ast.SymbolLiteral{Name: "b"}, Value: &ast.IntegerLiteral{Value: 1}},
+							}},
+						},
+					}},
+				},
+			},
+		},
+		{
+			name: "nil_valued_hash_default",
+			source: `def f(opts: { previous: nil })
+  opts
+end`,
+			want: []ast.Param{
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{Key: &ast.SymbolLiteral{Name: "previous"}, Value: &ast.NilLiteral{}},
+					}},
+				},
+			},
+		},
+		{
+			name: "nested_nil_valued_hash_default",
+			source: `def f(opts: { inner: { previous: nil } })
+  opts
+end`,
+			want: []ast.Param{
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key: &ast.SymbolLiteral{Name: "inner"},
+							Value: &ast.HashLiteral{Pairs: []ast.HashPair{
+								{Key: &ast.SymbolLiteral{Name: "previous"}, Value: &ast.NilLiteral{}},
 							}},
 						},
 					}},
@@ -522,6 +581,113 @@ end`
 				Name:     "array",
 				Kind:     ast.TypeArray,
 				TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
+			},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserGenericContainerTypeNotShadowedByLocal verifies that a built-in
+// generic container type name keeps continuing as a type even when an earlier
+// parameter shadows it with a value local. `array` here names a positional
+// parameter, yet `values: array<int>` must still parse as a generic type
+// annotation rather than a `array < int >` comparison: built-in generic type
+// parsing is never shadowed by value locals.
+func TestParserGenericContainerTypeNotShadowedByLocal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   []ast.Param
+	}{
+		{
+			name: "array_shadowed_by_param",
+			source: `def f(array, values: array<int>)
+  values
+end`,
+			want: []ast.Param{
+				{Name: "array"},
+				{
+					Name: "values",
+					Type: &ast.TypeExpr{
+						Name:     "array",
+						Kind:     ast.TypeArray,
+						TypeArgs: []*ast.TypeExpr{{Name: "int", Kind: ast.TypeInt}},
+					},
+				},
+			},
+		},
+		{
+			name: "hash_shadowed_by_param",
+			source: `def f(hash, lookup: hash<string, int>)
+  lookup
+end`,
+			want: []ast.Param{
+				{Name: "hash"},
+				{
+					Name: "lookup",
+					Type: &ast.TypeExpr{
+						Name: "hash",
+						Kind: ast.TypeHash,
+						TypeArgs: []*ast.TypeExpr{
+							{Name: "string", Kind: ast.TypeString},
+							{Name: "int", Kind: ast.TypeInt},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, errs := parseSource(t, tt.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tt.source, errs)
+			}
+			fn, ok := got.Statements[0].(*ast.FunctionStmt)
+			if !ok {
+				t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+			}
+			if diff := cmp.Diff(tt.want, fn.Params, astCmpOpts); diff != "" {
+				t.Fatalf("params mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestParserContainerLocalComparisonNeedsParens documents that a container-type
+// name continues as a type even after a colon, so a default that compares a
+// container-named local with `<` uses the documented parenthesized escape hatch
+// (`ok: (array < 1)`), matching the bare-identifier rule the changelog records.
+func TestParserContainerLocalComparisonNeedsParens(t *testing.T) {
+	t.Parallel()
+
+	source := `def f(array, ok: (array < 1))
+  ok
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	want := []ast.Param{
+		{Name: "array"},
+		{
+			Name: "ok",
+			Kind: ast.ParamKeyword,
+			DefaultVal: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "array"},
+				Operator: ast.TokenLT,
+				Right:    &ast.IntegerLiteral{Value: 1},
 			},
 		},
 	}

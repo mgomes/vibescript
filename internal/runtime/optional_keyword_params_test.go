@@ -188,6 +188,10 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
     def chained_hash(a:, b: { sum: a + 1 })
       b[:sum]
     end
+
+    def nil_field_default(opts: { previous: nil })
+      opts[:previous] == nil
+    end
     `)
 
 	t.Run("default_hash_applies_when_omitted", func(t *testing.T) {
@@ -221,6 +225,19 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
 		})
 		if !got.Equal(NewInt(3)) {
 			t.Fatalf("chained_hash(a: 2) = %#v, want 3", got)
+		}
+	})
+
+	t.Run("nil_valued_hash_default_binds_keyword", func(t *testing.T) {
+		t.Parallel()
+		if got := callFunc(t, script, "nil_field_default", nil); !got.Equal(NewBool(true)) {
+			t.Fatalf("nil_field_default() = %#v, want true", got)
+		}
+		got := callScript(t, context.Background(), script, "nil_field_default", nil, CallOptions{
+			Keywords: map[string]Value{"opts": NewHash(map[string]Value{"previous": NewInt(1)})},
+		})
+		if !got.Equal(NewBool(false)) {
+			t.Fatalf("nil_field_default(opts: {previous: 1}) = %#v, want false", got)
 		}
 	})
 }
