@@ -2026,20 +2026,38 @@ const stringScanInitialCap = 256
 // near-empty patterns and reintroduces the very host-memory spike the guard exists
 // to prevent.
 //
-// Once the worst case fits, the engine table is materialized once and the per-match
-// RESULT elements are built incrementally against the array-build accumulator. The
-// engine's whole [][]int table stays live the entire time the result accumulates,
-// so the accumulator is SEEDED with that table's actual footprint via
-// reserveScratch before the first element is charged: the index table and the
-// growing result are then charged TOGETHER against the quota, bounding their
-// coexisting peak rather than letting each fit separately while their sum exceeds
-// the quota. One step is charged per match, so a scan whose output would exceed the
-// memory or step quota trips the limit as the result accumulates rather than after
-// the whole array is materialized.
+// Once the worst case fits, one step is charged BEFORE the engine table is
+// materialized: FindAllStringSubmatchIndex is the scan's expensive phase (a
+// zero-width pattern allocates a match slot per position over the whole subject),
+// so an already-canceled context or an exhausted step quota must abort before that
+// cost is paid rather than after. The per-match step charges that follow run only
+// once the table exists, so without this pre-step a tiny step quota or a canceled
+// context would still pay the full materialization cost first.
+//
+// The table is then built into the per-match RESULT elements incrementally against
+// the array-build accumulator. The engine's whole [][]int table stays live the
+// entire time the result accumulates, so the accumulator is SEEDED with that table's
+// actual footprint via reserveScratch before the first element is charged: the index
+// table and the growing result are then charged TOGETHER against the quota, bounding
+// their coexisting peak rather than letting each fit separately while their sum
+// exceeds the quota. One step is charged per match, so a scan whose output would
+// exceed the memory or step quota trips the limit as the result accumulates rather
+// than after the whole array is materialized.
 func stringScan(exec *Execution, re *regexp.Regexp, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	groups := re.NumSubexp()
 
 	if err := guardRegexScanIndexFootprint(exec, text, groups); err != nil {
+		return NewNil(), err
+	}
+
+	// Charge a step BEFORE materializing the match table. FindAllStringSubmatchIndex
+	// is the expensive part of a scan -- for a zero-width pattern over a near-limit
+	// subject it allocates a slot per position -- and the per-match charges below run
+	// only after it completes. Stepping here means an already-canceled context or an
+	// exhausted step quota aborts the scan before that work runs rather than paying
+	// its full CPU and allocation cost first; step() polls cancellation on its very
+	// first invocation, so even an empty subject observes a canceled context here.
+	if err := exec.step(); err != nil {
 		return NewNil(), err
 	}
 
@@ -2099,20 +2117,25 @@ func guardRegexScanIndexFootprint(exec *Execution, text string, groups int) erro
 	return nil
 }
 
-// projectedRegexSubmatchIndexBytes returns the index-integer footprint of the
-// [][]int table FindAllStringSubmatchIndex materializes for matchCount matches of a
-// pattern with the given group count: each match is one slice of 2 + 2*groups ints,
-// so the projection is matchCount * (2 + 2*groups) * estimatedIntBytes. The
-// per-match structural overhead (the inner slice's own base and its header slot in
-// the outer slice) is deliberately omitted: the int payload dominates the cases the
-// guard exists to reject -- a many-capture-group pattern's 2+2*groups ints swamp the
-// fixed slice overhead -- so charging only the integers keeps the bound simple while
-// still tripping every footprint large enough to threaten the host. The worst-case
-// guard and the accumulator seed share this projection so the up-front rejection and
-// the running budget reserve the same bytes.
+// projectedRegexSubmatchIndexBytes returns the heap footprint of the [][]int table
+// FindAllStringSubmatchIndex materializes for matchCount matches of a pattern with
+// the given group count. Two costs accrue per match: the 2 + 2*groups index ints
+// the engine writes, and the structural overhead of the inner slice that holds them
+// -- a []int slice header occupying one slot in the outer [][]int backing array
+// (estimatedSliceBaseBytes, exactly unsafe.Sizeof([]int{})). Both are charged so the
+// projection is matchCount * ((2 + 2*groups) * estimatedIntBytes + estimatedSliceBaseBytes).
+//
+// The per-match slice overhead matters precisely for the low-capture shapes the int
+// payload alone undercounts: a no-capture zero-width or one-byte pattern writes only
+// 2 ints (16 bytes) per match yet still pays the 24-byte slice header, so omitting it
+// would under-report the table by more than half for every match. Counting it keeps
+// the worst-case guard and the accumulator seed -- which share this projection so the
+// up-front rejection and the running budget reserve the same bytes -- honest about
+// the table's true coexisting footprint rather than just its integer payload.
 func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
 	intsPerMatch := saturatingAdd(2, saturatingMul(2, groups))
-	bytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
+	indexBytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
+	bytesPerMatch := saturatingAdd(indexBytesPerMatch, estimatedSliceBaseBytes)
 	return saturatingMul(matchCount, bytesPerMatch)
 }
 

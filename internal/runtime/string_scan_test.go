@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // TestStringScanCaptureShape verifies that String#scan mirrors Ruby's
@@ -530,6 +531,49 @@ end`)
 	}
 }
 
+// TestStringScanQuotaCheckedBeforeMaterializing is the regression for charging a
+// step BEFORE FindAllStringSubmatchIndex runs. The per-match step charges fire only
+// once the match table exists, so a scan whose pattern matches NOTHING would never
+// step at all if the only steps were per match: an already-canceled context or an
+// exhausted step quota would go unobserved and the (expensive) full materialization
+// would run anyway before the empty result was returned. The pre-materialization
+// step closes that hole, so even a zero-match scan trips the limit/cancellation
+// before paying for the engine call.
+func TestStringScanQuotaCheckedBeforeMaterializing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("canceled context aborts a zero-match scan", func(t *testing.T) {
+		t.Parallel()
+
+		// "z" never matches an all-'a' subject, so the per-match loop body never runs;
+		// only the pre-materialization step can observe the canceled context here.
+		script := compileScript(t, `def run(text)
+  text.scan("z")
+end`)
+		subject := NewString(strings.Repeat("a", 10_000))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := script.Call(ctx, "run", []Value{subject}, CallOptions{})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("zero-match scan under canceled context = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("exhausted step quota aborts a zero-match scan", func(t *testing.T) {
+		t.Parallel()
+
+		// A one-step quota is consumed entering run(); the scan's pre-materialization
+		// step then trips the limit before the engine ever runs, even though the
+		// pattern matches nothing and the per-match loop would never step.
+		script := compileScriptWithConfig(t, Config{StepQuota: 1, MemoryQuotaBytes: 64 << 20}, `def run(text)
+  text.scan("z")
+end`)
+		subject := NewString(strings.Repeat("a", 10_000))
+		requireCallRuntimeErrorType(t, script, "run", []Value{subject}, CallOptions{}, runtimeErrorTypeLimit)
+	})
+}
+
 // TestStringScanIndexTableAndResultChargedTogether is the direct regression for
 // the reviewer's second P1: the engine's [][]int index table stays live the whole
 // time scan materializes per-match result elements from it, so the index table and
@@ -615,5 +659,95 @@ func TestStringScanIndexTableAndResultChargedTogether(t *testing.T) {
 	// between the two builds is the seed, not incidental rounding.
 	if err := buildResult(seededPeak-seed, false); err != nil {
 		t.Fatalf("unseeded build at peak minus seed = %v, want success", err)
+	}
+}
+
+// TestProjectedRegexSubmatchIndexBytesChargesSliceOverhead pins the per-match slice
+// overhead into the index-footprint projection. The [][]int table the engine returns
+// is not just its index integers: each match is an inner []int whose slice header
+// occupies one slot in the outer backing array (24 bytes, unsafe.Sizeof([]int{})).
+// Charging only the integers undercounts that table -- by more than half for a
+// no-capture zero-width or one-byte pattern, whose two ints are 16 bytes against the
+// 24-byte header -- so the projection must add estimatedSliceBaseBytes per match.
+func TestProjectedRegexSubmatchIndexBytesChargesSliceOverhead(t *testing.T) {
+	t.Parallel()
+
+	if got, want := estimatedSliceBaseBytes, int(unsafe.Sizeof([]int{})); got != want {
+		t.Fatalf("estimatedSliceBaseBytes = %d, want a []int header of %d bytes", got, want)
+	}
+
+	tests := []struct {
+		name       string
+		matchCount int
+		groups     int
+	}{
+		{name: "no-capture matches charge two ints plus the slice header", matchCount: 1000, groups: 0},
+		{name: "single-capture matches charge four ints plus the slice header", matchCount: 250, groups: 1},
+		{name: "many-capture matches charge the slice header on top of the ints", matchCount: 7, groups: 64},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			intsPerMatch := 2 + 2*tt.groups
+			indexBytes := tt.matchCount * intsPerMatch * estimatedIntBytes
+			want := indexBytes + tt.matchCount*estimatedSliceBaseBytes
+
+			got := projectedRegexSubmatchIndexBytes(tt.matchCount, tt.groups)
+			if got != want {
+				t.Fatalf("projectedRegexSubmatchIndexBytes(%d, %d) = %d, want %d (ints %d + slice headers %d)",
+					tt.matchCount, tt.groups, got, want, indexBytes, tt.matchCount*estimatedSliceBaseBytes)
+			}
+			if got <= indexBytes {
+				t.Fatalf("projection %d did not charge the per-match slice header on top of the %d index bytes", got, indexBytes)
+			}
+		})
+	}
+}
+
+// TestStringScanGuardChargesSliceOverhead is the behavioral regression for charging
+// the [][]int table's per-match slice overhead against the memory quota. It exercises
+// guardRegexScanIndexFootprint directly with a no-capture pattern (the shape the
+// integer-only projection undercounts most): the slice headers are 24 of every 40
+// bytes per match. The quota is set so the integer-only footprint fits but the real
+// footprint -- ints plus the per-match slice header -- does not, so the guard must
+// reject. A guard that charged only the integers would admit this scan and let the
+// engine materialize a table larger than the quota allows.
+func TestStringScanGuardChargesSliceOverhead(t *testing.T) {
+	t.Parallel()
+
+	const (
+		groups   = 0
+		runes    = 4000
+		maxMatch = runes + 1 // FindAllStringSubmatchIndex returns at most runeCount+1 matches.
+	)
+	text := strings.Repeat("a", runes)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	base := exec.estimateMemoryUsageBase(exec.memoryEstimatorForCheck())
+
+	intOnlyBytes := maxMatch * (2 + 2*groups) * estimatedIntBytes
+	fullBytes := projectedRegexSubmatchIndexBytes(maxMatch, groups)
+	if fullBytes != intOnlyBytes+maxMatch*estimatedSliceBaseBytes {
+		t.Fatalf("projection %d does not equal int bytes %d plus per-match slice headers %d",
+			fullBytes, intOnlyBytes, maxMatch*estimatedSliceBaseBytes)
+	}
+
+	// Quota sits strictly between the int-only footprint and the full footprint, so it
+	// admits the former and rejects the latter -- the slice overhead is the only thing
+	// that pushes the projection past the limit.
+	exec.memoryQuota = base + intOnlyBytes + maxMatch*estimatedSliceBaseBytes/2
+
+	if err := guardRegexScanIndexFootprint(exec, text, groups); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("guard at int-only-plus-half-overhead quota = %v, want errMemoryQuotaExceeded", err)
+	}
+
+	// Raising the quota to cover the full footprint (ints plus every slice header)
+	// admits the scan, confirming the guard rejects only the overhead deficit and not
+	// the legitimate footprint.
+	exec.memoryQuota = base + fullBytes
+	if err := guardRegexScanIndexFootprint(exec, text, groups); err != nil {
+		t.Fatalf("guard at full-footprint quota = %v, want success", err)
 	}
 }
