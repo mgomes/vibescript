@@ -134,12 +134,13 @@ connect(host: "example.com")            # uses port 8080, scheme "https"
 connect(host: "example.com", port: 443) # overrides port
 ```
 
-Because `name: Type` declares a typed positional parameter, a bare identifier or
-`nil` after the colon resolves as a type name, not a keyword default: write
-`a: int` for a typed positional and `a: 0` for an optional keyword. The `name: nil`
+Because `name: Type` declares a typed positional parameter, a bare identifier
+after the colon resolves as a type name, not a keyword default: write `a: int`
+for a typed positional and `a: 0` for an optional keyword. The `name: nil`
 spelling is the optional keyword default `nil`, matching Ruby and the stdlib's
-documented optional keywords. When a keyword default must reference another name
-on its own, wrap it in parentheses (`a: (other)`) so it parses as an expression.
+documented optional keywords; a bare `nil` positional type would be useless.
+When a keyword default must reference another name on its own, wrap it in
+parentheses (`a: (other)`) so it parses as an expression.
 
 A keyword default may be a full expression, including one that references an
 earlier parameter with a comparison (`def f(limit:, ok: limit < 10)`). A `{ ... }`
