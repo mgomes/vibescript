@@ -5,10 +5,13 @@ import (
 	"math"
 	"reflect"
 	"unsafe"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 const (
 	estimatedValueBytes        = int(unsafe.Sizeof(Value{}))
+	estimatedIntBytes          = int(unsafe.Sizeof(int(0)))
 	estimatedStringHeaderBytes = 16
 	estimatedSliceBaseBytes    = 24
 	estimatedMapBaseBytes      = 48
@@ -19,6 +22,14 @@ const (
 	estimatedCallFrameBytes    = 48
 	estimatedModuleContextSize = 24
 )
+
+// estimatedHashDataBytes is the heap footprint of the hashData wrapper every
+// KindHash value allocates around its entry map to carry Ruby-style default
+// metadata (a default value and/or a default proc). The entry map and default
+// payloads are charged separately; this is the wrapper struct itself, which the
+// estimate would otherwise miss for workloads that retain many small hashes (an
+// array of Hash.new or empty literals).
+const estimatedHashDataBytes = value.HashDataBytes
 
 // estimatedMapEntryStructuralBytes is the per-entry structural footprint a
 // map[string]Value reserves for one slot regardless of what its key and value
@@ -34,6 +45,7 @@ type memoryEstimator struct {
 	seenFrozen    *Env
 	seenEnvs      map[*Env]struct{}
 	seenMaps      map[uintptr]struct{}
+	seenHashData  map[uintptr]struct{}
 	seenSlices    map[uintptr]struct{}
 	seenStrings   map[stringIdentity]struct{}
 	seenClasses   map[*ClassDef]struct{}
@@ -55,6 +67,7 @@ func (est *memoryEstimator) reset() {
 	est.seenFrozen = nil
 	clear(est.seenEnvs)
 	clear(est.seenMaps)
+	clear(est.seenHashData)
 	clear(est.seenSlices)
 	clear(est.seenStrings)
 	clear(est.seenClasses)
@@ -329,6 +342,27 @@ func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwa
 	return acc
 }
 
+// reserveScratch folds a fixed scratch allocation into the baseline so it is held
+// against the quota for the build's entire lifetime, and rejects the build if the
+// reservation alone already overflows. Builders that keep a Go-local scratch
+// buffer live while the result accumulates (String#scan holds the engine's whole
+// [][]int match table the entire time it materializes per-match result elements
+// from it) reserve that buffer here so its bytes coexist with every accumulated
+// element at peak. Without the reservation a build could keep both the scratch and
+// the growing result live and exceed the quota by the scratch size before the
+// per-element check observed it. scratchBytes is the heap footprint of that live
+// buffer.
+func (acc *arrayBuildAccumulator) reserveScratch(scratchBytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, scratchBytes)
+	if acc.base > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // add charges a newly appended element and rejects the build if the result's
 // projected memory exceeds the quota. backingCap is the capacity of the result's
 // backing slice after the append; its slot array is charged from that capacity
@@ -338,7 +372,9 @@ func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwa
 // Elements aliased by a baseline root (for example filter_map returning an
 // element of its receiver unchanged) are deduplicated by the persistent
 // estimator, so their backing is charged once, exactly as the post-call check
-// would.
+// would. Scratch buffers held live for the build's duration are charged via
+// reserveScratch, which folds them into the baseline so they are counted
+// alongside the growing result rather than separately.
 func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
@@ -458,9 +494,10 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	// estimator stays empty: the base must be counted, but the results estimator
 	// must not dedup later block results against the call roots it walked.
 	acc.base = exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
-	// The output is a single map, so fold its empty-map overhead into the baseline;
-	// add then charges only the per-entry growth.
-	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes)
+	// The output is a single hash, so fold its empty-map overhead plus the
+	// hashData wrapper every KindHash allocates into the baseline; add then
+	// charges only the per-entry growth.
+	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	acc.est = newMemoryEstimator()
 	return acc
 }
@@ -598,12 +635,13 @@ func (exec *Execution) hashCallRootBytes(receiver Value, args []Value, kwargs ma
 }
 
 // projectedHashBaseBytes estimates the live footprint a hash transform holds
-// before it reserves its output map: the call-root usage plus the empty map's
-// structural overhead. maxProjectedHashEntries builds on it so the entry budget
-// and the byte check agree on the same baseline. Callers that build no output map
-// (the pure iterators) use hashCallRootBytes directly instead.
+// before it reserves its output map: the call-root usage plus the empty hash's
+// structural overhead (the empty map plus the hashData wrapper every KindHash
+// allocates). maxProjectedHashEntries builds on it so the entry budget and the
+// byte check agree on the same baseline. Callers that build no output map (the
+// pure iterators) use hashCallRootBytes directly instead.
 func (exec *Execution) projectedHashBaseBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
-	return saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), estimatedValueBytes+estimatedMapBaseBytes)
+	return saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 }
 
 // maxProjectedHashEntries returns the largest output-map entry count that
@@ -853,6 +891,20 @@ func (est *memoryEstimator) value(val Value) int {
 		size += est.slice(val.Array())
 	case KindHash, KindObject:
 		size += est.hash(val.Hash())
+		// A KindHash wraps its entry map in a hashData struct to carry optional
+		// Ruby-style default metadata; that wrapper is a real per-hash heap
+		// allocation outside the entry map, so it counts toward the quota too.
+		// Charged once per distinct wrapper identity so two values sharing the
+		// same hashData are not double counted. Objects use a bare map with no
+		// wrapper, so hashWrapperBytes returns 0 for them.
+		size += est.hashWrapperBytes(val)
+		// A KindHash may retain Ruby-style default metadata (a default value
+		// and/or a default proc) outside its entry map. Those payloads are
+		// reachable state — a script can hold a large array or string solely
+		// through a Hash.new(big) default — so they count toward the quota too.
+		// Objects never carry defaults, so these accessors return nil for them.
+		size += est.valuePayload(hashDefaultValue(val))
+		size += est.valuePayload(hashDefaultProc(val))
 	case KindClass:
 		cl := valueClass(val)
 		if cl == nil {
@@ -1038,6 +1090,29 @@ func sliceBackingIdentity(values []Value) uintptr {
 		return 0
 	}
 	return uintptr(unsafe.Pointer(unsafe.SliceData(values)))
+}
+
+// hashWrapperBytes charges the hashData wrapper a KindHash value allocates
+// around its entry map, deduplicated on the wrapper's identity so two values
+// that share the same wrapper count it once. It returns 0 for KindObject (a
+// bare map with no wrapper) and for any value whose wrapper identity is
+// unavailable, mirroring how est.hash dedups the entry map on its own pointer.
+func (est *memoryEstimator) hashWrapperBytes(val Value) int {
+	if val.Kind() != KindHash {
+		return 0
+	}
+	id := hashIdentity(val)
+	if id == 0 {
+		return estimatedHashDataBytes
+	}
+	if _, seen := est.seenHashData[id]; seen {
+		return 0
+	}
+	if est.seenHashData == nil {
+		est.seenHashData = make(map[uintptr]struct{})
+	}
+	est.seenHashData[id] = struct{}{}
+	return estimatedHashDataBytes
 }
 
 func (est *memoryEstimator) hash(values map[string]Value) int {

@@ -2,7 +2,9 @@ package value
 
 import (
 	"math"
+	"reflect"
 	"time"
+	"unsafe"
 )
 
 // NewNil returns a nil Value.
@@ -28,16 +30,79 @@ func NewString(s string) Value { return Value{kind: KindString, data: s} }
 // NewArray returns an array Value.
 func NewArray(a []Value) Value { return Value{kind: KindArray, data: a} }
 
-// NewHash returns a hash (map) Value. A nil map is replaced with a freshly
-// allocated empty map so that every hash has its own backing storage and thus a
-// distinct object identity. Without this, two independently constructed empty
-// hashes would share the nil map's zero pointer and wrongly report identical
-// under the Ruby-style equal? predicate.
+// hashData backs a KindHash value. It pairs the entry map with optional
+// Ruby-style default metadata consulted on missing-key lookup: either a default
+// value (returned without inserting) or a default proc (a KindBlock value the
+// runtime invokes with the hash and key). KindObject keeps a bare map because
+// objects never carry hash defaults.
+type hashData struct {
+	entries      map[string]Value
+	defaultValue Value
+	defaultProc  Value
+}
+
+// HashDataBytes is the heap footprint of the hashData wrapper every KindHash
+// value allocates, excluding the entry map and default payloads it points at.
+// Memory-quota accounting charges it once per distinct hash so an array of many
+// small hashes cannot retain the per-hash wrapper cost uncharged.
+const HashDataBytes = int(unsafe.Sizeof(hashData{}))
+
+// NewHash returns a hash (map) Value with no default.
 func NewHash(h map[string]Value) Value {
-	if h == nil {
-		h = map[string]Value{}
+	return Value{kind: KindHash, data: &hashData{entries: h}}
+}
+
+// NewHashWithDefault returns a hash (map) Value carrying Ruby-style default
+// metadata. A non-nil defaultProc (a KindBlock value) takes precedence over
+// defaultValue on missing-key lookup; pass NewNil() for whichever is unused.
+func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Value {
+	return Value{kind: KindHash, data: &hashData{
+		entries:      h,
+		defaultValue: defaultValue,
+		defaultProc:  defaultProc,
+	}}
+}
+
+// HashDefaultValue returns the default value configured for a hash, or NewNil()
+// when v is not a hash or carries no default value. It is the plain-value
+// counterpart to HashDefaultProc.
+func HashDefaultValue(v Value) Value {
+	if v.kind != KindHash {
+		return NewNil()
 	}
-	return Value{kind: KindHash, data: h}
+	if hd, ok := v.data.(*hashData); ok {
+		return hd.defaultValue
+	}
+	return NewNil()
+}
+
+// HashDefaultProc returns the default proc configured for a hash, or NewNil()
+// when v is not a hash or carries no default proc. The returned value, when
+// present, is the KindBlock the runtime invokes on missing-key lookup.
+func HashDefaultProc(v Value) Value {
+	if v.kind != KindHash {
+		return NewNil()
+	}
+	if hd, ok := v.data.(*hashData); ok {
+		return hd.defaultProc
+	}
+	return NewNil()
+}
+
+// HashIdentity returns a stable identity for a hash wrapper, or 0 when v is not
+// a hash. Unlike the entry-map pointer, this identifies the whole hashData
+// wrapper, so two KindHash values that share an entry map but carry different
+// default metadata are distinct. Cycle-detecting scanners that must also visit
+// hash defaults key their seen-set on this value rather than the bare entry map,
+// which would otherwise hide a second wrapper's distinct default payload.
+func HashIdentity(v Value) uintptr {
+	if v.kind != KindHash {
+		return 0
+	}
+	if hd, ok := v.data.(*hashData); ok {
+		return reflect.ValueOf(hd).Pointer()
+	}
+	return 0
 }
 
 // NewMoney returns a money Value.
@@ -56,7 +121,9 @@ func NewSymbol(name string) Value { return Value{kind: KindSymbol, data: name} }
 
 // NewObject returns an object Value with the given attributes. A nil map is
 // replaced with a freshly allocated empty map so that every object has its own
-// backing storage and thus a distinct object identity, matching NewHash.
+// backing storage and thus a distinct object identity. (Hashes get the same
+// per-instance identity from their hashData wrapper, which NewHash allocates
+// fresh on every call.)
 func NewObject(attrs map[string]Value) Value {
 	if attrs == nil {
 		attrs = map[string]Value{}

@@ -10,6 +10,14 @@ import (
 	"testing"
 )
 
+// estimatedEmptyOutputHashBytes is the structural footprint a hash-producing
+// transform's projection reserves for its output before any entries: the output
+// Value slot, the empty entry map's base overhead, and the hashData wrapper every
+// KindHash allocates around that map. It mirrors the non-call-root portion of
+// projectedHashBaseBytes so quota-sizing tests reserve exactly what the
+// projection charges.
+const estimatedEmptyOutputHashBytes = estimatedValueBytes + estimatedMapBaseBytes + estimatedHashDataBytes
+
 // largeHashReceiver builds a hash with count string-keyed integer entries for
 // the containment tests. The entries live only in the returned value, so a bare
 // Execution can drive a transform builtin against it without the receiver
@@ -230,7 +238,7 @@ func TestHashTransformProjectionCountsLiveCallRoots(t *testing.T) {
 	// pre-fix projection counted only the output structure and would have passed.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoot := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
-	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+	outputStructure := estimatedEmptyOutputHashBytes +
 		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
 	if liveWithRoot <= outputStructure {
 		t.Fatalf("test setup expects the live input (%d) to exceed the output structure (%d)", liveWithRoot, outputStructure)
@@ -264,12 +272,12 @@ func TestHashSliceProjectionBoundsByOutputNotArgCount(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	outputStructure := estimatedValueBytes + estimatedMapBaseBytes + len(receiver.Hash())*perEntry
+	outputStructure := estimatedEmptyOutputHashBytes + len(receiver.Hash())*perEntry
 	quota := liveWithRoots + outputStructure
 
 	// Sanity: a map projected at len(args) would dwarf this quota, so admitting the
 	// call proves the projection is bounded by the receiver, not the candidate list.
-	argSizedStructure := estimatedValueBytes + estimatedMapBaseBytes + argCount*perEntry
+	argSizedStructure := estimatedEmptyOutputHashBytes + argCount*perEntry
 	if argSizedStructure <= quota {
 		t.Fatalf("test setup expects an arg-sized map (%d) to exceed the quota (%d)", argSizedStructure, quota)
 	}
@@ -311,7 +319,7 @@ func TestHashMergeProjectionCountsUnionNotSum(t *testing.T) {
 	// the argument into -- all of what the operation actually needs.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, []Value{receiver}, nil, NewNil())
-	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+	outputStructure := estimatedEmptyOutputHashBytes +
 		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
 	scratch := sortedKeyBufferBytes(count)
 	quota := liveWithRoots + outputStructure + scratch
@@ -330,7 +338,7 @@ func TestHashMergeProjectionCountsUnionNotSum(t *testing.T) {
 
 	// Sanity: the discarded sum-based projection (len(base)+len(arg) = 2*count)
 	// would not fit this quota, confirming the test exercises the union fix.
-	sumProjection := estimatedValueBytes + estimatedMapBaseBytes +
+	sumProjection := estimatedEmptyOutputHashBytes +
 		2*count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
 	if liveWithRoots+sumProjection <= quota {
 		t.Fatalf("test setup expects the sum-based projection (%d) to exceed the quota (%d)", liveWithRoots+sumProjection, quota)
@@ -353,7 +361,7 @@ func TestHashMergeMultiArgOverlapStaysWithinQuota(t *testing.T) {
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
-	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+	outputStructure := estimatedEmptyOutputHashBytes +
 		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
 	// The per-argument sorted key scratch buffer is reused across arguments, so it
 	// only sizes to the largest single argument (count keys here). Fold it into the
@@ -363,7 +371,7 @@ func TestHashMergeMultiArgOverlapStaysWithinQuota(t *testing.T) {
 
 	// Sanity: the loose upper bound sums every argument length, so it exceeds the
 	// union-sized quota and the exact count path must run for this merge to pass.
-	looseProjection := estimatedValueBytes + estimatedMapBaseBytes +
+	looseProjection := estimatedEmptyOutputHashBytes +
 		(count+len(args)*count)*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
 	if liveWithRoots+looseProjection <= quota {
 		t.Fatalf("test setup expects the loose projection (%d) to exceed the quota (%d)", liveWithRoots+looseProjection, quota)
@@ -731,7 +739,7 @@ func hashStoreProjectionBytes(t *testing.T, receiver Value, args []Value, entrie
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	live := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	return live + estimatedValueBytes + estimatedMapBaseBytes + entries*perEntry
+	return live + estimatedEmptyOutputHashBytes + entries*perEntry
 }
 
 // TestHashStoreExistingKeyFitsReceiverQuota pins the P2 finding on PR #776: when
@@ -785,7 +793,7 @@ func TestHashExceptFailsFastOnTinyReceiver(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	receiverLive := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	quota := receiverLive + estimatedValueBytes + estimatedMapBaseBytes + len(receiver.Hash())*perEntry + 4*1024
+	quota := receiverLive + estimatedEmptyOutputHashBytes + len(receiver.Hash())*perEntry + 4*1024
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	_, err := callHashMember(t, exec, receiver, "except", args, NewNil())
@@ -855,7 +863,7 @@ func TestHashExceptChargesExclusionSet(t *testing.T) {
 	// quota that fits roots + output but not the set proves the set is now charged.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
-	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+	outputStructure := estimatedEmptyOutputHashBytes +
 		count*(estimatedMapEntryBytes+estimatedStringHeaderBytes+estimatedValueBytes)
 	preFixBudget := liveWithRoots + outputStructure
 
@@ -902,7 +910,7 @@ func TestHashBuildAccumulatorChargesIncrementally(t *testing.T) {
 	const payloadBytes = 4 * 1024
 	const capacity = 100
 	base := exec.estimateMemoryUsageBase(newMemoryEstimator())
-	exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes +
+	exec.memoryQuota = base + estimatedEmptyOutputHashBytes +
 		capacity*estimatedMapEntryStructuralBytes + 3*payloadBytes
 
 	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
@@ -978,8 +986,8 @@ func TestHashBuildAccumulatorReservesScratch(t *testing.T) {
 	// reserved. The second entry costs more than the scratch, so without the
 	// reservation the leftover headroom (a full entry's worth) covers it; with the
 	// reservation only the scratch's worth of headroom remains, which is too small.
-	emptyMap := estimatedValueBytes + estimatedMapBaseBytes
-	base := probe.base - emptyMap // probe.base folds in the empty-map overhead
+	emptyMap := estimatedEmptyOutputHashBytes
+	base := probe.base - emptyMap // probe.base folds in the empty output-hash overhead
 	exec.memoryQuota = base + emptyMap + builtOneEntry + secondEntryCost
 
 	// Without reserving the scratch, both entries fit the budget, proving the
@@ -1271,7 +1279,7 @@ func TestHashMergeManyCollidingOneKeyHashesWithBlockConservativeFootprint(t *tes
 	conservative := collisions * (entryBytes + payloadBytes)
 
 	// A quota above the conservative footprint admits the merge.
-	roomy := liveWithRoots + estimatedValueBytes + estimatedMapBaseBytes + conservative + 64*1024
+	roomy := liveWithRoots + estimatedEmptyOutputHashBytes + conservative + 64*1024
 	source := mergeManyCollidingArgsSource(collisions, payloadBytes)
 	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: roomy}, source)
 	got, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
@@ -1285,7 +1293,7 @@ func TestHashMergeManyCollidingOneKeyHashesWithBlockConservativeFootprint(t *tes
 	// A quota sized only to the single final entry -- enough for the replacement-aware
 	// accounting this PR removed, but far below the conservative footprint -- is now
 	// rejected, because the transient block results accumulate past it.
-	tight := liveWithRoots + estimatedValueBytes + estimatedMapBaseBytes + payloadBytes + 64*entryBytes + 64*1024
+	tight := liveWithRoots + estimatedEmptyOutputHashBytes + payloadBytes + 64*entryBytes + 64*1024
 	if tight >= conservative {
 		t.Fatalf("test setup expects the single-entry quota (%d) below the conservative footprint (%d)", tight, conservative)
 	}
@@ -1529,7 +1537,7 @@ func TestHashBuildAccumulatorChargesCyclicBlockResult(t *testing.T) {
 			// Ample headroom: a single cyclic value is tiny, so the quota only needs to
 			// admit one entry. The point is that the walk terminates and charges a finite
 			// amount rather than looping on the self-edge.
-			exec.memoryQuota = base + estimatedValueBytes + estimatedMapBaseBytes + 64*1024
+			exec.memoryQuota = base + estimatedEmptyOutputHashBytes + 64*1024
 
 			acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
 			if err := acc.add(shape.build()); err != nil {
@@ -1633,7 +1641,7 @@ func TestHashMergeZeroArgWithBlockOverLargeReceiverSucceeds(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
 	perEntry := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
-	outputStructure := estimatedValueBytes + estimatedMapBaseBytes + count*perEntry
+	outputStructure := estimatedEmptyOutputHashBytes + count*perEntry
 	scratch := sortedKeyBufferBytes(count)
 	quota := liveWithRoots + outputStructure + scratch/2
 
@@ -2147,7 +2155,7 @@ func TestHashMergeConflictBlockMutatesAndReturnsReceiverValueTrips(t *testing.T)
 	// A quota above the receiver's footprint plus the merge's one-entry output map, so
 	// the structural projection passes and the receiver array fits, but well below that
 	// plus the fresh payload, so charging the conflict result's full footprint trips.
-	outputStructure := estimatedValueBytes + estimatedMapBaseBytes +
+	outputStructure := estimatedEmptyOutputHashBytes +
 		(estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes)
 	quota := liveWithRoots + outputStructure + payload/2
 
@@ -2264,7 +2272,7 @@ func TestHashMergeNonConflictGrowthWithEarlyConflictTrips(t *testing.T) {
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	probe.root = newEnv(nil)
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
-	emptyMap := estimatedValueBytes + estimatedMapBaseBytes
+	emptyMap := estimatedEmptyOutputHashBytes
 	unionBacking := unionLen * estimatedMapEntryStructuralBytes
 	resultBytes := newMemoryEstimator().stringPayloadSize(strings.Repeat("z", conflictPayload))
 
@@ -2345,7 +2353,7 @@ func TestHashMergeOverlappingBlockExactUnionFitsLooseBoundWouldReject(t *testing
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	probe.root = newEnv(nil)
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, block)
-	emptyMap := estimatedValueBytes + estimatedMapBaseBytes
+	emptyMap := estimatedEmptyOutputHashBytes
 	scratch := mergeSortScratchBytes(args)
 	exactBacking := count * estimatedMapEntryStructuralBytes
 	looseBacking := 2 * count * estimatedMapEntryStructuralBytes

@@ -101,6 +101,109 @@ end`)
 	}
 }
 
+// TestEqualPredicateRebindsToHostClone confirms that when a returned graph holds
+// both a mutable receiver and a predicate bound to it, host-cloning the graph
+// rebinds the predicate to the cloned receiver. Without the rebind the cloned
+// predicate would keep comparing against the pre-clone receiver, so re-entering
+// the host clone with probe(clonedReceiver) would wrongly report not-identical
+// even though both came from the same object. A hash exercises the case because
+// hash identity is its (now cloned) wrapper rather than a value-stable scalar.
+func TestEqualPredicateRebindsToHostClone(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{"a": NewInt(1)})
+	probe, ok := universalMember(receiver, "equal?")
+	if !ok {
+		t.Fatal("universalMember did not resolve equal? for a hash")
+	}
+
+	// Export the receiver and its bound predicate together, the way Script.Call
+	// hands a returned graph to the host, then clone the whole graph.
+	cloned := cloneValueForHost(NewArray([]Value{receiver, probe}))
+	clonedItems := cloned.Array()
+	clonedReceiver := clonedItems[0]
+	clonedProbe := clonedItems[1]
+
+	if clonedReceiver.Identical(receiver) {
+		t.Fatal("cloned receiver shares identity with the original; test cannot observe the rebind")
+	}
+
+	clonedBuiltin := valueBuiltin(clonedProbe)
+	if clonedBuiltin == nil {
+		t.Fatal("cloned equal? did not resolve to a builtin")
+	}
+
+	got, err := clonedBuiltin.Fn(nil, NewNil(), []Value{clonedReceiver}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("cloned equal? against cloned receiver: %v", err)
+	}
+	if !got.Bool() {
+		t.Fatal("cloned equal? against the cloned receiver returned false; the predicate did not rebind to the cloned receiver")
+	}
+
+	// The rebound predicate must still report false against the pre-clone receiver,
+	// which is now a distinct object on the original side of the boundary.
+	got, err = clonedBuiltin.Fn(nil, NewNil(), []Value{receiver}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("cloned equal? against original receiver: %v", err)
+	}
+	if got.Bool() {
+		t.Fatal("cloned equal? against the original receiver returned true; the clone must compare by cloned identity")
+	}
+}
+
+// TestEqualPredicateRebindsAcrossScriptCalls exercises the rebind end to end
+// through Script.Call: one call exports a hash and its bound equal? predicate,
+// and a second call receives that host-cloned pair and invokes the predicate
+// against the receiver from the same pair. The predicate must report identity
+// even though Script.Call host-cloned the receiver between the two calls.
+func TestEqualPredicateRebindsAcrossScriptCalls(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def export_probe
+  obj = {a: 1}
+  [obj, obj.equal?]
+end
+
+def check(pair)
+  pair[1](pair[0])
+end`)
+
+	exported, err := script.Call(context.Background(), "export_probe", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("export_probe failed: %v", err)
+	}
+	if exported.Kind() != KindArray {
+		t.Fatalf("expected array result, got %#v", exported)
+	}
+
+	result, err := script.Call(context.Background(), "check", []Value{exported}, CallOptions{})
+	if err != nil {
+		t.Fatalf("check failed: %v", err)
+	}
+	if result.Kind() != KindBool || !result.Bool() {
+		t.Fatalf("exported equal? against its own receiver reported %#v; the predicate did not rebind to the host-cloned receiver", result)
+	}
+}
+
+// TestHostCloneHashPreservesSharedIdentity confirms a hash reachable through two
+// paths in a returned graph clones to a single wrapper, so the two cloned
+// references stay equal? to each other. Caching only the entry map would rebuild
+// a fresh wrapper per path and break identity, since hash identity is the
+// wrapper rather than the entry map.
+func TestHostCloneHashPreservesSharedIdentity(t *testing.T) {
+	t.Parallel()
+
+	shared := NewHash(map[string]Value{"a": NewInt(1)})
+	cloned := cloneValueForHost(NewArray([]Value{shared, shared}))
+	items := cloned.Array()
+	if !items[0].Identical(items[1]) {
+		t.Fatal("a hash shared across two paths cloned to distinct wrappers; host clone must preserve shared identity")
+	}
+	if items[0].Identical(shared) {
+		t.Fatal("cloned hash shares identity with the original; test cannot observe the clone")
+	}
+}
+
 // TestEqlPredicate exercises the universal eql? predicate across core value
 // kinds: it reports hash-key equality, so operands must share a kind and value.
 // An Int never eql-matches a Float even when their numeric values coincide,

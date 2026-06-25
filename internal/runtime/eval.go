@@ -400,10 +400,18 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj, idx Value) (Value, erro
 			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
 		}
 		val, ok := obj.Hash()[key]
-		if !ok {
-			return NewNil(), nil
+		if ok {
+			return val, nil
 		}
-		return val, nil
+		// A missing key consults the hash's Ruby-style default. Only KindHash
+		// carries default metadata (objects never do), so a missing object key
+		// stays nil. A default proc takes precedence over a default value and is
+		// invoked with (hash, key); the key keeps its original symbol/string
+		// value so the proc can render it the way Ruby does.
+		if obj.Kind() == KindHash {
+			return exec.hashMissingKeyDefault(obj, idx, e.Index.Pos())
+		}
+		return NewNil(), nil
 	default:
 		return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
 	}

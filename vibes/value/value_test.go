@@ -131,6 +131,77 @@ func TestNewValueDataRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHashDataRoundTrip pins the public Data payload of a hash to the bare
+// entry map. A hash stores its entries inside an unexported wrapper to carry
+// optional Ruby-style default metadata, but that wrapper must never leak
+// through Data: embedders inspect entries via Data and reconstruct a value via
+// NewValue(v.Kind(), v.Data()). The round-trip must yield a usable KindHash
+// whose accessors do not panic on the wrong payload type.
+func TestHashDataRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("data_exposes_entry_map", func(t *testing.T) {
+		t.Parallel()
+		entries := map[string]value.Value{"k": value.NewInt(1)}
+		got, ok := value.NewHash(entries).Data().(map[string]value.Value)
+		if !ok {
+			t.Fatalf("hash Data() = %T, want map[string]value.Value", value.NewHash(entries).Data())
+		}
+		if got["k"].Int() != 1 {
+			t.Fatalf("hash Data()[\"k\"] = %v, want 1", got["k"])
+		}
+	})
+
+	t.Run("data_exposes_entry_map_with_defaults", func(t *testing.T) {
+		t.Parallel()
+		// Default metadata must not change the public payload type: a hash
+		// carrying a default value still surfaces its bare entry map.
+		entries := map[string]value.Value{"k": value.NewInt(1)}
+		h := value.NewHashWithDefault(entries, value.NewInt(99), value.NewNil())
+		got, ok := h.Data().(map[string]value.Value)
+		if !ok {
+			t.Fatalf("hash-with-default Data() = %T, want map[string]value.Value", h.Data())
+		}
+		if got["k"].Int() != 1 {
+			t.Fatalf("hash-with-default Data()[\"k\"] = %v, want 1", got["k"])
+		}
+	})
+
+	t.Run("round_trips_through_new_value", func(t *testing.T) {
+		t.Parallel()
+		entries := map[string]value.Value{"a": value.NewInt(1), "b": value.NewString("x")}
+		original := value.NewHash(entries)
+
+		rebuilt := value.NewValue(original.Kind(), original.Data())
+		if rebuilt.Kind() != value.KindHash {
+			t.Fatalf("rebuilt Kind() = %s, want hash", rebuilt.Kind())
+		}
+		// The accessor must not panic and must recover the entries; a value
+		// whose payload was the unexported wrapper would panic here.
+		if got := rebuilt.Hash(); got["a"].Int() != 1 || got["b"].String() != "x" {
+			t.Fatalf("rebuilt Hash() = %v, want original entries", got)
+		}
+		if !rebuilt.Equal(original) {
+			t.Fatalf("rebuilt hash = %s, want value equal to %s", rebuilt, original)
+		}
+	})
+
+	t.Run("nil_entry_map_round_trips", func(t *testing.T) {
+		t.Parallel()
+		original := value.NewHash(nil)
+		rebuilt := value.NewValue(original.Kind(), original.Data())
+		if rebuilt.Kind() != value.KindHash {
+			t.Fatalf("rebuilt Kind() = %s, want hash", rebuilt.Kind())
+		}
+		if got := rebuilt.Hash(); got != nil {
+			t.Fatalf("rebuilt Hash() = %v, want nil", got)
+		}
+		if !rebuilt.Equal(original) {
+			t.Fatalf("rebuilt empty hash = %s, want value equal to %s", rebuilt, original)
+		}
+	})
+}
+
 func TestScalarValueData(t *testing.T) {
 	t.Parallel()
 
@@ -1531,6 +1602,12 @@ func TestValueIdentical(t *testing.T) {
 	t.Parallel()
 
 	sharedSlice := []value.Value{value.NewInt(1)}
+	// A hash's identity is its hashData wrapper, not its entry map. Aliasing a
+	// hash Value (the way `b = a` copies the struct, including its wrapper
+	// pointer) preserves identity, so sharedHash compared against itself is
+	// identical. Two distinct NewHash calls that merely share an entry map are
+	// not, because each call allocates its own wrapper.
+	sharedHash := value.NewHash(map[string]value.Value{"a": value.NewInt(1)})
 	sharedMap := map[string]value.Value{"a": value.NewInt(1)}
 	// A single empty hash must remain identical to itself even though its
 	// backing map is allocated from nil input; the fix must not break self
@@ -1571,12 +1648,15 @@ func TestValueIdentical(t *testing.T) {
 		// A non-empty array is never identical to an empty one even though the
 		// empty case short-circuits before comparing backing storage.
 		{"empty_array_vs_nonempty_distinct", value.NewArray([]value.Value{}), value.NewArray([]value.Value{value.NewInt(1)}), false},
-		{"hashes_shared_backing", value.NewHash(sharedMap), value.NewHash(sharedMap), true},
+		// Aliasing a hash Value preserves its wrapper, so it is identical to itself.
+		{"hashes_shared_wrapper", sharedHash, sharedHash, true},
+		// Two NewHash calls allocate distinct wrappers even with a shared entry map.
+		{"hashes_shared_entry_map_distinct", value.NewHash(sharedMap), value.NewHash(sharedMap), false},
 		{"hashes_distinct_backing", value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), false},
-		// Empty maps each receive a distinct backing, unlike empty slices.
+		// Each hash carries its own wrapper, so empties are distinct unlike empty slices.
 		{"empty_hashes_distinct_backing", value.NewHash(map[string]value.Value{}), value.NewHash(map[string]value.Value{}), false},
-		// Nil input must be normalized to a fresh backing map so that two empty
-		// hashes built the way the JSON parser builds {} stay distinct objects.
+		// Nil-backed hashes built the way the JSON parser builds {} stay distinct
+		// objects because each NewHash call allocates a fresh wrapper.
 		{"nil_backed_hashes_distinct", value.NewHash(nil), value.NewHash(nil), false},
 		{"nil_backed_objects_distinct", value.NewObject(nil), value.NewObject(nil), false},
 		{"empty_hash_vs_nil_backed_hash_distinct", value.NewHash(map[string]value.Value{}), value.NewHash(nil), false},

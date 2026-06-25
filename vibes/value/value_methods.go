@@ -259,7 +259,7 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		// than emit a result one byte over the cap.
 		return appendByteBounded(buf, ']', limit)
 	case KindHash:
-		entries := v.data.(map[string]Value)
+		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return appendBounded(buf, "{}", limit)
 		}
@@ -390,7 +390,7 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 		}
 		return total
 	case KindHash:
-		entries := v.data.(map[string]Value)
+		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose)
 		}
@@ -473,7 +473,7 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 		}
 		return total, nil
 	case KindHash:
-		entries := v.data.(map[string]Value)
+		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil
 		}
@@ -537,7 +537,7 @@ func (v Value) Truthy() bool {
 	case KindArray:
 		return len(v.data.([]Value)) > 0
 	case KindHash:
-		return len(v.data.(map[string]Value)) > 0
+		return len(v.hashEntries()) > 0
 	case KindEnum, KindEnumValue, KindClass, KindInstance:
 		return true
 	default:
@@ -582,9 +582,10 @@ func (v Value) Eql(other Value) bool {
 // empty result preallocated with spare capacity (for example array.select
 // starting from make([]Value, 0, len(arr))) carries its own non-zerobase pointer
 // and a different capacity than a literal []; only a length check captures the
-// contract. Empty hashes and objects stay distinct because NewHash and NewObject
-// allocate a fresh backing map for nil input, so each empty composite carries
-// its own non-nil pointer rather than sharing the nil map's zero pointer.
+// contract. Empty hashes and objects stay distinct because every hash carries
+// its own hashData wrapper (NewHash allocates a fresh one per call) and NewObject
+// allocates a fresh backing map for nil input, so each empty composite has a
+// distinct identity rather than collapsing onto a shared zero pointer.
 func (v Value) Identical(other Value) bool {
 	if v.kind != other.kind {
 		return false
@@ -614,7 +615,14 @@ func (v Value) Identical(other Value) bool {
 		}
 		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer() &&
 			len(left) == len(right) && cap(left) == cap(right)
-	case KindHash, KindObject:
+	case KindHash:
+		// A KindHash payload is a *hashData wrapper, so identity is the wrapper's
+		// pointer rather than its entry map. Two hashes that share an entry map but
+		// carry different default metadata are distinct objects, and each NewHash
+		// call allocates a fresh wrapper, so independently constructed hashes (even
+		// empty ones) are never identical.
+		return HashIdentity(v) == HashIdentity(other)
+	case KindObject:
 		left := v.data.(map[string]Value)
 		right := other.data.(map[string]Value)
 		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer()
