@@ -280,6 +280,25 @@ end`,
 			},
 		},
 		{
+			// A shape field whose value is a bare enum type name (not a local
+			// value in scope) stays a shape type. The local-value check that
+			// routes `{ sum: a }` to a hash default must not catch a genuine
+			// enum field like `Color` here.
+			name: "shape_type_with_enum_field",
+			source: `def f(a: { x: Color })
+  a
+end`,
+			want: []ast.Param{
+				{
+					Name: "a",
+					Type: &ast.TypeExpr{
+						Kind:  ast.TypeShape,
+						Shape: map[string]*ast.TypeExpr{"x": {Name: "Color", Kind: ast.TypeEnum}},
+					},
+				},
+			},
+		},
+		{
 			name: "shape_type_with_nullable_union_field",
 			source: `def f(a: { x: int | nil })
   a
@@ -461,6 +480,57 @@ end`,
 								Operator: ast.TokenPlus,
 								Right:    &ast.IntegerLiteral{Value: 1},
 							},
+						},
+					}},
+				},
+			},
+		},
+		{
+			// A hash default whose value is a *bare* identifier referencing an
+			// earlier keyword parameter. The speculative shape parse accepts the
+			// identifier as an enum type, so without the local-value check the
+			// brace group is misclassified as a positional shape annotation
+			// (which is then rejected for following a keyword parameter).
+			name: "bare_ident_hash_default_references_earlier_keyword",
+			source: `def g(a:, b: { sum: a })
+  b
+end`,
+			want: []ast.Param{
+				{Name: "a", Kind: ast.ParamKeyword},
+				{
+					Name: "b",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key:   &ast.SymbolLiteral{Name: "sum"},
+							Value: &ast.Identifier{Name: "a"},
+						},
+					}},
+				},
+			},
+		},
+		{
+			// The bare-identifier local-value check also looks through nested
+			// brace groups, so a nested hash value referencing an earlier
+			// parameter keeps the whole group a hash default.
+			name: "nested_bare_ident_hash_default_references_earlier_keyword",
+			source: `def g(a:, b: { inner: { sum: a } })
+  b
+end`,
+			want: []ast.Param{
+				{Name: "a", Kind: ast.ParamKeyword},
+				{
+					Name: "b",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key: &ast.SymbolLiteral{Name: "inner"},
+							Value: &ast.HashLiteral{Pairs: []ast.HashPair{
+								{
+									Key:   &ast.SymbolLiteral{Name: "sum"},
+									Value: &ast.Identifier{Name: "a"},
+								},
+							}},
 						},
 					}},
 				},

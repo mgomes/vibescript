@@ -1027,7 +1027,46 @@ func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
 	if shapeHasDegenerateNilField(shape) {
 		return false
 	}
+	if p.shapeFieldNamesLocalValue(shape) {
+		return false
+	}
 	return p.typeAnnotationBoundaryFollows(options)
+}
+
+// shapeFieldNamesLocalValue reports whether ty is a shape type with a bare
+// identifier field type that names a local value in scope, looking through
+// nested shapes.
+//
+// A bare identifier field such as the `a` in `{ sum: a }` parses cleanly as an
+// enum type, so the speculative shape parse alone cannot tell `def f(opts: {
+// status: pending })` (a shape whose `status` field is the `pending` enum type)
+// from `def g(a:, b: { sum: a })` (a hash default whose `sum` value references
+// the earlier keyword parameter `a`). When the identifier names a value already
+// in scope it is a value reference, so the brace group is a hash default rather
+// than a shape type. This mirrors identAfterColonStartsExpression and
+// identLessThanStartsExpression, which already treat a bare identifier naming a
+// local value as the head of a default expression.
+//
+// The check targets bare enum atoms only. A union field (`{ x: a | b }`) stays
+// a type because `|` continues a type annotation, and an identifier appearing
+// as a generic type argument (`{ x: array<a> }`) is a genuine type, matching how
+// those forms are disambiguated outside shapes.
+func (p *parser) shapeFieldNamesLocalValue(ty *ast.TypeExpr) bool {
+	if ty == nil || ty.Kind != ast.TypeShape {
+		return false
+	}
+	for _, fieldType := range ty.Shape {
+		if fieldType == nil {
+			continue
+		}
+		if fieldType.Kind == ast.TypeEnum && p.isLocalName(fieldType.Name) {
+			return true
+		}
+		if p.shapeFieldNamesLocalValue(fieldType) {
+			return true
+		}
+	}
+	return false
 }
 
 // shapeHasDegenerateNilField reports whether ty is a shape type with a field

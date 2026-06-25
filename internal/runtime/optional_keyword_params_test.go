@@ -189,6 +189,10 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
       b[:sum]
     end
 
+    def bare_chained_hash(a:, b: { sum: a })
+      b[:sum]
+    end
+
     def nil_field_default(opts: { previous: nil })
       opts[:previous] == nil
     end
@@ -225,6 +229,20 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
 		})
 		if !got.Equal(NewInt(3)) {
 			t.Fatalf("chained_hash(a: 2) = %#v, want 3", got)
+		}
+	})
+
+	// A bare identifier hash value (no trailing operator) referencing an earlier
+	// keyword parameter must still bind as a hash default rather than being
+	// misclassified as a positional shape annotation. Matches Ruby:
+	// `def g(a:, b: { sum: a }); b; end; g(a: 2) # => {sum: 2}`.
+	t.Run("bare_ident_hash_default_references_earlier_keyword", func(t *testing.T) {
+		t.Parallel()
+		got := callScript(t, context.Background(), script, "bare_chained_hash", nil, CallOptions{
+			Keywords: map[string]Value{"a": NewInt(2)},
+		})
+		if !got.Equal(NewInt(2)) {
+			t.Fatalf("bare_chained_hash(a: 2) = %#v, want 2", got)
 		}
 	})
 
