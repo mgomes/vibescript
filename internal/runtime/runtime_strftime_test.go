@@ -108,8 +108,12 @@ func TestStrftimeDirectives(t *testing.T) {
 		{name: "unknown colon directive", tm: utc, format: "%:q", want: "%:q"},
 		{name: "unknown double colon directive", tm: utc, format: "%::q", want: "%::q"},
 		{name: "unknown directive with flags and width", tm: utc, format: "%-^6Q", want: "%-^6Q"},
-		// Three or more colons on %z has no useful meaning and passes through.
-		{name: "triple colon offset passes through", tm: plus, format: "%:::z", want: "%:::z"},
+		// %:::z is Ruby's compact offset: it drops trailing all-zero components.
+		{name: "compact offset hours and minutes", tm: plus, format: "%:::z", want: "+05:30"},
+		{name: "compact offset minutes only", tm: minus, format: "%:::z", want: "-04"},
+		{name: "compact offset utc", tm: utc, format: "%:::z", want: "+00"},
+		// Four or more colons on %z has no useful meaning and passes through.
+		{name: "quadruple colon offset passes through", tm: plus, format: "%::::z", want: "%::::z"},
 
 		// Combined real-world layout.
 		{name: "combined layout", tm: plus, format: "%Y-%m-%d %H:%M:%S %z", want: "2024-01-02 03:04:05 +0530"},
@@ -188,10 +192,19 @@ func TestStrftimeFlagsAndWidth(t *testing.T) {
 		// Width with space padding on a numeric directive.
 		{name: "space width day", tm: utc, format: "%_6d", want: "     2"},
 
-		// Repeated padding flags: the last one wins.
+		// Repeated padding flags: the last of _/0 wins, but - sticks once seen.
 		{name: "repeated minus", tm: utc, format: "%--d", want: "2"},
 		{name: "repeated zero", tm: utc, format: "%00d", want: "02"},
-		{name: "zero then minus", tm: utc, format: "%0-d", want: "2"},
+		{name: "underscore then zero last wins", tm: utc, format: "%_0d", want: "02"},
+		{name: "zero then underscore last wins", tm: utc, format: "%0_d", want: " 2"},
+
+		// - is no-padding whenever it appears, even before a later _ or 0 flag.
+		{name: "minus then zero stays unpadded", tm: utc, format: "%-0d", want: "2"},
+		{name: "minus then underscore stays unpadded", tm: utc, format: "%-_d", want: "2"},
+		{name: "zero then minus stays unpadded", tm: utc, format: "%0-d", want: "2"},
+		{name: "underscore then minus stays unpadded", tm: utc, format: "%_-d", want: "2"},
+		{name: "minus then zero then underscore stays unpadded", tm: utc, format: "%-0_d", want: "2"},
+		{name: "zero then underscore then minus stays unpadded", tm: utc, format: "%0_-d", want: "2"},
 
 		// ^ uppercases name directives.
 		{name: "upper month full", tm: utc, format: "%^B", want: "JANUARY"},
@@ -207,6 +220,18 @@ func TestStrftimeFlagsAndWidth(t *testing.T) {
 		{name: "toggle meridian upper lowercases", tm: utc, format: "%#p", want: "am"},
 		{name: "toggle meridian lower uppercases", tm: utc, format: "%#P", want: "AM"},
 		{name: "toggle zone lowercases", tm: utc, format: "%#Z", want: "utc"},
+
+		// Combined ^ and # are not last-wins: # toggles the value regardless of
+		// flag order, so an all-uppercase value lowercases (%#^p -> "am").
+		{name: "toggle then upper meridian toggles", tm: utc, format: "%#^p", want: "am"},
+		{name: "upper then toggle meridian toggles", tm: utc, format: "%^#p", want: "am"},
+		{name: "toggle then upper zone toggles", tm: utc, format: "%#^Z", want: "utc"},
+		{name: "upper then toggle zone toggles", tm: utc, format: "%^#Z", want: "utc"},
+		{name: "toggle then upper month uppercases", tm: utc, format: "%#^B", want: "JANUARY"},
+		{name: "upper then toggle month uppercases", tm: utc, format: "%^#B", want: "JANUARY"},
+		// Repeated case flags do not change the outcome: # still wins over ^.
+		{name: "interleaved case flags toggle", tm: utc, format: "%^#^p", want: "am"},
+		{name: "interleaved case flags toggle reversed", tm: utc, format: "%#^#p", want: "am"},
 
 		// Case flags have no visible effect on numeric directives.
 		{name: "upper day is numeric noop", tm: utc, format: "%^d", want: "02"},
@@ -251,6 +276,10 @@ func TestStrftimeFlagsAndWidth(t *testing.T) {
 		{name: "toggle ctime is inert", tm: utc, format: "%#c", want: "Tue Jan  2 03:04:05 2024"},
 		{name: "upper twelve hour clock", tm: utc, format: "%^r", want: "03:04:05 AM"},
 		{name: "minus on compound is inert", tm: utc, format: "%-F", want: "2024-01-02"},
+		// With both case flags on a compound, ^ still propagates uppercase even
+		// though # never reaches the expansion.
+		{name: "toggle then upper ctime propagates upper", tm: utc, format: "%#^c", want: "TUE JAN  2 03:04:05 2024"},
+		{name: "upper then toggle ctime propagates upper", tm: utc, format: "%^#c", want: "TUE JAN  2 03:04:05 2024"},
 
 		// Width pads a compound directive's expansion as a single field: space
 		// by default, zeros with the 0 flag, and - is ignored (like %z).
@@ -270,6 +299,75 @@ func TestStrftimeFlagsAndWidth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := strftime(tc.tm, tc.format)
+			if err != nil {
+				t.Fatalf("strftime(%q) returned error: %v", tc.format, err)
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("strftime(%q) mismatch (-want +got):\n%s", tc.format, diff)
+			}
+		})
+	}
+}
+
+// TestStrftimeBCEYears pins the year directives for BCE (negative) years that
+// Time.utc accepts. Ruby pads %Y to a four-digit magnitude after the sign
+// ("-0001"), so compounds like %F inherit the full year, %C floors toward
+// negative infinity rather than truncating toward zero, and %y stays the
+// non-negative remainder. Every expected value was captured from MRI Ruby's
+// Time#strftime so the table doubles as a parity record.
+func TestStrftimeBCEYears(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		year   int
+		format string
+		want   string
+	}{
+		// %Y pads the magnitude to four digits after the sign, regardless of how
+		// many century digits the year has.
+		{name: "year minus one", year: -1, format: "%Y", want: "-0001"},
+		{name: "year minus nine", year: -9, format: "%Y", want: "-0009"},
+		{name: "year minus fifty", year: -50, format: "%Y", want: "-0050"},
+		{name: "year minus ninety nine", year: -99, format: "%Y", want: "-0099"},
+		{name: "year minus one hundred", year: -100, format: "%Y", want: "-0100"},
+		{name: "year minus one hundred one", year: -101, format: "%Y", want: "-0101"},
+		{name: "year minus full width", year: -2024, format: "%Y", want: "-2024"},
+		{name: "year minus five digits", year: -12345, format: "%Y", want: "-12345"},
+
+		// %F (and the other compounds) inherit the full BCE year width.
+		{name: "iso date minus one", year: -1, format: "%F", want: "-0001-01-01"},
+
+		// An explicit width is a total field width counting the sign.
+		{name: "year width five", year: -1, format: "%5Y", want: "-0001"},
+		{name: "year width four", year: -1, format: "%4Y", want: "-001"},
+		{name: "year width six", year: -1, format: "%6Y", want: "-00001"},
+		{name: "year minus flag drops padding", year: -1, format: "%-Y", want: "-1"},
+		{name: "year space flag pads before sign", year: -1, format: "%_Y", want: "   -1"},
+
+		// %C floors toward negative infinity, so -1..-99 round to century -1 and
+		// the boundary at -100/-101 steps to -1/-2.
+		{name: "century minus one", year: -1, format: "%C", want: "-1"},
+		{name: "century minus fifty", year: -50, format: "%C", want: "-1"},
+		{name: "century minus ninety nine", year: -99, format: "%C", want: "-1"},
+		{name: "century minus one hundred", year: -100, format: "%C", want: "-1"},
+		{name: "century minus one hundred one", year: -101, format: "%C", want: "-2"},
+		{name: "century minus full width", year: -2024, format: "%C", want: "-21"},
+		{name: "century minus five digits", year: -12345, format: "%C", want: "-124"},
+
+		// %y is the non-negative year-within-century remainder.
+		{name: "year in century minus one", year: -1, format: "%y", want: "99"},
+		{name: "year in century minus fifty", year: -50, format: "%y", want: "50"},
+		{name: "year in century minus ninety nine", year: -99, format: "%y", want: "01"},
+		{name: "year in century minus one hundred", year: -100, format: "%y", want: "00"},
+		{name: "year in century minus full width", year: -2024, format: "%y", want: "76"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tm := time.Date(tc.year, 1, 1, 0, 0, 0, 0, time.UTC)
+			got, err := strftime(tm, tc.format)
 			if err != nil {
 				t.Fatalf("strftime(%q) returned error: %v", tc.format, err)
 			}

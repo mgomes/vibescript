@@ -3,7 +3,8 @@
   alongside the existing Go-layout `Time#format`. The supported directive subset
   covers year/month/day, 12- and 24-hour time, minute/second, sub-second
   (`%L`, `%N`, and widths like `%6N`), weekday and month names, weekday numbers
-  (`%w`/`%u`), epoch seconds (`%s`), UTC offset (`%z`, `%:z`, `%::z`), zone name
+  (`%w`/`%u`), epoch seconds (`%s`), UTC offset (`%z`, `%:z`, `%::z`, and the
+  `%:::z` compact form), zone name
   (`%Z`), the `%n`/`%t`/`%%` escapes, and the compound shortcuts
   `%F`/`%T`/`%X`/`%R`/`%D`/`%x`/`%r`/`%c`. Directives honor Ruby's flags and
   width between the `%` and the letter: `-` (no padding), `_` (space padding),

@@ -15,13 +15,17 @@ import (
 //
 //	flags  any mix of - (omit padding), _ (pad with spaces), 0 (pad with
 //	       zeros), ^ (uppercase the result), and # (toggle case: lowercase an
-//	       all-uppercase result, otherwise uppercase it). The last padding flag
-//	       (-, _, 0) wins; a case flag combines with it.
+//	       all-uppercase result, otherwise uppercase it). Among the padding flags
+//	       - sticks once seen, so it wins over a later _ or 0 (%-0d -> "2");
+//	       otherwise the last of _ or 0 wins. The case flags are not last-wins:
+//	       when # is present it toggles the value (%#^p -> "am"), while ^ -- on
+//	       its own or inherited from a compound -- uppercases it.
 //	width  an optional decimal minimum field width. Ruby honors a width on
 //	       every numeric and name directive, not just %N, so %6Y -> "002024"
 //	       and %^10B -> "   JANUARY".
-//	colons  one or two leading colons, accepted only by %z to widen the offset
-//	       punctuation (%:z -> +09:00, %::z -> +09:00:00).
+//	colons  one to three leading colons, accepted only by %z to widen the offset
+//	       punctuation (%:z -> +09:00, %::z -> +09:00:00, %:::z -> the compact
+//	       form that drops trailing all-zero components, e.g. +09).
 //
 // Compound directives (%F, %T, %X, %R, %D, %x, %r, %c) expand a fixed
 // sub-format. The ^ flag propagates into the expansion (%^c uppercases the
@@ -30,8 +34,10 @@ import (
 //
 // Supported directives mirror Ruby's output for the common subset:
 //
-//	%Y  year, zero-padded to at least four digits (e.g. 2024)
-//	%C  century (year / 100), zero-padded to two digits
+//	%Y  year; the default minimum of four counts magnitude digits only, so a BCE
+//	    year keeps four digits after the sign (e.g. 2024, -0001)
+//	%C  century (year floor-divided by 100), zero-padded to two digits; a BCE
+//	    century floors toward negative infinity (year -1 -> "-1")
 //	%y  year within century, zero-padded to two digits (00..99)
 //	%m  month of year, zero-padded (01..12)
 //	%d  day of month, zero-padded (01..31)
@@ -55,8 +61,9 @@ import (
 //	%w  day of week, Sunday is 0 (0..6)
 //	%u  day of week, Monday is 1 (1..7)
 //	%s  seconds since the Unix epoch
-//	%z  time zone offset from UTC (e.g. +0900); %:z inserts a colon (+09:00)
-//	    and %::z adds seconds (+09:00:00)
+//	%z  time zone offset from UTC (e.g. +0900); %:z inserts a colon (+09:00),
+//	    %::z adds seconds (+09:00:00), and %:::z is the compact form that drops
+//	    trailing all-zero components (+09, +05:30, +05:30:15)
 //	%Z  time zone name (matching Time#zone)
 //	%n  newline; %t  tab; %%  a literal percent sign
 //	%F  shorthand for %Y-%m-%d
@@ -79,11 +86,12 @@ import (
 // space-padded offset renders a quirky, lossy form (%_z -> " +530"); Vibescript
 // keeps the offset intact rather than reproducing that degenerate behavior.
 func strftime(t time.Time, format string) (string, error) {
-	return strftimeCase(t, format, caseNone)
+	return strftimeCase(t, format, false)
 }
 
-// caseFlag captures the case transformation requested by the ^ and # flags so a
-// compound directive can propagate it into its sub-format the way Ruby does.
+// caseFlag captures the case transformation applied to a directive's rendered
+// value. It collapses the ^ and # flags into a single decision so applyCase can
+// share one switch across directives.
 type caseFlag int
 
 const (
@@ -92,11 +100,11 @@ const (
 	caseToggle                 // # : lowercase all-uppercase results, else uppercase
 )
 
-// strftimeCase renders format, applying inherited as the default case
-// transformation for every directive. Top-level rendering passes caseNone;
-// compound directives pass their own ^/# flag down so it reaches the nested
-// name directives, matching Ruby's %^c -> "TUE JAN  2 ...".
-func strftimeCase(t time.Time, format string, inherited caseFlag) (string, error) {
+// strftimeCase renders format. inheritedUpper carries the ^ flag down from a
+// compound directive so it uppercases the nested name directives, matching
+// Ruby's %^c -> "TUE JAN  2 ...". The # flag never propagates into a compound,
+// so it has no inherited counterpart.
+func strftimeCase(t time.Time, format string, inheritedUpper bool) (string, error) {
 	var b strings.Builder
 	b.Grow(len(format) + 16)
 
@@ -113,7 +121,7 @@ func strftimeCase(t time.Time, format string, inherited caseFlag) (string, error
 			return "", fmt.Errorf("time.strftime invalid format: %q", format)
 		}
 
-		if out, recognized := renderStrftimeDirective(t, token, inherited); recognized {
+		if out, recognized := renderStrftimeDirective(t, token, inheritedUpper); recognized {
 			b.WriteString(out)
 		} else {
 			// Unknown directive: emit the percent sequence verbatim like Ruby.
@@ -136,10 +144,11 @@ type strftimeToken struct {
 	colons    int
 	directive byte
 
-	noPad     bool     // - flag: omit padding entirely
-	spacePad  bool     // _ flag: pad with spaces
-	zeroPad   bool     // 0 flag: pad with zeros
-	caseShift caseFlag // ^ or # flag
+	noPad    bool // - flag: omit padding entirely
+	spacePad bool // _ flag: pad with spaces
+	zeroPad  bool // 0 flag: pad with zeros
+	upper    bool // ^ flag: uppercase the result
+	toggle   bool // # flag: lowercase all-uppercase results, else uppercase
 }
 
 // scanStrftimeDirective reads the directive that begins at the percent sign at
@@ -155,15 +164,17 @@ func scanStrftimeDirective(format string, start int) (strftimeToken, bool) {
 	for j < len(format) {
 		switch format[j] {
 		case '-':
-			tok.noPad, tok.spacePad, tok.zeroPad = true, false, false
+			// Ruby treats - as no-padding whenever it appears in the flag set, so
+			// it sticks even when a later _ or 0 padding flag follows (%-0d -> "2").
+			tok.noPad = true
 		case '_':
-			tok.noPad, tok.spacePad, tok.zeroPad = false, true, false
+			tok.spacePad, tok.zeroPad = true, false
 		case '0':
-			tok.noPad, tok.spacePad, tok.zeroPad = false, false, true
+			tok.spacePad, tok.zeroPad = false, true
 		case '^':
-			tok.caseShift = caseUpper
+			tok.upper = true
 		case '#':
-			tok.caseShift = caseToggle
+			tok.toggle = true
 		default:
 			goto flagsDone
 		}
@@ -203,6 +214,7 @@ type strftimeFieldKind int
 
 const (
 	fieldNumeric  strftimeFieldKind = iota // width is a minimum field width
+	fieldYear                              // %Y: default width counts digits only
 	fieldName                              // width pads, ^/# transform case
 	fieldSubsec                            // width is the fractional digit count
 	fieldLiteral                           // single literal byte, width pads
@@ -214,13 +226,11 @@ const (
 // the directive is not part of the supported subset (or carries colon modifiers
 // the directive does not accept), signaling the caller to emit the source
 // verbatim.
-func renderStrftimeDirective(t time.Time, tok strftimeToken, inherited caseFlag) (out string, recognized bool) {
-	// Only %z reads colon modifiers, and only one (%:z) or two (%::z) of them;
-	// any other directive carrying a colon, or %z with three or more, is an
-	// unknown sequence emitted verbatim. (Ruby's handling of three-plus colons is
-	// inconsistent quirk territory with no useful meaning, so Vibescript passes
-	// those through uniformly rather than reproducing it.)
-	if tok.colons != 0 && (tok.directive != 'z' || tok.colons > 2) {
+func renderStrftimeDirective(t time.Time, tok strftimeToken, inheritedUpper bool) (out string, recognized bool) {
+	// Only %z reads colon modifiers, and only one (%:z), two (%::z), or three
+	// (%:::z) of them; any other directive carrying a colon, or %z with four or
+	// more, is an unknown sequence emitted verbatim like Ruby.
+	if tok.colons != 0 && (tok.directive != 'z' || tok.colons > 3) {
 		return "", false
 	}
 
@@ -229,21 +239,23 @@ func renderStrftimeDirective(t time.Time, tok strftimeToken, inherited caseFlag)
 		return "", false
 	}
 
-	shift := tok.caseShift
-	if shift == caseNone {
-		shift = inherited
-	}
+	shift := directiveCase(tok, inheritedUpper)
 
 	switch kind {
 	case fieldCompound:
 		// value holds the compound directive's sub-format. The case flag is
-		// applied by expanding the sub-format with the propagated shift rather
+		// applied by expanding the sub-format with the propagated ^ flag rather
 		// than transforming the rendered string, matching Ruby: %^c uppercases
-		// the nested names while the # flag does not reach into a compound at
-		// all (so it is filtered out before recursing). The expanded result is
-		// then padded to the requested width as a single field.
-		expanded := mustStrftime(t, value, compoundShift(shift))
+		// the nested names while the # flag does not reach into a compound at all
+		// (so it never propagates). The expanded result is then padded to the
+		// requested width as a single field.
+		expanded := mustStrftime(t, value, tok.upper || inheritedUpper)
 		return padCompound(expanded, tok), true
+	case fieldYear:
+		// %Y's default minimum width counts magnitude digits only, so a BCE year
+		// renders as "-0001" (sign plus four digits), while an explicit width is a
+		// total field width counting the sign (%5Y of -1 -> "-0001", %4Y -> "-001").
+		return applyCase(padYear(value, tok), shift), true
 	case fieldSubsec:
 		// %L/%N already encode width as digit count; only case applies.
 		return applyCase(value, shift), true
@@ -254,15 +266,20 @@ func renderStrftimeDirective(t time.Time, tok strftimeToken, inherited caseFlag)
 	}
 }
 
-// compoundShift filters the case transformation propagated into a compound
-// directive's sub-format. Ruby's ^ (uppercase) flag flows into the expansion,
-// but its # (toggle) flag does not, so a toggle becomes a no-op for nested
-// directives.
-func compoundShift(shift caseFlag) caseFlag {
-	if shift == caseUpper {
+// directiveCase resolves the case transformation for a single directive from its
+// ^ (upper) and # (toggle) flags plus any ^ inherited from an enclosing compound.
+// Ruby's combined-flag behavior is not last-wins: when # is present it toggles
+// the value (%#^p -> "am"); otherwise ^ — whether on the directive or inherited
+// from a compound — uppercases it.
+func directiveCase(tok strftimeToken, inheritedUpper bool) caseFlag {
+	switch {
+	case tok.toggle:
+		return caseToggle
+	case tok.upper || inheritedUpper:
 		return caseUpper
+	default:
+		return caseNone
 	}
-	return caseNone
 }
 
 // strftimeField resolves a directive to its rendered value, default pad
@@ -272,9 +289,9 @@ func compoundShift(shift caseFlag) caseFlag {
 func strftimeField(t time.Time, tok strftimeToken) (value string, padChar byte, defaultWidth int, kind strftimeFieldKind, ok bool) {
 	switch tok.directive {
 	case 'Y':
-		return strftimeYear(t.Year()), '0', 4, fieldNumeric, true
+		return strftimeYear(t.Year()), '0', 4, fieldYear, true
 	case 'C':
-		return strconv.Itoa(t.Year() / 100), '0', 2, fieldNumeric, true
+		return strconv.Itoa(floorDiv(t.Year(), 100)), '0', 2, fieldNumeric, true
 	case 'y':
 		return strconv.Itoa(((t.Year() % 100) + 100) % 100), '0', 2, fieldNumeric, true
 	case 'm':
@@ -394,6 +411,42 @@ func padOffset(value string, tok strftimeToken) string {
 	return strings.Repeat("0", tok.width-len(value)) + value
 }
 
+// padYear pads a %Y value, reproducing Ruby's split width semantics: an explicit
+// width is a total field width that counts the sign, while the default minimum of
+// four counts only the magnitude digits, so a BCE year keeps four digits after
+// the sign (%Y of -1 -> "-0001"). The zero pad (default or 0 flag) goes after the
+// sign; the space pad (_ flag) goes before the whole value; the - flag drops
+// padding entirely.
+func padYear(value string, tok strftimeToken) string {
+	if tok.noPad {
+		return value
+	}
+
+	sign, digits := "", value
+	if len(value) > 0 && (value[0] == '+' || value[0] == '-') {
+		sign, digits = value[:1], value[1:]
+	}
+
+	if tok.hasWidth {
+		if len(value) >= tok.width {
+			return value
+		}
+		if tok.spacePad {
+			return strings.Repeat(" ", tok.width-len(value)) + value
+		}
+		return sign + strings.Repeat("0", tok.width-len(value)) + digits
+	}
+
+	const minDigits = 4
+	if len(digits) >= minDigits {
+		return value
+	}
+	if tok.spacePad {
+		return strings.Repeat(" ", minDigits-len(digits)) + value
+	}
+	return sign + strings.Repeat("0", minDigits-len(digits)) + digits
+}
+
 // padCompound pads an expanded compound directive (e.g. %F, %T) to its width.
 // Ruby pads the whole expansion as one field with spaces, or zeros under the 0
 // flag, and ignores the - and _ flags here (so %-12F still space-pads), the same
@@ -464,6 +517,17 @@ func strftimeYear(year int) string {
 	return strconv.Itoa(year)
 }
 
+// floorDiv returns the floored quotient of a/b, rounding toward negative
+// infinity rather than toward zero like Go's / operator. %C uses it so a BCE
+// century floors to Ruby's value (year -1 -> century -1, not Go's 0).
+func floorDiv(a, b int) int {
+	q := a / b
+	if (a%b != 0) && ((a < 0) != (b < 0)) {
+		q--
+	}
+	return q
+}
+
 // strftimeSubsec renders the fractional-second component to exactly width
 // digits, truncating beyond nanosecond resolution and zero-padding past it.
 // This backs %L (default width 3) and %N (default width 9).
@@ -480,7 +544,9 @@ func strftimeSubsec(nanos, width int) string {
 
 // strftimeOffset renders the UTC offset for %z. colons selects the punctuation:
 // 0 yields +HHMM, 1 yields +HH:MM, and 2 yields +HH:MM:SS, matching Ruby's %z,
-// %:z, and %::z.
+// %:z, and %::z. colons == 3 renders Ruby's %:::z compact form, which drops the
+// trailing all-zero components: +05:30:15 stays +05:30:15, +05:30:00 collapses
+// to +05:30, and +00:00:00 collapses to +00.
 func strftimeOffset(t time.Time, colons int) string {
 	_, offset := t.Zone()
 	sign := "+"
@@ -496,6 +562,15 @@ func strftimeOffset(t time.Time, colons int) string {
 		return fmt.Sprintf("%s%02d:%02d", sign, h, m)
 	case 2:
 		return fmt.Sprintf("%s%02d:%02d:%02d", sign, h, m, s)
+	case 3:
+		switch {
+		case s != 0:
+			return fmt.Sprintf("%s%02d:%02d:%02d", sign, h, m, s)
+		case m != 0:
+			return fmt.Sprintf("%s%02d:%02d", sign, h, m)
+		default:
+			return fmt.Sprintf("%s%02d", sign, h)
+		}
 	default:
 		return fmt.Sprintf("%s%02d%02d", sign, h, m)
 	}
@@ -535,12 +610,12 @@ func isoWeekday(wd time.Weekday) int {
 }
 
 // mustStrftime expands a compound directive's fixed sub-format, propagating the
-// case flag the compound directive carried. The sub-formats are literal and
-// contain only supported single-byte directives, so strftime cannot return an
-// error here; a non-nil error would indicate a programming mistake in a
-// compound directive definition.
-func mustStrftime(t time.Time, format string, shift caseFlag) string {
-	out, err := strftimeCase(t, format, shift)
+// ^ flag (inheritedUpper) the compound directive carried. The sub-formats are
+// literal and contain only supported single-byte directives, so strftime cannot
+// return an error here; a non-nil error would indicate a programming mistake in
+// a compound directive definition.
+func mustStrftime(t time.Time, format string, inheritedUpper bool) string {
+	out, err := strftimeCase(t, format, inheritedUpper)
 	if err != nil {
 		panic(fmt.Sprintf("runtime: invalid compound strftime directive %q: %v", format, err))
 	}
