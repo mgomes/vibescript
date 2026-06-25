@@ -17,6 +17,11 @@
   targets after the rest fill from left to right and pad with `nil` on the
   right, matching Ruby. For example, `a, *, y, z = [1, 2]` now yields `a = 1`,
   `y = 2`, `z = nil` instead of reversing the trailing values.
+- **Fixed: destructuring now snapshots the right-hand side before assigning.**
+  When a target writes back into the source array, later targets read the
+  original values rather than the mutated ones, matching Ruby's whole-RHS
+  evaluation. For example, `values = [1, 2, 3]; values[1], *rest = values` now
+  binds `rest` to `[2, 3]` (the original snapshot) instead of `[1, 3]`.
 - **Fixed: a splat-assignment that begins a line after a continuable
   expression now parses as its own statement.** A line that opens with `*` and
   forms a destructuring left-hand side, such as `*, last = values` or

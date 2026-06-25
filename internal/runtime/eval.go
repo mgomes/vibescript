@@ -1047,6 +1047,17 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value
 // invokes assign for each concrete leaf target.
 func AssignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
 	values := destructureValues(value)
+	// Ruby evaluates the whole right-hand side into an array before performing
+	// any assignment, so every target reads its original value regardless of
+	// LHS write order. When the RHS is an array, destructureValues aliases its
+	// live backing store, so a target that writes into that array (e.g.
+	// "values[1], *rest = values") would otherwise let later reads observe the
+	// mutation. Snapshot the source up front whenever a target can write back,
+	// but keep the alias on the common case where every target only binds a name
+	// (and the scalar RHS path, which already returns a fresh slice).
+	if value.Kind() == KindArray && destructureTargetWrites(target) {
+		values = append([]Value(nil), values...)
+	}
 	restIndex := -1
 	for i, element := range target.Elements {
 		if element.Rest {
@@ -1117,6 +1128,29 @@ func destructureValues(value Value) []Value {
 		return value.Array()
 	}
 	return []Value{value}
+}
+
+// destructureTargetWrites reports whether any leaf of the target list assigns
+// into an existing container (an index or member place) rather than binding a
+// fresh name. Such targets can mutate the right-hand side array when it is
+// aliased into the binding (e.g. "values[1], *rest = values"), so the caller
+// must snapshot the source before assigning. Plain identifiers, ivars, and
+// class vars write to environment or instance slots that never alias the RHS
+// array's backing store, so they need no snapshot.
+func destructureTargetWrites(target *DestructureTarget) bool {
+	for _, element := range target.Elements {
+		switch leaf := element.Target.(type) {
+		case nil:
+			// Anonymous rest target ("*"): discards its window, never writes.
+		case *IndexExpr, *MemberExpr:
+			return true
+		case *DestructureTarget:
+			if destructureTargetWrites(leaf) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func valueAt(values []Value, index int) Value {

@@ -449,6 +449,112 @@ func TestAssignDestructureNamedRestCopiesWindow(t *testing.T) {
 	compareArrays(t, bound, []Value{NewInt(2), NewInt(3)})
 }
 
+func TestParallelAssignmentSnapshotsSourceBeforeLHSWrites(t *testing.T) {
+	t.Parallel()
+
+	// Ruby evaluates the right-hand side into an array before performing any
+	// assignment, so a target that writes back into the source array must not be
+	// visible to later reads. Each expectation was confirmed against the
+	// reference Ruby implementation (e.g. `v = [1,2,3]; v[1], *rest = v` yields
+	// rest == [2, 3], the original snapshot, not [1, 3] from the mutated array).
+	tests := []struct {
+		name   string
+		body   string
+		result string
+		want   []Value
+	}{
+		{
+			name:   "named rest after index write",
+			body:   "v = [1, 2, 3]\n  v[1], *rest = v",
+			result: "[v, rest]",
+			want: []Value{
+				NewArray([]Value{NewInt(1), NewInt(1), NewInt(3)}),
+				NewArray([]Value{NewInt(2), NewInt(3)}),
+			},
+		},
+		{
+			name:   "fixed target after index write",
+			body:   "v = [1, 2, 3]\n  v[1], y = v",
+			result: "[v, y]",
+			want: []Value{
+				NewArray([]Value{NewInt(1), NewInt(1), NewInt(3)}),
+				NewInt(2),
+			},
+		},
+		{
+			name:   "trailing fixed target after index write",
+			body:   "v = [10, 20, 30]\n  v[2], *r = v",
+			result: "[v, r]",
+			want: []Value{
+				NewArray([]Value{NewInt(10), NewInt(20), NewInt(10)}),
+				NewArray([]Value{NewInt(20), NewInt(30)}),
+			},
+		},
+		{
+			name:   "leading rest then index write of trailing slot",
+			body:   "v = [1, 2, 3, 4]\n  *rest, v[0], last = v",
+			result: "[v, rest, last]",
+			want: []Value{
+				NewArray([]Value{NewInt(3), NewInt(2), NewInt(3), NewInt(4)}),
+				NewArray([]Value{NewInt(1), NewInt(2)}),
+				NewInt(4),
+			},
+		},
+		{
+			name:   "anonymous rest with index write of trailing",
+			body:   "v = [5, 6, 7, 8]\n  v[3], *, last = v",
+			result: "[v, last]",
+			want: []Value{
+				NewArray([]Value{NewInt(5), NewInt(6), NewInt(7), NewInt(5)}),
+				NewInt(8),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, "def run\n  "+tt.body+"\n  "+tt.result+"\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
+func TestAssignDestructureSnapshotsSourceForWritingTargets(t *testing.T) {
+	t.Parallel()
+
+	// Drive AssignDestructure directly to prove the snapshot guards against an
+	// index target that mutates the very array supplied as the value. The rest
+	// binding must capture the original values, not the mutated source.
+	source := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+	index := &IndexExpr{}
+	rest := &Identifier{Name: "rest"}
+	target := &DestructureTarget{
+		Elements: []DestructureElement{
+			{Target: index},
+			{Target: rest, Rest: true},
+		},
+	}
+
+	var bound Value
+	assign := func(expr Expression, v Value) error {
+		switch expr {
+		case index:
+			// Simulate "source[0] = v" by mutating the live backing array.
+			source.Array()[0] = v
+		case rest:
+			bound = v
+		}
+		return nil
+	}
+	if err := AssignDestructure(target, source, assign); err != nil {
+		t.Fatalf("AssignDestructure returned error: %v", err)
+	}
+	compareArrays(t, bound, []Value{NewInt(2), NewInt(3)})
+}
+
 func TestParallelAssignmentNestedTargets(t *testing.T) {
 	t.Parallel()
 
