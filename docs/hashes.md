@@ -137,6 +137,22 @@ base.merge({ a: 1 })[:b]        # 0   (default preserved)
 base.select { |k, v| true }[:b] # nil (default dropped)
 ```
 
+A hash default is part of a hash's value type, because a missing-key lookup
+returns it. When a hash is passed where `hash<key, value>` is expected, the
+default value must itself match `value`, and the validated default travels with
+the normalized hash. A hash carrying a default proc is rejected, because the
+proc's result cannot be checked ahead of time.
+
+```vibe
+def totals(counts: hash<string, int>) -> int
+  counts[:missing]
+end
+
+totals(Hash.new(0))               # 0   (int default conforms)
+totals(Hash.new("oops"))          # error: argument counts expected hash<string, int>
+totals(Hash.new { |h, k| 1 })     # error: a default proc cannot be type-checked
+```
+
 ## Query helpers
 
 - `size` / `length`

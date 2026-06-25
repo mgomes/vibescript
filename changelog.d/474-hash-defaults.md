@@ -17,4 +17,8 @@
   capabilities, and functions against the current invocation rather than the
   stale environment it was created in, while still keeping any local variables
   the proc legitimately closed over (such as a parameter of the function that
-  built the hash).
+  built the hash). Because a missing-key lookup returns the default, the default
+  is part of a typed hash's value type: validating a hash against
+  `hash<key, value>` requires the default value to match `value` (the validated
+  default travels with the normalized hash) and rejects a hash carrying a default
+  proc, whose result cannot be type-checked.
