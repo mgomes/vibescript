@@ -5,7 +5,11 @@
   (`%L`, `%N`, and widths like `%6N`), weekday and month names, weekday numbers
   (`%w`/`%u`), epoch seconds (`%s`), UTC offset (`%z`, `%:z`, `%::z`), zone name
   (`%Z`), the `%n`/`%t`/`%%` escapes, and the compound shortcuts
-  `%F`/`%T`/`%X`/`%R`/`%D`/`%x`/`%r`/`%c`. Unknown directives pass through
-  verbatim like Ruby (`%Q` stays `%Q`), `%Z` mirrors `Time#zone` (so fixed-offset
+  `%F`/`%T`/`%X`/`%R`/`%D`/`%x`/`%r`/`%c`. Directives honor Ruby's flags and
+  width between the `%` and the letter: `-` (no padding), `_` (space padding),
+  `0` (zero padding), `^` (uppercase), and `#` (toggle case), with an optional
+  width applied to every numeric and name directive (so `%-d` is `2`, `%6Y` is
+  `002024`, and `%^B` is `JANUARY`). Unknown directives pass through verbatim
+  like Ruby (`%Q` stays `%Q`), `%Z` mirrors `Time#zone` (so fixed-offset
   receivers render their offset name rather than Ruby's empty string), and a
   trailing `%` (or a modifier with no directive) raises a clear runtime error.

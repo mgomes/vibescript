@@ -96,7 +96,34 @@ Supported directives cover the common subset:
 | `%n` `%t` `%%` | Newline, tab, literal percent | `\n` `\t` `%` |
 | `%F` `%T`/`%X` `%R` `%D`/`%x` `%r` `%c` | Compound date/time shortcuts | `2024-01-02` `03:04:05` `03:04` `01/02/24` `03:04:05 AM` `Tue Jan  2 03:04:05 2024` |
 
-`%N` accepts an optional digit width (`%3N`, `%6N`, `%9N`, …) selecting the number of fractional-second digits, truncating beyond nanosecond resolution and zero-padding past it. `%Z` mirrors `Time#zone`, so a fixed-offset receiver renders its offset name (`+05:30`) rather than Ruby's empty string. Unknown directives are passed through verbatim (`%Q` stays `%Q`), matching Ruby, but a format whose trailing `%` has no directive (or a modifier such as `%6`/`%:` with no directive) raises a runtime error.
+Directives accept Ruby's optional flags and width between the `%` and the directive letter, written as `%<flags><width><letter>`:
+
+| Flag | Effect | Example |
+| --- | --- | --- |
+| `-` | Omit padding | `%-d` → `2` |
+| `_` | Pad with spaces | `%_d` → ` 2` |
+| `0` | Pad with zeros (even for normally blank-padded directives) | `%0e` → `02` |
+| `^` | Uppercase the result | `%^B` → `JANUARY` |
+| `#` | Toggle case: lowercase an all-uppercase result, otherwise uppercase it | `%#p` → `am`, `%#B` → `JANUARY` |
+
+The width sets a minimum field width and applies to **every** numeric and name directive, not just `%N`:
+
+```vibe
+def strftime_flags
+  t = Time.utc(2024, 1, 2, 3, 4, 5)
+  {
+    day_no_pad:   t.strftime("%-d"),  # "2"
+    day_padded:   t.strftime("%03d"), # "002"
+    year_wide:    t.strftime("%6Y"),  # "002024"
+    month_upper:  t.strftime("%^B"),  # "JANUARY"
+    meridian_low: t.strftime("%#p")   # "am"
+  }
+end
+```
+
+`%N` and `%L` interpret the width as the number of fractional-second digits (`%3N`, `%6N`, `%9N`, …), truncating beyond nanosecond resolution and zero-padding past it. Compound directives expand a fixed sub-format: the `^` flag propagates into the expansion (`%^c` uppercases the nested names) while `#` does not, and a width pads the whole expansion as one field (`%12F` → `  2024-01-02`). The `%z` offset honors width with zero padding (`%6z` → `+00530`) but treats the `_` space-padding flag as a no-op, keeping the offset intact rather than reproducing Ruby's lossy space-padded form.
+
+`%Z` mirrors `Time#zone`, so a fixed-offset receiver renders its offset name (`+05:30`) rather than Ruby's empty string. Unknown directives are passed through verbatim (`%Q` stays `%Q`), matching Ruby, but a format whose trailing `%` has no directive (or a modifier such as `%6`/`%:` with no directive) raises a runtime error.
 
 `Time#to_s` uses RFC3339Nano. `Time#iso8601`, `Time#xmlschema`, and `Time#rfc3339` return RFC3339, defaulting to whole-second precision. `xmlschema` is an alias for `iso8601`.
 

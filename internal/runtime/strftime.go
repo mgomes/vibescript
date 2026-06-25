@@ -11,6 +11,23 @@ import (
 // directives. It backs Time#strftime, giving Ruby formatting code a familiar
 // API alongside Vibescript's Go-layout Time#format.
 //
+// A directive has the shape %<flags><width><colons><letter>, mirroring Ruby:
+//
+//	flags  any mix of - (omit padding), _ (pad with spaces), 0 (pad with
+//	       zeros), ^ (uppercase the result), and # (toggle case: lowercase an
+//	       all-uppercase result, otherwise uppercase it). The last padding flag
+//	       (-, _, 0) wins; a case flag combines with it.
+//	width  an optional decimal minimum field width. Ruby honors a width on
+//	       every numeric and name directive, not just %N, so %6Y -> "002024"
+//	       and %^10B -> "   JANUARY".
+//	colons  one or two leading colons, accepted only by %z to widen the offset
+//	       punctuation (%:z -> +09:00, %::z -> +09:00:00).
+//
+// Compound directives (%F, %T, %X, %R, %D, %x, %r, %c) expand a fixed
+// sub-format. The ^ flag propagates into the expansion (%^c uppercases the
+// nested names) while the # flag does not, matching Ruby. A width pads the whole
+// expansion as one field (%12F -> "  2024-01-02", %012F -> "002024-01-02").
+//
 // Supported directives mirror Ruby's output for the common subset:
 //
 //	%Y  year, zero-padded to at least four digits (e.g. 2024)
@@ -56,7 +73,30 @@ import (
 // "%" and "%6" cases but happens to pass "%:" through; Vibescript treats every
 // modifier-without-directive uniformly as malformed rather than reproducing
 // Ruby's per-modifier quirks for that degenerate input.
+//
+// One narrow divergence: the %z offset honors width with zero/default padding
+// (%6z -> "+00530") but treats the _ space-padding flag as a no-op. Ruby's
+// space-padded offset renders a quirky, lossy form (%_z -> " +530"); Vibescript
+// keeps the offset intact rather than reproducing that degenerate behavior.
 func strftime(t time.Time, format string) (string, error) {
+	return strftimeCase(t, format, caseNone)
+}
+
+// caseFlag captures the case transformation requested by the ^ and # flags so a
+// compound directive can propagate it into its sub-format the way Ruby does.
+type caseFlag int
+
+const (
+	caseNone   caseFlag = iota // leave the rendered value unchanged
+	caseUpper                  // ^ : uppercase the whole result
+	caseToggle                 // # : lowercase all-uppercase results, else uppercase
+)
+
+// strftimeCase renders format, applying inherited as the default case
+// transformation for every directive. Top-level rendering passes caseNone;
+// compound directives pass their own ^/# flag down so it reaches the nested
+// name directives, matching Ruby's %^c -> "TUE JAN  2 ...".
+func strftimeCase(t time.Time, format string, inherited caseFlag) (string, error) {
 	var b strings.Builder
 	b.Grow(len(format) + 16)
 
@@ -73,7 +113,7 @@ func strftime(t time.Time, format string) (string, error) {
 			return "", fmt.Errorf("time.strftime invalid format: %q", format)
 		}
 
-		if out, recognized := renderStrftimeDirective(t, token); recognized {
+		if out, recognized := renderStrftimeDirective(t, token, inherited); recognized {
 			b.WriteString(out)
 		} else {
 			// Unknown directive: emit the percent sequence verbatim like Ruby.
@@ -86,33 +126,66 @@ func strftime(t time.Time, format string) (string, error) {
 }
 
 // strftimeToken captures one parsed percent directive: the full source slice
-// (e.g. "%6N", "%:z", "%%"), the optional numeric width preceding the directive
-// byte (used by %N), the count of leading colon modifiers (used by %z), and the
-// terminating directive byte itself.
+// (e.g. "%6N", "%:z", "%-^10B"), the parsed flags, the optional numeric width,
+// the count of leading colon modifiers (used by %z), and the terminating
+// directive byte itself.
 type strftimeToken struct {
 	source    string
-	width     string
+	hasWidth  bool
+	width     int
 	colons    int
 	directive byte
+
+	noPad     bool     // - flag: omit padding entirely
+	spacePad  bool     // _ flag: pad with spaces
+	zeroPad   bool     // 0 flag: pad with zeros
+	caseShift caseFlag // ^ or # flag
 }
 
 // scanStrftimeDirective reads the directive that begins at the percent sign at
-// index start. It consumes an optional numeric width (for %N), then optional
-// colon modifiers (for %z), then the directive byte. It returns ok=false when
-// the percent sequence reaches the end of the format before a directive byte
-// (e.g. a bare trailing "%" or "%6"), which Ruby rejects as an invalid format.
+// index start. It consumes any flag bytes, an optional decimal width, then
+// optional colon modifiers (for %z), then the directive byte. It returns
+// ok=false when the percent sequence reaches the end of the format before a
+// directive byte (e.g. a bare trailing "%" or "%6"), which Ruby rejects as an
+// invalid format.
 func scanStrftimeDirective(format string, start int) (strftimeToken, bool) {
+	tok := strftimeToken{}
 	j := start + 1
+
+	for j < len(format) {
+		switch format[j] {
+		case '-':
+			tok.noPad, tok.spacePad, tok.zeroPad = true, false, false
+		case '_':
+			tok.noPad, tok.spacePad, tok.zeroPad = false, true, false
+		case '0':
+			tok.noPad, tok.spacePad, tok.zeroPad = false, false, true
+		case '^':
+			tok.caseShift = caseUpper
+		case '#':
+			tok.caseShift = caseToggle
+		default:
+			goto flagsDone
+		}
+		j++
+	}
+flagsDone:
 
 	widthStart := j
 	for j < len(format) && format[j] >= '0' && format[j] <= '9' {
 		j++
 	}
-	width := format[widthStart:j]
+	if j > widthStart {
+		// The run is a bounded decimal slice, but guard against overflow on a
+		// pathological width so an extreme value falls back to no explicit width
+		// rather than panicking.
+		if w, err := strconv.Atoi(format[widthStart:j]); err == nil {
+			tok.hasWidth, tok.width = true, w
+		}
+	}
 
-	colons := 0
 	for j < len(format) && format[j] == ':' {
-		colons++
+		tok.colons++
 		j++
 	}
 
@@ -120,130 +193,280 @@ func scanStrftimeDirective(format string, start int) (strftimeToken, bool) {
 		return strftimeToken{}, false
 	}
 
-	return strftimeToken{
-		source:    format[start : j+1],
-		width:     width,
-		colons:    colons,
-		directive: format[j],
-	}, true
+	tok.source = format[start : j+1]
+	tok.directive = format[j]
+	return tok, true
 }
+
+// strftimeFieldKind classifies how a directive consumes width and padding.
+type strftimeFieldKind int
+
+const (
+	fieldNumeric  strftimeFieldKind = iota // width is a minimum field width
+	fieldName                              // width pads, ^/# transform case
+	fieldSubsec                            // width is the fractional digit count
+	fieldLiteral                           // single literal byte, width pads
+	fieldOffset                            // %z: width zero-pads the digits
+	fieldCompound                          // expands a fixed sub-format
+)
 
 // renderStrftimeDirective renders a parsed directive. recognized is false when
-// the directive is not part of the supported subset (or carries modifiers that
-// directive does not accept), signaling the caller to emit the source verbatim.
-func renderStrftimeDirective(t time.Time, tok strftimeToken) (out string, recognized bool) {
-	// Only %N reads a width and only %z reads colon modifiers. A modifier on any
-	// other directive makes the whole sequence an unknown one Ruby passes through.
-	if tok.width != "" && tok.directive != 'N' {
-		return "", false
-	}
-	if tok.colons != 0 && tok.directive != 'z' {
+// the directive is not part of the supported subset (or carries colon modifiers
+// the directive does not accept), signaling the caller to emit the source
+// verbatim.
+func renderStrftimeDirective(t time.Time, tok strftimeToken, inherited caseFlag) (out string, recognized bool) {
+	// Only %z reads colon modifiers, and only one (%:z) or two (%::z) of them;
+	// any other directive carrying a colon, or %z with three or more, is an
+	// unknown sequence emitted verbatim. (Ruby's handling of three-plus colons is
+	// inconsistent quirk territory with no useful meaning, so Vibescript passes
+	// those through uniformly rather than reproducing it.)
+	if tok.colons != 0 && (tok.directive != 'z' || tok.colons > 2) {
 		return "", false
 	}
 
+	value, padChar, defaultWidth, kind, ok := strftimeField(t, tok)
+	if !ok {
+		return "", false
+	}
+
+	shift := tok.caseShift
+	if shift == caseNone {
+		shift = inherited
+	}
+
+	switch kind {
+	case fieldCompound:
+		// value holds the compound directive's sub-format. The case flag is
+		// applied by expanding the sub-format with the propagated shift rather
+		// than transforming the rendered string, matching Ruby: %^c uppercases
+		// the nested names while the # flag does not reach into a compound at
+		// all (so it is filtered out before recursing). The expanded result is
+		// then padded to the requested width as a single field.
+		expanded := mustStrftime(t, value, compoundShift(shift))
+		return padCompound(expanded, tok), true
+	case fieldSubsec:
+		// %L/%N already encode width as digit count; only case applies.
+		return applyCase(value, shift), true
+	case fieldOffset:
+		return padOffset(value, tok), true
+	default:
+		return applyCase(applyPad(value, padChar, defaultWidth, tok), shift), true
+	}
+}
+
+// compoundShift filters the case transformation propagated into a compound
+// directive's sub-format. Ruby's ^ (uppercase) flag flows into the expansion,
+// but its # (toggle) flag does not, so a toggle becomes a no-op for nested
+// directives.
+func compoundShift(shift caseFlag) caseFlag {
+	if shift == caseUpper {
+		return caseUpper
+	}
+	return caseNone
+}
+
+// strftimeField resolves a directive to its rendered value, default pad
+// character, default minimum width, and field kind. For a fieldCompound
+// directive, value is the sub-format the caller expands rather than a rendered
+// string. ok is false for unknown directives.
+func strftimeField(t time.Time, tok strftimeToken) (value string, padChar byte, defaultWidth int, kind strftimeFieldKind, ok bool) {
 	switch tok.directive {
 	case 'Y':
-		return strftimePadYear(t.Year()), true
+		return strftimeYear(t.Year()), '0', 4, fieldNumeric, true
 	case 'C':
-		return fmt.Sprintf("%02d", t.Year()/100), true
+		return strconv.Itoa(t.Year() / 100), '0', 2, fieldNumeric, true
 	case 'y':
-		return fmt.Sprintf("%02d", ((t.Year()%100)+100)%100), true
+		return strconv.Itoa(((t.Year() % 100) + 100) % 100), '0', 2, fieldNumeric, true
 	case 'm':
-		return fmt.Sprintf("%02d", int(t.Month())), true
+		return strconv.Itoa(int(t.Month())), '0', 2, fieldNumeric, true
 	case 'd':
-		return fmt.Sprintf("%02d", t.Day()), true
+		return strconv.Itoa(t.Day()), '0', 2, fieldNumeric, true
 	case 'e':
-		return fmt.Sprintf("%2d", t.Day()), true
+		return strconv.Itoa(t.Day()), ' ', 2, fieldNumeric, true
 	case 'j':
-		return fmt.Sprintf("%03d", t.YearDay()), true
+		return strconv.Itoa(t.YearDay()), '0', 3, fieldNumeric, true
 	case 'H':
-		return fmt.Sprintf("%02d", t.Hour()), true
+		return strconv.Itoa(t.Hour()), '0', 2, fieldNumeric, true
 	case 'k':
-		return fmt.Sprintf("%2d", t.Hour()), true
+		return strconv.Itoa(t.Hour()), ' ', 2, fieldNumeric, true
 	case 'I':
-		return fmt.Sprintf("%02d", hour12(t.Hour())), true
+		return strconv.Itoa(hour12(t.Hour())), '0', 2, fieldNumeric, true
 	case 'l':
-		return fmt.Sprintf("%2d", hour12(t.Hour())), true
+		return strconv.Itoa(hour12(t.Hour())), ' ', 2, fieldNumeric, true
 	case 'M':
-		return fmt.Sprintf("%02d", t.Minute()), true
+		return strconv.Itoa(t.Minute()), '0', 2, fieldNumeric, true
 	case 'S':
-		return fmt.Sprintf("%02d", t.Second()), true
-	case 'L':
-		return strftimeSubsec(t.Nanosecond(), 3), true
-	case 'N':
-		return strftimeSubsec(t.Nanosecond(), strftimeNanoWidth(tok.width)), true
-	case 'p':
-		return meridian(t.Hour(), true), true
-	case 'P':
-		return meridian(t.Hour(), false), true
-	case 'A':
-		return t.Weekday().String(), true
-	case 'a':
-		return t.Weekday().String()[:3], true
-	case 'B':
-		return t.Month().String(), true
-	case 'b', 'h':
-		return t.Month().String()[:3], true
+		return strconv.Itoa(t.Second()), '0', 2, fieldNumeric, true
 	case 'w':
-		return strconv.Itoa(int(t.Weekday())), true
+		return strconv.Itoa(int(t.Weekday())), '0', 1, fieldNumeric, true
 	case 'u':
-		return strconv.Itoa(isoWeekday(t.Weekday())), true
+		return strconv.Itoa(isoWeekday(t.Weekday())), '0', 1, fieldNumeric, true
 	case 's':
-		return strconv.FormatInt(t.Unix(), 10), true
+		return strconv.FormatInt(t.Unix(), 10), '0', 1, fieldNumeric, true
+	case 'L':
+		return strftimeSubsec(t.Nanosecond(), strftimeSubsecWidth(tok, 3)), 0, 0, fieldSubsec, true
+	case 'N':
+		return strftimeSubsec(t.Nanosecond(), strftimeSubsecWidth(tok, 9)), 0, 0, fieldSubsec, true
+	case 'p':
+		return meridian(t.Hour(), true), ' ', 0, fieldName, true
+	case 'P':
+		return meridian(t.Hour(), false), ' ', 0, fieldName, true
+	case 'A':
+		return t.Weekday().String(), ' ', 0, fieldName, true
+	case 'a':
+		return t.Weekday().String()[:3], ' ', 0, fieldName, true
+	case 'B':
+		return t.Month().String(), ' ', 0, fieldName, true
+	case 'b', 'h':
+		return t.Month().String()[:3], ' ', 0, fieldName, true
 	case 'z':
-		return strftimeOffset(t, tok.colons), true
+		return strftimeOffset(t, tok.colons), '0', 0, fieldOffset, true
 	case 'Z':
 		name, _ := t.Zone()
-		return name, true
+		return name, ' ', 0, fieldName, true
 	case 'n':
-		return "\n", true
+		return "\n", ' ', 1, fieldLiteral, true
 	case 't':
-		return "\t", true
+		return "\t", ' ', 1, fieldLiteral, true
 	case '%':
-		return "%", true
+		return "%", ' ', 1, fieldLiteral, true
 	case 'F':
-		return mustStrftime(t, "%Y-%m-%d"), true
+		return "%Y-%m-%d", 0, 0, fieldCompound, true
 	case 'T', 'X':
-		return mustStrftime(t, "%H:%M:%S"), true
+		return "%H:%M:%S", 0, 0, fieldCompound, true
 	case 'R':
-		return mustStrftime(t, "%H:%M"), true
+		return "%H:%M", 0, 0, fieldCompound, true
 	case 'D', 'x':
-		return mustStrftime(t, "%m/%d/%y"), true
+		return "%m/%d/%y", 0, 0, fieldCompound, true
 	case 'r':
-		return mustStrftime(t, "%I:%M:%S %p"), true
+		return "%I:%M:%S %p", 0, 0, fieldCompound, true
 	case 'c':
-		return mustStrftime(t, "%a %b %e %T %Y"), true
+		return "%a %b %e %T %Y", 0, 0, fieldCompound, true
 	default:
-		return "", false
+		return "", 0, 0, fieldNumeric, false
 	}
 }
 
-// strftimeNanoWidth resolves the %N digit width: the empty default is nine
-// digits (nanoseconds). The width came from a bounded decimal run, so a parse
-// failure is not expected; it falls back to the default if one ever overflows.
-func strftimeNanoWidth(width string) int {
-	if width == "" {
-		return 9
+// applyPad pads value to its field width using the flag/width modifiers. The
+// minus flag omits padding, the underscore and zero flags override the pad
+// character, and an explicit width overrides the directive's default minimum.
+// Padding is never applied when it would have to truncate a value wider than the
+// field, and a sign on a zero-padded numeric stays ahead of the digits.
+func applyPad(value string, defaultPad byte, defaultWidth int, tok strftimeToken) string {
+	// An empty value (only %Z on an unnamed zone) is never padded; Ruby keeps it
+	// empty rather than emitting a run of pad characters.
+	if tok.noPad || value == "" {
+		return value
 	}
-	parsed, err := strconv.Atoi(width)
-	if err != nil {
-		return 9
+
+	width := defaultWidth
+	if tok.hasWidth {
+		width = tok.width
 	}
-	return parsed
+	if len(value) >= width {
+		return value
+	}
+
+	pad := defaultPad
+	switch {
+	case tok.spacePad:
+		pad = ' '
+	case tok.zeroPad:
+		pad = '0'
+	}
+
+	if pad == '0' && len(value) > 0 && (value[0] == '+' || value[0] == '-') {
+		return string(value[0]) + strings.Repeat("0", width-len(value)) + value[1:]
+	}
+	return strings.Repeat(string(pad), width-len(value)) + value
 }
 
-// strftimePadYear renders a calendar year zero-padded to at least four digits,
-// matching Ruby's %Y. Negative (BCE) years keep their sign ahead of the digits.
-func strftimePadYear(year int) string {
+// padOffset pads a %z offset. Ruby zero-pads the digit run after the sign to the
+// requested width and treats the -, _, and 0 flags as no-ops for the offset (so
+// even %-6z still zero-pads). Case flags do not affect an offset either.
+func padOffset(value string, tok strftimeToken) string {
+	if !tok.hasWidth || len(value) >= tok.width {
+		return value
+	}
+	if len(value) > 0 && (value[0] == '+' || value[0] == '-') {
+		return string(value[0]) + strings.Repeat("0", tok.width-len(value)) + value[1:]
+	}
+	return strings.Repeat("0", tok.width-len(value)) + value
+}
+
+// padCompound pads an expanded compound directive (e.g. %F, %T) to its width.
+// Ruby pads the whole expansion as one field with spaces, or zeros under the 0
+// flag, and ignores the - and _ flags here (so %-12F still space-pads), the same
+// way it treats the %z offset.
+func padCompound(value string, tok strftimeToken) string {
+	if !tok.hasWidth || len(value) >= tok.width {
+		return value
+	}
+	pad := byte(' ')
+	if tok.zeroPad {
+		pad = '0'
+	}
+	return strings.Repeat(string(pad), tok.width-len(value)) + value
+}
+
+// applyCase applies the ^/# case transformation to a rendered value. caseUpper
+// uppercases everything; caseToggle reproduces Ruby's # flag, which lowercases a
+// value whose cased letters are already all uppercase (e.g. %#p "AM" -> "am",
+// %#Z "UTC" -> "utc") and uppercases everything else (e.g. %#B "January" ->
+// "JANUARY").
+func applyCase(value string, shift caseFlag) string {
+	switch shift {
+	case caseUpper:
+		return strings.ToUpper(value)
+	case caseToggle:
+		if isAllUpper(value) {
+			return strings.ToLower(value)
+		}
+		return strings.ToUpper(value)
+	default:
+		return value
+	}
+}
+
+// isAllUpper reports whether value contains at least one cased letter and every
+// cased letter is uppercase, the condition Ruby's # flag uses to decide whether
+// to lowercase rather than uppercase a directive's output.
+func isAllUpper(value string) bool {
+	sawCased := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return false
+		case r >= 'A' && r <= 'Z':
+			sawCased = true
+		}
+	}
+	return sawCased
+}
+
+// strftimeSubsecWidth resolves the fractional-second digit count for %L and %N.
+// An explicit width selects the digit count; otherwise the directive's default
+// applies (3 for %L, 9 for %N). The minus flag, which suppresses padding
+// elsewhere, has no meaning for fractional digits and is ignored as in Ruby.
+func strftimeSubsecWidth(tok strftimeToken, def int) int {
+	if tok.hasWidth {
+		return tok.width
+	}
+	return def
+}
+
+// strftimeYear renders a calendar year. Negative (BCE) years keep their sign
+// ahead of the digits; the four-digit minimum is applied by the padding step.
+func strftimeYear(year int) string {
 	if year < 0 {
-		return fmt.Sprintf("-%04d", -year)
+		return "-" + strconv.Itoa(-year)
 	}
-	return fmt.Sprintf("%04d", year)
+	return strconv.Itoa(year)
 }
 
 // strftimeSubsec renders the fractional-second component to exactly width
 // digits, truncating beyond nanosecond resolution and zero-padding past it.
-// This backs %L (width 3) and %N (default width 9).
+// This backs %L (default width 3) and %N (default width 9).
 func strftimeSubsec(nanos, width int) string {
 	if width <= 0 {
 		return ""
@@ -311,12 +534,13 @@ func isoWeekday(wd time.Weekday) int {
 	return int(wd)
 }
 
-// mustStrftime expands a compound directive's fixed sub-format. The sub-formats
-// are literal and contain only supported single-byte directives, so strftime
-// cannot return an error here; a non-nil error would indicate a programming
-// mistake in a compound directive definition.
-func mustStrftime(t time.Time, format string) string {
-	out, err := strftime(t, format)
+// mustStrftime expands a compound directive's fixed sub-format, propagating the
+// case flag the compound directive carried. The sub-formats are literal and
+// contain only supported single-byte directives, so strftime cannot return an
+// error here; a non-nil error would indicate a programming mistake in a
+// compound directive definition.
+func mustStrftime(t time.Time, format string, shift caseFlag) string {
+	out, err := strftimeCase(t, format, shift)
 	if err != nil {
 		panic(fmt.Sprintf("runtime: invalid compound strftime directive %q: %v", format, err))
 	}
