@@ -720,23 +720,42 @@ func stringSwapCase(text string, mode caseMode) string {
 	b.Grow(len(text))
 	for _, r := range text {
 		switch {
-		case unicode.IsLower(r):
-			b.WriteString(unicodeUpcase(string(r)))
-		case unicode.IsUpper(r) || unicode.IsTitle(r):
-			// Titlecase digraphs (general category Lt, e.g. "ǅ") carry an
-			// uppercase leading letter, so swapping them toward lowercase is the
-			// principled toggle. Ruby instead toggles each underlying letter
-			// component ("ǅ" -> "dŽ"); reproducing that for every Lt codepoint
-			// would require hand-encoding Unicode's full case-mapping table
-			// (the Greek titlecase letters expand the iota subscript to a
-			// standalone capital iota), so this deliberately diverges from Ruby
-			// for those ~31 rare codepoints in favor of a clean lowercase.
+		case isUppercaseLike(r):
 			b.WriteString(unicodeDowncase(string(r)))
+		case isLowercaseLike(r):
+			b.WriteString(unicodeUpcase(string(r)))
 		default:
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+// isUppercaseLike reports whether a rune should be lowercased by swapcase. It
+// matches uppercase and titlecase letters (Lu/Lt) as well as cased symbols that
+// live outside the letter categories yet carry a distinct lowercase mapping,
+// such as circled Latin capitals ("Ⓐ") and uppercase Roman numerals ("Ⅰ"),
+// which the Is{Upper,Title} predicates miss.
+//
+// Titlecase digraphs (e.g. "ǅ") are downcased to a single rune ("ǆ"). Ruby
+// instead toggles each underlying letter component ("ǅ" -> "dŽ"); reproducing
+// that would require hand-encoding Unicode's full case-mapping table (the Greek
+// titlecase letters expand the iota subscript to a standalone capital iota), so
+// this deliberately diverges from Ruby for those rare codepoints in favor of a
+// clean lowercase.
+func isUppercaseLike(r rune) bool {
+	return unicode.IsUpper(r) || unicode.IsTitle(r) || unicode.ToLower(r) != r
+}
+
+// isLowercaseLike reports whether a rune should be uppercased by swapcase. It
+// matches lowercase letters (Ll), including those whose single-rune uppercase is
+// identical but whose full Unicode mapping expands ("ß" -> "SS"), as well as
+// cased symbols outside the letter categories with a distinct uppercase mapping,
+// such as circled Latin small letters ("ⓐ") and lowercase Roman numerals
+// ("ⅰ"). Uppercase-like runes are excluded by the caller checking
+// isUppercaseLike first.
+func isLowercaseLike(r rune) bool {
+	return unicode.IsLower(r) || unicode.ToUpper(r) != r
 }
 
 // asciiSwapCase toggles the case of ASCII letters only, leaving every other byte

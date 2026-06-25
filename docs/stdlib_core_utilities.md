@@ -99,8 +99,9 @@ Unicode characters, not bytes, unless noted.
   folding (so `"Straße".downcase(:fold)` is `"strasse"`).
 - `capitalize(mode = nil) -> string` – titlecase the first character and
   lowercase the rest. Pass `:ascii` to map only ASCII letters.
-- `swapcase(mode = nil) -> string` – flip the case of each letter. Pass `:ascii`
-  to map only ASCII letters.
+- `swapcase(mode = nil) -> string` – flip the case of each cased character,
+  including cased non-letters such as circled letters and Roman numerals. Pass
+  `:ascii` to map only ASCII letters.
 - `reverse -> string` – characters in reverse order.
 
 ### Whitespace and Affix Trimming

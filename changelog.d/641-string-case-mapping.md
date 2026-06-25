@@ -11,6 +11,9 @@
   folding (so `"Straße".downcase(:fold)` is `"strasse"`). Supplying `:fold` to a
   method other than `downcase`, an unknown option symbol, a non-symbol argument,
   or more than one option raises a clear error. The bang variants accept the
-  same options and continue to return `nil` when the value is unchanged. Swapcase
-  of a titlecase digraph (such as `ǅ`) is lowercased rather than split into its
-  component letters, a deliberate divergence from Ruby for those rare codepoints.
+  same options and continue to return `nil` when the value is unchanged.
+  `swapcase` toggles every cased character, including cased non-letters such as
+  circled letters (`"Ⓐ".swapcase` is `"ⓐ"`) and Roman numerals (`"Ⅰ".swapcase`
+  is `"ⅰ"`). Swapcase of a titlecase digraph (such as `ǅ`) is lowercased rather
+  than split into its component letters, a deliberate divergence from Ruby for
+  those rare codepoints.

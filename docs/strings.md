@@ -253,11 +253,14 @@ Pass `:ascii` to restrict mapping to ASCII letters.
 
 ### `swapcase`
 
-Flips letter casing for each character using full Unicode case mapping:
+Flips the case of each cased character using full Unicode case mapping. This
+includes cased characters outside the letter categories, such as circled Latin
+letters (`Ⓐ`) and Roman numerals (`Ⅰ`):
 
 ```vibe
 "Hello VIBE".swapcase # "hELLO vibe"
 "Straße".swapcase     # "sTRASSE"
+"Ⓐ".swapcase          # "ⓐ"
 ```
 
 Pass `:ascii` to restrict mapping to ASCII letters. Titlecase digraph

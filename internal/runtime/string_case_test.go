@@ -28,6 +28,14 @@ func TestStringCaseDefaultMapping(t *testing.T) {
 		{name: "capitalize downcases trailing letters", script: `def run() "iSTANBUL".capitalize end`, want: "Istanbul"},
 		{name: "swapcase expands sharp s on uppercase path", script: `def run() "Straße".swapcase end`, want: "sTRASSE"},
 		{name: "swapcase mixed input", script: `def run() "Hello VIBE".swapcase end`, want: "hELLO vibe"},
+		// Circled Latin letters (general category So) and Roman numerals
+		// (category Nl) carry Unicode case mappings even though they are not
+		// Lu/Ll/Lt letters, so swapcase must toggle them like Ruby does.
+		{name: "swapcase circled capital letter", script: `def run() "Ⓐ".swapcase end`, want: "ⓐ"},
+		{name: "swapcase circled small letter", script: `def run() "ⓐ".swapcase end`, want: "Ⓐ"},
+		{name: "swapcase uppercase roman numeral", script: `def run() "Ⅰ".swapcase end`, want: "ⅰ"},
+		{name: "swapcase lowercase roman numeral", script: `def run() "ⅰ".swapcase end`, want: "Ⅰ"},
+		{name: "swapcase mixed non-letter case pairs", script: `def run() "Ⓐb Ⅹⅰ".swapcase end`, want: "ⓐB ⅹⅠ"},
 		{name: "empty string upcase", script: `def run() "".upcase end`, want: ""},
 		{name: "empty string capitalize", script: `def run() "".capitalize end`, want: ""},
 	}
@@ -216,6 +224,27 @@ func TestStringCaseHelpers(t *testing.T) {
 		// stringSwapCase comment), yielding "ǆ".
 		if got := stringSwapCase("ǅ", caseModeDefault); got != "ǆ" {
 			t.Fatalf("swapcase titlecase digraph = %q, want %q", got, "ǆ")
+		}
+	})
+
+	t.Run("swapcase toggles non-letter case pairs", func(t *testing.T) {
+		t.Parallel()
+		// These runes are cased (they have distinct upper/lower mappings) but
+		// fall outside the Lu/Ll/Lt letter categories, so the Is{Upper,Lower}
+		// predicates miss them. swapcase must still toggle them via the case
+		// mapping, matching Ruby. The combining iota subscript (U+0345) only has
+		// an uppercase mapping (to capital iota), so it is treated as lowercase.
+		cases := map[string]string{
+			"Ⓐ": "ⓐ", // circled capital A (So) -> circled small a
+			"ⓐ": "Ⓐ", // circled small a (So) -> circled capital A
+			"Ⅰ": "ⅰ", // Roman numeral one (Nl) -> small Roman numeral one
+			"ⅰ": "Ⅰ", // small Roman numeral one (Nl) -> Roman numeral one
+			"ͅ": "Ι", // combining iota subscript -> capital iota
+		}
+		for in, want := range cases {
+			if got := stringSwapCase(in, caseModeDefault); got != want {
+				t.Fatalf("swapcase(%q) = %q, want %q", in, got, want)
+			}
 		}
 	})
 }
