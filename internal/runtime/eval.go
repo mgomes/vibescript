@@ -672,17 +672,22 @@ func (runner *blockCallRunner) call(args []Value) (Value, error) {
 	return runner.exec.callBlock(runner.blk, args, env, runner.charge)
 }
 
-// wantsCollapsedPair reports whether a hash iterator should yield each entry as a
-// single two-element [key, value] pair instead of two separate arguments. It
+// blockWantsCollapsedPair reports whether a hash iterator should yield each entry
+// as a single two-element [key, value] pair instead of two separate arguments. It
 // mirrors Ruby, where a block declaring exactly one positional parameter receives
 // the pair while a block with two or more positional parameters auto-splats into
 // key and value. A lone destructuring parameter such as |(k, v)| still counts as
 // one parameter, so it receives the pair and unpacks it. Any rest or keyword
 // parameter opts out so the iterator keeps yielding key and value separately.
-func (runner *blockCallRunner) wantsCollapsedPair() bool {
+//
+// It takes the block directly (rather than a runner) so a hash iterator can pick
+// the yield shape -- and thus size its walk scratch -- before building the runner,
+// letting the scratch be reserved before the runner snapshots its bind-charge
+// baseline.
+func blockWantsCollapsedPair(blk *Block) bool {
 	positional := 0
-	for i := range runner.blk.Params {
-		switch runner.blk.Params[i].Kind {
+	for i := range blk.Params {
+		switch blk.Params[i].Kind {
 		case ParamNormal:
 			positional++
 		default:

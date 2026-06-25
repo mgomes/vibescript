@@ -2415,7 +2415,7 @@ func overFixedNestedRestPairTarget() *DestructureTarget {
 }
 
 // overFixedNestedRestPairBlock builds an |(a, b, c, *(x))| block with an EMPTY body.
-// wantsCollapsedPair stays true (one positional parameter), so Hash#each collapses
+// blockWantsCollapsedPair stays true (one positional parameter), so Hash#each collapses
 // each entry into a [key, value] pair and binds it through this over-fixed nested
 // rest shape -- the shape whose rest reconstruction panicked the host before
 // AssignDestructure clamped the rest window's low bound.
@@ -2669,6 +2669,77 @@ func TestHashEachNestedRestFitsWhenTailFitsQuota(t *testing.T) {
 	if got.Kind() != KindHash || len(got.Hash()) != 1 {
 		t.Fatalf("each returned %v with %d entries, want the 1-entry receiver", got.Kind(), len(got.Hash()))
 	}
+}
+
+// TestHashEachEmptyBodyNestedRestCountsScratchInBindCharge is the regression for
+// the ordering gap the Codex thread on PR #808 raised: the bind-charge baseline
+// must be snapshotted AFTER the walk scratch is reserved, not before. Hash#each
+// reserves a sorted-key scratch slice plus one collapsed pair for the walk's
+// lifetime, then yields each entry to a |(k, (head, *tail))| block whose empty body
+// never runs its own memory checks. With the buggy ordering newBlockCallRunner
+// snapshotted the bind charge before reserveLoopScratch, so the charge measured the
+// fresh tail copy against a baseline that omitted the scratch (and pair). For a
+// many-key receiver carrying one large value, the scratch and pair are non-trivial,
+// so a quota that admits receiver+scratch (the walk preflight) and receiver+tail
+// (the buggy bind charge) SEPARATELY but not the real peak receiver+scratch+pair+tail
+// would let the empty body bind the huge tail and escape the quota. Reserving the
+// scratch before the runner folds it into the baseline so the charge rejects the
+// combined peak. The companion TestHashEachEmptyBodyNestedRestTripsMemoryQuota
+// covers the tail itself; this one isolates the scratch's inclusion in the baseline.
+func TestHashEachEmptyBodyNestedRestCountsScratchInBindCharge(t *testing.T) {
+	t.Parallel()
+
+	// Many keys so the sorted-key scratch buffer is non-trivial, with exactly one
+	// entry whose value is large enough that its rest copy dwarfs the scratch+pair;
+	// the rest carry tiny values that bind tails the quota easily admits.
+	const entryCount = 256
+	const bigValueLen = 200_000
+	bigValue := arrayValue(bigValueLen)
+	entries := make(map[string]Value, entryCount)
+	entries["big"] = bigValue
+	for i := range entryCount - 1 {
+		entries["k"+strconv.Itoa(i)] = arrayValue(2)
+	}
+	receiver := NewHash(entries)
+	block := emptyNestedRestEachBlock()
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects a reusable-env block so the empty-body rebind path is exercised")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(len(entries))
+	tailCharge := nestedRestTailChargeBytes(bigValue)
+
+	// Sanity: the scratch buffer is genuinely non-trivial, so the buggy ordering's
+	// omission of it -- not an incidentally tight quota -- is what would let the walk
+	// escape.
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heaped sorted-key scratch buffer, got %d bytes", scratch)
+	}
+
+	// Pick the quota one byte below the real peak (roots+scratch+pair+tail). The
+	// correct charge, which now folds the scratch into the baseline, rejects this
+	// peak. The buggy charge (baseline roots+tail, scratch omitted) and the walk
+	// preflight (roots+scratch, tail not yet bound) each fit it, so only the
+	// scratch's inclusion in the baseline catches the overflow.
+	quota := roots + scratch + collapsedPairBytes + tailCharge - 1
+
+	// The buggy bind charge would have measured only roots+tail, which must fit the
+	// quota, proving the scratch (not the tail or an over-tight quota) is the sole
+	// reason the corrected charge rejects the walk.
+	if roots+tailCharge > quota {
+		t.Fatalf("test setup expects roots+tail (%d) to fit the quota (%d) so the scratch is the deciding term", roots+tailCharge, quota)
+	}
+	// The walk preflight sees roots+scratch (the tail is not bound until the block is
+	// called), which must also fit so the preflight does not pre-empt the bind charge.
+	if roots+scratch > quota {
+		t.Fatalf("test setup expects roots+scratch (%d) to fit the quota (%d) so the preflight does not pre-empt the bind charge", roots+scratch, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "each", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 // TestHashEachNestedRestAccumulatorTripsMemoryQuota covers the live-footprint shape

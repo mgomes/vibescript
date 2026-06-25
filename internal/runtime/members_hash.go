@@ -395,16 +395,16 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each", receiver, nil, kwargs)
-			if err != nil {
+			if err := ensureBlock(block, "hash.each"); err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
 			// Match Ruby: a block declaring a single positional parameter receives
 			// each entry as a two-element [key, value] pair, while a block with two
 			// or more parameters auto-splats into key and value (extra parameters get
-			// nil). wantsCollapsedPair inspects the block's arity to pick the shape.
-			collapsePair := runner.wantsCollapsedPair()
+			// nil). blockWantsCollapsedPair inspects the block's arity to pick the
+			// shape.
+			collapsePair := blockWantsCollapsedPair(valueBlock(block))
 			// each builds no output map, but it materializes a sorted key list to
 			// walk entries deterministically. Reserve that scratch buffer against the
 			// quota for the walk's whole lifetime so a large receiver cannot escape the
@@ -417,12 +417,25 @@ func hashMemberQuery(property string) (Value, error) {
 			// than rechecking per entry) charges it into the baseline every in-body
 			// check already sees, keeping the walk O(n) in the receiver size instead of
 			// re-walking the receiver to charge the pair on every iteration.
+			//
+			// Reserve the scratch BEFORE building the runner so the runner's
+			// bind-charge baseline snapshot (taken in newBlockCallRunner, which folds
+			// reservedScratchBytes through estimateMemoryUsageBase) already includes
+			// it. Otherwise a nested-rest block (|(k, (head, *tail))|) over an
+			// ephemeral receiver would charge its fresh tail backing against a baseline
+			// that omits the scratch, while the body's own memory checks see the
+			// scratch but not the Go-stack-only receiver, letting receiver+scratch+tail
+			// exceed the quota with neither check failing.
 			scratch := sortedKeyBufferBytes(len(entries))
 			if collapsePair && len(entries) > 0 {
 				scratch = saturatingAdd(scratch, collapsedPairBytes)
 			}
 			delta := exec.reserveLoopScratch(scratch)
 			defer exec.releaseLoopScratch(delta)
+			runner, err := newBlockCallRunner(exec, block, "hash.each", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
@@ -466,8 +479,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_key does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each_key", receiver, nil, kwargs)
-			if err != nil {
+			if err := ensureBlock(block, "hash.each_key"); err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -476,9 +488,17 @@ func hashMemberQuery(property string) (Value, error) {
 			// while the block body runs, so reserving it keeps every memory check
 			// inside the body aware of the scratch. Reserving first means the walk
 			// projection adds no separate scratch bytes. each_key binds the key
-			// directly, so it allocates no per-entry pair.
+			// directly, so it allocates no per-entry pair. Reserve it BEFORE building
+			// the runner so the runner's bind-charge baseline snapshot already includes
+			// the scratch; otherwise a rest-collecting block (|(head, *tail)|) over an
+			// ephemeral receiver could charge its fresh tail backing against a baseline
+			// that omits the scratch while the body checks miss the Go-stack receiver.
 			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
 			defer exec.releaseLoopScratch(delta)
+			runner, err := newBlockCallRunner(exec, block, "hash.each_key", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
@@ -502,8 +522,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_value does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each_value", receiver, nil, kwargs)
-			if err != nil {
+			if err := ensureBlock(block, "hash.each_value"); err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -512,9 +531,17 @@ func hashMemberQuery(property string) (Value, error) {
 			// while the block body runs, so reserving it keeps every memory check
 			// inside the body aware of the scratch. Reserving first means the walk
 			// projection adds no separate scratch bytes. each_value binds the value
-			// directly, so it allocates no per-entry pair.
+			// directly, so it allocates no per-entry pair. Reserve it BEFORE building
+			// the runner so the runner's bind-charge baseline snapshot already includes
+			// the scratch; otherwise a rest-collecting block (|(head, *tail)|) over an
+			// ephemeral receiver could charge its fresh tail backing against a baseline
+			// that omits the scratch while the body checks miss the Go-stack receiver.
 			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
 			defer exec.releaseLoopScratch(delta)
+			runner, err := newBlockCallRunner(exec, block, "hash.each_value", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
