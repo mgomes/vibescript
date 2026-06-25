@@ -1688,29 +1688,37 @@ func stringMemberQuery(property string) (Value, error) {
 const stringScanInitialCap = 256
 
 // stringScan implements String#scan with Ruby's capture-aware result shape while
-// keeping its output bounded by the sandbox quotas. With no capture groups each
+// keeping its memory bounded by the sandbox quotas. With no capture groups each
 // element is the full match string; with one or more groups each element is an
 // array of that match's captured substrings, with nil for groups that did not
 // participate in the match.
 //
 // Matches are streamed one at a time rather than collected up front with
-// FindAllStringSubmatchIndex(text, -1). A pattern containing thousands of
-// zero-width capture groups (still under the pattern-size cap) over a near-limit
-// subject would otherwise make FindAllStringSubmatchIndex materialize matches ×
-// groups index integers before the runtime could charge a single byte against
-// the memory quota, allocating many gigabytes and bypassing the sandbox guards.
-// Streaming charges a step and the growing result against the quota per match, so
-// a scan whose output would exceed the quota errors instead of exhausting memory.
+// FindAllStringSubmatchIndex(text, -1). That all-submatch call materializes two
+// ints per capture per match before any quota accounting runs, so a pattern made
+// of thousands of empty () capture groups (still under the pattern-size cap) over
+// a near-limit subject would request matches × groups index integers -- tens of
+// gigabytes -- and OOM the host before the runtime could charge a single byte.
+// Streaming holds only the current match's index slice (O(groups)) and charges
+// each match's result element against the memory quota as the result accumulates,
+// so a scan whose output would exceed the quota errors on the limit instead.
+//
+// Crucially, the streaming advancement is anchor-correct: nextRegexScanSubmatchIndex
+// searches with a one-rune look-back window so anchors and zero-width assertions
+// (^, $, \b, \B, \A, \z) see the real character preceding each candidate start,
+// reproducing FindAllStringSubmatchIndex's match set exactly. (A prior variant
+// advanced by re-running the regex on detached text[pos:] substrings, which made
+// those assertions fire at every slice boundary and produced wrong results, e.g.
+// "abc".scan("^") yielding four matches instead of one.)
 func stringScan(exec *Execution, re *regexp.Regexp, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	groups := re.NumSubexp()
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	out := make([]Value, 0, stringScanInitialCap)
 
-	// Replicate the non-overlapping, left-to-right advancement of regexp's own
-	// FindAll iteration (which Ruby's String#scan shares): after a non-empty
-	// match resume at its end, and after an empty match step forward one rune so
-	// the scan terminates, suppressing an empty match that immediately follows a
-	// previous match's end exactly as the engine does.
+	// Replicate regexp.allMatches' non-overlapping, left-to-right advancement
+	// (which Ruby's String#scan shares): after a non-empty match resume at its
+	// end; after an empty match step forward one rune, suppressing an empty match
+	// that lands exactly where the previous match ended.
 	pos := 0
 	prevMatchEnd := -1
 	for pos <= len(text) {
@@ -1721,17 +1729,13 @@ func stringScan(exec *Execution, re *regexp.Regexp, text string, receiver Value,
 			return NewNil(), err
 		}
 
-		loc := re.FindStringSubmatchIndex(text[pos:])
-		if loc == nil {
+		loc, found := nextRegexScanSubmatchIndex(re, text, pos)
+		if !found {
 			break
 		}
-		offsetRegexSubmatchIndexInPlace(loc, pos)
 
 		matchStart, matchEnd := loc[0], loc[1]
-		// An empty match that lands exactly where the previous match ended is
-		// suppressed, matching the regexp engine's own FindAll advancement.
 		accept := matchEnd != matchStart || matchStart != prevMatchEnd
-
 		if accept {
 			out = append(out, stringScanElement(text, loc, groups))
 			if err := acc.add(out[len(out)-1], cap(out)); err != nil {
@@ -1755,6 +1759,40 @@ func stringScan(exec *Execution, re *regexp.Regexp, text string, receiver Value,
 	}
 
 	return NewArray(out), nil
+}
+
+// nextRegexScanSubmatchIndex returns the leftmost submatch of re that starts at or
+// after byte offset pos in text, with all indices relative to text, or (nil,
+// false) when none remains. Unlike FindStringSubmatchIndex(text[pos:]), which
+// detaches the suffix and lets anchors and zero-width assertions match at the
+// slice boundary, it searches from one rune before pos so the engine sees the real
+// preceding character and evaluates ^, $, \A, \z, \b, and \B exactly as
+// FindAllStringSubmatchIndex would over the whole subject.
+//
+// At most one match can begin inside the single-rune look-back window before pos,
+// so fetching two matches (FindAllStringSubmatchIndex(window, 2)) is enough to
+// skip that boundary artifact and return the first real match at or after pos. The
+// bounded count makes the regexp engine stop after those two matches rather than
+// scanning to the end, so each call allocates only O(groups) ints regardless of
+// how many matches the subject ultimately contains -- the property that keeps a
+// streaming scan's peak memory bounded.
+func nextRegexScanSubmatchIndex(re *regexp.Regexp, text string, pos int) ([]int, bool) {
+	if pos == 0 {
+		loc := re.FindStringSubmatchIndex(text)
+		return loc, loc != nil
+	}
+
+	_, width := utf8.DecodeLastRuneInString(text[:pos])
+	windowStart := pos - width
+	for _, loc := range re.FindAllStringSubmatchIndex(text[windowStart:], 2) {
+		if loc[0]+windowStart < pos {
+			// A match starting inside the look-back rune is the boundary artifact
+			// the window exists to expose; skip it and take the next real match.
+			continue
+		}
+		return offsetRegexSubmatchIndexInPlace(loc, windowStart), true
+	}
+	return nil, false
 }
 
 // stringScanElement builds the per-match result element for String#scan: the full

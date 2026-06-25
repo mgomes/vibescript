@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,137 @@ func TestStringScanCaptureShape(t *testing.T) {
 			got := callFunc(t, script, "run", nil)
 			compareArrays(t, got, tt.want)
 		})
+	}
+}
+
+// TestStringScanAnchoredZeroWidth verifies that String#scan evaluates anchors and
+// zero-width assertions against the full subject, matching Ruby and Go's own
+// FindAllStringSubmatchIndex. A streaming implementation that re-ran the regex on
+// text[pos:] substrings made these assertions fire at every slice boundary and
+// returned wrong results (e.g. "abc".scan("^") yielding four matches instead of
+// one). The expected counts below are confirmed against MRI Ruby; the test also
+// asserts the scan output equals what regexp.FindAllStringSubmatchIndex reports so
+// the regression cannot recur silently.
+func TestStringScanAnchoredZeroWidth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		text    string
+		pattern string
+		// wantRuby is the match count MRI Ruby returns for text.scan(/pattern/).
+		wantRuby int
+	}{
+		{name: "word boundary", text: "a b c", pattern: `\b`, wantRuby: 6},
+		{name: "non word boundary", text: "a b c", pattern: `\B`, wantRuby: 0},
+		{name: "line start", text: "abc", pattern: `^`, wantRuby: 1},
+		{name: "line end", text: "abc", pattern: `$`, wantRuby: 1},
+		{name: "string start", text: "abc", pattern: `\A`, wantRuby: 1},
+		{name: "boundary with captures", text: "a-b-c", pattern: `\b(\w)`, wantRuby: 3},
+		{name: "anchored capture at start", text: "abc", pattern: `^(\w)`, wantRuby: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			re := regexp.MustCompile(tt.pattern)
+			want := scanWantFromRegexp(re, tt.text)
+			if len(want) != tt.wantRuby {
+				t.Fatalf("regexp match count = %d, want Ruby count %d (test fixture out of sync)", len(want), tt.wantRuby)
+			}
+
+			source := `def run(text) text.scan(` + goStringToVibescript(tt.pattern) + `) end`
+			script := compileScript(t, source)
+			got := callFunc(t, script, "run", []Value{NewString(tt.text)})
+			compareArrays(t, got, want)
+		})
+	}
+}
+
+// scanWantFromRegexp builds the expected String#scan result for text and re using
+// the same capture-shape rules the runtime applies: the full match string when re
+// has no capture groups, otherwise a per-match array of captured substrings with
+// nil for non-participating groups. It derives the expectation from Go's own
+// FindAllStringSubmatchIndex so the test pins scan to that engine's match set.
+func scanWantFromRegexp(re *regexp.Regexp, text string) []Value {
+	groups := re.NumSubexp()
+	locs := re.FindAllStringSubmatchIndex(text, -1)
+	want := make([]Value, 0, len(locs))
+	for _, loc := range locs {
+		if groups == 0 {
+			want = append(want, NewString(text[loc[0]:loc[1]]))
+			continue
+		}
+		captures := make([]Value, groups)
+		for g := range groups {
+			start, end := loc[(g+1)*2], loc[(g+1)*2+1]
+			if start < 0 || end < 0 {
+				captures[g] = NewNil()
+				continue
+			}
+			captures[g] = NewString(text[start:end])
+		}
+		want = append(want, NewArray(captures))
+	}
+	return want
+}
+
+// goStringToVibescript renders s as a double-quoted Vibescript string literal,
+// escaping backslashes and quotes so a regex pattern survives parsing intact.
+func goStringToVibescript(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// TestStringScanMatchesFindAllParity pins String#scan's streaming match set to
+// regexp.FindAllStringSubmatchIndex(text, -1) across a broad pattern/text matrix.
+// The streaming advancement and its one-rune look-back window must reproduce the
+// all-submatch API's match set byte for byte; this is the canary that fails if a
+// future change to either reintroduces the anchor regression (matching against a
+// detached suffix) or otherwise drifts from the engine's own iteration.
+func TestStringScanMatchesFindAllParity(t *testing.T) {
+	t.Parallel()
+
+	patterns := []string{
+		`a`, `[a-z]`, `[a-z][0-9]`, `\d+`, `\s`, `.`,
+		`(a)`, `(\w)(\d)?`, `(x)(y)?(z*)`, `(\w)(-)?`,
+		`\b`, `\B`, `^`, `$`, `\A`, `\z`,
+		`\b\w+\b`, `\bcat\b`, `^\w`, `\w$`, `a*`, `x?`,
+		// Zero-width and alternation-with-empty-branch patterns exercise the
+		// empty-match suppression and the look-back window's boundary-artifact skip.
+		``, `b*`, `(ab)*`, `a|`, `^|$`, `\b|x`, `a??`, `(?:)`,
+	}
+	texts := []string{
+		"", "a", "abc", "a1 b2 c3", "a-b-c", "the cat sat on a cataract",
+		"a b c", "  spaced  ", "line1\nline2\nline3", "über café",
+		"fΩobar", "aaa", "x", "baaab", "abababc", ",,,",
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		source := `def run(text) text.scan(` + goStringToVibescript(pattern) + `) end`
+		script := compileScript(t, source)
+		for _, text := range texts {
+			t.Run(pattern+"/"+text, func(t *testing.T) {
+				t.Parallel()
+				want := scanWantFromRegexp(re, text)
+				got := callFunc(t, script, "run", []Value{NewString(text)})
+				compareArrays(t, got, want)
+			})
+		}
 	}
 }
 
@@ -154,6 +286,51 @@ end`)
 	}
 	if got.Kind() != KindInt || got.Int() != count {
 		t.Fatalf("scan size = %v, want int %d", got, count)
+	}
+}
+
+// TestStringScanManyGroupsPeakMemory exercises the reviewer's P1 scenario: a
+// pattern made of many empty () capture groups over a large subject. The old
+// implementation collected every match with FindAllStringSubmatchIndex(text, -1),
+// which materialized matches × 2(groups+1) index integers as one contiguous
+// allocation before any quota check ran. Streaming holds only the current match's
+// O(groups) index slice and charges each match's result against the quota as the
+// result accumulates, so the scan trips the memory limit cleanly. Reaching that
+// error (rather than crashing the test process) is the regression guard.
+func TestStringScanManyGroupsPeakMemory(t *testing.T) {
+	t.Parallel()
+
+	const groups = 40
+	pattern := strings.Repeat("()", groups) // ~80 bytes, well under the pattern cap.
+	source := `def run(text) text.scan("` + pattern + `") end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 256 * 1024}, source)
+
+	subject := NewString(strings.Repeat("a", 30_000))
+	requireRunMemoryQuotaError(t, script, []Value{subject}, CallOptions{})
+}
+
+// TestStringScanManyGroupsUnderAmpleMemory confirms the same many-groups pattern
+// scans correctly when the memory quota comfortably fits the result, proving the
+// streaming bound does not reject results that genuinely fit and that the
+// look-back streaming yields the right match count for an all-empty-groups
+// pattern (one empty match per position plus one at the end).
+func TestStringScanManyGroupsUnderAmpleMemory(t *testing.T) {
+	t.Parallel()
+
+	const groups = 40
+	pattern := strings.Repeat("()", groups)
+	source := `def run(text) text.scan("` + pattern + `").size end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 << 20}, source)
+
+	const count = 5_000
+	subject := NewString(strings.Repeat("a", count))
+	got, err := script.Call(context.Background(), "run", []Value{subject}, CallOptions{})
+	if err != nil {
+		t.Fatalf("many-groups scan under ample memory = %v, want success", err)
+	}
+	// Each position yields one (non-suppressed) empty match, plus one at the end.
+	if got.Kind() != KindInt || got.Int() != count+1 {
+		t.Fatalf("many-groups scan size = %v, want int %d", got, count+1)
 	}
 }
 
