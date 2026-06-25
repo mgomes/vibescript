@@ -62,6 +62,50 @@ returns an empty string:
 "".chr    # ""
 ```
 
+### `getbyte`
+
+Returns the byte at a byte offset as an integer in the range `0..255`, mirroring
+Ruby's `String#getbyte`. The offset is byte-level, not rune-aware, so a multibyte
+character occupies more than one offset. A negative offset counts back from the
+end, and an offset outside the string returns `nil`:
+
+```vibe
+"Aé".getbyte(0)   # 65
+"Aé".getbyte(1)   # 195 (first byte of é)
+"Aé".getbyte(-1)  # 169 (last byte of é)
+"Aé".getbyte(3)   # nil
+```
+
+### `byteslice`
+
+Returns a substring selected by byte offsets, mirroring Ruby's
+`String#byteslice`. Unlike [`slice`](#slice), offsets are byte-level rather than
+rune-aware. It accepts the same three shapes:
+
+- `byteslice(index)` returns the one-byte substring at `index`.
+- `byteslice(start, length)` returns up to `length` bytes starting at `start`.
+- `byteslice(range)` returns the bytes selected by a range.
+
+Negative offsets count back from the end. An out-of-range start, or a negative
+length, returns `nil`; a start exactly at the byte length with a length yields an
+empty string:
+
+```vibe
+"abc".byteslice(1)       # "b"
+"Aé".byteslice(1, 2)     # "é" (the two bytes of é)
+"abc".byteslice(1, 10)   # "bc" (length clamps to what is available)
+"abc".byteslice(1..3)    # "bc"
+"abc".byteslice(-2, 1)   # "b"
+"abc".byteslice(3, 2)    # ""
+"abc".byteslice(4, 1)    # nil
+"abc".byteslice(0, -1)   # nil
+```
+
+Because offsets are byte-level, slicing across a UTF-8 boundary returns the raw
+bytes verbatim without normalization (so `"Aé".byteslice(1, 1)` is the single
+byte `0xC3`, which is not valid UTF-8 on its own), matching Ruby's byte-oriented
+semantics.
+
 ### `hex`
 
 Interprets the leading characters as a hexadecimal integer, mirroring Ruby's
@@ -112,6 +156,29 @@ Returns true when the string has no characters:
 "".empty?      # true
 "hello".empty? # false
 ```
+
+### `to_sym` / `intern`
+
+Returns the symbol named by the string, mirroring Ruby's `String#to_sym` and its
+alias `String#intern`. Any contents are accepted verbatim, including whitespace,
+punctuation, and the empty string:
+
+```vibe
+"name".to_sym  # :name
+"name".intern  # :name
+"a b!".to_sym  # :"a b!"
+```
+
+The result is a genuine symbol, so it equals the matching symbol literal but not
+the source string:
+
+```vibe
+"name".to_sym == :name   # true
+"name".to_sym == "name"  # false
+```
+
+See `id2name` / `to_s` on a symbol (in `docs/stdlib_core_utilities.md`) for the
+reverse direction.
 
 ### `strip`
 
@@ -624,6 +691,34 @@ Appends one or more strings:
 "he".concat("llo", "!") # "hello!"
 ```
 
+### `prepend(*strings)`
+
+Prepends one or more strings, in order:
+
+```vibe
+"abc".prepend("z")      # "zabc"
+"abc".prepend("y", "z") # "yzabc"
+"abc".prepend           # "abc"
+```
+
+### `insert(index, string)`
+
+Inserts `string` into a copy of the receiver at a character index, matching
+Ruby's `String#insert`. A non-negative index inserts before the character at
+that position, so the valid range is `0` to the string's length (a value equal
+to the length appends). A negative index inserts after the character it selects,
+so `-1` appends and the valid range is `-1` down to `-(length + 1)`. The index
+counts characters, not bytes, so it works the same way for multibyte text. An
+out-of-range index raises an error.
+
+```vibe
+"abc".insert(1, "X")   # "aXbc"
+"abc".insert(3, "X")   # "abcX"
+"abc".insert(-1, "X")  # "abcX"
+"abc".insert(-2, "X")  # "abXc"
+"café".insert(2, "Z")  # "caZfé"
+```
+
 ### `replace(replacement)`
 
 Returns `replacement`:
@@ -645,7 +740,7 @@ When there is no change, bang methods return `nil`.
 
 ## Splitting
 
-### `split(separator = nil)`
+### `split(separator = nil, limit = 0)`
 
 Splits a string into an array of strings.
 
@@ -668,11 +763,21 @@ full Unicode whitespace table as delimiters:
 "a b".split  # ["a b"] (non-breaking space is preserved)
 ```
 
-**With separator:** Splits on the specified string:
+**With separator:** Splits on the specified string. By default trailing empty
+fields are removed, matching Ruby's default `String#split`:
 
 ```vibe
 "a,b,c".split(",")        # ["a", "b", "c"]
 "path/to/file".split("/") # ["path", "to", "file"]
+"a,b,".split(",")         # ["a", "b"] (trailing empty removed)
+```
+
+**With an empty separator:** Splits the string into its individual characters
+(runes), matching Ruby's `String#split("")`:
+
+```vibe
+"abc".split("")   # ["a", "b", "c"]
+"héllo".split("") # ["h", "é", "l", "l", "o"]
 ```
 
 **With an explicit `nil` separator:** Behaves exactly like the no-argument
@@ -683,7 +788,46 @@ form, splitting on runs of ASCII whitespace, matching Ruby's
 " a  b ".split(nil) # ["a", "b"]
 ```
 
+**With a single space separator:** A separator of exactly `" "` is Ruby's AWK
+whitespace mode rather than a literal split on the space character. It collapses
+runs of ASCII whitespace, discards leading whitespace, and honors the limit just
+like the `nil` form, so it never produces a leading empty field:
+
+```vibe
+" a  b ".split(" ")    # ["a", "b"]
+" a  b ".split(" ", 2) # ["a", "b "]
+```
+
 Any other non-string separator raises an error.
+
+**With a `limit`:** The optional second argument controls how many fields are
+returned and whether trailing empty fields are kept, matching Ruby:
+
+- A **positive** limit returns at most that many fields, leaving the remainder
+  unsplit in the final field. A limit of `1` returns the whole string unchanged.
+- The default **`0`** removes trailing empty fields.
+- A **negative** limit preserves every field, including trailing empties.
+
+```vibe
+"a,b,c,d".split(",", 2)  # ["a", "b,c,d"]
+"a,b,c".split(",", 1)    # ["a,b,c"]
+"a,b,".split(",", -1)    # ["a", "b", ""]
+"a,b,".split(",", 0)     # ["a", "b"]
+```
+
+The limit applies to every separator mode. With the whitespace default a
+positive limit keeps the unsplit remainder in the final field, and a non-zero
+limit preserves a single trailing empty field when the string ends in
+whitespace:
+
+```vibe
+"  a b c  ".split(nil, 2)  # ["a", "b c  "]
+"  a b c  ".split(nil, -1) # ["a", "b", "c", ""]
+"abc".split("", -1)        # ["a", "b", "c", ""]
+```
+
+An empty string always yields an empty array, regardless of the limit. A
+non-integer limit raises an error.
 
 ### `partition(separator)`
 
@@ -777,6 +921,20 @@ The raw bytes are returned verbatim. Strings carrying invalid UTF-8 (only
 reachable through host-provided values, since Vibescript literals cannot encode
 them) are not normalized, matching Ruby's `String#bytes`.
 
+### `codepoints`
+
+Returns an array of the string's Unicode code points as integers, mirroring
+Ruby's `String#codepoints`. This is rune-aware (the integer counterpart to
+[`chars`](#chars)): a multibyte character contributes a single code point, so
+`codepoints.size` equals [`length`](#length), not [`bytesize`](#bytesize):
+
+```vibe
+"abc".codepoints # [97, 98, 99]
+"Aé".codepoints  # [65, 233]
+"😀".codepoints   # [128512]
+"".codepoints    # []
+```
+
 ### `each_char`
 
 Yields each Unicode character to a block without first materializing an array,
@@ -809,6 +967,23 @@ out # [195, 169]
 
 As with `each_char`, a block is required; calling `each_byte` without a block
 reports `string.each_byte requires a block`.
+
+### `each_codepoint`
+
+Yields each Unicode code point as an integer without first materializing an
+array, the streaming counterpart to [`codepoints`](#codepoints). Iteration is
+rune-aware, so a multibyte character is yielded as a single code point. The
+block's return value is ignored, and `each_codepoint` returns the receiver
+string:
+
+```vibe
+out = []
+"Aé".each_codepoint { |c| out = out + [c] }
+out # [65, 233]
+```
+
+As with `each_char`, a block is required; calling `each_codepoint` without a
+block reports `string.each_codepoint requires a block`.
 
 ### `each_line`
 

@@ -337,6 +337,16 @@ func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 		default:
 			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary - operand")
 		}
+	case tokenPlus:
+		// Unary plus mirrors Ruby: it is the identity on numbers and strings.
+		// Vibescript strings are immutable values, so returning the same value
+		// matches Ruby's "unfrozen copy" semantics observably.
+		switch right.Kind() {
+		case KindInt, KindFloat, KindString:
+			return right, nil
+		default:
+			return NewNil(), exec.errorAt(e.Pos(), "unsupported unary + operand")
+		}
 	case tokenBang, tokenNot:
 		return NewBool(!right.Truthy()), nil
 	default:
@@ -474,6 +484,12 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		result, err = moduloValues(left, right)
 	case tokenEQ:
 		return NewBool(left.Equal(right)), nil
+	case tokenCaseEQ:
+		// Ruby's case equality operator: the left operand acts as the matcher and
+		// the right operand is the value being tested. Ranges check membership;
+		// every other value falls back to `==`. This mirrors `when` clause
+		// matching, where the clause value is the matcher.
+		return NewBool(caseCandidateMatches(right, left)), nil
 	case tokenNotEQ:
 		return NewBool(!left.Equal(right)), nil
 	case tokenLT:
@@ -1049,11 +1065,17 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	}
 
 	trailing := len(target.Elements) - restIndex - 1
+	// Clamp the rest window to the available values. When the target has more
+	// fixed targets than the value provides, restIndex can exceed len(values);
+	// the missing fixed targets bind to nil (via valueAt) and the rest is empty,
+	// matching Ruby. Without clamping the low bound, values[restIndex:restEnd]
+	// would panic the host (a sandbox DoS) on a slice-out-of-range.
+	restStart := min(restIndex, len(values))
 	restEnd := len(values) - trailing
-	if restEnd < restIndex {
-		restEnd = restIndex
+	if restEnd < restStart {
+		restEnd = restStart
 	}
-	restValues := append([]Value(nil), values[restIndex:restEnd]...)
+	restValues := append([]Value(nil), values[restStart:restEnd]...)
 	for i, element := range target.Elements {
 		var val Value
 		switch {
@@ -1105,6 +1127,12 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 	switch value := stmt.Value.(type) {
 	case *CallExpr:
 		member, ok := value.Callee.(*MemberExpr)
+		// Only push uses the accumulator fast path. That path reuses the
+		// receiver's hidden backing buffer across iterations, which is sound for
+		// push because it is the canonical accumulator pattern. append is a
+		// documented non-mutating helper: routing it through the shared buffer
+		// would let escaped aliases (b = a) observe later appends, so it stays on
+		// the normal copy path that always returns a fresh array.
 		if !ok || member.Property != "push" || len(value.KwArgs) > 0 || value.Block != nil {
 			return NewNil(), false, nil
 		}
@@ -1112,7 +1140,7 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 		if !ok || receiver.Name != target.Name {
 			return NewNil(), false, nil
 		}
-		return exec.evalArrayPushAppendAssignment(target.Name, value, env)
+		return exec.evalArrayPushAssignment(target.Name, value, env)
 	case *BinaryExpr:
 		if value.Operator != tokenPlus {
 			return NewNil(), false, nil
@@ -1131,7 +1159,7 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 	}
 }
 
-func (exec *Execution) evalArrayPushAppendAssignment(name string, call *CallExpr, env *Env) (Value, bool, error) {
+func (exec *Execution) evalArrayPushAssignment(name string, call *CallExpr, env *Env) (Value, bool, error) {
 	receiver, ok := env.Get(name)
 	if !ok || receiver.Kind() != KindArray {
 		return NewNil(), false, nil
@@ -1381,6 +1409,15 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			}
 			last = val
 		}
+	case KindHash:
+		val, returned, err := exec.evalForHash(stmt, env, iterable, last)
+		if err != nil {
+			return NewNil(), false, err
+		}
+		if returned {
+			return val, true, nil
+		}
+		last = val
 	case KindRange:
 		r := iterable.Range()
 		if r.Start <= r.End {
@@ -1430,6 +1467,62 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "cannot iterate over %s", iterable.Kind())
 	}
 
+	return last, false, nil
+}
+
+// evalForHash runs a `for` loop over a hash, mirroring Ruby's `for` over a hash,
+// which iterates `each` and yields a two-element [key, value] pair. The returned
+// bool reports whether the body returned (propagating an explicit `return`), and
+// last seeds the loop's running value so the value of an empty loop matches the
+// enclosing statement's last value.
+//
+// Like hash.each, the loop builds no output map but materializes a sorted key
+// list to walk entries deterministically. The scratch slice is reserved against
+// the memory quota for the loop's entire lifetime via reserveLoopScratch, so it
+// is counted by every memory check inside the body -- not just preflighted once
+// before the loop. Without that reservation a body that allocates near the quota
+// could pass its own checks while the true peak (roots + scratch + body
+// allocation) exceeded the quota by the scratch size. The reservation is released
+// on every exit path through defer.
+func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value) (Value, bool, error) {
+	entries := iterable.Hash()
+	delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+	defer exec.releaseLoopScratch(delta)
+
+	// The scratch is now in the live baseline, so the preflight charges it through
+	// the call roots. The iterable plays the receiver role here, so an ephemeral
+	// hash literal is counted while a hash already bound to a variable is
+	// deduplicated against the live base.
+	if err := exec.checkProjectedHashWalkBytes(iterable, nil, nil, NewNil()); err != nil {
+		return NewNil(), false, err
+	}
+	var keyBuf [smallHashKeyBufferSize]string
+	for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+		if err := exec.step(); err != nil {
+			return NewNil(), false, exec.wrapError(err, stmt.Pos())
+		}
+		// Hash keys round-trip as symbols, the same shape hash.each and hash.keys
+		// expose.
+		pair := NewArray([]Value{NewSymbol(key), entries[key]})
+		if err := exec.checkMemoryWith(pair); err != nil {
+			return NewNil(), false, err
+		}
+		env.Assign(stmt.Iterator, pair)
+		val, returned, err := exec.evalStatements(stmt.Body, env)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return last, false, nil
+			}
+			if errors.Is(err, errLoopNext) {
+				continue
+			}
+			return NewNil(), false, err
+		}
+		if returned {
+			return val, true, nil
+		}
+		last = val
+	}
 	return last, false, nil
 }
 

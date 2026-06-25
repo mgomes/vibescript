@@ -239,18 +239,22 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 }
 
 // checkProjectedHashWalkBytes rejects a pure hash iterator (each, each_key,
-// each_value) before it allocates its sorted-key scratch buffer. These iterators
-// return the receiver and build no derived map, so their only allocation beyond
-// the live call roots is the scratch key list (see sortedKeyBufferBytes); they
-// must not be charged an output map they never create. scratchBytes is the heap
-// footprint of that key list. Charging a phantom empty map here would falsely
-// reject a quota that exactly fits the receiver, block, and scratch.
-func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+// each_value, and the `for k, v in hash` statement) before it walks the receiver.
+// These iterators return the receiver and build no derived map, so they must not
+// be charged an output map they never create; charging a phantom empty map here
+// would falsely reject a quota that exactly fits the receiver and block.
+//
+// The sorted-key scratch buffer these iterators materialize stays live while
+// their body runs, so callers reserve it through reserveLoopScratch before this
+// check rather than passing it here: the reservation folds the scratch into the
+// live baseline (hashCallRootBytes measures it), which both charges it at this
+// preflight and keeps every memory check inside the body aware of it.
+func (exec *Execution) checkProjectedHashWalkBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), scratchBytes)
+	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
@@ -362,12 +366,39 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
 
-	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(backingCap, estimatedValueBytes))
-	used := saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
-	if used > acc.exec.memoryQuota {
+	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
+}
+
+// reserveSlots rejects the build up front when a backing slice of slotCount Value
+// slots would already overflow the quota on top of the baseline (exec's reachable
+// roots plus the call roots) and the payload accumulated so far. Builtins that can
+// derive a large lower bound on the result length before emitting it — such as a
+// range selector in Array#values_at expanding to a billion padded positions — use
+// it to fail fast instead of charging the same slots one append at a time. It
+// charges only the slot array, not per-element payloads (those are added by add as
+// each element is appended), so it never rejects a result add would accept.
+func (acc *arrayBuildAccumulator) reserveSlots(slotCount int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	if used := acc.projected(slotCount); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
+// projected returns the build's live footprint if its backing slice held slotCount
+// Value slots: the baseline (exec's reachable roots plus the call roots), the slot
+// array sized to slotCount, and the payloads accumulated so far. add and
+// reserveSlots share it so the per-append and up-front checks charge the slot array
+// identically.
+func (acc *arrayBuildAccumulator) projected(slotCount int) int {
+	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
+	return saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
 }
 
 // hashBuildAccumulator charges the memory of an output map assembled entry by
@@ -656,8 +687,37 @@ func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Va
 	return total
 }
 
+// reserveLoopScratch folds a Go-local scratch allocation into the live memory
+// baseline so it is charged by every memory check for as long as it is held,
+// then returns the bytes actually reserved so releaseLoopScratch can subtract
+// exactly that amount. A hash-walking loop (the `for k, v in hash` statement and
+// Hash#each / each_key / each_value) materializes a sorted-key scratch slice that
+// stays live on the Go stack while its body runs. The body executes arbitrary
+// code with its own memory checks, but those checks measure only exec's reachable
+// roots and so never see this scratch slice; without reserving it, a body that
+// allocates near the quota could pass its own checks while the true peak (roots +
+// scratch + body allocation) exceeds the quota by the scratch size. Folding the
+// scratch into estimateMemoryUsageBase for the loop's duration makes every check
+// inside the body account for it.
+//
+// The return value is the delta applied, which equals scratchBytes unless the
+// reservation saturates at math.MaxInt; releaseLoopScratch must be passed that
+// delta so nested reservations stay perfectly balanced even under saturation.
+func (exec *Execution) reserveLoopScratch(scratchBytes int) int {
+	reserved := saturatingAdd(exec.reservedScratchBytes, scratchBytes)
+	delta := reserved - exec.reservedScratchBytes
+	exec.reservedScratchBytes = reserved
+	return delta
+}
+
+// releaseLoopScratch returns reserved scratch bytes to the baseline once the loop
+// that held them has finished. delta is the value reserveLoopScratch returned.
+func (exec *Execution) releaseLoopScratch(delta int) {
+	exec.reservedScratchBytes -= delta
+}
+
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
-	total := 0
+	total := exec.reservedScratchBytes
 
 	total += est.env(exec.root)
 	for _, env := range exec.envStack {

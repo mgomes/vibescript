@@ -5,7 +5,7 @@ Vibescript supports these control-flow forms:
 - `if` / `elsif` / `else`
 - `case` / `when` expressions
 - ternary expressions with `condition ? when_true : when_false`
-- `for` loops over arrays and ranges
+- `for` loops over arrays, ranges, and hashes
 - `while` and `until` loops
 - loop control with `break` and `next`
 - numeric ranges via `start..finish` and `start...finish`
@@ -34,6 +34,21 @@ def first_four
   end
   out
 end
+```
+
+A `for` loop may also iterate a hash, matching Ruby's behavior of looping over
+`each`. Each iteration binds a two-element `[key, value]` pair; keys are exposed
+as symbols and entries are visited in sorted key order.
+
+```vibe
+def entries
+  out = []
+  for pair in { b: 2, a: 1 }
+    out = out + [pair]
+  end
+  out
+end
+# entries => [[:a, 1], [:b, 2]]
 ```
 
 ## `case` / `when` expressions
@@ -68,6 +83,11 @@ end
 `when` range candidates test numeric membership. Inclusive and exclusive
 endpoints follow the same `..` / `...` range semantics used by `for` loops.
 Non-range candidates still use value equality.
+
+The same logic is available directly through the case equality operator `===`,
+where the left operand is the matcher: `(80..99) === score` returns the same
+result the matching `when 80..99` clause would. See
+[Operators](language_reference.md#operators).
 
 Targetless `case` evaluates each `when` expression as a predicate in order.
 
@@ -176,6 +196,6 @@ Semantics:
 
 Loop execution participates in step and memory quotas. Infinite loops will terminate with quota errors when limits are exceeded.
 
-Every loop iteration consumes a step, including `for` iterations over arrays and ranges. This holds even when the loop body is empty, so a large `for` loop with no body still terminates once the step quota is reached and still observes a context that was canceled by the host before iteration completes.
+Every loop iteration consumes a step, including `for` iterations over arrays, ranges, and hashes. This holds even when the loop body is empty, so a large `for` loop with no body still terminates once the step quota is reached and still observes a context that was canceled by the host before iteration completes.
 
 See `examples/control_flow/`, `examples/loops/`, and `examples/ranges/` for runnable scripts.

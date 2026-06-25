@@ -250,7 +250,10 @@ Core operator families:
 
 - Arithmetic: `+`, `-`, `*`, `/`, `%`, `**`
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`
+- Case equality: `===`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
+- Unary sign: prefix `-` negates a number; prefix `+` is the identity on
+  numbers and strings
 - Conditional: `condition ? when_true : when_false`
 
 The spaceship operator `<=>` returns `-1`, `0`, or `1` for ordered operands and
@@ -258,6 +261,15 @@ The spaceship operator `<=>` returns `-1`, `0`, or `1` for ordered operands and
 different currencies, or a `NaN` on either side), matching Ruby's spaceship
 contract. The relational operators `<`, `<=`, `>`, `>=` instead raise on
 incomparable operands, matching Ruby's `ArgumentError`.
+
+The case equality operator `===` treats its left operand as a matcher and its
+right operand as the value being tested, mirroring how a `case`/`when` clause
+compares its patterns. A range matcher checks membership, so `(1..3) === 2` is
+`true` and `(1...3) === 3` is `false`. Every other matcher falls back to `==`,
+so `1 === 1` is `true` and `2 === (1..3)` is `false` (the integer `2` is not a
+range). Because the scalar path reuses `==`, integers and floats remain distinct
+kinds, so `1 === 1.0` is `false`, unlike Ruby. Regex and class matchers will be
+added alongside the corresponding language features.
 
 Operator precedence follows conventional arithmetic/boolean ordering.
 Exponentiation with `**` is right-associative and binds more tightly than
@@ -272,6 +284,21 @@ Inspect those special values with `Float#nan?`, `Float#infinite?`, and
 precedence as `&&`, and `or` has the same precedence as `||`. Ternary
 conditionals have lower precedence than `or`, associate to the right, and
 evaluate only the selected branch.
+
+Prefix `+` mirrors Ruby's unary plus: it returns integers, floats, and strings
+unchanged and raises on any other operand. Because Vibescript strings are
+immutable values, `+"x"` yields the same string value.
+
+A leading `+` or `-` at the start of a fresh line follows Vibescript's
+indented-continuation rule, which is shared with `-` and intentionally differs
+from Ruby. When the sign sits flush against its operand it begins a new
+statement (`total\n+amount` parses as two statements, matching Ruby). When the
+sign is separated from its operand by surrounding whitespace it continues the
+previous line as a binary operator (`total\n + amount` is addition). Ruby treats
+both forms as a new statement and would instead parse `total\n + amount` as the
+two statements `total` and `+amount`; Vibescript deliberately supports the
+spaced form as an explicit operator continuation so multi-line arithmetic can be
+indented under its first operand.
 
 ## Control Flow
 

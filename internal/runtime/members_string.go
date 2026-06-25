@@ -18,10 +18,11 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var stringMemberNames = []string{
-	"size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice",
+	"size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
-	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "each_char", "each_line", "each_byte", "template",
+	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "codepoints", "each_char", "each_line", "each_byte", "each_codepoint", "template",
 	"center", "ljust", "rjust",
+	"to_sym", "intern",
 }
 
 var stringBuiltinMembers = newMemberTable(stringMemberNames)
@@ -35,14 +36,35 @@ func stringMember(str Value, property string) (Value, error) {
 
 func stringMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "bytesize", "ord", "chr", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice":
+	case "size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
-	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "each_char", "each_line", "each_byte", "template":
+	case "sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "codepoints", "each_char", "each_line", "each_byte", "each_codepoint", "template":
 		return stringMemberTextOps(property)
 	case "center", "ljust", "rjust":
 		return stringMemberPadding(property)
+	case "to_sym", "intern":
+		return stringMemberConversions(property)
+	default:
+		return NewNil(), fmt.Errorf("unknown string method %s", property)
+	}
+}
+
+// stringMemberConversions builds the string-to-symbol conversion members.
+// Ruby's String#to_sym and its alias String#intern both return the symbol
+// whose name is the receiver, so any string contents (including empty) yield a
+// symbol verbatim without further validation.
+func stringMemberConversions(property string) (Value, error) {
+	switch property {
+	case "to_sym", "intern":
+		name := "string." + property
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			}
+			return NewSymbol(receiver.String()), nil
+		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
@@ -119,32 +141,138 @@ func isRubyASCIISpace(b byte) bool {
 	}
 }
 
-// splitOnASCIIWhitespace splits text on runs of ASCII whitespace, mirroring
-// Ruby's default (AWK-style) String#split. Leading and trailing whitespace is
-// discarded and consecutive whitespace collapses, so " a  b " yields ["a",
-// "b"] and a blank string yields no fields. Only the bytes recognized by
+// splitOnASCIIWhitespaceLimit performs Ruby's default (AWK-style) String#split
+// while honoring the optional limit argument. Only the bytes recognized by
 // isRubyASCIISpace separate fields; wider Unicode whitespace is preserved
 // inside the surrounding field rather than acting as a delimiter, matching Ruby
-// instead of Go's strings.Fields Unicode whitespace table.
-func splitOnASCIIWhitespace(text string) []string {
-	var fields []string
-	start := -1
-	for i := range len(text) {
-		if isRubyASCIISpace(text[i]) {
-			if start >= 0 {
-				fields = append(fields, text[start:i])
-				start = -1
-			}
-			continue
-		}
-		if start < 0 {
-			start = i
-		}
+// instead of Go's strings.Fields Unicode whitespace table. With the default
+// limit of 0 leading and trailing whitespace is discarded and consecutive
+// whitespace collapses, so " a  b " yields ["a", "b"]. The limit cases extend
+// that behavior:
+//
+//   - limit == 1 returns the whole string as a single field, leaving any
+//     leading or trailing whitespace intact, exactly like Ruby.
+//   - a positive limit caps the result at that many fields; once limit-1 fields
+//     have been collected the remainder of the string (including the whitespace
+//     that would normally separate fields) becomes the final field.
+//   - any limit other than 0 preserves a single trailing empty field when the
+//     string ends in whitespace, so "a b ".split(nil, -1) yields ["a", "b", ""].
+//
+// An empty string always yields no fields, matching Ruby.
+func splitOnASCIIWhitespaceLimit(text string, limit int) []string {
+	if text == "" {
+		return nil
 	}
-	if start >= 0 {
-		fields = append(fields, text[start:])
+	if limit == 1 {
+		return []string{text}
+	}
+	var fields []string
+	i := 0
+	n := len(text)
+	for i < n {
+		for i < n && isRubyASCIISpace(text[i]) {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		if limit > 0 && len(fields) == limit-1 {
+			fields = append(fields, text[i:])
+			return fields
+		}
+		start := i
+		for i < n && !isRubyASCIISpace(text[i]) {
+			i++
+		}
+		fields = append(fields, text[start:i])
+	}
+	// A trailing run of whitespace yields exactly one empty field whenever the
+	// limit is not the default 0; a fully blank string therefore yields [""].
+	if limit != 0 && isRubyASCIISpace(text[n-1]) {
+		fields = append(fields, "")
 	}
 	return fields
+}
+
+// splitEmptySeparator implements Ruby's String#split("") which splits a string
+// into its individual characters (runes). The limit argument matches Ruby:
+//
+//   - limit == 1 returns the whole string as a single field.
+//   - a positive limit keeps the first limit-1 characters as single-character
+//     fields and groups the remaining characters into the final field; if the
+//     limit exceeds the character count a single trailing empty field is added.
+//   - limit == 0 drops the trailing empty field, while a negative limit (and any
+//     positive limit large enough to exhaust the characters) keeps it, so
+//     "abc".split("", -1) yields ["a", "b", "c", ""].
+//
+// An empty string always yields no fields, matching Ruby. Splitting walks the
+// string by UTF-8 character boundaries rather than materializing a []rune so
+// that invalid bytes in a binary receiver are preserved as single-byte fields
+// (matching Ruby's "a\xffb".split("") => ["a", "\xff", "b"]) instead of being
+// rewritten as the U+FFFD replacement character.
+func splitEmptySeparator(text string, limit int) []string {
+	if text == "" {
+		return nil
+	}
+	if limit == 1 {
+		return []string{text}
+	}
+	// offsets holds the byte index where each character begins, so a positive
+	// limit can slice the original text without losing raw bytes.
+	offsets := make([]int, 0, len(text)+1)
+	for i := 0; i < len(text); {
+		offsets = append(offsets, i)
+		_, width := utf8.DecodeRuneInString(text[i:])
+		i += width
+	}
+	if limit > 1 && limit-1 < len(offsets) {
+		fields := make([]string, limit)
+		for i := range limit - 1 {
+			fields[i] = text[offsets[i]:offsets[i+1]]
+		}
+		fields[limit-1] = text[offsets[limit-1]:]
+		return fields
+	}
+	fields := make([]string, 0, len(offsets)+1)
+	for i, start := range offsets {
+		end := len(text)
+		if i+1 < len(offsets) {
+			end = offsets[i+1]
+		}
+		fields = append(fields, text[start:end])
+	}
+	if limit != 0 {
+		fields = append(fields, "")
+	}
+	return fields
+}
+
+// splitWithSeparator implements Ruby's String#split(sep, limit) for a non-empty
+// string separator. The limit argument matches Ruby:
+//
+//   - a positive limit caps the result at that many fields, leaving the
+//     remainder unsplit in the final field.
+//   - limit == 0 (the default) drops trailing empty fields.
+//   - a negative limit preserves every field, including trailing empties.
+//
+// An empty string always yields no fields, matching Ruby.
+func splitWithSeparator(text, sep string, limit int) []string {
+	if text == "" {
+		return nil
+	}
+	switch {
+	case limit > 0:
+		return strings.SplitN(text, sep, limit)
+	case limit < 0:
+		return strings.Split(text, sep)
+	default:
+		parts := strings.Split(text, sep)
+		end := len(parts)
+		for end > 0 && parts[end-1] == "" {
+			end--
+		}
+		return parts[:end]
+	}
 }
 
 func chompDefault(text string) string {
@@ -529,6 +657,22 @@ func stringSliceCharAt(text string, index int) Value {
 	return NewString(substr)
 }
 
+// stringInsertByteOffset maps a Ruby String#insert character index to a byte
+// offset in text, returning ok=false when the index is out of range. A
+// non-negative index inserts before the character at that position, so the
+// valid range is 0..runeLen (a value equal to runeLen appends). A negative
+// index inserts after the character it selects, so -1 appends and the valid
+// range is -(runeLen+1)..-1; the effective offset is runeLen + index + 1.
+func stringInsertByteOffset(text string, index int) (int, bool) {
+	if index < 0 {
+		index += stringRuneLen(text) + 1
+		if index < 0 {
+			return 0, false
+		}
+	}
+	return stringByteIndexForRuneOffset(text, index)
+}
+
 // stringRuneRangeSlice extracts the runes selected by a range, matching Ruby's
 // String#slice(range). Negative bounds count back from the end. A begin bound
 // before the start of the string (after normalization) or past its length
@@ -568,6 +712,103 @@ func stringRuneRangeSlice(text string, rng Range) (string, bool) {
 		return "", false
 	}
 	return substr, true
+}
+
+// stringByteslice implements Ruby's String#byteslice. It operates on raw byte
+// offsets (unlike slice, which is rune-aware) and accepts three argument shapes:
+// a single integer index returns the one-byte substring at that offset; an
+// integer start and length return up to length bytes from start; and a range
+// selects a byte window. Negative offsets count back from the end of the string.
+// An out-of-range start, or a negative length, yields nil, matching Ruby. The
+// extracted bytes are returned verbatim without UTF-8 normalization, so slicing
+// across a multibyte boundary preserves the raw bytes, mirroring Ruby's
+// byte-oriented semantics.
+func stringByteslice(text string, args []Value) (Value, error) {
+	switch len(args) {
+	case 1:
+		if args[0].Kind() == KindRange {
+			substr, inRange := stringByteRangeSlice(text, args[0].Range())
+			if !inRange {
+				return NewNil(), nil
+			}
+			return NewString(substr), nil
+		}
+		index, err := valueToInt(args[0])
+		if err != nil {
+			return NewNil(), fmt.Errorf("string.byteslice index must be an integer or range")
+		}
+		if index < 0 {
+			index += len(text)
+		}
+		if index < 0 || index >= len(text) {
+			return NewNil(), nil
+		}
+		return NewString(text[index : index+1]), nil
+	case 2:
+		start, err := valueToInt(args[0])
+		if err != nil {
+			return NewNil(), fmt.Errorf("string.byteslice start must be an integer")
+		}
+		length, err := valueToInt(args[1])
+		if err != nil {
+			return NewNil(), fmt.Errorf("string.byteslice length must be an integer")
+		}
+		if length < 0 {
+			return NewNil(), nil
+		}
+		if start < 0 {
+			start += len(text)
+		}
+		// A start exactly at the length is valid and yields an empty string; only
+		// a start before zero or past the length is out of range.
+		if start < 0 || start > len(text) {
+			return NewNil(), nil
+		}
+		end := start + length
+		if end > len(text) || end < start {
+			end = len(text)
+		}
+		return NewString(text[start:end]), nil
+	default:
+		return NewNil(), fmt.Errorf("string.byteslice expects an index, a range, or a start and length")
+	}
+}
+
+// stringByteRangeSlice extracts the byte window selected by a range for
+// String#byteslice. It mirrors stringRuneRangeSlice but counts in bytes: a
+// begin before the start (after normalization) or past the length yields
+// inRange=false (nil), a begin exactly at the length yields an empty string, the
+// end bound is clamped to the length, and an end before begin yields an empty
+// string.
+func stringByteRangeSlice(text string, rng Range) (string, bool) {
+	length := int64(len(text))
+	begin := rng.Start
+	if begin < 0 {
+		begin += length
+	}
+	if begin < 0 || begin > length {
+		return "", false
+	}
+	end := rng.End
+	if end < 0 {
+		end += length
+	}
+	if !rng.Exclusive {
+		// An inclusive range's exclusive end is one past End; guard the increment so
+		// End == math.MaxInt64 cannot wrap to a negative no-op window.
+		if end == math.MaxInt64 {
+			end = length
+		} else {
+			end++
+		}
+	}
+	if end > length {
+		end = length
+	}
+	if end < begin {
+		end = begin
+	}
+	return text[begin:end], true
 }
 
 func normalizeInvalidUTF8(text string) string {
@@ -1379,6 +1620,34 @@ func stringMemberQuery(property string) (Value, error) {
 			}
 			return NewString(string(r)), nil
 		}), nil
+	case "getbyte":
+		return NewAutoBuiltin("string.getbyte", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.getbyte does not accept keyword arguments")
+			}
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("string.getbyte expects exactly one index")
+			}
+			index, err := valueToInt(args[0])
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.getbyte index must be an integer")
+			}
+			text := receiver.String()
+			if index < 0 {
+				index += len(text)
+			}
+			if index < 0 || index >= len(text) {
+				return NewNil(), nil
+			}
+			return NewInt(int64(text[index])), nil
+		}), nil
+	case "byteslice":
+		return NewAutoBuiltin("string.byteslice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.byteslice does not accept keyword arguments")
+			}
+			return stringByteslice(receiver.String(), args)
+		}), nil
 	case "hex":
 		return NewAutoBuiltin("string.hex", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -1425,6 +1694,41 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				b.WriteString(arg.String())
 			}
+			return NewString(b.String()), nil
+		}), nil
+	case "prepend":
+		return NewAutoBuiltin("string.prepend", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			var b strings.Builder
+			for _, arg := range args {
+				if arg.Kind() != KindString {
+					return NewNil(), fmt.Errorf("string.prepend expects string arguments")
+				}
+				b.WriteString(arg.String())
+			}
+			b.WriteString(receiver.String())
+			return NewString(b.String()), nil
+		}), nil
+	case "insert":
+		return NewAutoBuiltin("string.insert", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 2 {
+				return NewNil(), fmt.Errorf("string.insert expects an index and a string")
+			}
+			index, err := valueToInt(args[0])
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.insert index must be integer")
+			}
+			if args[1].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.insert value must be string")
+			}
+			text := receiver.String()
+			byteAt, ok := stringInsertByteOffset(text, index)
+			if !ok {
+				return NewNil(), fmt.Errorf("string.insert index %d out of string", index)
+			}
+			var b strings.Builder
+			b.WriteString(text[:byteAt])
+			b.WriteString(args[1].String())
+			b.WriteString(text[byteAt:])
 			return NewString(b.String()), nil
 		}), nil
 	case "replace":
@@ -1921,21 +2225,43 @@ func stringMemberTextOps(property string) (Value, error) {
 		}), nil
 	case "split":
 		return NewAutoBuiltin("string.split", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 1 {
-				return NewNil(), fmt.Errorf("string.split accepts at most one separator")
+			if len(args) > 2 {
+				return NewNil(), fmt.Errorf("string.split accepts at most a separator and a limit")
+			}
+			// The optional second argument is Ruby's limit. limit == 0 is the
+			// default and trims trailing empty fields, a positive limit caps the
+			// field count with the remainder unsplit in the final field, and a
+			// negative limit preserves trailing empty fields. The limit must be a
+			// genuine integer: a Float (even one with no fractional part) is
+			// rejected so a computed numeric limit is never silently truncated.
+			limit := 0
+			if len(args) == 2 {
+				if args[1].Kind() != KindInt {
+					return NewNil(), fmt.Errorf("string.split limit must be integer")
+				}
+				limit = int(args[1].Int())
 			}
 			text := receiver.String()
 			var parts []string
+			switch {
 			// An explicit nil separator behaves like the no-argument form,
 			// splitting on runs of ASCII whitespace, matching Ruby's
 			// String#split(nil).
-			if len(args) == 0 || args[0].IsNil() {
-				parts = splitOnASCIIWhitespace(text)
-			} else {
-				if args[0].Kind() != KindString {
-					return NewNil(), fmt.Errorf("string.split separator must be string or nil")
-				}
-				parts = strings.Split(text, args[0].String())
+			case len(args) == 0 || args[0].IsNil():
+				parts = splitOnASCIIWhitespaceLimit(text, limit)
+			case args[0].Kind() != KindString:
+				return NewNil(), fmt.Errorf("string.split separator must be string or nil")
+			// A single ASCII space is Ruby's AWK whitespace mode, not a literal
+			// separator: it collapses runs of whitespace, discards leading
+			// whitespace, and honors the limit exactly like the nil form, so
+			// " a  b ".split(" ", 2) yields ["a", "b "] rather than a leading
+			// empty field.
+			case args[0].String() == " ":
+				parts = splitOnASCIIWhitespaceLimit(text, limit)
+			case args[0].String() == "":
+				parts = splitEmptySeparator(text, limit)
+			default:
+				parts = splitWithSeparator(text, args[0].String(), limit)
 			}
 			values := make([]Value, len(parts))
 			for i, part := range parts {
@@ -2008,6 +2334,24 @@ func stringMemberTextOps(property string) (Value, error) {
 			}
 			return NewArray(values), nil
 		}), nil
+	case "codepoints":
+		return NewAutoBuiltin("string.codepoints", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.codepoints does not take arguments")
+			}
+			text := receiver.String()
+			// Reject the allocation up front so a string that fits the memory
+			// quota cannot reserve a result array of one Value per code point that
+			// does not, mirroring the guard on bytes.
+			if err := exec.checkProjectedIntArrayBytes(stringRuneLen(text)); err != nil {
+				return NewNil(), err
+			}
+			values := make([]Value, 0, stringRuneLen(text))
+			for _, r := range text {
+				values = append(values, NewInt(int64(r)))
+			}
+			return NewArray(values), nil
+		}), nil
 	case "each_char":
 		return NewAutoBuiltin("string.each_char", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
@@ -2039,6 +2383,24 @@ func stringMemberTextOps(property string) (Value, error) {
 			text := receiver.String()
 			for i := range len(text) {
 				blockArg[0] = NewInt(int64(text[i]))
+				if _, err := runner.call(blockArg[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
+	case "each_codepoint":
+		return NewAutoBuiltin("string.each_codepoint", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 || len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("string.each_codepoint does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "string.each_codepoint")
+			if err != nil {
+				return NewNil(), err
+			}
+			var blockArg [1]Value
+			for _, r := range receiver.String() {
+				blockArg[0] = NewInt(int64(r))
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
 				}

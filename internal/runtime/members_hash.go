@@ -312,22 +312,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) == 0 {
 				return NewNil(), fmt.Errorf("hash.dig expects at least one key")
 			}
-			current := receiver
-			for _, arg := range args {
-				key, err := valueToHashKey(arg)
-				if err != nil {
-					return NewNil(), fmt.Errorf("hash.dig path keys must be symbol or string")
-				}
-				if current.Kind() != KindHash && current.Kind() != KindObject {
-					return NewNil(), nil
-				}
-				next, ok := current.Hash()[key]
-				if !ok {
-					return NewNil(), nil
-				}
-				current = next
-			}
-			return current, nil
+			return digPath("hash.dig", receiver, args)
 		}), nil
 	case "each":
 		return NewAutoBuiltin("hash.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -340,10 +325,15 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			entries := receiver.Hash()
 			// each builds no output map, but it materializes a sorted key list to
-			// walk entries deterministically. Charge that scratch buffer before
-			// allocating it so a large receiver cannot escape the memory quota; the
-			// walk projection charges no output map this iterator never creates.
-			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// walk entries deterministically. Reserve that scratch buffer against the
+			// quota for the walk's whole lifetime so a large receiver cannot escape the
+			// memory quota and so every memory check inside the block body counts the
+			// live scratch; the walk projection charges no output map this iterator
+			// never creates. Reserving first means the projection adds no separate
+			// scratch bytes.
+			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+			defer exec.releaseLoopScratch(delta)
+			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArgs [2]Value
@@ -374,10 +364,14 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// Charge the sorted key scratch buffer before allocating it; each_key
-			// builds no output map but walks a materialized key list, so the walk
-			// projection charges no output map.
-			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// Reserve the sorted key scratch buffer for the walk's lifetime; each_key
+			// builds no output map but walks a materialized key list that stays live
+			// while the block body runs, so reserving it keeps every memory check
+			// inside the body aware of the scratch. Reserving first means the walk
+			// projection adds no separate scratch bytes.
+			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+			defer exec.releaseLoopScratch(delta)
+			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value
@@ -405,10 +399,14 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// Charge the sorted key scratch buffer before allocating it; each_value
-			// builds no output map but walks a materialized key list, so the walk
-			// projection charges no output map.
-			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			// Reserve the sorted key scratch buffer for the walk's lifetime; each_value
+			// builds no output map but walks a materialized key list that stays live
+			// while the block body runs, so reserving it keeps every memory check
+			// inside the body aware of the scratch. Reserving first means the walk
+			// projection adds no separate scratch bytes.
+			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+			defer exec.releaseLoopScratch(delta)
+			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			var blockArg [1]Value

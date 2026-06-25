@@ -104,7 +104,12 @@ content and integers do not match equal-looking floats.
 - `fetch_values(*keys)` returns the values for several keys at once, in the
   requested order. Unlike `fetch`, it raises when a key is absent. Pass a block
   to compute a replacement for each missing key instead of raising.
-- `dig(*path)` for nested lookup.
+- `dig(*path)` for nested lookup. A path component descends one level: a
+  symbol or string key into a hash, or an integer index into an array, so a
+  single `dig` can walk JSON-shaped data that mixes hashes and arrays. Missing
+  keys and out-of-range indexes yield `nil` rather than raising. Indexing an
+  array with a non-integer component raises, matching how arrays reject
+  non-integer indexes elsewhere.
 - `values_at(*keys)` to read several values at once, in requested key order, with
   `nil` for missing keys.
 
@@ -113,6 +118,9 @@ def display_name_or_default(records, player_id)
   fallback = "unknown"
   records.dig(player_id, :meta, :display_name) || fallback
 end
+
+{ a: [10, 20] }.dig(:a, 1)  # 20
+{ a: { b: 1 } }.dig(:a, :z) # nil
 ```
 
 ```vibe
@@ -222,6 +230,21 @@ end
 
 `keys`, `values`, `flatten`, and block-based hash iteration process entries in
 sorted key order for deterministic behavior.
+
+A `for` loop may also iterate a hash directly, mirroring Ruby's loop over
+`each`. Each iteration binds a two-element `[key, value]` pair (keys exposed as
+symbols), visited in the same sorted key order:
+
+```vibe
+def entries(hash)
+  out = []
+  for pair in hash
+    out = out + [pair]
+  end
+  out
+end
+# entries({ b: 2, a: 1 }) => [[:a, 1], [:b, 2]]
+```
 
 Example:
 
