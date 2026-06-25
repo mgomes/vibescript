@@ -786,14 +786,14 @@ func (cloner *taskGlobalCloner) clone(val Value) Value {
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
 		if clone, seen := cloner.seenMaps[ptr]; seen {
-			return NewHash(clone)
+			return cloner.rebuildHash(val, clone)
 		}
 		clonedEntries := make(map[string]Value, len(entries))
 		cloner.seenMaps[ptr] = clonedEntries
 		for key, item := range entries {
 			clonedEntries[key] = cloner.clone(item)
 		}
-		return NewHash(clonedEntries)
+		return cloner.rebuildHash(val, clonedEntries)
 	case KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
@@ -824,6 +824,26 @@ func (cloner *taskGlobalCloner) clone(val Value) Value {
 	default:
 		return val
 	}
+}
+
+// rebuildHash wraps cloned entries in a hash carrying the cloned Ruby-style
+// default metadata of src. A hash's default value and default proc are reachable
+// state inherited by a task, so they must be cloned like entries rather than
+// dropped, which would make a missing-key lookup in the task return nil instead
+// of the configured default. A hash with no default produces a plain hash.
+func (cloner *taskGlobalCloner) rebuildHash(src Value, clonedEntries map[string]Value) Value {
+	defaultValue := hashDefaultValue(src)
+	defaultProc := hashDefaultProc(src)
+	if defaultValue.IsNil() && defaultProc.IsNil() {
+		return NewHash(clonedEntries)
+	}
+	if !defaultValue.IsNil() {
+		defaultValue = cloner.clone(defaultValue)
+	}
+	if !defaultProc.IsNil() {
+		defaultProc = cloner.clone(defaultProc)
+	}
+	return NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
 }
 
 func cloneTaskValue(label string, val Value) (Value, error) {

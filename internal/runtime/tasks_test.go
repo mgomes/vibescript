@@ -293,6 +293,77 @@ func TestCloneTaskGlobalsCreatesIndependentMutableSnapshots(t *testing.T) {
 	}
 }
 
+// TestCloneTaskGlobalsPreservesHashDefaults pins that cloning a global hash for
+// a task carries its Ruby-style default metadata. The cloner used to rebuild
+// every KindHash with NewHash(entries), dropping the default value and default
+// proc, so a missing-key lookup inside the task returned nil instead of the
+// configured default.
+func TestCloneTaskGlobalsPreservesHashDefaults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default value cloned and isolated", func(t *testing.T) {
+		t.Parallel()
+		defaultArr := NewArray([]Value{NewInt(1)})
+		globals := map[string]Value{
+			"cfg": NewHashWithDefault(map[string]Value{}, defaultArr, NewNil()),
+		}
+
+		cloned := cloneTaskGlobals(globals)
+		clonedDefault := hashDefaultValue(cloned["cfg"])
+		if clonedDefault.Kind() != KindArray {
+			t.Fatalf("cloned task global default = %#v, want an array", clonedDefault)
+		}
+		if got := clonedDefault.Array()[0]; got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("cloned default element = %s, want 1", got.String())
+		}
+
+		// Mutating the clone's default must not leak back into the source hash.
+		clonedDefault.Array()[0] = NewInt(99)
+		if got := defaultArr.Array()[0]; got.Kind() != KindInt || got.Int() != 1 {
+			t.Fatalf("source default leaked mutation: got %s, want 1", got.String())
+		}
+	})
+
+	t.Run("default proc preserved", func(t *testing.T) {
+		t.Parallel()
+		proc := NewBlock(nil, nil, newEnv(nil))
+		globals := map[string]Value{
+			"cfg": NewHashWithDefault(map[string]Value{}, NewNil(), proc),
+		}
+
+		cloned := cloneTaskGlobals(globals)
+		if got := hashDefaultProc(cloned["cfg"]); got.Kind() != KindBlock {
+			t.Fatalf("cloned task global default proc = %#v, want a block", got)
+		}
+	})
+}
+
+// TestTaskInheritsGlobalHashDefault pins end-to-end that a task spawned from a
+// global hash carrying a Ruby-style default sees that default on a missing-key
+// lookup. The task-global cloner used to drop the default when isolating the
+// inherited hash, so the lookup returned nil inside the task.
+func TestTaskInheritsGlobalHashDefault(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def read_missing(_item)
+  cfg[:missing]
+end
+
+def run()
+  Tasks.map([1], max: 1, with: :read_missing)
+end`)
+
+	cfg := NewHashWithDefault(map[string]Value{}, NewInt(42), NewNil())
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{"cfg": cfg},
+	})
+	if result.Kind() != KindArray || len(result.Array()) != 1 {
+		t.Fatalf("run result = %s, want a single-element array", result.String())
+	}
+	if got := result.Array()[0]; got.Kind() != KindInt || got.Int() != 42 {
+		t.Fatalf("task missing-key lookup = %#v, want int 42 from the inherited default", got)
+	}
+}
+
 func TestTasksCloneInheritedMutableGlobalsForEachJob(t *testing.T) {
 	t.Parallel()
 	script := compileScriptDefault(t, `def mark_global(item)
