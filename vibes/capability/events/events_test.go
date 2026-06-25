@@ -180,3 +180,48 @@ func TestCapabilityPublishRejectsCyclicPayload(t *testing.T) {
 		t.Fatalf("expected cycle rejection, got %v", err)
 	}
 }
+
+func TestCapabilityPublishRejectsDefaultProcPayload(t *testing.T) {
+	t.Parallel()
+	stub := &stubPublisher{result: value.NewNil()}
+	cap := MustNewCapability("events", stub)
+
+	// A payload hash carrying a default proc (a runtime-only block) outside its
+	// entry map must be rejected: the proc is a script callable that the
+	// data-only scan would miss if it walked only the entries.
+	payload := value.NewHashWithDefault(map[string]value.Value{}, value.NewNil(), value.NewValue(value.KindBlock, struct{}{}))
+	args := []value.Value{value.NewString("topic"), payload}
+
+	_, err := cap.Publish(context.Background(), args, nil, false)
+	if err == nil || !strings.Contains(err.Error(), "must be data-only") {
+		t.Fatalf("expected default-proc rejection, got %v", err)
+	}
+}
+
+func TestCapabilityPublishPreservesReturnHashDefault(t *testing.T) {
+	t.Parallel()
+
+	// The host returns a hash carrying a Ruby-style default value. The deep
+	// clone the capability applies before handing it to the script must keep
+	// that default, otherwise the script sees a plain hash that returns nil for
+	// missing keys.
+	stub := &stubPublisher{
+		result: value.NewHashWithDefault(
+			map[string]value.Value{"present": value.NewInt(1)},
+			value.NewInt(42),
+			value.NewNil(),
+		),
+	}
+	cap := MustNewCapability("events", stub)
+
+	args := []value.Value{value.NewString("topic"), value.NewHash(nil)}
+	result, err := cap.Publish(context.Background(), args, nil, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := value.HashDefaultValue(result)
+	if got.Kind() != value.KindInt || got.Int() != 42 {
+		t.Fatalf("clone dropped hash default: got %s", got)
+	}
+}
