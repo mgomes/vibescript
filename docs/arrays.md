@@ -104,6 +104,12 @@ and leaves the receiver untouched.
 - `count`, `count(value)`, or `count { ... }`. As in Ruby, a `value` argument
   takes precedence: `count(value) { ... }` counts elements equal to `value` and
   ignores the block.
+- `dig(*path)` for nested lookup across arrays and hashes. Each path component
+  descends one level: an integer index into an array, or a symbol/string key
+  into a hash, so a single `dig` can walk JSON-shaped data. Missing keys and
+  out-of-range indexes (including negative indexes, which arrays treat as out of
+  range) yield `nil` rather than raising. A non-integer array index raises, like
+  the index operator.
 - `any?`, `all?`, `none?` with optional blocks.
 
 `index`, `find_index`, and `rindex` accept either a value or a block, never both;
@@ -121,6 +127,10 @@ def health_checks(values)
     all_non_negative: values.all? { |v| v >= 0 }
   }
 end
+
+[[1, 2], [3, 4]].dig(1, 0)             # 3
+[{ name: "x" }, { name: "y" }].dig(1, :name) # "y"
+[[1, 2]].dig(5, 0)                     # nil
 ```
 
 ## Prefix and pattern filtering

@@ -447,9 +447,9 @@ end`,
 			errMsg: "expects at least one key",
 		},
 		{
-			name:   "hash.dig with unsupported key type",
-			script: `def run() {a: 1}.dig(1) end`,
-			errMsg: "path keys must be symbol or string",
+			name:   "hash.dig with non-integer array index",
+			script: `def run() {a: [1]}.dig(:a, "0") end`,
+			errMsg: "hash.dig array index must be integer",
 		},
 		{
 			name:   "hash.each without block",
