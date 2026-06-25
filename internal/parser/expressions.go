@@ -589,10 +589,12 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 // level of a destructuring-assignment left-hand side, between the leading
 // "*" and the terminating "=". Bracketed sub-targets are validated by depth
 // tracking in lineStartsSplatAssignment, so this only governs depth-zero
-// tokens.
+// tokens. "self" is included because "self.member" and "self[index]" are
+// valid assignment targets, so a target list may legitimately begin one of
+// its elements with "self".
 func splatAssignmentTopLevelToken(tt ast.TokenType) bool {
 	switch tt {
-	case ast.TokenIdent, ast.TokenIvar, ast.TokenClassVar, ast.TokenComma, ast.TokenAsterisk, ast.TokenDot, ast.TokenScope, ast.TokenLParen, ast.TokenRParen, ast.TokenLBracket, ast.TokenRBracket:
+	case ast.TokenIdent, ast.TokenIvar, ast.TokenClassVar, ast.TokenSelf, ast.TokenComma, ast.TokenAsterisk, ast.TokenDot, ast.TokenScope, ast.TokenLParen, ast.TokenRParen, ast.TokenLBracket, ast.TokenRBracket:
 		return true
 	default:
 		return false

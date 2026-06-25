@@ -351,6 +351,30 @@ func TestParserLineInitialSplatAssignmentStartsNewStatement(t *testing.T) {
 				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
 			}},
 		},
+		{
+			name:       "named rest before self member target",
+			assignment: "*rest, self.count = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "self"}, Property: "count"}},
+			}},
+		},
+		{
+			name:       "anonymous rest before self member target",
+			assignment: "*, self.count = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "self"}, Property: "count"}},
+			}},
+		},
+		{
+			name:       "named rest before self index target",
+			assignment: "*rest, self[0] = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.IndexExpr{Object: &ast.Identifier{Name: "self"}, Index: &ast.IntegerLiteral{Value: 0}}},
+			}},
+		},
 	}
 
 	for _, tt := range tests {
