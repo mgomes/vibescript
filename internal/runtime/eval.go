@@ -881,7 +881,7 @@ func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value V
 		env.Define(t.Name, value)
 		return nil
 	case *DestructureTarget:
-		return AssignDestructure(t, value, func(target Expression, value Value) error {
+		return exec.assignDestructure(t, value, func(target Expression, value Value) error {
 			return exec.bindBlockParamTarget(env, target, value)
 		})
 	default:
@@ -959,7 +959,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		env.Assign(t.Name, value)
 		return nil
 	case *DestructureTarget:
-		return AssignDestructure(t, value, func(target Expression, value Value) error {
+		return exec.assignDestructure(t, value, func(target Expression, value Value) error {
 			return exec.assign(target, value, env)
 		})
 	case *MemberExpr:
@@ -1052,18 +1052,47 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value
 }
 
 // AssignDestructure applies Vibescript's destructuring assignment rules and
-// invokes assign for each concrete leaf target.
+// invokes assign for each concrete leaf target. It is the host-facing entry
+// point used by tools that walk destructuring targets without a sandboxed
+// Execution (such as the REPL extracting bound names from a result); it never
+// charges memory because it allocates only when a leaf assigns into an aliased
+// right-hand side array, which those callers do not do. Sandboxed evaluation
+// goes through Execution.assignDestructure, which charges the snapshot against
+// the memory quota.
 func AssignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
+	return assignDestructure(target, value, assign, noopSnapshotCharge)
+}
+
+// noopSnapshotCharge admits every snapshot. AssignDestructure's host callers run
+// outside a memory quota, so the source snapshot they may take is not metered.
+func noopSnapshotCharge(int) error { return nil }
+
+// assignDestructure applies Vibescript's destructuring assignment rules and
+// invokes assign for each concrete leaf target. chargeSnapshot meters the source
+// snapshot's slot array against the caller's memory quota before it is
+// allocated.
+func (exec *Execution) assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
+	return assignDestructure(target, value, assign, exec.checkProjectedIntArrayBytes)
+}
+
+func assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error, chargeSnapshot func(int) error) error {
 	values := destructureValues(value)
 	// Ruby evaluates the whole right-hand side into an array before performing
 	// any assignment, so every target reads its original value regardless of
 	// LHS write order. When the RHS is an array, destructureValues aliases its
-	// live backing store, so a target that writes into that array (e.g.
-	// "values[1], *rest = values") would otherwise let later reads observe the
-	// mutation. Snapshot the source up front whenever a target can write back,
-	// but keep the alias on the common case where every target only binds a name
-	// (and the scalar RHS path, which already returns a fresh slice).
-	if value.Kind() == KindArray && destructureTargetWrites(target) {
+	// live backing store, so a target that writes into that array and is read
+	// back by a later target (e.g. "values[1], *rest = values") would otherwise
+	// let that later read observe the mutation. Snapshot the source only when a
+	// writing target precedes a reading one; the snapshot's slot array is a fresh
+	// allocation, so charge it against the memory quota and fail fast before
+	// materializing it. The common case where every target only binds a name (and
+	// the scalar RHS path, which already returns a fresh slice) keeps the alias,
+	// as does a write whose only followers discard their window (e.g.
+	// "values[0], * = values"), which reads nothing the write could corrupt.
+	if value.Kind() == KindArray && destructureWriteIsReadBack(target) {
+		if err := chargeSnapshot(len(values)); err != nil {
+			return err
+		}
 		values = append([]Value(nil), values...)
 	}
 	restIndex := -1
@@ -1076,7 +1105,7 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 
 	if restIndex == -1 {
 		for i, element := range target.Elements {
-			if err := assignDestructureValue(element.Target, valueAt(values, i), assign); err != nil {
+			if err := assignDestructureValue(element.Target, valueAt(values, i), assign, chargeSnapshot); err != nil {
 				return err
 			}
 		}
@@ -1113,20 +1142,20 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 			// Ruby (e.g. a, *, y, z = [1, 2] yields a=1, y=2, z=nil).
 			val = valueAt(values, restEnd+(i-restIndex-1))
 		}
-		if err := assignDestructureValue(element.Target, val, assign); err != nil {
+		if err := assignDestructureValue(element.Target, val, assign, chargeSnapshot); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func assignDestructureValue(target Expression, value Value, assign func(Expression, Value) error) error {
+func assignDestructureValue(target Expression, value Value, assign func(Expression, Value) error, chargeSnapshot func(int) error) error {
 	if target == nil {
 		// Anonymous rest target ("*"): discard the captured values.
 		return nil
 	}
 	if nested, ok := target.(*DestructureTarget); ok {
-		return AssignDestructure(nested, value, assign)
+		return assignDestructure(nested, value, assign, chargeSnapshot)
 	}
 	return assign(target, value)
 }
@@ -1138,22 +1167,50 @@ func destructureValues(value Value) []Value {
 	return []Value{value}
 }
 
-// destructureTargetWrites reports whether any leaf of the target list assigns
-// into an existing container (an index or member place) rather than binding a
-// fresh name. Such targets can mutate the right-hand side array when it is
-// aliased into the binding (e.g. "values[1], *rest = values"), so the caller
-// must snapshot the source before assigning. Plain identifiers, ivars, and
+// destructureWriteIsReadBack reports whether the target list contains a leaf
+// that assigns into an existing container (an index or member place) followed,
+// in left-to-right execution order, by a leaf that reads a value out of the
+// right-hand side. Only that ordering lets a later read observe an earlier
+// write's mutation of the aliased RHS array, so it is the only case that needs
+// the snapshot AssignDestructure would otherwise take unconditionally.
+//
+// A write whose only successors discard their window (e.g. "values[0], * =
+// values", where the trailing anonymous rest reads nothing) is safe to alias:
+// no surviving read can observe the mutation, so snapshotting it would copy the
+// whole backing slice for no observable effect. Plain identifiers, ivars, and
 // class vars write to environment or instance slots that never alias the RHS
-// array's backing store, so they need no snapshot.
-func destructureTargetWrites(target *DestructureTarget) bool {
+// array's backing store, so they count only as reads, never as container
+// writes.
+func destructureWriteIsReadBack(target *DestructureTarget) bool {
+	sawWrite := false
 	for _, element := range target.Elements {
-		switch leaf := element.Target.(type) {
-		case nil:
-			// Anonymous rest target ("*"): discards its window, never writes.
-		case *IndexExpr, *MemberExpr:
+		if sawWrite && destructureElementReads(element) {
 			return true
-		case *DestructureTarget:
-			if destructureTargetWrites(leaf) {
+		}
+		if destructureElementWrites(element.Target) {
+			sawWrite = true
+		}
+	}
+	return false
+}
+
+// destructureElementReads reports whether an element binds at least one value
+// out of the right-hand side. Every element reads except the anonymous rest
+// ("*"), whose nil target discards its window without observing any value.
+func destructureElementReads(element DestructureElement) bool {
+	return element.Target != nil
+}
+
+// destructureElementWrites reports whether a leaf (or any nested leaf) assigns
+// into an existing container slot, which can mutate an aliased RHS array's
+// backing store.
+func destructureElementWrites(target Expression) bool {
+	switch leaf := target.(type) {
+	case *IndexExpr, *MemberExpr:
+		return true
+	case *DestructureTarget:
+		for _, element := range leaf.Elements {
+			if destructureElementWrites(element.Target) {
 				return true
 			}
 		}

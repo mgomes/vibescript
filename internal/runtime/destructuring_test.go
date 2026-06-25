@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -553,6 +554,152 @@ func TestAssignDestructureSnapshotsSourceForWritingTargets(t *testing.T) {
 		t.Fatalf("AssignDestructure returned error: %v", err)
 	}
 	compareArrays(t, bound, []Value{NewInt(2), NewInt(3)})
+}
+
+func TestAssignDestructureSkipsSnapshotWhenWriteHasNoReadBack(t *testing.T) {
+	// testing.AllocsPerRun must not run under t.Parallel(), so this test stays
+	// sequential.
+
+	// "values[0], * = values" writes the first slot and then discards the rest.
+	// No surviving target reads the array after the write, so the source must be
+	// aliased rather than snapshotted: the whole backing slice would otherwise be
+	// copied for a mutation no binding can observe. The write is idempotent
+	// (source[0] receives its own original value) so repeated AllocsPerRun
+	// iterations stay stable.
+	index := &IndexExpr{}
+	target := &DestructureTarget{
+		Elements: []DestructureElement{
+			{Target: index}, // "values[0]"
+			{Rest: true},    // anonymous "*"
+		},
+	}
+
+	const size = 4096
+	backing := make([]Value, size)
+	for i := range backing {
+		backing[i] = NewInt(int64(i))
+	}
+	source := NewArray(backing)
+
+	assign := func(expr Expression, v Value) error {
+		if expr == index {
+			source.Array()[0] = v
+		}
+		return nil
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if err := AssignDestructure(target, source, assign); err != nil {
+			t.Fatalf("AssignDestructure returned error: %v", err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("write-then-discard allocated %v times; expected 0 (no read-back means no snapshot)", allocs)
+	}
+	if got := source.Array()[0]; got.Kind() != KindInt || got.Int() != 0 {
+		t.Fatalf("source[0] = %v; want 0 (idempotent self-write)", got)
+	}
+}
+
+func TestAssignDestructureChargesSnapshotAgainstMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// "values[1], *rest = values" must snapshot the source so rest reads the
+	// original values, not the mutated array. That snapshot is a fresh slot array
+	// the post-assignment memory check would otherwise miss, so assignDestructure
+	// charges it up front and fails fast. A quota that fits the bare execution but
+	// not the snapshot's slot array must reject before the copy is allocated.
+	const size = 1024
+	backing := make([]Value, size)
+	for i := range backing {
+		backing[i] = NewInt(int64(i))
+	}
+	source := NewArray(backing)
+
+	index := &IndexExpr{}
+	rest := &Identifier{Name: "rest"}
+	target := &DestructureTarget{
+		Elements: []DestructureElement{
+			{Target: index}, // "values[1]"
+			{Target: rest, Rest: true},
+		},
+	}
+	assign := func(expr Expression, v Value) error {
+		if expr == index {
+			source.Array()[1] = v
+		}
+		return nil
+	}
+
+	probe := &Execution{ctx: context.Background()}
+	base := probe.estimateMemoryUsageBase(probe.memoryEstimatorForCheck())
+	snapshotBytes := estimatedValueBytes + estimatedSliceBaseBytes + size*estimatedValueBytes
+
+	// One byte short of the snapshot's footprint: the source aliases fine, but the
+	// snapshot copy pushes the projection over the quota.
+	reject := &Execution{ctx: context.Background(), memoryQuota: base + snapshotBytes - 1}
+	if err := reject.assignDestructure(target, source, assign); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("assignDestructure under tight quota = %v; want errMemoryQuotaExceeded", err)
+	}
+
+	// Exactly enough room for the snapshot: the assignment succeeds and rest
+	// captures the original slot values, proving the snapshot was taken.
+	var bound Value
+	captureRest := func(expr Expression, v Value) error {
+		switch expr {
+		case index:
+			source.Array()[1] = v
+		case rest:
+			bound = v
+		}
+		return nil
+	}
+	accept := &Execution{ctx: context.Background(), memoryQuota: base + snapshotBytes}
+	if err := accept.assignDestructure(target, source, captureRest); err != nil {
+		t.Fatalf("assignDestructure with room for the snapshot returned error: %v", err)
+	}
+	if bound.Kind() != KindArray || len(bound.Array()) != size-1 {
+		t.Fatalf("rest bound to %v; want a %d-element array", bound, size-1)
+	}
+	if first := bound.Array()[0]; first.Kind() != KindInt || first.Int() != 1 {
+		t.Fatalf("rest[0] = %v; want 1 (original source[1], not the mutated value)", first)
+	}
+}
+
+func TestParallelAssignmentDiscardedRestAfterIndexWrite(t *testing.T) {
+	t.Parallel()
+
+	// A trailing anonymous rest after a writing index target discards everything
+	// the write could touch, so the result must match Ruby without taking a
+	// snapshot. Confirmed against the reference Ruby implementation:
+	//   v=[10,20,30,40]; v[1], * = v  -> v == [10, 10, 30, 40]
+	//   v=[10,20,30,40]; v[0], * = v  -> v == [10, 20, 30, 40]
+	tests := []struct {
+		name string
+		body string
+		want []Value
+	}{
+		{
+			name: "write middle slot then discard",
+			body: "v = [10, 20, 30, 40]\n  v[1], * = v",
+			want: []Value{NewInt(10), NewInt(10), NewInt(30), NewInt(40)},
+		},
+		{
+			name: "idempotent first-slot write then discard",
+			body: "v = [10, 20, 30, 40]\n  v[0], * = v",
+			want: []Value{NewInt(10), NewInt(20), NewInt(30), NewInt(40)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, "def run\n  "+tt.body+"\n  v\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, tt.want)
+		})
+	}
 }
 
 func TestParallelAssignmentNestedTargets(t *testing.T) {
