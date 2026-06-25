@@ -25,14 +25,14 @@ Common enumerable helpers include:
 - `reject` to keep items the block rejects (the inverse of `select`).
 - `find` / `find_index` to locate the first matching item.
 - `reduce` to accumulate values.
-- `first(n)` / `last(n)` to slice without mutating.
+- `first` / `last` to read an end element, or `first(n)` / `last(n)` to slice without mutating. The optional count is the only argument they accept; passing more than one positional argument or any keyword argument raises.
 - `take(n)` / `drop(n)` to keep or skip a prefix; both reject negative counts.
 - `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.
 - `transpose` to swap the rows and columns of a matrix of equal-length array rows; it raises when a row is not an array or the rows differ in length.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
-- `flatten(depth = nil)` to collapse nested arrays (defaults to fully flattening).
+- `flatten(depth = nil)` to collapse nested arrays. No argument, `nil`, or a negative depth flattens fully; `0` returns a shallow copy; a positive depth flattens that many levels and a `Float` depth is truncated to an integer. A nonnumeric depth raises.
 - `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
 - `chunk(size)` to split into fixed-size slices.
 - `window(size)` to build overlapping windows.

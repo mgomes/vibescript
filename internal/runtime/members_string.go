@@ -1611,11 +1611,14 @@ func stringMemberTextOps(property string) (Value, error) {
 			}
 			text := receiver.String()
 			var parts []string
-			if len(args) == 0 {
+			// An explicit nil separator behaves like the no-argument form,
+			// splitting on runs of ASCII whitespace, matching Ruby's
+			// String#split(nil).
+			if len(args) == 0 || args[0].IsNil() {
 				parts = splitOnASCIIWhitespace(text)
 			} else {
 				if args[0].Kind() != KindString {
-					return NewNil(), fmt.Errorf("string.split separator must be string")
+					return NewNil(), fmt.Errorf("string.split separator must be string or nil")
 				}
 				parts = strings.Split(text, args[0].String())
 			}
@@ -2009,6 +2012,11 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) == 0 {
 				return NewString(chompDefault(text)), nil
 			}
+			if args[0].Kind() == KindNil {
+				// Ruby treats a nil separator as "do not chomp" and returns
+				// the receiver unchanged.
+				return NewString(text), nil
+			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.chomp separator must be string")
 			}
@@ -2029,6 +2037,11 @@ func stringMemberTransforms(property string) (Value, error) {
 			original := receiver.String()
 			if len(args) == 0 {
 				return stringBangResult(original, chompDefault(original)), nil
+			}
+			if args[0].Kind() == KindNil {
+				// Ruby treats a nil separator as "do not chomp"; since no
+				// change occurs, the mutator form returns nil.
+				return NewNil(), nil
 			}
 			if args[0].Kind() != KindString {
 				return NewNil(), fmt.Errorf("string.chomp! separator must be string")
