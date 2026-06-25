@@ -484,6 +484,12 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		result, err = moduloValues(left, right)
 	case tokenEQ:
 		return NewBool(left.Equal(right)), nil
+	case tokenCaseEQ:
+		// Ruby's case equality operator: the left operand acts as the matcher and
+		// the right operand is the value being tested. Ranges check membership;
+		// every other value falls back to `==`. This mirrors `when` clause
+		// matching, where the clause value is the matcher.
+		return NewBool(caseCandidateMatches(right, left)), nil
 	case tokenNotEQ:
 		return NewBool(!left.Equal(right)), nil
 	case tokenLT:

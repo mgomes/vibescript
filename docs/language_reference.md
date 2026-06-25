@@ -250,6 +250,7 @@ Core operator families:
 
 - Arithmetic: `+`, `-`, `*`, `/`, `%`, `**`
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`
+- Case equality: `===`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
 - Unary sign: prefix `-` negates a number; prefix `+` is the identity on
   numbers and strings
@@ -260,6 +261,15 @@ The spaceship operator `<=>` returns `-1`, `0`, or `1` for ordered operands and
 different currencies, or a `NaN` on either side), matching Ruby's spaceship
 contract. The relational operators `<`, `<=`, `>`, `>=` instead raise on
 incomparable operands, matching Ruby's `ArgumentError`.
+
+The case equality operator `===` treats its left operand as a matcher and its
+right operand as the value being tested, mirroring how a `case`/`when` clause
+compares its patterns. A range matcher checks membership, so `(1..3) === 2` is
+`true` and `(1...3) === 3` is `false`. Every other matcher falls back to `==`,
+so `1 === 1` is `true` and `2 === (1..3)` is `false` (the integer `2` is not a
+range). Because the scalar path reuses `==`, integers and floats remain distinct
+kinds, so `1 === 1.0` is `false`, unlike Ruby. Regex and class matchers will be
+added alongside the corresponding language features.
 
 Operator precedence follows conventional arithmetic/boolean ordering.
 Exponentiation with `**` is right-associative and binds more tightly than
