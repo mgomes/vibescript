@@ -28,7 +28,9 @@
   `*rest, last = values`, is no longer misread as a multiplication continuation
   of the previous line. This holds even when the `=` lands on the next line via
   the newline-before-`=` continuation (for example `*rest` followed by an
-  indented `= values`). Genuine multiline multiplication (a line ending or
+  indented `= values`), and when the target list itself is split across lines
+  after a trailing comma (for example `*rest,` followed by an indented
+  `last = values`). Genuine multiline multiplication (a line ending or
   beginning with a spaced `*`) still continues as before. The lookahead also
   accepts reserved-word member names, so targets such as `*rest, record.end =
   values` start a new statement instead of failing to parse.

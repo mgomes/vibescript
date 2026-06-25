@@ -225,6 +225,67 @@ func TestParallelAssignmentLineInitialSplatContinuesEqualsAcrossNewline(t *testi
 	}
 }
 
+func TestParallelAssignmentLineInitialSplatContinuesCommaAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	// A splat-assignment target list may be split across lines after a trailing
+	// comma, just like a comma-split list with no leading "*". The split must
+	// parse even when the assignment follows a line that could otherwise
+	// continue onto a leading "*" as a multiplication. Each result was confirmed
+	// against the reference Ruby implementation.
+	tests := []struct {
+		name   string
+		body   string
+		result string
+		want   []Value
+	}{
+		{
+			name:   "named rest before trailing target",
+			body:   "a = 3\n  *rest,\n  last = [1, 2, 3]",
+			result: "[a, rest, last]",
+			want:   []Value{NewInt(3), NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(3)},
+		},
+		{
+			name:   "anonymous rest before trailing target",
+			body:   "a = 3\n  *,\n  last = [1, 2, 3]",
+			result: "[a, last]",
+			want:   []Value{NewInt(3), NewInt(3)},
+		},
+		{
+			name:   "named rest with two trailing targets",
+			body:   "a = 3\n  *mid, y,\n  z = [1, 2, 3, 4]",
+			result: "[a, mid, y, z]",
+			want: []Value{
+				NewInt(3),
+				NewArray([]Value{NewInt(1), NewInt(2)}),
+				NewInt(3),
+				NewInt(4),
+			},
+		},
+		{
+			name:   "nested paren sub-target spans newline",
+			body:   "a = 3\n  *rest, (m,\n  n) = [1, 2, [3, 4]]",
+			result: "[a, rest, m, n]",
+			want: []Value{
+				NewInt(3),
+				NewArray([]Value{NewInt(1), NewInt(2)}),
+				NewInt(3),
+				NewInt(4),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := compileScript(t, "def run\n  "+tt.body+"\n  "+tt.result+"\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
 func TestMultiplicationContinuesAcrossNewline(t *testing.T) {
 	t.Parallel()
 

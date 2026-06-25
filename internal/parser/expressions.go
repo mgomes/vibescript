@@ -533,20 +533,30 @@ func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 // form a destructuring left-hand side at the top level, requiring a top-level
 // "=" to terminate the list.
 //
-// The target portion of the list occupies the "*" token's physical line. The
-// terminating "=" may sit on the same line, or on a later line via
-// Vibescript's newline-before-"=" continuation (the same rule that lets
-// "x\n  = 1" parse as an assignment). To keep that continuation from
-// reviving the multiplication ambiguity, a later-line "=" only completes a
-// splat assignment when the leading "*" is shaped like a splat target: bare
+// A target list may span several physical lines at exactly the points the
+// real parser continues a statement across a newline:
+//   - inside an open bracket/paren group, where a nested sub-target spans the
+//     newline ("*rest, (a,\n b) = values");
+//   - after a trailing top-level "," , where the list continues with another
+//     element ("*rest,\n last = values"); and
+//   - via Vibescript's newline-before-"=" continuation (the same rule that
+//     lets "x\n  = 1" parse as an assignment), where the terminating "=" sits
+//     on a later line.
+//
+// To keep the newline-before-"=" continuation from reviving the multiplication
+// ambiguity, a bare "*operand" that crosses a newline only completes a splat
+// assignment when the leading "*" is shaped like a splat target: bare
 // (immediately followed by a terminator such as "," or "=") or flush against
-// its operand ("*rest"). A spaced "*" ("* b") is a multiplication operator,
-// so "x = a" / "* b" / "= c" stays a multiplication followed by a dangling
-// "=" rather than becoming "*b = c".
+// its operand ("*rest"). A spaced "*" ("* b") is a multiplication operator, so
+// "x = a" / "* b" / "= c" stays a multiplication followed by a dangling "="
+// rather than becoming "*b = c". Once a top-level "," has appeared the list is
+// unambiguously a destructuring list (a comma cannot follow a multiplicand at
+// the top level), so the splat-shaped guard no longer applies.
 //
 // Anything else - a multiplicand operand, a comparison, an arithmetic
-// operator, or a non-"=" token on a later line - means the "*" is an ordinary
-// multiplication continuation, so it returns false.
+// operator, or a token that starts a new line without a continuation point -
+// means the "*" is an ordinary multiplication continuation, so it returns
+// false.
 func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 	offset, ok := sourceOffsetForPosition(p.l.input, star.Pos)
 	if !ok {
@@ -564,8 +574,10 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 
 	first := true
 	splatShaped := false
+	sawTopLevelComma := false
 	depth := 0
 	prev := ast.Token{}
+	prevLine := star.Pos.Line
 	for {
 		tok = scan.NextToken()
 		if tok.Type == ast.TokenEOF {
@@ -579,13 +591,21 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 				(tok.Pos.Line == starEnd.Line && tok.Pos.Column == starEnd.Column)
 			first = false
 		}
-		// A destructuring target list occupies the "*" token's physical line. A
-		// token on a later line only continues the list when it is the
-		// newline-before-"=" assignment and the "*" is splat-shaped; otherwise
-		// the leading "*" is a multiplication continuation (such as "x = a" /
-		// "* b") and the lookahead stops.
-		if tok.Pos.Line > star.Pos.Line {
-			return depth == 0 && tok.Type == ast.TokenAssign && splatShaped
+		// A token that starts a later physical line only stays part of the
+		// target list when the list was mid-continuation: inside a bracket
+		// group, after a trailing top-level comma, or completing the
+		// newline-before-"=" rule. Otherwise the leading "*" is a multiplication
+		// continuation (such as "x = a" / "* b") and the lookahead stops.
+		if tok.Pos.Line > prevLine {
+			switch {
+			case depth > 0 || prev.Type == ast.TokenComma:
+				// Bracket group or trailing-comma continuation: the list keeps
+				// going, so fall through to the normal token handling below.
+			case tok.Type == ast.TokenAssign && (sawTopLevelComma || splatShaped):
+				return true
+			default:
+				return false
+			}
 		}
 		if depth == 0 {
 			if tok.Type == ast.TokenAssign {
@@ -593,6 +613,9 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 			}
 			if !splatAssignmentTopLevelToken(tok, prev) {
 				return false
+			}
+			if tok.Type == ast.TokenComma {
+				sawTopLevelComma = true
 			}
 		}
 		switch tok.Type {
@@ -606,6 +629,7 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 			return false
 		}
 		prev = tok
+		prevLine = tok.Pos.Line
 	}
 }
 

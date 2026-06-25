@@ -570,6 +570,70 @@ func TestParserLineInitialSplatAssignmentContinuesEqualsAcrossNewline(t *testing
 	}
 }
 
+func TestParserLineInitialSplatAssignmentContinuesCommaAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		assignment string
+		wantTarget *ast.DestructureTarget
+	}{
+		{
+			name:       "named rest before trailing target",
+			assignment: "*rest,\n    last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "anonymous rest before trailing target",
+			assignment: "*,\n    last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "spaced star disambiguated by comma",
+			assignment: "* rest,\n    last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A continuable previous expression ("a = 3") makes the leading "*"
+			// look like a multiplication continuation; a trailing comma must still
+			// continue the splat target list onto the next line.
+			source := "def run\n  a = 3\n  " + tt.assignment + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.AssignStmt{
+					Target: &ast.Identifier{Name: "a"},
+					Value:  &ast.IntegerLiteral{Value: 3},
+				},
+				&ast.AssignStmt{
+					Target: tt.wantTarget,
+					Value:  &ast.Identifier{Name: "values"},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestParserLineInitialSpacedAsteriskRejectsEqualsAcrossNewline(t *testing.T) {
 	t.Parallel()
 	// A spaced "*" ("* b") is a multiplication operator, not a splat target, so
