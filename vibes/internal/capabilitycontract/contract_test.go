@@ -57,6 +57,40 @@ func cyclicArrayThroughHash() value.Value {
 	return arr
 }
 
+// cyclicHashThroughDefault builds a genuine cycle that runs through a hash's
+// Ruby-style default value rather than its entries: the default value is an array
+// that holds the hash itself, so the walk re-enters the wrapper it is already
+// visiting. Cycle detection keys on the hash wrapper, so the back-reference is
+// observed as a cycle the same as an entry-level one. NewArray aliases its
+// backing slice, so writing the wrapper back into the slice closes the cycle.
+func cyclicHashThroughDefault() value.Value {
+	defaultElems := make([]value.Value, 1)
+	hash := value.NewHashWithDefault(
+		map[string]value.Value{},
+		value.NewArray(defaultElems),
+		value.NewNil(),
+	)
+	defaultElems[0] = hash
+	return hash
+}
+
+// sharedEntryMapCallableDefaultBehindPlain builds two hash wrappers over one
+// entry map: a plain data-only wrapper followed by one whose default proc is a
+// callable. The plain wrapper is visited first, so a scanner that keys its
+// seen-set on the entry-map pointer alone would mark the map seen and skip the
+// callable-carrying wrapper. Keying on the whole hash wrapper keeps the callable
+// default visible.
+func sharedEntryMapCallableDefaultBehindPlain() value.Value {
+	sharedEntries := map[string]value.Value{"k": value.NewInt(1)}
+	plain := value.NewHashWithDefault(sharedEntries, value.NewInt(0), value.NewNil())
+	withCallableDefault := value.NewHashWithDefault(
+		sharedEntries,
+		value.NewNil(),
+		runtimeKind(value.KindBlock),
+	)
+	return value.NewArray([]value.Value{plain, withCallableDefault})
+}
+
 func TestNameArg(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -294,6 +328,56 @@ func TestCloneDataOnlyValue(t *testing.T) {
 			t.Fatalf("CloneDataOnlyValue err = %q, want %q", err.Error(), want)
 		}
 	})
+
+	t.Run("default_proc_rejected", func(t *testing.T) {
+		val := value.NewHashWithDefault(
+			map[string]value.Value{"k": value.NewInt(1)},
+			value.NewNil(),
+			runtimeKind(value.KindBlock),
+		)
+		_, err := CloneDataOnlyValue("payload", val)
+		if err == nil {
+			t.Fatal("CloneDataOnlyValue err = nil, want data-only error for default proc")
+		}
+		if want := "payload must be data-only"; err.Error() != want {
+			t.Fatalf("CloneDataOnlyValue err = %q, want %q", err.Error(), want)
+		}
+	})
+
+	t.Run("callable_in_default_value_rejected", func(t *testing.T) {
+		val := value.NewHashWithDefault(
+			map[string]value.Value{},
+			value.NewArray([]value.Value{runtimeKind(value.KindFunction)}),
+			value.NewNil(),
+		)
+		if _, err := CloneDataOnlyValue("payload", val); err == nil {
+			t.Fatal("CloneDataOnlyValue err = nil, want data-only error for callable default value")
+		}
+	})
+
+	t.Run("data_only_default_value_preserved_and_isolated", func(t *testing.T) {
+		original := value.NewHashWithDefault(
+			map[string]value.Value{"k": value.NewInt(1)},
+			value.NewArray([]value.Value{value.NewString("dv")}),
+			value.NewNil(),
+		)
+		cloned, err := CloneDataOnlyValue("payload", original)
+		if err != nil {
+			t.Fatalf("CloneDataOnlyValue err = %v, want nil", err)
+		}
+		clonedDefault := value.HashDefaultValue(cloned)
+		if clonedDefault.Kind() != value.KindArray || len(clonedDefault.Array()) != 1 {
+			t.Fatalf("cloned default = %v, want a one-element array", clonedDefault.Kind())
+		}
+		if !clonedDefault.Array()[0].Equal(value.NewString("dv")) {
+			t.Fatalf("cloned default[0] = %v, want \"dv\"", clonedDefault.Array()[0])
+		}
+		// The clone must be isolated: mutating its default must not leak back.
+		clonedDefault.Array()[0] = value.NewString("changed")
+		if !value.HashDefaultValue(original).Array()[0].Equal(value.NewString("dv")) {
+			t.Fatalf("mutating cloned default leaked into original: %v", value.HashDefaultValue(original))
+		}
+	})
 }
 
 func TestDeepCloneValue(t *testing.T) {
@@ -393,6 +477,30 @@ func TestDeepCloneValue(t *testing.T) {
 		clone.Hash()["rows"].Array()[0].Hash()["name"] = value.NewString("changed")
 		if !original.Hash()["rows"].Array()[0].Hash()["name"].Equal(value.NewString("ada")) {
 			t.Fatalf("mutating clone at depth 3 leaked into original: %v", original)
+		}
+	})
+	t.Run("hash_default_value_preserved_and_isolated", func(t *testing.T) {
+		original := value.NewHashWithDefault(
+			map[string]value.Value{"k": value.NewInt(1)},
+			value.NewArray([]value.Value{value.NewString("dv")}),
+			value.NewNil(),
+		)
+		clone := DeepCloneValue(original)
+		clonedDefault := value.HashDefaultValue(clone)
+		if clonedDefault.Kind() != value.KindArray || len(clonedDefault.Array()) != 1 {
+			t.Fatalf("cloned default = %v, want a one-element array", clonedDefault.Kind())
+		}
+		clonedDefault.Array()[0] = value.NewString("changed")
+		if !value.HashDefaultValue(original).Array()[0].Equal(value.NewString("dv")) {
+			t.Fatalf("mutating cloned default leaked into original: %v", value.HashDefaultValue(original))
+		}
+	})
+	t.Run("hash_default_proc_preserved", func(t *testing.T) {
+		proc := runtimeKind(value.KindBlock)
+		original := value.NewHashWithDefault(map[string]value.Value{}, value.NewNil(), proc)
+		clone := DeepCloneValue(original)
+		if got := value.HashDefaultProc(clone); got.Kind() != value.KindBlock {
+			t.Fatalf("cloned default proc kind = %v, want KindBlock (preserved by reference)", got.Kind())
 		}
 	})
 }
@@ -543,6 +651,42 @@ func TestValidateDataOnlyValue(t *testing.T) {
 		{
 			name:    "function_in_object",
 			val:     value.NewObject(map[string]value.Value{"fn": runtimeKind(value.KindFunction)}),
+			wantErr: "payload must be data-only",
+		},
+		{
+			name: "data_only_default_value_is_ok",
+			val: value.NewHashWithDefault(
+				map[string]value.Value{"k": value.NewInt(1)},
+				value.NewInt(0),
+				value.NewNil(),
+			),
+		},
+		{
+			name: "default_proc_is_callable",
+			val: value.NewHashWithDefault(
+				map[string]value.Value{},
+				value.NewNil(),
+				runtimeKind(value.KindBlock),
+			),
+			wantErr: "payload must be data-only",
+		},
+		{
+			name: "callable_in_default_value",
+			val: value.NewHashWithDefault(
+				map[string]value.Value{},
+				value.NewArray([]value.Value{runtimeKind(value.KindBuiltin)}),
+				value.NewNil(),
+			),
+			wantErr: "payload must be data-only",
+		},
+		{
+			name:    "cycle_through_default_value",
+			val:     cyclicHashThroughDefault(),
+			wantErr: "payload must not contain cyclic references",
+		},
+		{
+			name:    "callable_default_behind_shared_entry_map",
+			val:     sharedEntryMapCallableDefaultBehindPlain(),
 			wantErr: "payload must be data-only",
 		},
 		{

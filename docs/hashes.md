@@ -65,6 +65,94 @@ sizes.size   # 1
 sizes[:size] # "XL"
 ```
 
+## Default values
+
+Hash literals return `nil` for a missing key. To return something else, build the
+hash with `Hash.new` and a Ruby-style default. `Hash.new` accepts either a
+default value or a default proc, but not both:
+
+```vibe
+counts = Hash.new(0)
+counts[:misses]   # 0   (the default value)
+counts.size       # 0   (a value default never inserts)
+
+cache = Hash.new { |hash, key| hash[key] = "made-" + key }
+cache["a"]        # "made-a"  (the proc runs and stores)
+cache.size        # 1         (the proc inserted the entry)
+cache["a"]        # "made-a"  (now present, the proc does not run again)
+```
+
+A default value is returned without inserting it, so repeated misses keep the
+hash empty and always return the same default. A default proc is invoked with the
+hash and the missing key; it inserts an entry only if its body assigns one
+(`hash[key] = ...`). A proc that merely returns a value leaves the hash unchanged:
+
+```vibe
+computed = Hash.new { |hash, key| "computed-" + key }
+computed["x"]     # "computed-x"
+computed.size     # 0   (the proc did not store)
+```
+
+Read the configured default with `default` and `default_proc`:
+
+- `default` with no argument returns the configured default value, or `nil`. Like
+  Ruby, it never runs the default proc, so a proc-only hash reports `nil` here.
+- `default(key)` resolves the default the same way a missing-key `[]` access
+  would: a default proc is invoked with `(hash, key)` (and may store), otherwise
+  the default value is returned.
+- `default_proc` returns the configured default proc, or `nil`.
+
+```vibe
+Hash.new(0).default                 # 0
+Hash.new(0).default(:any)           # 0
+Hash.new { |h, k| 1 }.default       # nil
+Hash.new { |h, k| k }.default(:x)   # :x  (proc invoked with the key)
+Hash.new { |h, k| 1 }.default_proc  # the proc
+{}.default                          # nil
+{}.default_proc                     # nil
+```
+
+`[]` access, `dig`, and `values_at` all consult the default for a missing key,
+because each is a `[]` lookup in Ruby: `dig` consults the default at every hash
+level it walks, and `values_at` consults it once per missing key. A default proc
+runs (and may store) on each such miss. `fetch` is the exception: like Ruby, it
+ignores the hash default and uses only its own optional fallback.
+
+```vibe
+Hash.new(0).fetch(:missing, 99) # 99 (fetch's own default, not the hash default)
+Hash.new(0).dig(:missing)       # 0  (the default value)
+Hash.new(0).values_at(:a, :b)   # [0, 0]
+```
+
+The default travels with the hash object: index assignment (`hash[key] = ...`)
+keeps it, and `merge` (with its `update` / `merge!` aliases) copies the
+receiver's default onto the merged hash. Every other transform that returns a new
+hash (`select`, `reject`, `slice`, `except`, `transform_keys`,
+`transform_values`, `compact`, `store`, `replace`, ...) returns a plain hash with
+no default, so derived hashes do not silently inherit missing-key behavior.
+
+```vibe
+base = Hash.new(0)
+base.merge({ a: 1 })[:b]        # 0   (default preserved)
+base.select { |k, v| true }[:b] # nil (default dropped)
+```
+
+A hash default is part of a hash's value type, because a missing-key lookup
+returns it. When a hash is passed where `hash<key, value>` is expected, the
+default value must itself match `value`, and the validated default travels with
+the normalized hash. A hash carrying a default proc is rejected, because the
+proc's result cannot be checked ahead of time.
+
+```vibe
+def totals(counts: hash<string, int>) -> int
+  counts[:missing]
+end
+
+totals(Hash.new(0))               # 0   (int default conforms)
+totals(Hash.new("oops"))          # error: argument counts expected hash<string, int>
+totals(Hash.new { |h, k| 1 })     # error: a default proc cannot be type-checked
+```
+
 ## Query helpers
 
 - `size` / `length`
@@ -106,12 +194,14 @@ content and integers do not match equal-looking floats.
   to compute a replacement for each missing key instead of raising.
 - `dig(*path)` for nested lookup. A path component descends one level: a
   symbol or string key into a hash, or an integer index into an array, so a
-  single `dig` can walk JSON-shaped data that mixes hashes and arrays. Missing
-  keys and out-of-range indexes yield `nil` rather than raising. Indexing an
-  array with a non-integer component raises, matching how arrays reject
-  non-integer indexes elsewhere.
-- `values_at(*keys)` to read several values at once, in requested key order, with
-  `nil` for missing keys.
+  single `dig` can walk JSON-shaped data that mixes hashes and arrays. Each hash
+  step is a `[]` lookup, so a missing key consults that hash's default (see
+  [Default values](#default-values)); plain hash literals and out-of-range array
+  indexes yield `nil`. Indexing an array with a non-integer component raises,
+  matching how arrays reject non-integer indexes elsewhere.
+- `values_at(*keys)` to read several values at once, in requested key order. Each
+  key is a `[]` lookup, so a missing key consults the hash default; a plain hash
+  literal yields `nil`.
 
 ```vibe
 def display_name_or_default(records, player_id)

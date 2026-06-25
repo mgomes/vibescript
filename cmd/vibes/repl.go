@@ -144,6 +144,7 @@ var replBuiltinCompletions = []string{
 	"random_id",
 	"to_int",
 	"to_float",
+	"Hash",
 	"JSON",
 	"Regex",
 	"Time",

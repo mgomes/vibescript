@@ -69,11 +69,24 @@ func (v Value) Array() []Value {
 }
 
 // Hash returns the hash content of v, or nil if v is not a hash or object.
+// A KindHash payload wraps its entries in a hashData struct (to carry optional
+// default metadata); a KindObject payload is a bare map.
 func (v Value) Hash() map[string]Value {
-	if v.kind != KindHash && v.kind != KindObject {
+	switch v.kind {
+	case KindHash:
+		return v.data.(*hashData).entries
+	case KindObject:
+		return v.data.(map[string]Value)
+	default:
 		return nil
 	}
-	return v.data.(map[string]Value)
+}
+
+// hashEntries returns the entry map of a KindHash value. Callers must already
+// know v.kind == KindHash; it is the unchecked counterpart to Hash used on the
+// internal rendering and equality paths that have switched on the kind.
+func (v Value) hashEntries() map[string]Value {
+	return v.data.(*hashData).entries
 }
 
 // Money returns the money content of v, or a zero Money if v is not money.

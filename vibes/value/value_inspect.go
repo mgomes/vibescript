@@ -130,7 +130,7 @@ func (v Value) appendInspectArray(buf *strings.Builder, state *valueStringState,
 }
 
 func (v Value) appendInspectHash(buf *strings.Builder, state *valueStringState, limit int) error {
-	entries := v.data.(map[string]Value)
+	entries := v.Hash()
 	if len(entries) == 0 {
 		return appendBounded(buf, "{}", limit)
 	}
@@ -195,7 +195,7 @@ func (v Value) inspectByteLenWithState(state *valueStringState) int {
 		}
 		return total
 	case KindHash, KindObject:
-		entries := v.data.(map[string]Value)
+		entries := v.Hash()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose)
 		}
@@ -255,7 +255,7 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 		}
 		return total, nil
 	case KindHash, KindObject:
-		entries := v.data.(map[string]Value)
+		entries := v.Hash()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil
 		}

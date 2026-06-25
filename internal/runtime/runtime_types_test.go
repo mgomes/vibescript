@@ -546,6 +546,64 @@ func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.
 	}
 }
 
+// TestTypedHashValidatesDefaults pins that a Ruby-style hash default is part of
+// a typed hash's value type. A missing-key lookup returns the default, so an
+// int-typed hash must reject a string default (or any default proc, whose result
+// the type checker cannot inspect) and must carry a conforming default through
+// normalization rather than dropping it.
+func TestTypedHashValidatesDefaults(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def missing_lookup(h: hash<string, int>) -> int
+      h[:missing]
+    end
+
+    def passes_string_default()
+      missing_lookup(Hash.new("oops"))
+    end
+
+    def passes_proc_default()
+      missing_lookup(Hash.new { |hash, key| 1 })
+    end
+
+    def preserves_int_default()
+      missing_lookup(Hash.new(42))
+    end
+
+    def preserves_default_with_entries(present: int)
+      base = Hash.new(0)
+      base[:present] = present
+      missing_lookup(base)
+    end
+    `)
+
+	t.Run("rejects_string_default", func(t *testing.T) {
+		t.Parallel()
+		requireCallErrorContains(t, script, "passes_string_default", nil, CallOptions{}, "argument h expected hash<string, int>, got {}")
+	})
+
+	t.Run("rejects_proc_default", func(t *testing.T) {
+		t.Parallel()
+		requireCallErrorContains(t, script, "passes_proc_default", nil, CallOptions{}, "argument h expected hash<string, int>, got {} with a default proc")
+	})
+
+	t.Run("preserves_conforming_default", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "preserves_int_default", nil)
+		if got.Kind() != KindInt || got.Int() != 42 {
+			t.Fatalf("expected missing-key lookup to return preserved default 42, got %#v", got)
+		}
+	})
+
+	t.Run("preserves_default_when_entries_change", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "preserves_default_with_entries", []Value{NewInt(5)})
+		if got.Kind() != KindInt || got.Int() != 0 {
+			t.Fatalf("expected missing-key lookup to return preserved default 0, got %#v", got)
+		}
+	})
+}
+
 func TestExistingUntypedScriptsRemainCompatible(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

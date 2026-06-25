@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestDigPaths exercises Array#dig, Hash#dig, and mixed hash/array dig paths.
 // The script returns the dug value verbatim so each case asserts the exact
@@ -191,10 +194,11 @@ func TestDigPathUnit(t *testing.T) {
 		},
 	}
 
+	exec := &Execution{ctx: context.Background()}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := digPath("test.dig", tt.current, tt.args)
+			got, err := exec.digPath("test.dig", tt.current, tt.args)
 			if tt.wantErr != "" {
 				requireErrorContains(t, err, tt.wantErr)
 				return
