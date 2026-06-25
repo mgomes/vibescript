@@ -180,8 +180,14 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
-	if val, ok := cl.ClassVars[property]; ok {
-		return val, nil
+	// A stored class var keyed "eql?"/"equal?" is data, not a member, so it must
+	// not preempt the universal equality predicate (resolveMember supplies it via
+	// the unknown-member fallback). A user-defined class method of that name is
+	// resolved above and still overrides the predicate.
+	if !isUniversalPredicate(property) {
+		if val, ok := cl.ClassVars[property]; ok {
+			return val, nil
+		}
 	}
 	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1)
 	candidates = append(candidates, "new")
@@ -205,8 +211,14 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
-	if val, ok := inst.Ivars[property]; ok {
-		return val, nil
+	// A stored ivar keyed "eql?"/"equal?" is data, not a member, so it must not
+	// preempt the universal equality predicate (resolveMember supplies it via the
+	// unknown-member fallback). A user-defined instance method of that name is
+	// resolved above and still overrides the predicate.
+	if !isUniversalPredicate(property) {
+		if val, ok := inst.Ivars[property]; ok {
+			return val, nil
+		}
 	}
 	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1)
 	candidates = append(candidates, "class")

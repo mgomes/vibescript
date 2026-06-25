@@ -403,6 +403,56 @@ end`,
 	}
 }
 
+// TestEqualityPredicateNotShadowedByStoredMember confirms a stored instance ivar
+// or class var keyed "eql?"/"equal?" is treated as data, not a member, so it
+// never preempts the universal equality predicate. assignToMember stores a
+// property with no matching setter directly in the receiver's ivars/class vars,
+// so `box.equal? = 1` would otherwise let instanceMember/classMember return that
+// stored value and make `box.equal?(box)` try to call a non-callable Int. Member
+// dispatch must instead resolve the universal identity predicate.
+func TestEqualityPredicateNotShadowedByStoredMember(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		script string
+		want   []Value
+	}{
+		{
+			name: "instance ivar",
+			script: `class Box
+end
+
+def run()
+  b = Box.new
+  b.equal? = 1
+  b.eql? = 2
+  [b.equal?(b), b.equal?(Box.new), b.eql?(b), b.eql?(Box.new)]
+end`,
+			want: []Value{NewBool(true), NewBool(false), NewBool(true), NewBool(false)},
+		},
+		{
+			name: "class var",
+			script: `class Box
+end
+
+def run()
+  Box.equal? = 1
+  Box.eql? = 2
+  [Box.equal?(Box), Box.equal?(1), Box.eql?(Box)]
+end`,
+			want: []Value{NewBool(true), NewBool(false), NewBool(true)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			result := callFunc(t, script, "run", nil)
+			compareArrays(t, result, tc.want)
+		})
+	}
+}
+
 // TestEqualityPredicatePrivateOverrideRaises confirms a private eql?/equal?
 // override is not silently bypassed by the universal fallback. External lookup
 // paths — a bound member probe and the reduce(:op) shorthand — must raise the

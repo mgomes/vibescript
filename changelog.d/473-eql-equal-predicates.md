@@ -3,7 +3,10 @@
   (object identity, so `1.equal?(1)` is `true` while two independently built
   arrays with equal contents are not `equal?`). The predicates report `false`
   rather than raising when the operands' kinds differ, and a class may override
-  them with its own methods of the same name. Every empty hash and object now
+  them with its own methods of the same name. A stored hash/object entry, instance
+  ivar, or class var keyed `eql?`/`equal?` is treated as data and never shadows the
+  predicate, so `box.equal? = 1` does not stop `box.equal?(box)` from answering
+  identity. Every empty hash and object now
   carries its own backing storage, so two independently built empties (including
   `{}` from `JSON.parse("{}")`) are distinct objects under `equal?`. Empty arrays
   are the one exception: any two empty arrays are `equal?` regardless of how they
