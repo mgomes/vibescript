@@ -17,10 +17,11 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var stringMemberNames = []string{
-	"size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice",
+	"size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "codepoints", "each_char", "each_line", "each_byte", "each_codepoint", "template",
 	"center", "ljust", "rjust",
+	"to_sym", "intern",
 }
 
 var stringBuiltinMembers = newMemberTable(stringMemberNames)
@@ -34,7 +35,7 @@ func stringMember(str Value, property string) (Value, error) {
 
 func stringMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice":
+	case "size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice":
 		return stringMemberQuery(property)
 	case "strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!":
 		return stringMemberTransforms(property)
@@ -42,6 +43,27 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberTextOps(property)
 	case "center", "ljust", "rjust":
 		return stringMemberPadding(property)
+	case "to_sym", "intern":
+		return stringMemberConversions(property)
+	default:
+		return NewNil(), fmt.Errorf("unknown string method %s", property)
+	}
+}
+
+// stringMemberConversions builds the string-to-symbol conversion members.
+// Ruby's String#to_sym and its alias String#intern both return the symbol
+// whose name is the receiver, so any string contents (including empty) yield a
+// symbol verbatim without further validation.
+func stringMemberConversions(property string) (Value, error) {
+	switch property {
+	case "to_sym", "intern":
+		name := "string." + property
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			}
+			return NewSymbol(receiver.String()), nil
+		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
@@ -526,6 +548,22 @@ func stringSliceCharAt(text string, index int) Value {
 		return NewNil()
 	}
 	return NewString(substr)
+}
+
+// stringInsertByteOffset maps a Ruby String#insert character index to a byte
+// offset in text, returning ok=false when the index is out of range. A
+// non-negative index inserts before the character at that position, so the
+// valid range is 0..runeLen (a value equal to runeLen appends). A negative
+// index inserts after the character it selects, so -1 appends and the valid
+// range is -(runeLen+1)..-1; the effective offset is runeLen + index + 1.
+func stringInsertByteOffset(text string, index int) (int, bool) {
+	if index < 0 {
+		index += stringRuneLen(text) + 1
+		if index < 0 {
+			return 0, false
+		}
+	}
+	return stringByteIndexForRuneOffset(text, index)
 }
 
 // stringRuneRangeSlice extracts the runes selected by a range, matching Ruby's
@@ -1549,6 +1587,41 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				b.WriteString(arg.String())
 			}
+			return NewString(b.String()), nil
+		}), nil
+	case "prepend":
+		return NewAutoBuiltin("string.prepend", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			var b strings.Builder
+			for _, arg := range args {
+				if arg.Kind() != KindString {
+					return NewNil(), fmt.Errorf("string.prepend expects string arguments")
+				}
+				b.WriteString(arg.String())
+			}
+			b.WriteString(receiver.String())
+			return NewString(b.String()), nil
+		}), nil
+	case "insert":
+		return NewAutoBuiltin("string.insert", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) != 2 {
+				return NewNil(), fmt.Errorf("string.insert expects an index and a string")
+			}
+			index, err := valueToInt(args[0])
+			if err != nil {
+				return NewNil(), fmt.Errorf("string.insert index must be integer")
+			}
+			if args[1].Kind() != KindString {
+				return NewNil(), fmt.Errorf("string.insert value must be string")
+			}
+			text := receiver.String()
+			byteAt, ok := stringInsertByteOffset(text, index)
+			if !ok {
+				return NewNil(), fmt.Errorf("string.insert index %d out of string", index)
+			}
+			var b strings.Builder
+			b.WriteString(text[:byteAt])
+			b.WriteString(args[1].String())
+			b.WriteString(text[byteAt:])
 			return NewString(b.String()), nil
 		}), nil
 	case "replace":
