@@ -27,6 +27,12 @@ Shape types for object/hash payload contracts:
 
 Nullable: append `?` to allow `nil` (e.g., `string?`, `time?`, `int?`).
 
+For a generic container, the `?` belongs after the type arguments, not on the
+container name. Write the nullable container as a union for now: `array<int> | nil`,
+`hash<string, int> | nil`. The misplaced spellings `array?<int>` and
+`hash?<string, int>` are rejected as parse errors. (Untyped nullable containers
+such as `array?` and `hash?`, without type arguments, are accepted.)
+
 Unions: join allowed types with `|` (e.g., `int | string`, `int | nil`).
 
 ## Function definitions
