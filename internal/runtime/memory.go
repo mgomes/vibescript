@@ -786,6 +786,13 @@ func (est *memoryEstimator) value(val Value) int {
 		size += est.slice(val.Array())
 	case KindHash, KindObject:
 		size += est.hash(val.Hash())
+		// A KindHash may retain Ruby-style default metadata (a default value
+		// and/or a default proc) outside its entry map. Those payloads are
+		// reachable state — a script can hold a large array or string solely
+		// through a Hash.new(big) default — so they count toward the quota too.
+		// Objects never carry defaults, so these accessors return nil for them.
+		size += est.valuePayload(hashDefaultValue(val))
+		size += est.valuePayload(hashDefaultProc(val))
 	case KindClass:
 		cl := valueClass(val)
 		if cl == nil {
