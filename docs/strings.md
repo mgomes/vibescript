@@ -113,6 +113,29 @@ Returns true when the string has no characters:
 "hello".empty? # false
 ```
 
+### `to_sym` / `intern`
+
+Returns the symbol named by the string, mirroring Ruby's `String#to_sym` and its
+alias `String#intern`. Any contents are accepted verbatim, including whitespace,
+punctuation, and the empty string:
+
+```vibe
+"name".to_sym  # :name
+"name".intern  # :name
+"a b!".to_sym  # :"a b!"
+```
+
+The result is a genuine symbol, so it equals the matching symbol literal but not
+the source string:
+
+```vibe
+"name".to_sym == :name   # true
+"name".to_sym == "name"  # false
+```
+
+See `id2name` / `to_s` on a symbol (in `docs/stdlib_core_utilities.md`) for the
+reverse direction.
+
 ### `strip`
 
 Removes leading and trailing whitespace:
