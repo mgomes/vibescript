@@ -967,8 +967,19 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.values_at does not take keyword arguments")
 			}
 			arr := receiver.Array()
-			out := make([]Value, len(args))
-			for i, arg := range args {
+			out := make([]Value, 0, len(args))
+			for _, arg := range args {
+				if arg.Kind() == KindRange {
+					// Range selectors expand to their selected positions in place,
+					// matching Ruby's Array#values_at(0..1) -> [a[0], a[1]] and the
+					// mixed form values_at(0..1, -1).
+					selected, err := arrayValuesAtRange(exec, arr, arg.Range())
+					if err != nil {
+						return NewNil(), err
+					}
+					out = append(out, selected...)
+					continue
+				}
 				// Floats truncate toward zero like Ruby's Array#values_at (1.5 -> 1,
 				// -1.9 -> -1); non-numeric arguments are rejected.
 				index, err := valueToInt(arg)
@@ -979,9 +990,9 @@ func arrayMemberQuery(property string) (Value, error) {
 					index += len(arr)
 				}
 				if index >= 0 && index < len(arr) {
-					out[i] = arr[index]
+					out = append(out, arr[index])
 				} else {
-					out[i] = NewNil()
+					out = append(out, NewNil())
 				}
 			}
 			return NewArray(out), nil
@@ -1123,6 +1134,61 @@ func arrayMemberQuery(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+// arrayValuesAtRange expands a range selector for Array#values_at into the
+// elements it selects, matching Ruby's semantics. A negative start counts back
+// from the end; a start that remains negative after that adjustment is rejected
+// with an out-of-range error, exactly as Ruby raises a RangeError for
+// values_at(-4..-1) on a three-element array. A negative end likewise counts
+// back from the end but is never rejected: an end at or before the start simply
+// selects nothing. The window is not clamped to the receiver length, so
+// positions at or past the end pad with nil (values_at(0..5) on [10,20,30]
+// yields [10,20,30,nil,nil,nil]). Bound arithmetic stays in int64 so a
+// near-MaxInt64 inclusive range cannot wrap to a negative no-op window, and the
+// selected count is projected against the memory quota before the slice is built
+// so a huge padded window (values_at(0..1_000_000_000)) fails fast instead of
+// reserving an oversized backing array.
+func arrayValuesAtRange(exec *Execution, arr []Value, rng Range) ([]Value, error) {
+	length := int64(len(arr))
+	begin := rng.Start
+	if begin < 0 {
+		begin += length
+		if begin < 0 {
+			return nil, fmt.Errorf("array.values_at range %s out of range", NewRange(rng).String())
+		}
+	}
+	endExclusive := rng.End
+	if endExclusive < 0 {
+		endExclusive += length
+	}
+	if !rng.Exclusive {
+		// An inclusive range's exclusive end is one past End; guard the increment so
+		// End == math.MaxInt64 cannot wrap to a negative no-op window.
+		if endExclusive == math.MaxInt64 {
+			return nil, fmt.Errorf("array.values_at window is too large")
+		}
+		endExclusive++
+	}
+	if endExclusive <= begin {
+		return nil, nil
+	}
+	count := endExclusive - begin
+	if count > math.MaxInt {
+		return nil, fmt.Errorf("array.values_at window is too large")
+	}
+	if err := exec.checkProjectedIntArrayBytes(int(count)); err != nil {
+		return nil, err
+	}
+	out := make([]Value, 0, count)
+	for index := begin; index < endExclusive; index++ {
+		if index < length {
+			out = append(out, arr[index])
+		} else {
+			out = append(out, NewNil())
+		}
+	}
+	return out, nil
 }
 
 // arrayForwardIndex implements the shared forward-scanning logic for

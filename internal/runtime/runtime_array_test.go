@@ -737,6 +737,169 @@ func TestArrayValuesAtRejectsNonIntegerArguments(t *testing.T) {
 	requireCallErrorContains(t, script, "lookup_keyword", []Value{values}, CallOptions{}, "array.values_at does not take keyword arguments")
 }
 
+func TestArrayValuesAtRangeSelectors(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def in_bounds(values)
+      values.values_at(0..1)
+    end
+
+    def mixed_range_and_int(values)
+      values.values_at(0..1, -1)
+    end
+
+    def exclusive(values)
+      values.values_at(0...2)
+    end
+
+    def end_past_length(values)
+      values.values_at(0..5)
+    end
+
+    def partial_out_of_range(values)
+      values.values_at(2..5)
+    end
+
+    def begin_at_length(values)
+      values.values_at(3..7)
+    end
+
+    def fully_out_of_range(values)
+      values.values_at(5..7)
+    end
+
+    def negative_bounds(values)
+      values.values_at(-2..-1)
+    end
+
+    def negative_begin_past_start(values)
+      values.values_at(-3..5)
+    end
+
+    def empty_begin_after_end(values)
+      values.values_at(2..0)
+    end
+
+    def empty_exclusive(values)
+      values.values_at(0...0)
+    end
+
+    def negative_empty(values)
+      values.values_at(-1..-3)
+    end
+
+    def full_via_negative_end(values)
+      values.values_at(0..-1)
+    end
+
+    def interleaved(values)
+      values.values_at(0, 1..2, -1)
+    end
+
+    def float_range(values)
+      values.values_at(0.5..2.9)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	nilV := NewNil()
+
+	cases := []struct {
+		name string
+		fn   string
+		want []Value
+	}{
+		{"range within bounds", "in_bounds", []Value{NewInt(10), NewInt(20)}},
+		{"range mixed with negative int", "mixed_range_and_int", []Value{NewInt(10), NewInt(20), NewInt(30)}},
+		{"exclusive range", "exclusive", []Value{NewInt(10), NewInt(20)}},
+		{"range end past length pads nil", "end_past_length", []Value{NewInt(10), NewInt(20), NewInt(30), nilV, nilV, nilV}},
+		{"partial out of range pads nil", "partial_out_of_range", []Value{NewInt(30), nilV, nilV, nilV}},
+		{"begin at length pads nil", "begin_at_length", []Value{nilV, nilV, nilV, nilV, nilV}},
+		{"fully out of range pads nil", "fully_out_of_range", []Value{nilV, nilV, nilV}},
+		{"negative bounds", "negative_bounds", []Value{NewInt(20), NewInt(30)}},
+		{"negative begin with end past length", "negative_begin_past_start", []Value{NewInt(10), NewInt(20), NewInt(30), nilV, nilV, nilV}},
+		{"begin after end is empty", "empty_begin_after_end", []Value{}},
+		{"exclusive empty range", "empty_exclusive", []Value{}},
+		{"negative reversed range is empty", "negative_empty", []Value{}},
+		{"full range via negative end", "full_via_negative_end", []Value{NewInt(10), NewInt(20), NewInt(30)}},
+		{"int and range interleaved flatten in order", "interleaved", []Value{NewInt(10), NewInt(20), NewInt(30), NewInt(30)}},
+		{"float range bounds truncate toward zero", "float_range", []Value{NewInt(10), NewInt(20), NewInt(30)}},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, []Value{values})
+			compareArrays(t, got, tc.want)
+		})
+	}
+}
+
+func TestArrayValuesAtRangeOnEmptyReceiver(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def inclusive(values)
+      values.values_at(0..2)
+    end
+
+    def full(values)
+      values.values_at(0..-1)
+    end
+    `)
+
+	empty := NewArray([]Value{})
+	nilV := NewNil()
+
+	got := callFunc(t, script, "inclusive", []Value{empty})
+	compareArrays(t, got, []Value{nilV, nilV, nilV})
+
+	got = callFunc(t, script, "full", []Value{empty})
+	compareArrays(t, got, []Value{})
+}
+
+func TestArrayValuesAtRejectsNegativeBeginPastStart(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def out_of_range(values)
+      values.values_at(-4..-1)
+    end
+
+    def out_of_range_empty_window(values)
+      values.values_at(-4..-5)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	requireCallErrorContains(t, script, "out_of_range", []Value{values}, CallOptions{}, "array.values_at range -4..-1 out of range")
+	// Ruby rejects a negative begin past the start even when the window would be
+	// empty, so the begin check runs before any emptiness short-circuit.
+	requireCallErrorContains(t, script, "out_of_range_empty_window", []Value{values}, CallOptions{}, "array.values_at range -4..-5 out of range")
+}
+
+func TestArrayValuesAtRangeTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// A range selector pads positions past the receiver with nil, so a huge
+	// window would reserve a backing slice that dwarfs the quota. The projected
+	// check rejects the call before the slice is built rather than the
+	// statement-level check catching it after the allocation already happened.
+	receiver := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 8 * 1024}
+	hugeRange := NewRange(Range{Start: 0, End: 100_000_000})
+	_, err = builtin.Fn(exec, receiver, []Value{hugeRange}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestArrayUniqUsesScalarKeysAndCompositeFallback(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
