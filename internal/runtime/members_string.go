@@ -21,6 +21,7 @@ var stringMemberNames = []string{
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "each_char", "each_line", "each_byte", "template",
 	"center", "ljust", "rjust",
+	"inspect",
 }
 
 var stringBuiltinMembers = newMemberTable(stringMemberNames)
@@ -42,6 +43,8 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberTextOps(property)
 	case "center", "ljust", "rjust":
 		return stringMemberPadding(property)
+	case "inspect":
+		return newInspectBuiltin("string"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}

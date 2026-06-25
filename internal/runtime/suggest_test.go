@@ -274,6 +274,30 @@ func TestMemberSuggestionCandidatesResolve(t *testing.T) {
 				return err
 			},
 		},
+		{
+			kind:  "symbol",
+			names: symbolMemberNames,
+			resolve: func(name string) error {
+				_, err := (&Execution{}).symbolMember(NewSymbol("ok"), name, Position{})
+				return err
+			},
+		},
+		{
+			kind:  "nil",
+			names: nilMemberNames,
+			resolve: func(name string) error {
+				_, err := (&Execution{}).nilMember(NewNil(), name, Position{})
+				return err
+			},
+		},
+		{
+			kind:  "bool",
+			names: boolMemberNames,
+			resolve: func(name string) error {
+				_, err := (&Execution{}).boolMember(NewBool(true), name, Position{})
+				return err
+			},
+		},
 	}
 
 	for _, table := range tables {

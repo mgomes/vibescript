@@ -29,6 +29,52 @@ in depth; this page favors compact signatures and one-line descriptions.
 "  hello ".strip! # "hello"
 ```
 
+## Debug Representation
+
+Every core value kind responds to `inspect`, returning a `string` debug
+rendering. Unlike the output rendering used by string interpolation (which is
+the `to_s` form), `inspect` keeps quotes and escaping so the result is
+unambiguous; for strings, arrays, and hashes the rendering also parses back as a
+Vibescript literal.
+
+- `inspect -> string` – available on `nil`, booleans, integers, floats,
+  strings, symbols, arrays, and hashes (`inspect` takes no arguments and no
+  block).
+
+| Kind | `to_s` (interpolated) | `inspect` |
+| --- | --- | --- |
+| `nil` | (empty) | `nil` |
+| `true` | `true` | `true` |
+| `42` | `42` | `42` |
+| `:ok` | `ok` | `:ok` |
+| `"a\nb"` | `a` then `b` on the next line | `"a\nb"` |
+| `[1, "x", nil]` | `[1, x, ]` | `[1, "x", nil]` |
+| `{ a: 1, b: "x" }` | `{a: 1, b: x}` | `{a: 1, b: "x"}` |
+
+```vibe
+"a\nb".inspect       # "\"a\\nb\""  (the six characters: " a \ n b ")
+[1, "x", nil].inspect # "[1, \"x\", nil]"
+{ a: 1, b: "x" }.inspect # "{a: 1, b: \"x\"}"
+:ok.inspect          # ":ok"
+nil.inspect          # "nil"
+```
+
+Strings are double-quoted and escape `\\`, `\"`, `\n`, `\t`, and the
+interpolation marker `\#{`; any other byte is written verbatim, since
+Vibescript's double-quoted literals have no `\r`/`\xNN`/`\uNNNN` escapes (so the
+rendering stays a parseable literal rather than emitting an escape the language
+cannot decode). Hash keys render in Vibescript's colon-label form (`name:`, or
+`"with space":` when the key is not a bare identifier) rather than Ruby's
+unsupported hash-rocket syntax, so an inspected hash parses back as a Vibescript
+literal. Because hashes iterate in Go's map order, the entry order of an
+inspected hash is not stable across calls. Symbols render as `:name`, or as
+`:"name"` (Ruby's shape) when the name is not a bare identifier — the quoted form
+is a debug rendering for symbols (such as those created from a quoted hash key)
+that have no bare-symbol literal syntax, not a re-parseable literal. Cycles
+render as `<cycle>`. The rendered length is charged against the sandbox memory
+quota before the string is built, so inspecting a huge composite fails with a
+quota error instead of allocating an oversized result.
+
 ## Strings
 
 See [strings.md](strings.md) for worked examples. Indexes and lengths count
@@ -48,6 +94,8 @@ Unicode characters, not bytes, unless noted.
 - `oct -> int` – leading characters parsed using a base inferred from a
   `0x`/`0b`/`0o`/`0d` prefix (octal by default); same lenient parsing,
   zero-on-failure, and `int64` overflow behavior as `hex`.
+- `inspect -> string` – double-quoted, escaped debug rendering (see
+  [Debug Representation](#debug-representation)).
 
 ### Search and Matching
 
@@ -183,6 +231,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `size -> int` – element count.
 - `length -> int` – alias for `size`.
 - `empty? -> bool` – true when the array has no elements.
+- `inspect -> string` – debug rendering with each element inspected
+  recursively (see [Debug Representation](#debug-representation)).
 
 ### Iteration
 
@@ -349,6 +399,8 @@ methods.
 - `include?(key) -> bool` – alias for `key?`.
 - `value?(value) -> bool` – true when any stored value equals `value` using `==`.
 - `has_value?(value) -> bool` – alias for `value?`.
+- `inspect -> string` – debug rendering using colon-label keys with each value
+  inspected recursively (see [Debug Representation](#debug-representation)).
 
 ### Access
 
@@ -465,6 +517,8 @@ aliases, so `1.second` reads naturally.
 - `modulo(n) -> int|float` – the `%` operator as a method: the result's sign
   follows the divisor (floored division). Integer operands yield an integer;
   any float operand yields a float; a zero divisor errors.
+- `inspect -> string` – the integer's debug rendering (same digits as `to_s`;
+  see [Debug Representation](#debug-representation)).
 
 `round`, `floor`, and `ceil` accept an optional Integer precision. As in Ruby,
 the precision must fit a 32-bit signed integer (Ruby reads it through `NUM2INT`),
@@ -507,6 +561,9 @@ Ruby's arbitrary-precision integers.
   (truncated division); a zero divisor errors.
 - `modulo(n) -> float` – the `%` operator as a method: the result's sign
   follows the divisor (floored division); a zero divisor errors.
+- `inspect -> string` – the float's debug rendering (same text as `to_s`,
+  including `Infinity`/`-Infinity`/`NaN`; see
+  [Debug Representation](#debug-representation)).
 
 Float division by zero with the `/` operator follows IEEE 754 like Ruby:
 `1.0 / 0` is `Infinity`, `-1.0 / 0` is `-Infinity`, and `0.0 / 0.0` is `NaN`.

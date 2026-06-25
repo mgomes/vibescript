@@ -66,6 +66,12 @@ func (exec *Execution) resolveMember(obj Value, property string, pos Position, c
 		return exec.rangeMember(obj, property, pos)
 	case KindFunction:
 		return exec.functionMember(obj, property, pos)
+	case KindSymbol:
+		return exec.symbolMember(obj, property, pos)
+	case KindNil:
+		return exec.nilMember(obj, property, pos)
+	case KindBool:
+		return exec.boolMember(obj, property, pos)
 	default:
 		return NewNil(), exec.errorAt(pos, "unsupported member access on %s", obj.Kind())
 	}
@@ -230,5 +236,8 @@ func MemberCompletionNames() map[string][]string {
 		"time":     slices.Clone(timeMemberNames),
 		"range":    slices.Clone(rangeMemberNames),
 		"function": slices.Clone(functionMemberNames),
+		"symbol":   slices.Clone(symbolMemberNames),
+		"nil":      slices.Clone(nilMemberNames),
+		"bool":     slices.Clone(boolMemberNames),
 	}
 }

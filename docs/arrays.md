@@ -281,4 +281,18 @@ end
 Both methods return a new array and leave the receiver unchanged. A non-array
 argument raises an error.
 
+## Debug Representation
+
+`inspect` renders an array as a parseable debug string, inspecting each element
+recursively so strings keep their quotes and nested values stay distinct from
+the raw interpolation rendering:
+
+```vibe
+[1, "x", nil].inspect # => "[1, \"x\", nil]"
+[:a, :b].inspect      # => "[:a, :b]"
+```
+
+See [Debug Representation](stdlib_core_utilities.md#debug-representation) for the
+full per-kind contract.
+
 See `examples/arrays/` for concrete scripts exercised by the test suite.
