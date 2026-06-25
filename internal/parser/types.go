@@ -82,14 +82,17 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 			p.addParseError(p.curToken.Pos, fmt.Sprintf("type %s does not accept type arguments", ty.Name))
 			return nil
 		}
-		// A nullable suffix on the container name (e.g. array?<int>) belongs
-		// after the type arguments. resolveType strips a trailing "?" and
-		// marks the type nullable, so detect that here and reject the
-		// misplaced spelling rather than silently accepting it.
+		// A nullable suffix on the container name (e.g. array?<int>) is
+		// misplaced. resolveType strips a trailing "?" and marks the type
+		// nullable, so detect that here and reject the spelling rather than
+		// silently accepting it. A suffix `?` on a generic container (e.g.
+		// array<int>?) is not yet supported, so point users at the union
+		// form (array<int> | nil), which is the documented nullable spelling
+		// for compound types.
 		if ty.Nullable {
 			base := strings.TrimSuffix(ty.Name, "?")
 			p.addParseError(p.curToken.Pos, fmt.Sprintf(
-				"nullable suffix on %s must follow its type arguments; write %s<...>? instead of %s?<...>",
+				"nullable suffix on %s is misplaced; write the nullable container as a union, e.g. %s<...> | nil, instead of %s?<...>",
 				base, base, base))
 			return nil
 		}
