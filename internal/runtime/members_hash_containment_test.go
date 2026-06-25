@@ -2209,3 +2209,108 @@ func TestHashMergeOverlappingBlockExactUnionFitsLooseBoundWouldReject(t *testing
 		t.Fatalf("overlapping merge produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
 	}
 }
+
+// singleParamPairBlock builds a block declaring exactly one positional parameter
+// whose body references that parameter, mirroring the |pair| form Hash#each
+// collapses entries into. The single positional parameter makes
+// wantsCollapsedPair true (so the iterator allocates a [key, value] pair per
+// entry), and the body captures nothing, so blockCanReuseEnv stays true -- the
+// regime where the previous iteration's pair lingers in the reused env while the
+// next pair is allocated.
+func singleParamPairBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	params := []Param{{Name: "pair", Kind: ParamNormal}}
+	body := []Statement{&ExprStmt{Expr: &Identifier{Name: "pair", Position: pos}, Position: pos}}
+	return NewBlock(params, body, newEnv(nil))
+}
+
+// TestHashEachEmptySingleParamFitsCallRoots pins the first P2 finding on PR #808:
+// an empty receiver iterated by a single-parameter block allocates no [key, value]
+// pair, so the iterator must reserve no per-entry pair bytes. A quota sized to the
+// bare call roots (an empty receiver heaps no sorted-key buffer, so the roots are
+// the only live footprint) must admit {}.each do |pair| ... end. Before the fix the
+// iterator charged collapsedPairBytes even with zero entries, so this exact-roots
+// quota wrongly rejected the empty-hash walk.
+func TestHashEachEmptySingleParamFitsCallRoots(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{})
+	block := singleParamPairBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	if scratch := sortedKeyBufferBytes(0); scratch != 0 {
+		t.Fatalf("empty receiver expects no sorted-key buffer, got %d bytes", scratch)
+	}
+
+	// A quota of exactly the call roots: no pair, no scratch, no output map. With the
+	// fix the empty walk fits; charging even one collapsedPairBytes here would push the
+	// projection one pair over and reject.
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("{}.each do |pair| at the exact call-roots quota %d = %v, want success", roots, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 0 {
+		t.Fatalf("{}.each returned %v with %d entries, want the empty hash receiver", got.Kind(), len(got.Hash()))
+	}
+
+	// Guard: a quota one byte below the call roots still rejects, proving the success
+	// above comes from the roots fitting exactly and not from an unbounded short
+	// circuit or slack in the projection.
+	if roots > 0 {
+		tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots - 1}
+		if _, err := callHashMember(t, tight, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+			t.Fatalf("{}.each one byte below the call roots = %v, want errMemoryQuotaExceeded", err)
+		}
+	}
+}
+
+// TestHashEachSingleParamReservesTwoLivePairs pins the second P2 finding on PR
+// #808: a single-parameter block that reuses its environment briefly holds two
+// [key, value] pairs live at once -- the previous iteration's pair stays bound in
+// the reused env until runner.call resets it, but the next pair is allocated before
+// that reset. The iterator must therefore reserve two pairs, not one. A quota sized
+// to the call roots, the sorted-key scratch, and exactly ONE pair must trip; a quota
+// that also fits the second pair must admit the walk. Before the fix only one pair
+// was reserved, so the one-pair quota wrongly passed even though two pairs overlap.
+func TestHashEachSingleParamReservesTwoLivePairs(t *testing.T) {
+	t.Parallel()
+
+	const count = 50_000
+	receiver := largeHashReceiver(count)
+	block := singleParamPairBlock()
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects the single-parameter block to reuse its environment")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(count)
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heap-allocated key buffer for %d entries", count)
+	}
+
+	// Room for the roots, the scratch, and exactly one pair. The loop keeps the old
+	// and new pair live simultaneously, so reserving two pairs (the fix) rejects this
+	// one-pair quota up front.
+	onePairQuota := roots + scratch + collapsedPairBytes
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: onePairQuota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("single-parameter each at a one-pair quota %d = %v, want errMemoryQuotaExceeded (two pairs are briefly live)", onePairQuota, err)
+	}
+
+	// Room for both live pairs admits the walk, proving the rejection above comes from
+	// the two-pair reservation and not an over-tight baseline. The block body runs no
+	// allocating statement, so the two reserved pairs plus a small slack for the
+	// interpreter's own per-step checks bound the true peak.
+	twoPairQuota := roots + scratch + 2*collapsedPairBytes + 64*1024
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: twoPairQuota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("single-parameter each at a two-pair quota %d = %v, want success", twoPairQuota, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != count {
+		t.Fatalf("single-parameter each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), count)
+	}
+}

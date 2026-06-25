@@ -348,12 +348,16 @@ func hashMemberQuery(property string) (Value, error) {
 			// walk entries deterministically. Charge that scratch buffer before
 			// allocating it so a large receiver cannot escape the memory quota; the
 			// walk projection charges no output map this iterator never creates. When
-			// the block wants the collapsed pair, also reserve the single [key, value]
-			// array the loop allocates per entry -- only one is live at a time, so a
-			// single pair's footprint bounds the peak.
+			// the block wants the collapsed pair, also reserve the [key, value] arrays
+			// the loop allocates per entry -- but only when there is at least one entry,
+			// since an empty receiver allocates no pair at all. Reserve two pairs, not
+			// one: a block that reuses its environment keeps the previous iteration's
+			// pair bound in runner.env until runner.call resets it, yet the next pair is
+			// allocated before that reset, so two pairs are briefly live at once. Two
+			// pairs bound the peak without re-walking the receiver per entry.
 			perEntryBytes := 0
-			if collapsePair {
-				perEntryBytes = collapsedPairBytes
+			if collapsePair && len(entries) > 0 {
+				perEntryBytes = 2 * collapsedPairBytes
 			}
 			if err := exec.checkProjectedHashWalkBytes(sortedKeyBufferBytes(len(entries)), perEntryBytes, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
