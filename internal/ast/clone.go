@@ -336,8 +336,9 @@ func cloneDestructureElements(elements []DestructureElement) []DestructureElemen
 	out := make([]DestructureElement, len(elements))
 	for i, element := range elements {
 		out[i] = DestructureElement{
-			Target: cloneExpression(element.Target),
-			Rest:   element.Rest,
+			Target:   cloneExpression(element.Target),
+			Rest:     element.Rest,
+			Position: element.Position,
 		}
 	}
 	return out

@@ -320,6 +320,443 @@ end`
 	}
 }
 
+func TestParserLineInitialSplatAssignmentStartsNewStatement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		assignment string
+		wantTarget *ast.DestructureTarget
+	}{
+		{
+			name:       "anonymous rest",
+			assignment: "*, last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "named rest",
+			assignment: "*rest, last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "bare named rest",
+			assignment: "*rest = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+			}},
+		},
+		{
+			name:       "named rest before self member target",
+			assignment: "*rest, self.count = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "self"}, Property: "count"}},
+			}},
+		},
+		{
+			name:       "anonymous rest before self member target",
+			assignment: "*, self.count = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "self"}, Property: "count"}},
+			}},
+		},
+		{
+			name:       "named rest before self index target",
+			assignment: "*rest, self[0] = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.IndexExpr{Object: &ast.Identifier{Name: "self"}, Index: &ast.IntegerLiteral{Value: 0}}},
+			}},
+		},
+		{
+			// "end" is a reserved-word label token, so the splat lookahead must
+			// accept the same member names the real member parser does after a
+			// ".". Without that, the prior line's RHS swallows "*rest" as a
+			// multiplication and parsing fails at the comma.
+			name:       "named rest before keyword member target",
+			assignment: "*rest, record.end = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "end"}},
+			}},
+		},
+		{
+			name:       "anonymous rest before keyword member target",
+			assignment: "*, record.begin = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "begin"}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := "def run\n  a = 3\n  " + tt.assignment + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.AssignStmt{
+					Target: &ast.Identifier{Name: "a"},
+					Value:  &ast.IntegerLiteral{Value: 3},
+				},
+				&ast.AssignStmt{
+					Target: tt.wantTarget,
+					Value:  &ast.Identifier{Name: "values"},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestParserLineInitialAsteriskContinuesMultiplication(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  a = 3
+  b = 4
+  x = a
+  * b
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "a"},
+			Value:  &ast.IntegerLiteral{Value: 3},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "b"},
+			Value:  &ast.IntegerLiteral{Value: 4},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "x"},
+			Value: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "a"},
+				Operator: ast.TokenAsterisk,
+				Right:    &ast.Identifier{Name: "b"},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserLineInitialAsteriskContinuesMultiplicationBeforeLaterAssignment(t *testing.T) {
+	t.Parallel()
+	// The splat-assignment lookahead must stop at the end of the "*" token's
+	// physical line. A later line that contains an assignment (such as
+	// "c = 5") must not pull the leading "*" into a destructuring target; the
+	// line continues the previous expression as a multiplication.
+	source := `def run
+  a = 3
+  b = 4
+  x = a
+  * b
+  c = 5
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "a"},
+			Value:  &ast.IntegerLiteral{Value: 3},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "b"},
+			Value:  &ast.IntegerLiteral{Value: 4},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "x"},
+			Value: &ast.BinaryExpr{
+				Left:     &ast.Identifier{Name: "a"},
+				Operator: ast.TokenAsterisk,
+				Right:    &ast.Identifier{Name: "b"},
+			},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "c"},
+			Value:  &ast.IntegerLiteral{Value: 5},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserLineInitialSplatAssignmentContinuesEqualsAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		assignment string
+		wantTarget *ast.DestructureTarget
+	}{
+		{
+			name:       "named rest",
+			assignment: "*rest\n    = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+			}},
+		},
+		{
+			name:       "anonymous rest before target",
+			assignment: "*, last\n    = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "named rest before target",
+			assignment: "*rest, last\n    = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A continuable previous expression ("a = 3") makes the leading "*"
+			// look like a multiplication continuation; the newline-before-"="
+			// rule must still complete the splat destructuring assignment.
+			source := "def run\n  a = 3\n  " + tt.assignment + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.AssignStmt{
+					Target: &ast.Identifier{Name: "a"},
+					Value:  &ast.IntegerLiteral{Value: 3},
+				},
+				&ast.AssignStmt{
+					Target: tt.wantTarget,
+					Value:  &ast.Identifier{Name: "values"},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestParserLineInitialSplatAssignmentContinuesCommaAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		assignment string
+		wantTarget *ast.DestructureTarget
+	}{
+		{
+			name:       "named rest before trailing target",
+			assignment: "*rest,\n    last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "anonymous rest before trailing target",
+			assignment: "*,\n    last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+		{
+			name:       "spaced star disambiguated by comma",
+			assignment: "* rest,\n    last = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.Identifier{Name: "last"}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A continuable previous expression ("a = 3") makes the leading "*"
+			// look like a multiplication continuation; a trailing comma must still
+			// continue the splat target list onto the next line.
+			source := "def run\n  a = 3\n  " + tt.assignment + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.AssignStmt{
+					Target: &ast.Identifier{Name: "a"},
+					Value:  &ast.IntegerLiteral{Value: 3},
+				},
+				&ast.AssignStmt{
+					Target: tt.wantTarget,
+					Value:  &ast.Identifier{Name: "values"},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestParserLineInitialSplatAssignmentContinuesMemberAccessAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		assignment string
+		wantTarget *ast.DestructureTarget
+	}{
+		{
+			// The real target parser uses a line-limited expression, which
+			// continues a member access onto a line that begins with ".". The
+			// splat lookahead must honor the same continuation so the previous
+			// statement does not swallow the leading "*" as a multiplication and
+			// fail at the comma.
+			name:       "named rest before split member target",
+			assignment: "*rest, record\n    .field = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "field"}},
+			}},
+		},
+		{
+			name:       "anonymous rest before split member target",
+			assignment: "*, record\n    .field = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "field"}},
+			}},
+		},
+		{
+			name:       "named rest before split self member target",
+			assignment: "*rest, self\n    .field = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "self"}, Property: "field"}},
+			}},
+		},
+		{
+			// A keyword label such as "end" is a valid member name, so it can be
+			// the receiver of a further "." split across the newline.
+			name:       "named rest before chained split member target",
+			assignment: "*rest, record.end\n    .field = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{
+					Object:   &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "end"},
+					Property: "field",
+				}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A continuable previous expression ("a = 3") makes the leading "*"
+			// look like a multiplication continuation; a member access split
+			// across the newline must still continue the splat target list.
+			source := "def run\n  a = 3\n  " + tt.assignment + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.AssignStmt{
+					Target: &ast.Identifier{Name: "a"},
+					Value:  &ast.IntegerLiteral{Value: 3},
+				},
+				&ast.AssignStmt{
+					Target: tt.wantTarget,
+					Value:  &ast.Identifier{Name: "values"},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestParserLineInitialSpacedAsteriskRejectsEqualsAcrossNewline(t *testing.T) {
+	t.Parallel()
+	// A spaced "*" ("* b") is a multiplication operator, not a splat target, so
+	// the newline-before-"=" continuation must not pull it into a destructuring
+	// assignment ("*b = c"). The line continues "x = a" as a multiplication and
+	// the dangling "=" then errors.
+	source := `def run
+  a = 3
+  b = 4
+  x = a
+  * b
+    = [1, 2]
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want dangling '=' diagnostic", source)
+	}
+}
+
+func TestParserLineInitialSpacedAsteriskRejectsSplitMemberAccess(t *testing.T) {
+	t.Parallel()
+	// A spaced "*" ("* obj") is a multiplication operator, not a splat target,
+	// so a member access split across the newline ("* obj\n  .field = ...") must
+	// not pull it into a destructuring assignment. The member-access lookahead
+	// continuation only applies once the list is committed to a splat assignment
+	// (a bare "*" target or a top-level comma). The line continues "x = a" as a
+	// multiplication chain and the dangling "=" then errors.
+	source := `def run
+  a = 3
+  x = a
+  * obj
+    .field = 2
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want dangling '=' diagnostic", source)
+	}
+}
+
 func TestParserAssignmentEqualsContinuesAcrossNewline(t *testing.T) {
 	t.Parallel()
 	source := `def run
