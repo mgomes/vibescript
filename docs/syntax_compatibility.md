@@ -8,8 +8,9 @@ stabilization track.
 The following syntax families are considered core and frozen for compatibility
 planning:
 
-- Function declarations (`def ... end`) with positional, keyword/default, and
-  typed parameters.
+- Function declarations (`def ... end`) with positional, default, typed,
+  required keyword-only (`name:`), and optional keyword-only (`name: default`)
+  parameters.
 - Optional return type annotations (`-> type`).
 - Class declarations with class/instance methods and variables.
 - Core literals: `nil`, booleans, numbers, strings, symbols, arrays, hashes,

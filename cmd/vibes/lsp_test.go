@@ -891,6 +891,76 @@ end
 	}
 }
 
+func TestSignatureHelpForOptionalKeywordParameter(t *testing.T) {
+	t.Parallel()
+	server := newCompletionTestServer()
+	uri := "file:///tmp/sigkw.vibe"
+	openDoc(t, server, uri, `def configure(host:, port: 8080, scheme: "https")
+  host
+end
+
+def run()
+  configure(host: "a")
+end
+`)
+
+	result, ok := signatureHelpResult(t, server, uri, 5, 18).(map[string]any)
+	if !ok {
+		t.Fatal("expected signature help for optional keyword function")
+	}
+	signatures := result["signatures"].([]map[string]any)
+	if len(signatures) != 1 {
+		t.Fatalf("expected one signature, got %d", len(signatures))
+	}
+	label := signatures[0]["label"].(string)
+	// The required keyword renders as `host:`, while the optional keyword-only
+	// parameters render their default after the colon (`port: …`), not with the
+	// positional `= …` marker.
+	if !strings.Contains(label, "configure(host:, port: …, scheme: …)") {
+		t.Fatalf("label = %q, want optional keyword defaults rendered after the colon", label)
+	}
+}
+
+func TestParamLabelOptionalKeyword(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		param ast.Param
+		want  string
+	}{
+		{
+			name:  "required_keyword",
+			param: ast.Param{Name: "host", Kind: ast.ParamKeyword},
+			want:  "host:",
+		},
+		{
+			name:  "optional_keyword_default",
+			param: ast.Param{Name: "port", Kind: ast.ParamKeyword, DefaultVal: &ast.IntegerLiteral{Value: 8080}},
+			want:  "port: …",
+		},
+		{
+			name:  "positional_default",
+			param: ast.Param{Name: "count", DefaultVal: &ast.IntegerLiteral{Value: 1}},
+			want:  "count = …",
+		},
+		{
+			name:  "typed_positional",
+			param: ast.Param{Name: "amount", Type: &ast.TypeExpr{Name: "int", Kind: ast.TypeInt}},
+			want:  "amount: int",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := paramLabel(tt.param); got != tt.want {
+				t.Fatalf("paramLabel(%+v) = %q, want %q", tt.param, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSignatureHelpForBuiltin(t *testing.T) {
 	t.Parallel()
 	server := newCompletionTestServer()

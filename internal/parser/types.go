@@ -140,6 +140,7 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 func (p *parser) parseTypeShape() *ast.TypeExpr {
 	pos := p.curToken.Pos
 	fields := make(map[string]*ast.TypeExpr)
+	p.shapeStructurallyInvalid = false
 
 	if p.peekToken.Type == ast.TokenRBrace {
 		p.nextToken()
@@ -166,7 +167,26 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 		if fieldType == nil {
 			return nil
 		}
-		if _, exists := fields[key]; exists {
+		if prior, exists := fields[key]; exists {
+			// A repeated key reaches here only after both field values parsed as
+			// complete type expressions ending at a `,` or `}` boundary, so the
+			// brace group is clearly a shape annotation rather than a hash
+			// literal. Mark it as a structural shape error worth surfacing,
+			// unless either repeated value is a hash-default shape:
+			//
+			//   - a bare identifier naming a local value (mirroring the
+			//     shapeFieldNamesLocalValue disambiguation), or
+			//   - a bare `nil` atom (mirroring shapeHasDegenerateNilField).
+			//
+			// A `nil` field type is degenerate as a positional annotation, so a
+			// group like `{ previous: nil, previous: nil }` is the Ruby-style
+			// hash default `def f(opts: { previous: nil })` (Ruby accepts the
+			// repeated key, keeping the last value) rather than a shape type.
+			// Leaving the flag clear lets the group fall back to a hash default
+			// instead of being rejected as a duplicate shape field.
+			if !p.bracedFieldIsHashDefault(prior) && !p.bracedFieldIsHashDefault(fieldType) {
+				p.shapeStructurallyInvalid = true
+			}
 			p.addParseError(p.curToken.Pos, fmt.Sprintf("duplicate shape field %s", key))
 			return nil
 		}
@@ -178,6 +198,22 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 			continue
 		}
 		if p.peekToken.Type != ast.TokenRBrace {
+			// A complete field value followed by another `label:` field opener is a
+			// missing field separator (`{ id: string name: int }`). A brace group
+			// cannot reach here as a valid hash literal: `value label:` without a
+			// separator is malformed in Ruby too, so the braces are a malformed shape
+			// annotation rather than a hash default. Mark it structurally invalid so
+			// the speculative parameter-list parse routes the group to the type path
+			// and re-emits the shape diagnostic instead of silently reinterpreting
+			// the braces as a keyword default, which the line-limited hash parse
+			// would otherwise accept in parenless parameter syntax.
+			//
+			// Any other trailing token leaves the flag clear: in the speculative
+			// parse it usually means the value was an expression that stopped at an
+			// operator (`{ sum: a + 1 }`), so the group falls back to a hash default.
+			if p.peekStartsShapeField() {
+				p.shapeStructurallyInvalid = true
+			}
 			p.errorExpected(p.peekToken, "}")
 			return nil
 		}
@@ -193,15 +229,33 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 }
 
 func (p *parser) parseTypeShapeFieldName() (string, bool) {
-	switch p.curToken.Type {
-	case ast.TokenIdent, ast.TokenString, ast.TokenSymbol, ast.TokenEnum:
+	if tokenStartsShapeFieldName(p.curToken) {
 		return p.curToken.Literal, true
-	case ast.TokenAnd, ast.TokenOr, ast.TokenNot:
-		if isWordBooleanKeywordToken(p.curToken) {
-			return p.curToken.Literal, true
-		}
-	default:
 	}
 	p.errorExpected(p.curToken, "shape field name")
 	return "", false
+}
+
+// peekStartsShapeField reports whether the lookahead tokens open another shape
+// field, i.e. a field-name token followed by a `:`. parseTypeShape uses it to
+// recognize a missing field separator (`{ id: string name: int }`) after a
+// complete field value, distinguishing it from an expression continuation
+// (`{ sum: a + 1 }`) that should fall back to a hash default.
+func (p *parser) peekStartsShapeField() bool {
+	return tokenStartsShapeFieldName(p.peekToken) && p.peekPeek.Type == ast.TokenColon
+}
+
+// tokenStartsShapeFieldName reports whether tok can name a shape field. Shape
+// field names accept the same tokens as hash keys: bare identifiers, string and
+// symbol literals, enum names, and the word-form boolean keywords (`and`, `or`,
+// `not`) used as ordinary labels.
+func tokenStartsShapeFieldName(tok ast.Token) bool {
+	switch tok.Type {
+	case ast.TokenIdent, ast.TokenString, ast.TokenSymbol, ast.TokenEnum:
+		return true
+	case ast.TokenAnd, ast.TokenOr, ast.TokenNot:
+		return isWordBooleanKeywordToken(tok)
+	default:
+		return false
+	}
 }

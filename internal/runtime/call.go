@@ -1090,7 +1090,81 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	return val, nil
 }
 
+// validateCallShape checks that args and kwargs can satisfy fn's parameters
+// before any default is evaluated. It reproduces the positional and keyword
+// consumption of the binding loop so it reports the same missing-argument,
+// leftover-positional, and unexpected-keyword errors, but it touches no default
+// expression. Surfacing these mismatches first keeps a defaulted parameter's
+// side effects, errors, or step-quota cost from masking a call that can never
+// bind, such as f(1) against def f(a: expensive()) or an omitted required
+// keyword that follows a defaulted one.
+func (exec *Execution) validateCallShape(fn *ScriptFunction, args []Value, kwargs map[string]Value, pos Position) error {
+	var usedKw map[string]bool
+	if len(kwargs) > 0 {
+		usedKw = make(map[string]bool, len(kwargs))
+	}
+	argIdx := 0
+
+	for _, param := range fn.Params {
+		switch param.Kind {
+		case ParamKeyword:
+			if _, ok := kwargs[param.Name]; ok {
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal == nil {
+				return exec.errorAt(pos, "missing keyword argument %s", param.Name)
+			}
+		case ParamRest:
+			argIdx = len(args)
+		case ParamKeywordRest:
+			for name := range kwargs {
+				if usedKw != nil {
+					usedKw[name] = true
+				}
+			}
+		case ParamBlock:
+			// A block parameter binds from the call environment, never from the
+			// positional or keyword arguments, so it imposes no shape constraint.
+		case ParamNormal:
+			if argIdx < len(args) {
+				argIdx++
+			} else if _, ok := kwargs[param.Name]; ok {
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal == nil {
+				return exec.errorAt(pos, "missing argument %s", param.Name)
+			}
+		default:
+			return exec.errorAt(pos, "unknown parameter kind for %s", param.Name)
+		}
+	}
+
+	if argIdx < len(args) {
+		return exec.errorAt(pos, "unexpected positional arguments")
+	}
+	if usedKw != nil {
+		for name := range kwargs {
+			if !usedKw[name] {
+				return exec.errorAt(pos, "unexpected keyword argument %s", name)
+			}
+		}
+	}
+	return nil
+}
+
 func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Value, kwargs map[string]Value, pos Position) error {
+	// Validate the whole call shape before binding so that no parameter default
+	// is evaluated when the call can never bind successfully. A default may have
+	// side effects, raise an error, or consume the step quota, and evaluating it
+	// would mask the real arity or keyword mismatch. validateCallShape mirrors
+	// the binding loop's positional/keyword bookkeeping without evaluating any
+	// default expression.
+	if err := exec.validateCallShape(fn, args, kwargs, pos); err != nil {
+		return err
+	}
+
 	var usedKw map[string]bool
 	if len(kwargs) > 0 {
 		usedKw = make(map[string]bool, len(kwargs))
@@ -1101,13 +1175,19 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 		var val Value
 		switch param.Kind {
 		case ParamKeyword:
-			kw, ok := kwargs[param.Name]
-			if !ok {
+			if kw, ok := kwargs[param.Name]; ok {
+				val = kw
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal != nil {
+				defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
+				if err != nil {
+					return err
+				}
+				val = defaultVal
+			} else {
 				return exec.errorAt(pos, "missing keyword argument %s", param.Name)
-			}
-			val = kw
-			if usedKw != nil {
-				usedKw[param.Name] = true
 			}
 		case ParamRest:
 			rest := append([]Value(nil), args[argIdx:]...)
