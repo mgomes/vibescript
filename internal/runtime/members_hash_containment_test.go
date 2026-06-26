@@ -2768,6 +2768,27 @@ func TestHashEachSingleParamLargeSymbolKeyFitsQuota(t *testing.T) {
 	}
 }
 
+// TestMaxCollapsedPairBytesIncludesKeySymbolPayload directly pins that the
+// collapsed [key, value] pair reservation accounts for the key symbol's payload,
+// not just the array structure. The end-to-end quota tests above size their
+// quotas from maxCollapsedPairBytes itself, so they cannot detect an omission
+// where the reservation and the actual charge drop the symbol together; this
+// unit assertion can. A key that is keyLen bytes longer must raise the pair
+// reservation by approximately keyLen; if the symbol payload is dropped the
+// delta collapses to ~0, which is the exact escape the finding described.
+func TestMaxCollapsedPairBytesIncludesKeySymbolPayload(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	const keyLen = 80_000
+	small := exec.maxCollapsedPairBytes(NewHash(map[string]Value{"k": NewInt(1)}))
+	big := exec.maxCollapsedPairBytes(NewHash(map[string]Value{strings.Repeat("k", keyLen): NewInt(1)}))
+
+	if delta := big - small; delta < keyLen-1 {
+		t.Fatalf("maxCollapsedPairBytes omits the key symbol payload: big=%d small=%d delta=%d, want >= ~%d", big, small, delta, keyLen-1)
+	}
+}
+
 // TestHashEachEmptyBodyNestedRestCountsScratchInBindCharge is the regression for
 // the ordering gap the Codex thread on PR #808 raised: the bind-charge baseline
 // must be snapshotted AFTER the walk scratch is reserved, not before. Hash#each
