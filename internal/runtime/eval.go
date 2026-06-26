@@ -1732,19 +1732,17 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 // allocation) exceeded the quota by the scratch size. The reservation is released
 // on every exit path through defer.
 //
-// The per-iteration [key, value] pair is reserved the same way: one constant pair
-// (collapsedPairBytes) is folded into the baseline for the loop's lifetime. The pair
-// the loop binds to the iterator stays in env (already counted by the env walk), and
-// the next pair overlaps it only for the instant before the assignment overwrites it,
-// so reserving one pair conservatively bounds the transient. Reserving it -- rather
-// than charging it through checkMemoryWith every iteration -- keeps the walk O(n) in
-// the receiver size instead of re-walking the receiver per entry.
+// The per-iteration [key, value] pair is reserved the same way: the largest pair
+// (maxCollapsedPairBytes) is folded into the baseline for the loop's lifetime. The
+// pair the loop binds to the iterator stays in env (already counted by the env walk),
+// and the next pair overlaps it only for the instant before the assignment overwrites
+// it, so reserving the largest one conservatively bounds the transient. Reserving the
+// exact pair size -- rather than a structural constant that omits the symbol key's
+// payload -- keeps the walk O(n) in the receiver size while charging the pair the body
+// check would bill, even though the body check is blind to the Go-stack receiver.
 func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value) (Value, bool, error) {
 	entries := iterable.Hash()
-	scratch := sortedKeyBufferBytes(len(entries))
-	if len(entries) > 0 {
-		scratch = saturatingAdd(scratch, collapsedPairBytes)
-	}
+	scratch := saturatingAdd(sortedKeyBufferBytes(len(entries)), exec.maxCollapsedPairBytes(iterable))
 	delta := exec.reserveLoopScratch(scratch)
 	defer exec.releaseLoopScratch(delta)
 

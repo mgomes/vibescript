@@ -2625,17 +2625,18 @@ func TestHashEachEmptyBodyNestedRestTripsMemoryQuota(t *testing.T) {
 	// Size the quota to admit the live call roots (which include the receiver and so
 	// the value array) plus the reserved [key, value] pair and a little headroom, but
 	// NOT the fresh tail copy the nested rest allocates.
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
 	tailCharge := nestedRestTailChargeBytes(value)
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
 	const headroom = 16 * 1024
-	quota := roots + collapsedPairBytes + headroom
+	quota := roots + pairCharge + headroom
 
 	// Sanity: the fresh tail copy genuinely exceeds the headroom the quota leaves
 	// above the receiver, so its omission -- not an incidentally tight quota -- is
 	// what would let the walk escape.
-	if tailCharge <= headroom+collapsedPairBytes {
-		t.Fatalf("test setup expects the tail charge (%d) to exceed the headroom above the roots (%d)", tailCharge, headroom+collapsedPairBytes)
+	if tailCharge <= headroom+pairCharge {
+		t.Fatalf("test setup expects the tail charge (%d) to exceed the headroom above the roots (%d)", tailCharge, headroom+pairCharge)
 	}
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
@@ -2656,15 +2657,111 @@ func TestHashEachNestedRestFitsWhenTailFitsQuota(t *testing.T) {
 	receiver := NewHash(map[string]Value{"a": value})
 	block := emptyNestedRestEachBlock()
 
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
 	tailCharge := nestedRestTailChargeBytes(value)
-	quota := roots + collapsedPairBytes + tailCharge + 64*1024
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
+	quota := roots + pairCharge + tailCharge + 64*1024
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	got, err := callHashMember(t, exec, receiver, "each", nil, block)
 	if err != nil {
 		t.Fatalf("each over a nested-rest block whose tail fits the quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 1 {
+		t.Fatalf("each returned %v with %d entries, want the 1-entry receiver", got.Kind(), len(got.Hash()))
+	}
+}
+
+// emptyPairEachBlock builds an EMPTY-body single-parameter |pair| block. Its lone
+// positional parameter binds the whole [key, value] pair by reference (no
+// destructuring, no rest), so it triggers the collapsed-pair yield and allocates
+// nothing beyond the pair the iterator builds. The empty body means no per-statement
+// body check ever runs, so the pair reservation is the only thing that can bound the
+// transient pair against the Go-stack-only receiver.
+func emptyPairEachBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	return NewBlock([]Param{{Kind: ParamNormal, Name: "pair", Target: &Identifier{Name: "pair", Position: pos}}}, nil, newEnv(nil))
+}
+
+// collapsedPairStructuralBytes is the structural-only footprint a fixed pair
+// constant would reserve: the array Value, its slice base, and two element slots,
+// with no payload for the symbol key or the value. The pre-fix code reserved this
+// constant, which omitted the symbol key's string payload the estimator bills, so a
+// quota between receiver+structure and receiver+full-pair escaped the sandbox.
+const collapsedPairStructuralBytes = estimatedValueBytes + estimatedSliceBaseBytes + 2*estimatedValueBytes
+
+// TestHashEachSingleParamLargeSymbolKeyTripsMemoryQuota is the P2 regression for the
+// pair reservation omitting the symbol key's payload. A single-parameter |pair| block
+// yields each entry as a transient [NewSymbol(key), value] pair; the estimator bills
+// the symbol key's string header and payload on top of the array structure. With the
+// receiver held only on the iterator's Go frame, the body check (here, an empty body
+// that never runs one) cannot see it, so the pair reservation in the iterator
+// preflight is the sole guard combining the receiver with the live pair. A structural
+// constant omitting the symbol payload let a quota between receiver+structure and
+// receiver+full-pair pass that preflight and escape. Reserving the exact pair size
+// (maxCollapsedPairBytes), which probes the real symbol-keyed pair, rejects it.
+func TestHashEachSingleParamLargeSymbolKeyTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// One entry whose KEY is a large symbol so the symbol payload the structural
+	// constant omitted dominates the gap, with a tiny value so the pair's cost is the
+	// key, not the value.
+	bigKey := strings.Repeat("k", 200_000)
+	receiver := NewHash(map[string]Value{bigKey: NewInt(1)})
+	block := emptyPairEachBlock()
+	if !blockWantsCollapsedPair(valueBlock(block)) {
+		t.Fatal("test setup expects a single-parameter block that yields the collapsed pair")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
+
+	// Sanity: the real pair charge genuinely exceeds the structural constant by the
+	// symbol payload, so the omission -- not an incidentally tight quota -- is what
+	// let the walk escape.
+	if pairCharge <= collapsedPairStructuralBytes {
+		t.Fatalf("test setup expects the real pair charge (%d) to exceed the structural constant (%d) by the symbol payload", pairCharge, collapsedPairStructuralBytes)
+	}
+
+	// A quota that admits the receiver and the structural constant but NOT the real
+	// pair. The pre-fix reservation (structural constant) fit this and let the empty
+	// body walk the hash and escape; the exact reservation rejects it.
+	quota := roots + collapsedPairStructuralBytes + (pairCharge-collapsedPairStructuralBytes)/2
+
+	// Sanity: the pre-fix structural reservation genuinely fit the quota, proving the
+	// symbol payload -- not an over-tight quota -- is the deciding term.
+	if roots+collapsedPairStructuralBytes > quota {
+		t.Fatalf("test setup expects roots+structure (%d) to fit the quota (%d) so the omitted symbol payload is the deciding term", roots+collapsedPairStructuralBytes, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "each", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashEachSingleParamLargeSymbolKeyFitsQuota pins the other side: a quota
+// generously above the receiver and the full symbol-keyed pair must NOT over-reject
+// the collapsed-pair walk. It admits the empty-body walk and returns the receiver,
+// proving the exact pair reservation bounds only the transient pair rather than
+// rejecting every single-parameter block over a large-keyed hash.
+func TestHashEachSingleParamLargeSymbolKeyFitsQuota(t *testing.T) {
+	t.Parallel()
+
+	bigKey := strings.Repeat("k", 50_000)
+	receiver := NewHash(map[string]Value{bigKey: NewInt(1)})
+	block := emptyPairEachBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
+	quota := roots + pairCharge + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each over a single-parameter block whose pair fits the quota = %v, want success", err)
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != 1 {
 		t.Fatalf("each returned %v with %d entries, want the 1-entry receiver", got.Kind(), len(got.Hash()))
@@ -2706,9 +2803,10 @@ func TestHashEachEmptyBodyNestedRestCountsScratchInBindCharge(t *testing.T) {
 		t.Fatal("test setup expects a reusable-env block so the empty-body rebind path is exercised")
 	}
 
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
 	scratch := sortedKeyBufferBytes(len(entries))
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
 	tailCharge := nestedRestTailChargeBytes(bigValue)
 
 	// Sanity: the scratch buffer is genuinely non-trivial, so the buggy ordering's
@@ -2719,11 +2817,11 @@ func TestHashEachEmptyBodyNestedRestCountsScratchInBindCharge(t *testing.T) {
 	}
 
 	// Pick the quota one byte below the real peak (roots+scratch+pair+tail). The
-	// correct charge, which now folds the scratch into the baseline, rejects this
-	// peak. The buggy charge (baseline roots+tail, scratch omitted) and the walk
+	// correct charge, which now folds the scratch and pair into the baseline, rejects
+	// this peak. The buggy charge (baseline roots+tail, scratch omitted) and the walk
 	// preflight (roots+scratch, tail not yet bound) each fit it, so only the
 	// scratch's inclusion in the baseline catches the overflow.
-	quota := roots + scratch + collapsedPairBytes + tailCharge - 1
+	quota := roots + scratch + pairCharge + tailCharge - 1
 
 	// The buggy bind charge would have measured only roots+tail, which must fit the
 	// quota, proving the scratch (not the tail or an over-tight quota) is the sole

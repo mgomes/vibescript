@@ -412,23 +412,24 @@ func hashMemberQuery(property string) (Value, error) {
 			// live scratch; the walk projection charges no output map this iterator
 			// never creates. Reserving first means the projection adds no separate
 			// scratch bytes. A collapsed-pair walk also allocates a transient
-			// [key, value] pair each entry, so reserve one constant pair for the walk's
-			// lifetime: only one pair is ever live at a time, and reserving it (rather
-			// than rechecking per entry) charges it into the baseline every in-body
-			// check already sees, keeping the walk O(n) in the receiver size instead of
-			// re-walking the receiver to charge the pair on every iteration.
+			// [key, value] pair each entry, so reserve its largest pair for the walk's
+			// lifetime (maxCollapsedPairBytes): only one pair is live at a time, and
+			// reserving the largest one charges it into the baseline every in-body check,
+			// the preflight, and the bind charge all see -- so the pair is bounded
+			// alongside any fresh rest backing a destructuring block binds, keeping the
+			// walk O(n) in the receiver size instead of re-walking the receiver per entry.
 			//
 			// Reserve the scratch BEFORE building the runner so the runner's
 			// bind-charge baseline snapshot (taken in newBlockCallRunner, which folds
 			// reservedScratchBytes through estimateMemoryUsageBase) already includes
 			// it. Otherwise a nested-rest block (|(k, (head, *tail))|) over an
 			// ephemeral receiver would charge its fresh tail backing against a baseline
-			// that omits the scratch, while the body's own memory checks see the
-			// scratch but not the Go-stack-only receiver, letting receiver+scratch+tail
+			// that omits the scratch and pair, while the body's own memory checks see the
+			// scratch but not the Go-stack-only receiver, letting receiver+scratch+pair+tail
 			// exceed the quota with neither check failing.
 			scratch := sortedKeyBufferBytes(len(entries))
-			if collapsePair && len(entries) > 0 {
-				scratch = saturatingAdd(scratch, collapsedPairBytes)
+			if collapsePair {
+				scratch = saturatingAdd(scratch, exec.maxCollapsedPairBytes(receiver))
 			}
 			delta := exec.reserveLoopScratch(scratch)
 			defer exec.releaseLoopScratch(delta)
@@ -458,8 +459,8 @@ func hashMemberQuery(property string) (Value, error) {
 					// the collected source, which for a nested rest is a whole hash value,
 					// not the bounded pair. That fresh backing is charged by the runner's
 					// per-call bind charge (newBlockBindCharge), which counts it against
-					// the live call roots including this receiver, so an empty block body
-					// cannot let the copy escape the quota.
+					// the live call roots including this receiver and the reserved pair, so
+					// an empty block body cannot let the copy escape the quota.
 					pair := NewArray([]Value{NewSymbol(key), entries[key]})
 					if _, err := runner.call([]Value{pair}); err != nil {
 						return NewNil(), err

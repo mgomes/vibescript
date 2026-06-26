@@ -372,9 +372,10 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 // passing it here: the reservation folds the scratch into the live baseline
 // (hashCallRootBytes measures it), which both charges it at this preflight and
 // keeps every memory check inside the body aware of it. A collapsed-pair walk
-// reserves one collapsedPairBytes the same way, so the transient [key, value] pair
-// it builds each entry is charged for the loop's lifetime without re-walking the
-// receiver per entry (the walk stays O(n) in the receiver size).
+// reserves its largest transient [key, value] pair (maxCollapsedPairBytes) the
+// same way, so the symbol-key payload the estimator bills is captured exactly
+// without re-walking the receiver per entry (the walk stays O(n) in the receiver
+// size).
 func (exec *Execution) checkProjectedHashWalkBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
@@ -386,17 +387,52 @@ func (exec *Execution) checkProjectedHashWalkBytes(receiver Value, args []Value,
 	return nil
 }
 
-// collapsedPairBytes is the structural heap footprint of the fresh two-element
-// [key, value] array a collapsed-pair hash walk allocates per entry (Hash#each or
-// `for pair in hash` with a single-parameter block). The slice base plus two Value
-// slots are new each iteration; the key and value the slots reference alias the
-// receiver's own entries, already counted in the live baseline, so only this
-// constant structure is charged on top. Only one pair is live at a time -- the
-// previous iteration's pair is unreferenced once the next overwrites the slot -- so
-// reserving one pair for the walk's lifetime (reserveLoopScratch) conservatively
-// bounds the transient and lets every in-body check see it without re-walking the
-// receiver per entry.
-const collapsedPairBytes = estimatedValueBytes + estimatedSliceBaseBytes + 2*estimatedValueBytes
+// maxCollapsedPairBytes returns the heap footprint of the largest transient
+// two-element [key, value] array a collapsed-pair hash walk allocates over
+// entries (Hash#each or `for pair in hash` with a single-parameter block). Only
+// one pair is live at a time -- the previous entry's pair is unreferenced once the
+// next overwrites the slot it is bound to -- so reserving the largest one for the
+// walk's lifetime conservatively bounds the transient and lets every in-body check,
+// the iterator preflight, and the per-call bind charge all see it without
+// re-walking the receiver per entry.
+//
+// Each pair is PROBED against a single estimator seeded once with the receiver, so
+// the value the pair references deduplicates against the receiver (it aliases the
+// receiver's own entry) and is charged only its reference slot, while the array
+// structure and the symbol key's string payload -- which the estimator bills on top
+// of the structure -- are charged in full. probe rolls the estimator back after each
+// pair, so the receiver is walked exactly once and every pair is measured against the
+// same baseline: the scan is O(n) in the number of entries, not O(n^2).
+//
+// Reserving this exact maximum (rather than a fixed structural constant) closes the
+// escape where a constant omitting the symbol payload let a quota between
+// receiver+structure and receiver+full-pair pass the preflight while the body check,
+// blind to the Go-stack receiver, also passed -- letting the true peak exceed the
+// quota. Because the reservation is folded into the live baseline, it also keeps the
+// pair charged alongside any fresh rest backing a destructuring block binds, so the
+// combined peak (receiver + pair + rest) is bounded, not just each term alone.
+//
+// It returns 0 when no memory quota is enforced, skipping the per-entry probe scan
+// the reservation would otherwise pay for a budget nothing checks.
+func (exec *Execution) maxCollapsedPairBytes(receiver Value) int {
+	if exec.memoryQuota <= 0 {
+		return 0
+	}
+	entries := receiver.Hash()
+	if len(entries) == 0 {
+		return 0
+	}
+	est := newMemoryEstimator()
+	est.value(receiver)
+	maxBytes := 0
+	for key, value := range entries {
+		pair := NewArray([]Value{NewSymbol(key), value})
+		if bytes := est.probe(pair); bytes > maxBytes {
+			maxBytes = bytes
+		}
+	}
+	return maxBytes
+}
 
 // arrayBuildAccumulator charges the memory of an array assembled element by
 // element against the quota without re-walking the whole prefix on each append.
