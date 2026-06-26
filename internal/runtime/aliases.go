@@ -357,6 +357,14 @@ type hostValueCloneState struct {
 	// the clone keeps aliases of one bound predicate identical across the host
 	// boundary.
 	boundBuiltins map[*Builtin]Value
+	// enums caches the clone of an enum definition keyed on the source *EnumDef.
+	// cloneEnumDef rebuilds a fresh *EnumDef (and fresh *EnumValueDef members), so
+	// the same enum or enum member reachable through several paths in the returned
+	// graph (for example [Status::Draft, Status::Draft]) would otherwise clone to
+	// distinct pointers. equal? compares enums and members by backing pointer, so
+	// those distinct clones would wrongly report not-identical; caching the clone
+	// keeps aliases of one enum member identical across the host boundary.
+	enums map[*EnumDef]*EnumDef
 }
 
 type hostValueScanState struct {
@@ -529,6 +537,7 @@ func cloneValueForHost(val Value) Value {
 		classes:       make(map[*ClassDef]*ClassDef),
 		envs:          make(map[*Env]*Env),
 		boundBuiltins: make(map[*Builtin]Value),
+		enums:         make(map[*EnumDef]*EnumDef),
 	}
 	return cloneValueForHostWithState(val, state)
 }
@@ -585,13 +594,16 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		return cloned
 	case KindEnum:
 		enumDef := valueEnum(val)
-		return NewEnum(cloneEnumDef(enumDef, enumOwner(enumDef)))
+		if enumDef == nil {
+			return val
+		}
+		return NewEnum(cloneEnumForHost(enumDef, state))
 	case KindEnumValue:
 		member := valueEnumValue(val)
 		if member == nil || member.Enum == nil {
 			return val
 		}
-		enumClone := cloneEnumDef(member.Enum, enumOwner(member.Enum))
+		enumClone := cloneEnumForHost(member.Enum, state)
 		if memberClone, ok := enumClone.Members[member.Name]; ok {
 			return NewEnumValue(memberClone)
 		}
@@ -617,25 +629,31 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 }
 
 // cloneBuiltinForHost clones a builtin for the host boundary. A receiver-bound
-// predicate (one carrying RebindReceiver) is rebuilt around the clone of its
+// predicate (one carrying BoundReceiver) is rebuilt around the clone of its
 // captured receiver, walked through state so it dedups with the same receiver
-// appearing elsewhere in the returned graph. Without this the cloned predicate's
-// Fn would keep comparing against the pre-clone receiver, so a re-entering
-// probe(clonedReceiver) would wrongly report not-identical. Plain builtins have
-// no runtime-cloneable state, so they fall back to the shallow copy.
+// appearing elsewhere in the returned graph. The clone is reserved and cached
+// before the receiver is cloned, so a receiver graph that reaches the predicate
+// bound to it (for example `[p, a]` where `a` stores `p = a.eql?`) dedups against
+// the reserved clone instead of minting a second one the outer call would then
+// overwrite — which would make pre-clone aliases report not-identical after the
+// boundary. Without rebinding at all the cloned predicate's Fn would keep
+// comparing against the pre-clone receiver, so a re-entering probe(clonedReceiver)
+// would wrongly report not-identical. Plain builtins have no runtime-cloneable
+// state, so they fall back to the shallow copy.
 func cloneBuiltinForHost(val Value, state hostValueCloneState) Value {
 	builtin := valueBuiltin(val)
-	if builtin == nil || builtin.RebindReceiver == nil || len(builtin.CapturedValues) == 0 {
+	if builtin == nil || builtin.BoundReceiver == nil {
 		return cloneBuiltinValue(val)
 	}
 	if clone, ok := state.boundBuiltins[builtin]; ok {
 		return clone
 	}
-	clonedReceiver := cloneValueForHostWithState(builtin.CapturedValues[0], state)
-	clone := builtin.RebindReceiver(clonedReceiver)
+	clone, clonedCell := builtin.BoundReceiver.reserve()
 	if state.boundBuiltins != nil {
 		state.boundBuiltins[builtin] = clone
 	}
+	clonedReceiver := cloneValueForHostWithState(builtin.BoundReceiver.receiver.value, state)
+	setBoundReceiver(valueBuiltin(clone), clonedCell, clonedReceiver)
 	return clone
 }
 
@@ -789,6 +807,26 @@ func enumOwner(enumDef *EnumDef) *Script {
 	return enumDef.owner
 }
 
+// cloneEnumForHost clones an enum definition for the host boundary, memoizing the
+// clone on its source *EnumDef so the same enum (and therefore the same members)
+// reachable through several paths in one returned graph clones once. equal?
+// compares enums and members by backing pointer, so reusing the cached clone keeps
+// aliases of one enum member identical after the boundary; cloning per occurrence
+// would mint distinct pointers that wrongly report not-identical.
+func cloneEnumForHost(enumDef *EnumDef, state hostValueCloneState) *EnumDef {
+	if enumDef == nil {
+		return nil
+	}
+	if clone, ok := state.enums[enumDef]; ok {
+		return clone
+	}
+	clone := cloneEnumDef(enumDef, enumOwner(enumDef))
+	if state.enums != nil {
+		state.enums[enumDef] = clone
+	}
+	return clone
+}
+
 // Builtin represents a built-in function callable from Vibescript. It
 // remains defined in the vibes package because BuiltinFunc references
 // the runtime *Execution type.
@@ -813,15 +851,19 @@ type Builtin struct {
 	// outside the runtime memory quota. Builtins that close over no runtime values
 	// leave this nil and stay free, as before.
 	CapturedValues []Value
-	// RebindReceiver, when non-nil, reconstructs a receiver-bound builtin around a
-	// new receiver. The universal eql?/equal? predicates close over the value they
-	// were resolved from, so a plain clone of the Fn keeps comparing against the
-	// pre-clone receiver. When Script.Call host-clones a returned graph that holds
-	// both a receiver and a predicate bound to it, the clone walk rebinds the
-	// predicate to the cloned receiver via this hook so a re-entering
-	// `probe(clonedReceiver)` still reports identity. The receiver it rebinds is
-	// CapturedValues[0]; builtins with no bound receiver leave this nil.
-	RebindReceiver func(receiver Value) Value
+	// BoundReceiver, when non-nil, marks the builtin a receiver-bound predicate (a
+	// bound eql?/equal?) and exposes a two-phase clone. The universal predicates
+	// read the value they were resolved from through a mutable cell, so a plain
+	// clone of the Fn keeps comparing against the pre-clone receiver. When
+	// Script.Call host-clones a returned graph (or re-roots an inbound one) that
+	// holds both a receiver and a predicate bound to it, the clone walk reserves an
+	// empty clone, registers it, recurses to clone the receiver, then installs the
+	// cloned receiver via this hook. Reserving before recursing keeps a receiver
+	// graph that reaches the predicate bound to it (for example `[p, a]` where `a`
+	// stores `p = a.eql?`) deduplicated to one clone, so a re-entering
+	// `probe(clonedReceiver)` still reports identity. Builtins with no bound
+	// receiver leave this nil.
+	BoundReceiver *boundReceiverClone
 	// Capability marks a builtin a capability adapter exposed for a single
 	// Script.Call. Capability grants are per call: when a closure that captured
 	// one (for example a `Hash.new { ... }` default proc copying a capability

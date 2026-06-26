@@ -287,19 +287,26 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		// A receiver-bound predicate (a bound eql?/equal?) rebinds to the rebound
 		// clone of its captured receiver. The receiver flows through the same
 		// rebinder, so it dedups with the same receiver appearing elsewhere in the
-		// inbound graph and the rebound predicate reports identity against it. Left
-		// unchanged, the predicate would keep comparing against the receiver's
-		// pre-rebind wrapper while the receiver passed alongside rebinds to a fresh
-		// one, so probe(receiver) would wrongly report not-identical.
-		if builtin.RebindReceiver != nil && len(builtin.CapturedValues) > 0 {
+		// inbound graph and the rebound predicate reports identity against it. The
+		// clone is reserved and cached before the receiver rebinds, so a receiver
+		// graph that reaches the predicate bound to it (for example `[p, a]` where
+		// `a[0]` is the same `p = a.eql?`) dedups against the reserved clone instead
+		// of minting a second one the outer call would then overwrite — which would
+		// make the callee observe arg[0].equal?(arg[1][0]) == false even though the
+		// inbound graph held one predicate object. Left unchanged, the predicate
+		// would keep comparing against the receiver's pre-rebind wrapper while the
+		// receiver passed alongside rebinds to a fresh one.
+		if builtin.BoundReceiver != nil {
 			if clone, ok := r.seenBoundBuiltins[builtin]; ok {
 				return clone
 			}
-			clone := builtin.RebindReceiver(r.rebindValue(builtin.CapturedValues[0]))
+			clone, clonedCell := builtin.BoundReceiver.reserve()
 			if r.seenBoundBuiltins == nil {
 				r.seenBoundBuiltins = make(map[*Builtin]Value)
 			}
 			r.seenBoundBuiltins[builtin] = clone
+			reboundReceiver := r.rebindValue(builtin.BoundReceiver.receiver.value)
+			setBoundReceiver(valueBuiltin(clone), clonedCell, reboundReceiver)
 			return clone
 		}
 		// A capability copied into a local (for example `cap = jobs` captured by a

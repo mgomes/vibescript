@@ -72,6 +72,78 @@ end`)
 	}
 }
 
+// TestHostCloneEnumPreservesAliasIdentity confirms two references to the same
+// enum member in a returned graph (for example [Status::Draft, Status::Draft])
+// clone to one backing pointer, so the cloned aliases stay equal? to each other.
+// cloneEnumDef rebuilds a fresh *EnumDef and fresh members per call, so without
+// memoizing the clone on the source *EnumDef the two occurrences would clone to
+// distinct pointers; equal? compares enums and members by backing pointer, so
+// those distinct clones would wrongly report not-identical even though they were
+// one member inside the script. The cloned enum definition reachable through a
+// member must likewise be the same pointer for both aliases.
+func TestHostCloneEnumPreservesAliasIdentity(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `enum Status
+  Draft
+  Published
+end`)
+
+	statusDraft := enumTestValue(t, script, "Status", "Draft")
+	statusPublished := enumTestValue(t, script, "Status", "Published")
+
+	cloned := cloneValueForHost(NewArray([]Value{statusDraft, statusDraft, statusPublished}))
+	items := cloned.Array()
+
+	if !items[0].Identical(items[1]) {
+		t.Fatal("the same enum member cloned through two paths produced distinct members; aliases must stay equal?")
+	}
+	if EnumValueOf(items[0]) != EnumValueOf(items[1]) {
+		t.Fatal("cloned enum member aliases hold distinct *EnumValueDef pointers; host clone must memoize the enum clone")
+	}
+	if items[0].Identical(statusDraft) {
+		t.Fatal("cloned enum member shares identity with the original; test cannot observe the clone")
+	}
+
+	// Two members of one enum must clone through the same enum definition so
+	// member-level identity stays consistent across the whole returned graph.
+	draftEnum := EnumValueOf(items[0]).Enum
+	publishedEnum := EnumValueOf(items[2]).Enum
+	if draftEnum != publishedEnum {
+		t.Fatal("members of one enum cloned through distinct enum definitions; the enum clone must be memoized for the whole graph")
+	}
+	if draftEnum == EnumValueOf(statusDraft).Enum {
+		t.Fatal("cloned enum definition shares identity with the original; test cannot observe the clone")
+	}
+}
+
+// TestHostCloneEnumDefAndMemberShareIdentity confirms an enum definition and one
+// of its members reachable through the same returned graph clone through one
+// memoized *EnumDef, so the cloned member belongs to the cloned enum. Without the
+// shared enum cache the standalone enum value and the member would clone to two
+// distinct enum definitions and break member-of-enum identity across the boundary.
+func TestHostCloneEnumDefAndMemberShareIdentity(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `enum Status
+  Draft
+  Published
+end`)
+
+	enumDef := NewEnum(script.enums["Status"])
+	statusDraft := enumTestValue(t, script, "Status", "Draft")
+
+	cloned := cloneValueForHost(NewArray([]Value{enumDef, statusDraft}))
+	items := cloned.Array()
+
+	clonedEnum := EnumOf(items[0])
+	clonedMemberEnum := EnumValueOf(items[1]).Enum
+	if clonedEnum != clonedMemberEnum {
+		t.Fatal("the cloned enum definition and the cloned member's enum are distinct; the enum clone must be memoized across the graph")
+	}
+	if clonedEnum == EnumOf(enumDef) {
+		t.Fatal("cloned enum definition shares identity with the original; test cannot observe the clone")
+	}
+}
+
 // TestEqualPredicateEnumDispatchesIdentity confirms the universal equal?
 // predicate on enums and enum values routes through Value.Identical rather than
 // Value.Equal. The predicate builtin captures the receiver, so invoking it with
@@ -240,6 +312,103 @@ func TestHostCloneBoundPredicatePreservesAliasIdentity(t *testing.T) {
 		if !got.Bool() {
 			t.Fatalf("cloned equal? alias %d returned false against the cloned receiver; it did not rebind", i)
 		}
+	}
+}
+
+// TestHostCloneRecursiveBoundPredicatePreservesAliasIdentity covers a bound
+// predicate whose receiver reaches the predicate itself: an array `a` stores
+// `p = a.equal?`, returned as `[p, a]`. Cloning item 0 (`p`) must register its
+// clone before cloning the receiver `a`, because the walk through `a` reaches `p`
+// again; otherwise that recursion mints a second clone and the outer call
+// overwrites the cache, so the predicate cloned directly (`cloned[0]`) and the one
+// reached through the receiver (`cloned[1][0]`) end up distinct and wrongly report
+// not-`equal?`, even though they were one builtin before the host boundary.
+func TestHostCloneRecursiveBoundPredicatePreservesAliasIdentity(t *testing.T) {
+	t.Parallel()
+
+	// Build the receiver array first, bind the predicate to it, then store the
+	// predicate back into the same backing slice so the receiver reaches the
+	// predicate bound to it. Array identity is the backing pointer, so the in-place
+	// write keeps the probe's captured receiver pointing at this same array.
+	slot := make([]Value, 1)
+	receiver := NewArray(slot)
+	probe, ok := universalMember(receiver, "equal?")
+	if !ok {
+		t.Fatal("universalMember did not resolve equal? for an array")
+	}
+	slot[0] = probe
+
+	cloned := cloneValueForHost(NewArray([]Value{probe, receiver}))
+	items := cloned.Array()
+	clonedProbe := items[0]
+	clonedReceiver := items[1]
+
+	if clonedReceiver.Identical(receiver) {
+		t.Fatal("cloned receiver shares identity with the original; test cannot observe the clone")
+	}
+
+	reachedProbe := clonedReceiver.Array()[0]
+	if !clonedProbe.Identical(reachedProbe) {
+		t.Fatal("the predicate cloned directly and the one reached through its own receiver are distinct builtins; the recursive clone must reuse the reserved clone")
+	}
+
+	// The deduplicated clone must rebind to the cloned receiver from the same graph.
+	clonedBuiltin := valueBuiltin(clonedProbe)
+	if clonedBuiltin == nil {
+		t.Fatal("cloned equal? did not resolve to a builtin")
+	}
+	got, err := clonedBuiltin.Fn(nil, NewNil(), []Value{clonedReceiver}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("cloned equal? against cloned receiver: %v", err)
+	}
+	if !got.Bool() {
+		t.Fatal("cloned equal? returned false against the cloned receiver; the recursive clone did not rebind")
+	}
+}
+
+// TestCallRebindRecursiveBoundPredicatePreservesAliasIdentity is the inbound
+// counterpart to TestHostCloneRecursiveBoundPredicatePreservesAliasIdentity:
+// Script.Call rebinds incoming arguments through callFunctionRebinder, which must
+// likewise reserve a bound predicate's clone before rebinding its receiver so a
+// receiver that reaches the predicate bound to it (an argument `[p, a]` where
+// `a[0]` is the same `p = a.equal?`) dedups to one builtin. Otherwise the callee
+// observes arg[0].equal?(arg[1][0]) == false even though the inbound graph held a
+// single predicate object.
+func TestCallRebindRecursiveBoundPredicatePreservesAliasIdentity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, "def run()\n  nil\nend")
+	root := newEnv(nil)
+	rebinder := newCallFunctionRebinder(script, root, map[string]*ClassDef{}, map[string]*EnumDef{})
+
+	slot := make([]Value, 1)
+	receiver := NewArray(slot)
+	probe, ok := universalMember(receiver, "equal?")
+	if !ok {
+		t.Fatal("universalMember did not resolve equal? for an array")
+	}
+	slot[0] = probe
+
+	rebound := rebinder.rebindValue(NewArray([]Value{probe, receiver}))
+	items := rebound.Array()
+	reboundProbe := items[0]
+	reboundReceiver := items[1]
+
+	reachedProbe := reboundReceiver.Array()[0]
+	if !reboundProbe.Identical(reachedProbe) {
+		t.Fatal("the predicate rebound directly and the one reached through its own receiver are distinct builtins; the recursive rebind must reuse the reserved clone")
+	}
+
+	reboundBuiltin := valueBuiltin(reboundProbe)
+	if reboundBuiltin == nil {
+		t.Fatal("rebound equal? did not resolve to a builtin")
+	}
+	got, err := reboundBuiltin.Fn(nil, NewNil(), []Value{reboundReceiver}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("rebound equal? against rebound receiver: %v", err)
+	}
+	if !got.Bool() {
+		t.Fatal("rebound equal? returned false against the rebound receiver; the recursive rebind did not rebind")
 	}
 }
 
