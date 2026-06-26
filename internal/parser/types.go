@@ -172,11 +172,19 @@ func (p *parser) parseTypeShape() *ast.TypeExpr {
 			// complete type expressions ending at a `,` or `}` boundary, so the
 			// brace group is clearly a shape annotation rather than a hash
 			// literal. Mark it as a structural shape error worth surfacing,
-			// unless either repeated value is a bare identifier naming a local
-			// value: such a reference is a hash default (mirroring the
-			// shapeFieldNamesLocalValue disambiguation), so leave the flag clear
-			// and let the group fall back to a hash default.
-			if !p.typeAtomNamesLocalValue(prior) && !p.typeAtomNamesLocalValue(fieldType) {
+			// unless either repeated value is a hash-default shape:
+			//
+			//   - a bare identifier naming a local value (mirroring the
+			//     shapeFieldNamesLocalValue disambiguation), or
+			//   - a bare `nil` atom (mirroring shapeHasDegenerateNilField).
+			//
+			// A `nil` field type is degenerate as a positional annotation, so a
+			// group like `{ previous: nil, previous: nil }` is the Ruby-style
+			// hash default `def f(opts: { previous: nil })` (Ruby accepts the
+			// repeated key, keeping the last value) rather than a shape type.
+			// Leaving the flag clear lets the group fall back to a hash default
+			// instead of being rejected as a duplicate shape field.
+			if !p.bracedFieldIsHashDefault(prior) && !p.bracedFieldIsHashDefault(fieldType) {
 				p.shapeStructurallyInvalid = true
 			}
 			p.addParseError(p.curToken.Pos, fmt.Sprintf("duplicate shape field %s", key))

@@ -1108,6 +1108,27 @@ func (p *parser) typeAtomNamesLocalValue(ty *ast.TypeExpr) bool {
 	}
 }
 
+// bracedFieldIsHashDefault reports whether a braced-group field value, parsed as
+// a type atom during the speculative shape parse, actually reads as a hash
+// default rather than a shape field type. Two atoms qualify:
+//
+//   - a bare identifier naming a local value (typeAtomNamesLocalValue), and
+//   - a bare `nil` atom (the degenerate field type recognized by
+//     shapeHasDegenerateNilField).
+//
+// parseTypeShape uses it on the repeated values of a duplicate key so that a
+// group like `{ previous: nil, previous: nil }` or `{ x: a, x: a }` is left to
+// fall back to a hash default instead of being marked a structural shape error.
+func (p *parser) bracedFieldIsHashDefault(ty *ast.TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	if ty.Kind == ast.TypeNil {
+		return true
+	}
+	return p.typeAtomNamesLocalValue(ty)
+}
+
 // shapeHasDegenerateNilField reports whether ty is a shape type with a field
 // whose type is the bare `nil` atom, looking through nested shapes.
 //

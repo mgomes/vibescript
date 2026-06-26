@@ -223,6 +223,10 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
     def nil_field_default(opts: { previous: nil })
       opts[:previous] == nil
     end
+
+    def duplicate_nil_field_default(opts: { previous: nil, previous: nil })
+      opts[:previous] == nil && opts.size == 1
+    end
     `)
 
 	t.Run("default_hash_applies_when_omitted", func(t *testing.T) {
@@ -297,6 +301,16 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
 		})
 		if !got.Equal(NewBool(false)) {
 			t.Fatalf("nil_field_default(opts: {previous: 1}) = %#v, want false", got)
+		}
+	})
+
+	// A duplicate key whose values are bare nil atoms is a Ruby-style hash
+	// default rather than a duplicate shape field. Ruby keeps the last value, so
+	// the default binds to a single-entry hash `{previous: nil}`.
+	t.Run("duplicate_nil_valued_hash_default_binds_keyword", func(t *testing.T) {
+		t.Parallel()
+		if got := callFunc(t, script, "duplicate_nil_field_default", nil); !got.Equal(NewBool(true)) {
+			t.Fatalf("duplicate_nil_field_default() = %#v, want true", got)
 		}
 	})
 }

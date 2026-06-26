@@ -1054,3 +1054,40 @@ end`
 		t.Fatalf("params mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestParserDuplicateKeyNilHashDefaultStillBinds verifies that a duplicate key
+// whose values are bare `nil` atoms stays a hash default rather than surfacing a
+// shape diagnostic. A `nil` field type is degenerate as a positional annotation
+// (the same disambiguation shapeHasDegenerateNilField applies to single-key
+// groups), so a repeated nil value like `{ previous: nil, previous: nil }`
+// remains the Ruby-style hash default `def f(opts: { previous: nil })`. Ruby
+// accepts the duplicate key, keeping the last value, so the brace group must not
+// be rejected as a duplicate shape field.
+func TestParserDuplicateKeyNilHashDefaultStillBinds(t *testing.T) {
+	t.Parallel()
+
+	source := `def f(opts: { previous: nil, previous: nil })
+  opts
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	want := []ast.Param{
+		{
+			Name: "opts",
+			Kind: ast.ParamKeyword,
+			DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+				{Key: &ast.SymbolLiteral{Name: "previous"}, Value: &ast.NilLiteral{}},
+				{Key: &ast.SymbolLiteral{Name: "previous"}, Value: &ast.NilLiteral{}},
+			}},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}
