@@ -59,6 +59,21 @@ x, (y, z) = [1, [2, 3]]
 Missing values bind as `nil`, extra values are ignored unless captured by a
 `*rest` target, and scalar right-hand values are treated as one value.
 
+A bare `*` is an anonymous rest target: it discards the values it captures
+without binding a name, which is useful for ignoring leading, trailing, or
+interior values:
+
+```vibe
+first, * = [1, 2, 3]
+head, *, tail = [1, 2, 3, 4]
+```
+
+A leading `*` discards the values before the named targets:
+
+```vibe
+*, last = [1, 2, 3]
+```
+
 Index assignment is supported for mutable collections:
 
 ```vibe

@@ -29,6 +29,20 @@ pairs.map do |(left, right)|
 end
 ```
 
+A bare `*` is an anonymous rest target that discards the values it captures
+without binding a name, just as in assignment destructuring. It can sit at the
+front, middle, or end of the pattern:
+
+```vibe
+rows.map do |(head, *)|
+  head
+end
+
+rows.map do |(head, *, tail)|
+  [head, tail]
+end
+```
+
 Ruby-style ampersand block forwarding (`&block`) and symbol-to-proc shorthand
 (`&:method_name`) are not supported. Write an explicit `do ... end` or brace
 block instead.

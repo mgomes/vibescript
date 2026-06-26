@@ -1371,13 +1371,13 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 			return nil
 		}
 		pos = first.Pos()
-		elements = append(elements, ast.DestructureElement{Target: first})
+		elements = append(elements, ast.DestructureElement{Target: first, Position: first.Pos()})
 	} else {
 		element, ok := p.parseDestructureElement()
 		if !ok {
 			return nil
 		}
-		pos = element.Target.Pos()
+		pos = element.Position
 		seenRest = element.Rest
 		elements = append(elements, element)
 	}
@@ -1391,7 +1391,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 		}
 		if element.Rest {
 			if seenRest {
-				p.addParseError(element.Target.Pos(), "duplicate rest assignment target")
+				p.addParseError(element.Position, "duplicate rest assignment target")
 				return nil
 			}
 			seenRest = true
@@ -1405,6 +1405,12 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
 	rest := false
 	if p.curToken.Type == ast.TokenAsterisk {
+		restPos := p.curToken.Pos
+		// A bare "*" not followed by a target is an anonymous (discard) rest.
+		// Leave curToken on "*" so the caller's lookahead sees the terminator.
+		if isAnonymousRestTerminator(p.peekToken.Type) {
+			return ast.DestructureElement{Rest: true, Position: restPos}, true
+		}
 		rest = true
 		p.nextToken()
 	}
@@ -1413,7 +1419,20 @@ func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
 	if target == nil {
 		return ast.DestructureElement{}, false
 	}
-	return ast.DestructureElement{Target: target, Rest: rest}, true
+	return ast.DestructureElement{Target: target, Rest: rest, Position: target.Pos()}, true
+}
+
+// isAnonymousRestTerminator reports whether tt ends a bare "*" destructuring
+// target, leaving an anonymous (discard) rest with no bound name. A "*" is
+// anonymous when the next token closes the target list (an assignment operator),
+// continues it (a comma), or closes a nested target group (")" or "]").
+func isAnonymousRestTerminator(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TokenComma, ast.TokenRParen, ast.TokenRBracket:
+		return true
+	default:
+		return isAssignmentOperator(tt)
+	}
 }
 
 func (p *parser) parseDestructureSingleTarget() ast.Expression {
