@@ -663,13 +663,25 @@ func newBlockCallRunner(exec *Execution, block Value, name string, receiver Valu
 }
 
 func (runner *blockCallRunner) call(args []Value) (Value, error) {
+	return runner.callWithChargedRoots(args)
+}
+
+// callWithChargedRoots invokes the block, additionally charging per-call roots that
+// live only in the builtin's Go frame and evolve every call -- the reduce
+// accumulator, whose current payload (the seed on the first call, the previous
+// call's result thereafter) is not in the runner's one-time baseline. Charging it
+// per call closes the gap a snapshotted callArgs cannot: a fixed positional root can
+// be folded into the baseline once, but an evolving accumulator must be re-charged
+// each call so a block that copies its tail into a rest backing is rejected when the
+// real peak (receiver + accumulator + tail) exceeds the quota.
+func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots ...Value) (Value, error) {
 	env := runner.env
 	if env == nil {
 		env = newEnv(runner.blk.Env)
 	} else {
 		env.resetForBlockCall(runner.blk.Env)
 	}
-	return runner.exec.callBlock(runner.blk, args, env, runner.charge)
+	return runner.exec.callBlock(runner.blk, args, env, runner.charge, chargedRoots...)
 }
 
 // blockWantsCollapsedPair reports whether a hash iterator should yield each entry
@@ -716,7 +728,7 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	return exec.callBlock(blk, args, newEnv(blk.Env), charge)
 }
 
-func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge) (Value, error) {
+func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, chargedRoots ...Value) (Value, error) {
 	exec.pushModuleContext(moduleContext{
 		key:    blk.moduleKey,
 		path:   blk.modulePath,
@@ -725,7 +737,9 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	})
 	defer exec.popModuleContext()
 
-	charge.begin(args)
+	if err := charge.begin(args, chargedRoots...); err != nil {
+		return NewNil(), err
+	}
 	for i, param := range blk.Params {
 		var val Value
 		if i < len(args) {

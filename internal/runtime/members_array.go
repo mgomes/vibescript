@@ -1737,7 +1737,14 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	for i := start; i < len(arr); i++ {
 		blockArgs[0] = acc
 		blockArgs[1] = arr[i]
-		next, err := runner.call(blockArgs[:])
+		// The accumulator lives only in this Go frame and evolves every call (the
+		// seed first, each prior call's result after), so it is not in the runner's
+		// one-time baseline and cannot be folded into it like a fixed positional
+		// root. Charge it per call so a block that copies its tail into a
+		// rest-collecting parameter (reduce(big) do |(head, *tail), item| ... end) is
+		// rejected when the real peak (receiver + accumulator + tail) exceeds the
+		// quota, not just when receiver + tail does.
+		next, err := runner.callWithChargedRoots(blockArgs[:], acc)
 		if err != nil {
 			return NewNil(), err
 		}

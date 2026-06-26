@@ -703,15 +703,35 @@ func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []
 // deduplicates to zero. Only the backing's new slots remain to be charged. Seeding
 // walks just this call's arguments, never the whole receiver, so it stays O(the
 // data this entry yields).
-func (c *blockBindCharge) begin(args []Value) {
+//
+// chargedRoots are per-call arguments that live only in the builtin's Go frame and
+// are NOT in the snapshotted baseline, yet evolve every call so they cannot be
+// folded into that one-time baseline -- the reduce accumulator (acc_0 is the seed,
+// acc_n is the previous call's block result). Unlike the fixed positional callArgs a
+// merge or grep snapshots once, the accumulator changes each call, so its current
+// payload must be charged here, per call. They are charged BEFORE the args are
+// seeded so their full marginal footprint over the baseline is counted and recorded
+// in the seen-set; a rest backing that later aliases the accumulator (the tail copy a
+// reduce(big) do |(head, *tail), item| ... end binds) then deduplicates against it
+// and is charged only its genuinely new slots. begin returns the quota error if the
+// charged roots alone exceed the budget, so a reduce whose live peak is
+// receiver + accumulator is rejected before the block body runs.
+func (c *blockBindCharge) begin(args []Value, chargedRoots ...Value) error {
 	if c == nil {
-		return
+		return nil
 	}
 	c.est.reset()
 	c.built = 0
+	for _, root := range chargedRoots {
+		c.built = saturatingAdd(c.built, c.est.value(root))
+		if saturatingAdd(c.baseline, c.built) > c.exec.memoryQuota {
+			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+		}
+	}
 	for _, arg := range args {
 		c.est.value(arg)
 	}
+	return nil
 }
 
 // charge adds a freshly bound leaf value to the running estimate and rejects the

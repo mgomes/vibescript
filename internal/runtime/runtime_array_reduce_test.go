@@ -293,3 +293,117 @@ func TestArrayReduceOperationHonorsCancellation(t *testing.T) {
 		t.Fatalf("reduce under canceled context = %v, want context.Canceled", err)
 	}
 }
+
+// emptyAccRestReduceBlock builds an EMPTY-body |(head, *tail), item| block: a block
+// whose first positional parameter destructures the accumulator with a rest target
+// and whose second binds the element. The empty body runs no statements, so the
+// body's own per-statement memory checks never observe the fresh tail backing the
+// rest collects -- the case the per-call bind charge must cover on its own.
+func emptyAccRestReduceBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	accTarget := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	return NewBlock([]Param{
+		{Kind: ParamNormal, Target: accTarget},
+		{Kind: ParamNormal, Target: &Identifier{Name: "item", Position: pos}},
+	}, nil, newEnv(nil))
+}
+
+// reduceAccRestChargeBytes returns the bytes the per-call bind charge attributes to a
+// single reduce call whose |(head, *tail), item| block destructures the accumulator
+// acc and the element item. It mirrors blockBindCharge exactly: charge the
+// accumulator as a per-call Go-frame root, seed the call's arguments (so payloads the
+// rest backing shares with acc deduplicate), then charge the genuinely fresh tail
+// backing of acc[1:]. The returned (full, tailOnly) pair lets tests size a quota
+// between the old accounting (tailOnly, which omitted the accumulator) and the new
+// one (full), proving the accumulator's footprint is what the charge now closes.
+func reduceAccRestChargeBytes(acc, item Value) (full, tailOnly int) {
+	tail := NewArray(slicesClone(acc.Array()[1:]))
+
+	withAcc := newMemoryEstimator()
+	accBytes := withAcc.value(acc)
+	withAcc.value(item)
+	full = accBytes + withAcc.value(tail)
+
+	tailOnlyEst := newMemoryEstimator()
+	tailOnlyEst.value(acc)
+	tailOnlyEst.value(item)
+	tailOnly = tailOnlyEst.value(tail)
+	return full, tailOnly
+}
+
+// TestArrayReduceEmptyBodyAccRestTripsMemoryQuota is the regression for the reduce
+// accumulator gap on PR #808. reduce(big) do |(head, *tail), item| ... end folds
+// from a large initial accumulator that lives only in arrayReduce's Go frame, never
+// in any env the body's checks walk. With an EMPTY block body, the body never
+// observes the fresh tail the rest target copies, and the accumulator is not in the
+// runner's one-time baseline (which holds the receiver, not the seed). Charging only
+// the tail against that baseline let a quota fit (receiver + tail) while the real
+// peak (receiver + accumulator + tail) escaped. The per-call charge now counts the
+// accumulator, so a quota admitting the receiver and tail but NOT the accumulator
+// rejects the fold.
+func TestArrayReduceEmptyBodyAccRestTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// A single-element receiver makes reduce run exactly one block call whose
+	// accumulator is the large seed; the empty body then returns nil, so no later
+	// call carries a large accumulator. The seed lives only on the Go call stack.
+	const seedLen = 200_000
+	seed := arrayValue(seedLen)
+	receiver := NewArray([]Value{NewInt(1)})
+	block := emptyAccRestReduceBlock()
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects a reusable-env block so the empty-body rebind path is exercised")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	baseline := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	full, tailOnly := reduceAccRestChargeBytes(seed, NewInt(1))
+	const headroom = 16 * 1024
+	quota := baseline + tailOnly + headroom
+
+	// Sanity: the accumulator's footprint genuinely exceeds the headroom the quota
+	// leaves above the tail-only accounting, so its omission -- not an incidentally
+	// tight quota -- is what would let the fold escape.
+	if full <= tailOnly+headroom {
+		t.Fatalf("test setup expects the accumulator charge (full %d) to exceed tail-only (%d) plus headroom (%d)", full, tailOnly, headroom)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := arrayReduce(exec, receiver, []Value{seed}, nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestArrayReduceEmptyBodyAccRestFitsWhenAccFitsQuota pins the other side of the
+// charge: it must not over-reject a fold whose accumulator and fresh tail genuinely
+// fit. A quota generously above the receiver, the accumulator, and the tail copy
+// admits the empty-body fold and returns the empty block's nil result, proving the
+// charge bounds only the live peak rather than rejecting every rest-collecting
+// reduce block.
+func TestArrayReduceEmptyBodyAccRestFitsWhenAccFitsQuota(t *testing.T) {
+	t.Parallel()
+
+	const seedLen = 50_000
+	seed := arrayValue(seedLen)
+	receiver := NewArray([]Value{NewInt(1)})
+	block := emptyAccRestReduceBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	baseline := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	full, _ := reduceAccRestChargeBytes(seed, NewInt(1))
+	quota := baseline + full + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := arrayReduce(exec, receiver, []Value{seed}, nil, block)
+	if err != nil {
+		t.Fatalf("reduce over an accumulator-rest block whose tail fits the quota = %v, want success", err)
+	}
+	if got.Kind() != KindNil {
+		t.Fatalf("empty-body reduce returned %v, want nil", got.Kind())
+	}
+}
