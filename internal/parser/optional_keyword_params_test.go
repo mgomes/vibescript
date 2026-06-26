@@ -1091,3 +1091,107 @@ end`
 		t.Fatalf("params mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// TestParserDuplicateKeyNestedNilHashDefaultStillBinds verifies that a duplicate
+// key whose values are nested hash defaults stays a hash default rather than
+// surfacing a shape diagnostic. The repeated value `{ previous: nil }` is itself
+// a hash default (shapeHasDegenerateNilField recognizes its degenerate `nil`
+// field), so the structural shape check must look through the nesting just like
+// the single-key disambiguation does. Ruby accepts the duplicate key, keeping the
+// last value, so a group like `{ x: { previous: nil }, x: { previous: nil } }`
+// must remain the Ruby-style hash default rather than be rejected as a duplicate
+// shape field.
+func TestParserDuplicateKeyNestedNilHashDefaultStillBinds(t *testing.T) {
+	t.Parallel()
+
+	source := `def f(opts: { x: { previous: nil }, x: { previous: nil } })
+  opts
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	nestedNil := func() *ast.HashLiteral {
+		return &ast.HashLiteral{Pairs: []ast.HashPair{
+			{Key: &ast.SymbolLiteral{Name: "previous"}, Value: &ast.NilLiteral{}},
+		}}
+	}
+	want := []ast.Param{
+		{
+			Name: "opts",
+			Kind: ast.ParamKeyword,
+			DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+				{Key: &ast.SymbolLiteral{Name: "x"}, Value: nestedNil()},
+				{Key: &ast.SymbolLiteral{Name: "x"}, Value: nestedNil()},
+			}},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserDuplicateKeyNestedLocalRefHashDefaultStillBinds verifies that a
+// duplicate key whose values are nested hash defaults referencing an earlier
+// keyword parameter stays a hash default. The repeated value `{ sum: a }` is
+// itself a hash default (shapeFieldNamesLocalValue recognizes its field naming
+// the local `a`), so the structural shape check must look through the nesting.
+func TestParserDuplicateKeyNestedLocalRefHashDefaultStillBinds(t *testing.T) {
+	t.Parallel()
+
+	source := `def g(a:, b: { x: { sum: a }, x: { sum: a } })
+  b
+end`
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("statement 0 = %T, want *ast.FunctionStmt", got.Statements[0])
+	}
+	nestedSum := func() *ast.HashLiteral {
+		return &ast.HashLiteral{Pairs: []ast.HashPair{
+			{Key: &ast.SymbolLiteral{Name: "sum"}, Value: &ast.Identifier{Name: "a"}},
+		}}
+	}
+	want := []ast.Param{
+		{Name: "a", Kind: ast.ParamKeyword},
+		{
+			Name: "b",
+			Kind: ast.ParamKeyword,
+			DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+				{Key: &ast.SymbolLiteral{Name: "x"}, Value: nestedSum()},
+				{Key: &ast.SymbolLiteral{Name: "x"}, Value: nestedSum()},
+			}},
+		},
+	}
+	if diff := cmp.Diff(want, fn.Params, astCmpOpts); diff != "" {
+		t.Fatalf("params mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserDuplicateKeyNestedShapeSurfacesDiagnostic verifies that the
+// recursive hash-default classification does not over-match: a duplicate key
+// whose nested values are genuine shape types (`{ id: int }`) is still a
+// structurally invalid shape and surfaces the duplicate-field diagnostic rather
+// than being silently reinterpreted as a hash-literal default. This keeps the
+// nested recursion in bracedFieldIsHashDefault from swallowing real shape errors.
+func TestParserDuplicateKeyNestedShapeSurfacesDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	source := `def f(opts: { x: { id: int }, x: { id: int } })
+  opts
+end`
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want the shape diagnostic", source)
+	}
+	if got := errs[0].Error(); !strings.Contains(got, "duplicate shape field x") {
+		t.Fatalf("parseSource(%q) first error = %q, want a duplicate shape field diagnostic", source, got)
+	}
+}

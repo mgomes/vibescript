@@ -1109,16 +1109,25 @@ func (p *parser) typeAtomNamesLocalValue(ty *ast.TypeExpr) bool {
 }
 
 // bracedFieldIsHashDefault reports whether a braced-group field value, parsed as
-// a type atom during the speculative shape parse, actually reads as a hash
-// default rather than a shape field type. Two atoms qualify:
+// a type expression during the speculative shape parse, actually reads as a hash
+// default rather than a shape field type. A value qualifies when it is:
 //
-//   - a bare identifier naming a local value (typeAtomNamesLocalValue), and
+//   - a bare identifier naming a local value (typeAtomNamesLocalValue),
 //   - a bare `nil` atom (the degenerate field type recognized by
-//     shapeHasDegenerateNilField).
+//     shapeHasDegenerateNilField), or
+//   - a nested shape that is itself a hash default, i.e. one with a degenerate
+//     `nil` field (shapeHasDegenerateNilField) or a field naming a local value
+//     (shapeFieldNamesLocalValue).
+//
+// The nested-shape cases mirror the disambiguation bracedGroupIsShapeType
+// applies to the whole group, so a nested value like `{ previous: nil }` or
+// `{ sum: a }` is recognized as a hash default at any depth, not only when it is
+// the outermost group.
 //
 // parseTypeShape uses it on the repeated values of a duplicate key so that a
-// group like `{ previous: nil, previous: nil }` or `{ x: a, x: a }` is left to
-// fall back to a hash default instead of being marked a structural shape error.
+// group like `{ previous: nil, previous: nil }`, `{ x: a, x: a }`, or
+// `{ x: { previous: nil }, x: { previous: nil } }` is left to fall back to a
+// hash default instead of being marked a structural shape error.
 func (p *parser) bracedFieldIsHashDefault(ty *ast.TypeExpr) bool {
 	if ty == nil {
 		return false
@@ -1126,7 +1135,10 @@ func (p *parser) bracedFieldIsHashDefault(ty *ast.TypeExpr) bool {
 	if ty.Kind == ast.TypeNil {
 		return true
 	}
-	return p.typeAtomNamesLocalValue(ty)
+	if p.typeAtomNamesLocalValue(ty) {
+		return true
+	}
+	return shapeHasDegenerateNilField(ty) || p.shapeFieldNamesLocalValue(ty)
 }
 
 // shapeHasDegenerateNilField reports whether ty is a shape type with a field
