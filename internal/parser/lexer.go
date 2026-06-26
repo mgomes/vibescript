@@ -405,12 +405,17 @@ func (l *lexer) scanToken() ast.Token {
 			tok.Literal = literal
 			return tok
 		case unicode.IsDigit(l.ch):
-			literal, isFloat := l.readNumber()
-			tok.Literal = literal
-			if isFloat {
+			literal, isFloat, errMsg := l.readNumber()
+			switch {
+			case errMsg != "":
+				tok.Type = ast.TokenIllegal
+				tok.Literal = errMsg
+			case isFloat:
 				tok.Type = ast.TokenFloat
-			} else {
+				tok.Literal = literal
+			default:
 				tok.Type = ast.TokenInt
+				tok.Literal = literal
 			}
 			return tok
 		default:
@@ -554,9 +559,20 @@ func (l *lexer) readIdentifier() string {
 	return literal
 }
 
-func (l *lexer) readNumber() (string, bool) {
+// readNumber lexes a numeric literal. It returns the normalized literal
+// (with visual-separator underscores stripped), whether the literal is a
+// float, and a non-empty diagnostic when the literal is malformed.
+//
+// A literal is a float when it carries a decimal point or an exponent
+// suffix. Exponent notation mirrors Ruby: an optional sign follows the
+// e/E marker and at least one exponent digit is required, with underscores
+// permitted only between digits. Malformed exponents such as 1e, 1e+, or
+// 1e_3 yield a diagnostic instead of silently splitting into an integer
+// followed by an identifier.
+func (l *lexer) readNumber() (literal string, isFloat bool, errMsg string) {
 	var sb strings.Builder
 	hasDot := false
+	hasExponent := false
 
 	// current rune is part of the number
 	sb.WriteRune(l.ch)
@@ -574,10 +590,16 @@ func (l *lexer) readNumber() (string, bool) {
 				continue
 			}
 			goto done
-		case r == '.' && !hasDot && unicode.IsDigit(l.peekRuneN(1)):
+		case r == '.' && !hasDot && !hasExponent && unicode.IsDigit(l.peekRuneN(1)):
 			hasDot = true
 			l.readRune()
 			sb.WriteRune('.')
+		case (r == 'e' || r == 'E') && !hasExponent:
+			if msg := l.readExponent(&sb); msg != "" {
+				errMsg = msg
+				goto done
+			}
+			hasExponent = true
 		case unicode.IsDigit(r):
 			l.readRune()
 			sb.WriteRune(r)
@@ -587,9 +609,47 @@ func (l *lexer) readNumber() (string, bool) {
 	}
 
 done:
-	literal := sb.String()
+	literal = sb.String()
 	l.readRune()
-	return literal, hasDot
+	return literal, hasDot || hasExponent, errMsg
+}
+
+// readExponent consumes an exponent suffix beginning at the e/E marker,
+// which must be the lexer's current peek rune. It appends the consumed
+// runes (minus visual-separator underscores) to sb and returns a
+// diagnostic when the suffix is malformed. A malformed suffix is one that
+// lacks any exponent digit, so its marker, sign, and any stray runes are
+// consumed to keep the span over the offending text.
+func (l *lexer) readExponent(sb *strings.Builder) string {
+	marker := l.peekRune()
+	l.readRune()
+	sb.WriteRune(marker)
+
+	if sign := l.peekRune(); sign == '+' || sign == '-' {
+		l.readRune()
+		sb.WriteRune(sign)
+	}
+
+	if !unicode.IsDigit(l.peekRune()) {
+		return "malformed exponent in numeric literal: expected digits after '" + string(marker) + "'"
+	}
+
+	for {
+		switch r := l.peekRune(); {
+		case r == '_':
+			// Underscores are visual separators; keep them only between digits.
+			if unicode.IsDigit(l.ch) && unicode.IsDigit(l.peekRuneN(1)) {
+				l.readRune()
+				continue
+			}
+			return ""
+		case unicode.IsDigit(r):
+			l.readRune()
+			sb.WriteRune(r)
+		default:
+			return ""
+		}
+	}
 }
 
 func (l *lexer) readDoubleQuotedString() (string, bool, string) {

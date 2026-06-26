@@ -324,6 +324,13 @@ func (p *parser) errorExpected(tok ast.Token, expected string) {
 }
 
 func (p *parser) errorUnexpected(tok ast.Token) {
+	// Lexer-emitted illegal tokens carry their diagnostic in the literal;
+	// surface it verbatim so malformed literals report a clear cause rather
+	// than the generic "unexpected token invalid token".
+	if tok.Type == ast.TokenIllegal && tok.Literal != "" {
+		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
+		return
+	}
 	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), fmt.Sprintf("unexpected token %s", tokenLabel(tok.Type)))
 }
 

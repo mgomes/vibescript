@@ -18,13 +18,22 @@ Use this with focused guides in `docs/` for deeper examples.
 Vibescript supports these literal/value categories:
 
 - `nil`, `true`, `false`
-- integers and floats (`1`, `42`, `3.14`)
+- integers and floats (`1`, `42`, `3.14`, `1e3`, `1.5e-2`)
 - strings (`"hello"`, `"hello #{name}"`)
 - symbols (`:name`)
 - arrays (`[1, 2, 3]`)
 - hashes (`{name: "Ada", active: true}`)
 - ranges (`1..5`, `1...5`)
 - duration literals (`5.minutes`, `2.days`)
+
+Numeric literals accept underscores as visual separators between digits
+(`1_000`, `1_000.50`). Floats may use scientific notation with an `e`/`E`
+marker, an optional sign, and one or more exponent digits (`1e3`, `1.5e-2`,
+`1E6`, `1e1_0`). Any literal carrying an exponent is a float even without a
+decimal point, matching Ruby (`1e3` is `1000.0`). A literal whose exponent
+overflows the 64-bit float range saturates to `Infinity`. Partial exponent
+forms such as `1e`, `1e+`, and `1e_3` are reported as parse errors rather than
+splitting into an integer followed by an identifier.
 
 Hash literals support label keys (`name:`) and quoted string keys (`"name":`).
 Ruby's hash rocket syntax (`=>`) is not supported.
