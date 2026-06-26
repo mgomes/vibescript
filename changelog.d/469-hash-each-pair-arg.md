@@ -5,10 +5,14 @@
   still receive the key and value separately, extra parameters still receive
   `nil`, and a single destructuring parameter such as `|(key, value)|` unpacks the
   pair.
-- **Fixed: `Array#reduce` charges its accumulator against the memory quota.** A
-  fold whose block destructures the accumulator with a rest target, such as
-  `reduce(big) do |(head, *tail), item| ... end`, copies part of the live
-  accumulator into a fresh backing. The accumulator lives only on the runtime's
-  Go stack and evolves every call, so it was missing from the per-call memory
-  accounting; the fold now charges the current accumulator on each call, closing
-  a path that could allocate past the sandbox quota.
+- **Fixed: `Array#reduce` charges its accumulator against the memory quota
+  without double counting.** A fold whose block destructures the accumulator with
+  a rest target, such as `reduce(big) do |(head, *tail), item| ... end`, copies
+  part of the live accumulator into a fresh backing. The accumulator lives only on
+  the runtime's Go stack and evolves every call, so it was missing from the
+  per-call memory accounting; the fold now charges the current accumulator on each
+  call, closing a path that could allocate past the sandbox quota. A reduce with no
+  initial value makes the accumulator the receiver's first element, which is already
+  counted in the receiver, so the accumulator charge now deduplicates against the
+  receiver: a large first element is charged once, not twice, so a quota that fits
+  the real peak is no longer wrongly rejected.

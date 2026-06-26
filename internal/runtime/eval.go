@@ -642,10 +642,11 @@ type blockCallRunner struct {
 // iterator. receiver, callArgs, and kwargs are the iterator's call roots: they seed
 // the per-call bind charge that bounds the fresh backing a rest-collecting
 // destructure parameter (|(k, *tail)|) allocates, so those roots -- live only on the
-// Go stack during the loop -- are counted alongside that backing. callArgs are the
-// iterator's POSITIONAL roots (the other hashes a block-driven hash.merge holds, for
-// example); pass nil for the pure iterators that reject positional arguments and so
-// hold only the receiver.
+// Go stack during the loop, invisible to estimateMemoryUsageBase -- are counted
+// alongside that backing. The charge snapshots them ONCE (no per-entry re-walk), so
+// the loop stays O(total data). callArgs are the iterator's POSITIONAL roots (the
+// other hashes a block-driven hash.merge holds, a grep pattern); pass nil for the
+// pure iterators that reject positional arguments and so hold only the receiver.
 func newBlockCallRunner(exec *Execution, block Value, name string, receiver Value, callArgs []Value, kwargs map[string]Value) (*blockCallRunner, error) {
 	if err := ensureBlock(block, name); err != nil {
 		return nil, err
@@ -667,13 +668,12 @@ func (runner *blockCallRunner) call(args []Value) (Value, error) {
 }
 
 // callWithChargedRoots invokes the block, additionally charging per-call roots that
-// live only in the builtin's Go frame and evolve every call -- the reduce
+// live only in the iterator's Go frame and evolve every call -- the reduce
 // accumulator, whose current payload (the seed on the first call, the previous
-// call's result thereafter) is not in the runner's one-time baseline. Charging it
-// per call closes the gap a snapshotted callArgs cannot: a fixed positional root can
-// be folded into the baseline once, but an evolving accumulator must be re-charged
-// each call so a block that copies its tail into a rest backing is rejected when the
-// real peak (receiver + accumulator + tail) exceeds the quota.
+// call's result thereafter) is not in the runner's one-time baseline. The accumulator
+// is probed against the snapshotted call roots, so a no-seed accumulator that is the
+// receiver's first element deduplicates against the receiver and is charged only its
+// structural slots, never a second copy of the receiver's data.
 func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots ...Value) (Value, error) {
 	env := runner.env
 	if env == nil {

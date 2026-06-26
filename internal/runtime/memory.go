@@ -51,6 +51,34 @@ type memoryEstimator struct {
 	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
 	seenBlocks    map[*Block]struct{}
+
+	// journal, when non-nil, records every seen-set entry a walk newly inserts so
+	// the walk can be rolled back to the estimator's prior state. It backs the
+	// per-call charged-root probe (see blockBindCharge.begin), which measures a
+	// transient root's marginal footprint against the persistent call-root estimator
+	// without permanently committing that root: committing it would let a later
+	// root that reuses the transient's freed backing be falsely deduplicated, an
+	// under-count that could escape the memory quota. A walk records nothing when
+	// journal is nil, which is the common path.
+	journal *estimatorJournal
+}
+
+// estimatorJournal records the seen-set keys a single probe walk inserts so the
+// probe can be undone, restoring the estimator to its pre-probe state. Each slice
+// holds only the keys this probe added (entries the estimator already contained
+// before the probe are not recorded and stay committed), so rollback removes
+// exactly the probe's own additions and is O(values walked by the probe). The
+// single-slot frozen cache is not journaled per-write; probe captures its
+// pre-probe value and rollback restores it directly.
+type estimatorJournal struct {
+	envs      []*Env
+	maps      []uintptr
+	hashData  []uintptr
+	slices    []uintptr
+	strings   []stringIdentity
+	classes   []*ClassDef
+	instances []*Instance
+	blocks    []*Block
 }
 
 type stringIdentity struct {
@@ -64,6 +92,7 @@ func newMemoryEstimator() *memoryEstimator {
 
 func (est *memoryEstimator) reset() {
 	est.seenFrozen = nil
+	est.journal = nil
 	clear(est.seenEnvs)
 	clear(est.seenMaps)
 	clear(est.seenHashData)
@@ -72,6 +101,54 @@ func (est *memoryEstimator) reset() {
 	clear(est.seenClasses)
 	clear(est.seenInstances)
 	clear(est.seenBlocks)
+}
+
+// probe walks val against the estimator's current seen-set to measure val's
+// marginal footprint (the bytes not already deduplicated against everything the
+// estimator has committed), then rolls the estimator back to its pre-probe state
+// so nothing val touched is retained. It backs the per-call charged-root probe in
+// blockBindCharge.begin, where a transient root (a reduce accumulator that changes
+// every call) must deduplicate against the committed call roots (the receiver)
+// without being committed itself -- so the NEXT call's accumulator cannot falsely
+// deduplicate against this one's possibly-freed backing.
+func (est *memoryEstimator) probe(val Value) int {
+	prevFrozen := est.seenFrozen
+	est.journal = &estimatorJournal{}
+	journal := est.journal
+	size := est.value(val)
+	est.journal = nil
+	journal.rollback(est, prevFrozen)
+	return size
+}
+
+// rollback removes from est exactly the seen-set entries the journal recorded,
+// restoring the single-slot frozen cache to the value it held before the probe.
+func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
+	est.seenFrozen = prevFrozen
+	for _, env := range j.envs {
+		delete(est.seenEnvs, env)
+	}
+	for _, id := range j.maps {
+		delete(est.seenMaps, id)
+	}
+	for _, id := range j.hashData {
+		delete(est.seenHashData, id)
+	}
+	for _, id := range j.slices {
+		delete(est.seenSlices, id)
+	}
+	for _, key := range j.strings {
+		delete(est.seenStrings, key)
+	}
+	for _, cl := range j.classes {
+		delete(est.seenClasses, cl)
+	}
+	for _, inst := range j.instances {
+		delete(est.seenInstances, inst)
+	}
+	for _, blk := range j.blocks {
+		delete(est.seenBlocks, blk)
+	}
 }
 
 func (exec *Execution) memoryEstimatorForCheck() *memoryEstimator {
@@ -633,89 +710,101 @@ func (acc *hashBuildAccumulator) checkQuota() error {
 // Go call stack (invisible to estimateMemoryUsageBase), so the fresh copy could
 // escape the sandbox quota entirely. This charge closes that gap in the one place
 // every block iterator shares (the param-binding path), so it covers Hash#each,
-// array.each/map/select, and any other block call alike.
+// array.each/map/select, reduce, and any other block call alike.
 //
-// baseline is a single snapshot of the live call roots (exec's reachable roots
-// plus the receiver, kwargs, and block), measured ONCE when the runner is built --
-// the same footprint the iterator's preflight charged, including the receiver the
-// in-body checks cannot see. It is NOT remeasured per entry: re-walking the
-// receiver or the env stack on every iteration is the O(n^2) trap that previously
-// dominated CI runtime. Per-entry growth in outer scope is still caught by the
-// body's own per-statement checks, which walk the live env (the bound rest
-// included) on each statement.
+// rootEst is a PERSISTENT estimator seeded ONCE (at construction) with the live call
+// roots: exec's reachable roots (the env stack and exec.root) plus the receiver,
+// kwargs, callArgs, and block. It is the same single walk estimateMemoryUsageForCallRoots
+// performs, so the receiver deduplicates against the env (a named local passed to
+// arr.each is counted once, not twice) and baseline records that one walk's total.
+// Crucially it is NOT re-walked per entry: re-walking the receiver or the env on
+// every iteration is the O(n^2) trap that previously dominated CI. The env held in
+// rootEst stays live for the whole loop (the iterator runs mid-expression), so the
+// committed backings are never freed and a later probe cannot falsely deduplicate
+// against a reused address.
 //
-// The snapshot baseline and the body's per-statement checks together cover the live
-// footprint: the snapshot accounts for the receiver (which the body checks cannot
-// see) plus the freshly bound rest, while the body checks account for any state the
-// body grows in outer scope (which the snapshot, taken before the loop, does not
-// see). The one shape neither view alone bounds is an ephemeral receiver (reachable
-// only through the builtin's Go frame) paired with a non-empty body that copies each
-// bound rest into a retained outer accumulator: there the body checks miss the
-// receiver and the snapshot misses the accumulator. Closing that corner would
-// require re-walking the receiver against the current outer state on every entry --
-// the O(n^2) walk this design deliberately avoids -- so it is left to the per-entry
-// body checks, which still bound the accumulator's own growth.
+// Per-entry growth in outer scope is still caught by the body's own per-statement
+// checks, which walk the live env (the bound rest included) on each statement. The
+// snapshot baseline (the receiver the body checks cannot see, plus the fresh rest)
+// and the body checks (state the body grows, which the pre-loop snapshot misses)
+// together bound the live footprint.
 //
-// Each call seeds a fresh estimator with that call's arguments (the [key, value]
-// pair for Hash#each, or the destructured element for array iterators), so a fresh
-// rest backing whose ELEMENTS alias the receiver's data deduplicates those payloads
-// to zero and only the backing's genuinely new slots are charged. The estimator is
-// reset every call so its seen-set never grows across a long loop, keeping the
-// charge O(the data bound this entry) and the whole walk O(total data).
+// Each call resets a SEPARATE per-call estimator (est) and seeds it with that call's
+// arguments (the [key, value] pair for Hash#each, the destructured element for array
+// iterators, the (acc, item) pair for reduce), so a fresh rest backing whose ELEMENTS
+// alias the yielded data deduplicates those payloads to zero and only the backing's
+// genuinely new slots are charged. est is reset every call so its seen-set never
+// grows across a long loop, keeping the charge O(the data bound this entry).
 type blockBindCharge struct {
 	exec     *Execution
 	est      *memoryEstimator
+	rootEst  *memoryEstimator
 	baseline int
 	built    int
 }
 
 // newBlockBindCharge snapshots the live call roots as the baseline for charging a
 // block's destructured bindings, or returns nil when no charge is needed: either no
-// memory quota is enforced or the block has no rest-collecting destructure
-// parameter (the only binding shape that allocates a fresh, source-sized backing).
-// A plain or non-rest destructure parameter binds references already counted in the
-// call roots, so it allocates nothing fresh and needs no charge.
+// memory quota is enforced or the block has no rest-collecting destructure parameter
+// (the only binding shape AssignDestructure materializes into a fresh, source-sized
+// backing slice). A plain or non-rest destructure parameter binds references already
+// counted in the call roots, so it allocates nothing fresh and needs no charge.
 //
-// callArgs are the iterator's POSITIONAL call roots (for example the other hashes a
-// block-driven hash.merge folds in, or the host-supplied arguments a capability
-// CallBlock drives a block with). Like the receiver, they live only on the Go call
-// stack during the loop, invisible to estimateMemoryUsageBase, so they must be
-// snapshotted into the baseline here: charging only the fresh rest copy against a
-// baseline that omits them lets a quota fit (roots + rest) and (receiver + rest)
-// separately while the real peak (receiver + args + rest) exceeds it. They are NOT
-// the per-entry yielded values begin seeds the estimator with -- those vary per
-// call and are seeded fresh each entry for dedup, whereas these are the fixed
-// backings held for the whole loop.
+// callArgs are the iterator's POSITIONAL call roots (the other hashes a block-driven
+// hash.merge folds in, a grep pattern, the host arguments a capability CallBlock
+// drives a block with). Like the receiver they live only on the Go call stack during
+// the loop, invisible to estimateMemoryUsageBase, so they are walked into the
+// persistent rootEst here: charging only the fresh rest copy against a baseline that
+// omits them lets a quota fit (roots + rest) and (receiver + rest) separately while
+// the real peak (receiver + args + rest) exceeds it. They are the FIXED backings held
+// for the whole loop; the per-entry yielded values and the per-call charged roots are
+// handled by begin instead.
 func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []Value, kwargs map[string]Value, block Value) *blockBindCharge {
 	if exec.memoryQuota <= 0 || !blockBindsRest(blk) {
 		return nil
 	}
+	rootEst := newMemoryEstimator()
+	baseline := exec.estimateMemoryUsageBase(rootEst)
+	if receiver.Kind() != KindNil {
+		baseline = saturatingAdd(baseline, rootEst.value(receiver))
+	}
+	for _, arg := range callArgs {
+		baseline = saturatingAdd(baseline, rootEst.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		baseline = saturatingAdd(baseline, rootEst.value(kwarg))
+	}
+	if !block.IsNil() {
+		baseline = saturatingAdd(baseline, rootEst.value(block))
+	}
 	return &blockBindCharge{
 		exec:     exec,
 		est:      newMemoryEstimator(),
-		baseline: exec.estimateMemoryUsageForCallRoots(receiver, callArgs, kwargs, block),
+		rootEst:  rootEst,
+		baseline: baseline,
 	}
 }
 
-// begin prepares the charge for one block call: it resets the estimator and seeds
-// it with the call's arguments so any payload a freshly bound rest backing shares
-// with them (the receiver's own data, reached through the yielded pair or element)
-// deduplicates to zero. Only the backing's new slots remain to be charged. Seeding
-// walks just this call's arguments, never the whole receiver, so it stays O(the
-// data this entry yields).
+// begin prepares the charge for one block call: it resets the per-call estimator and
+// seeds it with the call's arguments so any payload a freshly bound rest backing
+// shares with them (the receiver's own data, reached through the yielded pair or
+// element) deduplicates to zero. Only the backing's new slots remain to be charged.
+// Seeding walks just this call's arguments, never the whole receiver, so it stays
+// O(the data this entry yields).
 //
-// chargedRoots are per-call arguments that live only in the builtin's Go frame and
-// are NOT in the snapshotted baseline, yet evolve every call so they cannot be
-// folded into that one-time baseline -- the reduce accumulator (acc_0 is the seed,
-// acc_n is the previous call's block result). Unlike the fixed positional callArgs a
-// merge or grep snapshots once, the accumulator changes each call, so its current
-// payload must be charged here, per call. They are charged BEFORE the args are
-// seeded so their full marginal footprint over the baseline is counted and recorded
-// in the seen-set; a rest backing that later aliases the accumulator (the tail copy a
-// reduce(big) do |(head, *tail), item| ... end binds) then deduplicates against it
-// and is charged only its genuinely new slots. begin returns the quota error if the
-// charged roots alone exceed the budget, so a reduce whose live peak is
-// receiver + accumulator is rejected before the block body runs.
+// chargedRoots are per-call values that live only in the iterator's Go frame and
+// evolve every call, so they cannot be folded into the one-time baseline -- the
+// reduce accumulator (acc_0 is the seed, acc_n is the previous call's block result).
+// Each is PROBED against the persistent rootEst, which already holds the receiver, so
+// a no-seed accumulator that is the receiver's first element deduplicates to its
+// structural slots only and is NOT charged a second copy of the receiver's data --
+// the double-charge this guards against. The probe walks only the charged root
+// (bounded by its size) and rolls back, so the rootEst is not permanently grown and
+// the next call's accumulator cannot falsely deduplicate against this one's freed
+// backing. begin returns the quota error if the charged roots alone exceed the
+// budget, so a reduce whose live peak is receiver + accumulator is rejected before
+// the block body runs. The charged roots are also seeded into the per-call estimator
+// so a rest backing that copies part of the accumulator deduplicates against it.
 func (c *blockBindCharge) begin(args []Value, chargedRoots ...Value) error {
 	if c == nil {
 		return nil
@@ -723,10 +812,11 @@ func (c *blockBindCharge) begin(args []Value, chargedRoots ...Value) error {
 	c.est.reset()
 	c.built = 0
 	for _, root := range chargedRoots {
-		c.built = saturatingAdd(c.built, c.est.value(root))
+		c.built = saturatingAdd(c.built, c.rootEst.probe(root))
 		if saturatingAdd(c.baseline, c.built) > c.exec.memoryQuota {
 			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
 		}
+		c.est.value(root)
 	}
 	for _, arg := range args {
 		c.est.value(arg)
@@ -993,6 +1083,9 @@ func (est *memoryEstimator) env(env *Env) int {
 		est.seenEnvs = make(map[*Env]struct{})
 	}
 	est.seenEnvs[env] = struct{}{}
+	if est.journal != nil {
+		est.journal.envs = append(est.journal.envs, env)
+	}
 
 	size := estimatedEnvBytes + staticBindingsBytes(env)
 	if env.values != nil {
@@ -1085,6 +1178,9 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenClasses = make(map[*ClassDef]struct{})
 		}
 		est.seenClasses[cl] = struct{}{}
+		if est.journal != nil {
+			est.journal.classes = append(est.journal.classes, cl)
+		}
 		size += est.hash(cl.ClassVars)
 	case KindInstance:
 		inst := valueInstance(val)
@@ -1098,6 +1194,9 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenInstances = make(map[*Instance]struct{})
 		}
 		est.seenInstances[inst] = struct{}{}
+		if est.journal != nil {
+			est.journal.instances = append(est.journal.instances, inst)
+		}
 		size += estimatedInstanceBytes
 		size += est.hash(inst.Ivars)
 	case KindBlock:
@@ -1112,6 +1211,9 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenBlocks = make(map[*Block]struct{})
 		}
 		est.seenBlocks[blk] = struct{}{}
+		if est.journal != nil {
+			est.journal.blocks = append(est.journal.blocks, blk)
+		}
 		size += estimatedBlockBytes + estimatedSliceBaseBytes + len(blk.Params)*estimatedStringHeaderBytes
 		for _, param := range blk.Params {
 			size += estimatedParamBytes(param)
@@ -1164,6 +1266,9 @@ func (est *memoryEstimator) stringPayloadSize(str string) int {
 		est.seenStrings = make(map[stringIdentity]struct{})
 	}
 	est.seenStrings[key] = struct{}{}
+	if est.journal != nil {
+		est.journal.strings = append(est.journal.strings, key)
+	}
 	return len(str)
 }
 
@@ -1218,6 +1323,9 @@ func (est *memoryEstimator) slice(values []Value) int {
 			est.seenSlices = make(map[uintptr]struct{})
 		}
 		est.seenSlices[id] = struct{}{}
+		if est.journal != nil {
+			est.journal.slices = append(est.journal.slices, id)
+		}
 	}
 
 	if len(values) == 0 {
@@ -1257,6 +1365,9 @@ func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 		est.seenHashData = make(map[uintptr]struct{})
 	}
 	est.seenHashData[id] = struct{}{}
+	if est.journal != nil {
+		est.journal.hashData = append(est.journal.hashData, id)
+	}
 	return estimatedHashDataBytes
 }
 
@@ -1270,6 +1381,9 @@ func (est *memoryEstimator) hash(values map[string]Value) int {
 			est.seenMaps = make(map[uintptr]struct{})
 		}
 		est.seenMaps[id] = struct{}{}
+		if est.journal != nil {
+			est.journal.maps = append(est.journal.maps, id)
+		}
 	}
 
 	size := mapStructuralBytes(values)

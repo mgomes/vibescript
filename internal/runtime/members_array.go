@@ -1743,7 +1743,10 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		// root. Charge it per call so a block that copies its tail into a
 		// rest-collecting parameter (reduce(big) do |(head, *tail), item| ... end) is
 		// rejected when the real peak (receiver + accumulator + tail) exceeds the
-		// quota, not just when receiver + tail does.
+		// quota, not just when receiver + tail does. The charge probes the accumulator
+		// against the snapshotted call roots, so a no-seed accumulator that is the
+		// receiver's first element deduplicates against the receiver and is charged
+		// only its structural slots -- never a second copy of the receiver's data.
 		next, err := runner.callWithChargedRoots(blockArgs[:], acc)
 		if err != nil {
 			return NewNil(), err

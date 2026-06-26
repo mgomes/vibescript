@@ -407,3 +407,58 @@ func TestArrayReduceEmptyBodyAccRestFitsWhenAccFitsQuota(t *testing.T) {
 		t.Fatalf("empty-body reduce returned %v, want nil", got.Kind())
 	}
 }
+
+// TestArrayReduceNoSeedAccRestNotDoubleCharged is the direct regression for the
+// Codex finding on PR #808: a no-initial reduce makes the accumulator the receiver's
+// first element, so charging it as a per-call root must not count it a SECOND time
+// on top of the receiver. With a large first element and a |(head, *tail), item|
+// block, a quota that fits the actual peak (the receiver plus the fresh tail copy)
+// must admit the fold; the buggy charge measured the accumulator with a fresh
+// estimator and rejected the fold as if a second copy of the first element existed.
+// Registering the accumulator as an active root deduplicates it against the receiver,
+// so the first element is charged exactly once.
+func TestArrayReduceNoSeedAccRestNotDoubleCharged(t *testing.T) {
+	t.Parallel()
+
+	// Two elements so the fold runs exactly one block call whose accumulator is the
+	// large first element (no seed, so acc = arr[0]). The fresh tail the rest collects
+	// is arr[0][1:], whose payload aliases the receiver and so adds only its backing
+	// slots. The empty body returns nil, ending the fold after one call.
+	const firstLen = 200_000
+	first := arrayValue(firstLen)
+	receiver := NewArray([]Value{first, NewInt(2)})
+	block := emptyAccRestReduceBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	// The true peak is the receiver (which already holds the first element) plus the
+	// fresh tail copy. The accumulator IS the first element, already inside the
+	// receiver, so it contributes nothing beyond the receiver.
+	roots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	tail := NewArray(slicesClone(first.Array()[1:]))
+	est := newMemoryEstimator()
+	est.value(receiver)
+	tailCharge := est.value(tail)
+	// A quota sized to the real peak plus modest headroom must admit the fold. A
+	// phantom second copy of the 200k-element first element would dwarf this headroom,
+	// so success proves the accumulator is not charged twice.
+	quota := roots + tailCharge + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := arrayReduce(exec, receiver, nil, nil, block)
+	if err != nil {
+		t.Fatalf("no-seed reduce whose accumulator is the receiver's first element = %v, want success (the accumulator must not be charged twice)", err)
+	}
+	if got.Kind() != KindNil {
+		t.Fatalf("empty-body reduce returned %v, want nil", got.Kind())
+	}
+
+	// Guard that the headroom genuinely cannot hold a second copy of the first
+	// element, so the success above reflects single-charging rather than slack. The
+	// buggy charge measured the accumulator with a fresh estimator (no receiver
+	// dedup), which is the full footprint here.
+	doubleChargeProbe := newMemoryEstimator()
+	secondCopy := doubleChargeProbe.value(first)
+	if secondCopy <= 64*1024 {
+		t.Fatalf("test setup expects a second copy of the first element (%d bytes) to dwarf the headroom (%d)", secondCopy, 64*1024)
+	}
+}
