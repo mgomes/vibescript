@@ -1065,26 +1065,40 @@ func AssignDestructure(target *DestructureTarget, value Value, assign func(Expre
 
 // destructureCharge meters the fresh int-value slot arrays a destructuring
 // assignment allocates (the right-hand-side snapshot and any named rest
-// window) against a memory quota before they materialize. liveSlots tracks the
-// snapshot slots that are already allocated but reachable only from a Go-local
-// slice on the call stack, so the memory estimator's root walk cannot see them;
-// the count threads down the recursion so a nested destructure charges its own
-// arrays on top of every enclosing level's still-live snapshot, projecting the
-// true peak rather than a single level's allocation.
+// window) against a memory quota before they materialize.
+//
+// liveRoot is the top-level evaluated right-hand side. While assignDestructure
+// runs it is held only on this call's Go stack — a function or capability
+// return, or an array literal — so the memory estimator's root walk never sees
+// it, yet it is real memory live at the peak of every slot array this charge
+// guards. Threading it into each check charges it as a root (deduplicated
+// against the base, so a right-hand side already reachable from an environment
+// contributes nothing extra). Every nested element is reachable through this
+// root, so the top-level value alone covers all levels.
+//
+// liveSlots tracks the snapshot slots that are already allocated but reachable
+// only from a Go-local slice on the call stack, so the root walk cannot see them
+// either; the count threads down the recursion so a nested destructure charges
+// its own arrays on top of every enclosing level's still-live snapshot,
+// projecting the true peak rather than a single level's allocation.
 type destructureCharge struct {
-	check     func(count, liveSlots int) error
+	check     func(count, liveSlots int, liveRoot Value) error
+	liveRoot  Value
 	liveSlots int
 }
 
 // noopDestructureCheck admits every allocation. AssignDestructure's host callers
 // run outside a memory quota, so the arrays they may materialize are not metered.
-func noopDestructureCheck(int, int) error { return nil }
+func noopDestructureCheck(int, int, Value) error { return nil }
 
 // assignDestructure applies Vibescript's destructuring assignment rules and
 // invokes assign for each concrete leaf target. The returned charge meters every
-// fresh slot array against the caller's memory quota before it is allocated.
+// fresh slot array against the caller's memory quota before it is allocated,
+// counting the live right-hand side held on the Go stack as a root so the peak
+// is projected even when the right-hand side is not reachable from any
+// environment (a function return or array literal).
 func (exec *Execution) assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error) error {
-	return assignDestructure(target, value, assign, destructureCharge{check: exec.checkProjectedIntArrayBytesWithLive})
+	return assignDestructure(target, value, assign, destructureCharge{check: exec.checkProjectedIntArrayBytesWithLive, liveRoot: value})
 }
 
 func assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error, charge destructureCharge) error {
@@ -1102,7 +1116,7 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 	// as does a write whose only followers discard their window (e.g.
 	// "values[0], * = values"), which reads nothing the write could corrupt.
 	if value.Kind() == KindArray && destructureWriteIsReadBack(target) {
-		if err := charge.check(len(values), charge.liveSlots); err != nil {
+		if err := charge.check(len(values), charge.liveSlots, charge.liveRoot); err != nil {
 			return err
 		}
 		values = append([]Value(nil), values...)
@@ -1156,7 +1170,7 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 			// fits base+snapshot but not base+snapshot+rest would pass the snapshot
 			// check, allocate the window anyway, and the snapshot would be gone by
 			// the next per-statement check, letting execution exceed the quota.
-			if err := charge.check(restEnd-restStart, charge.liveSlots); err != nil {
+			if err := charge.check(restEnd-restStart, charge.liveSlots, charge.liveRoot); err != nil {
 				return err
 			}
 			val = NewArray(append([]Value(nil), values[restStart:restEnd]...))

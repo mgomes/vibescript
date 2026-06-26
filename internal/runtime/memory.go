@@ -178,28 +178,40 @@ func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int)
 // count is the number of int values the array would hold; each int value
 // contributes only the base Value size.
 func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
-	return exec.checkProjectedIntArrayBytesWithLive(count, 0)
+	return exec.checkProjectedIntArrayBytesWithLive(count, 0, NewNil())
 }
 
 // checkProjectedIntArrayBytesWithLive is checkProjectedIntArrayBytes for a
-// projection that must also account for liveSlots int-value slots that are
-// already allocated but not reachable from any environment root, so
-// estimateMemoryUsageBase cannot see them. Destructuring assignment uses it when
-// it has snapshotted the right-hand side into a Go-local slice (held only on the
-// call stack) and is about to build a second array — such as a named rest's
-// captured window — while that snapshot is still live. Charging both the live
-// snapshot and the new array projects the true peak (base + snapshot + array),
-// which the per-statement check would otherwise miss because the snapshot is
-// gone by the time control returns from the assignment. The live-snapshot term
-// reserves the same slice-header-plus-slot-array footprint the snapshot's own
-// up-front charge reserved, so the two charges describe the same bytes.
-func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int) error {
+// projection that must also account for memory that is already allocated but not
+// reachable from any environment root, so estimateMemoryUsageBase cannot see it.
+// Destructuring assignment uses it: while assignDestructure runs, the evaluated
+// right-hand side (liveRoot) is held only on the Go call stack — a function or
+// capability return, or an array literal — and a defensive snapshot of it
+// (liveSlots) may have been copied into another Go-local slice. Both are live at
+// the peak of the array this check guards (a named rest's captured window), yet
+// neither is reachable from an environment, so the base walk misses them.
+//
+// liveRoot is the live right-hand-side value, charged through the same estimator
+// that walks the base so a right-hand side that IS reachable from an environment
+// (an existing variable destructured directly) deduplicates against the base and
+// contributes only its already-counted footprint once. A nil liveRoot (the
+// builtin callers, which have no off-stack right-hand side) charges nothing.
+// liveSlots is the snapshot's slot count; its slot array is charged structurally
+// because the snapshot shares element payloads with liveRoot, which already
+// charged them. Charging all three projects the true peak (base + right-hand side
+// + snapshot + array), which the per-statement check would otherwise miss because
+// the right-hand side and snapshot are gone by the time control returns from the
+// assignment.
+func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int, liveRoot Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
 	est := exec.memoryEstimatorForCheck()
 	used := exec.estimateMemoryUsageBase(est)
+	if liveRoot.Kind() != KindNil {
+		used = saturatingAdd(used, est.value(liveRoot))
+	}
 	est.reset()
 
 	if liveSlots > 0 {
