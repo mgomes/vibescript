@@ -286,6 +286,49 @@ func TestParallelAssignmentLineInitialSplatContinuesCommaAcrossNewline(t *testin
 	}
 }
 
+func TestParallelAssignmentLineInitialSplatContinuesMemberAccessAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	// A destructuring target may split a member access across the newline
+	// ("record\n  .field = values"), the same continuation the real target
+	// parser allows for any line-limited member access. The split must parse
+	// even when the assignment follows a line ("a = 3") that could otherwise
+	// continue onto a leading "*" as a multiplication. Each result was confirmed
+	// against the reference Ruby implementation.
+	tests := []struct {
+		name   string
+		body   string
+		result string
+		want   []Value
+	}{
+		{
+			name:   "named rest before split member target",
+			body:   "*rest, b\n    .value = [1, 2, 3]",
+			result: "[a, rest, b.value]",
+			want:   []Value{NewInt(3), NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(3)},
+		},
+		{
+			name:   "anonymous rest before split member target",
+			body:   "*, b\n    .value = [1, 2, 3]",
+			result: "[a, b.value]",
+			want:   []Value{NewInt(3), NewInt(3)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := "class Box\n  property value\nend\n" +
+				"def run\n  b = Box.new\n  a = 3\n  " + tt.body +
+				"\n  " + tt.result + "\nend"
+			script := compileScript(t, source)
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
 func TestMultiplicationContinuesAcrossNewline(t *testing.T) {
 	t.Parallel()
 

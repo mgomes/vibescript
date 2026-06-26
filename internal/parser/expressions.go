@@ -593,14 +593,25 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 		}
 		// A token that starts a later physical line only stays part of the
 		// target list when the list was mid-continuation: inside a bracket
-		// group, after a trailing top-level comma, or completing the
-		// newline-before-"=" rule. Otherwise the leading "*" is a multiplication
-		// continuation (such as "x = a" / "* b") and the lookahead stops.
+		// group, after a trailing top-level comma, when a target splits a member
+		// access across the newline ("record\n  .field = values"), or completing
+		// the newline-before-"=" rule. Otherwise the leading "*" is a
+		// multiplication continuation (such as "x = a" / "* b") and the lookahead
+		// stops.
 		if tok.Pos.Line > prevLine {
 			switch {
 			case depth > 0 || prev.Type == ast.TokenComma:
 				// Bracket group or trailing-comma continuation: the list keeps
 				// going, so fall through to the normal token handling below.
+			case (splatShaped || sawTopLevelComma) && splitsMemberAccess(tok, prev):
+				// The real target parser uses a line-limited expression, which
+				// continues a member or scope access onto a line that begins
+				// with "." or "::" ("record\n  .field"). Keep scanning so the
+				// element completes instead of severing the list at the newline.
+				// This only applies once the list is committed to a splat
+				// assignment - a bare "*" target or a top-level comma. A spaced
+				// "*" with no comma ("* obj\n  .field") stays a multiplication,
+				// the same disambiguation the newline-before-"=" rule uses.
 			case tok.Type == ast.TokenAssign && (sawTopLevelComma || splatShaped):
 				return true
 			default:
@@ -630,6 +641,32 @@ func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
 		}
 		prev = tok
 		prevLine = tok.Pos.Line
+	}
+}
+
+// splitsMemberAccess reports whether tok begins a later physical line that
+// continues the current destructuring target's member or scope access, as in
+// "record\n  .field = values". The real target parser builds each element with
+// a line-limited expression, and lineLimitedContinuationToken lets such an
+// expression continue onto a line that starts with "." or "::". The lookahead
+// honors the same rule so a split member target completes instead of severing
+// the list at the newline (which would let the previous statement consume the
+// leading "*" as multiplication). prev is the preceding depth-zero token: the
+// continuation only applies when it can end a member-access receiver, so a
+// leading "." or "::" with no operand before it is not mistaken for one.
+func splitsMemberAccess(tok, prev ast.Token) bool {
+	if tok.Type != ast.TokenDot && tok.Type != ast.TokenScope {
+		return false
+	}
+	switch prev.Type {
+	case ast.TokenIdent, ast.TokenIvar, ast.TokenClassVar, ast.TokenSelf,
+		ast.TokenRParen, ast.TokenRBracket, ast.TokenEnum:
+		return true
+	default:
+		// A member name (the token after a preceding ".") can itself be the
+		// receiver of a further "." or "::", as in "a.b\n  .c = values".
+		return prev.Type != ast.TokenDot && prev.Type != ast.TokenScope &&
+			isMemberNameToken(prev)
 	}
 }
 

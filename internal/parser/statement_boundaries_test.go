@@ -634,6 +634,88 @@ func TestParserLineInitialSplatAssignmentContinuesCommaAcrossNewline(t *testing.
 	}
 }
 
+func TestParserLineInitialSplatAssignmentContinuesMemberAccessAcrossNewline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		assignment string
+		wantTarget *ast.DestructureTarget
+	}{
+		{
+			// The real target parser uses a line-limited expression, which
+			// continues a member access onto a line that begins with ".". The
+			// splat lookahead must honor the same continuation so the previous
+			// statement does not swallow the leading "*" as a multiplication and
+			// fail at the comma.
+			name:       "named rest before split member target",
+			assignment: "*rest, record\n    .field = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "field"}},
+			}},
+		},
+		{
+			name:       "anonymous rest before split member target",
+			assignment: "*, record\n    .field = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "field"}},
+			}},
+		},
+		{
+			name:       "named rest before split self member target",
+			assignment: "*rest, self\n    .field = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{Object: &ast.Identifier{Name: "self"}, Property: "field"}},
+			}},
+		},
+		{
+			// A keyword label such as "end" is a valid member name, so it can be
+			// the receiver of a further "." split across the newline.
+			name:       "named rest before chained split member target",
+			assignment: "*rest, record.end\n    .field = values",
+			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
+				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
+				{Target: &ast.MemberExpr{
+					Object:   &ast.MemberExpr{Object: &ast.Identifier{Name: "record"}, Property: "end"},
+					Property: "field",
+				}},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A continuable previous expression ("a = 3") makes the leading "*"
+			// look like a multiplication continuation; a member access split
+			// across the newline must still continue the splat target list.
+			source := "def run\n  a = 3\n  " + tt.assignment + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.AssignStmt{
+					Target: &ast.Identifier{Name: "a"},
+					Value:  &ast.IntegerLiteral{Value: 3},
+				},
+				&ast.AssignStmt{
+					Target: tt.wantTarget,
+					Value:  &ast.Identifier{Name: "values"},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestParserLineInitialSpacedAsteriskRejectsEqualsAcrossNewline(t *testing.T) {
 	t.Parallel()
 	// A spaced "*" ("* b") is a multiplication operator, not a splat target, so
@@ -646,6 +728,27 @@ func TestParserLineInitialSpacedAsteriskRejectsEqualsAcrossNewline(t *testing.T)
   x = a
   * b
     = [1, 2]
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) == 0 {
+		t.Fatalf("parseSource(%q) errors = nil, want dangling '=' diagnostic", source)
+	}
+}
+
+func TestParserLineInitialSpacedAsteriskRejectsSplitMemberAccess(t *testing.T) {
+	t.Parallel()
+	// A spaced "*" ("* obj") is a multiplication operator, not a splat target,
+	// so a member access split across the newline ("* obj\n  .field = ...") must
+	// not pull it into a destructuring assignment. The member-access lookahead
+	// continuation only applies once the list is committed to a splat assignment
+	// (a bare "*" target or a top-level comma). The line continues "x = a" as a
+	// multiplication chain and the dangling "=" then errors.
+	source := `def run
+  a = 3
+  x = a
+  * obj
+    .field = 2
 end`
 
 	_, errs := parseSource(t, source)
