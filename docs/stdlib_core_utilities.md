@@ -525,6 +525,16 @@ aliases, so `1.second` reads naturally.
 - `even? -> bool` – true for even integers.
 - `odd? -> bool` – true for odd integers.
 - `times { |i| } -> int` – run the block with `0..n-1`; returns the receiver.
+- `upto(limit) { |i| } -> int` – yield each integer ascending from the receiver
+  through `limit` inclusive; yields nothing when the receiver already exceeds
+  `limit`. Returns the receiver.
+- `downto(limit) { |i| } -> int` – yield each integer descending from the
+  receiver through `limit` inclusive; yields nothing when the receiver is already
+  below `limit`. Returns the receiver.
+- `step(limit, step = 1) { |i| } -> int` – yield the receiver and every `step`th
+  integer thereafter, up to and including `limit` when the stride lands on it.
+  The stride must be a nonzero integer; its sign selects the direction, so a
+  negative stride counts down. Returns the receiver.
 - `zero? -> bool` – true when the integer is `0`.
 - `positive? -> bool` – true when greater than `0`.
 - `negative? -> bool` – true when less than `0`.
@@ -848,6 +858,34 @@ rather than the empty result Ruby produces. The other helpers match Ruby's
 - `to_a -> array` – every element the range iterates over, bounded by the
   sandbox step and memory quotas so large ranges fail safely instead of
   exhausting memory.
+
+### Enumeration
+
+These walk the range's integer sequence lazily in iteration order (descending
+for ranges such as `5..1`), charging a step per element so a large range fails on
+the sandbox step quota instead of running unbounded. Methods that build an array
+also charge the result against the memory quota as it grows.
+
+- `each { |i| } -> range` – yield each integer; returns the receiver.
+- `each_with_index { |i, idx| } -> range` – yield each integer with its
+  zero-based iteration index; returns the receiver.
+- `map { |i| } -> array` – collect each block result into a new array.
+- `select { |i| } -> array` / `reject { |i| } -> array` – keep the integers whose
+  block result is (or, for `reject`, is not) truthy.
+- `find { |i| } -> int?` – the first integer whose block result is truthy, or
+  `nil` when none match. Stops iterating at the first match.
+- `reduce(initial?, operation?) { |acc, i| } -> value` – fold the integers, with
+  the same argument shapes as `Array#reduce`: an optional initial value, an
+  operation named by a symbol or string (e.g. `reduce("+")`), and/or a block.
+  An empty range with no initial value folds to `nil`.
+- `sum(initial = 0) { |i| } -> int|float` – add the integers (or the block
+  results) to `initial`. The initial value must be numeric.
+- `count -> int` – the number of integers the range iterates over.
+- `count(value) -> int` – how many iterated integers equal `value`.
+- `count { |i| } -> int` – how many iterated integers the block accepts. A value
+  argument takes precedence over an attached block, matching Ruby.
+- `step(n) { |i| } -> range` – yield the start and every `n`th integer
+  thereafter; `n` must be a positive integer. Returns the receiver.
 
 ## Builtin Functions
 

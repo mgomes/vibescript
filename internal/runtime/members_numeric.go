@@ -13,7 +13,7 @@ import (
 var (
 	intMemberNames = []string{
 		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
-		"abs", "clamp", "even?", "odd?", "times",
+		"abs", "clamp", "even?", "odd?", "times", "upto", "downto", "step",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
@@ -31,7 +31,7 @@ var (
 
 var (
 	intBuiltinMemberNames = []string{
-		"abs", "clamp", "even?", "odd?", "times",
+		"abs", "clamp", "even?", "odd?", "times", "upto", "downto", "step",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
@@ -134,6 +134,55 @@ func intMemberBuiltin(property string) (Value, error) {
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
 				}
+			}
+			return receiver, nil
+		}), nil
+	case "upto":
+		return NewAutoBuiltin("int.upto", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			limit, err := intStepLimitArg("int.upto", args)
+			if err != nil {
+				return NewNil(), err
+			}
+			runner, err := newBlockCallRunner(exec, block, "int.upto")
+			if err != nil {
+				return NewNil(), err
+			}
+			// upto yields nothing when the receiver already exceeds the limit,
+			// rather than iterating downward, matching Ruby's Integer#upto.
+			if err := exec.intStride(receiver.Int(), limit, 1, runner); err != nil {
+				return NewNil(), err
+			}
+			return receiver, nil
+		}), nil
+	case "downto":
+		return NewAutoBuiltin("int.downto", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			limit, err := intStepLimitArg("int.downto", args)
+			if err != nil {
+				return NewNil(), err
+			}
+			runner, err := newBlockCallRunner(exec, block, "int.downto")
+			if err != nil {
+				return NewNil(), err
+			}
+			// downto yields nothing when the receiver is already below the limit,
+			// matching Ruby's Integer#downto.
+			if err := exec.intStride(receiver.Int(), limit, -1, runner); err != nil {
+				return NewNil(), err
+			}
+			return receiver, nil
+		}), nil
+	case "step":
+		return NewAutoBuiltin("int.step", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			limit, stride, err := intStepArgs(args)
+			if err != nil {
+				return NewNil(), err
+			}
+			runner, err := newBlockCallRunner(exec, block, "int.step")
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := exec.intStride(receiver.Int(), limit, stride, runner); err != nil {
+				return NewNil(), err
 			}
 			return receiver, nil
 		}), nil
@@ -411,6 +460,79 @@ func floatMemberBuiltin(property string) (Value, error) {
 		return newInspectBuiltin("float"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown float method %s", property)
+	}
+}
+
+// intStepLimitArg validates the single integer limit argument shared by
+// Integer#upto and Integer#downto.
+func intStepLimitArg(method string, args []Value) (int64, error) {
+	if len(args) != 1 {
+		return 0, fmt.Errorf("%s expects a limit", method)
+	}
+	if args[0].Kind() != KindInt {
+		return 0, fmt.Errorf("%s expects an integer limit", method)
+	}
+	return args[0].Int(), nil
+}
+
+// intStepArgs validates Integer#step's limit and stride arguments. The stride
+// defaults to 1 and must be a nonzero integer; Ruby raises ArgumentError for a
+// zero step, and the sign of the stride selects the iteration direction.
+func intStepArgs(args []Value) (limit, stride int64, err error) {
+	if len(args) < 1 || len(args) > 2 {
+		return 0, 0, fmt.Errorf("int.step expects a limit and an optional step")
+	}
+	if args[0].Kind() != KindInt {
+		return 0, 0, fmt.Errorf("int.step expects an integer limit")
+	}
+	stride = 1
+	if len(args) == 2 {
+		if args[1].Kind() != KindInt {
+			return 0, 0, fmt.Errorf("int.step expects an integer step")
+		}
+		stride = args[1].Int()
+	}
+	if stride == 0 {
+		return 0, 0, fmt.Errorf("int.step step must not be zero")
+	}
+	return args[0].Int(), stride, nil
+}
+
+// intStride yields start, start+stride, ... up to and including limit (when the
+// stride lands on it), invoking runner with each value. A positive stride
+// iterates upward and stops once the value would exceed limit; a negative stride
+// iterates downward and stops once the value would drop below limit. A step is
+// charged per yield so a large span cannot starve the step quota, and the
+// advance is overflow checked so a stride that would push the counter past the
+// int64 boundary terminates rather than wrapping.
+func (exec *Execution) intStride(start, limit, stride int64, runner *blockCallRunner) error {
+	ascending := stride > 0
+	current := start
+	var blockArg [1]Value
+	for {
+		if ascending && current > limit {
+			return nil
+		}
+		if !ascending && current < limit {
+			return nil
+		}
+		if err := exec.step(); err != nil {
+			return err
+		}
+		blockArg[0] = NewInt(current)
+		if _, err := runner.call(blockArg[:]); err != nil {
+			return err
+		}
+		next := current + stride
+		// Stop when the advance overflows int64 rather than wrapping around, which
+		// would otherwise restart iteration from the opposite end of the range.
+		if ascending && next < current {
+			return nil
+		}
+		if !ascending && next > current {
+			return nil
+		}
+		current = next
 	}
 }
 

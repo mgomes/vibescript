@@ -17,6 +17,8 @@ const rangeMaterializeInitialCap = 4096
 // listed name resolves.
 var rangeMemberNames = []string{
 	"cover?", "include?", "member?", "first", "last", "size", "exclude_end?", "to_a",
+	"each", "each_with_index", "map", "select", "reject", "find", "reduce",
+	"sum", "count", "step",
 }
 
 func (exec *Execution) rangeMember(obj Value, property string, pos Position) (Value, error) {
@@ -33,6 +35,24 @@ func (exec *Execution) rangeMember(obj Value, property string, pos Position) (Va
 		return rangeMemberExcludeEnd(), nil
 	case "to_a":
 		return rangeMemberToArray(), nil
+	case "each":
+		return rangeMemberEach(), nil
+	case "each_with_index":
+		return rangeMemberEachWithIndex(), nil
+	case "map":
+		return rangeMemberMap(), nil
+	case "select", "reject":
+		return rangeMemberFilter(property), nil
+	case "find":
+		return rangeMemberFind(), nil
+	case "reduce":
+		return rangeMemberReduce(), nil
+	case "sum":
+		return rangeMemberSum(), nil
+	case "count":
+		return rangeMemberCount(), nil
+	case "step":
+		return rangeMemberStep(), nil
 	default:
 		return NewNil(), exec.errorAt(pos, "unknown range method %s%s", property, didYouMean(property, rangeMemberNames))
 	}
@@ -198,10 +218,11 @@ func rangeLength(rng Range) (int64, bool) {
 
 // rangeLastElement returns the final value the range iterates over: its end
 // endpoint for inclusive ranges, or the value one step inside the end for
-// exclusive ranges. Callers must only invoke it for non-empty ranges; the
-// trailing-window arithmetic in rangeMaterialize guarantees this because it
-// has already clamped the requested count to a positive number of in-range
-// elements.
+// exclusive ranges. Callers must only invoke it for non-empty ranges:
+// rangeMaterialize guarantees this via its trailing-window arithmetic, which has
+// already clamped the requested count to a positive number of in-range elements,
+// and rangeEachInt guarantees it by returning early for the empty exclusive
+// range before the loop reads this value.
 func rangeLastElement(rng Range) int64 {
 	if !rng.Exclusive {
 		return rng.End
