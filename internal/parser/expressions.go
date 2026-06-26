@@ -510,10 +510,189 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
+	case ast.TokenDot, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
 		return true
+	case ast.TokenAsterisk:
+		// A line that begins with "*" continues the previous expression as a
+		// multiplication, unless it opens a destructuring-assignment target
+		// list (such as "*, last = vals" or "*rest, last = vals"). In that
+		// case the statement boundary wins so the "*" parses as an anonymous
+		// or named rest target rather than a multiplication operator.
+		return !p.lineStartsSplatAssignment(tok)
 	case ast.TokenPlus, ast.TokenMinus:
 		return p.signContinuesLine(tok)
+	default:
+		return false
+	}
+}
+
+// lineStartsSplatAssignment reports whether the leading "*" token begins a
+// destructuring-assignment target list rather than continuing the previous
+// line as a multiplication. It scans ahead with a throwaway lexer (leaving
+// the parser's own lookahead untouched) and accepts only the tokens that may
+// form a destructuring left-hand side at the top level, requiring a top-level
+// "=" to terminate the list.
+//
+// A target list may span several physical lines at exactly the points the
+// real parser continues a statement across a newline:
+//   - inside an open bracket/paren group, where a nested sub-target spans the
+//     newline ("*rest, (a,\n b) = values");
+//   - after a trailing top-level "," , where the list continues with another
+//     element ("*rest,\n last = values"); and
+//   - via Vibescript's newline-before-"=" continuation (the same rule that
+//     lets "x\n  = 1" parse as an assignment), where the terminating "=" sits
+//     on a later line.
+//
+// To keep the newline-before-"=" continuation from reviving the multiplication
+// ambiguity, a bare "*operand" that crosses a newline only completes a splat
+// assignment when the leading "*" is shaped like a splat target: bare
+// (immediately followed by a terminator such as "," or "=") or flush against
+// its operand ("*rest"). A spaced "*" ("* b") is a multiplication operator, so
+// "x = a" / "* b" / "= c" stays a multiplication followed by a dangling "="
+// rather than becoming "*b = c". Once a top-level "," has appeared the list is
+// unambiguously a destructuring list (a comma cannot follow a multiplicand at
+// the top level), so the splat-shaped guard no longer applies.
+//
+// Anything else - a multiplicand operand, a comparison, an arithmetic
+// operator, or a token that starts a new line without a continuation point -
+// means the "*" is an ordinary multiplication continuation, so it returns
+// false.
+func (p *parser) lineStartsSplatAssignment(star ast.Token) bool {
+	offset, ok := sourceOffsetForPosition(p.l.input, star.Pos)
+	if !ok {
+		return false
+	}
+
+	scan := newLexer(p.l.input)
+	scan.seek(offset, ast.Token{})
+
+	tok := scan.NextToken()
+	if tok.Type != ast.TokenAsterisk {
+		return false
+	}
+	starEnd := tok.End
+
+	first := true
+	splatShaped := false
+	sawTopLevelComma := false
+	depth := 0
+	prev := ast.Token{}
+	prevLine := star.Pos.Line
+	for {
+		tok = scan.NextToken()
+		if tok.Type == ast.TokenEOF {
+			return false
+		}
+		if first {
+			// The "*" is splat-shaped when it is bare (a terminator follows) or
+			// flush against its operand, distinguishing the splat target "*rest"
+			// from the multiplication operator "* b".
+			splatShaped = isAnonymousRestTerminator(tok.Type) ||
+				(tok.Pos.Line == starEnd.Line && tok.Pos.Column == starEnd.Column)
+			first = false
+		}
+		// A token that starts a later physical line only stays part of the
+		// target list when the list was mid-continuation: inside a bracket
+		// group, after a trailing top-level comma, when a target splits a member
+		// access across the newline ("record\n  .field = values"), or completing
+		// the newline-before-"=" rule. Otherwise the leading "*" is a
+		// multiplication continuation (such as "x = a" / "* b") and the lookahead
+		// stops.
+		if tok.Pos.Line > prevLine {
+			switch {
+			case depth > 0 || prev.Type == ast.TokenComma:
+				// Bracket group or trailing-comma continuation: the list keeps
+				// going, so fall through to the normal token handling below.
+			case (splatShaped || sawTopLevelComma) && splitsMemberAccess(tok, prev):
+				// The real target parser uses a line-limited expression, which
+				// continues a member or scope access onto a line that begins
+				// with "." or "::" ("record\n  .field"). Keep scanning so the
+				// element completes instead of severing the list at the newline.
+				// This only applies once the list is committed to a splat
+				// assignment - a bare "*" target or a top-level comma. A spaced
+				// "*" with no comma ("* obj\n  .field") stays a multiplication,
+				// the same disambiguation the newline-before-"=" rule uses.
+			case tok.Type == ast.TokenAssign && (sawTopLevelComma || splatShaped):
+				return true
+			default:
+				return false
+			}
+		}
+		if depth == 0 {
+			if tok.Type == ast.TokenAssign {
+				return true
+			}
+			if !splatAssignmentTopLevelToken(tok, prev) {
+				return false
+			}
+			if tok.Type == ast.TokenComma {
+				sawTopLevelComma = true
+			}
+		}
+		switch tok.Type {
+		case ast.TokenLParen, ast.TokenLBracket:
+			depth++
+		case ast.TokenRParen, ast.TokenRBracket:
+			if depth > 0 {
+				depth--
+			}
+		case ast.TokenSemicolon:
+			return false
+		}
+		prev = tok
+		prevLine = tok.Pos.Line
+	}
+}
+
+// splitsMemberAccess reports whether tok begins a later physical line that
+// continues the current destructuring target's member or scope access, as in
+// "record\n  .field = values". The real target parser builds each element with
+// a line-limited expression, and lineLimitedContinuationToken lets such an
+// expression continue onto a line that starts with "." or "::". The lookahead
+// honors the same rule so a split member target completes instead of severing
+// the list at the newline (which would let the previous statement consume the
+// leading "*" as multiplication). prev is the preceding depth-zero token: the
+// continuation only applies when it can end a member-access receiver, so a
+// leading "." or "::" with no operand before it is not mistaken for one.
+func splitsMemberAccess(tok, prev ast.Token) bool {
+	if tok.Type != ast.TokenDot && tok.Type != ast.TokenScope {
+		return false
+	}
+	switch prev.Type {
+	case ast.TokenIdent, ast.TokenIvar, ast.TokenClassVar, ast.TokenSelf,
+		ast.TokenRParen, ast.TokenRBracket, ast.TokenEnum:
+		return true
+	default:
+		// A member name (the token after a preceding ".") can itself be the
+		// receiver of a further "." or "::", as in "a.b\n  .c = values".
+		return prev.Type != ast.TokenDot && prev.Type != ast.TokenScope &&
+			isMemberNameToken(prev)
+	}
+}
+
+// splatAssignmentTopLevelToken reports whether tok may appear at the top
+// level of a destructuring-assignment left-hand side, between the leading
+// "*" and the terminating "=". prev is the preceding depth-zero token, used
+// to recognize member names: after a "." the token is a method name and after
+// "::" it is a scope name, so each may be any name the real member or scope
+// parser accepts (including reserved-word labels such as "end" in
+// "record.end = values"). Bracketed sub-targets are validated by depth
+// tracking in lineStartsSplatAssignment, so this only governs depth-zero
+// tokens. "self" is included because "self.member" and "self[index]" are
+// valid assignment targets, so a target list may legitimately begin one of
+// its elements with "self".
+func splatAssignmentTopLevelToken(tok, prev ast.Token) bool {
+	switch prev.Type {
+	case ast.TokenDot:
+		// parseMemberExpression accepts any member-name token after ".".
+		return isMemberNameToken(tok)
+	case ast.TokenScope:
+		// parseScopeExpression accepts only identifiers and enum names after "::".
+		return tok.Type == ast.TokenIdent || tok.Type == ast.TokenEnum
+	}
+	switch tok.Type {
+	case ast.TokenIdent, ast.TokenIvar, ast.TokenClassVar, ast.TokenSelf, ast.TokenComma, ast.TokenAsterisk, ast.TokenDot, ast.TokenScope, ast.TokenLParen, ast.TokenRParen, ast.TokenLBracket, ast.TokenRBracket:
+		return true
 	default:
 		return false
 	}
@@ -1284,6 +1463,11 @@ func isBlockParameterTarget(target ast.Expression) bool {
 		return true
 	case *ast.DestructureTarget:
 		for _, element := range t.Elements {
+			// A rest element with no target is an anonymous (discard) rest
+			// ("*"), which is a valid block parameter that binds nothing.
+			if element.Rest && element.Target == nil {
+				continue
+			}
 			if !isBlockParameterTarget(element.Target) {
 				return false
 			}

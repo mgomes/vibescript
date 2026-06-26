@@ -148,10 +148,13 @@ type IndexExpr struct {
 func (e *IndexExpr) exprNode()     {}
 func (e *IndexExpr) Pos() Position { return e.Position }
 
-// DestructureElement represents one target in a destructuring assignment.
+// DestructureElement represents one target in a destructuring assignment. An
+// anonymous rest target (a bare "*") has a nil Target with Rest set true; its
+// Position records the location of the "*" for diagnostics.
 type DestructureElement struct {
-	Target Expression
-	Rest   bool
+	Target   Expression
+	Rest     bool
+	Position Position
 }
 
 // DestructureTarget represents a comma-separated assignment target list.
