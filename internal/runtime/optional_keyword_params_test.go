@@ -208,6 +208,10 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
       opts.size
     end
 
+    def nested_empty_default(opts: { headers: {} })
+      opts[:headers].size
+    end
+
     def chained_hash(a:, b: { sum: a + 1 })
       b[:sum]
     end
@@ -250,6 +254,16 @@ func TestOptionalKeywordParameterHashDefault(t *testing.T) {
 		t.Parallel()
 		if got := callFunc(t, script, "empty_default", nil); !got.Equal(NewInt(0)) {
 			t.Fatalf("empty_default() = %#v, want 0", got)
+		}
+	})
+
+	// A nested empty hash `{ headers: {} }` is an optional keyword default, so
+	// omitting it binds the default rather than raising a missing-argument error
+	// (which it would if the group were misparsed as a required positional shape).
+	t.Run("nested_empty_hash_default_applies_when_omitted", func(t *testing.T) {
+		t.Parallel()
+		if got := callFunc(t, script, "nested_empty_default", nil); !got.Equal(NewInt(0)) {
+			t.Fatalf("nested_empty_default() = %#v, want 0", got)
 		}
 	})
 

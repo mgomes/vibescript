@@ -1004,7 +1004,11 @@ func (p *parser) colonIntroducesKeywordDefault(options paramParseOptions) bool {
 // The empty group `{}` is treated as a hash default rather than an empty
 // shape type. An empty shape type as a parameter annotation is degenerate
 // (it accepts only an empty hash), whereas `opts: {}` is the common
-// Ruby-style empty-hash default.
+// Ruby-style empty-hash default. An empty *nested* shape is degenerate for
+// the same reason: `{ headers: {} }` reads as a shape whose `headers` field
+// accepts only an empty hash, but the Ruby-style intent is the hash default
+// `def f(opts: { headers: {} })`. shapeHasEmptyNestedShape marks such groups
+// as hash defaults too, mirroring the top-level `{}` case at any depth.
 //
 // A clean shape parse with a bare `nil` field type is likewise degenerate:
 // `{ previous: nil }` reads as a shape whose `previous` field accepts only
@@ -1038,6 +1042,9 @@ func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
 		return false
 	}
 	if shapeHasDegenerateNilField(shape) {
+		return false
+	}
+	if shapeHasEmptyNestedShape(shape) {
 		return false
 	}
 	if p.shapeFieldNamesLocalValue(shape) {
@@ -1114,9 +1121,11 @@ func (p *parser) typeAtomNamesLocalValue(ty *ast.TypeExpr) bool {
 //
 //   - a bare identifier naming a local value (typeAtomNamesLocalValue),
 //   - a bare `nil` atom (the degenerate field type recognized by
-//     shapeHasDegenerateNilField), or
+//     shapeHasDegenerateNilField),
+//   - an empty shape `{}` (the degenerate empty-hash default), or
 //   - a nested shape that is itself a hash default, i.e. one with a degenerate
-//     `nil` field (shapeHasDegenerateNilField) or a field naming a local value
+//     `nil` field (shapeHasDegenerateNilField), an empty nested shape
+//     (shapeHasEmptyNestedShape), or a field naming a local value
 //     (shapeFieldNamesLocalValue).
 //
 // The nested-shape cases mirror the disambiguation bracedGroupIsShapeType
@@ -1135,10 +1144,15 @@ func (p *parser) bracedFieldIsHashDefault(ty *ast.TypeExpr) bool {
 	if ty.Kind == ast.TypeNil {
 		return true
 	}
+	if typeIsEmptyShape(ty) {
+		return true
+	}
 	if p.typeAtomNamesLocalValue(ty) {
 		return true
 	}
-	return shapeHasDegenerateNilField(ty) || p.shapeFieldNamesLocalValue(ty)
+	return shapeHasDegenerateNilField(ty) ||
+		shapeHasEmptyNestedShape(ty) ||
+		p.shapeFieldNamesLocalValue(ty)
 }
 
 // shapeHasDegenerateNilField reports whether ty is a shape type with a field
@@ -1158,6 +1172,38 @@ func shapeHasDegenerateNilField(ty *ast.TypeExpr) bool {
 			continue
 		}
 		if fieldType.Kind == ast.TypeNil || shapeHasDegenerateNilField(fieldType) {
+			return true
+		}
+	}
+	return false
+}
+
+// typeIsEmptyShape reports whether ty is the empty shape `{}`, i.e. a shape
+// type with no fields. An empty shape is degenerate as a parameter annotation
+// (it accepts only an empty hash), so it is the Ruby-style empty-hash default
+// rather than a meaningful shape type, matching the top-level `{}` handling in
+// bracedGroupIsShapeType.
+func typeIsEmptyShape(ty *ast.TypeExpr) bool {
+	return ty != nil && ty.Kind == ast.TypeShape && len(ty.Shape) == 0
+}
+
+// shapeHasEmptyNestedShape reports whether ty is a shape type with a field
+// whose type is an empty shape `{}`, looking through nested shapes.
+//
+// An empty shape field type accepts solely an empty hash, which is degenerate
+// as a positional annotation, so a group like `{ headers: {} }` is the common
+// Ruby-style hash default (`def f(opts: { headers: {} })`) rather than a shape
+// type. This mirrors shapeHasDegenerateNilField for the empty-shape case,
+// extending the top-level `{}` handling in bracedGroupIsShapeType to any depth.
+func shapeHasEmptyNestedShape(ty *ast.TypeExpr) bool {
+	if ty == nil || ty.Kind != ast.TypeShape {
+		return false
+	}
+	for _, fieldType := range ty.Shape {
+		if fieldType == nil {
+			continue
+		}
+		if typeIsEmptyShape(fieldType) || shapeHasEmptyNestedShape(fieldType) {
 			return true
 		}
 	}

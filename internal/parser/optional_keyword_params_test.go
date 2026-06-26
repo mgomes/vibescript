@@ -485,6 +485,75 @@ end`,
 			},
 		},
 		{
+			// A nested empty hash `{}` is degenerate as a shape field (it accepts
+			// only an empty hash), so the speculative shape parse must fall back to
+			// a hash default the same way the top-level `{}` does, keeping `opts`
+			// an optional keyword rather than a required typed positional shape.
+			name: "nested_empty_hash_default",
+			source: `def f(opts: { headers: {} })
+  opts
+end`,
+			want: []ast.Param{
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key:   &ast.SymbolLiteral{Name: "headers"},
+							Value: &ast.HashLiteral{Pairs: []ast.HashPair{}},
+						},
+					}},
+				},
+			},
+		},
+		{
+			// The empty-shape check looks through nested shapes, so a deeply
+			// nested empty hash keeps the whole group a hash default.
+			name: "deeply_nested_empty_hash_default",
+			source: `def f(opts: { a: { b: {} } })
+  opts
+end`,
+			want: []ast.Param{
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key: &ast.SymbolLiteral{Name: "a"},
+							Value: &ast.HashLiteral{Pairs: []ast.HashPair{
+								{
+									Key:   &ast.SymbolLiteral{Name: "b"},
+									Value: &ast.HashLiteral{Pairs: []ast.HashPair{}},
+								},
+							}},
+						},
+					}},
+				},
+			},
+		},
+		{
+			// A mix of an empty nested hash alongside a typed-looking field still
+			// reads as a hash default: the empty `{}` field is degenerate, so the
+			// whole group falls back rather than being a positional shape.
+			name: "mixed_empty_nested_hash_default",
+			source: `def f(opts: { headers: {}, retry: 3 })
+  opts
+end`,
+			want: []ast.Param{
+				{
+					Name: "opts",
+					Kind: ast.ParamKeyword,
+					DefaultVal: &ast.HashLiteral{Pairs: []ast.HashPair{
+						{
+							Key:   &ast.SymbolLiteral{Name: "headers"},
+							Value: &ast.HashLiteral{Pairs: []ast.HashPair{}},
+						},
+						{Key: &ast.SymbolLiteral{Name: "retry"}, Value: &ast.IntegerLiteral{Value: 3}},
+					}},
+				},
+			},
+		},
+		{
 			name: "hash_default_references_earlier_keyword",
 			source: `def g(a:, b: { sum: a + 1 })
   b

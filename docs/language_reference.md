@@ -163,11 +163,13 @@ parses as an expression.
 A keyword default may be a full expression, including one that references an
 earlier parameter with a comparison (`def f(limit:, ok: limit < 10)`). A `{ ... }`
 default is a hash literal whenever its contents are values rather than types, so
-`def f(opts: { retry: 3 })` and `def f(opts: {})` both declare hash defaults. A
-hash value may reference an earlier parameter directly, including as a bare
-identifier (`def g(a:, b: { sum: a })`); no parentheses are needed inside the
-braces. The `name: { field: Type }` spelling, whose field values are themselves
-types, stays a typed positional parameter with a shape type.
+`def f(opts: { retry: 3 })` and `def f(opts: {})` both declare hash defaults. An
+empty hash is degenerate as a shape field, so a nested empty hash is a hash
+default too (`def f(opts: { headers: {} })`). A hash value may reference an
+earlier parameter directly, including as a bare identifier
+(`def g(a:, b: { sum: a })`); no parentheses are needed inside the braces. The
+`name: { field: Type }` spelling, whose field values are themselves types, stays
+a typed positional parameter with a shape type.
 
 ### Function values
 
