@@ -141,6 +141,77 @@ end`
 	}
 }
 
+func TestDoubleQuotedStringInterpolationWithNestedStringLiteral(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  "#{"guest"}"
+end`
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn := program.Statements[0].(*ast.FunctionStmt)
+	stmt := fn.Body[0].(*ast.ExprStmt)
+	lit, ok := stmt.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("expression = %T, want *ast.InterpolatedString", stmt.Expr)
+	}
+	if len(lit.Parts) != 1 {
+		t.Fatalf("parts length = %d, want 1", len(lit.Parts))
+	}
+	expr, ok := lit.Parts[0].(ast.StringExpr)
+	if !ok {
+		t.Fatalf("parts[0] = %T, want ast.StringExpr", lit.Parts[0])
+	}
+	inner, ok := expr.Expr.(*ast.StringLiteral)
+	if !ok || inner.Value != "guest" {
+		t.Fatalf("parts[0].Expr = %#v, want string literal %q", expr.Expr, "guest")
+	}
+}
+
+func TestDoubleQuotedStringInterpolationWithNestedInterpolation(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  "#{"hi #{inner}"}"
+end`
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn := program.Statements[0].(*ast.FunctionStmt)
+	stmt := fn.Body[0].(*ast.ExprStmt)
+	lit, ok := stmt.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("expression = %T, want *ast.InterpolatedString", stmt.Expr)
+	}
+	if len(lit.Parts) != 1 {
+		t.Fatalf("parts length = %d, want 1", len(lit.Parts))
+	}
+	expr, ok := lit.Parts[0].(ast.StringExpr)
+	if !ok {
+		t.Fatalf("parts[0] = %T, want ast.StringExpr", lit.Parts[0])
+	}
+	inner, ok := expr.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("parts[0].Expr = %T, want *ast.InterpolatedString", expr.Expr)
+	}
+	if len(inner.Parts) != 2 {
+		t.Fatalf("inner parts length = %d, want 2", len(inner.Parts))
+	}
+	if text, ok := inner.Parts[0].(ast.StringText); !ok || text.Text != "hi " {
+		t.Fatalf("inner parts[0] = %#v, want text %q", inner.Parts[0], "hi ")
+	}
+	innerExpr, ok := inner.Parts[1].(ast.StringExpr)
+	if !ok {
+		t.Fatalf("inner parts[1] = %T, want ast.StringExpr", inner.Parts[1])
+	}
+	if ident, ok := innerExpr.Expr.(*ast.Identifier); !ok || ident.Name != "inner" {
+		t.Fatalf("inner parts[1].Expr = %#v, want identifier inner", innerExpr.Expr)
+	}
+}
+
 func TestEscapedDoubleQuotedInterpolationMarkerStaysLiteral(t *testing.T) {
 	t.Parallel()
 	source := `def run
@@ -206,11 +277,24 @@ end`,
 			want: "empty string interpolation",
 		},
 		{
+			// An interpolation that never reaches its closing "}" leaves the outer
+			// string open, so the lexer reports an unterminated string when it hits
+			// end of input.
 			name: "unterminated",
+			source: `def run
+  "#{name
+end`,
+			want: "unterminated string",
+		},
+		{
+			// A bare double quote inside the interpolation opens an inner string,
+			// matching Ruby. With no closing quote the inner string runs to the end
+			// of input, so the lexer still reports an unterminated string.
+			name: "unterminated_inner_string",
 			source: `def run
   "#{name"
 end`,
-			want: "unterminated string interpolation",
+			want: "unterminated string",
 		},
 		{
 			name: "trailing_tokens",

@@ -73,6 +73,65 @@ end`)
 	}
 }
 
+func TestDoubleQuotedStringInterpolationNestedDoubleQuotes(t *testing.T) {
+	t.Parallel()
+
+	source := `def literal
+  "#{"guest"}"
+end
+
+def fallback
+  name = nil
+  "#{name || "guest"}"
+end
+
+def prefixed
+  name = nil
+  "hello #{name || "stranger"}!"
+end
+
+def nested
+  inner = "world"
+  "#{"hi #{inner}"}"
+end
+
+def method_call
+  "#{["a", "b"].join(", ")}"
+end
+
+def escaped_inner
+  "#{"a\"b"}"
+end
+
+def inner_single_with_double
+  "#{'say "hi"'}"
+end`
+
+	script := compileScriptDefault(t, source)
+
+	tests := []struct {
+		fn   string
+		want string
+	}{
+		{fn: "literal", want: "guest"},
+		{fn: "fallback", want: "guest"},
+		{fn: "prefixed", want: "hello stranger!"},
+		{fn: "nested", want: "hi world"},
+		{fn: "method_call", want: "a, b"},
+		{fn: "escaped_inner", want: `a"b`},
+		{fn: "inner_single_with_double", want: `say "hi"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.fn, func(t *testing.T) {
+			t.Parallel()
+			got := callScript(t, context.Background(), script, tc.fn, nil, CallOptions{})
+			if got.String() != tc.want {
+				t.Fatalf("Call(%s) = %q, want %q", tc.fn, got.String(), tc.want)
+			}
+		})
+	}
+}
+
 // newInterpolatedTextLiteral builds an InterpolatedString made entirely of
 // literal text parts. Splitting one large string across many parts lets a test
 // observe the per-chunk containment checks without depending on parser

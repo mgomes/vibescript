@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -414,7 +415,7 @@ func (l *lexer) scanToken() ast.Token {
 			}
 			return tok
 		default:
-			tok = l.makeToken(ast.TokenIllegal, string(l.ch))
+			tok = l.makeToken(ast.TokenIllegal, fmt.Sprintf("unexpected character %q", l.ch))
 			l.readRune()
 		}
 	}
@@ -602,10 +603,12 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 	for {
 		l.readRune()
 		if interpolationDepth > 0 {
-			if interpolationQuote == 0 && l.ch == '"' && !l.interpolationQuoteHasClose('"') {
-				l.readRune()
-				return raw.String(), true, ""
-			}
+			// While inside an interpolation expression, consume every rune as raw
+			// text until the matching "}" returns the depth to zero. The outer
+			// closing quote can never appear here in valid source because the
+			// interpolation always balances its braces first; tracking the inner
+			// string and brace nesting mirrors findStringInterpolationEnd so the
+			// parser receives the complete expression text.
 			switch l.ch {
 			case 0:
 				return "", false, "unterminated string"
@@ -689,25 +692,6 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 			decoded.WriteRune(l.ch)
 		}
 	}
-}
-
-func (l *lexer) interpolationQuoteHasClose(quote rune) bool {
-	idx := l.offset
-	for idx < len(l.input) {
-		r, width := utf8.DecodeRuneInString(l.input[idx:])
-		idx += width
-		if r == '\\' {
-			if idx < len(l.input) {
-				_, escapedWidth := utf8.DecodeRuneInString(l.input[idx:])
-				idx += escapedWidth
-			}
-			continue
-		}
-		if r == quote {
-			return true
-		}
-	}
-	return false
 }
 
 func (l *lexer) readSingleQuotedString() (string, string) {
