@@ -144,6 +144,36 @@ end`)
 	}
 }
 
+// TestHostCloneFunctionPreservesAliasIdentity confirms two references to the same
+// script function in a returned graph (for example [inc, inc]) clone to one
+// backing pointer, so the cloned aliases stay equal? to each other.
+// cloneFunctionForHostWithState rebuilds a fresh *ScriptFunction per call, so
+// without memoizing the clone on the source *ScriptFunction the two occurrences
+// would clone to distinct pointers; equal? compares functions by backing pointer,
+// so those distinct clones would wrongly report not-identical even though they
+// were one function inside the script.
+func TestHostCloneFunctionPreservesAliasIdentity(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `def inc(n)
+  n + 1
+end`)
+
+	inc := exportedFunctionValue(t, script, "inc")
+
+	cloned := cloneValueForHost(NewArray([]Value{inc, inc}))
+	items := cloned.Array()
+
+	if FunctionOf(items[0]) == FunctionOf(inc) {
+		t.Fatal("cloned function shares the original backing pointer; test cannot observe the clone")
+	}
+	if FunctionOf(items[0]) != FunctionOf(items[1]) {
+		t.Fatal("the same function cloned through two paths produced distinct *ScriptFunction pointers; host clone must memoize the function clone")
+	}
+	if !items[0].Identical(items[1]) {
+		t.Fatal("the same function cloned through two paths is not equal? to itself; aliases must stay identical across the host boundary")
+	}
+}
+
 // TestEqualPredicateEnumDispatchesIdentity confirms the universal equal?
 // predicate on enums and enum values routes through Value.Identical rather than
 // Value.Equal. The predicate builtin captures the receiver, so invoking it with

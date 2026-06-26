@@ -357,6 +357,17 @@ type hostValueCloneState struct {
 	// the clone keeps aliases of one bound predicate identical across the host
 	// boundary.
 	boundBuiltins map[*Builtin]Value
+	// functions caches the clone of a script function keyed on the source
+	// *ScriptFunction. cloneFunctionForHostWithState rebuilds a fresh
+	// *ScriptFunction (with a cloned environment), so the same function reachable
+	// through several paths in the returned graph (for example [inc, inc]) would
+	// otherwise clone to distinct pointers. equal? compares functions by backing
+	// pointer, so those distinct clones would wrongly report not-identical; caching
+	// the clone keeps aliases of one function identical across the host boundary.
+	// The clone is reserved before its environment is cloned so a function whose
+	// captured environment reaches the function itself (a recursive closure)
+	// dedups against the reserved clone instead of recursing forever.
+	functions map[*ScriptFunction]*ScriptFunction
 	// enums caches the clone of an enum definition keyed on the source *EnumDef.
 	// cloneEnumDef rebuilds a fresh *EnumDef (and fresh *EnumValueDef members), so
 	// the same enum or enum member reachable through several paths in the returned
@@ -537,6 +548,7 @@ func cloneValueForHost(val Value) Value {
 		classes:       make(map[*ClassDef]*ClassDef),
 		envs:          make(map[*Env]*Env),
 		boundBuiltins: make(map[*Builtin]Value),
+		functions:     make(map[*ScriptFunction]*ScriptFunction),
 		enums:         make(map[*EnumDef]*EnumDef),
 	}
 	return cloneValueForHostWithState(val, state)
@@ -661,12 +673,19 @@ func cloneFunctionForHostWithState(fn *ScriptFunction, state hostValueCloneState
 	if fn == nil {
 		return nil
 	}
-	clone := *fn
+	if clone, ok := state.functions[fn]; ok {
+		return clone
+	}
+	clone := &ScriptFunction{}
+	if state.functions != nil {
+		state.functions[fn] = clone
+	}
+	*clone = *fn
 	clone.Params = cloneParams(fn.Params)
 	clone.ReturnTy = cloneTypeExpr(fn.ReturnTy)
 	clone.Body = cloneStatements(fn.Body)
 	clone.Env = cloneEnvForHost(fn.Env, state)
-	return &clone
+	return clone
 }
 
 func cloneClassForHostWithState(classDef *ClassDef, state hostValueCloneState) *ClassDef {
