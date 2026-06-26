@@ -197,6 +197,131 @@ end`)
 	}
 }
 
+// TestHostCloneBoundPredicatePreservesAliasIdentity confirms the same bound
+// predicate (a bound equal?) reachable through two paths in a returned graph
+// clones to a single *Builtin, so the two cloned references stay equal? to each
+// other. Reconstructing a fresh *Builtin per path would give each alias its own
+// pointer; since equal? compares builtins by backing pointer, those aliases
+// would wrongly report not-identical across the host boundary. Each cloned alias
+// must also rebind to the cloned receiver from the same graph.
+func TestHostCloneBoundPredicatePreservesAliasIdentity(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{"a": NewInt(1)})
+	probe, ok := universalMember(receiver, "equal?")
+	if !ok {
+		t.Fatal("universalMember did not resolve equal? for a hash")
+	}
+
+	// Export the receiver and the same bound predicate through two array slots,
+	// the way Script.Call hands a returned graph to the host, then clone it.
+	cloned := cloneValueForHost(NewArray([]Value{receiver, probe, probe}))
+	items := cloned.Array()
+	clonedReceiver := items[0]
+	probeA := valueBuiltin(items[1])
+	probeB := valueBuiltin(items[2])
+	if probeA == nil || probeB == nil {
+		t.Fatal("cloned equal? aliases did not resolve to builtins")
+	}
+
+	if !items[1].Identical(items[2]) {
+		t.Fatal("the same bound predicate cloned through two paths produced distinct builtins; aliases must stay equal?")
+	}
+	if probeA != probeB {
+		t.Fatal("cloned predicate aliases hold distinct *Builtin pointers; host clone must memoize the bound builtin")
+	}
+
+	// Each alias must still rebind to the cloned receiver from the same graph.
+	for i, b := range []*Builtin{probeA, probeB} {
+		got, err := b.Fn(nil, NewNil(), []Value{clonedReceiver}, nil, NewNil())
+		if err != nil {
+			t.Fatalf("cloned equal? alias %d against cloned receiver: %v", i, err)
+		}
+		if !got.Bool() {
+			t.Fatalf("cloned equal? alias %d returned false against the cloned receiver; it did not rebind", i)
+		}
+	}
+}
+
+// TestCallRebindBoundPredicatePreservesAliasIdentity is the inbound counterpart
+// to TestHostCloneBoundPredicatePreservesAliasIdentity: Script.Call rebinds
+// incoming arguments through callFunctionRebinder, which must likewise memoize a
+// bound predicate so the same builtin reached through two paths rebinds to a
+// single *Builtin and the aliases stay equal? to each other.
+func TestCallRebindBoundPredicatePreservesAliasIdentity(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, "def run()\n  nil\nend")
+	root := newEnv(nil)
+	rebinder := newCallFunctionRebinder(script, root, map[string]*ClassDef{}, map[string]*EnumDef{})
+
+	receiver := NewHash(map[string]Value{"a": NewInt(1)})
+	probe, ok := universalMember(receiver, "equal?")
+	if !ok {
+		t.Fatal("universalMember did not resolve equal? for a hash")
+	}
+
+	rebound := rebinder.rebindValue(NewArray([]Value{receiver, probe, probe}))
+	items := rebound.Array()
+	reboundReceiver := items[0]
+	probeA := valueBuiltin(items[1])
+	probeB := valueBuiltin(items[2])
+	if probeA == nil || probeB == nil {
+		t.Fatal("rebound equal? aliases did not resolve to builtins")
+	}
+
+	if !items[1].Identical(items[2]) {
+		t.Fatal("the same bound predicate rebound through two paths produced distinct builtins; aliases must stay equal?")
+	}
+	if probeA != probeB {
+		t.Fatal("rebound predicate aliases hold distinct *Builtin pointers; the rebinder must memoize the bound builtin")
+	}
+
+	for i, b := range []*Builtin{probeA, probeB} {
+		got, err := b.Fn(nil, NewNil(), []Value{reboundReceiver}, nil, NewNil())
+		if err != nil {
+			t.Fatalf("rebound equal? alias %d against rebound receiver: %v", i, err)
+		}
+		if !got.Bool() {
+			t.Fatalf("rebound equal? alias %d returned false against the rebound receiver; it did not rebind", i)
+		}
+	}
+}
+
+// TestEqualPredicateAliasIdentityAcrossScriptCalls exercises alias preservation
+// end to end through Script.Call: one call exports a receiver and the same bound
+// equal? predicate twice, and a second call receives that host-cloned graph and
+// compares the two predicate aliases with equal?. They must report identical
+// even though Script.Call host-cloned and rebound the graph between the calls.
+func TestEqualPredicateAliasIdentityAcrossScriptCalls(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def export_probe
+  obj = {a: 1}
+  probe = obj.equal?
+  [probe, probe]
+end
+
+def check(pair)
+  pair[0].equal?(pair[1])
+end`)
+
+	exported, err := script.Call(context.Background(), "export_probe", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("export_probe failed: %v", err)
+	}
+	if exported.Kind() != KindArray {
+		t.Fatalf("expected array result, got %#v", exported)
+	}
+
+	result, err := script.Call(context.Background(), "check", []Value{exported}, CallOptions{})
+	if err != nil {
+		t.Fatalf("check failed: %v", err)
+	}
+	if result.Kind() != KindBool || !result.Bool() {
+		t.Fatalf("two aliases of one bound predicate reported %#v; they must stay equal? across the host boundary", result)
+	}
+}
+
 // TestHostCloneHashPreservesSharedIdentity confirms a hash reachable through two
 // paths in a returned graph clones to a single wrapper, so the two cloned
 // references stay equal? to each other. Caching only the entry map would rebuild

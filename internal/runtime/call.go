@@ -257,6 +257,15 @@ type callFunctionRebinder struct {
 	seenMaps        map[uintptr]map[string]Value
 	seenBlocks      map[*Block]Value
 	seenEnvs        map[*Env]*Env
+	// seenBoundBuiltins caches the rebound clone of a receiver-bound predicate
+	// (a bound eql?/equal?) keyed on the source builtin pointer. Rebinding such a
+	// builtin reconstructs a fresh *Builtin around the rebound receiver, so the
+	// same source builtin reached through two paths (two globals, two array slots)
+	// would otherwise produce two distinct clones. equal? compares builtins by
+	// backing pointer, so those distinct clones would wrongly report not-identical;
+	// caching the clone keeps aliases of one bound predicate identical across the
+	// host boundary.
+	seenBoundBuiltins map[*Builtin]Value
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -283,7 +292,15 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		// pre-rebind wrapper while the receiver passed alongside rebinds to a fresh
 		// one, so probe(receiver) would wrongly report not-identical.
 		if builtin.RebindReceiver != nil && len(builtin.CapturedValues) > 0 {
-			return builtin.RebindReceiver(r.rebindValue(builtin.CapturedValues[0]))
+			if clone, ok := r.seenBoundBuiltins[builtin]; ok {
+				return clone
+			}
+			clone := builtin.RebindReceiver(r.rebindValue(builtin.CapturedValues[0]))
+			if r.seenBoundBuiltins == nil {
+				r.seenBoundBuiltins = make(map[*Builtin]Value)
+			}
+			r.seenBoundBuiltins[builtin] = clone
+			return clone
 		}
 		// A capability copied into a local (for example `cap = jobs` captured by a
 		// Hash.new default proc) would otherwise survive re-rooting and stay

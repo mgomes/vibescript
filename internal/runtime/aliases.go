@@ -348,6 +348,15 @@ type hostValueCloneState struct {
 	instances   map[*Instance]Value
 	classes     map[*ClassDef]*ClassDef
 	envs        map[*Env]*Env
+	// boundBuiltins caches the clone of a receiver-bound predicate (a bound
+	// eql?/equal?) keyed on the source builtin pointer. Cloning such a builtin
+	// rebuilds a fresh *Builtin around the cloned receiver, so the same source
+	// builtin reachable through several paths in the returned graph would otherwise
+	// clone to distinct *Builtin values. equal? compares builtins by backing
+	// pointer, so those distinct clones would wrongly report not-identical; caching
+	// the clone keeps aliases of one bound predicate identical across the host
+	// boundary.
+	boundBuiltins map[*Builtin]Value
 }
 
 type hostValueScanState struct {
@@ -512,13 +521,14 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 
 func cloneValueForHost(val Value) Value {
 	state := hostValueCloneState{
-		arrays:      make(map[sliceIdentity]Value),
-		hashes:      make(map[uintptr]Value),
-		hashEntries: make(map[uintptr]map[string]Value),
-		maps:        make(map[uintptr]map[string]Value),
-		instances:   make(map[*Instance]Value),
-		classes:     make(map[*ClassDef]*ClassDef),
-		envs:        make(map[*Env]*Env),
+		arrays:        make(map[sliceIdentity]Value),
+		hashes:        make(map[uintptr]Value),
+		hashEntries:   make(map[uintptr]map[string]Value),
+		maps:          make(map[uintptr]map[string]Value),
+		instances:     make(map[*Instance]Value),
+		classes:       make(map[*ClassDef]*ClassDef),
+		envs:          make(map[*Env]*Env),
+		boundBuiltins: make(map[*Builtin]Value),
 	}
 	return cloneValueForHostWithState(val, state)
 }
@@ -618,8 +628,15 @@ func cloneBuiltinForHost(val Value, state hostValueCloneState) Value {
 	if builtin == nil || builtin.RebindReceiver == nil || len(builtin.CapturedValues) == 0 {
 		return cloneBuiltinValue(val)
 	}
+	if clone, ok := state.boundBuiltins[builtin]; ok {
+		return clone
+	}
 	clonedReceiver := cloneValueForHostWithState(builtin.CapturedValues[0], state)
-	return builtin.RebindReceiver(clonedReceiver)
+	clone := builtin.RebindReceiver(clonedReceiver)
+	if state.boundBuiltins != nil {
+		state.boundBuiltins[builtin] = clone
+	}
+	return clone
 }
 
 func cloneFunctionForHostWithState(fn *ScriptFunction, state hostValueCloneState) *ScriptFunction {
