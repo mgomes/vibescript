@@ -21,6 +21,21 @@ func isUniversalPredicate(property string) bool {
 	}
 }
 
+// isCallableMember reports whether a value stored under a member name is a
+// callable method export rather than plain data. Only functions and builtins
+// are invocable as methods, so only they may shadow a universal predicate; a
+// stored function/builtin keyed eql?/equal? is a module export or capability
+// method that overrides the predicate, while any other stored value is data
+// and must let the universal predicate answer.
+func isCallableMember(val Value) bool {
+	switch val.Kind() {
+	case KindFunction, KindBuiltin:
+		return true
+	default:
+		return false
+	}
+}
+
 // universalMember resolves the equality predicates that apply uniformly across
 // all value kinds. It is consulted only after a value's own type-specific
 // members and any user-defined methods have failed to resolve property, so

@@ -38,11 +38,16 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // materialize did-you-mean candidates from every stored key only for
 // resolveMember to discard that error in favor of the universal builtin.
 //
-// Object receivers are NOT in this exception. An object's map holds namespace
-// exports (a required module's `def eql?` is collected into NewObject(exports)),
-// so a stored eql?/equal? entry is a callable member that must shadow the
-// universal predicate exactly as a class method override does. Object dispatch
-// therefore runs first and the universal predicate only backstops a genuine miss.
+// Object receivers are NOT in this exception, but they are not uniform either.
+// KindObject backs two distinct shapes: module/capability namespaces, whose map
+// holds callable exports (a required module's `def eql?` is collected into
+// NewObject(exports)), and ordinary data objects returned by hosts/capabilities,
+// whose map holds data fields. A stored eql?/equal? must shadow the universal
+// predicate only when it is a callable export (so a module's `def eql?` overrides
+// like a class method); a plain data field keyed eql?/equal? is data, exactly like
+// a hash entry, and must not shadow identity. Object dispatch therefore consults
+// the typed member first but reports the predicate as a miss when the stored entry
+// is non-callable data, so the universal fallback answers it.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	if isUniversalPredicate(property) && universalPredicateAlwaysWins(obj.Kind()) {
 		if predicate, ok := universalMember(obj, property); ok {
@@ -66,9 +71,11 @@ func (exec *Execution) resolveMember(obj Value, property string, pos Position, c
 // resolution and resolving it first avoids hashMember's expensive miss path.
 //
 // Object receivers do not qualify even though they also store entries in a map:
-// an object's entries are namespace export members (a module's exported `def
-// eql?` lands there), so a stored eql?/equal? is a real member that must shadow
-// the universal predicate. Resolving it first would make that export unreachable.
+// an object's entries may be callable namespace exports (a module's exported `def
+// eql?` lands there), so a stored callable eql?/equal? is a real member that must
+// shadow the universal predicate. Resolving the predicate first would make that
+// export unreachable, so object dispatch runs first and resolveTypedMember decides
+// per entry whether the stored value is a callable export or non-callable data.
 func universalPredicateAlwaysWins(kind ValueKind) bool {
 	return kind == KindHash
 }
@@ -90,13 +97,20 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		}
 		return NewNil(), err
 	case KindObject:
-		// An object's map holds namespace export members, so a stored "eql?"/
-		// "equal?" entry is a callable member (a module's exported `def eql?`) that
-		// must shadow the universal predicate, unlike a hash data entry. Read it
-		// unconditionally; resolveMember only falls back to the universal predicate
-		// when no such member exists.
+		// An object's map backs both module/capability namespaces (callable
+		// exports) and ordinary data objects (data fields). A stored "eql?"/"equal?"
+		// entry shadows the universal predicate only when it is a callable export
+		// (a module's exported `def eql?`); a non-callable data field keyed
+		// "eql?"/"equal?" is data, like a hash entry, and must let the universal
+		// identity predicate answer so obj.equal?(obj) stays true.
 		if val, ok := obj.Hash()[property]; ok {
-			return val, nil
+			if !isUniversalPredicate(property) || isCallableMember(val) {
+				return val, nil
+			}
+			// A non-callable data field keyed eql?/equal? is data: leave it to
+			// resolveMember's universal fallback. The field stays readable as data
+			// through index access (obj["eql?"]).
+			return NewNil(), exec.errorAt(pos, "unknown member %s", property)
 		}
 		// A universal predicate that is not a stored member is answered by
 		// resolveMember's fallback. Report the miss with a cheap fixed error rather

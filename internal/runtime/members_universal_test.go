@@ -965,6 +965,80 @@ end`,
 	}
 }
 
+// TestEqualityPredicateObjectDataFieldNotShadowing confirms a KindObject that is
+// an ordinary data object — the shape hosts and capabilities return — does not let
+// a stored non-callable "eql?"/"equal?" field shadow the universal predicate.
+// Member dispatch must resolve the universal identity predicate (so obj.equal?(obj)
+// is true), while the stored field stays readable as data through index access.
+// A callable stored under the same name (a module/capability method export) must
+// still shadow, so namespace exports remain reachable.
+func TestEqualityPredicateObjectDataFieldNotShadowing(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, "def run()\n  nil\nend")
+	exec := newExecutionForCall(script, context.Background(), newEnv(nil), CallOptions{})
+
+	dataField := NewInt(7)
+	obj := NewObject(map[string]Value{"eql?": dataField, "equal?": dataField})
+
+	for _, property := range []string{"eql?", "equal?"} {
+		member, err := exec.resolveMember(obj, property, Position{}, false)
+		if err != nil {
+			t.Fatalf("resolveMember(%s) on data object: %v", property, err)
+		}
+		builtin := valueBuiltin(member)
+		if builtin == nil {
+			t.Fatalf("%s on a data object resolved to %v, want the universal predicate builtin; a data field must not shadow it", property, member.Kind())
+		}
+		got, err := builtin.Fn(exec, NewNil(), []Value{obj}, nil, NewNil())
+		if err != nil {
+			t.Fatalf("invoking resolved %s against the object: %v", property, err)
+		}
+		if !got.Bool() {
+			t.Fatalf("obj.%s(obj) reported false; the universal identity predicate must answer for a data object", property)
+		}
+		// The field is still readable as data through index access.
+		if stored, ok := obj.Hash()[property]; !ok || !stored.Equal(dataField) {
+			t.Fatalf("data field %q no longer readable as data: got %v ok=%v", property, stored, ok)
+		}
+	}
+
+	// A callable stored under the same name is a method export and must shadow.
+	callable := NewAutoBuiltin("export.eql?", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewString("export eql"), nil
+	})
+	namespace := NewObject(map[string]Value{"eql?": callable})
+	member, err := exec.resolveMember(namespace, "eql?", Position{}, false)
+	if err != nil {
+		t.Fatalf("resolveMember(eql?) on namespace object: %v", err)
+	}
+	if !member.Identical(callable) {
+		t.Fatalf("a callable eql? export was not resolved as the stored member; module exports must remain reachable")
+	}
+}
+
+// TestEqualityPredicateObjectDataFieldEndToEnd is the script-level counterpart to
+// TestEqualityPredicateObjectDataFieldNotShadowing: a host hands a data object
+// carrying eql?/equal? fields to a script, which must observe identity through
+// member dispatch while still reading the fields as data through index access.
+func TestEqualityPredicateObjectDataFieldEndToEnd(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def run(obj)
+  [obj.equal?(obj), obj.eql?(obj), obj["eql?"], obj["equal?"]]
+end`)
+
+	obj := NewObject(map[string]Value{"eql?": NewInt(1), "equal?": NewString("data")})
+	result, err := script.Call(context.Background(), "run", []Value{obj}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	compareArrays(t, result, []Value{
+		NewBool(true),
+		NewBool(true),
+		NewInt(1),
+		NewString("data"),
+	})
+}
+
 // TestEqualityPredicatePrivateOverrideRaises confirms a private eql?/equal?
 // override is not silently bypassed by the universal fallback. External lookup
 // paths — a bound member probe and the reduce(:op) shorthand — must raise the
