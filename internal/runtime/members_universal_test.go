@@ -174,6 +174,40 @@ end`)
 	}
 }
 
+// TestHostClonePlainBuiltinPreservesAliasIdentity confirms two references to the
+// same plain (non receiver-bound) builtin in a returned graph (for example
+// `p = JSON.parse; [p, p]`) clone to one backing *Builtin, so the cloned aliases
+// stay equal? to each other. cloneBuiltinValue mints a fresh *Builtin per
+// occurrence, so without memoizing the clone on the source *Builtin the two
+// occurrences would clone to distinct pointers; equal? compares builtins by
+// backing pointer, so those distinct clones would wrongly report not-identical
+// even though they were one callable inside the script.
+func TestHostClonePlainBuiltinPreservesAliasIdentity(t *testing.T) {
+	t.Parallel()
+
+	parse := NewBuiltin("JSON.parse", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), nil
+	})
+
+	cloned := cloneValueForHost(NewArray([]Value{parse, parse}))
+	items := cloned.Array()
+
+	cloneA := valueBuiltin(items[0])
+	cloneB := valueBuiltin(items[1])
+	if cloneA == nil || cloneB == nil {
+		t.Fatal("cloned plain builtin aliases did not resolve to builtins")
+	}
+	if cloneA == valueBuiltin(parse) {
+		t.Fatal("cloned plain builtin shares the original backing pointer; test cannot observe the clone")
+	}
+	if cloneA != cloneB {
+		t.Fatal("the same plain builtin cloned through two paths produced distinct *Builtin pointers; host clone must memoize the builtin clone")
+	}
+	if !items[0].Identical(items[1]) {
+		t.Fatal("the same plain builtin cloned through two paths is not equal? to itself; aliases must stay identical across the host boundary")
+	}
+}
+
 // TestEqualPredicateEnumDispatchesIdentity confirms the universal equal?
 // predicate on enums and enum values routes through Value.Identical rather than
 // Value.Equal. The predicate builtin captures the receiver, so invoking it with

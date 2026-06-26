@@ -357,6 +357,15 @@ type hostValueCloneState struct {
 	// the clone keeps aliases of one bound predicate identical across the host
 	// boundary.
 	boundBuiltins map[*Builtin]Value
+	// plainBuiltins caches the clone of a plain (non receiver-bound) builtin keyed
+	// on the source builtin pointer. cloneBuiltinValue mints a fresh *Builtin for
+	// each occurrence, so the same builtin reachable through several paths in the
+	// returned graph (for example `p = JSON.parse; [p, p]`) would otherwise clone to
+	// distinct *Builtin values. equal? compares builtins by backing pointer, so
+	// those distinct clones would wrongly report not-identical; caching the clone
+	// keeps aliases of one plain builtin identical across the host boundary, just
+	// like the bound-builtin, function, and enum caches above.
+	plainBuiltins map[*Builtin]Value
 	// functions caches the clone of a script function keyed on the source
 	// *ScriptFunction. cloneFunctionForHostWithState rebuilds a fresh
 	// *ScriptFunction (with a cloned environment), so the same function reachable
@@ -548,6 +557,7 @@ func cloneValueForHost(val Value) Value {
 		classes:       make(map[*ClassDef]*ClassDef),
 		envs:          make(map[*Env]*Env),
 		boundBuiltins: make(map[*Builtin]Value),
+		plainBuiltins: make(map[*Builtin]Value),
 		functions:     make(map[*ScriptFunction]*ScriptFunction),
 		enums:         make(map[*EnumDef]*EnumDef),
 	}
@@ -651,11 +661,23 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 // boundary. Without rebinding at all the cloned predicate's Fn would keep
 // comparing against the pre-clone receiver, so a re-entering probe(clonedReceiver)
 // would wrongly report not-identical. Plain builtins have no runtime-cloneable
-// state, so they fall back to the shallow copy.
+// state, so they fall back to the shallow copy, memoized on the source builtin so
+// aliases of one callable (for example `p = JSON.parse; [p, p]`) stay identical
+// across the boundary.
 func cloneBuiltinForHost(val Value, state hostValueCloneState) Value {
 	builtin := valueBuiltin(val)
-	if builtin == nil || builtin.BoundReceiver == nil {
+	if builtin == nil {
 		return cloneBuiltinValue(val)
+	}
+	if builtin.BoundReceiver == nil {
+		if clone, ok := state.plainBuiltins[builtin]; ok {
+			return clone
+		}
+		clone := cloneBuiltinValue(val)
+		if state.plainBuiltins != nil {
+			state.plainBuiltins[builtin] = clone
+		}
+		return clone
 	}
 	if clone, ok := state.boundBuiltins[builtin]; ok {
 		return clone
