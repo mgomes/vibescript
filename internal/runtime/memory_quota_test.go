@@ -289,6 +289,86 @@ func runTransientOOMCase(t *testing.T, tc transientOOMCase) {
 	}
 }
 
+// TestMemoryQuotaDestructureNamedRestChargesLiveRHS covers the peak the #830
+// finding flagged: "a, *rest = build_large_array()" where the right-hand side is
+// a function-return-shaped temporary (here an array literal) held only on the Go
+// stack while the assignment runs. The pre-assignment check proves base + RHS
+// fits, then the named rest window is materialized as a second slot array. The
+// true peak is base + RHS + rest window, but the rest-window projection used to
+// ignore the still-live RHS, so a quota that fit base + RHS but not base + RHS +
+// window slipped past every check until the next statement. The window must be
+// charged on top of the live RHS, so a quota one byte short of that peak rejects
+// before the window is allocated, while exactly the peak succeeds.
+func TestMemoryQuotaDestructureNamedRestChargesLiveRHS(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	const rhsCount = 1200
+	const element = "abcdefghij"
+
+	// "a, *rest = [<rhsCount string literals>]". The literal evaluates to an array
+	// reachable from no environment, so estimateMemoryUsageBase never sees it; it is
+	// the live right-hand side the projection must charge as a root.
+	buildStmts := func() []Statement {
+		return []Statement{
+			&AssignStmt{
+				Target: &DestructureTarget{
+					Elements: []DestructureElement{
+						{Target: &Identifier{Name: "a", Position: pos}},
+						{Target: &Identifier{Name: "rest", Position: pos}, Rest: true},
+					},
+					Position: pos,
+				},
+				Value:    buildLargeStringArrayLiteral(rhsCount, element, pos),
+				Position: pos,
+			},
+			&ExprStmt{Expr: &IntegerLiteral{Value: 1, Position: pos}, Position: pos},
+		}
+	}
+
+	probeExec := &Execution{quota: 10000, memoryQuota: 0, moduleLoading: make(map[string]bool)}
+	probeEnv := newEnv(nil)
+	probeExec.pushEnv(probeEnv)
+	base := probeExec.estimateMemoryUsage()
+	probeExec.popEnv()
+
+	// The live RHS is the whole evaluated array; the rest window is "a, *rest" =>
+	// rhsCount-1 fresh slots holding references shared with the RHS (no payloads).
+	rhsBytes := estimateLargeStringArray(rhsCount, element)
+	restBytes := estimatedValueBytes + estimatedSliceBaseBytes + (rhsCount-1)*estimatedValueBytes
+
+	run := func(quota int) error {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		_, _, err := exec.evalStatements(buildStmts(), newEnv(nil))
+		return err
+	}
+
+	// A quota that comfortably fits base + RHS (the pre-assignment checkMemoryWith
+	// passes) but lands in the middle of the rest window must reject. Before the fix
+	// the rest-window projection omitted the still-live RHS, computing base + window
+	// — well under this quota — so it admitted the allocation and overshot the quota
+	// until the next statement. The fix charges the RHS as a root, so base + RHS +
+	// (part of the window) overflows and rejects before the window is built. The
+	// reject quota stays strictly above base + RHS so the rejection can only come
+	// from the rest-window accounting, not the pre-assignment check.
+	rejectQuota := base + rhsBytes + restBytes/2
+	if rejectQuota <= base+rhsBytes {
+		t.Fatalf("reject quota %d does not exceed base+RHS %d; widen the window", rejectQuota, base+rhsBytes)
+	}
+	if err := run(rejectQuota); err == nil {
+		t.Fatalf("expected memory quota error when the rest window overflows on top of the live RHS")
+	} else {
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	}
+
+	// A quota with headroom for base + RHS + the rest window (plus the small "a"
+	// binding live when the window is charged) succeeds, proving the charge does not
+	// over-reject a legitimate assignment.
+	if err := run(base + rhsBytes + 2*restBytes); err != nil {
+		t.Fatalf("assignment with room for the live RHS and rest window returned error: %v", err)
+	}
+}
+
 func TestMemoryQuotaTransientAllocations(t *testing.T) {
 	t.Parallel()
 

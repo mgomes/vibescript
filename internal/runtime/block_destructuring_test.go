@@ -22,6 +22,34 @@ end`)
 	})
 }
 
+func TestBlockParameterDestructuringAnonymousRest(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  rows = [[1, 2, 3, 4], [5, 6]]
+  trailing = rows.map do |(head, *)|
+    head
+  end
+  middle = rows.map do |(head, *, tail)|
+    [head, tail]
+  end
+  leading = rows.map do |(*, tail)|
+    tail
+  end
+  [trailing, middle, leading]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewArray([]Value{NewInt(1), NewInt(5)}),
+		NewArray([]Value{
+			NewArray([]Value{NewInt(1), NewInt(4)}),
+			NewArray([]Value{NewInt(5), NewInt(6)}),
+		}),
+		NewArray([]Value{NewInt(4), NewInt(6)}),
+	})
+}
+
 func TestBlockParameterDestructuringRestAndNestedTargets(t *testing.T) {
 	t.Parallel()
 
