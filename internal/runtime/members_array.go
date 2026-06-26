@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
+	"size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
@@ -33,7 +33,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
+	case "size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
@@ -596,6 +596,25 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
+	case "each_with_index":
+		return NewAutoBuiltin("array.each_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.each_with_index does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.each_with_index")
+			if err != nil {
+				return NewNil(), err
+			}
+			var blockArgs [2]Value
+			for i, item := range receiver.Array() {
+				blockArgs[0] = item
+				blockArgs[1] = NewInt(int64(i))
+				if _, err := runner.call(blockArgs[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
 	case "each_slice":
 		return NewAutoBuiltin("array.each_slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			size, err := arrayPositiveSliceSize(args, "array.each_slice")
@@ -705,6 +724,29 @@ func arrayMemberQuery(property string) (Value, error) {
 			for i, item := range arr {
 				blockArg[0] = item
 				val, err := runner.call(blockArg[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				result[i] = val
+			}
+			return NewArray(result), nil
+		}), nil
+	case "map_with_index":
+		return NewAutoBuiltin("array.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.map_with_index does not take arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.map_with_index")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			result := make([]Value, len(arr))
+			var blockArgs [2]Value
+			for i, item := range arr {
+				blockArgs[0] = item
+				blockArgs[1] = NewInt(int64(i))
+				val, err := runner.call(blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}

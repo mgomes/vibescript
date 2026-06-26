@@ -317,9 +317,19 @@ end
 
 - `keys` and `values`
 - `each`, `each_key`, `each_value`
+- `each_with_index` yields each entry's `[key, value]` pair (keys exposed as
+  symbols) plus its 0-based index and returns the receiver. Matching Ruby's
+  `Hash#each_with_index`, the pair is the first block parameter and the index the
+  second, so `{ b: 2, a: 1 }.each_with_index { |pair, index| ... }` yields
+  `([:a, 1], 0)` then `([:b, 2], 1)`.
+- `map_with_index` yields the same `[key, value]` pair plus index and collects
+  each block result into a new array (`{ b: 2, a: 1 }.map_with_index { |pair, index| [pair[0], index] }`
+  is `[[:a, 0], [:b, 1]]`). It takes no arguments and requires a block.
 
 `keys`, `values`, `flatten`, and block-based hash iteration process entries in
-sorted key order for deterministic behavior.
+sorted key order for deterministic behavior. Because the index follows that
+sorted order, it stays stable across runs even though Go map storage is
+unordered.
 
 A `for` loop may also iterate a hash directly, mirroring Ruby's loop over
 `each`. Each iteration binds a two-element `[key, value]` pair (keys exposed as

@@ -18,6 +18,9 @@ statuses = %i[draft published archived]
 Common enumerable helpers include:
 
 - `map` to transform elements.
+- `map_with_index` to transform elements while also passing each element's
+  0-based index to the block (`["a", "b"].map_with_index { |value, index| [value, index] }`
+  is `[["a", 0], ["b", 1]]`). It takes no arguments and requires a block.
 - `filter_map` to transform elements and keep only the truthy results in one
   pass, dropping falsy block returns (the fused equivalent of `map` then a
   truthiness filter).
@@ -237,6 +240,8 @@ receiver.
 - `each_cons(n)` yields every sliding window of length `n`; an array shorter than
   `n` yields nothing. `n` must be a positive integer. Returns `nil`.
 - `reverse_each` yields values from last to first and returns the receiver.
+- `each_with_index` yields each element along with its 0-based index and returns
+  the receiver. It takes no arguments and requires a block.
 - `cycle(n)` yields the whole array `n` times. A non-positive `n` yields nothing.
   Omitting `n` or passing `nil` cycles forever; the step quota and context
   cancellation bound the otherwise unbounded loop. Returns `nil`.
@@ -263,6 +268,9 @@ end                                 # yields 3, 2, 1
 [1, 2].cycle(2) do |value|
   value + 1
 end                                 # yields 1, 2, 1, 2
+["a", "b"].each_with_index do |value, index|
+  [value, index]
+end                                 # yields ("a", 0) then ("b", 1)
 ```
 
 ## Ordering and grouping
