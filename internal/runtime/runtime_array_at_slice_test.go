@@ -61,6 +61,49 @@ func TestArrayAtMatchesBracketAccess(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "compare", nil), []Value{})
 }
 
+// TestArrayBracketRaisesWhereAtReturnsNil pins the behavior the #419 changelog
+// relies on for its migration advice: bracket indexing raises on negative or
+// out-of-range indices, whereas at/slice/dig return nil. Keeping these locked in
+// stops the changelog's "use at/slice/dig for nil-on-miss" guidance from drifting.
+func TestArrayBracketRaisesWhereAtReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	raises := []struct {
+		name   string
+		source string
+	}{
+		{name: "bracket past end raises", source: "def run() [10, 20, 30][9] end"},
+		{name: "bracket negative raises", source: "def run() [10, 20, 30][-1] end"},
+	}
+	for _, tt := range raises {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "array index out of bounds")
+		})
+	}
+
+	nilOnMiss := []struct {
+		name   string
+		source string
+	}{
+		{name: "at past end is nil", source: "def run() [10, 20, 30].at(9) end"},
+		{name: "at negative past start is nil", source: "def run() [10, 20, 30].at(-4) end"},
+		{name: "slice past end is nil", source: "def run() [10, 20, 30].slice(9) end"},
+		{name: "dig past end is nil", source: "def run() [10, 20, 30].dig(9) end"},
+	}
+	for _, tt := range nilOnMiss {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(NewNil()) {
+				t.Fatalf("%s = %v, want nil", tt.source, got)
+			}
+		})
+	}
+}
+
 // TestArrayAtRejectsMisuse covers the argument validation for Array#at.
 func TestArrayAtRejectsMisuse(t *testing.T) {
 	t.Parallel()

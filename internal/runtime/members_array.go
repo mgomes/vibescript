@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
+	"size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
@@ -33,7 +33,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
+	case "size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
@@ -596,6 +596,35 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
+	case "each_with_index":
+		return NewAutoBuiltin("array.each_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.each_with_index does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.each_with_index does not take keyword arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.each_with_index")
+			if err != nil {
+				return NewNil(), err
+			}
+			var blockArgs [2]Value
+			for i, item := range receiver.Array() {
+				// Charge a step per yield so an empty block body cannot starve
+				// the step quota or cancellation checks while traversing a large
+				// receiver; runner.call only charges steps for the statements it
+				// evaluates, and an empty block evaluates none.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				blockArgs[0] = item
+				blockArgs[1] = NewInt(int64(i))
+				if _, err := runner.call(blockArgs[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
 	case "each_slice":
 		return NewAutoBuiltin("array.each_slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			size, err := arrayPositiveSliceSize(args, "array.each_slice")
@@ -711,6 +740,61 @@ func arrayMemberQuery(property string) (Value, error) {
 				result[i] = val
 			}
 			return NewArray(result), nil
+		}), nil
+	case "map_with_index":
+		return NewAutoBuiltin("array.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.map_with_index does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.map_with_index does not take keyword arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.map_with_index")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			// map_with_index keeps an arbitrary block result per element, so charge
+			// the growing result incrementally rather than only after the call: a
+			// block returning an individually quota-sized value per element could
+			// otherwise pile up past MemoryQuotaBytes before the post-call check
+			// ran. The accumulator's baseline includes the live receiver and block
+			// (held on the Go stack during the call, so invisible to the per-call
+			// checkMemoryWith), matching hash.map_with_index and filter_map.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			// Reject the build before reserving the backing slice when its len(arr)
+			// slots would already overflow the quota. map keeps one result per
+			// element, so the backing reaches len(arr) Value slots regardless of the
+			// block; make would otherwise reserve all of them as a Go-local slice
+			// (invisible to the quota) before the first acc.add projected cap(out),
+			// letting a large receiver transiently allocate a full result backing
+			// that should have been rejected up front, mirroring rangeMaterialize's
+			// pre-make reservation.
+			if err := acc.reserveSlots(len(arr)); err != nil {
+				return NewNil(), err
+			}
+			out := make([]Value, 0, len(arr))
+			var blockArgs [2]Value
+			for i, item := range arr {
+				// Charge a step per yield so an empty block body cannot starve the
+				// step quota or cancellation checks while traversing a large
+				// receiver; runner.call only charges steps for the statements it
+				// evaluates, and an empty block evaluates none.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				blockArgs[0] = item
+				blockArgs[1] = NewInt(int64(i))
+				val, err := runner.call(blockArgs[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				out = append(out, val)
+				if err := acc.add(val, cap(out)); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewArray(out), nil
 		}), nil
 	case "filter_map":
 		return NewAutoBuiltin("array.filter_map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -961,6 +1045,7 @@ func arrayMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("array.slice", arraySlice), nil
 	case "fetch":
 		return NewAutoBuiltin("array.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			hasBlock := valueBlock(block) != nil
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("array.fetch expects index and optional default")
 			}
@@ -972,13 +1057,24 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.fetch index must be integer")
 			}
 			arr := receiver.Array()
-			if index >= 0 && index < len(arr) {
-				return arr[index], nil
+			normalized := index
+			if normalized < 0 {
+				normalized += len(arr)
+			}
+			if normalized >= 0 && normalized < len(arr) {
+				return arr[normalized], nil
+			}
+			// A block supersedes a default value argument, matching Ruby's
+			// Array#fetch: when both are supplied the block is invoked on a
+			// miss and the default argument is ignored.
+			if hasBlock {
+				blockArg := [1]Value{NewInt(int64(index))}
+				return exec.CallBlock(block, blockArg[:])
 			}
 			if len(args) == 2 {
 				return args[1], nil
 			}
-			return NewNil(), nil
+			return NewNil(), fmt.Errorf("array.fetch index %d outside of array bounds: %d...%d", index, -len(arr), len(arr))
 		}), nil
 	case "values_at":
 		return NewAutoBuiltin("array.values_at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1770,6 +1866,8 @@ var reduceArithmeticOps = map[string]func(left, right Value) (Value, error){
 	"/":  divideValues,
 	"%":  moduloValues,
 	"**": powerValues,
+	"<<": shovelValues,
+	"&":  intersectValues,
 }
 
 // reduceSendOperation applies a single fold step by sending operation to the

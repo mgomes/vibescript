@@ -326,17 +326,28 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 			tok = l.makeToken(ast.TokenLTE, string(first)+string(l.ch))
 			l.readRune()
+		} else if l.peekRune() == '<' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenShovel, string(first)+string(l.ch))
+			l.readRune()
 		} else {
 			tok = l.makeToken(ast.TokenLT, "<")
 			l.readRune()
 		}
 	case '&':
-		if l.peekRune() == '&' {
+		switch l.peekRune() {
+		case '&':
 			first := l.ch
 			l.readRune()
 			tok = l.makeToken(ast.TokenAnd, string(first)+string(l.ch))
 			l.readRune()
-		} else {
+		case '.':
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenSafeNav, string(first)+string(l.ch))
+			l.readRune()
+		default:
 			tok = l.makeToken(ast.TokenAmpersand, "&")
 			l.readRune()
 		}
