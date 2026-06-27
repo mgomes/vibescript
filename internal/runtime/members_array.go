@@ -607,6 +607,13 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			var blockArgs [2]Value
 			for i, item := range receiver.Array() {
+				// Charge a step per yield so an empty block body cannot starve
+				// the step quota or cancellation checks while traversing a large
+				// receiver; runner.call only charges steps for the statements it
+				// evaluates, and an empty block evaluates none.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArgs[0] = item
 				blockArgs[1] = NewInt(int64(i))
 				if _, err := runner.call(blockArgs[:]); err != nil {
@@ -741,18 +748,36 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
-			result := make([]Value, len(arr))
+			out := make([]Value, 0, len(arr))
+			// map_with_index keeps an arbitrary block result per element, so charge
+			// the growing result incrementally rather than only after the call: a
+			// block returning an individually quota-sized value per element could
+			// otherwise pile up past MemoryQuotaBytes before the post-call check
+			// ran. The accumulator's baseline includes the live receiver and block
+			// (held on the Go stack during the call, so invisible to the per-call
+			// checkMemoryWith), matching hash.map_with_index and filter_map.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			var blockArgs [2]Value
 			for i, item := range arr {
+				// Charge a step per yield so an empty block body cannot starve the
+				// step quota or cancellation checks while traversing a large
+				// receiver; runner.call only charges steps for the statements it
+				// evaluates, and an empty block evaluates none.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArgs[0] = item
 				blockArgs[1] = NewInt(int64(i))
 				val, err := runner.call(blockArgs[:])
 				if err != nil {
 					return NewNil(), err
 				}
-				result[i] = val
+				out = append(out, val)
+				if err := acc.add(val, cap(out)); err != nil {
+					return NewNil(), err
+				}
 			}
-			return NewArray(result), nil
+			return NewArray(out), nil
 		}), nil
 	case "filter_map":
 		return NewAutoBuiltin("array.filter_map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
