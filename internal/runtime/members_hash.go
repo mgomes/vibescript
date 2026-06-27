@@ -347,9 +347,6 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("hash.fetch expects key and optional default")
 			}
-			if len(args) == 2 && hasBlock {
-				return NewNil(), fmt.Errorf("hash.fetch does not accept both a default and a block")
-			}
 			key, err := valueToHashKey(args[0])
 			if err != nil {
 				return NewNil(), fmt.Errorf("hash.fetch key must be symbol or string")
@@ -357,6 +354,9 @@ func hashMemberQuery(property string) (Value, error) {
 			if value, ok := receiver.Hash()[key]; ok {
 				return value, nil
 			}
+			// A block supersedes a default value argument, matching Ruby's
+			// Hash#fetch: when both are supplied the block is invoked on a
+			// miss and the default argument is ignored.
 			if hasBlock {
 				blockArg := [1]Value{args[0]}
 				return exec.CallBlock(block, blockArg[:])

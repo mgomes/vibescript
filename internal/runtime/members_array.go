@@ -965,9 +965,6 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("array.fetch expects index and optional default")
 			}
-			if len(args) == 2 && hasBlock {
-				return NewNil(), fmt.Errorf("array.fetch does not accept both a default and a block")
-			}
 			index, err := valueToInt(args[0])
 			if err != nil {
 				return NewNil(), fmt.Errorf("array.fetch index must be integer")
@@ -983,6 +980,9 @@ func arrayMemberQuery(property string) (Value, error) {
 			if normalized >= 0 && normalized < len(arr) {
 				return arr[normalized], nil
 			}
+			// A block supersedes a default value argument, matching Ruby's
+			// Array#fetch: when both are supplied the block is invoked on a
+			// miss and the default argument is ignored.
 			if hasBlock {
 				blockArg := [1]Value{NewInt(int64(index))}
 				return exec.CallBlock(block, blockArg[:])

@@ -931,6 +931,16 @@ func TestHashFetch(t *testing.T) {
 			source: `def run() { a: 1 }.fetch(:a) { |key| :unused } end`,
 			want:   NewInt(1),
 		},
+		{
+			name:   "block supersedes default on miss",
+			source: `def run() { a: 1 }.fetch(:missing, 99) { |key| key } end`,
+			want:   NewSymbol("missing"),
+		},
+		{
+			name:   "present key ignores default and block",
+			source: `def run() { a: 1 }.fetch(:a, 99) { |key| :unused } end`,
+			want:   NewInt(1),
+		},
 	}
 
 	for _, tt := range tests {
@@ -962,11 +972,6 @@ func TestHashFetchErrors(t *testing.T) {
 			name:    "missing string key without default or block raises",
 			source:  `def run() { a: 1 }.fetch("missing") end`,
 			wantErr: `hash.fetch key not found: "missing"`,
-		},
-		{
-			name:    "both default and block rejected",
-			source:  `def run() { a: 1 }.fetch(:missing, 9) { |key| key } end`,
-			wantErr: "hash.fetch does not accept both a default and a block",
 		},
 		{
 			name:    "unsupported key type rejected",

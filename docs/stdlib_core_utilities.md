@@ -376,9 +376,10 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   never both.
 - `fetch(index, default) -> value` / `fetch(index) { |index| } -> value` –
   element at `index` (negative counts from the end). When `index` is out of
-  bounds, returns the `default` argument if given, otherwise evaluates the block
-  with the requested index, otherwise raises `index ... outside of array
-  bounds`. Supplying both a `default` and a block is rejected.
+  bounds, evaluates the block with the requested index if a block is given,
+  otherwise returns the `default` argument if given, otherwise raises `index
+  ... outside of array bounds`. When both a `default` and a block are supplied,
+  the block supersedes the default and is evaluated on a miss, matching Ruby.
 - `dig(*path) -> value | nil` – nested lookup following `path`. Each component
   descends one level: an integer index into an array or a symbol/string key
   into a hash, so a single `dig` can traverse mixed array/hash data. `nil` when
@@ -505,10 +506,11 @@ methods.
 ### Access
 
 - `fetch(key, default) -> value` / `fetch(key) { |key| } -> value` – value for
-  `key`. When `key` is missing, returns the `default` argument if given,
-  otherwise evaluates the block with the requested key, otherwise raises `key
-  not found`. Supplying both a `default` and a block is rejected. Use `[]` or
-  `dig` when a missing key should yield `nil`.
+  `key`. When `key` is missing, evaluates the block with the requested key if a
+  block is given, otherwise returns the `default` argument if given, otherwise
+  raises `key not found`. When both a `default` and a block are supplied, the
+  block supersedes the default and is evaluated on a miss, matching Ruby. Use
+  `[]` or `dig` when a missing key should yield `nil`.
 - `fetch_values(*keys) { |key| } -> array` – values for `keys` in requested
   order. Raises `key not found` for any missing key; when a block is given it is
   called with each missing key and its result is used instead.

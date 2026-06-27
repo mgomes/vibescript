@@ -206,9 +206,10 @@ content and integers do not match equal-looking floats.
 - `fetch(key, default)` returns the value for `key`. Like Ruby, a missing key is
   treated as exceptional: when no `default` argument and no block are supplied,
   `fetch` raises `key not found`. Supply a `default` to return instead of
-  raising, or pass a block to compute the fallback from the requested key.
-  Supplying both a `default` and a block is rejected. Use `[]` or `dig` when a
-  missing key should yield `nil` rather than raise.
+  raising, or pass a block to compute the fallback from the requested key. When
+  both a `default` and a block are supplied, the block supersedes the default and
+  is evaluated on a miss, matching Ruby. Use `[]` or `dig` when a missing key
+  should yield `nil` rather than raise.
 - `fetch_values(*keys)` returns the values for several keys at once, in the
   requested order. Like `fetch`, it raises when a key is absent. Pass a block
   to compute a replacement for each missing key instead of raising.
@@ -239,6 +240,7 @@ end
 { a: 1 }.fetch(:missing)                        # raises "key not found: :missing"
 { a: 1 }.fetch(:missing, 99)                    # 99
 { a: 1 }.fetch(:missing) { |k| k }             # :missing
+{ a: 1 }.fetch(:missing, 99) { |k| k }         # :missing (block supersedes default)
 { a: 1, b: 2 }.fetch_values(:a, :b)            # [1, 2]
 { a: 1 }.fetch_values(:a, :missing)            # raises "key not found: :missing"
 { a: 1 }.fetch_values(:a, :missing) { |k| k }  # [1, :missing]

@@ -1564,7 +1564,8 @@ func TestArrayIndexFamilyErrors(t *testing.T) {
 
 // TestArrayFetch covers the Ruby-aligned fetch contract: present index returns
 // the element (including negative offsets), missing index falls back to an
-// explicit default or a block, and the block receives the requested index.
+// explicit default or a block, the block receives the requested index, and a
+// block supersedes a default value argument when both are supplied.
 func TestArrayFetch(t *testing.T) {
 	t.Parallel()
 
@@ -1579,6 +1580,8 @@ func TestArrayFetch(t *testing.T) {
 		{name: "missing evaluates block", expr: "[1, 2, 3].fetch(9) { |idx| idx + 10 }", want: NewInt(19)},
 		{name: "negative miss evaluates block", expr: "[1, 2, 3].fetch(-9) { |idx| idx }", want: NewInt(-9)},
 		{name: "present index skips block", expr: "[1, 2, 3].fetch(0) { |idx| -1 }", want: NewInt(1)},
+		{name: "block supersedes default on miss", expr: "[1, 2, 3].fetch(9, 7) { |idx| idx + 10 }", want: NewInt(19)},
+		{name: "present index ignores default and block", expr: "[1, 2, 3].fetch(0, 7) { |idx| -1 }", want: NewInt(1)},
 	}
 
 	for _, tt := range tests {
@@ -1594,8 +1597,7 @@ func TestArrayFetch(t *testing.T) {
 }
 
 // TestArrayFetchErrors covers the rejected shapes for fetch: an out-of-range
-// index with no fallback, supplying both a default and a block, a non-integer
-// index, and too many arguments.
+// index with no fallback, a non-integer index, and too many arguments.
 func TestArrayFetchErrors(t *testing.T) {
 	t.Parallel()
 
@@ -1606,7 +1608,6 @@ func TestArrayFetchErrors(t *testing.T) {
 	}{
 		{name: "missing without fallback", expr: "[1, 2, 3].fetch(9)", want: "array.fetch index 9 outside of array bounds: -3...3"},
 		{name: "negative miss without fallback", expr: "[1, 2, 3].fetch(-9)", want: "array.fetch index -9 outside of array bounds: -3...3"},
-		{name: "default and block", expr: "[1, 2, 3].fetch(9, 7) { |idx| idx }", want: "array.fetch does not accept both a default and a block"},
 		{name: "non-integer index", expr: `[1, 2, 3].fetch("x")`, want: "array.fetch index must be integer"},
 		{name: "fractional index", expr: "[1, 2, 3].fetch(1.5)", want: "array.fetch index must be integer"},
 		{name: "too many arguments", expr: "[1, 2, 3].fetch(0, 1, 2)", want: "array.fetch expects index and optional default"},
