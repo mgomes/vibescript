@@ -136,6 +136,29 @@ func TestFixedStringTransformsHonorMemoryQuotaBeforeMaterializing(t *testing.T) 
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestASCIICaseTransformsHonorScratchQuota(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewString(strings.Repeat("a", 16*1024))
+	args := []Value{NewSymbol("ascii")}
+	outputBytes, scratchBytes := projectedCaseTransformBytesAndScratch(receiver.String(), caseModeASCII)
+	var b strings.Builder
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 60}
+	quota := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	quota = saturatingAdd(quota, estimatedValueBytes+estimatedStringHeaderBytes)
+	quota = saturatingAdd(quota, projectedBuilderCap(&b, outputBytes))
+	quota = saturatingAdd(quota, scratchBytes) - 1
+
+	for _, method := range []string{"upcase", "downcase", "capitalize", "swapcase"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callStringMemberForTest(t, exec, receiver, method, args)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+		})
+	}
+}
+
 func TestProjectedStringReverseBytesIncludesInvalidExpansionAndScratch(t *testing.T) {
 	t.Parallel()
 
@@ -147,5 +170,13 @@ func TestProjectedStringReverseBytesIncludesInvalidExpansionAndScratch(t *testin
 	wantScratch := estimatedSliceBaseBytes + 2*estimatedRuneBytes
 	if scratchBytes != wantScratch {
 		t.Fatalf("projected reverse scratch bytes = %d, want %d", scratchBytes, wantScratch)
+	}
+
+	outputBytes, scratchBytes = projectedCaseTransformBytesAndScratch("\xffa", caseModeDefault)
+	if outputBytes != 2 {
+		t.Fatalf("projected invalid-UTF8 case output bytes = %d, want 2", outputBytes)
+	}
+	if scratchBytes != byteBufferScratchBytes(2) {
+		t.Fatalf("projected invalid-UTF8 case scratch bytes = %d, want %d", scratchBytes, byteBufferScratchBytes(2))
 	}
 }

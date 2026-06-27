@@ -350,6 +350,13 @@ func splitEmptySeparatorCount(text string, limit int) int {
 	return count
 }
 
+func splitEmptySeparatorOffsetScratchBytes(text string, limit int) int {
+	if text == "" || limit == 1 {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(len(text)+1, estimatedIntBytes))
+}
+
 // splitWithSeparator implements Ruby's String#split(sep, limit) for a non-empty
 // string separator. The limit argument matches Ruby:
 //
@@ -440,13 +447,20 @@ func splitWithSeparatorCount(text, sep string, limit int) int {
 	return lastNonEmptyCount
 }
 
-func reserveStringSplitResult(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count int) (*arrayBuildAccumulator, error) {
+func stringSplitPartsScratchBytes(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(count, estimatedStringHeaderBytes))
+}
+
+func reserveStringSplitResult(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count, extraScratch int) (*arrayBuildAccumulator, error) {
 	if err := exec.checkStepBudgetFor(count); err != nil {
 		return nil, err
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
-	if count > 0 {
-		scratch := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(count, estimatedStringHeaderBytes))
+	scratch := saturatingAdd(stringSplitPartsScratchBytes(count), extraScratch)
+	if scratch > 0 {
 		if err := acc.reserveScratch(scratch); err != nil {
 			return nil, err
 		}
@@ -1093,6 +1107,21 @@ func projectedCaseTransformBytes(text string, mode caseMode) int {
 	return saturatingMul(len(text), 8)
 }
 
+func byteBufferScratchBytes(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, n)
+}
+
+func projectedCaseTransformBytesAndScratch(text string, mode caseMode) (int, int) {
+	outputBytes := projectedCaseTransformBytes(text, mode)
+	if mode == caseModeASCII || !utf8.ValidString(text) {
+		return outputBytes, byteBufferScratchBytes(len(text))
+	}
+	return outputBytes, 0
+}
+
 func projectedStringReverseBytes(text string) (int, int) {
 	outputBytes := 0
 	runeCount := 0
@@ -1109,12 +1138,13 @@ func projectedStringReverseBytes(text string) (int, int) {
 	return outputBytes, scratchBytes
 }
 
-func checkStringTransform(exec *Execution, projected int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+func checkStringCaseTransform(exec *Execution, text string, mode caseMode, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if err := exec.step(); err != nil {
 		return err
 	}
+	outputBytes, scratchBytes := projectedCaseTransformBytesAndScratch(text, mode)
 	var b strings.Builder
-	return exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, projected), receiver, args, kwargs, block)
+	return exec.checkProjectedStringBytesAndScratchWithCallRoots(projectedBuilderCap(&b, outputBytes), scratchBytes, receiver, args, kwargs, block)
 }
 
 func checkStringReverseTransform(exec *Execution, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
@@ -2902,7 +2932,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			// String#split(nil).
 			case len(args) == 0 || args[0].IsNil():
 				count = splitOnASCIIWhitespaceLimitCount(text, limit)
-				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count)
+				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count, 0)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -2910,14 +2940,14 @@ func stringMemberTextOps(property string) (Value, error) {
 				return stringSplitResult(exec, parts, acc)
 			case args[0].Kind() != KindString:
 				return NewNil(), fmt.Errorf("string.split separator must be string or nil")
-			// A single ASCII space is Ruby's AWK whitespace mode, not a literal
-			// separator: it collapses runs of whitespace, discards leading
-			// whitespace, and honors the limit exactly like the nil form, so
-			// " a  b ".split(" ", 2) yields ["a", "b "] rather than a leading
-			// empty field.
 			case args[0].String() == " ":
+				// A single ASCII space is Ruby's AWK whitespace mode, not a literal
+				// separator: it collapses runs of whitespace, discards leading
+				// whitespace, and honors the limit exactly like the nil form, so
+				// " a  b ".split(" ", 2) yields ["a", "b "] rather than a leading
+				// empty field.
 				count = splitOnASCIIWhitespaceLimitCount(text, limit)
-				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count)
+				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count, 0)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -2925,7 +2955,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				return stringSplitResult(exec, parts, acc)
 			case args[0].String() == "":
 				count = splitEmptySeparatorCount(text, limit)
-				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count)
+				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count, splitEmptySeparatorOffsetScratchBytes(text, limit))
 				if err != nil {
 					return NewNil(), err
 				}
@@ -2934,7 +2964,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			default:
 				sep := args[0].String()
 				count = splitWithSeparatorCount(text, sep, limit)
-				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count)
+				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count, 0)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -3468,7 +3498,7 @@ func stringMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := checkStringTransform(exec, projectedCaseTransformBytes(receiver.String(), mode), receiver, args, kwargs, block); err != nil {
+			if err := checkStringCaseTransform(exec, receiver.String(), mode, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewString(stringUpcase(receiver.String(), mode)), nil
@@ -3480,7 +3510,7 @@ func stringMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			original := receiver.String()
-			if err := checkStringTransform(exec, projectedCaseTransformBytes(original, mode), receiver, args, kwargs, block); err != nil {
+			if err := checkStringCaseTransform(exec, original, mode, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return stringBangResult(original, stringUpcase(original, mode)), nil
@@ -3491,7 +3521,7 @@ func stringMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := checkStringTransform(exec, projectedCaseTransformBytes(receiver.String(), mode), receiver, args, kwargs, block); err != nil {
+			if err := checkStringCaseTransform(exec, receiver.String(), mode, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewString(stringDowncase(receiver.String(), mode)), nil
@@ -3503,7 +3533,7 @@ func stringMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			original := receiver.String()
-			if err := checkStringTransform(exec, projectedCaseTransformBytes(original, mode), receiver, args, kwargs, block); err != nil {
+			if err := checkStringCaseTransform(exec, original, mode, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return stringBangResult(original, stringDowncase(original, mode)), nil
@@ -3514,7 +3544,7 @@ func stringMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := checkStringTransform(exec, projectedCaseTransformBytes(receiver.String(), mode), receiver, args, kwargs, block); err != nil {
+			if err := checkStringCaseTransform(exec, receiver.String(), mode, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewString(stringCapitalize(receiver.String(), mode)), nil
@@ -3526,7 +3556,7 @@ func stringMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			original := receiver.String()
-			if err := checkStringTransform(exec, projectedCaseTransformBytes(original, mode), receiver, args, kwargs, block); err != nil {
+			if err := checkStringCaseTransform(exec, original, mode, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return stringBangResult(original, stringCapitalize(original, mode)), nil
@@ -3537,7 +3567,7 @@ func stringMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			if err := checkStringTransform(exec, projectedCaseTransformBytes(receiver.String(), mode), receiver, args, kwargs, block); err != nil {
+			if err := checkStringCaseTransform(exec, receiver.String(), mode, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewString(stringSwapCase(receiver.String(), mode)), nil
@@ -3549,7 +3579,7 @@ func stringMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			original := receiver.String()
-			if err := checkStringTransform(exec, projectedCaseTransformBytes(original, mode), receiver, args, kwargs, block); err != nil {
+			if err := checkStringCaseTransform(exec, original, mode, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return stringBangResult(original, stringSwapCase(original, mode)), nil

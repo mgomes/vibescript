@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -501,6 +502,24 @@ func TestSplitWithSeparatorDefaultAvoidsTrimmedTrailingEmptyAllocation(t *testin
 	if alloc > 512*1024 {
 		t.Fatalf("splitWithSeparator allocated %d bytes trimming trailing empty fields, want <= %d", alloc, 512*1024)
 	}
+}
+
+func TestSplitEmptySeparatorReservesOffsetScratch(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Repeat("a", 4_096)
+	receiver := NewString(text)
+	args := []Value{NewString("")}
+	count := splitEmptySeparatorCount(text, 0)
+	offsetScratch := splitEmptySeparatorOffsetScratchBytes(text, 0)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 60}
+	acc := newArrayBuildAccumulator(probe, receiver, args, nil, NewNil())
+	quota := saturatingAdd(acc.projected(count), stringSplitPartsScratchBytes(count))
+	quota = saturatingAdd(quota, offsetScratch) - 1
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callStringMemberForTest(t, exec, receiver, "split", args)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestStringSplitRejectsInvalidSeparator(t *testing.T) {
