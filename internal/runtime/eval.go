@@ -859,7 +859,7 @@ func (exec *Execution) matchIfExpressionBranch(expr *IfExpr, env *Env) (Expressi
 }
 
 func (exec *Execution) evalBlockLiteral(block *BlockLiteral, env *Env) (Value, error) {
-	blockValue := NewBlock(block.Params, block.Body, env)
+	blockValue := newBlock(block.Params, block.ImplicitParams, block.Body, env)
 	blk := valueBlock(blockValue)
 	if ctx := exec.currentModuleContext(); ctx != nil && ctx.script != nil {
 		blk.owner = ctx.script
@@ -950,16 +950,37 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 // letting the scratch be reserved before the runner snapshots its bind-charge
 // baseline.
 func blockWantsCollapsedPair(blk *Block) bool {
+	return blockPositionalArity(blk) == 1
+}
+
+func blockPositionalArity(blk *Block) int {
+	if blk == nil {
+		return 0
+	}
+	if len(blk.Params) == 0 {
+		return implicitBlockParamArity(blk.ImplicitParams)
+	}
 	positional := 0
 	for i := range blk.Params {
 		switch blk.Params[i].Kind {
 		case ParamNormal:
 			positional++
 		default:
-			return false
+			return 0
 		}
 	}
-	return positional == 1
+	return positional
+}
+
+func implicitBlockParamArity(params []string) int {
+	arity := 0
+	for _, name := range params {
+		index := implicitBlockParamIndex(name)
+		if index+1 > arity {
+			arity = index + 1
+		}
+	}
+	return arity
 }
 
 // CallBlock invokes a block value with the provided arguments.
@@ -1019,6 +1040,14 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		}
 		blockEnv.Define(param.Name, val)
 	}
+	for _, name := range blk.ImplicitParams {
+		index := implicitBlockParamIndex(name)
+		val := NewNil()
+		if index >= 0 && index < len(args) {
+			val = args[index]
+		}
+		blockEnv.Define(name, val)
+	}
 	val, returned, err := exec.evalStatements(blk.Body, blockEnv)
 	if err != nil {
 		return NewNil(), err
@@ -1027,6 +1056,16 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		return blockEnv.detachArrayAppendResult(val), nil
 	}
 	return blockEnv.detachArrayAppendResult(val), nil
+}
+
+func implicitBlockParamIndex(name string) int {
+	if name == "it" {
+		return 0
+	}
+	if len(name) == 2 && name[0] == '_' && name[1] >= '1' && name[1] <= '9' {
+		return int(name[1] - '1')
+	}
+	return -1
 }
 
 func blockCanReuseEnv(blk *Block) bool {

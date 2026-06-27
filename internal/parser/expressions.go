@@ -1579,7 +1579,12 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 		p.errorExpected(p.curToken, stopName)
 	}
 
-	return &ast.BlockLiteral{Params: params, Body: body, Position: pos}
+	implicitParams := []string(nil)
+	if len(params) == 0 {
+		implicitParams = inferImplicitBlockParams(body)
+	}
+
+	return &ast.BlockLiteral{Params: params, ImplicitParams: implicitParams, Body: body, Position: pos}
 }
 
 func (p *parser) parseBlockParameters() ([]ast.Param, bool) {

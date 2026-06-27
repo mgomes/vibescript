@@ -194,6 +194,15 @@ func cloneParams(params []Param) []Param            { return ast.CloneParams(par
 func cloneTypeExpr(ty *TypeExpr) *TypeExpr          { return ast.CloneTypeExpr(ty) }
 func cloneStatements(stmts []Statement) []Statement { return ast.CloneStatements(stmts) }
 
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
+}
+
 // Internal aliases for the value package types so runtime code can keep
 // referring to short names (Value, Money, KindInt, NewNil, etc.) without
 // repeating the value. prefix everywhere. These mirror the public
@@ -649,6 +658,7 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		}
 		clone := *block
 		clone.Params = cloneParams(block.Params)
+		clone.ImplicitParams = cloneStringSlice(block.ImplicitParams)
 		clone.Body = cloneStatements(block.Body)
 		clone.Env = cloneEnvForHost(block.Env, state)
 		return value.NewValue(KindBlock, &clone)
@@ -937,18 +947,23 @@ type BuiltinFunc func(exec *Execution, receiver Value, args []Value, kwargs map[
 // in the vibes package because its fields reference parser AST and the
 // runtime Env/Script types.
 type Block struct {
-	Params     []Param
-	Body       []Statement
-	Env        *Env
-	owner      *Script
-	moduleKey  string
-	modulePath string
-	moduleRoot string
+	Params         []Param
+	ImplicitParams []string
+	Body           []Statement
+	Env            *Env
+	owner          *Script
+	moduleKey      string
+	modulePath     string
+	moduleRoot     string
 }
 
 // NewBlock returns a block (closure) Value.
 func NewBlock(params []Param, body []Statement, env *Env) Value {
-	return value.NewValue(KindBlock, &Block{Params: params, Body: body, Env: env})
+	return newBlock(params, nil, body, env)
+}
+
+func newBlock(params []Param, implicitParams []string, body []Statement, env *Env) Value {
+	return value.NewValue(KindBlock, &Block{Params: params, ImplicitParams: implicitParams, Body: body, Env: env})
 }
 
 // wrapBlock returns a block Value over an existing *Block, used by the inbound

@@ -1799,6 +1799,10 @@ func (est *memoryEstimator) value(val Value) int {
 		for _, param := range blk.Params {
 			size += estimatedParamBytes(param)
 		}
+		size += estimatedSliceBaseBytes + len(blk.ImplicitParams)*estimatedStringHeaderBytes
+		for _, param := range blk.ImplicitParams {
+			size += len(param)
+		}
 		size += estimatedStringHeaderBytes*3 + len(blk.moduleKey) + len(blk.modulePath) + len(blk.moduleRoot)
 		size += est.env(blk.Env)
 	case KindFunction:

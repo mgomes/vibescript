@@ -294,9 +294,10 @@ func (e *CaseExpr) Pos() Position { return e.Position }
 
 // BlockLiteral represents an inline block (closure) expression.
 type BlockLiteral struct {
-	Params   []Param
-	Body     []Statement
-	Position Position
+	Params         []Param
+	ImplicitParams []string
+	Body           []Statement
+	Position       Position
 }
 
 func (b *BlockLiteral) exprNode()     {}
