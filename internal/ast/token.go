@@ -34,6 +34,8 @@ const (
 	TokenSymbol             TokenType = "SYMBOL"
 	TokenWords              TokenType = "WORDS"
 	TokenSymbols            TokenType = "SYMBOLS"
+	TokenInterpWords        TokenType = "INTERP_WORDS"
+	TokenInterpSymbols      TokenType = "INTERP_SYMBOLS"
 
 	TokenAssign         TokenType = "="
 	TokenPlusAssign     TokenType = "+="

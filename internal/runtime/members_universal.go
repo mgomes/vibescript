@@ -18,16 +18,31 @@ import (
 //     and returns the receiver (threading side effects through a pipeline without
 //     changing the value), while `yield_self` yields the receiver and returns the
 //     block's result (rewriting a value inline).
+//   - respond_to?/is_a?/kind_of?/instance_of? — the introspection predicates:
+//     `respond_to?` reports whether the receiver has a callable member,
+//     `is_a?`/`kind_of?` test class ancestry, and `instance_of?` tests exact
+//     class identity (see members_introspect.go).
 //
 // Unlike the per-type member tables these are resolved centrally, after
 // type-specific members and user-defined methods, so a value's own members (and
 // any class override) always take precedence, matching Ruby's overridable
-// Object-level helpers. Resolving nil? here rather than on selected per-kind
-// tables means every receiver answers it uniformly — including the kinds whose
+// Object-level helpers. Resolving them here rather than on selected per-kind
+// tables means every receiver answers them uniformly — including the kinds whose
 // members resolve only through the universal fallback (instances, classes,
-// functions, enum values) — instead of raising "unknown member nil?". Editor
+// functions, enum values) — instead of raising "unknown member". Editor
 // completion surfaces them on every receiver via withUniversalMembers.
-var universalMemberNames = []string{"itself", "nil?", "eql?", "equal?", "tap", "yield_self"}
+var universalMemberNames = []string{
+	"itself",
+	"nil?",
+	"eql?",
+	"equal?",
+	"tap",
+	"yield_self",
+	respondToMemberName,
+	isAMemberName,
+	kindOfMemberName,
+	instanceOfMemberName,
+}
 
 // isUniversalMember reports whether property names one of the Object-level
 // helpers that every value answers through the universal fallback.
@@ -36,7 +51,7 @@ func isUniversalMember(property string) bool {
 	case "itself", "nil?", "eql?", "equal?", "tap", "yield_self":
 		return true
 	default:
-		return false
+		return isUniversalPredicate(property)
 	}
 }
 
@@ -45,7 +60,8 @@ func isUniversalMember(property string) bool {
 // before typed dispatch on those receivers (see universalMemberAlwaysWins) and
 // reported as a cheap miss rather than routed through hashMember's miss path.
 //
-// itself, nil?, eql?, and equal? qualify: they are methods, not keys, so a hash
+// itself, nil?, eql?, equal?, and the introspection predicates respond_to?/
+// is_a?/kind_of?/instance_of? qualify: they are methods, not keys, so a hash
 // entry or data field of that name is unreachable as data and never shadows the
 // helper. The block helpers tap/yield_self do NOT qualify: a hash entry keyed
 // tap/yield_self is ordinary data the typed dispatch returns, so they fall back
@@ -55,7 +71,7 @@ func isUniversalDataSafe(property string) bool {
 	case "itself", "nil?", "eql?", "equal?":
 		return true
 	default:
-		return false
+		return isUniversalPredicate(property)
 	}
 }
 
@@ -83,7 +99,28 @@ func isCallableMember(val Value) bool {
 // the receiver's kind in their name so argument errors read naturally (for
 // example "int.eql? expects 1 argument"). The block helpers take the receiver at
 // call time, so they return a kind-agnostic auto-builtin.
-func universalMember(obj Value, property string) (Value, bool) {
+//
+// callerIsReceiver controls whether the respond_to? predicate may report private
+// methods: only the receiver itself can already dispatch them, so a public
+// dispatch reaching here passes false to keep them hidden. The value-only
+// helpers (itself, nil?, eql?, equal?, tap, yield_self) ignore it and delegate to
+// universalValueMember.
+func (exec *Execution) universalMember(obj Value, property string, callerIsReceiver bool) (Value, bool) {
+	switch property {
+	case respondToMemberName, isAMemberName, kindOfMemberName, instanceOfMemberName:
+		return exec.universalPredicate(property, callerIsReceiver), true
+	default:
+		return universalValueMember(obj, property)
+	}
+}
+
+// universalValueMember resolves the universal helpers whose result depends only
+// on the receiver value and the call-time arguments, never on the Execution or
+// the caller's privacy stance: itself returns the receiver, nil? reports nil
+// identity, eql?/equal? are the equality predicates, and tap/yield_self are the
+// block helpers. The introspection predicates' exec-aware sibling delegates here
+// for these names, so the construction of each helper lives in one place.
+func universalValueMember(obj Value, property string) (Value, bool) {
 	switch property {
 	case "itself":
 		return bindItself(obj), true

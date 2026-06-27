@@ -84,7 +84,7 @@ func TestMemoryEstimatorChargesBuiltinCapturedReceiver(t *testing.T) {
 	payload := strings.Repeat("abcdefghij", 4096)
 	receiver := NewString(payload)
 
-	probe, ok := universalMember(receiver, "eql?")
+	probe, ok := universalValueMember(receiver, "eql?")
 	if !ok {
 		t.Fatal("universalMember did not resolve eql?")
 	}
@@ -110,7 +110,7 @@ func TestMemoryEstimatorChargesBuiltinCapturedReceiver(t *testing.T) {
 // allocations invisibly to the memory quota.
 func TestMemoryEstimatorChargesBuiltinStructureForScalarReceiver(t *testing.T) {
 	t.Parallel()
-	probe, ok := universalMember(NewInt(1), "eql?")
+	probe, ok := universalValueMember(NewInt(1), "eql?")
 	if !ok {
 		t.Fatal("universalMember did not resolve eql?")
 	}
@@ -138,7 +138,7 @@ func TestMemoryEstimatorDoesNotDoubleChargeReachableReceiver(t *testing.T) {
 	payload := strings.Repeat("abcdefghij", 4096)
 	receiver := NewString(payload)
 
-	probe, ok := universalMember(receiver, "eql?")
+	probe, ok := universalValueMember(receiver, "eql?")
 	if !ok {
 		t.Fatal("universalMember did not resolve eql?")
 	}

@@ -212,6 +212,52 @@ end`
 	}
 }
 
+func TestDoubleQuotedStringInterpolationWithParenlessPercentArrayArgumentBrace(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  "#{collect %w[}]}"
+end`
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn := program.Statements[0].(*ast.FunctionStmt)
+	stmt := fn.Body[0].(*ast.ExprStmt)
+	lit, ok := stmt.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("expression = %T, want *ast.InterpolatedString", stmt.Expr)
+	}
+	if len(lit.Parts) != 1 {
+		t.Fatalf("parts length = %d, want 1", len(lit.Parts))
+	}
+	expr, ok := lit.Parts[0].(ast.StringExpr)
+	if !ok {
+		t.Fatalf("parts[0] = %T, want ast.StringExpr", lit.Parts[0])
+	}
+	call, ok := expr.Expr.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("interpolation expression = %T, want *ast.CallExpr", expr.Expr)
+	}
+	if ident, ok := call.Callee.(*ast.Identifier); !ok || ident.Name != "collect" {
+		t.Fatalf("call callee = %#v, want collect identifier", call.Callee)
+	}
+	if len(call.Args) != 1 {
+		t.Fatalf("call args length = %d, want 1", len(call.Args))
+	}
+	arg, ok := call.Args[0].(*ast.ArrayLiteral)
+	if !ok {
+		t.Fatalf("call arg = %T, want *ast.ArrayLiteral", call.Args[0])
+	}
+	if len(arg.Elements) != 1 {
+		t.Fatalf("array elements length = %d, want 1", len(arg.Elements))
+	}
+	if elem, ok := arg.Elements[0].(*ast.StringLiteral); !ok || elem.Value != "}" {
+		t.Fatalf("array element = %#v, want string literal }", arg.Elements[0])
+	}
+}
+
 // TestDoubleQuotedStringInterpolationDeeplyNested guards against the lexer or
 // findStringInterpolationEnd treating a quote inside a nested interpolation as
 // the end of the enclosing inner string. A "}" buried inside the deepest string
@@ -258,6 +304,40 @@ end`
 	inner, ok := middleExpr.Expr.(*ast.StringLiteral)
 	if !ok || inner.Value != "}" {
 		t.Fatalf("middle parts[0].Expr = %#v, want string literal %q", middleExpr.Expr, "}")
+	}
+}
+
+func TestDoubleQuotedStringInterpolationManySpans(t *testing.T) {
+	t.Parallel()
+
+	var src strings.Builder
+	src.WriteString("def run\n  \"")
+	for i := range 512 {
+		src.WriteString("#{")
+		if i == 256 {
+			src.WriteString("%W[#{%w[}]}].first")
+		} else {
+			src.WriteString("1")
+		}
+		src.WriteString("}")
+	}
+	src.WriteString("\"\nend")
+	source := src.String()
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(many interpolations) errors = %v, want none", errs)
+	}
+	body := parsedFunctionBody(t, program)
+	if len(body) != 1 {
+		t.Fatalf("function body length = %d, want 1", len(body))
+	}
+	interp, ok := body[0].(*ast.ExprStmt).Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("body[0].Expr = %T, want *ast.InterpolatedString", body[0].(*ast.ExprStmt).Expr)
+	}
+	if len(interp.Parts) != 512 {
+		t.Fatalf("interpolated parts length = %d, want 512", len(interp.Parts))
 	}
 }
 

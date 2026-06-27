@@ -326,6 +326,8 @@ const (
 	prefixParserInterpolatedStringLiteral
 	prefixParserPercentWordsLiteral
 	prefixParserPercentSymbolsLiteral
+	prefixParserPercentInterpWordsLiteral
+	prefixParserPercentInterpSymbolsLiteral
 	prefixParserBooleanLiteral
 	prefixParserNilLiteral
 	prefixParserSymbolLiteral
@@ -357,6 +359,10 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserPercentWordsLiteral
 	case ast.TokenSymbols:
 		return prefixParserPercentSymbolsLiteral
+	case ast.TokenInterpWords:
+		return prefixParserPercentInterpWordsLiteral
+	case ast.TokenInterpSymbols:
+		return prefixParserPercentInterpSymbolsLiteral
 	case ast.TokenTrue, ast.TokenFalse:
 		return prefixParserBooleanLiteral
 	case ast.TokenNil:
@@ -404,6 +410,10 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parsePercentWordsLiteral()
 	case prefixParserPercentSymbolsLiteral:
 		return p.parsePercentSymbolsLiteral()
+	case prefixParserPercentInterpWordsLiteral:
+		return p.parsePercentInterpWordsLiteral()
+	case prefixParserPercentInterpSymbolsLiteral:
+		return p.parsePercentInterpSymbolsLiteral()
 	case prefixParserBooleanLiteral:
 		return p.parseBooleanLiteral()
 	case prefixParserNilLiteral:
@@ -807,69 +817,85 @@ func interpolationMarkerEscaped(raw string, hash int) bool {
 	return backslashes%2 == 1
 }
 
-func skipEscapedByte(raw string, i int) int {
-	if i+1 >= len(raw) {
-		return len(raw)
-	}
-	return i + 2
-}
-
 // findStringInterpolationEnd locates the byte index of the "}" that closes the
 // interpolation whose body begins at start (just past the opening "#{"). It
-// maintains a stack of interpolation and string contexts so nested
-// double-quoted strings, single-quoted strings, and further interpolations
-// balance correctly, mirroring the lexer's consumeInterpolation. It returns
-// false when the body is never closed before the end of raw.
+// drives the lexer over the body so that every construct the language
+// understands—double- and single-quoted strings, nested "#{...}"
+// interpolations, and percent-array literals such as %w/%i/%W/%I—is consumed as
+// a single unit. This means a "}" that appears inside one of those constructs
+// (for example %W[#{%w[}]}]) does not prematurely close the interpolation, and
+// a bare "%" remains the modulo operator wherever the lexer would treat it as
+// one. It returns false when the body is never closed before the end of raw.
 func findStringInterpolationEnd(raw string, start int) (int, bool) {
-	// stack frames mirror consumeInterpolation: interpolation contexts track
-	// unmatched "{" via braceDepth, string contexts hold their delimiting quote.
-	type context struct {
-		isInterp   bool
-		quote      byte
-		braceDepth int
+	if start < 0 || start > len(raw) {
+		return 0, false
 	}
-	stack := []context{{isInterp: true}}
+	lex := newLexer(raw[start:])
 
-	for i := start; i < len(raw); {
-		top := &stack[len(stack)-1]
-		if top.isInterp {
-			switch raw[i] {
-			case '{':
-				top.braceDepth++
-			case '}':
-				if top.braceDepth > 0 {
-					top.braceDepth--
-				} else {
-					stack = stack[:len(stack)-1]
-					if len(stack) == 0 {
-						return i, true
-					}
-				}
-			case '"', '\'':
-				stack = append(stack, context{quote: raw[i]})
+	braceDepth := 0
+	bracketDepth := 0
+	parenDepth := 0
+	for {
+		tok := lex.NextToken()
+		switch tok.Type {
+		case ast.TokenEOF, ast.TokenIllegal:
+			return 0, false
+		case ast.TokenPercent:
+			percentOffset := start + lex.currentOffset() - 1
+			kind, _, endOffset, ok := scanPercentArrayLiteralAt(raw, percentOffset)
+			if ok && interpolationPercentArrayArgumentScanCanAdvance(raw, endOffset) {
+				lex.seek(endOffset-start, ast.Token{Type: percentArrayLiteralTokenType(kind)})
 			}
-			i++
-			continue
-		}
-
-		switch raw[i] {
-		case '\\':
-			i = skipEscapedByte(raw, i)
-		case top.quote:
-			stack = stack[:len(stack)-1]
-			i++
-		case '#':
-			if top.quote == '"' && i+1 < len(raw) && raw[i+1] == '{' {
-				stack = append(stack, context{isInterp: true})
-				i += 2
-			} else {
-				i++
+		case ast.TokenLParen:
+			parenDepth++
+		case ast.TokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
 			}
-		default:
-			i++
+		case ast.TokenLBracket:
+			bracketDepth++
+		case ast.TokenRBracket:
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case ast.TokenLBrace:
+			braceDepth++
+		case ast.TokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+				continue
+			}
+			if bracketDepth == 0 && parenDepth == 0 {
+				// The lexer has consumed the closing "}"; currentOffset now
+				// points at the rune after it, so the "}" itself sits one byte
+				// back ("}" is always a single byte).
+				return start + lex.currentOffset() - 1, true
+			}
 		}
 	}
-	return 0, false
+}
+
+func interpolationPercentArrayArgumentScanCanAdvance(raw string, endOffset int) bool {
+	if endOffset >= len(raw) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(raw[endOffset:])
+	return r != '"' && r != '\''
+}
+
+func percentArrayLiteralTokenType(kind rune) ast.TokenType {
+	switch kind {
+	case 'w':
+		return ast.TokenWords
+	case 'i':
+		return ast.TokenSymbols
+	case 'W':
+		return ast.TokenInterpWords
+	case 'I':
+		return ast.TokenInterpSymbols
+	default:
+		return ast.TokenIllegal
+	}
 }
 
 func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position) (ast.Expression, bool) {
@@ -962,6 +988,20 @@ func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 		case 'i':
 			elements[i] = &ast.SymbolLiteral{Name: entry, Position: pos}
 			litType = ast.TokenSymbols
+		case 'W':
+			element, ok := p.interpolatedWordElement(entry, pos)
+			if !ok {
+				return nil
+			}
+			elements[i] = element
+			litType = ast.TokenInterpWords
+		case 'I':
+			element, ok := p.interpolatedSymbolElement(entry, pos)
+			if !ok {
+				return nil
+			}
+			elements[i] = element
+			litType = ast.TokenInterpSymbols
 		}
 	}
 	// The lexer already speculatively tokenized the literal's interior
@@ -995,6 +1035,74 @@ func (p *parser) parsePercentSymbolsLiteral() ast.Expression {
 	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
 }
 
+func (p *parser) parsePercentInterpWordsLiteral() ast.Expression {
+	entries := decodePercentLiteralEntries(p.curToken.Literal)
+	elements := make([]ast.Expression, 0, len(entries))
+	for _, entry := range entries {
+		element, ok := p.interpolatedWordElement(entry, p.curToken.Pos)
+		if !ok {
+			return nil
+		}
+		elements = append(elements, element)
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
+func (p *parser) parsePercentInterpSymbolsLiteral() ast.Expression {
+	entries := decodePercentLiteralEntries(p.curToken.Literal)
+	elements := make([]ast.Expression, 0, len(entries))
+	for _, entry := range entries {
+		element, ok := p.interpolatedSymbolElement(entry, p.curToken.Pos)
+		if !ok {
+			return nil
+		}
+		elements = append(elements, element)
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
+// interpolatedWordElement builds a single %W entry. Entries without an
+// embedded expression collapse to a plain string literal so they match the
+// AST produced by %w; entries with interpolation become an InterpolatedString.
+func (p *parser) interpolatedWordElement(entry string, pos ast.Position) (ast.Expression, bool) {
+	parts, ok := p.parseInterpolatedStringParts(entry, pos)
+	if !ok {
+		return nil, false
+	}
+	if text, plain := staticStringPart(parts); plain {
+		return &ast.StringLiteral{Value: text, Position: pos}, true
+	}
+	return &ast.InterpolatedString{Parts: parts, Position: pos}, true
+}
+
+// interpolatedSymbolElement builds a single %I entry. Entries without an
+// embedded expression collapse to a plain symbol literal so they match the
+// AST produced by %i; entries with interpolation become an InterpolatedSymbol.
+func (p *parser) interpolatedSymbolElement(entry string, pos ast.Position) (ast.Expression, bool) {
+	parts, ok := p.parseInterpolatedStringParts(entry, pos)
+	if !ok {
+		return nil, false
+	}
+	if text, plain := staticStringPart(parts); plain {
+		return &ast.SymbolLiteral{Name: text, Position: pos}, true
+	}
+	return &ast.InterpolatedSymbol{Parts: parts, Position: pos}, true
+}
+
+// staticStringPart returns the literal text and true when parts hold no
+// embedded expression, so a %W/%I entry can collapse to a plain literal.
+func staticStringPart(parts []ast.StringPart) (string, bool) {
+	switch len(parts) {
+	case 0:
+		return "", true
+	case 1:
+		if text, ok := parts[0].(ast.StringText); ok {
+			return text.Text, true
+		}
+	}
+	return "", false
+}
+
 func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bool) {
 	if start < 0 || start >= len(input) || input[start] != '%' {
 		return 0, nil, 0, false
@@ -1004,9 +1112,10 @@ func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bo
 		return 0, nil, 0, false
 	}
 	kind, width := utf8.DecodeRuneInString(input[idx:])
-	if kind != 'w' && kind != 'i' {
+	if kind != 'w' && kind != 'i' && kind != 'W' && kind != 'I' {
 		return 0, nil, 0, false
 	}
+	interpolating := kind == 'W' || kind == 'I'
 	idx += width
 	if idx >= len(input) {
 		return 0, nil, 0, false
@@ -1032,12 +1141,34 @@ func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bo
 			}
 			continue
 		}
+		// Skip over #{...} interpolation spans for the interpolating forms so a
+		// delimiter inside an interpolation expression (including one nested in a
+		// quoted string, e.g. %W[#{"]"}]) does not close the literal early. The
+		// span is matched with the same string-aware logic used elsewhere. When
+		// '#' is itself the closing delimiter it must close the literal instead of
+		// being treated as interpolation, mirroring Ruby where %W#a #{b}# closes at
+		// the first '#'.
+		if interpolating && close != '#' && r == '#' && idx < len(input) && input[idx] == '{' {
+			raw.WriteRune(r)
+			raw.WriteByte('{')
+			idx++
+			end, ok := findStringInterpolationEnd(input, idx)
+			if !ok {
+				return 0, nil, 0, false
+			}
+			raw.WriteString(input[idx : end+1])
+			idx = end + 1
+			continue
+		}
 		if paired && r == open {
 			depth++
 		}
 		if r == close {
 			depth--
 			if depth == 0 {
+				if interpolating {
+					return kind, splitInterpolatedPercentLiteralWords(raw.String()), idx, true
+				}
 				return kind, splitPercentLiteralWords(raw.String(), open, close), idx, true
 			}
 		}

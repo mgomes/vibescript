@@ -193,6 +193,46 @@ These helpers resolve only when the receiver does not already define a member of
 the same name, so a hash key, instance variable, or user-defined method named
 `tap` or `yield_self` keeps precedence.
 
+## Object Introspection
+
+Every value kind responds to the Ruby-style introspection predicates. They are
+resolved the way `Object`'s methods are in Ruby: available on any receiver, but a
+script class may define its own method of the same name and that definition wins.
+Unlike the data-eligible block helpers `tap`/`yield_self`, a data slot keyed with
+a predicate name (a hash key, instance variable, or class variable named
+`respond_to?`, `is_a?`, and so on) is data, not a method, so it never shadows the
+predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicate.
+
+- `respond_to?(name) -> bool` (optionally `respond_to?(name, include_all)`) –
+  reports whether the receiver has a callable member named `name` (a symbol or a
+  string). Data — hash keys, namespace constants, and instance variables — is not
+  a method and reports `false`; namespace functions such as `Math.sqrt` report
+  `true`. Private methods report `false` unless the caller is the receiver itself
+  or `include_all` is `true`, matching `respond_to?`'s privacy rules.
+- `is_a?(class) -> bool` and `kind_of?(class) -> bool` – report whether the
+  receiver is an instance of the given script class. Without inheritance these
+  test direct class identity; when a superclass chain is added they will also walk
+  it. A non-instance receiver (a core value, a class value, an enum value) reports
+  `false`. The argument must be a class.
+- `instance_of?(class) -> bool` – reports whether the receiver is an instance of
+  exactly the given script class.
+
+```vibe
+"Ada".respond_to?(:length)   # true
+"Ada".respond_to?(:nope)     # false
+{ name: "x" }.respond_to?(:name) # false  (a data key, not a method)
+{ name: "x" }.respond_to?(:keys) # true
+
+class User
+end
+
+user = User.new
+user.is_a?(User)        # true
+user.kind_of?(User)     # true
+user.instance_of?(User) # true
+42.is_a?(User)          # false
+```
+
 ## Strings
 
 See [strings.md](strings.md) for worked examples. Indexes and lengths count
@@ -517,6 +557,11 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `join(separator = "") -> string` – stringified elements joined by
   `separator`.
 - `reverse -> array` – elements in reverse order.
+- `to_h -> hash` / `to_h { |element| [key, value] } -> hash` – build a hash from
+  two-element `[key, value]` pairs (the inverse of `Hash#to_a`). Keys convert
+  through the symbol/string hash-key rules and duplicate keys keep the last pair;
+  the block form maps each element to its pair. A non-array element, a pair that
+  is not exactly two elements, or a non-symbol/string key raises.
 
 Because array methods never mutate the receiver, `pop` hands back both
 halves of the result:
@@ -619,6 +664,8 @@ methods.
   `Hash#each_with_index`; returns the receiver. Takes no arguments.
 - `each_key { |key| } -> hash` – yield each key.
 - `each_value { |value| } -> hash` – yield each value.
+- `to_a -> array` – nested `[key, value]` pairs in sorted key order, with keys
+  exposed as symbols. The inverse of `Array#to_h`, equivalent to `flatten(0)`.
 - `map_with_index { |pair, index| } -> array` – new array of block results,
   yielding each `[key, value]` pair with its 0-based index in sorted key order.
   Takes no arguments.

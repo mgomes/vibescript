@@ -231,7 +231,7 @@ end`)
 	statusDraft := enumTestValue(t, script, "Status", "Draft")
 	clonedDraft := cloneValueForHost(statusDraft)
 
-	probe, ok := universalMember(statusDraft, "equal?")
+	probe, ok := universalValueMember(statusDraft, "equal?")
 	if !ok {
 		t.Fatal("universalMember did not resolve equal? for an enum value")
 	}
@@ -268,7 +268,7 @@ func TestEqualPredicateRebindsToHostClone(t *testing.T) {
 	t.Parallel()
 
 	receiver := NewHash(map[string]Value{"a": NewInt(1)})
-	probe, ok := universalMember(receiver, "equal?")
+	probe, ok := universalValueMember(receiver, "equal?")
 	if !ok {
 		t.Fatal("universalMember did not resolve equal? for a hash")
 	}
@@ -352,7 +352,7 @@ func TestHostCloneBoundPredicatePreservesAliasIdentity(t *testing.T) {
 	t.Parallel()
 
 	receiver := NewHash(map[string]Value{"a": NewInt(1)})
-	probe, ok := universalMember(receiver, "equal?")
+	probe, ok := universalValueMember(receiver, "equal?")
 	if !ok {
 		t.Fatal("universalMember did not resolve equal? for a hash")
 	}
@@ -404,7 +404,7 @@ func TestHostCloneRecursiveBoundPredicatePreservesAliasIdentity(t *testing.T) {
 	// write keeps the probe's captured receiver pointing at this same array.
 	slot := make([]Value, 1)
 	receiver := NewArray(slot)
-	probe, ok := universalMember(receiver, "equal?")
+	probe, ok := universalValueMember(receiver, "equal?")
 	if !ok {
 		t.Fatal("universalMember did not resolve equal? for an array")
 	}
@@ -455,7 +455,7 @@ func TestCallRebindRecursiveBoundPredicatePreservesAliasIdentity(t *testing.T) {
 
 	slot := make([]Value, 1)
 	receiver := NewArray(slot)
-	probe, ok := universalMember(receiver, "equal?")
+	probe, ok := universalValueMember(receiver, "equal?")
 	if !ok {
 		t.Fatal("universalMember did not resolve equal? for an array")
 	}
@@ -497,7 +497,7 @@ func TestCallRebindBoundPredicatePreservesAliasIdentity(t *testing.T) {
 	rebinder := newCallFunctionRebinder(script, root, map[string]*ClassDef{}, map[string]*EnumDef{})
 
 	receiver := NewHash(map[string]Value{"a": NewInt(1)})
-	probe, ok := universalMember(receiver, "equal?")
+	probe, ok := universalValueMember(receiver, "equal?")
 	if !ok {
 		t.Fatal("universalMember did not resolve equal? for a hash")
 	}

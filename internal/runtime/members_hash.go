@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var hashMemberNames = []string{
-	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "default", "default_proc",
+	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a", "default", "default_proc",
 	"merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 	"inspect",
 }
@@ -33,7 +33,7 @@ func hashMember(obj Value, property string) (Value, error) {
 
 func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "default", "default_proc":
+	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a", "default", "default_proc":
 		return hashMemberQuery(property)
 	case "merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
@@ -554,6 +554,71 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 			}
 			return receiver, nil
+		}), nil
+	case "to_a":
+		return NewAutoBuiltin("hash.to_a", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.to_a does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.to_a does not take keyword arguments")
+			}
+			entries := receiver.Hash()
+			// Materialize the [key, value] pairs in Vibescript's deterministic
+			// (sorted-key) iteration order, matching keys/values/each. Keys
+			// reconstruct as symbols, as everywhere a hash key surfaces as a value.
+			//
+			// The pairs alias the receiver's values, but the output slice, the one
+			// pair array per entry, and the sorted-key scratch buffer are all fresh
+			// allocations the post-call result check would only observe after the
+			// whole structure was built. A receiver that fits the quota can still
+			// have a [key, value] materialization that does not, so charge the build
+			// incrementally through an array accumulator (seeded with the receiver, so
+			// aliased values dedup against it) and step per entry. This bounds the
+			// peak against MemoryQuotaBytes and honors a small StepQuota or a canceled
+			// context mid-loop, matching the neighboring hash walks rather than
+			// allocating everything before the runtime can reject it.
+			//
+			// Abort before materializing and sorting the keys when the context is
+			// already canceled or the remaining step quota cannot cover one step per
+			// entry. The per-pair loop charges a step per entry and observes
+			// cancellation, but the sortedHashKeysInto sort is O(n log n), so without
+			// this cheap up-front check a large hash could spend that work even when the
+			// loop is guaranteed to exhaust the step quota partway. Bounding on
+			// len(entries) (not just one remaining step) keeps a sandboxed caller from
+			// spending O(n log n) CPU on a projection that cannot fit the remaining
+			// steps; the per-pair step still enforces the quota, so this never rejects a
+			// build the loop would accept.
+			if err := exec.checkStepBudgetFor(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			scratch := sortedKeyBufferBytes(len(entries))
+			if err := acc.reserveScratch(scratch); err != nil {
+				return NewNil(), err
+			}
+			// The output length is known before the keys are sorted. Reserve the full
+			// slot backing before sortedHashKeysInto so a build that cannot fit the
+			// result slice does not spend the sort or allocate the key scratch first.
+			if err := acc.reserveSlots(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			var keyBuf [smallHashKeyBufferSize]string
+			keys := sortedHashKeysInto(entries, keyBuf[:])
+			pairs := make([]Value, 0, len(keys))
+			for _, key := range keys {
+				// Charge a step per pair so materializing a large hash participates in
+				// the step quota and observes cancellation before the result is fully
+				// assembled.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				pairs = append(pairs, NewArray([]Value{NewSymbol(key), entries[key]}))
+				if err := acc.add(pairs[len(pairs)-1], cap(pairs)); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewArray(pairs), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)

@@ -332,3 +332,15 @@ func (StringExpr) isStringPart() {}
 
 func (s *InterpolatedString) exprNode()     {}
 func (s *InterpolatedString) Pos() Position { return s.Position }
+
+// InterpolatedSymbol represents a symbol whose name is built from an
+// interpolating literal (e.g. an entry of a %I[...] array). The parts are
+// evaluated like an interpolated string and the resulting text becomes the
+// symbol's name.
+type InterpolatedSymbol struct {
+	Parts    []StringPart
+	Position Position
+}
+
+func (s *InterpolatedSymbol) exprNode()     {}
+func (s *InterpolatedSymbol) Pos() Position { return s.Position }

@@ -348,6 +348,17 @@ end
 
 - `keys` and `values`
 - `each`, `each_key`, `each_value`
+- `to_a` returns the `[key, value]` pairs as a nested array, with keys exposed as
+  symbols. It is the inverse of `Array#to_h` and equivalent to `flatten(0)`. The
+  materialization charges its output (the pair arrays and the sorted key scratch)
+  against the memory quota as the pairs accumulate, and charges the step quota per
+  pair while honoring context cancellation, so a large hash stays bounded rather
+  than allocating the whole nested array before the runtime can reject it.
+
+```vibe
+{ a: 1, b: 2 }.to_a # [[:a, 1], [:b, 2]]
+```
+
 - `each_with_index` yields each entry's `[key, value]` pair (keys exposed as
   symbols) plus its 0-based index and returns the receiver. Matching Ruby's
   `Hash#each_with_index`, the pair is the first block parameter and the index the
@@ -357,9 +368,9 @@ end
   each block result into a new array (`{ b: 2, a: 1 }.map_with_index { |pair, index| [pair[0], index] }`
   is `[[:a, 0], [:b, 1]]`). It takes no arguments and requires a block.
 
-`keys`, `values`, `flatten`, and block-based hash iteration process entries in
-sorted key order for deterministic behavior. Because the index follows that
-sorted order, it stays stable across runs even though Go map storage is
+`keys`, `values`, `flatten`, `to_a`, and block-based hash iteration process
+entries in sorted key order for deterministic behavior. Because the index follows
+that sorted order, it stays stable across runs even though Go map storage is
 unordered.
 
 A `for` loop may also iterate a hash directly, mirroring Ruby's loop over

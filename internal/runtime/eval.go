@@ -61,6 +61,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return NewString(e.Value), nil
 	case *InterpolatedString:
 		return exec.evalInterpolatedStringLiteral(e, env)
+	case *InterpolatedSymbol:
+		return exec.evalInterpolatedSymbolLiteral(e, env)
 	case *BoolLiteral:
 		return NewBool(e.Value), nil
 	case *NilLiteral:
@@ -157,24 +159,42 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 }
 
 func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, env *Env) (Value, error) {
+	text, err := exec.buildInterpolatedString(lit.Parts, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(text), nil
+}
+
+func (exec *Execution) evalInterpolatedSymbolLiteral(lit *InterpolatedSymbol, env *Env) (Value, error) {
+	name, err := exec.buildInterpolatedString(lit.Parts, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewSymbol(name), nil
+}
+
+// buildInterpolatedString materializes the text of an interpolated string or
+// symbol from its parts, honoring the sandbox step and memory quotas.
+func (exec *Execution) buildInterpolatedString(parts []StringPart, env *Env) (string, error) {
 	var sb strings.Builder
-	for _, part := range lit.Parts {
+	for _, part := range parts {
 		switch p := part.(type) {
 		case StringText:
 			if err := exec.appendInterpolatedChunk(&sb, p.Text); err != nil {
-				return NewNil(), err
+				return "", err
 			}
 		case StringExpr:
 			val, err := exec.evalExpressionWithAuto(p.Expr, env, true)
 			if err != nil {
-				return NewNil(), err
+				return "", err
 			}
 			if err := exec.appendInterpolatedValue(&sb, val); err != nil {
-				return NewNil(), err
+				return "", err
 			}
 		}
 	}
-	return NewString(sb.String()), nil
+	return sb.String(), nil
 }
 
 // appendInterpolatedChunk writes a literal text chunk to the interpolation
@@ -504,7 +524,7 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 	case KindString:
 		return exec.indexString(e, obj.String(), indices)
 	case KindArray:
-		return exec.indexArray(e, obj.Array(), indices)
+		return exec.indexArray(e, obj, indices)
 	case KindHash, KindObject:
 		return exec.indexHash(e, obj, indices)
 	default:
@@ -517,15 +537,19 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 // or nil when out of range, while a range returns a fresh subarray or nil when
 // the begin bound falls outside the array. The two-selector form is Array#[]
 // start/length, returning a fresh subarray or nil.
-func (exec *Execution) indexArray(e *IndexExpr, arr, indices []Value) (Value, error) {
+func (exec *Execution) indexArray(e *IndexExpr, receiver Value, indices []Value) (Value, error) {
+	arr := receiver.Array()
 	switch len(indices) {
 	case 1:
 		if indices[0].Kind() == KindRange {
-			sub, ok := arraySliceRange(arr, indices[0].Range())
+			window, ok := arraySliceRangeWindow(len(arr), indices[0].Range())
 			if !ok {
 				return NewNil(), nil
 			}
-			return NewArray(sub), nil
+			if err := exec.reserveArraySliceSlots(receiver, indices, window.length); err != nil {
+				return NewNil(), err
+			}
+			return NewArray(copyArraySliceWindow(arr, window)), nil
 		}
 		index, err := exec.indexSelectorToInt(e, indices[0], 0)
 		if err != nil {
@@ -541,14 +565,24 @@ func (exec *Execution) indexArray(e *IndexExpr, arr, indices []Value) (Value, er
 		if err != nil {
 			return NewNil(), err
 		}
-		sub, ok := arraySliceStartLength(arr, start, length)
+		window, ok := arraySliceStartLengthWindow(len(arr), start, length)
 		if !ok {
 			return NewNil(), nil
 		}
-		return NewArray(sub), nil
+		if err := exec.reserveArraySliceSlots(receiver, indices, window.length); err != nil {
+			return NewNil(), err
+		}
+		return NewArray(copyArraySliceWindow(arr, window)), nil
 	default:
 		return NewNil(), exec.errorAt(e.Position, "array index expects one index, a start and length, or a range")
 	}
+}
+
+func (exec *Execution) reserveArraySliceSlots(receiver Value, indices []Value, slotCount int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	return newArrayBuildAccumulator(exec, receiver, indices, nil, NewNil()).reserveSlots(slotCount)
 }
 
 // indexString implements str[...] reads as rune (character) operations. The
@@ -1090,16 +1124,22 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		}
 		return false
 	case *InterpolatedString:
-		for _, part := range e.Parts {
-			stringExpr, ok := part.(StringExpr)
-			if ok && expressionCapturesCurrentEnv(stringExpr.Expr) {
-				return true
-			}
-		}
-		return false
+		return stringPartsCaptureCurrentEnv(e.Parts)
+	case *InterpolatedSymbol:
+		return stringPartsCaptureCurrentEnv(e.Parts)
 	default:
 		return true
 	}
+}
+
+func stringPartsCaptureCurrentEnv(parts []StringPart) bool {
+	for _, part := range parts {
+		stringExpr, ok := part.(StringExpr)
+		if ok && expressionCapturesCurrentEnv(stringExpr.Expr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value) error {

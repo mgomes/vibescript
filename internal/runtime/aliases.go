@@ -76,6 +76,7 @@ type (
 	BlockLiteral       = ast.BlockLiteral
 	YieldExpr          = ast.YieldExpr
 	InterpolatedString = ast.InterpolatedString
+	InterpolatedSymbol = ast.InterpolatedSymbol
 	StringPart         = ast.StringPart
 	StringText         = ast.StringText
 	StringExpr         = ast.StringExpr
