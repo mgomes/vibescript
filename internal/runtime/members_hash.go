@@ -1430,6 +1430,9 @@ func hashMemberTransforms(property string) (Value, error) {
 			scratch := sortedKeyBufferBytes(len(entries))
 			delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), scratch))
 			defer exec.releaseLoopScratch(delta)
+			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			runner, err := newBlockCallRunner(exec, block, "hash.transform_keys", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
@@ -1539,6 +1542,9 @@ func hashMemberTransforms(property string) (Value, error) {
 			scratch := sortedKeyBufferBytes(len(entries))
 			delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), scratch))
 			defer exec.releaseLoopScratch(delta)
+			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			runner, err := newBlockCallRunner(exec, block, "hash.transform_values", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err

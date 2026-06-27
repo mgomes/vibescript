@@ -1178,6 +1178,45 @@ func TestHashTransformValuesScratchPeakTripsMemoryQuota(t *testing.T) {
 	}
 }
 
+func TestHashTransformReservationsRejectBeforeMapAllocation(t *testing.T) {
+	t.Parallel()
+
+	const count = 20_000
+	receiver := largeHashReceiver(count)
+
+	tests := []struct {
+		name  string
+		block Value
+	}{
+		{name: "transform_keys", block: keyIdentityBlock()},
+		{name: "transform_values", block: emptyHashBlock()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+			roots := probe.hashCallRootBytes(receiver, nil, nil, tt.block)
+			buffers := hashTransformBufferBytes(count, sortedKeyBufferBytes(count))
+			quota := saturatingAdd(roots, buffers) - 1
+			if roots > quota {
+				t.Fatalf("test setup expects roots (%d) to fit quota (%d)", roots, quota)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callHashMember(t, exec, receiver, tt.name, nil, tt.block)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("%s ran %d step(s), want the output backing rejected before allocation", tt.name, exec.steps)
+			}
+			if exec.reservedScratchBytes != 0 {
+				t.Fatalf("%s leaked %d reserved scratch bytes after rejection", tt.name, exec.reservedScratchBytes)
+			}
+		})
+	}
+}
+
 // TestHashEachFitsRealFootprint pins the P2 finding on PR #776: pure iterators
 // (each, each_key, each_value) build no output map -- they return the receiver --
 // so charging them an empty output map's overhead is a pure over-charge. A quota
@@ -1738,6 +1777,15 @@ func TestHashMergeZeroArgHonorsCancellationOnBaseCopy(t *testing.T) {
 // own per-iteration step or a large receiver would walk uncharged.
 func emptyHashBlock() Value {
 	return NewBlock(nil, nil, newEnv(nil))
+}
+
+func keyIdentityBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	return NewBlock(
+		[]Param{{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}}},
+		[]Statement{&ExprStmt{Position: pos, Expr: &Identifier{Name: "k", Position: pos}}},
+		newEnv(nil),
+	)
 }
 
 // TestHashEmptyBlockTransformHonorsStepQuota pins the P2 finding on PR #776: a

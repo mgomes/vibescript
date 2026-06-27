@@ -469,7 +469,22 @@ func (exec *Execution) checkProjectedHashWalkBytes(receiver Value, args []Value,
 		return nil
 	}
 
-	if exec.hashCallRootBytes(receiver, args, kwargs, block) > exec.memoryQuota {
+	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+// checkReservedLoopScratch rejects a hash walk or transform after it has folded
+// Go-local buffers into reservedScratchBytes, but before the caller allocates or
+// walks those buffers. It charges the current reserved scratch together with the
+// call roots, matching the baseline every later memory check will observe.
+func (exec *Execution) checkReservedLoopScratch(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
 	return nil
