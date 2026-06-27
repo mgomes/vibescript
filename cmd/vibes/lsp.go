@@ -853,14 +853,11 @@ func isMemberContext(lines []string, line, character int) bool {
 	}
 	if start >= 2 && unicode.IsDigit(runes[start-2]) {
 		if start < end {
-			partialIsDigits := true
-			for _, r := range runes[start:end] {
-				if !unicode.IsDigit(r) {
-					partialIsDigits = false
-					break
-				}
-			}
-			if partialIsDigits {
+			// The dot is preceded by a digit and followed by a typed
+			// suffix. When that suffix is the fractional/exponent tail of
+			// a float literal (e.g. "1.5", "1.5e2", "1.5E6", "1.5e1_0")
+			// the dot belongs to the number, not a member access.
+			if isFractionSuffix(runes[start:end]) {
 				return false
 			}
 		} else if start < len(runes) && unicode.IsDigit(runes[start]) {
@@ -870,6 +867,55 @@ func isMemberContext(lines []string, line, character int) bool {
 		}
 	}
 	return true
+}
+
+// isFractionSuffix reports whether suffix is the fractional (and optional
+// exponent) tail of a float literal whose decimal point precedes it, such
+// as the "5", "5e2", "5E6", or "5e1_0" in "1.5", "1.5e2", "1.5E6", and
+// "1.5e1_0". The suffix is the run of word runes after the dot, so an
+// exponent sign (which is not a word rune) never appears here; a trailing
+// "e"/"E" without exponent digits is accepted so an in-progress literal
+// like "1.5e" is still treated as a number rather than a member access.
+// Underscores are accepted only between digits, matching the lexer's
+// visual-separator rule.
+func isFractionSuffix(suffix []rune) bool {
+	if len(suffix) == 0 || !unicode.IsDigit(suffix[0]) {
+		return false
+	}
+	i := consumeDigitsWithSeparators(suffix, 0)
+	if i == len(suffix) {
+		return true
+	}
+	if suffix[i] != 'e' && suffix[i] != 'E' {
+		return false
+	}
+	i++
+	if i == len(suffix) {
+		// Trailing exponent marker with no digits yet (e.g. "5e").
+		return true
+	}
+	if !unicode.IsDigit(suffix[i]) {
+		return false
+	}
+	return consumeDigitsWithSeparators(suffix, i) == len(suffix)
+}
+
+// consumeDigitsWithSeparators advances past a run of digits beginning at
+// index i, allowing underscores only when wedged between two digits, and
+// returns the index of the first rune that is not part of the run.
+func consumeDigitsWithSeparators(runes []rune, i int) int {
+	for i < len(runes) {
+		switch {
+		case unicode.IsDigit(runes[i]):
+			i++
+		case runes[i] == '_' && i > 0 && unicode.IsDigit(runes[i-1]) &&
+			i+1 < len(runes) && unicode.IsDigit(runes[i+1]):
+			i++
+		default:
+			return i
+		}
+	}
+	return i
 }
 
 // memberCompletionItems returns the type-unaware union of every builtin

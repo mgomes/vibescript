@@ -789,6 +789,12 @@ func TestIsMemberContext(t *testing.T) {
 		{name: "cursor_inside_float", source: "1.5", line: 0, chr: 2, want: false},
 		{name: "numeric_member_open", source: "1.", line: 0, chr: 2, want: true},
 		{name: "numeric_member_word", source: "1.days", line: 0, chr: 6, want: true},
+		{name: "float_exponent", source: "1.5e2", line: 0, chr: 5, want: false},
+		{name: "float_exponent_upper", source: "1.5E6", line: 0, chr: 5, want: false},
+		{name: "float_exponent_underscore", source: "1.5e1_0", line: 0, chr: 7, want: false},
+		{name: "float_exponent_in_progress", source: "1.5e", line: 0, chr: 4, want: false},
+		{name: "member_on_exponent_float", source: "1.5e2.foo", line: 0, chr: 9, want: true},
+		{name: "float_with_trailing_letter", source: "1.5x", line: 0, chr: 4, want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
