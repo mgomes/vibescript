@@ -15,7 +15,7 @@ import (
 var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v",
-	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
+	"push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
@@ -36,7 +36,7 @@ func arrayMemberBuiltin(property string) (Value, error) {
 	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
-	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
+	case "push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -2148,13 +2148,14 @@ func arrayMemberTransforms(property string) (Value, error) {
 			copy(out[len(base):], args)
 			return NewArray(out), nil
 		}), nil
-	case "prepend":
-		// Ruby's Array#prepend (alias unshift) inserts the arguments, in order,
-		// at the front of the array. Vibescript's collections are non-mutating,
-		// so this returns a new array.
-		return NewAutoBuiltin("array.prepend", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	case "prepend", "unshift":
+		// Ruby exposes Array#unshift as an alias for Array#prepend, inserting the
+		// arguments, in order, at the front of the array. Vibescript's collections
+		// are non-mutating, so both return a new array.
+		name := "array." + property
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
-				return NewNil(), fmt.Errorf("array.prepend does not take keyword arguments")
+				return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
 			}
 			base := receiver.Array()
 			out := make([]Value, len(args)+len(base))
@@ -2209,6 +2210,12 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			return NewHash(result), nil
 		}), nil
+	case "shift":
+		return NewAutoBuiltin("array.shift", arrayShift), nil
+	case "delete":
+		return NewAutoBuiltin("array.delete", arrayDelete), nil
+	case "insert":
+		return NewAutoBuiltin("array.insert", arrayInsert), nil
 	case "uniq":
 		return NewAutoBuiltin("array.uniq", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -2539,4 +2546,190 @@ func arrayMemberTransforms(property string) (Value, error) {
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
 	}
+}
+
+// arrayShift implements Ruby's Array#shift, removing element(s) from the front.
+// Vibescript collections are non-mutating, so it returns both halves of the
+// result as the hash { array:, shifted: }, mirroring Array#pop's
+// { array:, popped: } convention. Bare shift removes one element and reports it
+// (or nil on an empty array); shift(n) removes up to n elements and reports them
+// as an array. n must be a non-negative integer.
+func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("array.shift accepts at most one argument")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.shift does not take keyword arguments")
+	}
+	count := 1
+	if len(args) == 1 {
+		n, err := valueToInt(args[0])
+		if err != nil || n < 0 {
+			return NewNil(), fmt.Errorf("array.shift expects non-negative integer")
+		}
+		count = n
+	}
+	arr := receiver.Array()
+	if count == 0 {
+		return NewHash(map[string]Value{
+			"array":   NewArray(arr),
+			"shifted": NewNil(),
+		}), nil
+	}
+	if len(arr) == 0 {
+		shifted := NewNil()
+		if len(args) == 1 {
+			shifted = NewArray([]Value{})
+		}
+		return NewHash(map[string]Value{
+			"array":   NewArray([]Value{}),
+			"shifted": shifted,
+		}), nil
+	}
+	if count > len(arr) {
+		count = len(arr)
+	}
+	removed := make([]Value, count)
+	copy(removed, arr[:count])
+	remaining := make([]Value, len(arr)-count)
+	copy(remaining, arr[count:])
+	result := map[string]Value{
+		"array": NewArray(remaining),
+	}
+	if count == 1 && len(args) == 0 {
+		result["shifted"] = removed[0]
+	} else {
+		result["shifted"] = NewArray(removed)
+	}
+	return NewHash(result), nil
+}
+
+// arrayDelete implements Ruby's Array#delete, removing every element equal to the
+// given value. Vibescript collections are non-mutating, so it returns both the
+// pruned array and the deleted value as the hash { array:, deleted: }, mirroring
+// Array#pop's { array:, popped: } convention. Following Ruby, deleted is the
+// value itself when at least one match was removed and nil otherwise; an attached
+// block is invoked with no arguments on a miss and its result reported instead,
+// matching `arr.delete(obj) { default }`.
+func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.delete does not take keyword arguments")
+	}
+	if len(args) != 1 {
+		return NewNil(), fmt.Errorf("array.delete expects exactly one value")
+	}
+	target := args[0]
+	arr := receiver.Array()
+	out := make([]Value, 0, len(arr))
+	found := false
+	for _, item := range arr {
+		if item.Equal(target) {
+			found = true
+			continue
+		}
+		out = append(out, item)
+	}
+	// A sparse result should not retain a backing array sized to the whole
+	// receiver, so right-size the result when matches were removed.
+	if len(out) < cap(out) {
+		trimmed := make([]Value, len(out))
+		copy(trimmed, out)
+		out = trimmed
+	}
+	deleted := NewNil()
+	if found {
+		// Ruby returns the deleted object itself rather than the matched element,
+		// so report the argument the caller searched for.
+		deleted = target
+	} else if valueBlock(block) != nil {
+		// On a miss Ruby invokes the block with no arguments and returns its
+		// result, matching `arr.delete(obj) { default }`.
+		runner, err := newBlockCallRunner(exec, block, "array.delete")
+		if err != nil {
+			return NewNil(), err
+		}
+		result, err := runner.call(nil)
+		if err != nil {
+			return NewNil(), err
+		}
+		deleted = result
+	}
+	return NewHash(map[string]Value{
+		"array":   NewArray(out),
+		"deleted": deleted,
+	}), nil
+}
+
+// arrayInsert implements Ruby's Array#insert, returning a new array with the
+// given values inserted before the element at index. Vibescript's collections are
+// non-mutating, so it returns the new array rather than the receiver.
+//
+// A non-negative index inserts before that position, padding with nil when the
+// index lies past the end (Ruby's [1].insert(3, "x") yields [1, nil, nil, "x"]).
+// A negative index counts back from the end and inserts after that element, so
+// insert(-1, x) appends and insert(-2, x) inserts before the last element,
+// matching Ruby. A negative index whose magnitude exceeds the length is rejected,
+// as Ruby raises IndexError for it. Inserting no values returns the array
+// unchanged, mirroring Ruby.
+func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.insert does not take keyword arguments")
+	}
+	if len(args) == 0 {
+		return NewNil(), fmt.Errorf("array.insert expects an index")
+	}
+	index, err := valueToInt(args[0])
+	if err != nil {
+		return NewNil(), fmt.Errorf("array.insert index must be integer")
+	}
+	if args[0].Kind() != KindInt && args[0].Kind() != KindFloat {
+		return NewNil(), fmt.Errorf("array.insert index must be integer")
+	}
+	values := args[1:]
+	arr := receiver.Array()
+	if len(values) == 0 {
+		out := make([]Value, len(arr))
+		copy(out, arr)
+		return NewArray(out), nil
+	}
+	// Resolve the insertion point. A negative index inserts after the element it
+	// names, so it normalizes to (index + len + 1); Ruby rejects a negative index
+	// whose magnitude exceeds the length.
+	at := index
+	if at < 0 {
+		at += len(arr) + 1
+		if at < 0 {
+			return NewNil(), fmt.Errorf("array.insert index %d out of range", index)
+		}
+	}
+	// A non-negative index past the end pads the gap with nil, growing the array
+	// so the inserted values land exactly at the requested position.
+	pad := 0
+	if at > len(arr) {
+		pad = at - len(arr)
+		at = len(arr)
+	}
+	// Reject a result that would exceed the memory quota before reserving the
+	// padded backing array, so insert(1_000_000_000, x) on a small array fails
+	// fast rather than allocating a huge nil-padded slice the post-call check
+	// would only catch after the fact.
+	finalLength := saturatingAdd(saturatingAdd(len(arr), pad), len(values))
+	if err := exec.checkProjectedIntArrayBytes(finalLength); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, 0, len(arr)+pad+len(values))
+	out = append(out, arr[:at]...)
+	for range pad {
+		// Charge a step per padded slot so a window far past the end
+		// (insert(1_000_000, x) on a short array) stays bounded by the step quota
+		// and observes cancellation even when the memory quota is generous,
+		// mirroring Array#fill's per-slot stepping.
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		out = append(out, NewNil())
+	}
+	out = append(out, values...)
+	out = append(out, arr[at:]...)
+	return NewArray(out), nil
 }

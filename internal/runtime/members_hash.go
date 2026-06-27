@@ -14,7 +14,7 @@ import (
 // listed name resolves.
 var hashMemberNames = []string{
 	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "default", "default_proc",
-	"merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+	"merge", "update", "merge!", "replace", "store", "delete", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 	"inspect",
 }
 
@@ -35,7 +35,7 @@ func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "default", "default_proc":
 		return hashMemberQuery(property)
-	case "merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
+	case "merge", "update", "merge!", "replace", "store", "delete", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	case "inspect":
 		return newInspectBuiltin("hash"), nil
@@ -949,6 +949,69 @@ func hashMemberTransforms(property string) (Value, error) {
 			}
 			out[key] = args[1]
 			return NewHash(out), nil
+		}), nil
+	case "delete":
+		return NewBuiltin("hash.delete", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.delete does not accept keyword arguments")
+			}
+			if len(args) != 1 {
+				return NewNil(), fmt.Errorf("hash.delete expects a key")
+			}
+			key, err := valueToHashKey(args[0])
+			if err != nil {
+				return NewNil(), fmt.Errorf("hash.delete key must be symbol or string")
+			}
+			// Vibescript's method-based hash helpers are immutable-style: delete
+			// returns a new hash with the key removed rather than mutating the
+			// receiver. Because the receiver itself is non-mutating, the removed
+			// value is reported alongside the pruned hash as { hash:, deleted: },
+			// mirroring Array#pop's { array:, popped: } convention.
+			base := receiver.Hash()
+			deleted, present := base[key]
+			if !present {
+				// On a miss Ruby returns nil, or the result of a block invoked with
+				// the requested key, matching `h.delete(key) { |k| default }`.
+				deleted = NewNil()
+				if valueBlock(block) != nil {
+					result, err := exec.CallBlock(block, []Value{args[0]})
+					if err != nil {
+						return NewNil(), err
+					}
+					deleted = result
+				}
+				// The hash is unchanged on a miss, so return a copy without
+				// reserving room to grow.
+				out := make(map[string]Value, len(base))
+				for k, v := range base {
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+					out[k] = v
+				}
+				return NewHash(map[string]Value{
+					"hash":    NewHash(out),
+					"deleted": deleted,
+				}), nil
+			}
+			// The result drops exactly one entry, so it is never larger than the
+			// receiver; no growth projection is needed. Copy entry by entry so
+			// deleting from a large hash charges a step per copied entry and honors
+			// cancellation, matching store, replace, and slice.
+			out := make(map[string]Value, len(base)-1)
+			for k, v := range base {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				if k == key {
+					continue
+				}
+				out[k] = v
+			}
+			return NewHash(map[string]Value{
+				"hash":    NewHash(out),
+				"deleted": deleted,
+			}), nil
 		}), nil
 	case "slice":
 		// AutoBuiltin so a parenless `hash.slice` invokes with zero arguments

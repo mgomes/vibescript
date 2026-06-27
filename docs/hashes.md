@@ -143,8 +143,9 @@ The default travels with the hash object: index assignment (`hash[key] = ...`)
 keeps it, and `merge` (with its `update` / `merge!` aliases) copies the
 receiver's default onto the merged hash. Every other transform that returns a new
 hash (`select`, `reject`, `slice`, `except`, `transform_keys`,
-`transform_values`, `compact`, `store`, `replace`, ...) returns a plain hash with
-no default, so derived hashes do not silently inherit missing-key behavior.
+`transform_values`, `compact`, `store`, `delete`, `replace`, ...) returns a plain
+hash with no default, so derived hashes do not silently inherit missing-key
+behavior.
 
 ```vibe
 base = Hash.new(0)
@@ -254,6 +255,11 @@ end
 - `store(key, value)` returns a new hash with the key assigned, leaving the
   receiver unchanged. Like the other method-based helpers it is immutable-style;
   use index assignment (`hash[key] = value`) when you want to mutate in place.
+- `delete(key)` / `delete(key) { |key| default }` returns a `{ hash:, deleted: }`
+  pair: `hash` is a new hash with `key` removed (the receiver is left unchanged,
+  immutable-style, unlike Ruby's mutating `delete`) and `deleted` is the removed
+  value, or `nil` on a miss. With a block, the block is invoked with the requested
+  key on a miss and its result reported as `deleted` instead.
 - `compact` removes `nil` values.
 - `slice(*keys)` keeps only selected keys. Candidate keys that are absent are
   omitted, and keys whose type cannot be a hash key (anything other than a symbol
@@ -272,8 +278,8 @@ map they project its size against the memory quota, so a transform over a large
 hash is rejected up front rather than after the backing map is allocated. While
 walking the receiver they charge the step quota per entry and honor context
 cancellation, so large materializations stay bounded. This applies to `merge`
-(and its `update` / `merge!` aliases), `replace`, `store`, `compact`, `slice`,
-`except`, `select`, `reject`, `transform_keys`, `transform_values`, and
+(and its `update` / `merge!` aliases), `replace`, `store`, `delete`, `compact`,
+`slice`, `except`, `select`, `reject`, `transform_keys`, `transform_values`, and
 `remap_keys`.
 
 The block-driven transforms (`transform_keys`, `transform_values`, and the
