@@ -539,9 +539,21 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `prepend(*values) -> array` – new array with `values` inserted at the front in
   order, so `[3].prepend(1, 2)` is `[1, 2, 3]`. Bare `prepend` and `prepend()`
   return the array unchanged.
+- `unshift(*values) -> array` – Ruby-style alias for `prepend`.
 - `pop(n = nil) -> hash` – returns `{ array:, popped: }`; bare `pop` pops one
   element (`popped` is the value or `nil`), `pop(n)` pops up to `n` elements
   (`popped` is an array).
+- `shift(n = nil) -> hash` – returns `{ array:, shifted: }`; bare `shift` removes
+  one leading element (`shifted` is the value or `nil`), `shift(n)` removes up to
+  `n` (`shifted` is an array). `n` must be a non-negative integer.
+- `delete(value) -> hash` / `delete(value) { default } -> hash` – removes every
+  element equal to `value`, returning `{ array:, deleted: }`. `deleted` is the
+  value when at least one match was removed and `nil` otherwise; the block result
+  is reported on a miss instead.
+- `insert(index, *values) -> array` – new array with `values` inserted before the
+  element at `index`. A negative index inserts after that element (`insert(-1, x)`
+  appends); an index past the end pads with `nil`; a negative index past the start
+  raises. Inserting no values returns the array unchanged.
 - `first -> value | nil` / `first(n) -> array` – leading element(s).
 - `last -> value | nil` / `last(n) -> array` – trailing element(s).
 - `uniq -> array` – distinct values, keeping first occurrences.
@@ -563,13 +575,16 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   the block form maps each element to its pair. A non-array element, a pair that
   is not exactly two elements, or a non-symbol/string key raises.
 
-Because array methods never mutate the receiver, `pop` hands back both
-halves of the result:
+Because array methods never mutate the receiver, the removal helpers `pop`,
+`shift`, and `delete` each hand back both halves of the result:
 
 ```vibe
 items = [1, 2, 3]
-items.pop    # {array: [1, 2], popped: 3}
-items.pop(2) # {array: [1], popped: [2, 3]}
+items.pop       # {array: [1, 2], popped: 3}
+items.pop(2)    # {array: [1], popped: [2, 3]}
+items.shift     # {array: [2, 3], shifted: 1}
+items.shift(2)  # {array: [3], shifted: [1, 2]}
+[1, 2, 2].delete(2) # {array: [1], deleted: 2}
 ```
 
 ### Aggregation, Ordering, and Grouping
@@ -694,6 +709,11 @@ methods.
   truncated. Entries are emitted in sorted key order.
 - `store(key, value) -> hash` – new hash with `key` assigned to `value`; the
   receiver is left unchanged (immutable-style, unlike Ruby's mutating `store`).
+- `delete(key) -> hash` / `delete(key) { |key| default } -> hash` – returns
+  `{ hash:, deleted: }`, where `hash` is a new hash with `key` removed and the
+  receiver is left unchanged (immutable-style, unlike Ruby's mutating `delete`).
+  `deleted` is the removed value, or `nil` on a miss; with a block, the block is
+  invoked with the requested key on a miss and its result reported instead.
 - `slice(*keys) -> hash` – only the listed keys; missing keys are skipped.
   Unsupported key types (anything other than a symbol or string) are ignored as
   Ruby misses, so a candidate that cannot match an entry is dropped rather than

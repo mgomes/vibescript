@@ -58,7 +58,10 @@ Common enumerable helpers include:
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `append(*values)` is a Ruby-style alias for `push`, returning a new array with the values added to the end in order.
 - `array << value` is the Ruby-style shovel operator. Because Vibescript arrays are immutable it does not mutate the receiver: it returns a new array with the single value appended (`[1, 2] << 3` is `[1, 2, 3]`). Accumulate by reassigning, `values = values << value`, the same idiom used with `push` and `+`; a bare `values << value` statement computes the appended array and discards it. The left operand must be an array.
-- `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`).
+- `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`). `unshift(*values)` is a Ruby-style alias.
+- `shift` / `shift(n)` removes element(s) from the front. Because the array is not mutated, it returns a `{ array:, shifted: }` hash mirroring `pop`: bare `shift` removes one element (`shifted` is the value or `nil` on an empty array) and `shift(n)` removes up to `n` (`shifted` is an array). `n` must be a non-negative integer.
+- `delete(value)` removes every element equal to `value`, returning a `{ array:, deleted: }` hash. Following Ruby, `deleted` is the last removed element when at least one match was removed and `nil` otherwise; when an element is equal to but a distinct object from `value` you get back the stored element, not your search argument. `delete(value) { default }` reports the block result on a miss instead.
+- `insert(index, *values)` returns a new array with `values` inserted before the element at `index`. A negative index counts back from the end and inserts *after* that element, so `insert(-1, x)` appends; an index past the end pads the gap with `nil`. A negative index whose magnitude exceeds the length raises. Inserting no values returns the array unchanged.
 - `sum` to total an array. `sum` starts from `0`; `sum(initial)` starts from `initial` (so `[1, 2, 3].sum(10)` is `16` and `["a", "b"].sum("")` is `"ab"`). A block transforms each element before it is added, so `[1, 2, 3].sum { |n| n * 2 }` is `12` and `sum(initial) { ... }` combines both. Each addition must operate on compatible operands, mirroring Ruby's `+`: summing a string with a non-string (such as the default `0` accumulator against string elements) raises rather than silently coercing the operands.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays. No argument, `nil`, or a negative depth flattens fully; `0` returns a shallow copy; a positive depth flattens that many levels and a `Float` depth is truncated to an integer. A nonnumeric depth raises.
@@ -98,6 +101,15 @@ survive.
 [1].append(2, 3)            # [1, 2, 3]
 [1, 2] << 3                 # [1, 2, 3]
 [3].prepend(1, 2)           # [1, 2, 3]
+[3].unshift(1, 2)           # [1, 2, 3]
+[1, 2, 3].shift             # {array: [2, 3], shifted: 1}
+[1, 2, 3].shift(2)          # {array: [3], shifted: [1, 2]}
+[1, 2, 3].shift(0)          # {array: [1, 2, 3], shifted: []}
+[1, 2, 2, 3].delete(2)      # {array: [1, 3], deleted: 2}
+[1, 2, 3].delete(9)         # {array: [1, 2, 3], deleted: nil}
+[1, 2, 3].insert(1, "x")    # [1, "x", 2, 3]
+[1, 2, 3].insert(-2, "x")   # [1, 2, "x", 3]
+[1].insert(3, "x")          # [1, nil, nil, "x"]
 [1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 [[1, 2], [3, 4]].transpose  # [[1, 3], [2, 4]]
 [[:a, 1], [:b, 2]].to_h     # { a: 1, b: 2 }
