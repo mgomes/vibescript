@@ -78,7 +78,7 @@ a semantic that already has one.
 | Forbidden state | `cannot X` | An operation is forbidden on this value or in this state (`cannot index int`, `cannot iterate over nil`, `break cannot cross call boundary`, `task handle cannot be used after task scope exits`). |
 | Guard limits | `X exceeds limit N bytes` / `... quota exceeded (N)` / `... exceeded (limit N)` | Sandbox limits. These messages were audited recently; keep their exact shapes (`step quota exceeded (50000)`, `memory quota exceeded (1048576 bytes)`, `recursion depth exceeded (limit 200)`, `string.gsub output exceeds limit 1048576 bytes`). |
 | Duplicate | `duplicate X NAME` | Compile-time redefinition (`duplicate function foo`, `duplicate top-level name Foo`). |
-| Domain-specific | fixed strings | Arithmetic and bounds keep their conventional short forms: `division by zero`, `modulo by zero`, `array index out of bounds`, `string index out of bounds`, `money currency mismatch` (arithmetic, from vibes/value), `money currency mismatch for comparison` (comparisons, from the runtime). |
+| Domain-specific | fixed strings | Arithmetic and bounds keep their conventional short forms: `division by zero`, `modulo by zero`, `array index out of bounds` (raised only by array assignment, since reads return `nil` out of range like Ruby), `money currency mismatch` (arithmetic, from vibes/value), `money currency mismatch for comparison` (comparisons, from the runtime). |
 
 Rendering rules inside messages:
 

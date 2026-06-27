@@ -123,21 +123,26 @@ func methodNameArg(v Value) (string, bool) {
 // the data slot itself holds a callable that real dispatch would invoke (an
 // object's callable export, see the KindObject branch).
 //
-// The universal members (itself, eql?, equal?, and the introspection predicates)
-// respond on every value because resolveMember answers them as a fallback, but a
-// user-defined override of one of these names is a real method: it responds only
-// under the same privacy as any other method, so a private override is not
-// reported to an external caller (matching the dispatch that would raise).
+// The universal members (itself, nil?, eql?, equal?, the block helpers
+// tap/yield_self, and the introspection predicates) respond on every value
+// because resolveMember answers them as a fallback. A user-defined override of
+// one of these names is a real method: it responds only under the same privacy
+// as any other method, so a private override is not reported to an external
+// caller (matching the dispatch that would raise). The data-eligible block
+// helpers tap/yield_self are the exception to "always responds": a stored data
+// slot of that name shadows them, so they respond only when not shadowed by
+// non-callable data (see universalMemberResponds).
 func (exec *Execution) respondsTo(receiver Value, method string, allowPrivate bool) bool {
 	switch receiver.Kind() {
 	case KindHash:
-		// Hashes have no methods that could shadow a universal member, and a hash
-		// builtin name always wins over a stored entry of the same name (hashMember
-		// resolves the builtin before any data key). A universal name therefore
-		// always responds; any other name responds when it is a hash builtin or a
-		// data entry holding a callable.
+		// A hash builtin name always wins over a stored entry of the same name
+		// (hashMember resolves the builtin before any data key). For universal
+		// members, the data-safe helpers always win over a stored entry, so they
+		// always respond; the data-eligible block helpers (tap/yield_self) are
+		// shadowed by a stored entry, so they respond only when no entry shadows
+		// them or the shadowing entry is itself callable.
 		if isUniversalMember(method) {
-			return true
+			return universalMemberResponds(method, receiver.Hash())
 		}
 		if _, ok := hashBuiltinMembers.lookup(method, hashMemberBuiltin); ok {
 			return true
@@ -162,6 +167,29 @@ func (exec *Execution) respondsTo(receiver Value, method string, allowPrivate bo
 	}
 }
 
+// universalMemberResponds reports whether a universal member named method
+// responds for a receiver whose data slots are data (a hash map, an object's
+// field map, an instance's ivars, or a class's class vars). It mirrors how
+// resolveMember resolves the helper against a stored entry of the same name:
+//
+//   - A data-safe helper (itself/nil?/eql?/equal? or an introspection predicate)
+//     always wins over a stored data entry, so it always responds.
+//   - A data-eligible block helper (tap/yield_self) is shadowed by a stored entry:
+//     dispatch returns that entry, so the receiver responds only when no entry
+//     shadows the helper or the shadowing entry is itself callable.
+//
+// method must be a universal member; callers gate on isUniversalMember.
+func universalMemberResponds(method string, data map[string]Value) bool {
+	if isUniversalDataSafe(method) {
+		return true
+	}
+	entry, ok := data[method]
+	if !ok {
+		return true
+	}
+	return isInvocable(entry)
+}
+
 // objectRespondsTo reports whether an object value responds to method, matching
 // the KindObject branch of resolveTypedMember. An object's map backs both
 // module/capability namespaces (callable exports) and ordinary data objects
@@ -171,22 +199,15 @@ func (exec *Execution) respondsTo(receiver Value, method string, allowPrivate bo
 // does NOT respond even when a hash builtin of that name exists, because real
 // dispatch would return (and try to call) the stored data, not the builtin.
 //
-// A universal member responds regardless: a callable export of that name shadows
-// the universal member (and is itself callable), while any other case lets the
-// universal fallback answer.
+// A universal member is shadowed by a non-callable data field only when it is a
+// data-eligible block helper (tap/yield_self); a data-safe helper always wins,
+// and a callable export of any universal name is itself callable.
 func objectRespondsTo(receiver Value, method string) bool {
-	if entry, ok := receiver.Hash()[method]; ok {
-		if isInvocable(entry) {
-			return true
-		}
-		// A non-callable field shadows the hash builtin (dispatch returns the
-		// data), so the receiver does not respond — unless the name is a universal
-		// member, where a non-callable field does not shadow and the universal
-		// fallback still answers.
-		return isUniversalMember(method)
-	}
 	if isUniversalMember(method) {
-		return true
+		return universalMemberResponds(method, receiver.Hash())
+	}
+	if entry, ok := receiver.Hash()[method]; ok {
+		return isInvocable(entry)
 	}
 	_, ok := hashBuiltinMembers.lookup(method, hashMemberBuiltin)
 	return ok
@@ -211,7 +232,9 @@ func isInvocable(v Value) bool {
 // (including an override of a universal member such as respond_to?) responds only
 // per privacy: a private method responds when allowPrivate is set, matching the
 // dispatch that would otherwise raise. A universal member with no override
-// responds because resolveMember answers it via the universal fallback.
+// responds because resolveMember answers it via the universal fallback, except a
+// data-eligible block helper (tap/yield_self) shadowed by a non-callable ivar:
+// dispatch returns that ivar, so the receiver does not respond.
 func instanceRespondsTo(inst *Instance, method string, allowPrivate bool) bool {
 	if method == "class" {
 		return true
@@ -219,7 +242,10 @@ func instanceRespondsTo(inst *Instance, method string, allowPrivate bool) bool {
 	if fn, ok := inst.Class.Methods[method]; ok {
 		return allowPrivate || !fn.Private
 	}
-	return isUniversalMember(method)
+	if isUniversalMember(method) {
+		return universalMemberResponds(method, inst.Ivars)
+	}
+	return false
 }
 
 // classRespondsTo reports whether a class value has a member named method.
@@ -228,7 +254,9 @@ func instanceRespondsTo(inst *Instance, method string, allowPrivate bool) bool {
 // (including an override of a universal member) responds only per privacy: a
 // private class method responds when allowPrivate is set. A universal member with
 // no override responds because resolveMember answers it via the universal
-// fallback.
+// fallback, except a data-eligible block helper (tap/yield_self) shadowed by a
+// non-callable class var: dispatch returns that class var, so the class does not
+// respond.
 func classRespondsTo(cl *ClassDef, method string, allowPrivate bool) bool {
 	if method == "new" {
 		return true
@@ -236,5 +264,8 @@ func classRespondsTo(cl *ClassDef, method string, allowPrivate bool) bool {
 	if fn, ok := cl.ClassMethods[method]; ok {
 		return allowPrivate || !fn.Private
 	}
-	return isUniversalMember(method)
+	if isUniversalMember(method) {
+		return universalMemberResponds(method, cl.ClassVars)
+	}
+	return false
 }

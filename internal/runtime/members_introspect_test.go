@@ -35,7 +35,8 @@ func TestRespondToCoreValues(t *testing.T) {
 		{"float has round", `1.5.respond_to?(:round)`, true},
 		{"symbol has to_s", `:ok.respond_to?(:to_s)`, true},
 		{"range has to_a", `(1..3).respond_to?(:to_a)`, true},
-		{"range missing each", `(1..3).respond_to?(:each)`, false},
+		{"range has each", `(1..3).respond_to?(:each)`, true},
+		{"range missing", `(1..3).respond_to?(:nope)`, false},
 		{"nil has inspect", `nil.respond_to?(:inspect)`, true},
 		{"nil missing", `nil.respond_to?(:length)`, false},
 		{"bool has inspect", `true.respond_to?(:inspect)`, true},
@@ -746,4 +747,99 @@ func TestPredicateMethodStillOverrides(t *testing.T) {
 	if got.Kind() != KindString || got.String() != "custom is_a" {
 		t.Fatalf("user-defined is_a? = %v, want \"custom is_a\"", got)
 	}
+}
+
+// TestRespondToReportsMergedUniversalHelpers guards that respond_to? reports the
+// full set of Object-level helpers — the value-only helpers itself/nil?/eql?/
+// equal? and the block helpers tap/yield_self that share the universal-member
+// fallback with the introspection predicates — so the merged universal mechanism
+// answers respond_to? consistently with actual dispatch.
+func TestRespondToReportsMergedUniversalHelpers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		{"int itself", `42.respond_to?(:itself)`, true},
+		{"int nil?", `42.respond_to?(:nil?)`, true},
+		{"int eql?", `42.respond_to?(:eql?)`, true},
+		{"int equal?", `42.respond_to?(:equal?)`, true},
+		{"int tap", `42.respond_to?(:tap)`, true},
+		{"int yield_self", `42.respond_to?(:yield_self)`, true},
+		{"string tap", `"x".respond_to?(:tap)`, true},
+		{"array yield_self", `[1].respond_to?(:yield_self)`, true},
+		{"hash nil?", `{}.respond_to?(:nil?)`, true},
+		{"hash tap (no shadow)", `{}.respond_to?(:tap)`, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := evalBoolExpr(t, tc.expr); got != tc.want {
+				t.Fatalf("%s = %v, want %v", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRespondToBlockHelpersShadowedByData guards the data-eligible block helpers
+// tap/yield_self: unlike the data-safe helpers and the introspection predicates,
+// a non-callable data slot keyed tap/yield_self shadows the helper (dispatch
+// returns the data), so respond_to? must report false — mirroring resolveMember's
+// per-kind decision. A data slot keyed by a data-safe helper or an introspection
+// predicate never shadows, so those still respond.
+func TestRespondToBlockHelpersShadowedByData(t *testing.T) {
+	t.Parallel()
+
+	t.Run("hash tap key shadows", func(t *testing.T) {
+		t.Parallel()
+		if got := evalBoolExpr(t, `{"tap": 1}.respond_to?(:tap)`); got {
+			t.Fatalf("hash with non-callable tap key responds to tap, want false")
+		}
+		// A data-safe helper and an introspection predicate are never shadowed.
+		if got := evalBoolExpr(t, `{"tap": 1}.respond_to?(:nil?)`); !got {
+			t.Fatalf("hash with tap key does not respond to nil?, want true")
+		}
+		if got := evalBoolExpr(t, `{"tap": 1}.respond_to?(:respond_to?)`); !got {
+			t.Fatalf("hash with tap key does not respond to respond_to?, want true")
+		}
+	})
+
+	t.Run("instance tap ivar shadows", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, `
+      class Record
+        def initialize
+          @tap = 1
+        end
+      end
+
+      def run()
+        Record.new.respond_to?(:tap)
+      end
+      `)
+		got := callFunc(t, script, "run", nil)
+		if got.Kind() != KindBool || got.Bool() {
+			t.Fatalf("instance with @tap ivar responds to tap = %v, want false", got)
+		}
+	})
+
+	t.Run("class tap class var shadows", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, `
+      class Widget
+        @@tap = 1
+      end
+
+      def run()
+        Widget.respond_to?(:tap)
+      end
+      `)
+		got := callFunc(t, script, "run", nil)
+		if got.Kind() != KindBool || got.Bool() {
+			t.Fatalf("class with @@tap class var responds to tap = %v, want false", got)
+		}
+	})
 }

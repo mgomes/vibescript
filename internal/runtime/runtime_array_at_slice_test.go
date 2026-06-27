@@ -61,6 +61,65 @@ func TestArrayAtMatchesBracketAccess(t *testing.T) {
 	compareArrays(t, callFunc(t, script, "compare", nil), []Value{})
 }
 
+// TestArrayBracketMatchesAtSliceDigNilOnMiss pins the behavior the #419
+// changelog relies on for its migration advice: bracket indexing, at, slice, and
+// dig all return nil for an out-of-range index and count negative indices from
+// the end, matching Ruby's Array#[]. Only fetch raises on a miss. Keeping these
+// locked in stops the changelog's "use [], at, slice, or dig for nil-on-miss"
+// guidance from drifting back to the pre-#408 raising behavior.
+func TestArrayBracketMatchesAtSliceDigNilOnMiss(t *testing.T) {
+	t.Parallel()
+
+	nilOnMiss := []struct {
+		name   string
+		source string
+	}{
+		{name: "bracket past end is nil", source: "def run() [10, 20, 30][9] end"},
+		{name: "bracket negative past start is nil", source: "def run() [10, 20, 30][-4] end"},
+		{name: "at past end is nil", source: "def run() [10, 20, 30].at(9) end"},
+		{name: "at negative past start is nil", source: "def run() [10, 20, 30].at(-4) end"},
+		{name: "slice past end is nil", source: "def run() [10, 20, 30].slice(9) end"},
+		{name: "dig past end is nil", source: "def run() [10, 20, 30].dig(9) end"},
+	}
+	for _, tt := range nilOnMiss {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(NewNil()) {
+				t.Fatalf("%s = %v, want nil", tt.source, got)
+			}
+		})
+	}
+
+	lastElement := []struct {
+		name   string
+		source string
+	}{
+		{name: "bracket negative counts from end", source: "def run() [10, 20, 30][-1] end"},
+		{name: "at negative counts from end", source: "def run() [10, 20, 30].at(-1) end"},
+		{name: "slice negative counts from end", source: "def run() [10, 20, 30].slice(-1) end"},
+	}
+	for _, tt := range lastElement {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(NewInt(30)) {
+				t.Fatalf("%s = %v, want 30", tt.source, got)
+			}
+		})
+	}
+
+	// fetch is the only accessor that raises on a miss; it anchors the
+	// changelog's "use fetch when a miss should raise" guidance.
+	t.Run("fetch past end raises", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, "def run() [10, 20, 30].fetch(9) end")
+		requireCallErrorContains(t, script, "run", nil, CallOptions{}, "outside of array bounds")
+	})
+}
+
 // TestArrayAtRejectsMisuse covers the argument validation for Array#at.
 func TestArrayAtRejectsMisuse(t *testing.T) {
 	t.Parallel()

@@ -51,6 +51,7 @@ const (
 	TokenSlash          TokenType = "/"
 	TokenPercent        TokenType = "%"
 	TokenLT             TokenType = "<"
+	TokenShovel         TokenType = "<<"
 	TokenGT             TokenType = ">"
 	TokenLTE            TokenType = "<="
 	TokenGTE            TokenType = ">="
@@ -68,6 +69,7 @@ const (
 	TokenColon     TokenType = ":"
 	TokenScope     TokenType = "::"
 	TokenDot       TokenType = "."
+	TokenSafeNav   TokenType = "&."
 	TokenRange     TokenType = ".."
 	TokenRangeExcl TokenType = "..."
 	TokenLParen    TokenType = "("
@@ -126,6 +128,11 @@ type Token struct {
 	// stamped by the lexer from the source text. It is the zero
 	// Position only for EOF.
 	End source.Position
+	// Diagnostic marks an illegal token whose Literal is a human-readable
+	// lexer diagnostic (such as a malformed numeric literal) rather than the
+	// raw offending source text. The parser surfaces such literals verbatim,
+	// while plain illegal characters fall back to a generic message.
+	Diagnostic bool
 }
 
 var keywordTokenTypes = map[string]TokenType{

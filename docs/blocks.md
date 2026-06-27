@@ -43,6 +43,34 @@ rows.map do |(head, *, tail)|
 end
 ```
 
+## Detecting and invoking a supplied block
+
+A function or method receives a block from its caller and runs it with `yield`.
+`yield` raises `no block given` when the call supplied no block, so optional
+block APIs first ask `block_given?` (Ruby's Kernel predicate). It returns `true`
+when the current call was given a block and `false` otherwise, letting a method
+branch instead of raising:
+
+```vibe
+def fetch(default)
+  if block_given?
+    yield
+  else
+    default
+  end
+end
+
+fetch("none")            # => "none"
+fetch("none") { "value" } # => "value"
+```
+
+`block_given?` reads the block of the call that is currently running. It is
+`false` at the top level and in any call that received no block, and a nested
+call does not inherit its caller's block. Inside a block, `block_given?` reports
+the enclosing method's block, matching Ruby. The predicate is reserved and
+cannot be shadowed by a local; the parenthesized `block_given?()` form behaves
+the same and, like Ruby, accepts no arguments.
+
 Ruby-style ampersand block forwarding (`&block`) and symbol-to-proc shorthand
 (`&:method_name`) are not supported. Write an explicit `do ... end` or brace
 block instead.

@@ -255,7 +255,7 @@ func cloneExpression(expr Expression) Expression {
 	case *IndexExpr:
 		clone := *e
 		clone.Object = cloneExpression(e.Object)
-		clone.Index = cloneExpression(e.Index)
+		clone.Indices = cloneExpressions(e.Indices)
 		return &clone
 	case *DestructureTarget:
 		clone := *e

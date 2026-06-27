@@ -18,13 +18,31 @@ Use this with focused guides in `docs/` for deeper examples.
 Vibescript supports these literal/value categories:
 
 - `nil`, `true`, `false`
-- integers and floats (`1`, `42`, `3.14`, `0xFF`, `0b1010`)
+- integers and floats (`1`, `42`, `3.14`, `1e3`, `1.5e-2`, `0xFF`, `0b1010`)
 - strings (`"hello"`, `"hello #{name}"`)
 - symbols (`:name`)
 - arrays (`[1, 2, 3]`)
 - hashes (`{name: "Ada", active: true}`)
 - ranges (`1..5`, `1...5`)
 - duration literals (`5.minutes`, `2.days`)
+
+Numeric literals accept underscores as visual separators between digits
+(`1_000`, `1_000.50`). Floats may use scientific notation with an `e`/`E`
+marker, an optional sign, and one or more exponent digits (`1e3`, `1.5e-2`,
+`1E6`, `1e1_0`). Any literal carrying an exponent is a float even without a
+decimal point, matching Ruby (`1e3` is `1000.0`). Exponent underscores are
+visual separators only between two digits. A literal whose exponent overflows
+the 64-bit float range saturates to `Infinity`. An `e`/`E` only opens an
+exponent when followed by a sign or digit; otherwise it begins a trailing
+identifier, so `5end` keeps the `end` keyword while `1e` and `1e_3` are
+rejected by the rule below.
+
+A numeric literal may not directly abut an identifier. Forms such as `1e3foo`,
+`123abc`, and `1.5x` are reported as parse errors rather than splitting into a
+number followed by an identifier, matching Ruby. A keyword suffix is exempt
+because Ruby keeps the keyword (`5if cond` and `1e3if cond` are valid modifier
+statements). Committed-but-malformed exponents (`1e+`, `1e3_`, `1e3__4`) are
+likewise reported as parse errors.
 
 Hash literals support label keys (`name:`) and quoted string keys (`"name":`).
 Ruby's hash rocket syntax (`=>`) is not supported.
@@ -84,12 +102,19 @@ A leading `*` discards the values before the named targets:
 *, last = [1, 2, 3]
 ```
 
-Index assignment is supported for mutable collections:
+Index assignment is supported for mutable collections. Array targets accept a
+negative index, which counts back from the end:
 
 ```vibe
 items = [1, 2, 3]
 items[0] = 10
+items[-1] = 30
 ```
+
+Reading with `[]` mirrors Ruby's `Array#[]` and `String#[]`, including negative
+indexes, `value[start, length]`, and `value[range]` slices; see
+[Arrays](arrays.md#indexed-access) and [Strings](strings.md#bracket-access-stringselector)
+for the full semantics.
 
 Compound assignment is supported for single assignment targets, including
 variables, member targets, and index targets:
@@ -120,6 +145,9 @@ Function features:
 - Optional type annotations.
 - Optional return type annotations.
 - Optional block parameters.
+
+Run a supplied block with `yield`, and ask `block_given?` whether the current
+call was given one before yielding. See `docs/blocks.md` for details.
 
 Typed signature example:
 
@@ -310,16 +338,26 @@ end
 Ruby-style ampersand block forwarding and symbol-to-proc shorthand are not
 supported; use an explicit `do ... end` or brace block.
 
-Ruby-style safe navigation (`receiver&.member`) is not supported. Use an
-explicit nil check:
+Ruby-style safe navigation (`receiver&.member`) reads a member or calls a
+method only when the receiver is not `nil`. When the receiver is `nil`, the
+whole `&.` access short-circuits to `nil` without looking up the member or
+dispatching the call; otherwise it behaves exactly like the ordinary `.`
+access:
 
 ```vibe
-if user == nil
-  nil
-else
-  user.name
-end
+user&.name           # nil when user is nil, otherwise user.name
+user&.profile("public")
 ```
+
+A short-circuited safe call does not evaluate its arguments or block, matching
+Ruby. The operator guards only its immediate access, so in `user&.profile.name`
+the trailing `.name` still dispatches on whatever `user&.profile` returned; if
+that is `nil`, the `.name` access raises. Use safe navigation at each link
+(`user&.profile&.name`) to guard a whole chain.
+
+Safe navigation cannot be used as an assignment target. It is rejected anywhere
+in the target, so `user&.name = "Ada"`, `user&.profile.name = "Ada"`, and
+`user&.items[0] = 1` are all parse errors rather than assignments through `nil`.
 
 ## Operators
 
@@ -329,6 +367,7 @@ Core operator families:
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`
 - Case equality: `===`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
+- Collection: `array << value` (append), `array & other` (intersection)
 - Unary sign: prefix `-` negates a number; prefix `+` is the identity on
   numbers and strings
 - Conditional: `condition ? when_true : when_false`
@@ -347,6 +386,21 @@ so `1 === 1` is `true` and `2 === (1..3)` is `false` (the integer `2` is not a
 range). Because the scalar path reuses `==`, integers and floats remain distinct
 kinds, so `1 === 1.0` is `false`, unlike Ruby. Regex and class matchers will be
 added alongside the corresponding language features.
+
+The collection operators work on arrays. `array << value` appends a single
+value, and `array & other` returns the elements common to both arrays with
+duplicates removed and the left array's order preserved. Because Vibescript
+arrays are immutable, `<<` does not mutate the receiver like Ruby's shovel does:
+it returns a new array, so accumulate by reassigning (`values = values << x`),
+the same idiom used with `push` and `+`. Following Ruby, `+` binds tighter than
+`<<`, which binds tighter than `&`. The `&` operator is disambiguated from the
+(unsupported) block-pass sigil by spacing, exactly as Ruby does: only an `&`
+that is detached from the callee yet flush against its operand (`call &block`)
+is read as a block pass and reported as unsupported. Every other shape is the
+intersection operator, including a spaced `&` (`items & others`), an `&` flush
+on both sides (`items&others`), and a trailing `&` that continues the
+expression onto the next line. See
+[Arrays](arrays.md#set-like-operations) for details.
 
 Operator precedence follows conventional arithmetic/boolean ordering.
 Exponentiation with `**` is right-associative and binds more tightly than

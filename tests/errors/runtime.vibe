@@ -6,12 +6,16 @@ def mod_by_zero
   1 % 0
 end
 
-def array_index_out_of_bounds
-  [1][5]
+def array_non_integer_index
+  [1, 2, 3]["x"]
 end
 
-def string_index_out_of_bounds
-  "hello"[10]
+def string_non_integer_index
+  "hello"["x"]
+end
+
+def index_unsupported_type
+  1[0]
 end
 
 def method_missing

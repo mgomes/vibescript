@@ -13,10 +13,11 @@ import (
 var (
 	intMemberNames = []string{
 		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
-		"abs", "clamp", "even?", "odd?", "times",
+		"abs", "clamp", "even?", "odd?", "times", "upto", "downto", "step",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
 	floatMemberNames = []string{
@@ -24,17 +25,19 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?",
 		"nan?", "infinite?", "finite?",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
-	moneyMemberNames = []string{"currency", "cents", "amount", "format"}
+	moneyMemberNames = []string{"currency", "cents", "amount", "format", "to_s", "string"}
 )
 
 var (
 	intBuiltinMemberNames = []string{
-		"abs", "clamp", "even?", "odd?", "times",
+		"abs", "clamp", "even?", "odd?", "times", "upto", "downto", "step",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
 	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
@@ -137,6 +140,16 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
+	case "upto":
+		return NewAutoBuiltin("int.upto", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return intUptoDownto(exec, receiver, args, kwargs, block, "int.upto", +1)
+		}), nil
+	case "downto":
+		return NewAutoBuiltin("int.downto", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return intUptoDownto(exec, receiver, args, kwargs, block, "int.downto", -1)
+		}), nil
+	case "step":
+		return NewAutoBuiltin("int.step", intStep), nil
 	case "zero?":
 		return NewAutoBuiltin("int.zero?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -247,11 +260,34 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return numericModulo("int.modulo", receiver, divisor)
 		}), nil
+	case "to_s", "string":
+		return newToStringBuiltin("int", property), nil
+	case "to_i":
+		return newIntIdentityBuiltin("int.to_i"), nil
+	case "to_f":
+		return NewAutoBuiltin("int.to_f", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if err := requireNullaryCall("int.to_f", args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			return NewFloat(float64(receiver.Int())), nil
+		}), nil
 	case "inspect":
 		return newInspectBuiltin("int"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown int method %s", property)
 	}
+}
+
+// newIntIdentityBuiltin returns the no-argument builtin backing Ruby's
+// Integer#to_i, which returns the receiver unchanged. name identifies the
+// builtin and its argument error.
+func newIntIdentityBuiltin(name string) Value {
+	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+		return receiver, nil
+	})
 }
 
 func (exec *Execution) floatMember(obj Value, property string, pos Position) (Value, error) {
@@ -406,6 +442,30 @@ func floatMemberBuiltin(property string) (Value, error) {
 				return NewNil(), err
 			}
 			return numericModulo("float.modulo", receiver, divisor)
+		}), nil
+	case "to_s", "string":
+		return newToStringBuiltin("float", property), nil
+	case "to_i":
+		return NewAutoBuiltin("float.to_i", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if err := requireNullaryCall("float.to_i", args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			// Ruby's Float#to_i truncates toward zero, unlike the strict global
+			// to_int which rejects a fractional float. floatToInt64Checked
+			// truncates after rejecting NaN, Infinity, and out-of-range
+			// magnitudes, matching Ruby's FloatDomainError for those cases.
+			n, err := floatToInt64Checked(receiver.Float(), "float.to_i")
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewInt(n), nil
+		}), nil
+	case "to_f":
+		return NewAutoBuiltin("float.to_f", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if err := requireNullaryCall("float.to_f", args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			return receiver, nil
 		}), nil
 	case "inspect":
 		return newInspectBuiltin("float"), nil
@@ -562,6 +622,121 @@ func flooredFloatMod(num, den float64) float64 {
 	return m
 }
 
+// intUptoDownto implements Integer#upto (direction +1) and Integer#downto
+// (direction -1): it yields each integer from the receiver to the limit
+// argument inclusive, stepping by one in the given direction, and returns the
+// receiver. A receiver already past the limit yields nothing, matching Ruby.
+// Each yield charges a step so a wide span is bounded by the sandbox quota and
+// honors cancellation. The terminal check uses the limit rather than unchecked
+// increment, so a span ending at MaxInt64/MinInt64 stops cleanly instead of
+// wrapping around.
+func intUptoDownto(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, name string, direction int64) (Value, error) {
+	if len(args) != 1 {
+		return NewNil(), fmt.Errorf("%s expects one integer argument", name)
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
+	}
+	if args[0].Kind() != KindInt {
+		return NewNil(), fmt.Errorf("%s expects an integer limit", name)
+	}
+	if valueBlock(block) == nil {
+		return NewNil(), fmt.Errorf("%s requires a block", name)
+	}
+	limit := args[0].Int()
+	runner, err := newBlockCallRunner(exec, block, name)
+	if err != nil {
+		return NewNil(), err
+	}
+	current := receiver.Int()
+	var blockArg [1]Value
+	for {
+		if direction > 0 {
+			if current > limit {
+				break
+			}
+		} else if current < limit {
+			break
+		}
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArg[0] = NewInt(current)
+		if _, err := runner.call(blockArg[:]); err != nil {
+			return NewNil(), err
+		}
+		if current == limit {
+			break
+		}
+		current += direction
+	}
+	return receiver, nil
+}
+
+// intStep implements Integer#step(limit, step): it yields the receiver and each
+// subsequent value obtained by adding step, while the value has not passed the
+// limit (`<= limit` for a positive step, `>= limit` for a negative step), and
+// returns the receiver. The step defaults to 1 and must be a nonzero integer,
+// matching Ruby's ArgumentError on a zero step. Each yield charges a step so a
+// wide span is bounded by the sandbox quota, and the terminal value is detected
+// before the next addition so a span reaching MaxInt64/MinInt64 stops without
+// wrapping around.
+func intStep(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("int.step expects a limit and an optional step")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("int.step does not take keyword arguments")
+	}
+	if args[0].Kind() != KindInt {
+		return NewNil(), fmt.Errorf("int.step expects an integer limit")
+	}
+	limit := args[0].Int()
+	stride := int64(1)
+	if len(args) == 2 {
+		if args[1].Kind() != KindInt {
+			return NewNil(), fmt.Errorf("int.step expects an integer step")
+		}
+		stride = args[1].Int()
+	}
+	if stride == 0 {
+		return NewNil(), fmt.Errorf("int.step step must not be zero")
+	}
+	if valueBlock(block) == nil {
+		return NewNil(), fmt.Errorf("int.step requires a block")
+	}
+	runner, err := newBlockCallRunner(exec, block, "int.step")
+	if err != nil {
+		return NewNil(), err
+	}
+	current := receiver.Int()
+	var blockArg [1]Value
+	for {
+		if stride > 0 {
+			if current > limit {
+				break
+			}
+		} else if current < limit {
+			break
+		}
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArg[0] = NewInt(current)
+		if _, err := runner.call(blockArg[:]); err != nil {
+			return NewNil(), err
+		}
+		next, ok := addInt64Checked(current, stride)
+		if !ok {
+			// The next value would wrap past the int64 range, so no further value
+			// can be in bounds; stop cleanly rather than wrapping around.
+			break
+		}
+		current = next
+	}
+	return receiver, nil
+}
+
 func moneyMember(m Money, property string) (Value, error) {
 	switch property {
 	case "currency":
@@ -570,6 +745,8 @@ func moneyMember(m Money, property string) (Value, error) {
 		return NewInt(m.Cents()), nil
 	case "amount":
 		return NewString(m.String()), nil
+	case "to_s", "string":
+		return newToStringBuiltin("money", property), nil
 	default:
 		if member, ok := moneyBuiltinMembers.lookup(property, moneyMemberBuiltin); ok {
 			return member, nil

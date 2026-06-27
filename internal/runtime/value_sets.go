@@ -216,6 +216,28 @@ func differenceArrayValues(left []Value, others [][]Value) []Value {
 	return out
 }
 
+// intersectArrayValues returns the elements of left that also appear in right,
+// duplicates removed while preserving the left array's first-seen order,
+// mirroring Ruby's Array#&. The right array seeds a membership set so each left
+// element is a constant-time scalar lookup (or an equality scan for composite
+// elements), and a second set tracks which results were already emitted so the
+// output never repeats a value.
+func intersectArrayValues(left, right []Value) []Value {
+	var inRight membershipSet
+	inRight.addSource(right, len(right))
+	var emitted valueSet
+	out := make([]Value, 0, boundedSetCap(min(len(left), len(right))))
+	for _, item := range left {
+		if !inRight.contains(item) {
+			continue
+		}
+		if emitted.add(item, len(left)) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func subtractArrayValues(left, right []Value) []Value {
 	var removal membershipSet
 	removal.addSource(right, len(right))

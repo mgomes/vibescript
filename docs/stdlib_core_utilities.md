@@ -134,15 +134,74 @@ render as `<cycle>`. The rendered length is charged against the sandbox memory
 quota before the string is built, so inspecting a huge composite fails with a
 quota error instead of allocating an oversized result.
 
+## Universal Methods
+
+Every value responds to `nil?`, including script class instances, classes,
+function values, and enum values:
+
+- `nil? -> bool` – `true` only for `nil`, `false` for every other value
+  (Ruby's `Object#nil?`). Takes no arguments. It resolves through the same
+  central fallback as the [object helpers](#object-helpers) below, so a
+  user-defined method named `nil?` keeps precedence.
+
+The scalar kinds whose display form is bounded by their own footprint (`nil`,
+booleans, integers, floats, strings, symbols, money, durations, and times) also
+respond to `to_s` and `string`:
+
+- `to_s -> string` – the value's display rendering (the `to_s` form used by
+  string interpolation). For strings it returns the receiver; for symbols,
+  durations, and times it matches the kind-specific `to_s` documented below.
+- `string -> string` – alias for `to_s`; the documented Vibescript conversion
+  idiom used in [typing.md](typing.md) (for example `id.string`).
+
+Both take no arguments. Arrays, hashes, and ranges deliberately do **not**
+respond to `to_s`/`string`: their rendering can be arbitrarily large, so they
+expose only `inspect`, which projects the rendered length against the sandbox
+memory quota before allocating. Strings additionally parse numeric text with
+`to_i`/`to_f` (see [Conversion](#conversion)), and integers and floats convert
+between numeric kinds with `to_i`/`to_f` (see [Integers](#integers) and
+[Floats](#floats)).
+
+```vibe
+42.nil?     # false
+nil.nil?    # true
+[1, 2].nil? # false
+42.string   # "42"
+:ok.to_s    # "ok"
+```
+
+## Object Helpers
+
+Every core value kind responds to the block-yielding helpers `tap` and
+`yield_self`. Both require a block, take no positional or keyword arguments, and
+pass the receiver as the block's single argument. They differ only in what they
+return:
+
+- `tap { |value| } -> receiver` – yields the receiver, ignores the block's
+  result, and returns the receiver. Use it to thread a side effect (such as
+  logging) through a pipeline without changing the value.
+- `yield_self { |value| } -> block result` – yields the receiver and returns the
+  block's result, so it rewrites a value inline.
+
+```vibe
+"ada".tap { |name| name.upcase }        # "ada" (block result discarded)
+"ada".yield_self { |name| name.upcase } # "ADA"
+3.yield_self { |n| n * 100 }            # 300
+```
+
+These helpers resolve only when the receiver does not already define a member of
+the same name, so a hash key, instance variable, or user-defined method named
+`tap` or `yield_self` keeps precedence.
+
 ## Object Introspection
 
 Every value kind responds to the Ruby-style introspection predicates. They are
 resolved the way `Object`'s methods are in Ruby: available on any receiver, but a
 script class may define its own method of the same name and that definition wins.
-A data slot keyed with a predicate name (a hash key, instance variable, or class
-variable named `respond_to?`, `is_a?`, and so on) is data, not a method, so it
-never shadows the predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still
-calls the predicate.
+Unlike the data-eligible block helpers `tap`/`yield_self`, a data slot keyed with
+a predicate name (a hash key, instance variable, or class variable named
+`respond_to?`, `is_a?`, and so on) is data, not a method, so it never shadows the
+predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicate.
 
 - `respond_to?(name) -> bool` (optionally `respond_to?(name, include_all)`) –
   reports whether the receiver has a callable member named `name` (a symbol or a
@@ -207,6 +266,21 @@ Unicode characters, not bytes, unless noted.
 - `to_sym -> symbol` – the symbol named by the string. Any contents are
   accepted verbatim, including whitespace, punctuation, and the empty string.
 - `intern -> symbol` – alias for `to_sym`.
+- `to_s -> string` – the receiver itself (Ruby's `String#to_s`).
+- `string -> string` – alias for `to_s`; the documented Vibescript conversion
+  idiom (see [typing.md](typing.md)).
+- `to_i -> int` – parse a base-10 integer. Unlike Ruby's lenient `String#to_i`
+  (which ignores trailing characters and returns `0` on failure), this is strict
+  like the global `to_int`: surrounding whitespace is trimmed, but an empty or
+  non-integer string raises rather than silently yielding `0`.
+- `to_f -> float` – parse a finite float with the same strict semantics as the
+  global `to_float`; an empty, non-numeric, or non-finite string raises.
+
+```vibe
+"42".to_i  # 42
+"3.5".to_f # 3.5
+"id".string # "id"
+```
 
 ### Search and Matching
 
@@ -224,6 +298,8 @@ Unicode characters, not bytes, unless noted.
   end (`size + offset`) and yields `nil` when it falls before the start.
 - `match(pattern) -> array | nil` – regex match returning
   `[full, capture1, ...]` (unmatched groups are `nil`); `nil` when no match.
+  Given a block, yields the match data and returns the block's result, or `nil`
+  without invoking the block when there is no match.
 - `match?(pattern, offset = 0) -> bool` – allocation-light predicate returning
   `true` when `pattern` matches at or after the character `offset`, else
   `false`. Anchors keep the full-string context across the offset; an offset
@@ -231,7 +307,8 @@ Unicode characters, not bytes, unless noted.
 - `scan(pattern) -> array` – every non-overlapping regex match. With no capture
   groups the result is an array of full match strings; with one or more groups
   each match contributes a nested array of its captured substrings (`nil` for an
-  optional group that did not participate), mirroring Ruby.
+  optional group that did not participate), mirroring Ruby. Given a block, yields
+  each match (using the same per-match shape) and returns the receiver string.
 
 `match`, `match?`, and `scan` treat `pattern` as a regex and enforce the
 [regex guard limits](#guard-limits).
@@ -308,9 +385,11 @@ then truncated at a character boundary to fill the span.
 ### Replacement, Splitting, and Templating
 
 - `sub(pattern, replacement, regex: false) -> string` – replace the first
-  occurrence of `pattern`.
+  occurrence of `pattern`. Given a block instead of `replacement`, the block
+  receives the matched substring and its result replaces the match.
 - `gsub(pattern, replacement, regex: false) -> string` – replace every
-  occurrence of `pattern`.
+  occurrence of `pattern`. Given a block instead of `replacement`, the block
+  receives each matched substring and its result replaces that match.
 - `split(separator = nil) -> array` – split on runs of ASCII whitespace
   (space, tab, newline, vertical tab, form feed, carriage return; dropping empty
   fields) without arguments, or on `separator` when given. Like Ruby, the
@@ -337,6 +416,13 @@ backslash. `$1` and `$&` are literal text, matching Ruby. See
 [String#sub replacement backreferences](strings.md#replacement-backreferences)
 for the full table. The regex [guard limits](#guard-limits) still apply.
 
+The block forms of `sub`/`gsub` honor the same `regex` keyword (defaulting to
+literal matching) and reject being given both a `replacement` argument and a
+block. `scan(pattern)` and `match(pattern)` also accept blocks: `scan` yields
+each match and returns the receiver, while `match` yields the match data and
+returns the block's result (or `nil`, without invoking the block, when there is
+no match). See [Strings](strings.md) for examples.
+
 ### Bang Variants
 
 Each of the following returns the transformed string, or `nil` when the
@@ -360,6 +446,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 ### Iteration
 
 - `each { |item| } -> array` – yield each element; returns the receiver.
+- `each_with_index { |item, index| } -> array` – yield each element with its
+  0-based index; returns the receiver. Takes no arguments.
 - `each_slice(n) { |slice| } -> nil` – yield non-overlapping slices of length
   `n` (the trailing slice may be shorter); `n` must be a positive integer.
 - `each_cons(n) { |window| } -> nil` – yield each sliding window of length `n`;
@@ -370,6 +458,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   non-positive `n` yields nothing. Omitting `n` or passing `nil` cycles forever,
   bounded by the step quota and context cancellation.
 - `map { |item| } -> array` – new array of block results.
+- `map_with_index { |item, index| } -> array` – new array of block results,
+  passing each element's 0-based index to the block. Takes no arguments.
 - `filter_map { |item| } -> array` – block results that are truthy; fuses `map`
   with a truthiness filter, dropping falsy returns.
 - `select { |item| } -> array` – elements for which the block is truthy.
@@ -414,8 +504,12 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   `rindex { |item| } -> int | nil` – last index of `value` at or before
   `offset`, or the last index whose block is truthy. Pass a value or a block,
   never both.
-- `fetch(index, default = nil) -> value` – element at `index`, or
-  `default`/`nil` when out of bounds.
+- `fetch(index, default) -> value` / `fetch(index) { |index| } -> value` –
+  element at `index` (negative counts from the end). When `index` is out of
+  bounds, evaluates the block with the requested index if a block is given,
+  otherwise returns the `default` argument if given, otherwise raises `index
+  ... outside of array bounds`. When both a `default` and a block are supplied,
+  the block supersedes the default and is evaluated on a miss, matching Ruby.
 - `dig(*path) -> value | nil` – nested lookup following `path`. Each component
   descends one level: an integer index into an array or a symbol/string key
   into a hash, so a single `dig` can traverse mixed array/hash data. `nil` when
@@ -541,8 +635,12 @@ methods.
 
 ### Access
 
-- `fetch(key, default = nil) -> value` – value for `key`, or `default`/`nil`
-  when missing.
+- `fetch(key, default) -> value` / `fetch(key) { |key| } -> value` – value for
+  `key`. When `key` is missing, evaluates the block with the requested key if a
+  block is given, otherwise returns the `default` argument if given, otherwise
+  raises `key not found`. When both a `default` and a block are supplied, the
+  block supersedes the default and is evaluated on a miss, matching Ruby. Use
+  `[]` or `dig` when a missing key should yield `nil`.
 - `fetch_values(*keys) { |key| } -> array` – values for `keys` in requested
   order. Raises `key not found` for any missing key; when a block is given it is
   called with each missing key and its result is used instead.
@@ -556,8 +654,14 @@ methods.
 ### Iteration
 
 - `each { |key, value| } -> hash` – yield each pair; returns the receiver.
+- `each_with_index { |pair, index| } -> hash` – yield each `[key, value]` pair
+  with its 0-based index in sorted key order, matching Ruby's
+  `Hash#each_with_index`; returns the receiver. Takes no arguments.
 - `each_key { |key| } -> hash` – yield each key.
 - `each_value { |value| } -> hash` – yield each value.
+- `map_with_index { |pair, index| } -> array` – new array of block results,
+  yielding each `[key, value]` pair with its 0-based index in sorted key order.
+  Takes no arguments.
 
 ### Transform and Filter
 
@@ -623,6 +727,16 @@ aliases, so `1.second` reads naturally.
 - `even? -> bool` – true for even integers.
 - `odd? -> bool` – true for odd integers.
 - `times { |i| } -> int` – run the block with `0..n-1`; returns the receiver.
+- `upto(limit) { |i| } -> int` – run the block with each integer from the
+  receiver up to `limit` inclusive (nothing when the receiver already exceeds
+  `limit`); returns the receiver.
+- `downto(limit) { |i| } -> int` – run the block with each integer from the
+  receiver down to `limit` inclusive (nothing when the receiver is already below
+  `limit`); returns the receiver.
+- `step(limit, by = 1) { |i| } -> int` – run the block with the receiver and
+  each subsequent value `by` apart, while it has not passed `limit` (`<= limit`
+  for a positive step, `>= limit` for a negative step); `by` must be a nonzero
+  integer. Returns the receiver.
 - `zero? -> bool` – true when the integer is `0`.
 - `positive? -> bool` – true when greater than `0`.
 - `negative? -> bool` – true when less than `0`.
@@ -656,6 +770,11 @@ aliases, so `1.second` reads naturally.
 - `modulo(n) -> int|float` – the `%` operator as a method: the result's sign
   follows the divisor (floored division). Integer operands yield an integer;
   any float operand yields a float; a zero divisor errors.
+- `to_s -> string` – the integer's display digits (Ruby's `Integer#to_s`).
+- `string -> string` – alias for `to_s`.
+- `to_i -> int` – the receiver itself.
+- `to_f -> float` – the value as a float.
+- `nil? -> bool` – always `false`.
 - `inspect -> string` – the integer's debug rendering (same digits as `to_s`;
   see [Debug Representation](#debug-representation)).
 
@@ -700,6 +819,12 @@ Ruby's arbitrary-precision integers.
   (truncated division); a zero divisor errors.
 - `modulo(n) -> float` – the `%` operator as a method: the result's sign
   follows the divisor (floored division); a zero divisor errors.
+- `to_s -> string` – the float's display text (Ruby's `Float#to_s`).
+- `string -> string` – alias for `to_s`.
+- `to_i -> int` – truncate toward zero (Ruby's `Float#to_i`); a non-finite or
+  out-of-range value raises rather than producing garbage.
+- `to_f -> float` – the receiver itself.
+- `nil? -> bool` – always `false`.
 - `inspect -> string` – the float's debug rendering (same text as `to_s`,
   including `Infinity`/`-Infinity`/`NaN`; see
   [Debug Representation](#debug-representation)).
@@ -739,6 +864,7 @@ support arithmetic and comparison operators.
 - `cents -> int` – total amount in minor units.
 - `amount -> string` – formatted amount with currency, e.g. `"100.50 USD"`.
 - `format -> string` – same as `amount`.
+- `to_s` / `string` -> string – same as `amount`.
 
 ```vibe
 m = money("100.50 USD")
@@ -784,6 +910,7 @@ Each returns a `float`. Months use 30-day and years 365-day approximations.
 - `parts -> hash` – `{ days:, hours:, minutes:, seconds: }` breakdown.
 - `to_i -> int` – total seconds.
 - `to_s -> string` – seconds string, e.g. `"5400s"`.
+- `string -> string` – alias for `to_s`.
 - `format -> string` – same as `to_s`.
 - `eql?(other) -> bool` – true when both durations span the same seconds.
 
@@ -848,6 +975,7 @@ formatting. Times also support `time + duration`, `time - duration`,
 - `to_f -> float` – epoch seconds with fractional part.
 - `to_r -> float` – same as `to_f` (rationals are not supported).
 - `to_s -> string` – RFC3339Nano representation.
+- `string -> string` – alias for `to_s`.
 - `to_a -> array` – positional tuple `[sec, min, hour, mday, month, year, wday,
   yday, isdst, zone]`, matching Ruby's field order and the receiver's zone.
 - `iso8601(ndigits = 0)` / `xmlschema(ndigits = 0)` / `rfc3339(ndigits = 0)` -> string – RFC3339 representation. With no argument it emits whole seconds; a non-negative `ndigits` appends that many fractional-second digits, truncated toward zero (matching Ruby's `Time#iso8601`). `xmlschema` is an alias for `iso8601`. Negative, non-integer, or out-of-range (above 100 digits) precision raises a runtime error.
@@ -894,6 +1022,7 @@ Symbols (`:name`) expose the Ruby string/symbol conversion helpers:
 
 - `id2name -> string` – the symbol's name as a string.
 - `to_s -> string` – alias for `id2name`.
+- `string -> string` – alias for `to_s`.
 - `to_sym -> symbol` – returns the receiver unchanged.
 
 `"name".to_sym` and `:name.to_s` round-trip between the two representations.
@@ -946,6 +1075,34 @@ rather than the empty result Ruby produces. The other helpers match Ruby's
 - `to_a -> array` – every element the range iterates over, bounded by the
   sandbox step and memory quotas so large ranges fail safely instead of
   exhausting memory.
+
+### Iteration
+
+Each helper yields the range's integers in iteration order (ascending for
+`1..5`, descending for `5..1`), charging one sandbox step per element so a wide
+range fails on the step quota rather than running unbounded. Helpers that build
+an array (`map`, `select`, `reject`) also honor the memory quota as the result
+grows.
+
+- `each { |i| } -> range` – run the block with each integer; returns the range.
+- `step(n) { |i| } -> range` – run the block with every `n`-th integer starting
+  at the range's start; `n` must be a positive integer. Iteration advances by the
+  stride directly, so a sparse step over a wide span only charges the step quota
+  for the values it yields. Returns the range.
+- `map { |i| } -> array` – collect the block's result for each integer.
+- `select { |i| } -> array` / `reject { |i| } -> array` – keep the integers for
+  which the block is truthy (`select`) or falsy (`reject`).
+- `find { |i| } -> int?` – the first integer for which the block is truthy, or
+  `nil` when none match; short-circuits on the first match.
+- `reduce(initial = first) { |acc, i| } -> value` – fold the integers with the
+  block. With no argument the first integer seeds the accumulator; an empty
+  range returns the seed, or `nil` when no seed is given.
+- `count -> int` / `count { |i| } -> int` – the number of integers in the
+  range, or, with a block, how many the block keeps.
+- `sum(initial = 0) -> int` – the sum of the range's integers plus `initial`;
+  errors on 64-bit overflow rather than wrapping.
+- `min -> int?` / `max -> int?` – the smallest or largest integer the range
+  iterates over, or `nil` for an empty range.
 
 ## Builtin Functions
 
