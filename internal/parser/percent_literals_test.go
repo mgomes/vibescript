@@ -56,6 +56,297 @@ end`
 	}
 }
 
+func TestParserPercentInterpolatedWordArrayLiteral(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  %W[hello #{name} world]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.StringLiteral{Value: "hello"},
+			&ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringExpr{Expr: &ast.Identifier{Name: "name"}},
+			}},
+			&ast.StringLiteral{Value: "world"},
+		}}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserPercentInterpolatedSymbolArrayLiteral(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  %I[hello #{name} world]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.SymbolLiteral{Name: "hello"},
+			&ast.InterpolatedSymbol{Parts: []ast.StringPart{
+				ast.StringExpr{Expr: &ast.Identifier{Name: "name"}},
+			}},
+			&ast.SymbolLiteral{Name: "world"},
+		}}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// %W/%I entries without interpolation collapse to the same plain literal nodes
+// the lowercase forms produce, so downstream consumers see no difference.
+func TestParserPercentInterpolatedArrayLiteralPlainEntries(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  [%W[alpha beta], %I[gamma delta]]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "alpha"},
+				&ast.StringLiteral{Value: "beta"},
+			}},
+			&ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.SymbolLiteral{Name: "gamma"},
+				&ast.SymbolLiteral{Name: "delta"},
+			}},
+		}}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A space inside #{...} must not split a %W/%I word, and an escaped #{ is a
+// literal rather than an interpolation marker.
+func TestParserPercentInterpolatedArrayLiteralWordSplitting(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  [%W[a #{b + c} d], %W[lit\#{x} tail]]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "a"},
+				&ast.InterpolatedString{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: &ast.BinaryExpr{
+						Left:     &ast.Identifier{Name: "b"},
+						Operator: ast.TokenPlus,
+						Right:    &ast.Identifier{Name: "c"},
+					}},
+				}},
+				&ast.StringLiteral{Value: "d"},
+			}},
+			&ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "lit#{x}"},
+				&ast.StringLiteral{Value: "tail"},
+			}},
+		}}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// %W applies double-quoted escape semantics: \t becomes a tab and \  becomes a
+// literal space that does not split the word, unlike the lowercase %w form.
+func TestParserPercentInterpolatedArrayLiteralEscapes(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  %W[tab\there a\ b]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.StringLiteral{Value: "tab\there"},
+			&ast.StringLiteral{Value: "a b"},
+		}}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserPercentInterpolatedArrayLiteralEmptyAndAlternativeDelimiters(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  [%W[], %I{}, %W(a #{x}), %I<b #{x}>]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	interpString := &ast.InterpolatedString{Parts: []ast.StringPart{
+		ast.StringExpr{Expr: &ast.Identifier{Name: "x"}},
+	}}
+	interpSymbol := &ast.InterpolatedSymbol{Parts: []ast.StringPart{
+		ast.StringExpr{Expr: &ast.Identifier{Name: "x"}},
+	}}
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.ArrayLiteral{Elements: []ast.Expression{}},
+			&ast.ArrayLiteral{Elements: []ast.Expression{}},
+			&ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "a"},
+				interpString,
+			}},
+			&ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.SymbolLiteral{Name: "b"},
+				interpSymbol,
+			}},
+		}}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// %W/%I parse as parenless call arguments after a non-local callee, mirroring
+// the lowercase forms and exercising the argument scan path.
+func TestParserPercentInterpolatedArrayParenlessCallArguments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name: "words",
+			source: `def run
+  collect %W[hi #{name}]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.StringLiteral{Value: "hi"},
+						&ast.InterpolatedString{Parts: []ast.StringPart{
+							ast.StringExpr{Expr: &ast.Identifier{Name: "name"}},
+						}},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name: "symbols",
+			source: `def run
+  collect %I[hi #{name}]
+end`,
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.SymbolLiteral{Name: "hi"},
+						&ast.InterpolatedSymbol{Parts: []ast.StringPart{
+							ast.StringExpr{Expr: &ast.Identifier{Name: "name"}},
+						}},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: tc.wantExpr},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// A local named W/I keeps %W/%I parsing as modulo against an index/call, the
+// same disambiguation the lowercase forms use.
+func TestParserLocalModuloBeforeCompactUppercaseWIIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  W = [3]
+  total %W[0]
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "total"},
+			Value:  &ast.IntegerLiteral{Value: 10},
+		},
+		&ast.AssignStmt{
+			Target: &ast.Identifier{Name: "W"},
+			Value: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.IntegerLiteral{Value: 3},
+			}},
+		},
+		&ast.ExprStmt{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "total"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "W"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserPercentArrayLiteralEscapes(t *testing.T) {
 	t.Parallel()
 

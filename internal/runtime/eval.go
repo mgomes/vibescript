@@ -61,6 +61,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return NewString(e.Value), nil
 	case *InterpolatedString:
 		return exec.evalInterpolatedStringLiteral(e, env)
+	case *InterpolatedSymbol:
+		return exec.evalInterpolatedSymbolLiteral(e, env)
 	case *BoolLiteral:
 		return NewBool(e.Value), nil
 	case *NilLiteral:
@@ -157,24 +159,42 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 }
 
 func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, env *Env) (Value, error) {
+	text, err := exec.buildInterpolatedString(lit.Parts, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(text), nil
+}
+
+func (exec *Execution) evalInterpolatedSymbolLiteral(lit *InterpolatedSymbol, env *Env) (Value, error) {
+	name, err := exec.buildInterpolatedString(lit.Parts, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewSymbol(name), nil
+}
+
+// buildInterpolatedString materializes the text of an interpolated string or
+// symbol from its parts, honoring the sandbox step and memory quotas.
+func (exec *Execution) buildInterpolatedString(parts []StringPart, env *Env) (string, error) {
 	var sb strings.Builder
-	for _, part := range lit.Parts {
+	for _, part := range parts {
 		switch p := part.(type) {
 		case StringText:
 			if err := exec.appendInterpolatedChunk(&sb, p.Text); err != nil {
-				return NewNil(), err
+				return "", err
 			}
 		case StringExpr:
 			val, err := exec.evalExpressionWithAuto(p.Expr, env, true)
 			if err != nil {
-				return NewNil(), err
+				return "", err
 			}
 			if err := exec.appendInterpolatedValue(&sb, val); err != nil {
-				return NewNil(), err
+				return "", err
 			}
 		}
 	}
-	return NewString(sb.String()), nil
+	return sb.String(), nil
 }
 
 // appendInterpolatedChunk writes a literal text chunk to the interpolation
@@ -1090,16 +1110,22 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		}
 		return false
 	case *InterpolatedString:
-		for _, part := range e.Parts {
-			stringExpr, ok := part.(StringExpr)
-			if ok && expressionCapturesCurrentEnv(stringExpr.Expr) {
-				return true
-			}
-		}
-		return false
+		return stringPartsCaptureCurrentEnv(e.Parts)
+	case *InterpolatedSymbol:
+		return stringPartsCaptureCurrentEnv(e.Parts)
 	default:
 		return true
 	}
+}
+
+func stringPartsCaptureCurrentEnv(parts []StringPart) bool {
+	for _, part := range parts {
+		stringExpr, ok := part.(StringExpr)
+		if ok && expressionCapturesCurrentEnv(stringExpr.Expr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value) error {

@@ -326,6 +326,8 @@ const (
 	prefixParserInterpolatedStringLiteral
 	prefixParserPercentWordsLiteral
 	prefixParserPercentSymbolsLiteral
+	prefixParserPercentInterpWordsLiteral
+	prefixParserPercentInterpSymbolsLiteral
 	prefixParserBooleanLiteral
 	prefixParserNilLiteral
 	prefixParserSymbolLiteral
@@ -357,6 +359,10 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserPercentWordsLiteral
 	case ast.TokenSymbols:
 		return prefixParserPercentSymbolsLiteral
+	case ast.TokenInterpWords:
+		return prefixParserPercentInterpWordsLiteral
+	case ast.TokenInterpSymbols:
+		return prefixParserPercentInterpSymbolsLiteral
 	case ast.TokenTrue, ast.TokenFalse:
 		return prefixParserBooleanLiteral
 	case ast.TokenNil:
@@ -404,6 +410,10 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parsePercentWordsLiteral()
 	case prefixParserPercentSymbolsLiteral:
 		return p.parsePercentSymbolsLiteral()
+	case prefixParserPercentInterpWordsLiteral:
+		return p.parsePercentInterpWordsLiteral()
+	case prefixParserPercentInterpSymbolsLiteral:
+		return p.parsePercentInterpSymbolsLiteral()
 	case prefixParserBooleanLiteral:
 		return p.parseBooleanLiteral()
 	case prefixParserNilLiteral:
@@ -962,6 +972,20 @@ func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 		case 'i':
 			elements[i] = &ast.SymbolLiteral{Name: entry, Position: pos}
 			litType = ast.TokenSymbols
+		case 'W':
+			element, ok := p.interpolatedWordElement(entry, pos)
+			if !ok {
+				return nil
+			}
+			elements[i] = element
+			litType = ast.TokenInterpWords
+		case 'I':
+			element, ok := p.interpolatedSymbolElement(entry, pos)
+			if !ok {
+				return nil
+			}
+			elements[i] = element
+			litType = ast.TokenInterpSymbols
 		}
 	}
 	// The lexer already speculatively tokenized the literal's interior
@@ -995,6 +1019,74 @@ func (p *parser) parsePercentSymbolsLiteral() ast.Expression {
 	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
 }
 
+func (p *parser) parsePercentInterpWordsLiteral() ast.Expression {
+	entries := decodePercentLiteralEntries(p.curToken.Literal)
+	elements := make([]ast.Expression, 0, len(entries))
+	for _, entry := range entries {
+		element, ok := p.interpolatedWordElement(entry, p.curToken.Pos)
+		if !ok {
+			return nil
+		}
+		elements = append(elements, element)
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
+func (p *parser) parsePercentInterpSymbolsLiteral() ast.Expression {
+	entries := decodePercentLiteralEntries(p.curToken.Literal)
+	elements := make([]ast.Expression, 0, len(entries))
+	for _, entry := range entries {
+		element, ok := p.interpolatedSymbolElement(entry, p.curToken.Pos)
+		if !ok {
+			return nil
+		}
+		elements = append(elements, element)
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
+// interpolatedWordElement builds a single %W entry. Entries without an
+// embedded expression collapse to a plain string literal so they match the
+// AST produced by %w; entries with interpolation become an InterpolatedString.
+func (p *parser) interpolatedWordElement(entry string, pos ast.Position) (ast.Expression, bool) {
+	parts, ok := p.parseInterpolatedStringParts(entry, pos)
+	if !ok {
+		return nil, false
+	}
+	if text, plain := staticStringPart(parts); plain {
+		return &ast.StringLiteral{Value: text, Position: pos}, true
+	}
+	return &ast.InterpolatedString{Parts: parts, Position: pos}, true
+}
+
+// interpolatedSymbolElement builds a single %I entry. Entries without an
+// embedded expression collapse to a plain symbol literal so they match the
+// AST produced by %i; entries with interpolation become an InterpolatedSymbol.
+func (p *parser) interpolatedSymbolElement(entry string, pos ast.Position) (ast.Expression, bool) {
+	parts, ok := p.parseInterpolatedStringParts(entry, pos)
+	if !ok {
+		return nil, false
+	}
+	if text, plain := staticStringPart(parts); plain {
+		return &ast.SymbolLiteral{Name: text, Position: pos}, true
+	}
+	return &ast.InterpolatedSymbol{Parts: parts, Position: pos}, true
+}
+
+// staticStringPart returns the literal text and true when parts hold no
+// embedded expression, so a %W/%I entry can collapse to a plain literal.
+func staticStringPart(parts []ast.StringPart) (string, bool) {
+	switch len(parts) {
+	case 0:
+		return "", true
+	case 1:
+		if text, ok := parts[0].(ast.StringText); ok {
+			return text.Text, true
+		}
+	}
+	return "", false
+}
+
 func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bool) {
 	if start < 0 || start >= len(input) || input[start] != '%' {
 		return 0, nil, 0, false
@@ -1004,9 +1096,10 @@ func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bo
 		return 0, nil, 0, false
 	}
 	kind, width := utf8.DecodeRuneInString(input[idx:])
-	if kind != 'w' && kind != 'i' {
+	if kind != 'w' && kind != 'i' && kind != 'W' && kind != 'I' {
 		return 0, nil, 0, false
 	}
+	interpolating := kind == 'W' || kind == 'I'
 	idx += width
 	if idx >= len(input) {
 		return 0, nil, 0, false
@@ -1038,6 +1131,9 @@ func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bo
 		if r == close {
 			depth--
 			if depth == 0 {
+				if interpolating {
+					return kind, splitInterpolatedPercentLiteralWords(raw.String()), idx, true
+				}
 				return kind, splitPercentLiteralWords(raw.String(), open, close), idx, true
 			}
 		}

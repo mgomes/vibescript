@@ -13,6 +13,27 @@ words = %w[alpha beta gamma]
 statuses = %i[draft published archived]
 ```
 
+The lowercase forms (`%w`, `%i`) are literal: whitespace separates the entries
+and only delimiters, whitespace, and the backslash itself can be escaped, so a
+sequence such as `\n` stays as the two characters `\` and `n`.
+
+The uppercase forms (`%W`, `%I`) apply double-quoted string semantics to each
+entry. They expand `#{...}` interpolation and process the usual escape
+sequences (`\t`, `\n`, and so on), while still splitting entries on whitespace
+that is neither escaped nor inside an interpolation. `%W` produces strings and
+`%I` produces symbols:
+
+```vibe
+name = "Ada"
+greeting = %W[hello #{name} world]      # ["hello", "Ada", "world"]
+labels   = %I[hello #{name} world]      # [:hello, :Ada, :world]
+spaced   = %W[a #{1 + 2} d]             # ["a", "3", "d"]
+escaped  = %W[tab\there a\ b]           # ["tab\there", "a b"]
+```
+
+Any of `[]`, `()`, `{}`, `<>`, or a repeated non-alphanumeric delimiter work
+for every form (`%W(a b)`, `%I{x y}`).
+
 ## Transformations
 
 Common enumerable helpers include:

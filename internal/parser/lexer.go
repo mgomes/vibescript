@@ -168,7 +168,7 @@ func (l *lexer) scanToken() ast.Token {
 		switch l.peekRune() {
 		case 'w':
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
-				entries, err := l.readPercentArrayLiteral()
+				entries, err := l.readPercentArrayLiteral(false)
 				if err != "" {
 					setDiagnostic(&tok, err)
 				} else {
@@ -181,11 +181,39 @@ func (l *lexer) scanToken() ast.Token {
 			}
 		case 'i':
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
-				entries, err := l.readPercentArrayLiteral()
+				entries, err := l.readPercentArrayLiteral(false)
 				if err != "" {
 					setDiagnostic(&tok, err)
 				} else {
 					tok.Type = ast.TokenSymbols
+					tok.Literal = encodePercentLiteralEntries(entries)
+				}
+			} else {
+				tok = l.makeToken(ast.TokenPercent, "%")
+				l.readRune()
+			}
+		case 'W':
+			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
+				entries, err := l.readPercentArrayLiteral(true)
+				if err != "" {
+					tok.Type = ast.TokenIllegal
+					tok.Literal = err
+				} else {
+					tok.Type = ast.TokenInterpWords
+					tok.Literal = encodePercentLiteralEntries(entries)
+				}
+			} else {
+				tok = l.makeToken(ast.TokenPercent, "%")
+				l.readRune()
+			}
+		case 'I':
+			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
+				entries, err := l.readPercentArrayLiteral(true)
+				if err != "" {
+					tok.Type = ast.TokenIllegal
+					tok.Literal = err
+				} else {
+					tok.Type = ast.TokenInterpSymbols
 					tok.Literal = encodePercentLiteralEntries(entries)
 				}
 			} else {
@@ -1051,7 +1079,12 @@ func (l *lexer) readSingleQuotedString() (string, string) {
 	}
 }
 
-func (l *lexer) readPercentArrayLiteral() ([]string, string) {
+// readPercentArrayLiteral consumes a %w/%i/%W/%I percent-array literal and
+// returns its entries. When interpolating is true (the uppercase %W/%I forms)
+// the entries are split on interpolation-aware whitespace and returned with
+// their #{...} markers and escape sequences intact for the parser to expand;
+// otherwise the lowercase splitting that strips %w-style escapes is applied.
+func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 	l.readRune()
 	l.readRune()
 	open := l.ch
@@ -1081,6 +1114,9 @@ func (l *lexer) readPercentArrayLiteral() ([]string, string) {
 				depth--
 				if depth == 0 {
 					l.readRune()
+					if interpolating {
+						return splitInterpolatedPercentLiteralWords(raw.String()), ""
+					}
 					return splitPercentLiteralWords(raw.String(), open, close), ""
 				}
 			}
@@ -1111,7 +1147,8 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 func canEndExpressionToken(tt ast.TokenType) bool {
 	switch tt {
 	case ast.TokenIdent, ast.TokenInt, ast.TokenFloat, ast.TokenString, ast.TokenInterpolatedString,
-		ast.TokenSymbol, ast.TokenWords, ast.TokenSymbols, ast.TokenTrue, ast.TokenFalse, ast.TokenNil,
+		ast.TokenSymbol, ast.TokenWords, ast.TokenSymbols, ast.TokenInterpWords, ast.TokenInterpSymbols,
+		ast.TokenTrue, ast.TokenFalse, ast.TokenNil,
 		ast.TokenSelf, ast.TokenIvar, ast.TokenClassVar, ast.TokenRParen, ast.TokenRBracket,
 		ast.TokenRBrace, ast.TokenEnd:
 		return true
@@ -1200,6 +1237,67 @@ func splitPercentLiteralWords(raw string, open, close rune) []string {
 
 func isPercentWordEscapable(r, open, close rune) bool {
 	return unicode.IsSpace(r) || r == '\\' || r == open || r == close
+}
+
+// splitInterpolatedPercentLiteralWords splits the interior of a %W/%I literal
+// into words. Unlike the lowercase splitter it leaves escape sequences and
+// #{...} interpolation markers intact so the parser can apply double-quoted
+// string semantics per entry. Whitespace splits words unless it is escaped or
+// appears inside an interpolation, matching Ruby's handling of `%W[a #{b c} d]`.
+// Interpolation spans are scanned with the same string-aware logic the parser
+// uses (findStringInterpolationEnd) so quotes and nested braces inside #{...}
+// do not prematurely terminate a word.
+func splitInterpolatedPercentLiteralWords(raw string) []string {
+	var words []string
+	var sb strings.Builder
+	inWord := false
+
+	flush := func() {
+		if !inWord {
+			return
+		}
+		words = append(words, sb.String())
+		sb.Reset()
+		inWord = false
+	}
+
+	for i := 0; i < len(raw); {
+		switch {
+		case raw[i] == '\\':
+			sb.WriteByte(raw[i])
+			i++
+			if i < len(raw) {
+				_, size := utf8.DecodeRuneInString(raw[i:])
+				sb.WriteString(raw[i : i+size])
+				i += size
+			}
+			inWord = true
+		case raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{':
+			end, ok := findStringInterpolationEnd(raw, i+2)
+			if !ok {
+				// Unterminated interpolation: copy the rest verbatim and let
+				// the parser report the error against the full entry.
+				sb.WriteString(raw[i:])
+				i = len(raw)
+			} else {
+				sb.WriteString(raw[i : end+1])
+				i = end + 1
+			}
+			inWord = true
+		default:
+			r, size := utf8.DecodeRuneInString(raw[i:])
+			if unicode.IsSpace(r) {
+				flush()
+			} else {
+				sb.WriteString(raw[i : i+size])
+				inWord = true
+			}
+			i += size
+		}
+	}
+
+	flush()
+	return words
 }
 
 // ast.Identifier classification and keyword lookup are now provided by
