@@ -264,6 +264,7 @@ var precedences = map[ast.TokenType]int{
 	ast.TokenPower:     precPower,
 	ast.TokenLParen:    precCall,
 	ast.TokenDot:       precCall,
+	ast.TokenSafeNav:   precCall,
 	ast.TokenScope:     precCall,
 	ast.TokenLBracket:  precCall,
 	ast.TokenDo:        precCall,

@@ -310,16 +310,26 @@ end
 Ruby-style ampersand block forwarding and symbol-to-proc shorthand are not
 supported; use an explicit `do ... end` or brace block.
 
-Ruby-style safe navigation (`receiver&.member`) is not supported. Use an
-explicit nil check:
+Ruby-style safe navigation (`receiver&.member`) reads a member or calls a
+method only when the receiver is not `nil`. When the receiver is `nil`, the
+whole `&.` access short-circuits to `nil` without looking up the member or
+dispatching the call; otherwise it behaves exactly like the ordinary `.`
+access:
 
 ```vibe
-if user == nil
-  nil
-else
-  user.name
-end
+user&.name           # nil when user is nil, otherwise user.name
+user&.profile("public")
 ```
+
+A short-circuited safe call does not evaluate its arguments or block, matching
+Ruby. The operator guards only its immediate access, so in `user&.profile.name`
+the trailing `.name` still dispatches on whatever `user&.profile` returned; if
+that is `nil`, the `.name` access raises. Use safe navigation at each link
+(`user&.profile&.name`) to guard a whole chain.
+
+Safe navigation cannot be used as an assignment target. It is rejected anywhere
+in the target, so `user&.name = "Ada"`, `user&.profile.name = "Ada"`, and
+`user&.items[0] = 1` are all parse errors rather than assignments through `nil`.
 
 ## Operators
 
