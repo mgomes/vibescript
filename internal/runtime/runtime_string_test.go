@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -485,6 +486,20 @@ func TestSplitHelpers(t *testing.T) {
 				t.Fatalf("split helper mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestSplitWithSeparatorDefaultAvoidsTrimmedTrailingEmptyAllocation(t *testing.T) {
+	text := "x" + strings.Repeat(",", 200_000)
+	var got []string
+	alloc := allocBytes(func() {
+		got = splitWithSeparator(text, ",", 0)
+	})
+	if diff := cmp.Diff([]string{"x"}, got); diff != "" {
+		t.Fatalf("splitWithSeparator trailing trim mismatch (-want +got):\n%s", diff)
+	}
+	if alloc > 512*1024 {
+		t.Fatalf("splitWithSeparator allocated %d bytes trimming trailing empty fields, want <= %d", alloc, 512*1024)
 	}
 }
 

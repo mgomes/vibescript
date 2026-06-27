@@ -369,12 +369,30 @@ func splitWithSeparator(text, sep string, limit int) []string {
 	case limit < 0:
 		return strings.Split(text, sep)
 	default:
-		parts := strings.Split(text, sep)
-		end := len(parts)
-		for end > 0 && parts[end-1] == "" {
-			end--
+		var parts []string
+		pendingEmpty := 0
+		start := 0
+		for {
+			idx := strings.Index(text[start:], sep)
+			end := len(text)
+			if idx >= 0 {
+				end = start + idx
+			}
+			part := text[start:end]
+			if part == "" {
+				pendingEmpty++
+			} else {
+				for range pendingEmpty {
+					parts = append(parts, "")
+				}
+				pendingEmpty = 0
+				parts = append(parts, part)
+			}
+			if idx < 0 {
+				return parts
+			}
+			start = end + len(sep)
 		}
-		return parts[:end]
 	}
 }
 
@@ -1075,12 +1093,36 @@ func projectedCaseTransformBytes(text string, mode caseMode) int {
 	return saturatingMul(len(text), 8)
 }
 
+func projectedStringReverseBytes(text string) (int, int) {
+	outputBytes := 0
+	runeCount := 0
+	for len(text) > 0 {
+		r, size := utf8.DecodeRuneInString(text)
+		outputBytes = saturatingAdd(outputBytes, utf8.RuneLen(r))
+		runeCount++
+		text = text[size:]
+	}
+	if runeCount == 0 {
+		return outputBytes, 0
+	}
+	scratchBytes := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(runeCount, estimatedRuneBytes))
+	return outputBytes, scratchBytes
+}
+
 func checkStringTransform(exec *Execution, projected int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if err := exec.step(); err != nil {
 		return err
 	}
 	var b strings.Builder
 	return exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, projected), receiver, args, kwargs, block)
+}
+
+func checkStringReverseTransform(exec *Execution, text string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if err := exec.step(); err != nil {
+		return err
+	}
+	outputBytes, scratchBytes := projectedStringReverseBytes(text)
+	return exec.checkProjectedStringBytesAndScratchWithCallRoots(outputBytes, scratchBytes, receiver, args, kwargs, block)
 }
 
 // unicodeUpcase applies full Unicode uppercase mapping. A fresh Caser is built
@@ -3517,7 +3559,7 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.reverse does not take arguments")
 			}
-			if err := checkStringTransform(exec, len(receiver.String()), receiver, args, kwargs, block); err != nil {
+			if err := checkStringReverseTransform(exec, receiver.String(), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewString(stringReverse(receiver.String())), nil
@@ -3527,7 +3569,7 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.reverse! does not take arguments")
 			}
-			if err := checkStringTransform(exec, len(receiver.String()), receiver, args, kwargs, block); err != nil {
+			if err := checkStringReverseTransform(exec, receiver.String(), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			updated := stringReverse(receiver.String())

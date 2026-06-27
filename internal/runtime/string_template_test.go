@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func callStringMemberForTest(t *testing.T, exec *Execution, receiver Value, name string, args []Value) (Value, error) {
@@ -115,7 +116,22 @@ func TestFixedStringTransformsHonorMemoryQuotaBeforeMaterializing(t *testing.T) 
 	_, err := callStringMemberForTest(t, exec, receiver, "concat", []Value{arg})
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 
-	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 64 * 1024}
+	receiver = NewString(strings.Repeat("x", 16*1024))
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 48 * 1024}
 	_, err = callStringMemberForTest(t, exec, receiver, "reverse", nil)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestProjectedStringReverseBytesIncludesInvalidExpansionAndScratch(t *testing.T) {
+	t.Parallel()
+
+	outputBytes, scratchBytes := projectedStringReverseBytes("\xffa")
+	wantOutput := utf8.RuneLen(utf8.RuneError) + len("a")
+	if outputBytes != wantOutput {
+		t.Fatalf("projected reverse output bytes = %d, want %d", outputBytes, wantOutput)
+	}
+	wantScratch := estimatedSliceBaseBytes + 2*estimatedRuneBytes
+	if scratchBytes != wantScratch {
+		t.Fatalf("projected reverse scratch bytes = %d, want %d", scratchBytes, wantScratch)
+	}
 }

@@ -12,6 +12,7 @@ import (
 const (
 	estimatedValueBytes        = int(unsafe.Sizeof(Value{}))
 	estimatedIntBytes          = int(unsafe.Sizeof(int(0)))
+	estimatedRuneBytes         = int(unsafe.Sizeof(rune(0)))
 	estimatedStringHeaderBytes = 16
 	estimatedSliceBaseBytes    = 24
 	estimatedMapBaseBytes      = 48
@@ -279,6 +280,21 @@ func (exec *Execution) checkProjectedStringBytesWithCallRoots(payloadBytes int, 
 	}
 
 	used := exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
+	used = saturatingAdd(used, payloadBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+func (exec *Execution) checkProjectedStringBytesAndScratchWithCallRoots(payloadBytes, scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	used = saturatingAdd(used, scratchBytes)
 	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
 	used = saturatingAdd(used, payloadBytes)
 	if used > exec.memoryQuota {
