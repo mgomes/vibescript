@@ -2945,7 +2945,8 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	}
 	target := args[0]
 	arr := receiver.Array()
-	out := make([]Value, 0, len(arr))
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	out := make([]Value, 0)
 	found := false
 	var matched Value
 	for _, item := range arr {
@@ -2959,13 +2960,9 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 			continue
 		}
 		out = append(out, item)
-	}
-	// A sparse result should not retain a backing array sized to the whole
-	// receiver, so right-size the result when matches were removed.
-	if len(out) < cap(out) {
-		trimmed := make([]Value, len(out))
-		copy(trimmed, out)
-		out = trimmed
+		if err := acc.add(out[len(out)-1], cap(out)); err != nil {
+			return NewNil(), err
+		}
 	}
 	deleted := NewNil()
 	if found {

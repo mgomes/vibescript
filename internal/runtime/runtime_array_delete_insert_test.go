@@ -154,6 +154,53 @@ func TestArrayDeleteReturnsStoredElement(t *testing.T) {
 	compareArrays(t, lastMatch["last"], []Value{NewString("mutated")})
 }
 
+func TestArrayDeleteMissTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 20_000
+	receiver := largeIntArray(count)
+	target := NewInt(-1)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	acc := newArrayBuildAccumulator(probe, receiver, []Value{target}, nil, NewNil())
+	quota := acc.projected(count) - 1
+	if acc.base > quota {
+		t.Fatalf("test setup call roots = %d exceed quota = %d", acc.base, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := arrayDelete(exec, receiver, []Value{target}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestArrayDeleteAllMatchesFitsBelowFullCopyQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 20_000
+	items := make([]Value, count)
+	for i := range items {
+		items[i] = NewInt(1)
+	}
+	receiver := NewArray(items)
+	target := NewInt(1)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	acc := newArrayBuildAccumulator(probe, receiver, []Value{target}, nil, NewNil())
+	quota := acc.projected(count) - 1
+	if acc.base > quota {
+		t.Fatalf("test setup call roots = %d exceed quota = %d", acc.base, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := arrayDelete(exec, receiver, []Value{target}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("array.delete with every element removed under sparse quota = %v, want success", err)
+	}
+	result := got.Hash()
+	compareArrays(t, result["array"], []Value{})
+	if diff := valueDiff(NewInt(1), result["deleted"]); diff != "" {
+		t.Fatalf("deleted mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestArrayDeleteErrors(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
