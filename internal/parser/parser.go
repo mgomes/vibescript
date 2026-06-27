@@ -320,10 +320,21 @@ func (e *parseError) End() ast.Position { return e.end }
 func (e *parseError) Message() string { return e.msg }
 
 func (p *parser) errorExpected(tok ast.Token, expected string) {
+	if tok.Type == ast.TokenIllegal {
+		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
+		return
+	}
 	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), fmt.Sprintf("expected %s, got %s", expected, tokenLabel(tok.Type)))
 }
 
 func (p *parser) errorUnexpected(tok ast.Token) {
+	// The lexer stamps illegal tokens with a descriptive diagnostic in
+	// Literal (e.g. "invalid numeric literal"); surface it directly rather
+	// than the generic "unexpected token invalid token".
+	if tok.Type == ast.TokenIllegal && tok.Literal != "" {
+		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
+		return
+	}
 	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), fmt.Sprintf("unexpected token %s", tokenLabel(tok.Type)))
 }
 

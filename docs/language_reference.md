@@ -18,7 +18,7 @@ Use this with focused guides in `docs/` for deeper examples.
 Vibescript supports these literal/value categories:
 
 - `nil`, `true`, `false`
-- integers and floats (`1`, `42`, `3.14`)
+- integers and floats (`1`, `42`, `3.14`, `0xFF`, `0b1010`)
 - strings (`"hello"`, `"hello #{name}"`)
 - symbols (`:name`)
 - arrays (`[1, 2, 3]`)
@@ -31,10 +31,20 @@ Ruby's hash rocket syntax (`=>`) is not supported.
 
 Ranges with `..` include the final endpoint. Ranges with `...` exclude it.
 
+Integer literals accept Ruby's base prefixes: `0x`/`0X` for hexadecimal,
+`0b`/`0B` for binary, `0o`/`0O` for octal, and `0d`/`0D` for explicit decimal.
+Underscores may separate digits in any base (`0xDEAD_BEEF`, `1_000`) but only
+between two digits. A prefix must be followed by at least one valid digit, and a
+prefixed literal may not carry a fractional part or trailing letters; otherwise
+the literal is rejected with an `invalid numeric literal` error. A bare leading
+zero (`010`) stays decimal rather than being read as legacy octal.
+
 Double-quoted strings support `#{...}` interpolation. Each interpolation must
 contain one expression; the expression value is converted with the same string
-form used by `to_s`. Escape an interpolation marker as `\#{...}` for literal
-text. Single-quoted strings do not interpolate.
+form used by `to_s`. The expression may contain its own double-quoted strings
+and even nested interpolations (for example `"#{name || "guest"}"`); the
+interpolation extends to its matching `}`. Escape an interpolation marker as
+`\#{...}` for literal text. Single-quoted strings do not interpolate.
 
 See `docs/arrays.md`, `docs/hashes.md`, `docs/strings.md`, `docs/durations.md`,
 and `docs/time.md` for full method coverage.

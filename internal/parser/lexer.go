@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -405,16 +406,21 @@ func (l *lexer) scanToken() ast.Token {
 			tok.Literal = literal
 			return tok
 		case unicode.IsDigit(l.ch):
-			literal, isFloat := l.readNumber()
-			tok.Literal = literal
-			if isFloat {
+			num := l.readNumber()
+			switch {
+			case num.errMsg != "":
+				tok.Type = ast.TokenIllegal
+				tok.Literal = num.errMsg
+			case num.isFloat:
 				tok.Type = ast.TokenFloat
-			} else {
+				tok.Literal = num.literal
+			default:
 				tok.Type = ast.TokenInt
+				tok.Literal = num.literal
 			}
 			return tok
 		default:
-			tok = l.makeToken(ast.TokenIllegal, string(l.ch))
+			tok = l.makeToken(ast.TokenIllegal, fmt.Sprintf("unexpected character %q", l.ch))
 			l.readRune()
 		}
 	}
@@ -554,7 +560,37 @@ func (l *lexer) readIdentifier() string {
 	return literal
 }
 
-func (l *lexer) readNumber() (string, bool) {
+// numberToken is the lexer's classification of a scanned numeric literal.
+// On success errMsg is empty and literal carries the underscore-stripped
+// digits (prefix included for based literals); on failure errMsg holds an
+// "invalid numeric literal" diagnostic and the literal is undefined.
+type numberToken struct {
+	literal string
+	isFloat bool
+	errMsg  string
+}
+
+const invalidNumericLiteral = "invalid numeric literal"
+
+// readNumber scans a numeric literal beginning at the current rune. It
+// recognizes Ruby-style base prefixes (0x/0X, 0b/0B, 0o/0O, 0d/0D) in
+// addition to decimal integers and floats. Underscores are accepted as
+// visual separators only between adjacent digits and are stripped from the
+// returned literal. A prefix must be followed by at least one valid digit
+// and the literal must not be immediately followed by an identifier rune;
+// either violation yields an invalid-numeric-literal diagnostic so the
+// caller can emit a precise parse error instead of leaving a stray
+// identifier behind.
+func (l *lexer) readNumber() numberToken {
+	if l.ch == '0' {
+		if prefix, base, ok := basePrefix(l.peekRune()); ok {
+			return l.readPrefixedNumber(prefix, base)
+		}
+	}
+	return l.readDecimalNumber()
+}
+
+func (l *lexer) readDecimalNumber() numberToken {
 	var sb strings.Builder
 	hasDot := false
 
@@ -589,55 +625,126 @@ func (l *lexer) readNumber() (string, bool) {
 done:
 	literal := sb.String()
 	l.readRune()
-	return literal, hasDot
+	return numberToken{literal: literal, isFloat: hasDot}
+}
+
+// readPrefixedNumber scans a based literal whose leading '0' is the current
+// rune and whose base marker (x/b/o/d) is the next rune. base reports the
+// numeric radix and prefix carries the marker rune for the returned literal.
+func (l *lexer) readPrefixedNumber(prefix rune, base int) numberToken {
+	var sb strings.Builder
+	sb.WriteByte('0')
+	sb.WriteRune(prefix)
+
+	// Consume the '0' and the prefix marker so the current rune sits on the
+	// first body character of the literal.
+	l.readRune()
+
+	digits := 0
+	for {
+		r := l.peekRune()
+		switch {
+		case r == '_':
+			// Underscores are valid only between two body digits.
+			if isBaseDigit(l.peekRuneN(1), base) && digits > 0 {
+				l.readRune()
+				continue
+			}
+			return l.invalidPrefixedNumber()
+		case isBaseDigit(r, base):
+			l.readRune()
+			sb.WriteRune(r)
+			digits++
+		default:
+			goto done
+		}
+	}
+
+done:
+	if digits == 0 {
+		return l.invalidPrefixedNumber()
+	}
+	// A based literal followed directly by a name rune (an out-of-range digit, a
+	// stray letter, or a leading-underscore name) is never valid; the fractional
+	// dot is likewise rejected since based literals are integers. The '?' and '!'
+	// suffixes are excluded: they are operators (e.g. the ternary '?') that
+	// terminate the literal rather than glue onto it, matching how the decimal
+	// path leaves "1?2:3" as an integer followed by the ternary.
+	next := l.peekRune()
+	if isNumericTrailRune(next) || (next == '.' && isBaseDigit(l.peekRuneN(1), 10)) {
+		return l.invalidPrefixedNumber()
+	}
+	literal := sb.String()
+	l.readRune()
+	return numberToken{literal: literal}
+}
+
+// invalidPrefixedNumber consumes the remaining identifier and fractional runes
+// of a malformed based literal so the lexer resumes scanning past it, then
+// reports the invalid-numeric-literal diagnostic.
+func (l *lexer) invalidPrefixedNumber() numberToken {
+	for isNumericTrailRune(l.peekRune()) {
+		l.readRune()
+	}
+	if l.peekRune() == '.' && unicode.IsDigit(l.peekRuneN(1)) {
+		l.readRune()
+		for isNumericTrailRune(l.peekRune()) {
+			l.readRune()
+		}
+	}
+	l.readRune()
+	return numberToken{errMsg: invalidNumericLiteral}
+}
+
+// isNumericTrailRune reports whether r, appearing immediately after a numeric
+// literal, indicates a malformed literal (a digit, letter, or underscore glued
+// onto the digits) rather than a following operator. Unlike
+// ast.IsIdentifierRune it excludes the '?' and '!' method-name suffixes, since
+// those are operator runes (the ternary '?', logical negation '!') that
+// terminate the literal instead of extending it.
+func isNumericTrailRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// basePrefix maps a base-marker rune to its prefix rune and radix.
+func basePrefix(r rune) (prefix rune, base int, ok bool) {
+	switch r {
+	case 'x', 'X':
+		return r, 16, true
+	case 'b', 'B':
+		return r, 2, true
+	case 'o', 'O':
+		return r, 8, true
+	case 'd', 'D':
+		return r, 10, true
+	default:
+		return 0, 0, false
+	}
+}
+
+// isBaseDigit reports whether r is a valid digit in the given radix.
+func isBaseDigit(r rune, base int) bool {
+	var v int
+	switch {
+	case r >= '0' && r <= '9':
+		v = int(r - '0')
+	case r >= 'a' && r <= 'f':
+		v = int(r-'a') + 10
+	case r >= 'A' && r <= 'F':
+		v = int(r-'A') + 10
+	default:
+		return false
+	}
+	return v < base
 }
 
 func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 	var decoded strings.Builder
 	var raw strings.Builder
 	interpolated := false
-	interpolationDepth := 0
-	var interpolationQuote rune
 
 	for {
 		l.readRune()
-		if interpolationDepth > 0 {
-			if interpolationQuote == 0 && l.ch == '"' && !l.interpolationQuoteHasClose('"') {
-				l.readRune()
-				return raw.String(), true, ""
-			}
-			switch l.ch {
-			case 0:
-				return "", false, "unterminated string"
-			case '\\':
-				raw.WriteRune(l.ch)
-				decoded.WriteRune(l.ch)
-				if interpolationQuote != 0 && l.peekRune() != 0 {
-					l.readRune()
-					raw.WriteRune(l.ch)
-					decoded.WriteRune(l.ch)
-				}
-			default:
-				raw.WriteRune(l.ch)
-				decoded.WriteRune(l.ch)
-				if interpolationQuote != 0 {
-					if l.ch == interpolationQuote {
-						interpolationQuote = 0
-					}
-					continue
-				}
-				switch l.ch {
-				case '\'', '"':
-					interpolationQuote = l.ch
-				case '{':
-					interpolationDepth++
-				case '}':
-					interpolationDepth--
-				}
-			}
-			continue
-		}
-
 		switch l.ch {
 		case 0:
 			return "", false, "unterminated string"
@@ -680,9 +787,10 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 			if l.peekRune() == '{' {
 				l.readRune()
 				raw.WriteRune(l.ch)
-				decoded.WriteRune(l.ch)
 				interpolated = true
-				interpolationDepth = 1
+				if errMsg := l.consumeInterpolation(&raw); errMsg != "" {
+					return "", false, errMsg
+				}
 			}
 		default:
 			raw.WriteRune(l.ch)
@@ -691,23 +799,79 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 	}
 }
 
-func (l *lexer) interpolationQuoteHasClose(quote rune) bool {
-	idx := l.offset
-	for idx < len(l.input) {
-		r, width := utf8.DecodeRuneInString(l.input[idx:])
-		idx += width
-		if r == '\\' {
-			if idx < len(l.input) {
-				_, escapedWidth := utf8.DecodeRuneInString(l.input[idx:])
-				idx += escapedWidth
+// consumeInterpolation reads the body of a "#{...}" interpolation that the
+// caller has just opened (the leading "#{" is already consumed) and appends
+// every rune up to and including the matching "}" to raw. It maintains a stack
+// of interpolation and string contexts so that nested double-quoted strings,
+// single-quoted strings, and further interpolations balance correctly instead
+// of guessing where the enclosing string ends. The decoded builder is not
+// updated because an interpolated string always returns its raw text; the
+// parser re-scans it with the same nesting rules in findStringInterpolationEnd.
+//
+// It returns an error message when the input ends before every context closes.
+func (l *lexer) consumeInterpolation(raw *strings.Builder) string {
+	// stack holds the open contexts. isInterp reports whether a context is an
+	// interpolation expression (true) or a string literal (false). For
+	// interpolation contexts braceDepth tracks unmatched "{" so that an inner
+	// "}" only closes the interpolation once its own braces are balanced. For
+	// string contexts quote holds the delimiting rune so the matching closing
+	// quote can be recognized.
+	type context struct {
+		isInterp   bool
+		quote      rune
+		braceDepth int
+	}
+	stack := []context{{isInterp: true}}
+
+	for {
+		l.readRune()
+		if l.ch == 0 {
+			return "unterminated string"
+		}
+		raw.WriteRune(l.ch)
+
+		top := &stack[len(stack)-1]
+		if top.isInterp {
+			switch l.ch {
+			case '{':
+				top.braceDepth++
+			case '}':
+				if top.braceDepth > 0 {
+					top.braceDepth--
+				} else {
+					stack = stack[:len(stack)-1]
+					if len(stack) == 0 {
+						return ""
+					}
+				}
+			case '"', '\'':
+				stack = append(stack, context{quote: l.ch})
 			}
 			continue
 		}
-		if r == quote {
-			return true
+
+		// Inside a string literal.
+		switch l.ch {
+		case '\\':
+			// A backslash escapes the next rune so an escaped quote does not
+			// close the string. Single-quoted strings only treat \' and \\ as
+			// escapes, but consuming the following rune is harmless for balance
+			// because no other escape can introduce or close a context.
+			if l.peekRune() != 0 {
+				l.readRune()
+				raw.WriteRune(l.ch)
+			}
+		case top.quote:
+			stack = stack[:len(stack)-1]
+		case '#':
+			// Only double-quoted strings interpolate; single quotes are literal.
+			if top.quote == '"' && l.peekRune() == '{' {
+				l.readRune()
+				raw.WriteRune(l.ch)
+				stack = append(stack, context{isInterp: true})
+			}
 		}
 	}
-	return false
 }
 
 func (l *lexer) readSingleQuotedString() (string, string) {
