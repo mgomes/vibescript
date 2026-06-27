@@ -1274,7 +1274,7 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 	}
 
 	if fn, ok := methods[setterName]; ok {
-		if fn.Private && !exec.isCurrentReceiver(obj) {
+		if fn.Private {
 			return exec.errorAt(pos, "private method %s", setterName)
 		}
 		_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), pos)
@@ -2300,7 +2300,7 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return NewNil(), nil, err
 		}
-		member, err := exec.getMember(obj, t.Property, t.Pos())
+		member, err := exec.getPublicMember(obj, t.Property, t.Pos())
 		if err != nil {
 			return NewNil(), nil, err
 		}

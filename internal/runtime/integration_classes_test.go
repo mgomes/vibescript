@@ -19,12 +19,24 @@ class Helper
     42
   end
 
+  private def secret=(value)
+    @secret = value
+  end
+
   def implicit_secret
     secret
   end
 
   def explicit_self_secret
     self.secret
+  end
+
+  def explicit_self_secret_set
+    self.secret = 7
+  end
+
+  def explicit_self_secret_increment
+    self.secret += 1
   end
 
   private def self.class_secret
@@ -48,6 +60,14 @@ def explicit_instance
   Helper.new.explicit_self_secret
 end
 
+def explicit_instance_setter
+  Helper.new.explicit_self_secret_set
+end
+
+def explicit_instance_compound
+  Helper.new.explicit_self_secret_increment
+end
+
 def implicit_class
   Helper.implicit_class_secret
 end
@@ -68,6 +88,8 @@ end
 		t.Fatalf("implicit private class call = %v, want 99", got)
 	}
 	requireCallErrorContains(t, script, "explicit_instance", nil, CallOptions{}, "private method secret")
+	requireCallErrorContains(t, script, "explicit_instance_setter", nil, CallOptions{}, "private method secret=")
+	requireCallErrorContains(t, script, "explicit_instance_compound", nil, CallOptions{}, "private method secret")
 	requireCallErrorContains(t, script, "explicit_class", nil, CallOptions{}, "private method class_secret")
 	requireCallErrorContains(t, script, "external_private_class", nil, CallOptions{}, "private method class_secret")
 }
