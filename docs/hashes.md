@@ -333,7 +333,11 @@ end
 - `keys` and `values`
 - `each`, `each_key`, `each_value`
 - `to_a` returns the `[key, value]` pairs as a nested array, with keys exposed as
-  symbols. It is the inverse of `Array#to_h` and equivalent to `flatten(0)`.
+  symbols. It is the inverse of `Array#to_h` and equivalent to `flatten(0)`. The
+  materialization charges its output (the pair arrays and the sorted key scratch)
+  against the memory quota as the pairs accumulate, and charges the step quota per
+  pair while honoring context cancellation, so a large hash stays bounded rather
+  than allocating the whole nested array before the runtime can reject it.
 
 ```vibe
 { a: 1, b: 2 }.to_a # [[:a, 1], [:b, 2]]

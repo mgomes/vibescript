@@ -287,3 +287,59 @@ func TestArrayToHashHonorsMemoryQuota(t *testing.T) {
 	converts := compileScriptWithConfig(t, cfg, `def run(a); a.to_h; end`)
 	requireCallRuntimeErrorType(t, converts, "run", []Value{pairsArr}, CallOptions{}, runtimeErrorTypeLimit)
 }
+
+// TestHashToArrayHonorsMemoryQuota pins the P2 finding on this PR: a hash whose
+// receiver fits the quota but whose [key, value] materialization does not must be
+// rejected as the pairs accumulate, not after the whole array is built. Driving
+// the builtin directly removes the statement-level post-call net (which would mask
+// an unbounded build behind a single check on the finished result), so the only
+// thing that can reject the over-quota materialization is the incremental charge
+// the accumulator and the per-pair step now perform during the loop.
+func TestHashToArrayHonorsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 4000
+	receiver := largeHashReceiver(count)
+
+	// Size the quota to admit the receiver but not the pair materialization on top:
+	// the output slice, one [key, value] pair array per entry, and the sorted-key
+	// scratch buffer push the build over a quota with slim receiver headroom.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
+	quota := roots + roots/4
+
+	fits := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if err := fits.checkCallMemoryRoots(receiver, nil, nil, NewNil()); err != nil {
+		t.Fatalf("receiver should fit under quota %d: %v", quota, err)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "to_a", nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashToArrayHonorsStepQuota pins the second half of the P2 finding: the
+// materialization must charge a step per pair so a small step quota stops it
+// mid-loop. Before the fix the loop emitted every pair without a step charge, so a
+// large hash ignored the step quota entirely during materialization.
+func TestHashToArrayHonorsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 40, memoryQuota: 64 << 20}
+	_, err := callHashMember(t, exec, largeHashReceiver(2_000), "to_a", nil, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+}
+
+// TestHashToArrayHonorsCancellation verifies the per-pair step check observes a
+// canceled context, so a sandboxed to_a cannot keep materializing after
+// cancellation. step polls the context on its first call, so even a tiny hash
+// aborts.
+func TestHashToArrayHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
+	_, err := callHashMember(t, exec, largeHashReceiver(8), "to_a", nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+}

@@ -512,13 +512,36 @@ func hashMemberQuery(property string) (Value, error) {
 			// Materialize the [key, value] pairs in Vibescript's deterministic
 			// (sorted-key) iteration order, matching keys/values/each. Keys
 			// reconstruct as symbols, as everywhere a hash key surfaces as a value.
-			// The pairs alias the receiver's values, so the post-call result check
-			// (sized to the receiver, already a live call root) bounds the build.
+			//
+			// The pairs alias the receiver's values, but the output slice, the one
+			// pair array per entry, and the sorted-key scratch buffer are all fresh
+			// allocations the post-call result check would only observe after the
+			// whole structure was built. A receiver that fits the quota can still
+			// have a [key, value] materialization that does not, so charge the build
+			// incrementally through an array accumulator (seeded with the receiver, so
+			// aliased values dedup against it) and step per entry. This bounds the
+			// peak against MemoryQuotaBytes and honors a small StepQuota or a canceled
+			// context mid-loop, matching the neighboring hash walks rather than
+			// allocating everything before the runtime can reject it.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			scratch := sortedKeyBufferBytes(len(entries))
+			if err := acc.reserveScratch(scratch); err != nil {
+				return NewNil(), err
+			}
 			var keyBuf [smallHashKeyBufferSize]string
 			keys := sortedHashKeysInto(entries, keyBuf[:])
-			pairs := make([]Value, len(keys))
-			for i, key := range keys {
-				pairs[i] = NewArray([]Value{NewSymbol(key), entries[key]})
+			pairs := make([]Value, 0, len(keys))
+			for _, key := range keys {
+				// Charge a step per pair so materializing a large hash participates in
+				// the step quota and observes cancellation before the result is fully
+				// assembled.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				pairs = append(pairs, NewArray([]Value{NewSymbol(key), entries[key]}))
+				if err := acc.add(pairs[len(pairs)-1], cap(pairs)); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(pairs), nil
 		}), nil
