@@ -18,7 +18,7 @@ Use this with focused guides in `docs/` for deeper examples.
 Vibescript supports these literal/value categories:
 
 - `nil`, `true`, `false`
-- integers and floats (`1`, `42`, `3.14`)
+- integers and floats (`1`, `42`, `3.14`, `0xFF`, `0b1010`)
 - strings (`"hello"`, `"hello #{name}"`)
 - symbols (`:name`)
 - arrays (`[1, 2, 3]`)
@@ -30,6 +30,14 @@ Hash literals support label keys (`name:`) and quoted string keys (`"name":`).
 Ruby's hash rocket syntax (`=>`) is not supported.
 
 Ranges with `..` include the final endpoint. Ranges with `...` exclude it.
+
+Integer literals accept Ruby's base prefixes: `0x`/`0X` for hexadecimal,
+`0b`/`0B` for binary, `0o`/`0O` for octal, and `0d`/`0D` for explicit decimal.
+Underscores may separate digits in any base (`0xDEAD_BEEF`, `1_000`) but only
+between two digits. A prefix must be followed by at least one valid digit, and a
+prefixed literal may not carry a fractional part or trailing letters; otherwise
+the literal is rejected with an `invalid numeric literal` error. A bare leading
+zero (`010`) stays decimal rather than being read as legacy octal.
 
 Double-quoted strings support `#{...}` interpolation. Each interpolation must
 contain one expression; the expression value is converted with the same string
@@ -302,16 +310,26 @@ end
 Ruby-style ampersand block forwarding and symbol-to-proc shorthand are not
 supported; use an explicit `do ... end` or brace block.
 
-Ruby-style safe navigation (`receiver&.member`) is not supported. Use an
-explicit nil check:
+Ruby-style safe navigation (`receiver&.member`) reads a member or calls a
+method only when the receiver is not `nil`. When the receiver is `nil`, the
+whole `&.` access short-circuits to `nil` without looking up the member or
+dispatching the call; otherwise it behaves exactly like the ordinary `.`
+access:
 
 ```vibe
-if user == nil
-  nil
-else
-  user.name
-end
+user&.name           # nil when user is nil, otherwise user.name
+user&.profile("public")
 ```
+
+A short-circuited safe call does not evaluate its arguments or block, matching
+Ruby. The operator guards only its immediate access, so in `user&.profile.name`
+the trailing `.name` still dispatches on whatever `user&.profile` returned; if
+that is `nil`, the `.name` access raises. Use safe navigation at each link
+(`user&.profile&.name`) to guard a whole chain.
+
+Safe navigation cannot be used as an assignment target. It is rejected anywhere
+in the target, so `user&.name = "Ada"`, `user&.profile.name = "Ada"`, and
+`user&.items[0] = 1` are all parse errors rather than assignments through `nil`.
 
 ## Operators
 
@@ -321,6 +339,7 @@ Core operator families:
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`
 - Case equality: `===`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
+- Collection: `array << value` (append), `array & other` (intersection)
 - Unary sign: prefix `-` negates a number; prefix `+` is the identity on
   numbers and strings
 - Conditional: `condition ? when_true : when_false`
@@ -339,6 +358,21 @@ so `1 === 1` is `true` and `2 === (1..3)` is `false` (the integer `2` is not a
 range). Because the scalar path reuses `==`, integers and floats remain distinct
 kinds, so `1 === 1.0` is `false`, unlike Ruby. Regex and class matchers will be
 added alongside the corresponding language features.
+
+The collection operators work on arrays. `array << value` appends a single
+value, and `array & other` returns the elements common to both arrays with
+duplicates removed and the left array's order preserved. Because Vibescript
+arrays are immutable, `<<` does not mutate the receiver like Ruby's shovel does:
+it returns a new array, so accumulate by reassigning (`values = values << x`),
+the same idiom used with `push` and `+`. Following Ruby, `+` binds tighter than
+`<<`, which binds tighter than `&`. The `&` operator is disambiguated from the
+(unsupported) block-pass sigil by spacing, exactly as Ruby does: only an `&`
+that is detached from the callee yet flush against its operand (`call &block`)
+is read as a block pass and reported as unsupported. Every other shape is the
+intersection operator, including a spaced `&` (`items & others`), an `&` flush
+on both sides (`items&others`), and a trailing `&` that continues the
+expression onto the next line. See
+[Arrays](arrays.md#set-like-operations) for details.
 
 Operator precedence follows conventional arithmetic/boolean ordering.
 Exponentiation with `**` is right-associative and binds more tightly than

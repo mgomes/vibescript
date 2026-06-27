@@ -33,6 +33,7 @@ Common enumerable helpers include:
 - `transpose` to swap the rows and columns of a matrix of equal-length array rows; it raises when a row is not an array or the rows differ in length.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `append(*values)` is a Ruby-style alias for `push`, returning a new array with the values added to the end in order.
+- `array << value` is the Ruby-style shovel operator. Because Vibescript arrays are immutable it does not mutate the receiver: it returns a new array with the single value appended (`[1, 2] << 3` is `[1, 2, 3]`). Accumulate by reassigning, `values = values << value`, the same idiom used with `push` and `+`; a bare `values << value` statement computes the appended array and discards it. The left operand must be an array.
 - `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`). `unshift(*values)` is a Ruby-style alias.
 - `shift` / `shift(n)` removes element(s) from the front. Because the array is not mutated, it returns a `{ array:, shifted: }` hash mirroring `pop`: bare `shift` removes one element (`shifted` is the value or `nil` on an empty array) and `shift(n)` removes up to `n` (`shifted` is an array). `n` must be a non-negative integer.
 - `delete(value)` removes every element equal to `value`, returning a `{ array:, deleted: }` hash. Following Ruby, `deleted` is the value when at least one match was removed and `nil` otherwise; `delete(value) { default }` reports the block result on a miss instead.
@@ -73,6 +74,7 @@ survive.
 [1, 2, 3].take(2)           # [1, 2]
 [1, 2, 3].drop(1)           # [2, 3]
 [1].append(2, 3)            # [1, 2, 3]
+[1, 2] << 3                 # [1, 2, 3]
 [3].prepend(1, 2)           # [1, 2, 3]
 [3].unshift(1, 2)           # [1, 2, 3]
 [1, 2, 3].shift             # {array: [2, 3], shifted: 1}
@@ -327,7 +329,7 @@ end
 
 ## Set-like Operations
 
-Use `+` to concatenate and `-` to subtract values:
+Use `+` to concatenate, `-` to subtract values, and `&` to intersect:
 
 ```vibe
 def unique_participants(core, late)
@@ -337,6 +339,19 @@ end
 def without_dropouts(participants, dropouts)
   participants - dropouts
 end
+
+def shared(left, right)
+  left & right
+end
+```
+
+`&` returns the elements common to both arrays, removing duplicates and keeping
+the left array's order. Equality follows the same value semantics as `uniq`, so
+nested arrays and hashes compare by content. Both operands must be arrays:
+
+```vibe
+[1, 2, 3] & [2, 3, 4]    # => [2, 3]
+[1, 1, 2, 3] & [1, 3, 4] # => [1, 3]
 ```
 
 The method forms `union(*others)` and `difference(*others)` accept any number of

@@ -74,11 +74,6 @@ func (p *parser) continueExpressionParse(left ast.Expression, precedence, limitL
 			return left
 		}
 
-		if p.peekToken.Type == ast.TokenAmpersand && p.peekPeek.Type == ast.TokenDot {
-			p.recoverUnsupportedSafeNavigation()
-			return left
-		}
-
 		if p.canParseParenlessCall(left, precedence, lineLimited) {
 			left = p.parseParenlessCallExpression(left)
 			if left == nil {
@@ -125,49 +120,6 @@ func (p *parser) peekStopsLineExpression() bool {
 	return false
 }
 
-func (p *parser) recoverUnsupportedSafeNavigation() {
-	start := p.peekToken
-	end := p.peekPeek.End
-	if end == (ast.Position{}) {
-		end = tokenEnd(start)
-	}
-	p.addParseErrorSpan(start.Pos, end, "safe navigation is not supported; use an explicit nil check")
-
-	p.nextToken()
-	p.nextToken()
-	recoveryLine := start.Pos.Line
-	if p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line > recoveryLine {
-		recoveryLine = p.peekToken.Pos.Line
-	}
-	nesting := 0
-	for p.peekToken.Type != ast.TokenEOF {
-		if nesting == 0 && isSafeNavigationRecoveryStop(p.peekToken.Type) {
-			return
-		}
-		if nesting == 0 && p.peekToken.Pos.Line > recoveryLine && !p.lineLimitedContinuationToken(p.peekToken) {
-			return
-		}
-		p.nextToken()
-		switch p.curToken.Type {
-		case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
-			nesting++
-		case ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
-			if nesting > 0 {
-				nesting--
-			}
-		}
-	}
-}
-
-func isSafeNavigationRecoveryStop(tt ast.TokenType) bool {
-	switch tt {
-	case ast.TokenComma, ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
-		return true
-	default:
-		return false
-	}
-}
-
 func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, lineLimited bool) bool {
 	if !lineLimited || precedence != lowestPrec {
 		return false
@@ -184,7 +136,44 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 	if p.peekStartsParenlessKeywordLabel() {
 		return true
 	}
+	if p.peekToken.Type == ast.TokenAmpersand {
+		// "&" is both the binary intersection operator and the (unsupported)
+		// block-pass / symbol-to-proc sigil. Ruby disambiguates by spacing:
+		// "foo &bar" passes a block while "foo & bar", "foo&bar", and a
+		// trailing "&" line continuation are all the binary operator. Only the
+		// block-pass shape starts a parenless argument here so the helpful
+		// block-pass diagnostic still fires; the operator shapes fall through
+		// to the infix path.
+		return p.peekAmpersandStartsBlockPass()
+	}
 	return isParenlessArgumentStart(p.peekToken.Type)
+}
+
+// peekAmpersandStartsBlockPass reports whether the lookahead "&" has the
+// spacing Ruby reads as a block-pass argument ("foo &bar") rather than the
+// binary intersection operator. Ruby disambiguates purely by spacing: the
+// block-pass shape requires the "&" to be separated from the callee yet flush
+// against its operand. Concretely both of these must hold:
+//
+//   - The "&" is detached from the callee. "foo &bar" is a block-pass, while
+//     "foo&bar" (flush on both sides) is the binary operator, so a "&" that
+//     abuts the callee on the same line is never a block-pass.
+//   - The operand is flush against the "&" on the same line. "foo & bar" is the
+//     binary operator, and a trailing "&" that ends the line is the intersection
+//     line-continuation operator (see lineLimitedContinuationToken); neither is
+//     a block-pass.
+func (p *parser) peekAmpersandStartsBlockPass() bool {
+	if p.peekToken.Type != ast.TokenAmpersand {
+		return false
+	}
+	calleeFlush := p.peekToken.Pos.Line == p.curToken.End.Line &&
+		p.peekToken.Pos.Column == p.curToken.End.Column
+	if calleeFlush {
+		return false
+	}
+	operandFlush := p.peekPeek.Pos.Line == p.peekToken.Pos.Line &&
+		p.peekPeek.Pos.Column == p.peekToken.End.Column
+	return operandFlush
 }
 
 // peekStartsParenlessKeywordLabel reports whether the lookahead begins a
@@ -464,7 +453,7 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 	switch tt {
 	case ast.TokenPlus, ast.TokenMinus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent,
 		ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
-		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
+		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenShovel, ast.TokenAmpersand:
 		return infixParserInfixExpression
 	case ast.TokenQuestion:
 		return infixParserConditionalExpression
@@ -472,7 +461,7 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 		return infixParserRangeExpression
 	case ast.TokenLParen:
 		return infixParserCallExpression
-	case ast.TokenDot:
+	case ast.TokenDot, ast.TokenSafeNav:
 		return infixParserMemberExpression
 	case ast.TokenScope:
 		return infixParserScopeExpression
@@ -510,7 +499,7 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
+	case ast.TokenDot, ast.TokenSafeNav, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion, ast.TokenShovel, ast.TokenAmpersand:
 		return true
 	case ast.TokenAsterisk:
 		// A line that begins with "*" continues the previous expression as a
@@ -722,12 +711,29 @@ func (p *parser) parseIdentifier() ast.Expression {
 }
 
 func (p *parser) parseIntegerLiteral() ast.Expression {
-	value, err := strconv.ParseInt(p.curToken.Literal, 10, 64)
+	value, err := parseIntegerToken(p.curToken.Literal)
 	if err != nil {
 		p.addParseError(p.curToken.Pos, "invalid integer literal")
 		return nil
 	}
 	return &ast.IntegerLiteral{Value: value, Position: p.curToken.Pos}
+}
+
+// parseIntegerToken converts a lexer-produced integer literal into its value.
+// The lexer strips underscore separators and validates digit sets, so the
+// only remaining work is choosing the radix from any Ruby base prefix. Plain
+// decimal literals are parsed in base 10 so a leading zero stays decimal
+// rather than being read as octal.
+func parseIntegerToken(literal string) (int64, error) {
+	if len(literal) >= 2 && literal[0] == '0' {
+		switch literal[1] {
+		case 'd', 'D':
+			return strconv.ParseInt(literal[2:], 10, 64)
+		case 'x', 'X', 'b', 'B', 'o', 'O':
+			return strconv.ParseInt(literal, 0, 64)
+		}
+	}
+	return strconv.ParseInt(literal, 10, 64)
 }
 
 func (p *parser) parseFloatLiteral() ast.Expression {
@@ -1188,12 +1194,21 @@ func (p *parser) parseMemberExpression(object ast.Expression) ast.Expression {
 	if object == nil {
 		return nil
 	}
+	safe := p.curToken.Type == ast.TokenSafeNav
 	p.nextToken()
 	if !isMemberNameToken(p.curToken) {
 		p.errorExpected(p.curToken, "member name")
 		return nil
 	}
-	return &ast.MemberExpr{Object: object, Property: p.curToken.Literal, Position: object.Pos()}
+	return &ast.MemberExpr{Object: object, Property: p.curToken.Literal, Safe: safe, Position: object.Pos()}
+}
+
+// isSafeMemberCallee reports whether a call's callee is a member access that
+// used the safe-navigation operator (`receiver&.method`). Such calls propagate
+// the safe flag so the runtime short-circuits to nil when the receiver is nil.
+func isSafeMemberCallee(callee ast.Expression) bool {
+	member, ok := callee.(*ast.MemberExpr)
+	return ok && member.Safe
 }
 
 func (p *parser) parseScopeExpression(object ast.Expression) ast.Expression {
@@ -1566,7 +1581,7 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 	if function == nil {
 		return nil
 	}
-	expr := &ast.CallExpr{Callee: function, Position: function.Pos()}
+	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function)}
 	args := []ast.Expression{}
 	kwargs := []ast.KeywordArg{}
 
@@ -1619,7 +1634,7 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 	if function == nil {
 		return nil
 	}
-	expr := &ast.CallExpr{Callee: function, Position: function.Pos()}
+	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function)}
 	args := []ast.Expression{}
 	kwargs := []ast.KeywordArg{}
 	keywordOptionsHash := false
@@ -1657,7 +1672,7 @@ func (p *parser) callWithBlock(callee ast.Expression, block *ast.BlockLiteral) a
 	if existing, ok := callee.(*ast.CallExpr); ok {
 		call = existing
 	} else {
-		call = &ast.CallExpr{Callee: callee, Position: callee.Pos()}
+		call = &ast.CallExpr{Callee: callee, Position: callee.Pos(), Safe: isSafeMemberCallee(callee)}
 	}
 	call.Block = block
 	return call
