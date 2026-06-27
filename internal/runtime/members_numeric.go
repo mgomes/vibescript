@@ -13,7 +13,7 @@ import (
 var (
 	intMemberNames = []string{
 		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
-		"abs", "clamp", "even?", "odd?", "times",
+		"abs", "clamp", "even?", "odd?", "times", "upto", "downto", "step",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
@@ -33,7 +33,7 @@ var (
 
 var (
 	intBuiltinMemberNames = []string{
-		"abs", "clamp", "even?", "odd?", "times",
+		"abs", "clamp", "even?", "odd?", "times", "upto", "downto", "step",
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
@@ -140,6 +140,16 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
+	case "upto":
+		return NewAutoBuiltin("int.upto", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return intUptoDownto(exec, receiver, args, kwargs, block, "int.upto", +1)
+		}), nil
+	case "downto":
+		return NewAutoBuiltin("int.downto", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return intUptoDownto(exec, receiver, args, kwargs, block, "int.downto", -1)
+		}), nil
+	case "step":
+		return NewAutoBuiltin("int.step", intStep), nil
 	case "zero?":
 		return NewAutoBuiltin("int.zero?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -614,6 +624,121 @@ func flooredFloatMod(num, den float64) float64 {
 		m += den
 	}
 	return m
+}
+
+// intUptoDownto implements Integer#upto (direction +1) and Integer#downto
+// (direction -1): it yields each integer from the receiver to the limit
+// argument inclusive, stepping by one in the given direction, and returns the
+// receiver. A receiver already past the limit yields nothing, matching Ruby.
+// Each yield charges a step so a wide span is bounded by the sandbox quota and
+// honors cancellation. The terminal check uses the limit rather than unchecked
+// increment, so a span ending at MaxInt64/MinInt64 stops cleanly instead of
+// wrapping around.
+func intUptoDownto(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, name string, direction int64) (Value, error) {
+	if len(args) != 1 {
+		return NewNil(), fmt.Errorf("%s expects one integer argument", name)
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
+	}
+	if args[0].Kind() != KindInt {
+		return NewNil(), fmt.Errorf("%s expects an integer limit", name)
+	}
+	if valueBlock(block) == nil {
+		return NewNil(), fmt.Errorf("%s requires a block", name)
+	}
+	limit := args[0].Int()
+	runner, err := newBlockCallRunner(exec, block, name)
+	if err != nil {
+		return NewNil(), err
+	}
+	current := receiver.Int()
+	var blockArg [1]Value
+	for {
+		if direction > 0 {
+			if current > limit {
+				break
+			}
+		} else if current < limit {
+			break
+		}
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArg[0] = NewInt(current)
+		if _, err := runner.call(blockArg[:]); err != nil {
+			return NewNil(), err
+		}
+		if current == limit {
+			break
+		}
+		current += direction
+	}
+	return receiver, nil
+}
+
+// intStep implements Integer#step(limit, step): it yields the receiver and each
+// subsequent value obtained by adding step, while the value has not passed the
+// limit (`<= limit` for a positive step, `>= limit` for a negative step), and
+// returns the receiver. The step defaults to 1 and must be a nonzero integer,
+// matching Ruby's ArgumentError on a zero step. Each yield charges a step so a
+// wide span is bounded by the sandbox quota, and the terminal value is detected
+// before the next addition so a span reaching MaxInt64/MinInt64 stops without
+// wrapping around.
+func intStep(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return NewNil(), fmt.Errorf("int.step expects a limit and an optional step")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("int.step does not take keyword arguments")
+	}
+	if args[0].Kind() != KindInt {
+		return NewNil(), fmt.Errorf("int.step expects an integer limit")
+	}
+	limit := args[0].Int()
+	stride := int64(1)
+	if len(args) == 2 {
+		if args[1].Kind() != KindInt {
+			return NewNil(), fmt.Errorf("int.step expects an integer step")
+		}
+		stride = args[1].Int()
+	}
+	if stride == 0 {
+		return NewNil(), fmt.Errorf("int.step step must not be zero")
+	}
+	if valueBlock(block) == nil {
+		return NewNil(), fmt.Errorf("int.step requires a block")
+	}
+	runner, err := newBlockCallRunner(exec, block, "int.step")
+	if err != nil {
+		return NewNil(), err
+	}
+	current := receiver.Int()
+	var blockArg [1]Value
+	for {
+		if stride > 0 {
+			if current > limit {
+				break
+			}
+		} else if current < limit {
+			break
+		}
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArg[0] = NewInt(current)
+		if _, err := runner.call(blockArg[:]); err != nil {
+			return NewNil(), err
+		}
+		next, ok := addInt64Checked(current, stride)
+		if !ok {
+			// The next value would wrap past the int64 range, so no further value
+			// can be in bounds; stop cleanly rather than wrapping around.
+			break
+		}
+		current = next
+	}
+	return receiver, nil
 }
 
 func moneyMember(m Money, property string) (Value, error) {

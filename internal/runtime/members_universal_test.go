@@ -4,8 +4,16 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 )
+
+// evalUniversal compiles and runs a one-line expression and returns its result.
+func evalUniversal(t *testing.T, expr string) Value {
+	t.Helper()
+	script := compileScript(t, "def run()\n  "+expr+"\nend")
+	return callFunc(t, script, "run", nil)
+}
 
 // entryMapPtr returns the identity of a hash entry map for comparing whether two
 // hashes share the same backing storage.
@@ -1360,5 +1368,220 @@ func TestEqualityPredicateCallErrors(t *testing.T) {
 			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
 			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
 		})
+	}
+}
+
+// TestUniversalHelpersDeferToKindMembers confirms a kind-specific member keeps
+// precedence over the universal fallback: a hash key, an instance method, and an
+// instance variable named like a universal helper resolve to the kind member
+// rather than the Object-level builtin.
+func TestUniversalHelpersDeferToKindMembers(t *testing.T) {
+	t.Parallel()
+
+	t.Run("hash key wins", func(t *testing.T) {
+		t.Parallel()
+		got := evalUniversal(t, `{tap: 42}.tap`)
+		if !got.Equal(NewInt(42)) {
+			t.Fatalf("hash key tap = %v, want 42", got)
+		}
+	})
+
+	t.Run("instance method wins", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, `class Box
+  def tap
+    "custom"
+  end
+end
+
+def run()
+  Box.new.tap
+end`)
+		got := callFunc(t, script, "run", nil)
+		if !got.Equal(NewString("custom")) {
+			t.Fatalf("instance tap = %v, want \"custom\"", got)
+		}
+	})
+
+	t.Run("instance variable wins", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, `class Box
+  def initialize
+    @yield_self = 99
+  end
+end
+
+def run()
+  Box.new.yield_self
+end`)
+		got := callFunc(t, script, "run", nil)
+		if !got.Equal(NewInt(99)) {
+			t.Fatalf("instance ivar yield_self = %v, want 99", got)
+		}
+	})
+
+	t.Run("instance without member uses universal", func(t *testing.T) {
+		t.Parallel()
+		script := compileScript(t, `class Box
+end
+
+def run()
+  Box.new.yield_self { |b| "wrapped" }
+end`)
+		got := callFunc(t, script, "run", nil)
+		if !got.Equal(NewString("wrapped")) {
+			t.Fatalf("instance yield_self = %v, want \"wrapped\"", got)
+		}
+	})
+}
+
+// TestUniversalHelpersPrivateOverrideRaises confirms a private user-defined
+// tap/yield_self is not silently bypassed by the universal block-helper fallback.
+// resolveTypedMember reports the private override with a private-member error,
+// which suppresses the fallback so the privacy block raises rather than resolving
+// the universal builtin. Both the bare member access (obj.tap) and the call form
+// (obj.tap { ... }) must surface the same private-method error, exactly as the
+// equality predicates do.
+func TestUniversalHelpersPrivateOverrideRaises(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name: "bare access to private tap",
+			script: `class Box
+  private def tap
+    "secret"
+  end
+end
+
+def run()
+  Box.new.tap
+end`,
+			want: "private method tap",
+		},
+		{
+			name: "call form of private tap",
+			script: `class Box
+  private def tap
+    "secret"
+  end
+end
+
+def run()
+  Box.new.tap { |b| b }
+end`,
+			want: "private method tap",
+		},
+		{
+			name: "bare access to private yield_self",
+			script: `class Box
+  private def yield_self
+    "secret"
+  end
+end
+
+def run()
+  Box.new.yield_self
+end`,
+			want: "private method yield_self",
+		},
+		{
+			name: "call form of private yield_self",
+			script: `class Box
+  private def yield_self
+    "secret"
+  end
+end
+
+def run()
+  Box.new.yield_self { |b| b }
+end`,
+			want: "private method yield_self",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+// TestUniversalHelpersPrivateMethodInternalAccess confirms the private-member
+// suppression only blocks external callers: the receiver itself may still invoke
+// its private tap/yield_self override, so the universal fallback never masks a
+// legitimately reachable private method.
+func TestUniversalHelpersPrivateMethodInternalAccess(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		method string
+	}{
+		{name: "tap", method: "tap"},
+		{name: "yield_self", method: "yield_self"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `class Box
+  private def `+tc.method+`
+    "internal"
+  end
+
+  def probe
+    `+tc.method+`
+  end
+end
+
+def run()
+  Box.new.probe
+end`)
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(NewString("internal")) {
+				t.Fatalf("internal private %s call = %v, want internal", tc.method, got)
+			}
+		})
+	}
+}
+
+// TestUniversalHelpersPropagateBlockErrors confirms an error raised inside the
+// block surfaces from tap and yield_self rather than being swallowed.
+func TestUniversalHelpersPropagateBlockErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+	}{
+		{"tap", `"x".tap { |s| raise "boom" }`},
+		{"yield_self", `"x".yield_self { |s| raise "boom" }`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "boom")
+		})
+	}
+}
+
+// TestUniversalMemberNamesAppearInCompletion confirms editor completion lists
+// the universal helpers for every receiver type, since they resolve on every
+// value even though they live outside the per-kind dispatch switches.
+func TestUniversalMemberNamesAppearInCompletion(t *testing.T) {
+	t.Parallel()
+
+	names := MemberCompletionNames()
+	for receiver, members := range names {
+		for _, universal := range universalMemberNames {
+			if !slices.Contains(members, universal) {
+				t.Errorf("completion for %s missing universal helper %q", receiver, universal)
+			}
+		}
 	}
 }
