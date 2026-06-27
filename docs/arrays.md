@@ -33,6 +33,7 @@ Common enumerable helpers include:
 - `transpose` to swap the rows and columns of a matrix of equal-length array rows; it raises when a row is not an array or the rows differ in length.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `append(*values)` is a Ruby-style alias for `push`, returning a new array with the values added to the end in order.
+- `array << value` is the Ruby-style shovel operator. Because Vibescript arrays are immutable it does not mutate the receiver: it returns a new array with the single value appended (`[1, 2] << 3` is `[1, 2, 3]`). Accumulate by reassigning, `values = values << value`, the same idiom used with `push` and `+`; a bare `values << value` statement computes the appended array and discards it. The left operand must be an array.
 - `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`).
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
@@ -70,6 +71,7 @@ survive.
 [1, 2, 3].take(2)           # [1, 2]
 [1, 2, 3].drop(1)           # [2, 3]
 [1].append(2, 3)            # [1, 2, 3]
+[1, 2] << 3                 # [1, 2, 3]
 [3].prepend(1, 2)           # [1, 2, 3]
 [1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 [[1, 2], [3, 4]].transpose  # [[1, 3], [2, 4]]
@@ -315,7 +317,7 @@ end
 
 ## Set-like Operations
 
-Use `+` to concatenate and `-` to subtract values:
+Use `+` to concatenate, `-` to subtract values, and `&` to intersect:
 
 ```vibe
 def unique_participants(core, late)
@@ -325,6 +327,19 @@ end
 def without_dropouts(participants, dropouts)
   participants - dropouts
 end
+
+def shared(left, right)
+  left & right
+end
+```
+
+`&` returns the elements common to both arrays, removing duplicates and keeping
+the left array's order. Equality follows the same value semantics as `uniq`, so
+nested arrays and hashes compare by content. Both operands must be arrays:
+
+```vibe
+[1, 2, 3] & [2, 3, 4]    # => [2, 3]
+[1, 1, 2, 3] & [1, 3, 4] # => [1, 3]
 ```
 
 The method forms `union(*others)` and `difference(*others)` accept any number of

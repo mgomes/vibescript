@@ -127,6 +127,7 @@ const (
 	tokenSlash     = ast.TokenSlash
 	tokenPercent   = ast.TokenPercent
 	tokenLT        = ast.TokenLT
+	tokenShovel    = ast.TokenShovel
 	tokenGT        = ast.TokenGT
 	tokenLTE       = ast.TokenLTE
 	tokenGTE       = ast.TokenGTE

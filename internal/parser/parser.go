@@ -231,6 +231,8 @@ const (
 	precEquality
 	precComparison
 	precRange
+	precBitAnd
+	precShift
 	precSum
 	precProduct
 	precPrefix
@@ -252,6 +254,8 @@ var precedences = map[ast.TokenType]int{
 	ast.TokenSpaceship: precComparison,
 	ast.TokenRange:     precRange,
 	ast.TokenRangeExcl: precRange,
+	ast.TokenAmpersand: precBitAnd,
+	ast.TokenShovel:    precShift,
 	ast.TokenPlus:      precSum,
 	ast.TokenMinus:     precSum,
 	ast.TokenSlash:     precProduct,
@@ -329,7 +333,10 @@ func (p *parser) errorExpected(tok ast.Token, expected string) {
 }
 
 func (p *parser) errorUnexpected(tok ast.Token) {
-	if tok.Type == ast.TokenIllegal {
+	// The lexer stamps illegal tokens with a descriptive diagnostic in
+	// Literal (e.g. "invalid numeric literal"); surface it directly rather
+	// than the generic "unexpected token invalid token".
+	if tok.Type == ast.TokenIllegal && tok.Literal != "" {
 		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
 		return
 	}
