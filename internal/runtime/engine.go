@@ -318,7 +318,13 @@ func cloneBuiltinValue(val Value) Value {
 		clonedBuiltin := valueBuiltin(cloned)
 		clonedBuiltin.OptionsHashTarget = builtin.OptionsHashTarget
 		clonedBuiltin.DirectCallAlias = builtin.DirectCallAlias
+		clonedBuiltin.CapturedValues = builtin.CapturedValues
 		clonedBuiltin.Capability = builtin.Capability
+		// A bound predicate's BoundReceiver and Fn both read one mutable cell, so a
+		// shallow copy that shares both stays consistent: the copy reads the same
+		// receiver, and a later two-phase clone rebuilds a fresh predicate around
+		// that cell's current value.
+		clonedBuiltin.BoundReceiver = builtin.BoundReceiver
 		return cloned
 	case KindArray:
 		arr := val.Array()
