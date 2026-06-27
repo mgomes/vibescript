@@ -320,6 +320,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 ### Iteration
 
 - `each { |item| } -> array` – yield each element; returns the receiver.
+- `each_with_index { |item, index| } -> array` – yield each element with its
+  0-based index; returns the receiver. Takes no arguments.
 - `each_slice(n) { |slice| } -> nil` – yield non-overlapping slices of length
   `n` (the trailing slice may be shorter); `n` must be a positive integer.
 - `each_cons(n) { |window| } -> nil` – yield each sliding window of length `n`;
@@ -330,6 +332,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   non-positive `n` yields nothing. Omitting `n` or passing `nil` cycles forever,
   bounded by the step quota and context cancellation.
 - `map { |item| } -> array` – new array of block results.
+- `map_with_index { |item, index| } -> array` – new array of block results,
+  passing each element's 0-based index to the block. Takes no arguments.
 - `filter_map { |item| } -> array` – block results that are truthy; fuses `map`
   with a truthiness filter, dropping falsy returns.
 - `select { |item| } -> array` – elements for which the block is truthy.
@@ -516,8 +520,14 @@ methods.
 ### Iteration
 
 - `each { |key, value| } -> hash` – yield each pair; returns the receiver.
+- `each_with_index { |pair, index| } -> hash` – yield each `[key, value]` pair
+  with its 0-based index in sorted key order, matching Ruby's
+  `Hash#each_with_index`; returns the receiver. Takes no arguments.
 - `each_key { |key| } -> hash` – yield each key.
 - `each_value { |value| } -> hash` – yield each value.
+- `map_with_index { |pair, index| } -> array` – new array of block results,
+  yielding each `[key, value]` pair with its 0-based index in sorted key order.
+  Takes no arguments.
 
 ### Transform and Filter
 
