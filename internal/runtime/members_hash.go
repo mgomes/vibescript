@@ -580,12 +580,16 @@ func hashMemberQuery(property string) (Value, error) {
 			// allocating everything before the runtime can reject it.
 			//
 			// Abort before materializing and sorting the keys when the context is
-			// already canceled or the step quota is already spent. The per-pair loop
-			// charges a step and observes cancellation, but the sortedHashKeysInto sort
-			// (O(n log n) CPU plus a scratch list) and the make below run first, so
-			// without this cheap up-front check a large hash could spend that work even
-			// when no quota or a generous MemoryQuotaBytes would let the projection pass.
-			if err := exec.checkBudget(); err != nil {
+			// already canceled or the remaining step quota cannot cover one step per
+			// entry. The per-pair loop charges a step per entry and observes
+			// cancellation, but the sortedHashKeysInto sort (O(n log n) CPU plus a
+			// scratch list) and the make below run first, so without this cheap up-front
+			// check a large hash could spend that work even when the loop is guaranteed
+			// to exhaust the step quota partway. Bounding on len(entries) (not just one
+			// remaining step) keeps a sandboxed caller from spending O(n log n) CPU on a
+			// projection that cannot fit the remaining steps; the per-pair step still
+			// enforces the quota, so this never rejects a build the loop would accept.
+			if err := exec.checkStepBudgetFor(len(entries)); err != nil {
 				return NewNil(), err
 			}
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)

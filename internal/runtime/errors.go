@@ -178,7 +178,25 @@ func (exec *Execution) step() error {
 // allocation, rather than reserving the full backing and only observing the stop
 // condition once the per-element loop runs.
 func (exec *Execution) checkBudget() error {
-	if exec.quota > 0 && exec.steps >= exec.quota {
+	return exec.checkStepBudgetFor(1)
+}
+
+// checkStepBudgetFor reports whether at least n more steps may be charged
+// without exhausting the step quota, and whether the context is still live. It
+// generalizes checkBudget (which only requires a single step) for builtins that
+// will charge one step per element of a known-size receiver: when the remaining
+// quota cannot cover all n steps the per-element loop is guaranteed to fail, so
+// rejecting up front lets such a builtin skip bulk work (for example sorting a
+// hash's keys) that the loop would otherwise perform before the first step()
+// fails. n is clamped to a minimum of one so callers can pass a receiver length
+// directly even when it is zero. Like step, the per-element charge still observes
+// the quota and cancellation, so this is purely an early-out and never accepts a
+// build the loop would reject.
+func (exec *Execution) checkStepBudgetFor(n int) error {
+	if n < 1 {
+		n = 1
+	}
+	if exec.quota > 0 && exec.quota-exec.steps < n {
 		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
 	}
 	if exec.ctx != nil {

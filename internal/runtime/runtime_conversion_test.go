@@ -627,3 +627,26 @@ func TestHashToArrayChecksStepQuotaBeforeSorting(t *testing.T) {
 		t.Fatalf("expected to_a to abort before sorting the keys (steps unchanged at 1), but steps reached %d", exec.steps)
 	}
 }
+
+// TestHashToArrayRejectsInsufficientStepQuotaBeforeSorting pins the exact P2
+// finding: a positive but insufficient remaining step quota (for example 40
+// remaining steps on a hash with thousands of entries) must abort Hash#to_a
+// before materializing and sorting the keys. The per-pair loop charges one step
+// per entry, so a remaining quota smaller than len(entries) guarantees the loop
+// fails partway; without bounding the up-front check on len(entries) the sort
+// (O(n log n) CPU plus a scratch list) and the output-slice allocation run first,
+// letting a sandboxed call spend that work on a projection that can never fit.
+// Asserting exec.steps stayed 0 proves the sort was skipped: with only the
+// remaining > 0 check the loop would run its first step (after the sort) and steps
+// would reach 1.
+func TestHashToArrayRejectsInsufficientStepQuotaBeforeSorting(t *testing.T) {
+	t.Parallel()
+
+	const count = 4000
+	exec := &Execution{ctx: context.Background(), quota: 40, memoryQuota: 64 << 20}
+	_, err := callHashMember(t, exec, largeHashReceiver(count), "to_a", nil, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("expected to_a to abort before sorting the keys (0 steps) when only %d of %d required steps remain, but %d step(s) ran", exec.quota, count, exec.steps)
+	}
+}
