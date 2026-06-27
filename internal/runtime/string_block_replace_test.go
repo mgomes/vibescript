@@ -96,8 +96,8 @@ func TestStringSubGsubBlockForm(t *testing.T) {
 }
 
 // TestStringBangBlockNoMatchReturnsNil pins the Ruby behavior that String#sub!
-// and String#gsub! return nil (not the receiver) when the block form makes no
-// replacement, matching the value-replacement bang forms.
+// and String#gsub! return nil only when the pattern never matches. The decision
+// is keyed off whether a match occurred, not whether the result bytes changed.
 func TestStringBangBlockNoMatchReturnsNil(t *testing.T) {
 	t.Parallel()
 
@@ -113,6 +113,22 @@ func TestStringBangBlockNoMatchReturnsNil(t *testing.T) {
 			name:   "gsub bang no match",
 			script: `def run() "hello".gsub!("z") do |m| m.upcase end end`,
 		},
+		{
+			name:   "sub bang regex no match",
+			script: `def run() "hello".sub!("z", regex: true) do |m| m.upcase end end`,
+		},
+		{
+			name:   "gsub bang regex no match",
+			script: `def run() "hello".gsub!("z", regex: true) do |m| m.upcase end end`,
+		},
+		{
+			name:   "sub bang template no match",
+			script: `def run() "hello".sub!("z", "Z") end`,
+		},
+		{
+			name:   "gsub bang template no match",
+			script: `def run() "hello".gsub!("z", "Z") end`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -122,6 +138,83 @@ func TestStringBangBlockNoMatchReturnsNil(t *testing.T) {
 			got := callFunc(t, script, "run", nil)
 			if got.Kind() != KindNil {
 				t.Fatalf("expected nil, got %v (%q)", got.Kind(), got.String())
+			}
+		})
+	}
+}
+
+// TestStringBangMatchUnchangedReturnsReceiver is the direct regression for the
+// reviewer's finding that String#sub!/String#gsub! must return the receiver --
+// not nil -- whenever a substitution is performed, even one that reproduces the
+// original text. Ruby keys the bang return off whether the pattern matched, so a
+// block that returns the match unchanged, or an empty-pattern replacement that
+// leaves the bytes identical, still returns the rewritten string. Comparing the
+// result bytes (the prior behavior) wrongly reported nil for these cases.
+func TestStringBangMatchUnchangedReturnsReceiver(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "sub bang literal block returns match unchanged",
+			script: `def run() "a".sub!("a") do |m| m end end`,
+			want:   "a",
+		},
+		{
+			name:   "gsub bang literal block returns match unchanged",
+			script: `def run() "aa".gsub!("a") do |m| m end end`,
+			want:   "aa",
+		},
+		{
+			name:   "sub bang regex block returns match unchanged",
+			script: `def run() "abc".sub!("b", regex: true) do |m| m end end`,
+			want:   "abc",
+		},
+		{
+			name:   "gsub bang regex block returns match unchanged",
+			script: `def run() "abc".gsub!("[abc]", regex: true) do |m| m end end`,
+			want:   "abc",
+		},
+		{
+			name:   "sub bang template replaces with same text",
+			script: `def run() "abc".sub!("b", "b") end`,
+			want:   "abc",
+		},
+		{
+			name:   "gsub bang template replaces with same text",
+			script: `def run() "abc".gsub!("b", "b") end`,
+			want:   "abc",
+		},
+		{
+			name:   "gsub bang empty literal pattern leaves bytes identical",
+			script: `def run() "abc".gsub!("", "") end`,
+			want:   "abc",
+		},
+		{
+			name:   "gsub bang empty pattern on empty string still substitutes",
+			script: `def run() "".gsub!("", "") end`,
+			want:   "",
+		},
+		{
+			name:   "gsub bang empty-match regex leaves bytes identical",
+			script: `def run() "abc".gsub!("x*", regex: true) do |m| m end end`,
+			want:   "abc",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			got := callFunc(t, script, "run", nil)
+			if got.Kind() != KindString {
+				t.Fatalf("expected string, got %v (%q)", got.Kind(), got.String())
+			}
+			if got.String() != tc.want {
+				t.Fatalf("result = %q, want %q", got.String(), tc.want)
 			}
 		})
 	}
@@ -323,7 +416,7 @@ func TestStringGsubBlockOutputLimit(t *testing.T) {
 	}
 	text := strings.Repeat("a", maxRegexInputBytes)
 	yield := func(string) (string, error) { return "xx", nil }
-	if _, err := rubyRegexGSubWith(re, text, "string.gsub", rubyBlockReplacer(text, yield)); err == nil {
+	if _, _, err := rubyRegexGSubWith(re, text, "string.gsub", rubyBlockReplacer(text, yield)); err == nil {
 		t.Fatalf("expected output limit error, got nil")
 	} else if !strings.Contains(err.Error(), "output exceeds limit") {
 		t.Fatalf("unexpected error: %v", err)
@@ -509,76 +602,103 @@ func TestLiteralBlockReplace(t *testing.T) {
 	const invalid = "\xc3" // raw lead byte, never valid UTF-8 on its own
 
 	tests := []struct {
-		name       string
-		src        string
-		pattern    string
-		global     bool
-		wantResult string
-		wantYields []string
+		name        string
+		src         string
+		pattern     string
+		global      bool
+		wantResult  string
+		wantMatched bool
+		wantYields  []string
 	}{
 		{
-			name:       "gsub non-empty literal",
-			src:        "ababab",
-			pattern:    "ab",
-			global:     true,
-			wantResult: "<ab><ab><ab>",
-			wantYields: []string{"ab", "ab", "ab"},
+			name:        "gsub non-empty literal",
+			src:         "ababab",
+			pattern:     "ab",
+			global:      true,
+			wantResult:  "<ab><ab><ab>",
+			wantMatched: true,
+			wantYields:  []string{"ab", "ab", "ab"},
 		},
 		{
-			name:       "sub non-empty literal first only",
-			src:        "ababab",
-			pattern:    "ab",
-			global:     false,
-			wantResult: "<ab>abab",
-			wantYields: []string{"ab"},
+			name:        "sub non-empty literal first only",
+			src:         "ababab",
+			pattern:     "ab",
+			global:      false,
+			wantResult:  "<ab>abab",
+			wantMatched: true,
+			wantYields:  []string{"ab"},
 		},
 		{
-			name:       "gsub empty pattern every position",
-			src:        "abc",
-			pattern:    "",
-			global:     true,
-			wantResult: "<>a<>b<>c<>",
-			wantYields: []string{"", "", "", ""},
+			name:        "gsub empty pattern every position",
+			src:         "abc",
+			pattern:     "",
+			global:      true,
+			wantResult:  "<>a<>b<>c<>",
+			wantMatched: true,
+			wantYields:  []string{"", "", "", ""},
 		},
 		{
-			name:       "sub empty pattern leading only",
-			src:        "abc",
-			pattern:    "",
-			global:     false,
-			wantResult: "<>abc",
-			wantYields: []string{""},
+			name:        "sub empty pattern leading only",
+			src:         "abc",
+			pattern:     "",
+			global:      false,
+			wantResult:  "<>abc",
+			wantMatched: true,
+			wantYields:  []string{""},
 		},
 		{
-			name:       "gsub empty pattern multibyte advances by rune",
-			src:        "aé",
-			pattern:    "",
-			global:     true,
-			wantResult: "<>a<>é<>",
-			wantYields: []string{"", "", ""},
+			name:        "gsub empty pattern multibyte advances by rune",
+			src:         "aé",
+			pattern:     "",
+			global:      true,
+			wantResult:  "<>a<>é<>",
+			wantMatched: true,
+			wantYields:  []string{"", "", ""},
 		},
 		{
-			name:       "gsub matches invalid utf8 byte literally",
-			src:        "X" + invalid + "Y" + invalid + "Z",
-			pattern:    invalid,
-			global:     true,
-			wantResult: "X<" + invalid + ">Y<" + invalid + ">Z",
-			wantYields: []string{invalid, invalid},
+			name:        "sub empty pattern on empty source still matches",
+			src:         "",
+			pattern:     "",
+			global:      false,
+			wantResult:  "<>",
+			wantMatched: true,
+			wantYields:  []string{""},
 		},
 		{
-			name:       "gsub empty pattern over invalid byte subject advances by one byte",
-			src:        "X" + invalid + "Y",
-			pattern:    "",
-			global:     true,
-			wantResult: "<>X<>" + invalid + "<>Y<>",
-			wantYields: []string{"", "", "", ""},
+			name:        "gsub matches invalid utf8 byte literally",
+			src:         "X" + invalid + "Y" + invalid + "Z",
+			pattern:     invalid,
+			global:      true,
+			wantResult:  "X<" + invalid + ">Y<" + invalid + ">Z",
+			wantMatched: true,
+			wantYields:  []string{invalid, invalid},
 		},
 		{
-			name:       "gsub no match returns receiver",
-			src:        "abc",
-			pattern:    "xyz",
-			global:     true,
-			wantResult: "abc",
-			wantYields: nil,
+			name:        "gsub empty pattern over invalid byte subject advances by one byte",
+			src:         "X" + invalid + "Y",
+			pattern:     "",
+			global:      true,
+			wantResult:  "<>X<>" + invalid + "<>Y<>",
+			wantMatched: true,
+			wantYields:  []string{"", "", "", ""},
+		},
+		{
+			name:        "sub no match leaves matched false",
+			src:         "abc",
+			pattern:     "xyz",
+			global:      false,
+			wantResult:  "abc",
+			wantMatched: false,
+			wantYields:  nil,
+		},
+		{
+			name:        "gsub no match returns receiver",
+			src:         "abc",
+			pattern:     "xyz",
+			global:      true,
+			wantResult:  "abc",
+			wantMatched: false,
+			wantYields:  nil,
 		},
 	}
 
@@ -590,12 +710,15 @@ func TestLiteralBlockReplace(t *testing.T) {
 				yields = append(yields, match)
 				return "<" + match + ">", nil
 			}
-			got, err := literalBlockReplace(tc.src, tc.pattern, tc.global, yield)
+			got, matched, err := literalBlockReplace(tc.src, tc.pattern, tc.global, yield)
 			if err != nil {
 				t.Fatalf("literalBlockReplace error: %v", err)
 			}
 			if got != tc.wantResult {
 				t.Fatalf("result = %x, want %x", got, tc.wantResult)
+			}
+			if matched != tc.wantMatched {
+				t.Fatalf("matched = %v, want %v", matched, tc.wantMatched)
 			}
 			if len(yields) != len(tc.wantYields) {
 				t.Fatalf("yield count = %d (%x), want %d (%x)", len(yields), yields, len(tc.wantYields), tc.wantYields)
@@ -618,9 +741,92 @@ func TestLiteralBlockReplaceOutputLimit(t *testing.T) {
 
 	src := strings.Repeat("a", maxRegexInputBytes)
 	yield := func(string) (string, error) { return "xx", nil }
-	if _, err := literalBlockReplace(src, "a", true, yield); err == nil {
+	if _, _, err := literalBlockReplace(src, "a", true, yield); err == nil {
 		t.Fatal("expected output limit error, got nil")
 	} else if !strings.Contains(err.Error(), "output exceeds limit") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestStringSubGsubLiteralBlockIgnoresPatternCap is the direct regression for
+// the reviewer's finding that the literal block form must not inherit the
+// regex-only pattern-size cap (validateRegexTextPattern's 16 KiB pattern and
+// 1 MiB input checks). The literal template form (strings.Replace/ReplaceAll)
+// imposes no such validation caps, so its block counterpart must accept the same
+// oversized literal token -- the finding's "replace a 20 KiB literal token with a
+// block" case -- rather than rejecting valid input the non-block path replaces.
+// Only the regex form (regex: true) applies the validation guards. The shared
+// output-size cap that bounds each append is a separate, deliberate guard and is
+// kept; this test keeps the result well under that cap to isolate the validation
+// caps the fix removed.
+func TestStringSubGsubLiteralBlockIgnoresPatternCap(t *testing.T) {
+	t.Parallel()
+
+	// A literal pattern far larger than the regex pattern cap (16 KiB). The old
+	// code rejected this at validation before reaching literalBlockReplace.
+	bigPattern := strings.Repeat("p", maxRegexPatternSize+1)
+	text := "A" + bigPattern + "B" + bigPattern + "C"
+
+	tests := []struct {
+		name   string
+		global bool
+		want   string
+	}{
+		{name: "sub oversized literal pattern", global: false, want: "ARB" + bigPattern + "C"},
+		{name: "gsub oversized literal pattern", global: true, want: "ARBRC"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			yield := func(string) (string, error) { return "R", nil }
+			got, matched, err := func() (string, bool, error) {
+				if tc.global {
+					return stringGSubBlock("string.gsub", text, bigPattern, false, yield)
+				}
+				return stringSubBlock("string.sub", text, bigPattern, false, yield)
+			}()
+			if err != nil {
+				t.Fatalf("literal block over pattern cap = %v, want success", err)
+			}
+			if !matched {
+				t.Fatal("expected matched true for literal block over pattern cap")
+			}
+			if got != tc.want {
+				t.Fatalf("result = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStringLiteralBlockMatchesTemplateOverCaps drives the full script-level
+// sub/gsub block path with a literal pattern past the regex pattern cap and
+// confirms it produces exactly what the literal template form produces, proving
+// the block form shares the literal path's validation-cap-free behavior end to
+// end.
+func TestStringLiteralBlockMatchesTemplateOverCaps(t *testing.T) {
+	t.Parallel()
+
+	pattern := strings.Repeat("p", maxRegexPatternSize+1)
+	text := pattern + "tail"
+	cfg := Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 << 20}
+
+	script := compileScriptWithConfig(t, cfg, `def run(text, pattern)
+  block_result = text.gsub(pattern) do |m| "R" end
+  template_result = text.gsub(pattern, "R")
+  { block: block_result, template: template_result }
+end`)
+	got, err := script.Call(context.Background(), "run", []Value{NewString(text), NewString(pattern)}, CallOptions{})
+	if err != nil {
+		t.Fatalf("literal block over caps = %v, want success", err)
+	}
+	hash := got.Hash()
+	block := hash["block"]
+	template := hash["template"]
+	if block.Kind() != KindString || block.String() != "Rtail" {
+		t.Fatalf("block result = %v %q, want %q", block.Kind(), block.String(), "Rtail")
+	}
+	if template.Kind() != KindString || template.String() != block.String() {
+		t.Fatalf("template result = %v %q, want it to equal block result %q", template.Kind(), template.String(), block.String())
 	}
 }

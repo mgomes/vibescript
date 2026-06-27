@@ -309,13 +309,14 @@ func rubyBlockReplacer(src string, yield func(match string) (string, error)) rub
 
 // literalBlockReplace replaces literal occurrences of pattern in src with the
 // string the yield block returns for each matched run, returning the rewritten
-// string. It drives String#sub and String#gsub block forms when the pattern is
-// literal (regex: false), so it must match byte-for-byte exactly like
-// strings.Replace/ReplaceAll rather than routing through Go's regexp engine,
-// whose patterns must be valid UTF-8. Vibescript strings can hold arbitrary
-// bytes (for example a pattern produced by "Aé".byteslice(1, 1) is the raw byte
-// 0xc3), so the regex path would reject those literals; this path matches them
-// the same way the literal template forms do.
+// string and whether any match was found. It drives String#sub and String#gsub
+// block forms when the pattern is literal (regex: false), so it must match
+// byte-for-byte exactly like strings.Replace/ReplaceAll rather than routing
+// through Go's regexp engine, whose patterns must be valid UTF-8. Vibescript
+// strings can hold arbitrary bytes (for example a pattern produced by
+// "Aé".byteslice(1, 1) is the raw byte 0xc3), so the regex path would reject
+// those literals; this path matches them the same way the literal template forms
+// do.
 //
 // global selects gsub-style replacement of every occurrence over sub-style
 // replacement of only the first. The matched substring yielded to the block is
@@ -326,33 +327,41 @@ func rubyBlockReplacer(src string, yield func(match string) (string, error)) rub
 // empty matches and an invalid byte such as 0xc3 counts as a single position
 // (utf8.RuneError of width one), matching Ruby's behavior on byte strings.
 //
+// The matched flag distinguishes a performed replacement from an untouched
+// receiver so String#sub!/String#gsub! can return the receiver whenever a match
+// occurred (even if the block reproduced the original text) and nil only when no
+// match was found. An empty pattern always matches at least position 0, so the
+// flag is true even when the source is empty.
+//
 // yield charges the sandbox step quota per match and returns the bounded string
 // form of the block result; every append is checked against the shared regex
 // output cap so a block returning a huge replacement cannot allocate past it.
-func literalBlockReplace(src, pattern string, global bool, yield func(match string) (string, error)) (string, error) {
+func literalBlockReplace(src, pattern string, global bool, yield func(match string) (string, error)) (string, bool, error) {
 	if pattern == "" {
 		return literalBlockReplaceEmpty(src, global, yield)
 	}
 	out := make([]byte, 0, len(src))
 	start := 0
+	matched := false
 	for {
 		idx := strings.Index(src[start:], pattern)
 		if idx < 0 {
 			break
 		}
+		matched = true
 		matchStart := start + idx
 		next, err := appendBounded(out, src[start:matchStart])
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		out = next
 		replacement, err := yield(pattern)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		next, err = appendBounded(out, replacement)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		out = next
 		start = matchStart + len(pattern)
@@ -362,10 +371,10 @@ func literalBlockReplace(src, pattern string, global bool, yield func(match stri
 	}
 	next, err := appendBounded(out, src[start:])
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	out = next
-	return string(out), nil
+	return string(out), matched, nil
 }
 
 // literalBlockReplaceEmpty implements the empty-pattern case of
@@ -376,18 +385,23 @@ func literalBlockReplace(src, pattern string, global bool, yield func(match stri
 // replaced; for gsub every position is. This mirrors strings.Replace's
 // empty-old handling so the block form stays byte-for-byte consistent with the
 // literal template forms.
-func literalBlockReplaceEmpty(src string, global bool, yield func(match string) (string, error)) (string, error) {
+//
+// An empty pattern always matches at least position 0 (even on an empty source),
+// so the returned matched flag is unconditionally true, matching Ruby where
+// "".gsub!("", "") returns the receiver rather than nil.
+func literalBlockReplaceEmpty(src string, global bool, yield func(match string) (string, error)) (string, bool, error) {
 	out := make([]byte, 0, len(src))
 	replacement, err := yield("")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	out, err = appendBounded(out, replacement)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !global {
-		return appendStringBounded(out, src)
+		result, err := appendStringBounded(out, src)
+		return result, true, err
 	}
 	start := 0
 	for start < len(src) {
@@ -398,19 +412,19 @@ func literalBlockReplaceEmpty(src string, global bool, yield func(match string) 
 		next := start + width
 		out, err = appendBounded(out, src[start:next])
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		replacement, err := yield("")
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		out, err = appendBounded(out, replacement)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		start = next
 	}
-	return string(out), nil
+	return string(out), true, nil
 }
 
 // appendStringBounded appends s to out under the shared regex output cap and
@@ -427,48 +441,55 @@ func appendStringBounded(out []byte, s string) (string, error) {
 // rubyRegexSub replaces the first match of re in src using the Ruby-style
 // replacement template, enforcing the shared regex output-size guard. It is the
 // Ruby-semantics counterpart of the first-match path that previously relied on
-// Go's ExpandString.
-func rubyRegexSub(re *regexp.Regexp, src, template, method string) (string, error) {
+// Go's ExpandString. The reported matched flag is true whenever a match was
+// found, independent of whether the replacement reproduced the original text.
+func rubyRegexSub(re *regexp.Regexp, src, template, method string) (string, bool, error) {
 	return rubyRegexSubWith(re, src, method, rubyTemplateReplacer(re, template, src))
 }
 
 // rubyRegexSubWith replaces the first match of re in src with the result of
 // replace, enforcing the shared regex output-size guard. It backs both the
 // template form (rubyRegexSub) and the block form, which differ only in how each
-// match's replacement is produced.
-func rubyRegexSubWith(re *regexp.Regexp, src, method string, replace rubyMatchReplacer) (string, error) {
+// match's replacement is produced. It returns whether a match was found so the
+// bang forms can distinguish a performed substitution from an untouched
+// receiver.
+func rubyRegexSubWith(re *regexp.Regexp, src, method string, replace rubyMatchReplacer) (string, bool, error) {
 	loc := re.FindStringSubmatchIndex(src)
 	if loc == nil {
-		return src, nil
+		return src, false, nil
 	}
 	replaced, err := replace(nil, loc)
 	if err != nil {
-		return "", fmt.Errorf("%s %w", method, err)
+		return "", false, fmt.Errorf("%s %w", method, err)
 	}
 	outputLen := len(src) - (loc[1] - loc[0]) + len(replaced)
 	if outputLen > maxRegexInputBytes {
-		return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		return "", false, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
-	return src[:loc[0]] + string(replaced) + src[loc[1]:], nil
+	return src[:loc[0]] + string(replaced) + src[loc[1]:], true, nil
 }
 
 // rubyRegexGSub replaces every match of re in src using the Ruby-style
 // replacement template. Match iteration mirrors regexReplaceAllWithLimit
 // (empty-match advancement and the output-size guard); only the per-match
-// expansion differs, using Ruby substitution rules instead of Go's.
-func rubyRegexGSub(re *regexp.Regexp, src, template, method string) (string, error) {
+// expansion differs, using Ruby substitution rules instead of Go's. The reported
+// matched flag is true whenever at least one match was found.
+func rubyRegexGSub(re *regexp.Regexp, src, template, method string) (string, bool, error) {
 	return rubyRegexGSubWith(re, src, method, rubyTemplateReplacer(re, template, src))
 }
 
 // rubyRegexGSubWith replaces every match of re in src with the result of replace,
 // sharing the empty-match advancement and output-size guard with the template
 // form (rubyRegexGSub). Only the per-match replacement differs between the
-// template and block forms.
-func rubyRegexGSubWith(re *regexp.Regexp, src, method string, replace rubyMatchReplacer) (string, error) {
+// template and block forms. It returns whether at least one match was found so
+// the bang forms can distinguish a performed substitution from an untouched
+// receiver.
+func rubyRegexGSubWith(re *regexp.Regexp, src, method string, replace rubyMatchReplacer) (string, bool, error) {
 	out := make([]byte, 0, len(src))
 	lastAppended := 0
 	searchStart := 0
 	lastMatchEnd := -1
+	matched := false
 	for searchStart <= len(src) {
 		loc, found := nextRegexReplaceAllSubmatchIndex(re, src, searchStart)
 		if !found {
@@ -486,18 +507,19 @@ func rubyRegexGSubWith(re *regexp.Regexp, src, method string, replace rubyMatchR
 			continue
 		}
 
+		matched = true
 		segmentLen := loc[0] - lastAppended
 		if len(out) > maxRegexInputBytes-segmentLen {
-			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+			return "", false, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
 		out = append(out, src[lastAppended:loc[0]]...)
 		expanded, err := replace(out, loc)
 		if err != nil {
-			return "", fmt.Errorf("%s %w", method, err)
+			return "", false, fmt.Errorf("%s %w", method, err)
 		}
 		out = expanded
 		if len(out) > maxRegexInputBytes {
-			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+			return "", false, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
 		lastAppended = loc[1]
 		lastMatchEnd = loc[1]
@@ -518,8 +540,8 @@ func rubyRegexGSubWith(re *regexp.Regexp, src, method string, replace rubyMatchR
 
 	tailLen := len(src) - lastAppended
 	if len(out) > maxRegexInputBytes-tailLen {
-		return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		return "", false, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	out = append(out, src[lastAppended:]...)
-	return string(out), nil
+	return string(out), matched, nil
 }

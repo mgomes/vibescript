@@ -649,8 +649,10 @@ substring and its result (coerced to a string) replaces that match:
 
 As with `sub`, the block form honors the `regex` keyword (defaulting to literal
 matching), and passing both a replacement argument and a block is an error. The
-`sub!` and `gsub!` variants accept the same block form, returning the modified
-string when a replacement was made and `nil` otherwise.
+`sub!` and `gsub!` variants accept the same block form. Matching Ruby, they
+return the rewritten string whenever the pattern matched -- even when the
+replacement reproduces the original text, as in `"a".sub!("a") do |m| m end`
+-- and return `nil` only when the pattern never matched.
 
 #### Replacement backreferences
 
