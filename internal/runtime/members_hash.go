@@ -343,6 +343,7 @@ func hashMemberQuery(property string) (Value, error) {
 		}), nil
 	case "fetch":
 		return NewAutoBuiltin("hash.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			hasBlock := valueBlock(block) != nil
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("hash.fetch expects key and optional default")
 			}
@@ -353,10 +354,17 @@ func hashMemberQuery(property string) (Value, error) {
 			if value, ok := receiver.Hash()[key]; ok {
 				return value, nil
 			}
+			// A block supersedes a default value argument, matching Ruby's
+			// Hash#fetch: when both are supplied the block is invoked on a
+			// miss and the default argument is ignored.
+			if hasBlock {
+				blockArg := [1]Value{args[0]}
+				return exec.CallBlock(block, blockArg[:])
+			}
 			if len(args) == 2 {
 				return args[1], nil
 			}
-			return NewNil(), nil
+			return NewNil(), fmt.Errorf("hash.fetch key not found: %s", formatMissingHashKey(args[0]))
 		}), nil
 	case "fetch_values":
 		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
