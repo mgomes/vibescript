@@ -76,6 +76,42 @@ render as `<cycle>`. The rendered length is charged against the sandbox memory
 quota before the string is built, so inspecting a huge composite fails with a
 quota error instead of allocating an oversized result.
 
+## Object Introspection
+
+Every value kind responds to the Ruby-style introspection predicates. They are
+resolved the way `Object`'s methods are in Ruby: available on any receiver, but a
+script class may define its own method of the same name and that definition wins.
+
+- `respond_to?(name) -> bool` (optionally `respond_to?(name, include_all)`) –
+  reports whether the receiver has a callable member named `name` (a symbol or a
+  string). Data — hash keys, namespace constants, and instance variables — is not
+  a method and reports `false`; namespace functions such as `Math.sqrt` report
+  `true`. Private methods report `false` unless the caller is the receiver itself
+  or `include_all` is `true`, matching `respond_to?`'s privacy rules.
+- `is_a?(class) -> bool` and `kind_of?(class) -> bool` – report whether the
+  receiver is an instance of the given script class. Without inheritance these
+  test direct class identity; when a superclass chain is added they will also walk
+  it. A non-instance receiver (a core value, a class value, an enum value) reports
+  `false`. The argument must be a class.
+- `instance_of?(class) -> bool` – reports whether the receiver is an instance of
+  exactly the given script class.
+
+```vibe
+"Ada".respond_to?(:length)   # true
+"Ada".respond_to?(:nope)     # false
+{ name: "x" }.respond_to?(:name) # false  (a data key, not a method)
+{ name: "x" }.respond_to?(:keys) # true
+
+class User
+end
+
+user = User.new
+user.is_a?(User)        # true
+user.kind_of?(User)     # true
+user.instance_of?(User) # true
+42.is_a?(User)          # false
+```
+
 ## Strings
 
 See [strings.md](strings.md) for worked examples. Indexes and lengths count

@@ -1,6 +1,10 @@
 package runtime
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+)
 
 // TestFunctionValueCall covers Ruby-style fn.call(...) on script function
 // values, which must mirror direct fn(...) invocation including args,
@@ -190,14 +194,16 @@ func exportedFunctionValue(t *testing.T, script *Script, names ...string) Value 
 }
 
 // TestFunctionValueCallMemberSuggestion confirms the function member list is
-// wired into editor completion metadata.
+// wired into editor completion metadata. It exposes `call` plus the universal
+// introspection predicates that every kind gains.
 func TestFunctionValueCallMemberSuggestion(t *testing.T) {
 	t.Parallel()
 	names, ok := MemberCompletionNames()["function"]
 	if !ok {
 		t.Fatalf("MemberCompletionNames missing function entry")
 	}
-	if len(names) != 1 || names[0] != "call" {
-		t.Fatalf("function member completion = %v, want [call]", names)
+	want := append([]string{"call"}, universalPredicateNames...)
+	if diff := cmp.Diff(want, names); diff != "" {
+		t.Fatalf("function member completion mismatch (-want +got):\n%s", diff)
 	}
 }

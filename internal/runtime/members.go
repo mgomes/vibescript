@@ -22,7 +22,21 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // callerIsReceiver controls private-method visibility: only the current
 // receiver may resolve private methods, so external/public dispatch passes
 // false to keep privacy enforced regardless of which value is self.
+//
+// The universal introspection predicates (respond_to?, is_a?, kind_of?,
+// instance_of?) are resolved as a fallback only when the receiver's own
+// kind does not define the name. This mirrors Ruby's Object-level methods
+// while letting a script class override them with its own definition.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
+	member, err := exec.resolveKindMember(obj, property, pos, callerIsReceiver)
+	if err != nil && isUniversalPredicate(property) {
+		return exec.universalPredicate(property, callerIsReceiver), nil
+	}
+	return member, err
+}
+
+// resolveKindMember dispatches member resolution to the receiver's kind.
+func (exec *Execution) resolveKindMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	switch obj.Kind() {
 	case KindHash:
 		member, err := hashMember(obj, property)
@@ -132,10 +146,11 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 	if val, ok := cl.ClassVars[property]; ok {
 		return val, nil
 	}
-	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1)
+	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1+len(universalPredicateNames))
 	candidates = append(candidates, "new")
 	candidates = appendAccessibleMethodNames(candidates, cl.ClassMethods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassVars))
+	candidates = append(candidates, universalPredicateNames...)
 	return NewNil(), exec.errorAt(pos, "unknown class member %s%s", property, didYouMean(property, candidates))
 }
 
@@ -157,10 +172,11 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 	if val, ok := inst.Ivars[property]; ok {
 		return val, nil
 	}
-	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1)
+	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1+len(universalPredicateNames))
 	candidates = append(candidates, "class")
 	candidates = appendAccessibleMethodNames(candidates, inst.Class.Methods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Ivars))
+	candidates = append(candidates, universalPredicateNames...)
 	return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
 }
 
@@ -223,21 +239,26 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 
 // MemberCompletionNames returns the builtin member-method names per
 // receiver type, for editor tooling such as LSP completion. The slices
-// are copies; callers may sort or mutate them freely.
+// are copies; callers may sort or mutate them freely. Every kind also
+// gains the universal introspection predicates (respond_to?, is_a?,
+// kind_of?, instance_of?), which resolve on any receiver.
 func MemberCompletionNames() map[string][]string {
+	withUniversal := func(names []string) []string {
+		return append(slices.Clone(names), universalPredicateNames...)
+	}
 	return map[string][]string{
-		"string":   slices.Clone(stringMemberNames),
-		"array":    slices.Clone(arrayMemberNames),
-		"hash":     slices.Clone(hashMemberNames),
-		"int":      slices.Clone(intMemberNames),
-		"float":    slices.Clone(floatMemberNames),
-		"money":    slices.Clone(moneyMemberNames),
-		"duration": slices.Clone(durationMemberNames),
-		"time":     slices.Clone(timeMemberNames),
-		"range":    slices.Clone(rangeMemberNames),
-		"function": slices.Clone(functionMemberNames),
-		"symbol":   slices.Clone(symbolMemberNames),
-		"nil":      slices.Clone(nilMemberNames),
-		"bool":     slices.Clone(boolMemberNames),
+		"string":   withUniversal(stringMemberNames),
+		"array":    withUniversal(arrayMemberNames),
+		"hash":     withUniversal(hashMemberNames),
+		"int":      withUniversal(intMemberNames),
+		"float":    withUniversal(floatMemberNames),
+		"money":    withUniversal(moneyMemberNames),
+		"duration": withUniversal(durationMemberNames),
+		"time":     withUniversal(timeMemberNames),
+		"range":    withUniversal(rangeMemberNames),
+		"function": withUniversal(functionMemberNames),
+		"symbol":   withUniversal(symbolMemberNames),
+		"nil":      withUniversal(nilMemberNames),
+		"bool":     withUniversal(boolMemberNames),
 	}
 }
