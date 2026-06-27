@@ -596,6 +596,9 @@ func arrayMemberQuery(property string) (Value, error) {
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
 				}
+				if err := exec.checkContext(); err != nil {
+					return NewNil(), err
+				}
 			}
 			return receiver, nil
 		}), nil
