@@ -196,8 +196,7 @@ func (l *lexer) scanToken() ast.Token {
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral(true)
 				if err != "" {
-					tok.Type = ast.TokenIllegal
-					tok.Literal = err
+					setDiagnostic(&tok, err)
 				} else {
 					tok.Type = ast.TokenInterpWords
 					tok.Literal = encodePercentLiteralEntries(entries)
@@ -210,8 +209,7 @@ func (l *lexer) scanToken() ast.Token {
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral(true)
 				if err != "" {
-					tok.Type = ast.TokenIllegal
-					tok.Literal = err
+					setDiagnostic(&tok, err)
 				} else {
 					tok.Type = ast.TokenInterpSymbols
 					tok.Literal = encodePercentLiteralEntries(entries)

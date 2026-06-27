@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -1011,6 +1012,60 @@ end`
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserInterpolatedPercentArrayLiteralReportsLexerDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{
+			name: "words unterminated literal",
+			source: `def run
+  %W[alpha
+end`,
+			want: "unterminated percent array literal",
+		},
+		{
+			name: "symbols unterminated literal",
+			source: `def run
+  %I[alpha
+end`,
+			want: "unterminated percent array literal",
+		},
+		{
+			name: "words unterminated interpolation",
+			source: `def run
+  %W[#{name]
+end`,
+			want: "unterminated string interpolation in percent array literal",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, errs := parseSource(t, tt.source)
+			if len(errs) == 0 {
+				t.Fatalf("parseSource(%q) errors = nil, want diagnostic containing %q", tt.source, tt.want)
+			}
+			messages := make([]string, len(errs))
+			for i, err := range errs {
+				messages[i] = err.Error()
+			}
+			got := strings.Join(messages, "\n")
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("parseSource(%q) errors = %s, want substring %q", tt.source, got, tt.want)
+			}
+			if strings.Contains(got, "unexpected token invalid token") {
+				t.Fatalf("parseSource(%q) errors = %s, want lexer diagnostic instead of generic invalid token", tt.source, got)
+			}
+		})
 	}
 }
 
