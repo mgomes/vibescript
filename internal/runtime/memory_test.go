@@ -75,6 +75,91 @@ func TestMemoryEstimatorResetAllowsReuse(t *testing.T) {
 	}
 }
 
+// TestMemoryEstimatorChargesBuiltinCapturedReceiver verifies that a bound
+// equality predicate (for example probe = big.eql?) is charged for the receiver
+// it keeps alive in its closure. Without this accounting an array of such probes
+// would retain arbitrarily large structures invisibly to the memory quota.
+func TestMemoryEstimatorChargesBuiltinCapturedReceiver(t *testing.T) {
+	t.Parallel()
+	payload := strings.Repeat("abcdefghij", 4096)
+	receiver := NewString(payload)
+
+	probe, ok := universalValueMember(receiver, "eql?")
+	if !ok {
+		t.Fatal("universalMember did not resolve eql?")
+	}
+
+	bare := newMemoryEstimator().value(NewBuiltin("noop", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewNil(), nil
+	}))
+	charged := newMemoryEstimator().value(probe)
+
+	if charged <= bare {
+		t.Fatalf("bound predicate estimate = %d, want greater than plain builtin %d (captured receiver uncharged)", charged, bare)
+	}
+	if charged < len(payload) {
+		t.Fatalf("bound predicate estimate = %d, want captured receiver payload included (>= %d)", charged, len(payload))
+	}
+}
+
+// TestMemoryEstimatorChargesBuiltinStructureForScalarReceiver verifies that a
+// bound predicate over a scalar receiver (for example 1.eql?) is charged the
+// structural cost of the freshly allocated *Builtin and its CapturedValues
+// backing even though the captured scalar's payload is zero. Without this a
+// script pushing many such probes into an array would retain per-probe builtin
+// allocations invisibly to the memory quota.
+func TestMemoryEstimatorChargesBuiltinStructureForScalarReceiver(t *testing.T) {
+	t.Parallel()
+	probe, ok := universalValueMember(NewInt(1), "eql?")
+	if !ok {
+		t.Fatal("universalMember did not resolve eql?")
+	}
+
+	bare := newMemoryEstimator().value(NewBuiltin("noop", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewNil(), nil
+	}))
+	charged := newMemoryEstimator().value(probe)
+
+	// The scalar receiver contributes no payload, so the difference is the
+	// per-probe builtin structure: the *Builtin plus its single-slot backing.
+	wantStructure := estimatedBuiltinBytes + sliceStructuralBytes(valueBuiltin(probe).CapturedValues)
+	if extra := charged - bare; extra < wantStructure {
+		t.Fatalf("scalar-bound predicate estimate added %d bytes over plain builtin, want >= %d (per-probe builtin allocation uncharged)", extra, wantStructure)
+	}
+}
+
+// TestMemoryEstimatorDoesNotDoubleChargeReachableReceiver confirms the captured
+// receiver payload is counted once when the receiver is also independently
+// reachable: a hash holding both the receiver and a probe bound to it costs no
+// more than the receiver alone plus the probe's entry slot and per-probe builtin
+// structure (the *Builtin and its captured-slot backing).
+func TestMemoryEstimatorDoesNotDoubleChargeReachableReceiver(t *testing.T) {
+	t.Parallel()
+	payload := strings.Repeat("abcdefghij", 4096)
+	receiver := NewString(payload)
+
+	probe, ok := universalValueMember(receiver, "eql?")
+	if !ok {
+		t.Fatal("universalMember did not resolve eql?")
+	}
+
+	receiverOnly := newMemoryEstimator().value(NewHash(map[string]Value{"receiver": receiver}))
+	combined := newMemoryEstimator().value(NewHash(map[string]Value{
+		"receiver": receiver,
+		"probe":    probe,
+	}))
+
+	// The combined hash adds only structural cost for the extra entry plus the
+	// probe's own builtin allocation, not a second copy of the receiver payload —
+	// maxExtra stays far below the receiver's len(payload), so double-charging the
+	// receiver would still trip this bound.
+	builtinStructure := estimatedBuiltinBytes + sliceStructuralBytes(valueBuiltin(probe).CapturedValues)
+	maxExtra := estimatedMapEntryStructuralBytes + estimatedStringHeaderBytes + len("probe") + estimatedValueBytes + builtinStructure
+	if extra := combined - receiverOnly; extra > maxExtra {
+		t.Fatalf("combined estimate added %d bytes over receiver-only, want <= %d (receiver payload double-charged)", extra, maxExtra)
+	}
+}
+
 func TestEnvStaticBindingsAccountedWithoutWalk(t *testing.T) {
 	t.Parallel()
 	payload := strings.Repeat("a", 16384)

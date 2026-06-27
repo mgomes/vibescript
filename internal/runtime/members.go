@@ -23,33 +23,112 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // receiver may resolve private methods, so external/public dispatch passes
 // false to keep privacy enforced regardless of which value is self.
 //
-// The universal introspection predicates (respond_to?, is_a?, kind_of?,
-// instance_of?) are resolved as a fallback only when the receiver's own
-// kind does not define the name. This mirrors Ruby's Object-level methods
-// while letting a script class override them with its own definition.
+// The universal members itself, eql?, equal?, and the introspection predicates
+// respond_to?, is_a?, kind_of?, and instance_of? are resolved as a fallback
+// after the type-specific dispatch reports the member as unknown, so a value's
+// own members and any user-defined methods of the same name always take
+// precedence, matching Ruby's overridable Object-level methods.
+// A private override is not "unknown": resolveTypedMember reports it with a
+// private-member error, which suppresses the fallback so the privacy block still
+// raises rather than silently resolving the builtin. Resolving as a fallback in
+// resolveMember (rather than per-kind dispatch) keeps the no-paren form
+// (probe = obj.itself) and the parenthesized form (obj.itself()) in agreement:
+// a user-defined itself wins in both, since both routes share this resolution.
+//
+// Hash receivers are the exception: a stored hash entry keyed itself/eql?/equal?
+// (or respond_to?, etc.) is data rather than a method, so the typed dispatch can
+// never own that member and the universal member always wins. Resolving it
+// before typed dispatch keeps resolution O(1): it skips hashMember's miss path,
+// which would otherwise materialize did-you-mean candidates from every stored
+// key only for resolveMember to discard that error in favor of the universal
+// builtin.
+//
+// Object receivers are NOT in this exception, but they are not uniform either.
+// KindObject backs two distinct shapes: module/capability namespaces, whose map
+// holds callable exports (a required module's `def eql?` is collected into
+// NewObject(exports)), and ordinary data objects returned by hosts/capabilities,
+// whose map holds data fields. A stored universal name must shadow the universal
+// member only when it is a callable export (so a module's `def eql?` overrides
+// like a class method); a plain data field keyed with a universal name is data,
+// exactly like a hash entry, and must not shadow it. Object dispatch therefore
+// consults the typed member first but reports the member as a miss when the
+// stored entry is non-callable data, so the universal fallback answers it.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
-	member, err := exec.resolveKindMember(obj, property, pos, callerIsReceiver)
-	if err != nil && isUniversalPredicate(property) {
-		return exec.universalPredicate(property, callerIsReceiver), nil
+	if isUniversalMember(property) && universalMemberAlwaysWins(obj.Kind()) {
+		if member, ok := exec.universalMember(obj, property, callerIsReceiver); ok {
+			return member, nil
+		}
+	}
+	member, err := exec.resolveTypedMember(obj, property, pos, callerIsReceiver)
+	if err != nil && !isPrivateMemberError(err) && isUniversalMember(property) {
+		if universal, ok := exec.universalMember(obj, property, callerIsReceiver); ok {
+			return universal, nil
+		}
 	}
 	return member, err
 }
 
-// resolveKindMember dispatches member resolution to the receiver's kind.
-func (exec *Execution) resolveKindMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
+// universalMemberAlwaysWins reports whether a receiver kind has no typed member
+// or user-defined method that could shadow the universal members (itself, eql?,
+// equal?, respond_to?, is_a?, kind_of?, instance_of?), so they may be resolved
+// before typed dispatch. Only hash receivers qualify: hashMember exposes no such
+// builtin and a stored entry of that name is data rather than a method, so the
+// universal member is the sole resolution and resolving it first avoids
+// hashMember's expensive miss path.
+//
+// Object receivers do not qualify even though they also store entries in a map:
+// an object's entries may be callable namespace exports (a module's exported `def
+// eql?` lands there), so a stored callable universal name is a real member that
+// must shadow the universal member. Resolving the universal member first would
+// make that export unreachable, so object dispatch runs first and
+// resolveTypedMember decides per entry whether the stored value is a callable
+// export or non-callable data.
+func universalMemberAlwaysWins(kind ValueKind) bool {
+	return kind == KindHash
+}
+
+// resolveTypedMember dispatches member resolution to the receiver's kind.
+func (exec *Execution) resolveTypedMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	switch obj.Kind() {
 	case KindHash:
 		member, err := hashMember(obj, property)
 		if err == nil {
 			return member, nil
 		}
-		if val, ok := obj.Hash()[property]; ok {
-			return val, nil
+		// Universal members are not stored data: a hash entry keyed "itself",
+		// "eql?", "respond_to?", or any other universal name must not shadow the
+		// Object-level member, so leave the lookup to fall through to the
+		// universal fallback in resolveMember.
+		if !isUniversalMember(property) {
+			if val, ok := obj.Hash()[property]; ok {
+				return val, nil
+			}
 		}
 		return NewNil(), err
 	case KindObject:
+		// An object's map backs both module/capability namespaces (callable
+		// exports) and ordinary data objects (data fields). A stored entry keyed
+		// with a universal name (itself/eql?/equal?/respond_to?/...) shadows the
+		// universal member only when it is a callable export (a module's exported
+		// `def eql?`); a non-callable data field keyed with a universal name is
+		// data, like a hash entry, and must let the universal member answer so
+		// obj.equal?(obj) stays true.
 		if val, ok := obj.Hash()[property]; ok {
-			return val, nil
+			if !isUniversalMember(property) || isCallableMember(val) {
+				return val, nil
+			}
+			// A non-callable data field keyed with a universal name is data: leave
+			// it to resolveMember's universal fallback. The field stays readable as
+			// data through index access (obj["eql?"]).
+			return NewNil(), exec.errorAt(pos, "unknown member %s", property)
+		}
+		// A universal member that is not a stored member is answered by
+		// resolveMember's fallback. Report the miss with a cheap fixed error rather
+		// than routing through hashMember, whose miss path materializes did-you-mean
+		// candidates from every export -- that work would scale with the object size
+		// only to be discarded in favor of the universal builtin.
+		if isUniversalMember(property) {
+			return NewNil(), exec.errorAt(pos, "unknown member %s", property)
 		}
 		member, err := hashMember(obj, property)
 		if err != nil {
@@ -135,7 +214,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 	}
 	if fn, ok := cl.ClassMethods[property]; ok {
 		if fn.Private && !callerIsReceiver {
-			return NewNil(), exec.errorAt(pos, "private method %s", property)
+			return NewNil(), privateMemberAccess(exec.errorAt(pos, "private method %s", property))
 		}
 		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
@@ -143,14 +222,21 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
-	if val, ok := cl.ClassVars[property]; ok {
-		return val, nil
+	// A stored class var keyed with a universal name (itself/eql?/respond_to?/...)
+	// is data, not a member, so it must not preempt the universal member
+	// (resolveMember supplies it via the unknown-member fallback). A user-defined
+	// class method of that name is resolved above and still overrides the
+	// universal member.
+	if !isUniversalMember(property) {
+		if val, ok := cl.ClassVars[property]; ok {
+			return val, nil
+		}
 	}
-	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1+len(universalPredicateNames))
+	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1+len(universalMemberNames))
 	candidates = append(candidates, "new")
 	candidates = appendAccessibleMethodNames(candidates, cl.ClassMethods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassVars))
-	candidates = append(candidates, universalPredicateNames...)
+	candidates = append(candidates, universalMemberNames...)
 	return NewNil(), exec.errorAt(pos, "unknown class member %s%s", property, didYouMean(property, candidates))
 }
 
@@ -161,7 +247,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 	}
 	if fn, ok := inst.Class.Methods[property]; ok {
 		if fn.Private && !callerIsReceiver {
-			return NewNil(), exec.errorAt(pos, "private method %s", property)
+			return NewNil(), privateMemberAccess(exec.errorAt(pos, "private method %s", property))
 		}
 		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
@@ -169,14 +255,21 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
-	if val, ok := inst.Ivars[property]; ok {
-		return val, nil
+	// A stored ivar keyed with a universal name (itself/eql?/respond_to?/...) is
+	// data, not a member, so it must not preempt the universal member
+	// (resolveMember supplies it via the unknown-member fallback). A user-defined
+	// instance method of that name is resolved above and still overrides the
+	// universal member.
+	if !isUniversalMember(property) {
+		if val, ok := inst.Ivars[property]; ok {
+			return val, nil
+		}
 	}
-	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1+len(universalPredicateNames))
+	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1+len(universalMemberNames))
 	candidates = append(candidates, "class")
 	candidates = appendAccessibleMethodNames(candidates, inst.Class.Methods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Ivars))
-	candidates = append(candidates, universalPredicateNames...)
+	candidates = append(candidates, universalMemberNames...)
 	return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
 }
 
@@ -239,26 +332,37 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 
 // MemberCompletionNames returns the builtin member-method names per
 // receiver type, for editor tooling such as LSP completion. The slices
-// are copies; callers may sort or mutate them freely. Every kind also
-// gains the universal introspection predicates (respond_to?, is_a?,
-// kind_of?, instance_of?), which resolve on any receiver.
+// are copies; callers may sort or mutate them freely. The universal members
+// (itself, eql?, equal?, respond_to?, is_a?, kind_of?, instance_of?) are
+// appended to every type because resolveMember answers them for all values, so
+// completion surfaces them on each receiver.
 func MemberCompletionNames() map[string][]string {
-	withUniversal := func(names []string) []string {
-		return append(slices.Clone(names), universalPredicateNames...)
-	}
 	return map[string][]string{
-		"string":   withUniversal(stringMemberNames),
-		"array":    withUniversal(arrayMemberNames),
-		"hash":     withUniversal(hashMemberNames),
-		"int":      withUniversal(intMemberNames),
-		"float":    withUniversal(floatMemberNames),
-		"money":    withUniversal(moneyMemberNames),
-		"duration": withUniversal(durationMemberNames),
-		"time":     withUniversal(timeMemberNames),
-		"range":    withUniversal(rangeMemberNames),
-		"function": withUniversal(functionMemberNames),
-		"symbol":   withUniversal(symbolMemberNames),
-		"nil":      withUniversal(nilMemberNames),
-		"bool":     withUniversal(boolMemberNames),
+		"string":   withUniversalMembers(stringMemberNames),
+		"symbol":   withUniversalMembers(symbolMemberNames),
+		"array":    withUniversalMembers(arrayMemberNames),
+		"hash":     withUniversalMembers(hashMemberNames),
+		"int":      withUniversalMembers(intMemberNames),
+		"float":    withUniversalMembers(floatMemberNames),
+		"money":    withUniversalMembers(moneyMemberNames),
+		"duration": withUniversalMembers(durationMemberNames),
+		"time":     withUniversalMembers(timeMemberNames),
+		"range":    withUniversalMembers(rangeMemberNames),
+		"function": withUniversalMembers(functionMemberNames),
+		"nil":      withUniversalMembers(nilMemberNames),
+		"bool":     withUniversalMembers(boolMemberNames),
 	}
+}
+
+// withUniversalMembers returns a fresh slice holding names followed by the
+// universal members, skipping any a type already lists itself (Duration and
+// Time define their own eql?) so the result has no duplicates.
+func withUniversalMembers(names []string) []string {
+	out := slices.Clone(names)
+	for _, name := range universalMemberNames {
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }

@@ -194,15 +194,16 @@ func exportedFunctionValue(t *testing.T, script *Script, names ...string) Value 
 }
 
 // TestFunctionValueCallMemberSuggestion confirms the function member list is
-// wired into editor completion metadata. It exposes `call` plus the universal
-// introspection predicates that every kind gains.
+// wired into editor completion metadata. The list carries the function-specific
+// call member alongside the universal members (itself, eql?, equal?, and the
+// introspection predicates) exposed on every value kind.
 func TestFunctionValueCallMemberSuggestion(t *testing.T) {
 	t.Parallel()
 	names, ok := MemberCompletionNames()["function"]
 	if !ok {
 		t.Fatalf("MemberCompletionNames missing function entry")
 	}
-	want := append([]string{"call"}, universalPredicateNames...)
+	want := append([]string{"call"}, universalMemberNames...)
 	if diff := cmp.Diff(want, names); diff != "" {
 		t.Fatalf("function member completion mismatch (-want +got):\n%s", diff)
 	}

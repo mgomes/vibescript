@@ -239,9 +239,33 @@ type callFunctionRebinder struct {
 	seenFunctions map[*ScriptFunction]*ScriptFunction
 	seenInstances map[*Instance]Value
 	seenArrays    map[sliceIdentity]Value
-	seenMaps      map[uintptr]map[string]Value
-	seenBlocks    map[*Block]Value
-	seenEnvs      map[*Env]*Env
+	// seenHashes caches rebound KindHash values keyed on the source hash's wrapper
+	// identity. A hash reachable through several paths in the inbound graph rebinds
+	// to one wrapper and keeps its identity, so a bound predicate rebound to that
+	// same wrapper still reports identity against the rebound receiver. Keying on
+	// the entry map alone would rebuild a fresh wrapper per path and break identity,
+	// since hash identity is the wrapper.
+	seenHashes map[uintptr]Value
+	// seenHashEntries caches the rebound entry map keyed on the source hash's entry
+	// map pointer. Two distinct hash wrappers may intentionally share one mutable
+	// entry map (a host can build `a := NewHash(shared); b := NewHash(shared)`);
+	// index assignment mutates that map in place, so a callee that does `a[:x] = 1`
+	// must see the write through b. The wrapper cache cannot preserve this -- the
+	// two wrappers have distinct identities -- so the entry-map cache lets both
+	// rebound wrappers point at one cloned entry map and keep the aliasing.
+	seenHashEntries map[uintptr]map[string]Value
+	seenMaps        map[uintptr]map[string]Value
+	seenBlocks      map[*Block]Value
+	seenEnvs        map[*Env]*Env
+	// seenBoundBuiltins caches the rebound clone of a receiver-bound predicate
+	// (a bound eql?/equal?) keyed on the source builtin pointer. Rebinding such a
+	// builtin reconstructs a fresh *Builtin around the rebound receiver, so the
+	// same source builtin reached through two paths (two globals, two array slots)
+	// would otherwise produce two distinct clones. equal? compares builtins by
+	// backing pointer, so those distinct clones would wrongly report not-identical;
+	// caching the clone keeps aliases of one bound predicate identical across the
+	// host boundary.
+	seenBoundBuiltins map[*Builtin]Value
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -256,16 +280,44 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	switch val.Kind() {
 	case KindBuiltin:
-		// A builtin captured by an escaped closure is preserved unchanged unless
-		// it is a per-call capability grant. A capability copied into a local (for
-		// example `cap = jobs` captured by a Hash.new default proc) would otherwise
-		// survive re-rooting and stay callable, letting a missing-key lookup invoke
-		// a capability the re-entering call never granted -- the ambient root is
-		// re-rooted but a local snapshot bypasses that lookup. Revoke the captured
-		// grant so invoking it fails closed; a free reference to the live capability
-		// global still resolves through the re-rooted ambient root.
 		builtin := valueBuiltin(val)
-		if builtin == nil || !builtin.Capability {
+		if builtin == nil {
+			return val
+		}
+		// A receiver-bound predicate (a bound eql?/equal?) rebinds to the rebound
+		// clone of its captured receiver. The receiver flows through the same
+		// rebinder, so it dedups with the same receiver appearing elsewhere in the
+		// inbound graph and the rebound predicate reports identity against it. The
+		// clone is reserved and cached before the receiver rebinds, so a receiver
+		// graph that reaches the predicate bound to it (for example `[p, a]` where
+		// `a[0]` is the same `p = a.eql?`) dedups against the reserved clone instead
+		// of minting a second one the outer call would then overwrite — which would
+		// make the callee observe arg[0].equal?(arg[1][0]) == false even though the
+		// inbound graph held one predicate object. Left unchanged, the predicate
+		// would keep comparing against the receiver's pre-rebind wrapper while the
+		// receiver passed alongside rebinds to a fresh one.
+		if builtin.BoundReceiver != nil {
+			if clone, ok := r.seenBoundBuiltins[builtin]; ok {
+				return clone
+			}
+			clone, clonedCell := builtin.BoundReceiver.reserve()
+			if r.seenBoundBuiltins == nil {
+				r.seenBoundBuiltins = make(map[*Builtin]Value)
+			}
+			r.seenBoundBuiltins[builtin] = clone
+			reboundReceiver := r.rebindValue(builtin.BoundReceiver.receiver.value)
+			setBoundReceiver(valueBuiltin(clone), clonedCell, reboundReceiver)
+			return clone
+		}
+		// A capability copied into a local (for example `cap = jobs` captured by a
+		// Hash.new default proc) would otherwise survive re-rooting and stay
+		// callable, letting a missing-key lookup invoke a capability the re-entering
+		// call never granted -- the ambient root is re-rooted but a local snapshot
+		// bypasses that lookup. Revoke the captured grant so invoking it fails
+		// closed; a free reference to the live capability global still resolves
+		// through the re-rooted ambient root. All other builtins are preserved
+		// unchanged.
+		if !builtin.Capability {
 			return val
 		}
 		return revokedCapabilityBuiltin(builtin.Name)
@@ -384,20 +436,66 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		return clonedArray
 	case KindHash:
+		id := hashIdentity(val)
+		if id != 0 {
+			if clone, seen := r.seenHashes[id]; seen {
+				return clone
+			}
+		}
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
-		if cloneMap, seen := r.seenMaps[ptr]; seen {
-			return r.rebindHash(val, cloneMap)
+		entriesPtr := reflect.ValueOf(entries).Pointer()
+		// A distinct wrapper that shares this entry map already cloned it; reuse
+		// that cloned map so both rebound wrappers mutate one map in place and the
+		// host's intentional aliasing survives rebinding. The shared map is already
+		// fully populated, so skip the fill loop -- only a fresh wrapper (with this
+		// wrapper's own rebound defaults) is built around it.
+		sharedEntries, sharedSeen := r.seenHashEntries[entriesPtr]
+		clonedEntries := sharedEntries
+		if !sharedSeen {
+			clonedEntries = make(map[string]Value, len(entries))
 		}
-		clonedEntries := make(map[string]Value, len(entries))
-		if r.seenMaps == nil {
-			r.seenMaps = make(map[uintptr]map[string]Value)
+		defaultValue := hashDefaultValue(val)
+		defaultProc := hashDefaultProc(val)
+		hasDefault := !defaultValue.IsNil() || !defaultProc.IsNil()
+		var cloned Value
+		if hasDefault {
+			cloned = NewHashWithDefault(clonedEntries, NewNil(), NewNil())
+		} else {
+			cloned = NewHash(clonedEntries)
 		}
-		r.seenMaps[ptr] = clonedEntries
-		for key, item := range entries {
-			clonedEntries[key] = r.rebindValue(item)
+		// Register the wrapper before rebinding defaults or entries so a hash that
+		// contains itself -- whether through an entry or through a default that
+		// reaches the hash (e.g. Hash.new { |_, _| h }) -- rebinds against this
+		// clone rather than recursing forever or rebinding a second wrapper.
+		if id != 0 {
+			if r.seenHashes == nil {
+				r.seenHashes = make(map[uintptr]Value)
+			}
+			r.seenHashes[id] = cloned
 		}
-		return r.rebindHash(val, clonedEntries)
+		if !sharedSeen && entriesPtr != 0 {
+			if r.seenHashEntries == nil {
+				r.seenHashEntries = make(map[uintptr]map[string]Value)
+			}
+			r.seenHashEntries[entriesPtr] = clonedEntries
+		}
+		if hasDefault {
+			clonedDefaultValue := NewNil()
+			clonedDefaultProc := NewNil()
+			if !defaultValue.IsNil() {
+				clonedDefaultValue = r.rebindValue(defaultValue)
+			}
+			if !defaultProc.IsNil() {
+				clonedDefaultProc = r.rebindValue(defaultProc)
+			}
+			cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
+		}
+		if !sharedSeen {
+			for key, item := range entries {
+				clonedEntries[key] = r.rebindValue(item)
+			}
+		}
+		return cloned
 	case KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
@@ -453,27 +551,6 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 		clone.DefineStatic(name, r.rebindValue(val))
 	})
 	return clone
-}
-
-// rebindHash wraps rebound entries in a hash that carries the rebound Ruby-style
-// default metadata of src. A default value and default proc are reachable hash
-// state (a host may pass NewHashWithDefault(..., NewInt(5), proc)), so they must
-// be rebound like entries rather than dropped, which would make missing-key
-// lookup return nil instead of the configured default. A hash with no default
-// produces a plain hash.
-func (r *callFunctionRebinder) rebindHash(src Value, clonedEntries map[string]Value) Value {
-	defaultValue := hashDefaultValue(src)
-	defaultProc := hashDefaultProc(src)
-	if defaultValue.IsNil() && defaultProc.IsNil() {
-		return NewHash(clonedEntries)
-	}
-	if !defaultValue.IsNil() {
-		defaultValue = r.rebindValue(defaultValue)
-	}
-	if !defaultProc.IsNil() {
-		defaultProc = r.rebindValue(defaultProc)
-	}
-	return NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
 }
 
 func (r *callFunctionRebinder) rebindValues(values []Value) []Value {
@@ -896,13 +973,48 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 }
 
 func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	if receiver.Kind() == KindNil && len(kwargs) == 0 && block.IsNil() {
-		if len(args) == 0 {
-			return nil
+	return exec.checkCallMemoryRootsWithCallee(NewNil(), receiver, args, kwargs, block)
+}
+
+// checkCallMemoryRootsWithCallee charges the live call roots — the callee,
+// receiver, arguments, keyword arguments, and block — against the memory quota
+// before the call runs.
+//
+// The callee is included because a bound predicate builtin captures its receiver
+// (see universalMember): the captured payload is reachable only through the
+// callee value, not through the call's own receiver. A stored probe such as
+// `probe = huge.eql?` is charged because the variable keeps the builtin in the
+// environment, but an immediately invoked temporary callee such as
+// `make_probe()(huge_arg)` lives only on the Go call stack, so without charging
+// it here the captured receiver plus the outer arguments could exceed the quota
+// unseen. Passing the callee through the same estimator deduplicates it against
+// the environment, so a callee that is also reachable from a variable is counted
+// once and the common static callee — a function, or a builtin with no captures —
+// adds nothing.
+func (exec *Execution) checkCallMemoryRootsWithCallee(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if !calleeCapturesRoots(callee) {
+		if receiver.Kind() == KindNil && len(kwargs) == 0 && block.IsNil() {
+			if len(args) == 0 {
+				return nil
+			}
+			return exec.checkMemoryWith(args...)
 		}
-		return exec.checkMemoryWith(args...)
+		return exec.checkMemoryWithCallRoots(NewNil(), receiver, args, kwargs, block)
 	}
-	return exec.checkMemoryWithCallRoots(receiver, args, kwargs, block)
+	return exec.checkMemoryWithCallRoots(callee, receiver, args, kwargs, block)
+}
+
+// calleeCapturesRoots reports whether a callee value carries captured runtime
+// values that the call roots must charge — that is, a bound builtin (such as a
+// stored or temporary eql?/equal? predicate) whose Fn closes over a receiver.
+// Static callees (functions, or builtins without captures) carry no extra
+// payload, so the common call path skips charging them.
+func calleeCapturesRoots(callee Value) bool {
+	if callee.Kind() != KindBuiltin {
+		return false
+	}
+	builtin := valueBuiltin(callee)
+	return builtin != nil && len(builtin.CapturedValues) > 0
 }
 
 func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
@@ -927,7 +1039,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
+	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
 
@@ -983,7 +1095,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
+	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
 

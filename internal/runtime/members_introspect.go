@@ -14,16 +14,6 @@ const (
 	instanceOfMemberName = "instance_of?"
 )
 
-// universalPredicateNames lists the introspection predicates exposed on every
-// value kind. It feeds editor completion (appended to each kind's list in
-// MemberCompletionNames) and "did you mean" suggestions.
-var universalPredicateNames = []string{
-	respondToMemberName,
-	isAMemberName,
-	kindOfMemberName,
-	instanceOfMemberName,
-}
-
 // isUniversalPredicate reports whether property names one of the universal
 // introspection predicates.
 func isUniversalPredicate(property string) bool {
@@ -127,9 +117,10 @@ func methodNameArg(v Value) (string, bool) {
 // consults each kind's method namespace only, never its data (hash keys, object
 // entries, instance variables, or class variables), so storing a callable in a
 // data slot does not make the receiver respond to that slot's name. The
-// universal predicates themselves always respond.
+// universal members (itself, eql?, equal?, and the introspection predicates)
+// always respond, since resolveMember answers them for every value.
 func (exec *Execution) respondsTo(receiver Value, method string, allowPrivate bool) bool {
-	if isUniversalPredicate(method) {
+	if isUniversalMember(method) {
 		return true
 	}
 	switch receiver.Kind() {
@@ -151,7 +142,7 @@ func (exec *Execution) respondsTo(receiver Value, method string, allowPrivate bo
 	default:
 		// Every non-container kind exposes only methods, so a successful
 		// resolution means the name is a callable member.
-		_, err := exec.resolveKindMember(receiver, method, Position{}, allowPrivate)
+		_, err := exec.resolveTypedMember(receiver, method, Position{}, allowPrivate)
 		return err == nil
 	}
 }

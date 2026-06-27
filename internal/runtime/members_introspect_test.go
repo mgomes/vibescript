@@ -478,3 +478,108 @@ func TestRespondToRejectsBlock(t *testing.T) {
     `)
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "does not take a block")
 }
+
+// TestPredicateDataSlotsDoNotShadow guards the contract that every value
+// responds to the universal introspection predicates: a stored data slot keyed
+// with a predicate name (a hash key, instance variable, or class variable) is
+// data, not a method, so it must never preempt the universal predicate. Without
+// this guarantee a record with a colliding key would resolve the stored value
+// and attempt to invoke that data instead of the predicate, making introspection
+// unusable for such records.
+func TestPredicateDataSlotsDoNotShadow(t *testing.T) {
+	t.Parallel()
+
+	t.Run("hash key", func(t *testing.T) {
+		t.Parallel()
+		// {"respond_to?": 1}.respond_to?(:keys) must call the predicate, not the
+		// stored 1, and report that the hash responds to its keys builtin.
+		if got := evalBoolExpr(t, `{"respond_to?": 1}.respond_to?(:keys)`); !got {
+			t.Fatalf("hash with colliding respond_to? key = false, want true")
+		}
+		// is_a? must also reach the universal predicate (not the stored data), so
+		// it reports false against a class for a hash receiver.
+		script := compileScript(t, `
+      class A
+      end
+
+      def run()
+        {"is_a?": 1}.is_a?(A)
+      end
+      `)
+		got := callFunc(t, script, "run", nil)
+		if got.Kind() != KindBool || got.Bool() {
+			t.Fatalf("hash with colliding is_a? key = %v, want false", got)
+		}
+	})
+
+	t.Run("instance variable", func(t *testing.T) {
+		t.Parallel()
+		// An instance carrying an ivar named like a predicate must still answer the
+		// universal predicate rather than the stored ivar value.
+		script := compileScript(t, `
+      class Record
+        def initialize
+          @respond_to? = 1
+        end
+
+        def name
+          "r"
+        end
+      end
+
+      def run()
+        Record.new.respond_to?(:name)
+      end
+      `)
+		got := callFunc(t, script, "run", nil)
+		if got.Kind() != KindBool || !got.Bool() {
+			t.Fatalf("instance with colliding respond_to? ivar = %v, want true", got)
+		}
+	})
+
+	t.Run("class variable", func(t *testing.T) {
+		t.Parallel()
+		// A class carrying a class var named like a predicate must still answer the
+		// universal predicate on the class value.
+		script := compileScript(t, `
+      class Widget
+        @@respond_to? = 1
+
+        def self.build
+          "built"
+        end
+      end
+
+      def run()
+        Widget.respond_to?(:build)
+      end
+      `)
+		got := callFunc(t, script, "run", nil)
+		if got.Kind() != KindBool || !got.Bool() {
+			t.Fatalf("class with colliding respond_to? class var = %v, want true", got)
+		}
+	})
+}
+
+// TestPredicateMethodStillOverrides confirms the data-slot guard does not also
+// suppress a genuine user-defined method of the same name: a class method named
+// like a predicate continues to override the universal fallback.
+func TestPredicateMethodStillOverrides(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class Custom
+      def is_a?(other)
+        "custom is_a"
+      end
+    end
+
+    def run()
+      Custom.new.is_a?(Custom)
+    end
+    `)
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindString || got.String() != "custom is_a" {
+		t.Fatalf("user-defined is_a? = %v, want \"custom is_a\"", got)
+	}
+}
