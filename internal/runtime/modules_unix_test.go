@@ -1,4 +1,4 @@
-//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
+//go:build (aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris) && !illumos
 
 package runtime
 
