@@ -1028,6 +1028,9 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
+	if call.Safe && receiver.Kind() == KindNil {
+		return NewNil(), nil
+	}
 	if err := exec.checkMemoryWith(receiver); err != nil {
 		return NewNil(), err
 	}
