@@ -368,6 +368,29 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 	return nil
 }
 
+// hashTransformBufferBytes returns the Go-local heap footprint a block-driven hash
+// transform (select, reject, transform_keys, transform_values, and the
+// block-conflict merge) holds for its whole walk: the output map it fills plus any
+// sorted-key scratch slices. outputEntries is the largest entry count the result
+// map could reach; scratchBytes is the scratch slices' footprint (see
+// sortedKeyBufferBytes). The empty-map base overhead is always included because the
+// transform allocates a real map even for an empty result.
+//
+// These buffers live only on the Go call stack while the block runs, so they are
+// invisible to estimateMemoryUsageBase. Callers reserve this through
+// reserveLoopScratch BEFORE building the block-call runner so the runner's
+// bind-charge baseline already includes them: otherwise a rest-collecting
+// destructure block (|k, (head, *tail)|) would charge its fresh tail backing
+// against a baseline that omits the output map and scratch, letting
+// receiver+out+scratch and receiver+tail each fit the quota while the real peak
+// receiver+out+scratch+tail exceeds it. It mirrors what checkProjectedHashTransformBytes
+// charges so the up-front reservation and the projection agree byte-for-byte.
+func hashTransformBufferBytes(outputEntries, scratchBytes int) int {
+	bytes := estimatedValueBytes + estimatedMapBaseBytes + estimatedHashDataBytes
+	bytes = saturatingAdd(bytes, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
+	return saturatingAdd(bytes, scratchBytes)
+}
+
 // checkProjectedHashWalkBytes rejects a pure hash iterator (each, each_key,
 // each_value, and the `for k, v in hash` statement) before it walks the receiver.
 // These iterators return the receiver and build no derived map, so they must not
@@ -613,13 +636,17 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 // is tracked in #787.
 //
 // The output map is preallocated with make(map[string]Value, n), so its full
-// n-slot backing is live from the first block call -- before any result has been
-// charged. The accumulator therefore reserves that backing in the baseline up
-// front via reserveBacking, then charges each add only the entry's key/value
-// PAYLOAD beyond the structural slot already reserved. Without the reservation a
-// large early block result would be checked against only the slots inserted so
-// far rather than the whole live backing, letting backing + early result exceed
-// the quota until later entries (or the post-call check) caught it.
+// n-slot backing -- and its empty-map overhead -- is live from the first block
+// call, before any result has been charged. The caller therefore reserves that
+// whole output map plus any sorted-key scratch through reserveLoopScratch
+// (hashTransformBufferBytes) BEFORE building the accumulator, so the reservation is
+// folded into the live baseline every check reads (estimateMemoryUsageBase),
+// including the accumulator's own base measured here. add then charges each entry
+// only the key/value PAYLOAD beyond the structural slot already reserved. Routing
+// the reservation through reserveLoopScratch (rather than a private accumulator
+// field) is what also lets the block-call runner's bind-charge baseline see the
+// output map and scratch, so a rest-collecting destructure block cannot charge its
+// fresh backing against a baseline that omits them.
 //
 // Each add is O(size of the inserted value) and the total is O(sum of inserted
 // result sizes), not O(n^2): the estimator walks only the newly inserted value,
@@ -629,26 +656,26 @@ type hashBuildAccumulator struct {
 	// est is a results-only estimator: it is never seeded with the base or call
 	// roots, so it deduplicates backings shared across block results but charges a
 	// result's full footprint even when it aliases a baseline container. base is the
-	// live footprint snapshotted when the build started (exec's reachable roots, the
-	// call roots, the output map's empty overhead, and -- once reserveBacking is
-	// called -- the preallocated n-slot backing); built is the running byte total
-	// charged for the per-entry key/value payloads as the output is assembled.
+	// live footprint snapshotted when the build started: exec's reachable roots, the
+	// call roots, and the output map plus scratch the caller reserved through
+	// reserveLoopScratch before the accumulator was built. built is the running byte
+	// total charged for the per-entry key/value payloads as the output is assembled.
 	est   *memoryEstimator
 	base  int
 	built int
 }
 
 // newHashBuildAccumulator snapshots the execution's current live memory plus the
-// transform's call roots as the baseline for an incremental hash build, then folds
-// the output map's empty overhead into that baseline. Callers that preallocate the
-// output with make(map[string]Value, capacity) must then call reserveBacking so the
-// whole capacity backing is held against the quota before any block runs; add then
-// charges only the per-entry payloads beyond the reserved structural slots. The
-// accumulator's results-only estimator is a fresh estimator that is deliberately
-// NOT seeded with the base or call roots: it deduplicates backings shared across
-// block results but never against the baseline, so an in-place-mutated receiver
-// container returned by a block is charged at its full current size rather than
-// treated as already accounted.
+// transform's call roots as the baseline for an incremental hash build. Callers
+// reserve the preallocated output map (its empty overhead plus every capacity slot)
+// and any sorted-key scratch through reserveLoopScratch BEFORE building the
+// accumulator, so those bytes are already folded into the live baseline this
+// snapshot reads; add then charges only the per-entry payloads beyond the reserved
+// structural slots. The accumulator's results-only estimator is a fresh estimator
+// that is deliberately NOT seeded with the base or call roots: it deduplicates
+// backings shared across block results but never against the baseline, so an
+// in-place-mutated receiver container returned by a block is charged at its full
+// current size rather than treated as already accounted.
 func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *hashBuildAccumulator {
 	acc := &hashBuildAccumulator{exec: exec}
 	if exec.memoryQuota <= 0 {
@@ -656,57 +683,13 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	}
 	// Measure the baseline through a throwaway estimator so the results-only
 	// estimator stays empty: the base must be counted, but the results estimator
-	// must not dedup later block results against the call roots it walked.
+	// must not dedup later block results against the call roots it walked. The
+	// baseline already includes the output map and scratch the caller reserved via
+	// reserveLoopScratch (estimateMemoryUsageBase reads the reservation), so the
+	// empty-map overhead is not folded in again here.
 	acc.base = exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
-	// The output is a single hash, so fold its empty-map overhead plus the
-	// hashData wrapper every KindHash allocates into the baseline; add then
-	// charges only the per-entry growth.
-	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	acc.est = newMemoryEstimator()
 	return acc
-}
-
-// reserveScratch folds a fixed scratch allocation into the baseline so it is held
-// against the quota for the build's entire lifetime, and rejects the build if the
-// reservation alone already overflows. Block-driven hash transforms materialize a
-// sorted-key scratch slice (see sortedKeyBufferBytes) that stays live the whole
-// time the output map fills, so its bytes coexist with every accumulated entry at
-// peak. The up-front projection charges this scratch once before any fresh block
-// result exists, but the accumulator's running budget (base + built) does not,
-// so without reserving it here the combined output+scratch peak could exceed the
-// quota by the scratch size before the post-call check observed it. scratchBytes
-// is the heap footprint the caller passed to its projection, so the two views of
-// the budget reserve the same bytes.
-func (acc *hashBuildAccumulator) reserveScratch(scratchBytes int) error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	acc.base = saturatingAdd(acc.base, scratchBytes)
-	return acc.checkQuota()
-}
-
-// reserveBacking folds the structural footprint of a preallocated output map into
-// the baseline so the whole backing is held against the quota from the first block
-// call, and rejects the build if the reservation alone already overflows. Hash
-// transforms allocate their output with make(map[string]Value, capacity), so all
-// capacity slots are live before any block result is charged; without reserving
-// them, an early add would be checked against only the slots filled so far rather
-// than the full backing, letting a large early result plus the whole backing slip
-// past the quota until later entries (or the post-call check) caught it.
-//
-// capacity is the slot count passed to make; the empty map's base overhead is
-// already folded into the baseline by newHashBuildAccumulator, so only the
-// per-slot structure is reserved here. The key and value PAYLOADS are charged
-// incrementally by add/addSynthesizedKey, which after this reservation add only
-// the payload beyond the structural slot already counted, so nothing is double
-// counted: base ends at call roots + empty map + capacity*slot, and built ends at
-// the sum of per-entry payloads.
-func (acc *hashBuildAccumulator) reserveBacking(capacity int) error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
-	return acc.checkQuota()
 }
 
 // add charges a write whose VALUE is a block result to the output map and rejects
@@ -716,7 +699,8 @@ func (acc *hashBuildAccumulator) reserveBacking(capacity int) error {
 // the KEY while the value stays a receiver value, uses addSynthesizedKey instead.
 //
 // The entry's structural slot (map bucket, key header, value slot) is already
-// held in the baseline by reserveBacking, so add charges only PAYLOADS beyond it.
+// held in the baseline by the caller's reserveLoopScratch reservation, so add
+// charges only PAYLOADS beyond it.
 // The key is a receiver/argument key whose payload is already counted in the
 // baseline via the call roots, so it contributes nothing further. Only the
 // block-returned value's payload goes through the results-only estimator, so a
@@ -744,9 +728,10 @@ func (acc *hashBuildAccumulator) add(val Value) error {
 // string but whose VALUE is a receiver value already counted in the baseline
 // (transform_keys yields a new key per entry while keeping the original value).
 // The entry's structural slot (map bucket, key header, value slot) is already held
-// in the baseline by reserveBacking, and the value's reachable payload is already
-// folded into acc.base via the call roots, so the only fresh allocation to charge
-// is the synthesized key's PAYLOAD beyond its header. It goes through the
+// in the baseline by the caller's reserveLoopScratch reservation, and the value's
+// reachable payload is already folded into acc.base via the call roots, so the only
+// fresh allocation to charge is the synthesized key's PAYLOAD beyond its header. It
+// goes through the
 // results-only estimator so a key string shared across block results is counted
 // once; the value never goes through the estimator, since routing it would record
 // its backing in the seen-set and let a later block result aliasing it be dedup'd

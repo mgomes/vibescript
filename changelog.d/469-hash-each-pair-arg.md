@@ -22,3 +22,11 @@
   preflights that window against the memory quota before the copy, so a quota smaller
   than a single copied tail rejects the walk before the backing is materialized
   instead of allocating the whole tail first and only then reporting the overflow.
+- **Fixed: block-driven hash transforms count their output map in the rest-bind
+  charge.** `Hash#select`, `#reject`, `#transform_keys`, `#transform_values`, and a
+  block-conflict `#merge` hold their preallocated output map and sorted-key scratch
+  while the block binds a rest-collecting destructure parameter such as
+  `|k, (head, *tail)|`. Those buffers are now reserved against the memory quota before
+  the block runs, so the rest-bind charge measures the fresh tail copy on top of them
+  rather than against a baseline that omitted them, closing a path where the combined
+  peak could exceed the quota.
