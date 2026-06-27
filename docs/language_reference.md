@@ -41,8 +41,10 @@ zero (`010`) stays decimal rather than being read as legacy octal.
 
 Double-quoted strings support `#{...}` interpolation. Each interpolation must
 contain one expression; the expression value is converted with the same string
-form used by `to_s`. Escape an interpolation marker as `\#{...}` for literal
-text. Single-quoted strings do not interpolate.
+form used by `to_s`. The expression may contain its own double-quoted strings
+and even nested interpolations (for example `"#{name || "guest"}"`); the
+interpolation extends to its matching `}`. Escape an interpolation marker as
+`\#{...}` for literal text. Single-quoted strings do not interpolate.
 
 See `docs/arrays.md`, `docs/hashes.md`, `docs/strings.md`, `docs/durations.md`,
 and `docs/time.md` for full method coverage.
