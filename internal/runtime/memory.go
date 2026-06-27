@@ -621,6 +621,14 @@ type hashBuildAccumulator struct {
 	est   *memoryEstimator
 	base  int
 	built int
+
+	// Call roots retained so checkTransient can re-seed a throwaway estimator
+	// with the same baseline the build was snapshotted against, deduplicating a
+	// transient block result against memory already charged in base.
+	receiver Value
+	args     []Value
+	kwargs   map[string]Value
+	block    Value
 }
 
 // newHashBuildAccumulator snapshots the execution's current live memory plus the
@@ -635,7 +643,13 @@ type hashBuildAccumulator struct {
 // container returned by a block is charged at its full current size rather than
 // treated as already accounted.
 func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *hashBuildAccumulator {
-	acc := &hashBuildAccumulator{exec: exec}
+	acc := &hashBuildAccumulator{
+		exec:     exec,
+		receiver: receiver,
+		args:     args,
+		kwargs:   kwargs,
+		block:    block,
+	}
 	if exec.memoryQuota <= 0 {
 		return acc
 	}
@@ -854,6 +868,40 @@ func (acc *hashBuildAccumulator) addSynthesizedKey(key string) error {
 
 	acc.built = saturatingAdd(acc.built, acc.est.stringPayloadSize(key))
 	return acc.checkQuota()
+}
+
+// checkTransient rejects the build when a freshly allocated value returned by a
+// block, but not retained as part of the output map, would push the peak
+// footprint over the quota. Array#to_h's block form uses it for the temporary
+// two-element pair returned by each block call: the output map backing is already
+// live and reserved in base, while the pair array itself is only live until its
+// key and value are extracted.
+func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := acc.exec.memoryEstimatorForCheck()
+	defer est.reset()
+	acc.exec.estimateMemoryUsageBase(est)
+	if acc.receiver.Kind() != KindNil {
+		est.value(acc.receiver)
+	}
+	for _, arg := range acc.args {
+		est.value(arg)
+	}
+	for _, kwarg := range acc.kwargs {
+		est.value(kwarg)
+	}
+	if !acc.block.IsNil() {
+		est.value(acc.block)
+	}
+
+	used := saturatingAdd(saturatingAdd(acc.base, acc.built), est.value(transient))
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
 }
 
 // checkQuota rejects the build when the live baseline plus the accumulated output

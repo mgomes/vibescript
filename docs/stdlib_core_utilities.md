@@ -517,6 +517,11 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `join(separator = "") -> string` – stringified elements joined by
   `separator`.
 - `reverse -> array` – elements in reverse order.
+- `to_h -> hash` / `to_h { |element| [key, value] } -> hash` – build a hash from
+  two-element `[key, value]` pairs (the inverse of `Hash#to_a`). Keys convert
+  through the symbol/string hash-key rules and duplicate keys keep the last pair;
+  the block form maps each element to its pair. A non-array element, a pair that
+  is not exactly two elements, or a non-symbol/string key raises.
 
 Because array methods never mutate the receiver, `pop` hands back both
 halves of the result:
@@ -619,6 +624,8 @@ methods.
   `Hash#each_with_index`; returns the receiver. Takes no arguments.
 - `each_key { |key| } -> hash` – yield each key.
 - `each_value { |value| } -> hash` – yield each value.
+- `to_a -> array` – nested `[key, value]` pairs in sorted key order, with keys
+  exposed as symbols. The inverse of `Array#to_h`, equivalent to `flatten(0)`.
 - `map_with_index { |pair, index| } -> array` – new array of block results,
   yielding each `[key, value]` pair with its 0-based index in sorted key order.
   Takes no arguments.

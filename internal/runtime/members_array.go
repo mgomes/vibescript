@@ -15,7 +15,7 @@ import (
 var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v",
-	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
+	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "to_h",
 	"take", "drop", "zip", "transpose", "union", "difference",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
@@ -36,7 +36,7 @@ func arrayMemberBuiltin(property string) (Value, error) {
 	case "size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
-	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
+	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "to_h", "take", "drop", "zip", "transpose", "union", "difference":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -2029,6 +2029,128 @@ func arrayMemberGrep(property string) (Value, error) {
 	}), nil
 }
 
+// arrayToHash implements Ruby's Array#to_h, converting an array of two-element
+// [key, value] pairs into a hash. It accepts the bare and block forms:
+//
+//	[[:a, 1], [:b, 2]].to_h            # => { a: 1, b: 2 }
+//	[:a, :b].to_h { |sym| [sym, 0] }   # => { a: 0, b: 0 }
+//
+// In the block form the block maps each element to the [key, value] pair, so the
+// receiver's elements need not themselves be pairs. Either way each pair must be
+// a two-element array whose key resolves through the same symbol/string hash-key
+// rules used everywhere else; a non-array element, a wrong-length pair, or an
+// unsupported key type is rejected, matching Ruby's TypeError/ArgumentError for
+// malformed pairs. Duplicate keys keep the last pair encountered, like Ruby.
+func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("array.to_h does not take arguments")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.to_h does not take keyword arguments")
+	}
+	arr := receiver.Array()
+
+	var runner *blockCallRunner
+	if valueBlock(block) != nil {
+		var err error
+		runner, err = newBlockCallRunner(exec, block, "array.to_h")
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+
+	// Abort before reserving anything when the context is already canceled or the
+	// remaining step quota cannot cover the per-element loop. The loop still
+	// charges each step, but the make below reserves a map sized to the whole
+	// receiver first, so without this up-front check a large receiver could trigger
+	// that full allocation even though the conversion is guaranteed to fail.
+	if err := exec.checkStepBudgetFor(len(arr)); err != nil {
+		return NewNil(), err
+	}
+
+	// The output holds at most one entry per element; duplicate keys collapse.
+	// Reject the build before reserving the backing map when that capacity alone
+	// already overflows the quota, mirroring the map-producing hash transforms.
+	if err := exec.checkProjectedHashBytes(len(arr), receiver, args, kwargs, block); err != nil {
+		return NewNil(), err
+	}
+
+	// In the bare form every pair, key, and value aliases a receiver element, so
+	// the structural projection above (sized to the receiver, already a live call
+	// root) bounds the build. The block form is different: it can synthesize a
+	// fresh key string and a fresh value per element (ids.to_h { |id| [id.to_s,
+	// big] }), and those results live only in the Go-local out map until the
+	// builtin returns. The structural projection cannot see them, so many
+	// individually-under-quota block results could grow the map past the quota
+	// before the post-call check observed them. Charge each block-produced key and
+	// value incrementally through a build accumulator so accumulated payloads count
+	// toward the quota as entries are inserted. The accumulator is only needed for
+	// the block form; nil for the bare form skips the per-entry charge.
+	var acc *hashBuildAccumulator
+	if runner != nil {
+		acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+		// The output map is preallocated with make(map, len(arr)), so its full
+		// backing is live before the first block runs; reserve it so a large early
+		// block result is checked against the whole backing, not just the entries
+		// inserted so far.
+		if err := acc.reserveBacking(len(arr)); err != nil {
+			return NewNil(), err
+		}
+	}
+
+	out := make(map[string]Value, len(arr))
+	var blockArg [1]Value
+	for _, item := range arr {
+		// Charge a step per element so even the bare form, where runner is nil and
+		// no block statements run, participates in the step quota and observes
+		// cancellation while converting a large receiver. runner.call only charges
+		// steps for the statements the block evaluates, and the bare form evaluates
+		// none, so without this a huge pairs.to_h could run to completion despite a
+		// canceled context or a tiny StepQuota.
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		pair := item
+		if runner != nil {
+			blockArg[0] = item
+			mapped, err := runner.call(blockArg[:])
+			if err != nil {
+				return NewNil(), err
+			}
+			if err := acc.checkTransient(mapped); err != nil {
+				return NewNil(), err
+			}
+			pair = mapped
+		}
+		if pair.Kind() != KindArray {
+			return NewNil(), fmt.Errorf("array.to_h expects an array of two-element pairs")
+		}
+		elements := pair.Array()
+		if len(elements) != 2 {
+			return NewNil(), fmt.Errorf("array.to_h pair must have exactly two elements")
+		}
+		key, err := valueToHashKey(elements[0])
+		if err != nil {
+			return NewNil(), fmt.Errorf("array.to_h pair key must be symbol or string")
+		}
+		out[key] = elements[1]
+		if acc != nil {
+			// The block synthesized both the key and the value, so charge each: the
+			// key string via addSynthesizedKey and the value via add. Both route
+			// through the accumulator's results-only estimator, so a backing shared
+			// across block results is counted once while a result aliasing a receiver
+			// element is conservatively counted again rather than dedup'd to nothing.
+			if err := acc.addSynthesizedKey(key); err != nil {
+				return NewNil(), err
+			}
+			if err := acc.add(elements[1]); err != nil {
+				return NewNil(), err
+			}
+		}
+	}
+	return NewHash(out), nil
+}
+
 // arrayFillInitialCap bounds the capacity reserved up front when building a
 // fill result. Larger fills grow the backing array via append so the per-element
 // step() and arrayBuildAccumulator checks bound the actual allocation, rather
@@ -2514,6 +2636,8 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			return NewArray(out), nil
 		}), nil
+	case "to_h":
+		return NewAutoBuiltin("array.to_h", arrayToHash), nil
 	case "fill":
 		return NewAutoBuiltin("array.fill", arrayFill), nil
 	case "chunk":
