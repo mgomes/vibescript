@@ -568,9 +568,10 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 
 // hashBuildAccumulator charges the memory of an output map assembled entry by
 // entry against the quota without re-walking the whole map on each insertion.
-// Hash transforms whose block returns fresh heap values (transform_values and
-// transform_keys, where each block call can yield an arbitrarily large string
-// or nested collection, and the merge conflict block) use it so accumulated
+// Hash literals use it for expression results held in a Go-local map. Hash
+// transforms whose block returns fresh heap values (transform_values and
+// transform_keys, where each block call can yield an arbitrarily large string or
+// nested collection, and the merge conflict block) use it so accumulated
 // payloads count toward the quota during construction, not only after the
 // builtin returns.
 //
@@ -611,13 +612,14 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 // never the accumulated prefix.
 type hashBuildAccumulator struct {
 	exec *Execution
-	// est is a results-only estimator: it is never seeded with the base or call
-	// roots, so it deduplicates backings shared across block results but charges a
-	// result's full footprint even when it aliases a baseline container. base is the
-	// live footprint snapshotted when the build started (exec's reachable roots, the
-	// call roots, the output map's empty overhead, and -- once reserveBacking is
-	// called -- the preallocated n-slot backing); built is the running byte total
-	// charged for the per-entry key/value payloads as the output is assembled.
+	// est tracks the backings seen by incremental entry charges. Transform builds use
+	// a results-only estimator; literal builds seed it from the current execution
+	// roots so aliases already reachable from the environment deduplicate the same
+	// way the final memory check would. base is the live footprint snapshotted when
+	// the build started (exec's reachable roots, the call roots, the output map's
+	// empty overhead, and -- once reserveBacking is called -- the preallocated n-slot
+	// backing); built is the running byte total charged for the per-entry key/value
+	// payloads as the output is assembled.
 	est   *memoryEstimator
 	base  int
 	built int
@@ -648,6 +650,23 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	// charges only the per-entry growth.
 	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	acc.est = newMemoryEstimator()
+	return acc
+}
+
+// newHashLiteralBuildAccumulator snapshots the current execution roots and seeds
+// the entry estimator with them. Hash literal values are plain expression results,
+// not block callbacks that may mutate baseline containers in place, so an alias
+// such as `big = ...; {a: big}` should be charged like the final hash: the new map
+// structure and key bytes are fresh, while big's backing remains counted once.
+func newHashLiteralBuildAccumulator(exec *Execution) *hashBuildAccumulator {
+	acc := &hashBuildAccumulator{exec: exec}
+	if exec.memoryQuota <= 0 {
+		return acc
+	}
+
+	acc.est = newMemoryEstimator()
+	acc.base = exec.estimateMemoryUsageBase(acc.est)
+	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	return acc
 }
 

@@ -691,6 +691,67 @@ func (f *bracketSliceFixture) hashPeakFor(copies int) int {
 	return total
 }
 
+func (f *bracketSliceFixture) hashAliasPeakFor(key string) int {
+	probeEnv := newEnv(nil)
+	f.setupEnv(probeEnv)
+	f.probeExec.pushEnv(probeEnv)
+	defer f.probeExec.popEnv()
+
+	entries := map[string]Value{key: NewArray(f.big)}
+	est := f.probeExec.memoryEstimatorForCheck()
+	total := f.probeExec.estimateMemoryUsageBase(est)
+	total += est.value(NewHash(entries))
+	est.reset()
+	return total
+}
+
+// TestMemoryQuotaHashLiteralDeduplicatesEnvironmentValue covers hash literals
+// whose values are aliases of values already reachable from the environment. The
+// literal allocates a new hash map and key, but it must not charge the aliased
+// array backing again; the final estimator would count that backing once.
+func TestMemoryQuotaHashLiteralDeduplicatesEnvironmentValue(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	f := newBracketSliceFixture(t, 1200, "abcdefghij")
+
+	literal := func() *HashLiteral {
+		return &HashLiteral{
+			Pairs: []HashPair{
+				{
+					Key:   &SymbolLiteral{Name: "a", Position: pos},
+					Value: &Identifier{Name: "big", Position: pos},
+				},
+			},
+			Position: pos,
+		}
+	}
+
+	peak := f.hashAliasPeakFor("a")
+	duplicateCharge := newMemoryEstimator().valuePayload(NewArray(f.big))
+	if duplicateCharge <= 0 {
+		t.Fatalf("test setup expects aliased array to have a non-zero payload charge")
+	}
+
+	run := func(quota int) error {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		f.setupEnv(env)
+		exec.pushEnv(env)
+		defer exec.popEnv()
+		_, err := exec.evalExpression(literal(), env)
+		return err
+	}
+
+	quota := peak + duplicateCharge/2
+	if quota <= peak {
+		t.Fatalf("quota %d must fit the deduplicated peak %d", quota, peak)
+	}
+	if err := run(quota); err != nil {
+		t.Fatalf("hash literal with an environment-aliased value over-rejected: %v", err)
+	}
+}
+
 // TestMemoryQuotaBracketSliceHashLiteralChargesStackedCopies mirrors the array
 // literal case for hashes: {a: big[0, n], b: big[0, n]} holds both fresh slice
 // values in the partially built Go-local map the base estimator cannot see.

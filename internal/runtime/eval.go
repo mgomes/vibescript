@@ -333,7 +333,7 @@ func (exec *Execution) evalArrayLiteral(e *ArrayLiteral, env *Env) (Value, error
 // entry's key and value payloads incrementally, deduplicating payloads aliased by
 // an environment root.
 func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) {
-	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	acc := newHashLiteralBuildAccumulator(exec)
 	if err := acc.reserveBacking(len(e.Pairs)); err != nil {
 		return NewNil(), err
 	}
