@@ -495,9 +495,8 @@ func (exec *Execution) checkReservedLoopScratch(receiver Value, args []Value, kw
 // entries (Hash#each or `for pair in hash` with a single-parameter block). Only
 // one pair is live at a time -- the previous entry's pair is unreferenced once the
 // next overwrites the slot it is bound to -- so reserving the largest one for the
-// walk's lifetime conservatively bounds the transient and lets every in-body check,
-// the iterator preflight, and the per-call bind charge all see it without
-// re-walking the receiver per entry.
+// walk's lifetime conservatively bounds the transient when body checks cannot see
+// the Go-stack receiver.
 //
 // Each pair is PROBED against a single estimator seeded once with the receiver, so
 // the value the pair references deduplicates against the receiver (it aliases the
@@ -521,12 +520,16 @@ func (exec *Execution) maxCollapsedPairBytes(receiver Value) int {
 	if exec.memoryQuota <= 0 {
 		return 0
 	}
+	est := newMemoryEstimator()
+	est.value(receiver)
+	return maxCollapsedPairBytesWithEstimator(receiver, est)
+}
+
+func maxCollapsedPairBytesWithEstimator(receiver Value, est *memoryEstimator) int {
 	entries := receiver.Hash()
 	if len(entries) == 0 {
 		return 0
 	}
-	est := newMemoryEstimator()
-	est.value(receiver)
 	maxBytes := 0
 	for key, value := range entries {
 		pair := NewArray([]Value{NewSymbol(key), value})
@@ -535,6 +538,33 @@ func (exec *Execution) maxCollapsedPairBytes(receiver Value) int {
 		}
 	}
 	return maxBytes
+}
+
+func (exec *Execution) valueReachableFromLiveBase(value, block Value) bool {
+	if exec.memoryQuota <= 0 || value.Kind() == KindNil {
+		return false
+	}
+	est := exec.memoryEstimatorForCheck()
+	exec.estimateMemoryUsageBase(est)
+	if !block.IsNil() {
+		est.value(block)
+	}
+	return est.probe(value) <= estimatedValueBytes
+}
+
+func (exec *Execution) checkCollapsedPairBytesWithLiveBase(receiver, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	if !block.IsNil() {
+		used = saturatingAdd(used, est.value(block))
+	}
+	if used = saturatingAdd(used, maxCollapsedPairBytesWithEstimator(receiver, est)); used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
 }
 
 // arrayBuildAccumulator charges the memory of an array assembled element by

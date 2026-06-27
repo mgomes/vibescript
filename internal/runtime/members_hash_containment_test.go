@@ -2046,6 +2046,63 @@ end`
 	}
 }
 
+func TestForHashReachablePairBodyFitsWithoutPairReservation(t *testing.T) {
+	t.Parallel()
+
+	const bodyLen = 20_000
+	key := strings.Repeat("k", 20_000)
+	receiver := NewHash(map[string]Value{key: NewInt(1)})
+	body := arrayValue(bodyLen)
+	pair := NewArray([]Value{NewSymbol(key), NewInt(1)})
+	scratch := sortedKeyBufferBytes(1)
+	pairChargeProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	pairCharge := pairChargeProbe.maxCollapsedPairBytes(receiver)
+
+	peakEnv := newEnv(nil)
+	peakEnv.Assign("values", receiver)
+	peakEnv.Assign("body", body)
+	peakEnv.Assign("pair", pair)
+	peakProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	peakProbe.reservedScratchBytes = scratch
+	peakProbe.pushEnv(peakEnv)
+	bodyPeak := peakProbe.estimateMemoryUsage(body)
+	peakProbe.popEnv()
+
+	preflightEnv := newEnv(nil)
+	preflightEnv.Assign("values", receiver)
+	preflightEnv.Assign("body", body)
+	preflightProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	preflightProbe.reservedScratchBytes = scratch
+	preflightProbe.pushEnv(preflightEnv)
+	preflightEst := preflightProbe.memoryEstimatorForCheck()
+	preflightPeak := preflightProbe.estimateMemoryUsageBase(preflightEst)
+	preflightPeak = saturatingAdd(preflightPeak, maxCollapsedPairBytesWithEstimator(receiver, preflightEst))
+	preflightProbe.popEnv()
+
+	realPeak := max(bodyPeak, preflightPeak)
+	quota := realPeak + pairCharge/2
+	if pairCharge <= 0 {
+		t.Fatalf("test setup expects a positive pair charge, got %d", pairCharge)
+	}
+
+	pos := Position{Line: 1, Column: 1}
+	stmt := &ForStmt{
+		Iterator: "pair",
+		Body:     []Statement{&ExprStmt{Position: pos, Expr: &Identifier{Name: "body", Position: pos}}},
+		Position: pos,
+	}
+	loopEnv := newEnv(nil)
+	loopEnv.Assign("values", receiver)
+	loopEnv.Assign("body", body)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	exec.pushEnv(loopEnv)
+	_, _, err := exec.evalForHash(stmt, loopEnv, receiver, NewNil())
+	exec.popEnv()
+	if err != nil {
+		t.Fatalf("for pair in hash with reachable iterable and bound pair at quota %d = %v, want success", quota, err)
+	}
+}
+
 // tightestForHashQuota binary-searches the smallest MemoryQuotaBytes under which
 // run(receiver) still succeeds, so a test can pin a `for` loop's real live peak
 // without hand-computing every transient the interpreter holds.
@@ -2735,6 +2792,15 @@ func emptyPairEachBlock() Value {
 	return NewBlock([]Param{{Kind: ParamNormal, Name: "pair", Target: &Identifier{Name: "pair", Position: pos}}}, nil, newEnv(nil))
 }
 
+func bodyPairEachBlock(env *Env) Value {
+	pos := Position{Line: 1, Column: 1}
+	return NewBlock(
+		[]Param{{Kind: ParamNormal, Name: "pair", Target: &Identifier{Name: "pair", Position: pos}}},
+		[]Statement{&ExprStmt{Position: pos, Expr: &Identifier{Name: "body", Position: pos}}},
+		env,
+	)
+}
+
 // collapsedPairStructuralBytes is the structural-only footprint a fixed pair
 // constant would reserve: the array Value, its slice base, and two element slots,
 // with no payload for the symbol key or the value. The pre-fix code reserved this
@@ -2816,6 +2882,50 @@ func TestHashEachSingleParamLargeSymbolKeyFitsQuota(t *testing.T) {
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != 1 {
 		t.Fatalf("each returned %v with %d entries, want the 1-entry receiver", got.Kind(), len(got.Hash()))
+	}
+}
+
+func TestHashEachReachablePairBodyFitsWithoutPairReservation(t *testing.T) {
+	t.Parallel()
+
+	const bodyLen = 20_000
+	key := strings.Repeat("k", 20_000)
+	receiver := NewHash(map[string]Value{key: NewInt(1)})
+	body := arrayValue(bodyLen)
+	parent := newEnv(nil)
+	parent.Assign("values", receiver)
+	parent.Assign("body", body)
+	block := bodyPairEachBlock(parent)
+
+	pair := NewArray([]Value{NewSymbol(key), NewInt(1)})
+	scratch := sortedKeyBufferBytes(1)
+	pairChargeProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	pairCharge := pairChargeProbe.maxCollapsedPairBytes(receiver)
+
+	bodyEnv := newEnv(parent)
+	bodyEnv.Assign("pair", pair)
+	peakProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	peakProbe.reservedScratchBytes = scratch
+	peakProbe.pushEnv(bodyEnv)
+	bodyPeak := peakProbe.estimateMemoryUsage(body)
+	peakProbe.popEnv()
+
+	preflightProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	preflightProbe.reservedScratchBytes = scratch
+	preflightEst := preflightProbe.memoryEstimatorForCheck()
+	preflightPeak := preflightProbe.estimateMemoryUsageBase(preflightEst)
+	preflightPeak = saturatingAdd(preflightPeak, preflightEst.value(block))
+	preflightPeak = saturatingAdd(preflightPeak, maxCollapsedPairBytesWithEstimator(receiver, preflightEst))
+
+	realPeak := max(bodyPeak, preflightPeak)
+	quota := realPeak + pairCharge/2
+	if pairCharge <= 0 {
+		t.Fatalf("test setup expects a positive pair charge, got %d", pairCharge)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); err != nil {
+		t.Fatalf("hash.each with reachable receiver and bound pair at quota %d = %v, want success", quota, err)
 	}
 }
 

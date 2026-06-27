@@ -2046,24 +2046,31 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 // allocation) exceeded the quota by the scratch size. The reservation is released
 // on every exit path through defer.
 //
-// The per-iteration [key, value] pair is reserved the same way: the largest pair
-// (maxCollapsedPairBytes) is folded into the baseline for the loop's lifetime. The
-// pair the loop binds to the iterator stays in env (already counted by the env walk),
-// and the next pair overlaps it only for the instant before the assignment overwrites
-// it, so reserving the largest one conservatively bounds the transient. Reserving the
-// exact pair size -- rather than a structural constant that omits the symbol key's
-// payload -- keeps the walk O(n) in the receiver size while charging the pair the body
-// check would bill, even though the body check is blind to the Go-stack receiver.
+// The per-iteration [key, value] pair is handled according to receiver visibility.
+// If the iterable is already reachable from the loop body environment, the bound
+// pair is also visible to body checks, so the loop preflights the largest pair once
+// without reserving it for the whole body. If the iterable is Go-stack-only, the
+// largest pair stays reserved so body checks keep accounting for the transient they
+// cannot combine with the invisible receiver.
 func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value) (Value, bool, error) {
 	entries := iterable.Hash()
-	scratch := saturatingAdd(sortedKeyBufferBytes(len(entries)), exec.maxCollapsedPairBytes(iterable))
+	reservePair := !exec.valueReachableFromLiveBase(iterable, NewNil())
+	scratch := sortedKeyBufferBytes(len(entries))
+	if reservePair {
+		scratch = saturatingAdd(scratch, exec.maxCollapsedPairBytes(iterable))
+	}
 	delta := exec.reserveLoopScratch(scratch)
 	defer exec.releaseLoopScratch(delta)
+	if !reservePair {
+		if err := exec.checkCollapsedPairBytesWithLiveBase(iterable, NewNil()); err != nil {
+			return NewNil(), false, err
+		}
+	}
 
-	// The scratch and the reserved pair are now in the live baseline, so the preflight
-	// charges them through the call roots. The iterable plays the receiver role here,
-	// so an ephemeral hash literal is counted while a hash already bound to a variable
-	// is deduplicated against the live base.
+	// The scratch, and the reserved pair when needed, are now in the live baseline.
+	// The iterable plays the receiver role here, so an ephemeral hash literal is
+	// counted while a hash already bound to a variable is deduplicated against the
+	// live base.
 	if err := exec.checkProjectedHashWalkBytes(iterable, nil, nil, NewNil()); err != nil {
 		return NewNil(), false, err
 	}

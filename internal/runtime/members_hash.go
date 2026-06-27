@@ -413,34 +413,26 @@ func hashMemberQuery(property string) (Value, error) {
 			// nil). blockWantsCollapsedPair inspects the block's arity to pick the
 			// shape.
 			collapsePair := blockWantsCollapsedPair(valueBlock(block))
-			// each builds no output map, but it materializes a sorted key list to
-			// walk entries deterministically. Reserve that scratch buffer against the
-			// quota for the walk's whole lifetime so a large receiver cannot escape the
-			// memory quota and so every memory check inside the block body counts the
-			// live scratch; the walk projection charges no output map this iterator
-			// never creates. Reserving first means the projection adds no separate
-			// scratch bytes. A collapsed-pair walk also allocates a transient
-			// [key, value] pair each entry, so reserve its largest pair for the walk's
-			// lifetime (maxCollapsedPairBytes): only one pair is live at a time, and
-			// reserving the largest one charges it into the baseline every in-body check,
-			// the preflight, and the bind charge all see -- so the pair is bounded
-			// alongside any fresh rest backing a destructuring block binds, keeping the
-			// walk O(n) in the receiver size instead of re-walking the receiver per entry.
-			//
-			// Reserve the scratch BEFORE building the runner so the runner's
-			// bind-charge baseline snapshot (taken in newBlockCallRunner, which folds
-			// reservedScratchBytes through estimateMemoryUsageBase) already includes
-			// it. Otherwise a nested-rest block (|(k, (head, *tail))|) over an
-			// ephemeral receiver would charge its fresh tail backing against a baseline
-			// that omits the scratch and pair, while the body's own memory checks see the
-			// scratch but not the Go-stack-only receiver, letting receiver+scratch+pair+tail
-			// exceed the quota with neither check failing.
+			// each builds no output map, but it materializes a sorted key list to walk
+			// entries deterministically. Reserve that scratch for the walk's lifetime so
+			// every block-body check sees it. Collapsed-pair walks also allocate one
+			// transient [key, value] pair per entry. Keep the largest pair reserved only
+			// when the body cannot account for the actual bound pair: either the block
+			// collects a rest while binding, or the receiver is not already reachable
+			// from the live baseline. Otherwise preflight the largest pair once and let
+			// body checks count the real bound pair, avoiding a false extra pair.
 			scratch := sortedKeyBufferBytes(len(entries))
-			if collapsePair {
+			reservePair := collapsePair && (blockBindsRest(valueBlock(block)) || !exec.valueReachableFromLiveBase(receiver, block))
+			if reservePair {
 				scratch = saturatingAdd(scratch, exec.maxCollapsedPairBytes(receiver))
 			}
 			delta := exec.reserveLoopScratch(scratch)
 			defer exec.releaseLoopScratch(delta)
+			if collapsePair && !reservePair {
+				if err := exec.checkCollapsedPairBytesWithLiveBase(receiver, block); err != nil {
+					return NewNil(), err
+				}
+			}
 			runner, err := newBlockCallRunner(exec, block, "hash.each", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
@@ -459,16 +451,10 @@ func hashMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				if collapsePair {
-					// The pair's footprint is already reserved above for the walk's
-					// lifetime, so build and yield it directly. The yielded value is
-					// always a two-element array. A destructuring-parameter rest a block
-					// collects (|(k, *rest)|, or the nested |(k, (head, *tail))|) makes
-					// AssignDestructure copy its window into a FRESH backing -- sized to
-					// the collected source, which for a nested rest is a whole hash value,
-					// not the bounded pair. That fresh backing is charged by the runner's
-					// per-call bind charge (newBlockBindCharge), which counts it against
-					// the live call roots including this receiver and the reserved pair, so
-					// an empty block body cannot let the copy escape the quota.
+					// The yielded value is always a two-element array. Rest-collecting
+					// destructuring blocks keep the max pair reserved in the runner's bind
+					// baseline; plain pair bindings rely on the bound pair the body checks
+					// already see when the receiver is reachable.
 					pair := NewArray([]Value{NewSymbol(key), entries[key]})
 					if _, err := runner.call([]Value{pair}); err != nil {
 						return NewNil(), err
