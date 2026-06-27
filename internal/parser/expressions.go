@@ -832,53 +832,40 @@ func findStringInterpolationEnd(raw string, start int) (int, bool) {
 	}
 	lex := newLexer(raw[start:])
 
-	depth := 0
+	braceDepth := 0
+	bracketDepth := 0
+	parenDepth := 0
 	for {
 		tok := lex.NextToken()
 		switch tok.Type {
 		case ast.TokenEOF, ast.TokenIllegal:
 			return 0, false
+		case ast.TokenLParen:
+			parenDepth++
+		case ast.TokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case ast.TokenLBracket:
+			bracketDepth++
+		case ast.TokenRBracket:
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
 		case ast.TokenLBrace:
-			depth++
+			braceDepth++
 		case ast.TokenRBrace:
-			if depth == 0 {
+			if braceDepth > 0 {
+				braceDepth--
+				continue
+			}
+			if bracketDepth == 0 && parenDepth == 0 {
 				// The lexer has consumed the closing "}"; currentOffset now
 				// points at the rune after it, so the "}" itself sits one byte
 				// back ("}" is always a single byte).
 				return start + lex.currentOffset() - 1, true
 			}
-			depth--
-		case ast.TokenPercent:
-			percentOffset := start + lex.currentOffset() - 1
-			kind, endOffset, ok := scanStringInterpolationPercentArrayArgument(raw, percentOffset)
-			if !ok {
-				continue
-			}
-			lex.advanceTo(endOffset-start, ast.Token{Type: percentArrayLiteralTokenType(kind)})
 		}
-	}
-}
-
-func scanStringInterpolationPercentArrayArgument(input string, offset int) (rune, int, bool) {
-	if !offsetHasLeadingWhitespace(input, offset) {
-		return 0, 0, false
-	}
-	kind, _, endOffset, ok := scanPercentArrayLiteralAt(input, offset)
-	return kind, endOffset, ok
-}
-
-func percentArrayLiteralTokenType(kind rune) ast.TokenType {
-	switch kind {
-	case 'w':
-		return ast.TokenWords
-	case 'i':
-		return ast.TokenSymbols
-	case 'W':
-		return ast.TokenInterpWords
-	case 'I':
-		return ast.TokenInterpSymbols
-	default:
-		return ast.TokenIllegal
 	}
 }
 

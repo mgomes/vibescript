@@ -1570,6 +1570,46 @@ end`
 	}
 }
 
+func TestParserStringInterpolationKeepsIndexedLocalPercentModulo(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  total = 10
+  w = [3]
+  "#{total %w["]"]}"
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	body := parsedFunctionBody(t, got)
+	if len(body) != 3 {
+		t.Fatalf("function body has %d statements, want 3", len(body))
+	}
+	interp, ok := body[2].(*ast.ExprStmt).Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("body[2].Expr = %T, want *ast.InterpolatedString", body[2].(*ast.ExprStmt).Expr)
+	}
+	exprPart, ok := interp.Parts[0].(ast.StringExpr)
+	if !ok {
+		t.Fatalf("parts[0] = %T, want ast.StringExpr", interp.Parts[0])
+	}
+
+	want := &ast.BinaryExpr{
+		Left:     &ast.Identifier{Name: "total"},
+		Operator: ast.TokenPercent,
+		Right: &ast.IndexExpr{
+			Object: &ast.Identifier{Name: "w"},
+			Index:  &ast.StringLiteral{Value: "]"},
+		},
+	}
+	if diff := cmp.Diff(want, exprPart.Expr, astCmpOpts); diff != "" {
+		t.Fatalf("interpolation expression mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // A parameter default may reference an earlier parameter, so the earlier
 // parameter must be a known local when the default is parsed: the percent
 // literal in the default is modulo, not a parenless call.
