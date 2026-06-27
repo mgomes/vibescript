@@ -1346,8 +1346,15 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 		return p.parseAssignmentValue(target)
 	}
 
-	if isAssignmentOperator(p.peekToken.Type) && isAssignable(expr) {
-		return p.parseAssignmentValue(expr)
+	if isAssignmentOperator(p.peekToken.Type) {
+		if pos, ok := safeNavigationPos(expr); ok {
+			p.addParseError(pos, "safe navigation cannot be used as an assignment target")
+			p.recoverAssignmentRemainder()
+			return nil
+		}
+		if isAssignable(expr) {
+			return p.parseAssignmentValue(expr)
+		}
 	}
 
 	return &ast.ExprStmt{Expr: expr, Position: expr.Pos()}
@@ -1412,6 +1419,10 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 	seenRest := false
 
 	if first != nil {
+		if pos, ok := safeNavigationPos(first); ok {
+			p.addParseError(pos, "safe navigation cannot be used as an assignment target")
+			return nil
+		}
 		if !isAssignable(first) {
 			p.addParseError(first.Pos(), "invalid destructuring assignment target")
 			return nil
@@ -1492,6 +1503,10 @@ func (p *parser) parseDestructureSingleTarget() ast.Expression {
 		if target == nil {
 			return nil
 		}
+		if pos, ok := safeNavigationPos(target); ok {
+			p.addParseError(pos, "safe navigation cannot be used as an assignment target")
+			return nil
+		}
 		if !isAssignable(target) {
 			p.addParseError(target.Pos(), "invalid destructuring assignment target")
 			return nil
@@ -1565,10 +1580,42 @@ func (p *parser) peekEndsStatement(pos ast.Position) bool {
 }
 
 func isAssignable(expr ast.Expression) bool {
+	if _, ok := safeNavigationPos(expr); ok {
+		return false
+	}
 	switch expr.(type) {
-	case *ast.Identifier, *ast.MemberExpr, *ast.IndexExpr, *ast.IvarExpr, *ast.ClassVarExpr:
+	case *ast.MemberExpr, *ast.Identifier, *ast.IndexExpr, *ast.IvarExpr, *ast.ClassVarExpr:
 		return true
 	default:
 		return false
+	}
+}
+
+// safeNavigationPos reports whether an assignment target contains a
+// safe-navigation operator anywhere in its receiver chain, returning the
+// position of the first such operator. Safe navigation (`object&.prop` or
+// `object&.method(...)`) short-circuits to nil on a nil receiver, so allowing
+// it on the left of an assignment would silently assign through nil. Vibescript
+// rejects every such target—`user&.name = x`, `user&.profile.name = x`, and
+// `user&.items[0] = x` alike—so the receiver chain is walked rather than only
+// the outermost node.
+func safeNavigationPos(expr ast.Expression) (ast.Position, bool) {
+	for {
+		switch e := expr.(type) {
+		case *ast.MemberExpr:
+			if e.Safe {
+				return e.Position, true
+			}
+			expr = e.Object
+		case *ast.CallExpr:
+			if e.Safe {
+				return e.Position, true
+			}
+			expr = e.Callee
+		case *ast.IndexExpr:
+			expr = e.Object
+		default:
+			return ast.Position{}, false
+		}
 	}
 }

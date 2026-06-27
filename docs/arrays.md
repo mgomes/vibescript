@@ -18,6 +18,9 @@ statuses = %i[draft published archived]
 Common enumerable helpers include:
 
 - `map` to transform elements.
+- `map_with_index` to transform elements while also passing each element's
+  0-based index to the block (`["a", "b"].map_with_index { |value, index| [value, index] }`
+  is `[["a", 0], ["b", 1]]`). It takes no arguments and requires a block.
 - `filter_map` to transform elements and keep only the truthy results in one
   pass, dropping falsy block returns (the fused equivalent of `map` then a
   truthiness filter).
@@ -33,6 +36,7 @@ Common enumerable helpers include:
 - `transpose` to swap the rows and columns of a matrix of equal-length array rows; it raises when a row is not an array or the rows differ in length.
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `append(*values)` is a Ruby-style alias for `push`, returning a new array with the values added to the end in order.
+- `array << value` is the Ruby-style shovel operator. Because Vibescript arrays are immutable it does not mutate the receiver: it returns a new array with the single value appended (`[1, 2] << 3` is `[1, 2, 3]`). Accumulate by reassigning, `values = values << value`, the same idiom used with `push` and `+`; a bare `values << value` statement computes the appended array and discards it. The left operand must be an array.
 - `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`).
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
@@ -71,6 +75,7 @@ survive.
 [1, 2, 3].take(2)           # [1, 2]
 [1, 2, 3].drop(1)           # [2, 3]
 [1].append(2, 3)            # [1, 2, 3]
+[1, 2] << 3                 # [1, 2, 3]
 [3].prepend(1, 2)           # [1, 2, 3]
 [1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 [[1, 2], [3, 4]].transpose  # [[1, 3], [2, 4]]
@@ -239,6 +244,8 @@ receiver.
 - `each_cons(n)` yields every sliding window of length `n`; an array shorter than
   `n` yields nothing. `n` must be a positive integer. Returns `nil`.
 - `reverse_each` yields values from last to first and returns the receiver.
+- `each_with_index` yields each element along with its 0-based index and returns
+  the receiver. It takes no arguments and requires a block.
 - `cycle(n)` yields the whole array `n` times. A non-positive `n` yields nothing.
   Omitting `n` or passing `nil` cycles forever; the step quota and context
   cancellation bound the otherwise unbounded loop. Returns `nil`.
@@ -265,6 +272,9 @@ end                                 # yields 3, 2, 1
 [1, 2].cycle(2) do |value|
   value + 1
 end                                 # yields 1, 2, 1, 2
+["a", "b"].each_with_index do |value, index|
+  [value, index]
+end                                 # yields ("a", 0) then ("b", 1)
 ```
 
 ## Ordering and grouping
@@ -317,7 +327,7 @@ end
 
 ## Set-like Operations
 
-Use `+` to concatenate and `-` to subtract values:
+Use `+` to concatenate, `-` to subtract values, and `&` to intersect:
 
 ```vibe
 def unique_participants(core, late)
@@ -327,6 +337,19 @@ end
 def without_dropouts(participants, dropouts)
   participants - dropouts
 end
+
+def shared(left, right)
+  left & right
+end
+```
+
+`&` returns the elements common to both arrays, removing duplicates and keeping
+the left array's order. Equality follows the same value semantics as `uniq`, so
+nested arrays and hashes compare by content. Both operands must be arrays:
+
+```vibe
+[1, 2, 3] & [2, 3, 4]    # => [2, 3]
+[1, 1, 2, 3] & [1, 3, 4] # => [1, 3]
 ```
 
 The method forms `union(*others)` and `difference(*others)` accept any number of
