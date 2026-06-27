@@ -15,6 +15,11 @@ const (
 	maxInt64FloatExclusive = 9223372036854775808.0
 )
 
+// blockGivenName is the reserved Kernel-style predicate that reports whether the
+// current call was supplied a block, mirroring Ruby's block_given?. It is
+// resolved before ordinary variable lookup so it cannot be shadowed.
+const blockGivenName = "block_given?"
+
 func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) {
 	return exec.evalExpressionWithAuto(expr, env, true)
 }
@@ -25,6 +30,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	}
 	switch e := expr.(type) {
 	case *Identifier:
+		if e.Name == blockGivenName {
+			return NewBool(blockGivenInCurrentCall(env)), nil
+		}
 		val, ok := env.Get(e.Name)
 		if !ok {
 			// allow implicit self method lookup
@@ -897,7 +905,7 @@ func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value V
 }
 
 func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
-	block, ok := env.Get("__block__")
+	block, ok := env.lookupCallBlock()
 	if !ok || block.Kind() == KindNil {
 		return NewNil(), exec.errorAt(expr.Pos(), "no block given")
 	}

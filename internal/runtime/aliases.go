@@ -757,6 +757,13 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 	for name, val := range env.statics {
 		clone.DefineStatic(name, cloneValueForHostWithState(val, state))
 	}
+	// A call frame captured by an escaped closure carries the block its method
+	// received in a hidden slot; clone it so a closure or default proc that
+	// crosses the host boundary still resolves yield and block_given? to that
+	// block on re-entry instead of seeing no block.
+	if env.hasCallBlock {
+		clone.setCallBlock(cloneValueForHostWithState(env.callBlock, state))
+	}
 	return clone
 }
 

@@ -139,6 +139,9 @@ Function features:
 - Optional return type annotations.
 - Optional block parameters.
 
+Run a supplied block with `yield`, and ask `block_given?` whether the current
+call was given one before yielding. See `docs/blocks.md` for details.
+
 Typed signature example:
 
 ```vibe
