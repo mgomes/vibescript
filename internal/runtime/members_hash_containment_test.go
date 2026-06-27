@@ -1217,6 +1217,39 @@ func TestHashTransformReservationsRejectBeforeMapAllocation(t *testing.T) {
 	}
 }
 
+func TestHashTransformReservationsDoNotMaskRequiredBlock(t *testing.T) {
+	t.Parallel()
+
+	const count = 20_000
+	receiver := largeHashReceiver(count)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, NewNil())
+	buffers := hashTransformBufferBytes(count, sortedKeyBufferBytes(count))
+	quota := saturatingAdd(roots, buffers) - 1
+	if roots > quota {
+		t.Fatalf("test setup expects roots (%d) to fit quota (%d)", roots, quota)
+	}
+
+	for _, name := range []string{"transform_keys", "transform_values"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callHashMember(t, exec, receiver, name, nil, NewNil())
+			if errors.Is(err, errMemoryQuotaExceeded) {
+				t.Fatalf("%s returned memory quota before validating its block: %v", name, err)
+			}
+			requireErrorContains(t, err, "hash."+name+" requires a block")
+			if exec.steps != 0 {
+				t.Fatalf("%s ran %d step(s), want required-block validation before iteration", name, exec.steps)
+			}
+			if exec.reservedScratchBytes != 0 {
+				t.Fatalf("%s leaked %d reserved scratch bytes after required-block validation", name, exec.reservedScratchBytes)
+			}
+		})
+	}
+}
+
 // TestHashEachFitsRealFootprint pins the P2 finding on PR #776: pure iterators
 // (each, each_key, each_value) build no output map -- they return the receiver --
 // so charging them an empty output map's overhead is a pure over-charge. A quota

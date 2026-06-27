@@ -1402,6 +1402,9 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_keys does not take arguments")
 			}
+			if err := ensureBlock(block, "hash.transform_keys"); err != nil {
+				return NewNil(), err
+			}
 			entries := receiver.Hash()
 			// Reserve the output map and sorted-key scratch for the build's whole
 			// lifetime BEFORE building the runner, so the runner's bind-charge baseline
@@ -1513,6 +1516,9 @@ func hashMemberTransforms(property string) (Value, error) {
 		return NewAutoBuiltin("hash.transform_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_values does not take arguments")
+			}
+			if err := ensureBlock(block, "hash.transform_values"); err != nil {
+				return NewNil(), err
 			}
 			entries := receiver.Hash()
 			// Reserve the output map and sorted-key scratch for the build's whole
