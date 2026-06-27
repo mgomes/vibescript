@@ -2166,6 +2166,11 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 // rangeMaterializeInitialCap.
 const arrayFillInitialCap = 4096
 
+// arrayInsertInitialCap bounds the capacity reserved up front when building an
+// insert result. Larger inserts grow by append so step and memory checks run
+// before the backing reaches the requested final length.
+const arrayInsertInitialCap = arrayFillInitialCap
+
 // arrayFillSpan describes the half-open destination window [begin, end) that a
 // fill writes to, together with finalLength, the length the result array needs
 // so the window fits. When the window extends past the receiver, finalLength is
@@ -3014,9 +3019,9 @@ func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	values := args[1:]
 	arr := receiver.Array()
 	if len(values) == 0 {
-		out := make([]Value, len(arr))
-		copy(out, arr)
-		return NewArray(out), nil
+		return arrayInsertBuildResult(exec, receiver, args, kwargs, block, len(arr), func(i int) Value {
+			return arr[i]
+		})
 	}
 	// Resolve the insertion point. A negative index inserts after the element it
 	// names, so it normalizes to (index + len + 1); Ruby rejects a negative index
@@ -3035,27 +3040,42 @@ func arrayInsert(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		pad = at - len(arr)
 		at = len(arr)
 	}
-	// Reject a result that would exceed the memory quota before reserving the
-	// padded backing array, so insert(1_000_000_000, x) on a small array fails
-	// fast rather than allocating a huge nil-padded slice the post-call check
-	// would only catch after the fact.
 	finalLength := saturatingAdd(saturatingAdd(len(arr), pad), len(values))
-	if err := exec.checkProjectedIntArrayBytes(finalLength); err != nil {
+	padEnd := saturatingAdd(at, pad)
+	valuesEnd := saturatingAdd(padEnd, len(values))
+	return arrayInsertBuildResult(exec, receiver, args, kwargs, block, finalLength, func(i int) Value {
+		switch {
+		case i < at:
+			return arr[i]
+		case i < padEnd:
+			return NewNil()
+		case i < valuesEnd:
+			return values[i-padEnd]
+		default:
+			return arr[at+i-valuesEnd]
+		}
+	})
+}
+
+func arrayInsertBuildResult(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, finalLength int, valueAt func(int) Value) (Value, error) {
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	if err := acc.reserveSlots(finalLength); err != nil {
 		return NewNil(), err
 	}
-	out := make([]Value, 0, len(arr)+pad+len(values))
-	out = append(out, arr[:at]...)
-	for range pad {
-		// Charge a step per padded slot so a window far past the end
-		// (insert(1_000_000, x) on a short array) stays bounded by the step quota
-		// and observes cancellation even when the memory quota is generous,
-		// mirroring Array#fill's per-slot stepping.
+
+	initialCap := finalLength
+	if initialCap > arrayInsertInitialCap {
+		initialCap = arrayInsertInitialCap
+	}
+	out := make([]Value, 0, initialCap)
+	for i := range finalLength {
 		if err := exec.step(); err != nil {
 			return NewNil(), err
 		}
-		out = append(out, NewNil())
+		out = append(out, valueAt(i))
+		if err := acc.add(out[len(out)-1], cap(out)); err != nil {
+			return NewNil(), err
+		}
 	}
-	out = append(out, values...)
-	out = append(out, arr[at:]...)
 	return NewArray(out), nil
 }

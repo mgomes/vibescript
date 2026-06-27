@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestArrayDelete(t *testing.T) {
 	t.Parallel()
@@ -499,6 +502,33 @@ func TestArrayInsertStepQuota(t *testing.T) {
 end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 64, MemoryQuotaBytes: 1 << 30}, source)
 	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+func TestArrayInsertCountsLiveCallRoots(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 4096
+
+	receiver := largeIntArray(receiverSize)
+	args := []Value{NewInt(0), NewInt(-1)}
+	probe := &Execution{}
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	resultSlots := saturatingAdd(
+		estimatedValueBytes+estimatedSliceBaseBytes,
+		saturatingMul(receiverSize+1, estimatedValueBytes),
+	)
+	quota := saturatingAdd(roots, resultSlots) - estimatedValueBytes
+
+	fits := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if err := fits.checkCallMemoryRoots(receiver, args, nil, NewNil()); err != nil {
+		t.Fatalf("receiver and args should fit under quota %d: %v", quota, err)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, exec, receiver, "insert", args, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("steps = %d, want insert rejected before building the result", exec.steps)
+	}
 }
 
 // TestArrayHelpersDoNotAliasReceiverBacking guards every collection helper this
