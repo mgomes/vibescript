@@ -478,6 +478,125 @@ end`
 	}
 }
 
+// A '#' chosen as the delimiter still closes the literal for every percent
+// form. The interpolation special-casing of "#{" must not steal the closing
+// delimiter, which would otherwise scan the literal to EOF. Verified against
+// Ruby: %w#foo bar# and %W#foo bar# => ["foo", "bar"], %i#foo bar# and
+// %I#foo bar# => [:foo, :bar].
+func TestParserPercentArrayLiteralHashDelimiter(t *testing.T) {
+	t.Parallel()
+
+	words := &ast.ArrayLiteral{Elements: []ast.Expression{
+		&ast.StringLiteral{Value: "foo"},
+		&ast.StringLiteral{Value: "bar"},
+	}}
+	symbols := &ast.ArrayLiteral{Elements: []ast.Expression{
+		&ast.SymbolLiteral{Name: "foo"},
+		&ast.SymbolLiteral{Name: "bar"},
+	}}
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{name: "lowercase_words", source: "def run\n  %w#foo bar#\nend", wantExpr: words},
+		{name: "uppercase_words", source: "def run\n  %W#foo bar#\nend", wantExpr: words},
+		{name: "lowercase_symbols", source: "def run\n  %i#foo bar#\nend", wantExpr: symbols},
+		{name: "uppercase_symbols", source: "def run\n  %I#foo bar#\nend", wantExpr: symbols},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{&ast.ExprStmt{Expr: tc.wantExpr}}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// When '#' is the delimiter, "#{" does not interpolate: the first unescaped '#'
+// closes the literal. An escaped "\#" is a literal '#' that does not close.
+// Verified against Ruby: %W#a\#b# => ["a#b"], %W#a#b# => ["a"].
+func TestParserPercentArrayLiteralHashDelimiterEscapeAndEarlyClose(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name:   "escaped_hash_is_literal",
+			source: "def run\n  %W#a\\#b#\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "a#b"},
+			}},
+		},
+		{
+			name:   "lowercase_escaped_hash_is_literal",
+			source: "def run\n  %w#a\\#b#\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "a#b"},
+			}},
+		},
+		{
+			name:   "first_hash_closes",
+			source: "def run\n  %W#a#\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "a"},
+			}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{&ast.ExprStmt{Expr: tc.wantExpr}}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// A literal '#' inside a non-'#' delimiter is kept verbatim unless it begins a
+// real "#{" interpolation. Verified against Ruby: %W[a#b] => ["a#b"].
+func TestParserPercentInterpolatedArrayLiteralBareHash(t *testing.T) {
+	t.Parallel()
+
+	source := "def run\n  %W[a#b c]\nend"
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.StringLiteral{Value: "a#b"},
+			&ast.StringLiteral{Value: "c"},
+		}}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserPercentArrayLiteralEscapes(t *testing.T) {
 	t.Parallel()
 

@@ -86,6 +86,33 @@ end`)
 	})
 }
 
+// TestPercentArrayLiteralHashDelimiter confirms '#' works as a percent-array
+// delimiter for every form. The interpolation handling for the uppercase
+// forms must not consume the closing '#'. An escaped "\#" stays literal, and
+// when '#' is the delimiter "#{" does not interpolate. Verified against Ruby:
+//
+//	%w#foo bar# => ["foo", "bar"]
+//	%W#foo bar# => ["foo", "bar"]
+//	%i#foo bar# => [:foo, :bar]
+//	%I#foo bar# => [:foo, :bar]
+//	%W#a\#b#    => ["a#b"]
+func TestPercentArrayLiteralHashDelimiter(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  [%w#foo bar#, %W#foo bar#, %i#foo bar#, %I#foo bar#, %W#a\#b#]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewArray([]Value{NewString("foo"), NewString("bar")}),
+		NewArray([]Value{NewString("foo"), NewString("bar")}),
+		NewArray([]Value{NewSymbol("foo"), NewSymbol("bar")}),
+		NewArray([]Value{NewSymbol("foo"), NewSymbol("bar")}),
+		NewArray([]Value{NewString("a#b")}),
+	})
+}
+
 // TestPercentInterpolatedSymbolArrayProducesSymbols guards that interpolated %I
 // entries are genuine symbols, not strings: Vibescript symbol/string equality
 // is kind-sensitive.

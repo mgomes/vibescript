@@ -1101,6 +1101,25 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 
 	depth := 1
 	var raw strings.Builder
+
+	// closed reports whether the current rune is the closing delimiter that
+	// balances the literal. When it returns true the literal is finished and
+	// the consumed runes have already been split into entries.
+	closed := func() (entries []string, done bool) {
+		if l.ch != close {
+			return nil, false
+		}
+		depth--
+		if depth != 0 {
+			return nil, false
+		}
+		l.readRune()
+		if interpolating {
+			return splitInterpolatedPercentLiteralWords(raw.String()), true
+		}
+		return splitPercentLiteralWords(raw.String(), open, close), true
+	}
+
 	for {
 		l.readRune()
 		switch l.ch {
@@ -1113,25 +1132,27 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 				raw.WriteRune(l.ch)
 			}
 		case '#':
-			raw.WriteRune(l.ch)
-			if interpolating && l.peekRune() == '{' {
+			// A '#' chosen as the delimiter still closes the literal, so only
+			// treat "#{" as interpolation when '#' is not the closing rune.
+			// This mirrors Ruby, where %W#a #{b}# closes at the first '#'
+			// instead of interpolating.
+			if interpolating && close != '#' && l.peekRune() == '{' {
+				raw.WriteRune(l.ch)
 				if msg := l.consumePercentArrayInterpolation(&raw); msg != "" {
 					return nil, msg
 				}
+				continue
 			}
+			if entries, done := closed(); done {
+				return entries, ""
+			}
+			raw.WriteRune(l.ch)
 		default:
 			if paired && l.ch == open {
 				depth++
 			}
-			if l.ch == close {
-				depth--
-				if depth == 0 {
-					l.readRune()
-					if interpolating {
-						return splitInterpolatedPercentLiteralWords(raw.String()), ""
-					}
-					return splitPercentLiteralWords(raw.String(), open, close), ""
-				}
+			if entries, done := closed(); done {
+				return entries, ""
 			}
 			raw.WriteRune(l.ch)
 		}
