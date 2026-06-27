@@ -1173,6 +1173,77 @@ func TestArraySumChargesEphemeralReceiverWhileAccumulating(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestArraySumChargesLiveBlockResultWhileAccumulating(t *testing.T) {
+	t.Parallel()
+
+	// sum's block form holds the block result (the contribution) live on the Go
+	// stack while arraySumAdd builds the next accumulator from a fresh copy, so a
+	// block that returns a large value coexists with the new accumulator at the
+	// step's allocation peak. The per-iteration check must charge that contribution,
+	// not just the new accumulator: a quota that admits the new accumulator alone but
+	// not accumulator + contribution has to be rejected before the builtin returns.
+	// Without seeding the contribution the step could allocate a full extra block
+	// result beyond the quota, with the excess only caught after the builtin returned.
+	//
+	// A single-element receiver isolates the contribution: the loop runs one
+	// iteration, so the only thing distinguishing the buggy check (accumulator only)
+	// from the correct one (accumulator + contribution) is the live block result.
+	const initialBytes = 1000
+	const contributionBytes = 1000
+	receiver := NewArray([]Value{NewInt(0)})
+	initial := NewString(string(make([]byte, initialBytes)))
+	block := freshStringBlockValue(contributionBytes)
+
+	member, err := arrayMember(receiver, "sum")
+	if err != nil {
+		t.Fatalf("arrayMember(sum): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member sum is not a builtin")
+	}
+
+	// At the single iteration's peak three distinct buffers are live: the initial
+	// string (the call argument), the contribution (the block result), and the new
+	// accumulator (initial + contribution). Measure the footprint the correct check
+	// sees (call roots + accumulator + contribution) and the footprint the buggy
+	// check saw (call roots + accumulator only), then land the quota strictly
+	// between them so only the contribution-aware check rejects.
+	contribution := NewString(string(make([]byte, contributionBytes)))
+	accumulator := NewString(string(make([]byte, initialBytes+contributionBytes)))
+	accumulatorOnly := func() int {
+		est := newMemoryEstimator()
+		used := est.value(receiver)
+		used += est.value(initial)
+		used += est.value(block)
+		used += est.value(accumulator)
+		return used
+	}()
+	withContribution := func() int {
+		est := newMemoryEstimator()
+		used := est.value(receiver)
+		used += est.value(initial)
+		used += est.value(block)
+		used += est.value(accumulator)
+		used += est.value(contribution)
+		return used
+	}()
+	if accumulatorOnly >= withContribution {
+		t.Fatalf("contribution adds no footprint: accumulator-only %d, with-contribution %d", accumulatorOnly, withContribution)
+	}
+	quota := accumulatorOnly + (withContribution-accumulatorOnly)/2
+	if quota <= accumulatorOnly {
+		t.Fatalf("quota %d does not exceed the accumulator-only footprint %d; widen the chunks", quota, accumulatorOnly)
+	}
+	if quota >= withContribution {
+		t.Fatalf("quota %d does not stay below the contribution-aware footprint %d; widen the chunks", quota, withContribution)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err = builtin.Fn(exec, receiver, []Value{initial}, nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestArrayValuesAtRangeTripsStepQuota(t *testing.T) {
 	t.Parallel()
 

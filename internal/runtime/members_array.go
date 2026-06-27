@@ -1798,7 +1798,14 @@ func arraySum(exec *Execution, receiver Value, args []Value, kwargs map[string]V
 		if err != nil {
 			return NewNil(), err
 		}
-		if err := exec.checkAccumulatorWithCallRoots(next, receiver, args, kwargs, block); err != nil {
+		// The contribution stays live on the Go stack alongside next: arraySumAdd
+		// builds next from a fresh copy (a new string buffer or a new slice backing),
+		// so a block that returns a large value coexists with the new accumulator at
+		// this step's peak. Charge it as a live extra so a quota above the new
+		// accumulator alone but below accumulator + contribution is rejected here
+		// rather than only after the builtin returns. The estimator dedups it, so the
+		// blockless case (contribution is a receiver element) adds nothing.
+		if err := exec.checkAccumulatorWithCallRoots(next, receiver, args, kwargs, block, contribution); err != nil {
 			return NewNil(), err
 		}
 		total = next

@@ -112,18 +112,30 @@ func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []V
 }
 
 // checkAccumulatorWithCallRoots rejects a fold step whose running accumulator,
-// together with the builtin's live call roots, would exceed the memory quota.
-// Builtins that grow a single Go-local accumulator value from a non-rooted
-// receiver — Array#sum building a string or array total — use it instead of the
-// plain checkMemoryWith(accumulator). The receiver, args, and block stay live on
-// the Go call stack for the builtin's whole run yet are invisible to
+// together with the builtin's live call roots and any extra Go-local values that
+// coexist with it at the step's peak, would exceed the memory quota. Builtins
+// that grow a single Go-local accumulator value from a non-rooted receiver —
+// Array#sum building a string or array total — use it instead of the plain
+// checkMemoryWith(accumulator). The receiver, args, and block stay live on the Go
+// call stack for the builtin's whole run yet are invisible to
 // estimateMemoryUsageBase, so a check that charged only the accumulator could
 // admit a peak (call roots + accumulator) that exceeds the quota until the
 // builtin returns. Charging the accumulator and the call roots through one
 // deduplicating estimator keeps the running check consistent with the pre-call
 // checkCallMemoryRoots: an accumulator that aliases the receiver or an argument
 // is counted once, matching the real shared backing.
-func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+//
+// liveExtras are additional values that are live on the Go call stack alongside
+// the new accumulator at the step's allocation peak but are not reachable from
+// any call root. Array#sum's block form passes the block result it just produced:
+// that contribution is still referenced while arraySumAdd builds the next
+// accumulator from it, so a fresh large block result coexists with both the old
+// total and the new one. Without charging it, a quota above call roots + new
+// accumulator but below call roots + contribution + new accumulator would admit a
+// step whose true peak exceeds the limit. Each extra is charged through the same
+// deduplicating estimator, so a contribution that aliases a receiver element or
+// the accumulator itself is counted once, matching the real shared backing.
+func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value, args []Value, kwargs map[string]Value, block Value, liveExtras ...Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
@@ -142,6 +154,9 @@ func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value
 	}
 	if !block.IsNil() {
 		used = saturatingAdd(used, est.value(block))
+	}
+	for _, extra := range liveExtras {
+		used = saturatingAdd(used, est.value(extra))
 	}
 	est.reset()
 
