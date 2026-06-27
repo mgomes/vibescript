@@ -29,6 +29,23 @@ in depth; this page favors compact signatures and one-line descriptions.
 "  hello ".strip! # "hello"
 ```
 
+## Universal Members
+
+These members are available on every value, regardless of kind.
+
+- `itself -> self` – returns the receiver unchanged. Useful in pipelines and
+  block-based callbacks where an identity step keeps the call shape uniform. It
+  takes no arguments; passing any positional or keyword argument is an error.
+  A class that defines its own `itself` method overrides this builtin, matching
+  Ruby's method-resolution order.
+
+```vibe
+"x".itself     # "x"
+3.itself       # 3
+[1, 2].itself  # [1, 2]
+nil.itself     # nil
+```
+
 ## Universal Predicates
 
 Every value answers two equality predicates in addition to the `==` operator.
