@@ -201,10 +201,6 @@ func newTypedRuntimeError(kind string, err error) error {
 	return &typedRuntimeError{kind: kind, err: err}
 }
 
-func newTypedRuntimeErrorf(kind, format string, args ...any) error {
-	return newTypedRuntimeError(kind, fmt.Errorf(format, args...))
-}
-
 func (exec *Execution) step() error {
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {

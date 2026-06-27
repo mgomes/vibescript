@@ -261,8 +261,8 @@ func TestScriptCallRuntimeErrorSurface(t *testing.T) {
 	if !errors.As(err, &runtimeErr) {
 		t.Fatalf("Call(boom) error type = %T, want *vibes.RuntimeError", err)
 	}
-	if runtimeErr.Type != "RuntimeError" {
-		t.Errorf("RuntimeError.Type = %q, want %q", runtimeErr.Type, "RuntimeError")
+	if runtimeErr.Type != "ZeroDivisionError" {
+		t.Errorf("RuntimeError.Type = %q, want %q", runtimeErr.Type, "ZeroDivisionError")
 	}
 	if runtimeErr.Message != "division by zero" {
 		t.Errorf("RuntimeError.Message = %q, want %q", runtimeErr.Message, "division by zero")

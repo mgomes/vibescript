@@ -2431,7 +2431,10 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 			return NewNil(), false, err
 		}
 		if err := exec.assign(s.Target, val, env); err != nil {
-			return NewNil(), false, err
+			if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
+				return NewNil(), false, err
+			}
+			return NewNil(), false, exec.wrapError(err, s.Pos())
 		}
 		return val, false, nil
 	case *IfStmt:

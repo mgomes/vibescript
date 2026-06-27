@@ -680,7 +680,7 @@ func initializeClassBodiesForCall(exec *Execution, env *Env, callClasses map[str
 			return exec.errorAt(classDef.Body[0].Pos(), "class %s is not bound", name)
 		}
 		if err := exec.initializeClassBody(classVal, classDef, env); err != nil {
-			return err
+			return exec.wrapError(err, classDef.Body[0].Pos())
 		}
 	}
 
