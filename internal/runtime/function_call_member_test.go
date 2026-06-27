@@ -194,7 +194,7 @@ func exportedFunctionValue(t *testing.T, script *Script, names ...string) Value 
 
 // TestFunctionValueCallMemberSuggestion confirms the function member list is
 // wired into editor completion metadata, including the universal Object-level
-// helpers that resolve on every value.
+// helpers (eql?, equal?, tap, yield_self) that resolve on every value.
 func TestFunctionValueCallMemberSuggestion(t *testing.T) {
 	t.Parallel()
 	names, ok := MemberCompletionNames()["function"]

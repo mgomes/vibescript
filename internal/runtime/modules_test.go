@@ -1137,6 +1137,39 @@ end`)
 	}
 }
 
+// TestRequireExportedEqualityPredicateOverridesUniversal confirms a module that
+// exports a function named eql? or equal? makes mod.eql?(...) invoke that export
+// rather than the universal Object-level predicate. Module exports are collected
+// into a NewObject(exports), so an exported `def eql?` is a callable namespace
+// member that must shadow the universal predicate exactly as a class method
+// override does; treating an object like a hash (whose stored entries are data)
+// would make the export unreachable.
+func TestRequireExportedEqualityPredicateOverridesUniversal(t *testing.T) {
+	t.Parallel()
+	dir := tempModuleTree(t, moduleFile{path: "eq.vibe", content: `def eql?(other)
+  "module eql " + other
+end
+
+def equal?(other)
+  "module equal " + other
+end
+`})
+	engine := mustNewEngineWithModuleRoot(t, dir)
+	script := compileScriptWithEngine(t, engine, `def run()
+  mod = require("eq")
+  [mod.eql?("a"), mod.equal?("b")]
+end`)
+
+	result, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	compareArrays(t, result, []Value{
+		NewString("module eql a"),
+		NewString("module equal b"),
+	})
+}
+
 func TestRequireInitializesModuleClassBodiesInSourceOrder(t *testing.T) {
 	t.Parallel()
 	dir := tempModuleTree(t, moduleFile{path: "settings.vibe", content: `limit = 10

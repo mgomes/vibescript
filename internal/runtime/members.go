@@ -23,36 +23,108 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // receiver may resolve private methods, so external/public dispatch passes
 // false to keep privacy enforced regardless of which value is self.
 //
-// The universal Object-level helpers `tap` and `yield_self` resolve as a
-// fallback: each kind's own dispatch runs first, so a user-defined method, hash
-// key, or instance variable named `tap`/`yield_self` keeps precedence, and the
-// universal builtin only fills in when nothing else does. The fallback is gated
-// on the exact helper names, so it never masks a genuine error for any other
-// property.
+// The universal Object-level helpers — the equality predicates eql?/equal? and
+// the block helpers tap/yield_self — are resolved as a fallback after the
+// type-specific dispatch reports the member as unknown, so a value's own members
+// and any user-defined methods of the same name always take precedence, matching
+// Ruby's overridable Object-level helpers. A private override is not "unknown":
+// resolveTypedMember reports it with a private-member error, which suppresses the
+// fallback so the privacy block still raises rather than silently resolving the
+// universal builtin.
+//
+// Hash receivers are the exception for the equality predicates: a stored hash
+// entry keyed eql?/equal? is data rather than a method, so the typed dispatch can
+// never own that member and the universal predicate always wins. Resolving it
+// before typed dispatch keeps identity O(1): it skips hashMember's miss path,
+// which would otherwise materialize did-you-mean candidates from every stored key
+// only for resolveMember to discard that error in favor of the universal builtin.
+// The block helpers are not in this exception: a hash entry keyed tap/yield_self
+// is ordinary data the typed dispatch returns, so they fall back only on a miss.
+//
+// Object receivers are NOT in the predicate exception, but they are not uniform
+// either. KindObject backs two distinct shapes: module/capability namespaces,
+// whose map holds callable exports (a required module's `def eql?` is collected
+// into NewObject(exports)), and ordinary data objects returned by hosts/
+// capabilities, whose map holds data fields. A stored eql?/equal? must shadow the
+// universal predicate only when it is a callable export (so a module's `def eql?`
+// overrides like a class method); a plain data field keyed eql?/equal? is data,
+// exactly like a hash entry, and must not shadow identity. Object dispatch
+// therefore consults the typed member first but reports the predicate as a miss
+// when the stored entry is non-callable data, so the universal fallback answers
+// it.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
-	member, err := exec.resolveKindMember(obj, property, pos, callerIsReceiver)
-	if err != nil && isUniversalMemberName(property) {
-		return universalMember(property), nil
+	if isUniversalPredicate(property) && universalPredicateAlwaysWins(obj.Kind()) {
+		if helper, ok := universalMember(obj, property); ok {
+			return helper, nil
+		}
+	}
+	member, err := exec.resolveTypedMember(obj, property, pos, callerIsReceiver)
+	if err != nil && !isPrivateMemberError(err) && isUniversalMemberName(property) {
+		if helper, ok := universalMember(obj, property); ok {
+			return helper, nil
+		}
 	}
 	return member, err
 }
 
-// resolveKindMember dispatches member resolution to the handler for obj's kind,
+// universalPredicateAlwaysWins reports whether a receiver kind has no typed
+// member or user-defined method that could shadow the universal eql?/equal?
+// predicates, so they may be resolved before typed dispatch. Only hash receivers
+// qualify: hashMember exposes no eql?/equal? builtin and a stored entry of that
+// name is data rather than a method, so the universal predicate is the sole
+// resolution and resolving it first avoids hashMember's expensive miss path.
+//
+// Object receivers do not qualify even though they also store entries in a map:
+// an object's entries may be callable namespace exports (a module's exported `def
+// eql?` lands there), so a stored callable eql?/equal? is a real member that must
+// shadow the universal predicate. Resolving the predicate first would make that
+// export unreachable, so object dispatch runs first and resolveTypedMember decides
+// per entry whether the stored value is a callable export or non-callable data.
+func universalPredicateAlwaysWins(kind ValueKind) bool {
+	return kind == KindHash
+}
+
+// resolveTypedMember dispatches member resolution to the handler for obj's kind,
 // before the universal Object-level fallback in resolveMember is considered.
-func (exec *Execution) resolveKindMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
+func (exec *Execution) resolveTypedMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	switch obj.Kind() {
 	case KindHash:
 		member, err := hashMember(obj, property)
 		if err == nil {
 			return member, nil
 		}
-		if val, ok := obj.Hash()[property]; ok {
-			return val, nil
+		// Universal predicates are not stored data: a hash entry keyed "eql?"
+		// or "equal?" must not shadow the Object-level predicate, so leave the
+		// lookup to fall through to the universal fallback in resolveMember.
+		if !isUniversalPredicate(property) {
+			if val, ok := obj.Hash()[property]; ok {
+				return val, nil
+			}
 		}
 		return NewNil(), err
 	case KindObject:
+		// An object's map backs both module/capability namespaces (callable
+		// exports) and ordinary data objects (data fields). A stored "eql?"/"equal?"
+		// entry shadows the universal predicate only when it is a callable export
+		// (a module's exported `def eql?`); a non-callable data field keyed
+		// "eql?"/"equal?" is data, like a hash entry, and must let the universal
+		// identity predicate answer so obj.equal?(obj) stays true.
 		if val, ok := obj.Hash()[property]; ok {
-			return val, nil
+			if !isUniversalPredicate(property) || isCallableMember(val) {
+				return val, nil
+			}
+			// A non-callable data field keyed eql?/equal? is data: leave it to
+			// resolveMember's universal fallback. The field stays readable as data
+			// through index access (obj["eql?"]).
+			return NewNil(), exec.errorAt(pos, "unknown member %s", property)
+		}
+		// A universal predicate that is not a stored member is answered by
+		// resolveMember's fallback. Report the miss with a cheap fixed error rather
+		// than routing through hashMember, whose miss path materializes did-you-mean
+		// candidates from every export -- that work would scale with the object size
+		// only to be discarded in favor of the universal builtin.
+		if isUniversalPredicate(property) {
+			return NewNil(), exec.errorAt(pos, "unknown member %s", property)
 		}
 		member, err := hashMember(obj, property)
 		if err != nil {
@@ -138,7 +210,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 	}
 	if fn, ok := cl.ClassMethods[property]; ok {
 		if fn.Private && !callerIsReceiver {
-			return NewNil(), exec.errorAt(pos, "private method %s", property)
+			return NewNil(), privateMemberAccess(exec.errorAt(pos, "private method %s", property))
 		}
 		method := NewAutoBuiltin(cl.Name+"."+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
@@ -146,8 +218,14 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
-	if val, ok := cl.ClassVars[property]; ok {
-		return val, nil
+	// A stored class var keyed "eql?"/"equal?" is data, not a member, so it must
+	// not preempt the universal equality predicate (resolveMember supplies it via
+	// the unknown-member fallback). A user-defined class method of that name is
+	// resolved above and still overrides the predicate.
+	if !isUniversalPredicate(property) {
+		if val, ok := cl.ClassVars[property]; ok {
+			return val, nil
+		}
 	}
 	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1)
 	candidates = append(candidates, "new")
@@ -163,7 +241,7 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 	}
 	if fn, ok := inst.Class.Methods[property]; ok {
 		if fn.Private && !callerIsReceiver {
-			return NewNil(), exec.errorAt(pos, "private method %s", property)
+			return NewNil(), privateMemberAccess(exec.errorAt(pos, "private method %s", property))
 		}
 		method := NewAutoBuiltin(inst.Class.Name+"#"+property, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return exec.callFunction(fn, obj, args, kwargs, block, pos)
@@ -171,8 +249,14 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
-	if val, ok := inst.Ivars[property]; ok {
-		return val, nil
+	// A stored ivar keyed "eql?"/"equal?" is data, not a member, so it must not
+	// preempt the universal equality predicate (resolveMember supplies it via the
+	// unknown-member fallback). A user-defined instance method of that name is
+	// resolved above and still overrides the predicate.
+	if !isUniversalPredicate(property) {
+		if val, ok := inst.Ivars[property]; ok {
+			return val, nil
+		}
 	}
 	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1)
 	candidates = append(candidates, "class")
@@ -241,23 +325,23 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 // MemberCompletionNames returns the builtin member-method names per
 // receiver type, for editor tooling such as LSP completion. The slices
 // are copies; callers may sort or mutate them freely. Each type's list
-// includes the universal Object-level helpers (`tap`, `yield_self`), which
-// resolve on every value through resolveMember's fallback even though they
+// includes the universal Object-level helpers (eql?, equal?, tap, yield_self),
+// which resolve on every value through resolveMember's fallback even though they
 // live outside the per-kind dispatch switches.
 func MemberCompletionNames() map[string][]string {
 	return map[string][]string{
-		"string":   appendUniversalMemberNames(stringMemberNames),
-		"array":    appendUniversalMemberNames(arrayMemberNames),
-		"hash":     appendUniversalMemberNames(hashMemberNames),
-		"int":      appendUniversalMemberNames(intMemberNames),
-		"float":    appendUniversalMemberNames(floatMemberNames),
-		"money":    appendUniversalMemberNames(moneyMemberNames),
-		"duration": appendUniversalMemberNames(durationMemberNames),
-		"time":     appendUniversalMemberNames(timeMemberNames),
-		"range":    appendUniversalMemberNames(rangeMemberNames),
-		"function": appendUniversalMemberNames(functionMemberNames),
-		"symbol":   appendUniversalMemberNames(symbolMemberNames),
-		"nil":      appendUniversalMemberNames(nilMemberNames),
-		"bool":     appendUniversalMemberNames(boolMemberNames),
+		"string":   withUniversalMembers(stringMemberNames),
+		"symbol":   withUniversalMembers(symbolMemberNames),
+		"array":    withUniversalMembers(arrayMemberNames),
+		"hash":     withUniversalMembers(hashMemberNames),
+		"int":      withUniversalMembers(intMemberNames),
+		"float":    withUniversalMembers(floatMemberNames),
+		"money":    withUniversalMembers(moneyMemberNames),
+		"duration": withUniversalMembers(durationMemberNames),
+		"time":     withUniversalMembers(timeMemberNames),
+		"range":    withUniversalMembers(rangeMemberNames),
+		"function": withUniversalMembers(functionMemberNames),
+		"nil":      withUniversalMembers(nilMemberNames),
+		"bool":     withUniversalMembers(boolMemberNames),
 	}
 }
