@@ -47,6 +47,59 @@ func callHashMember(t *testing.T, exec *Execution, receiver Value, name string, 
 	return builtin.Fn(exec, receiver, args, nil, block)
 }
 
+func TestHashKeysValuesHonorSandboxDuringMaterialization(t *testing.T) {
+	t.Parallel()
+	receiver := largeHashReceiver(2_000)
+	baseExec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	base := baseExec.estimateMemoryUsage(receiver)
+	quota := base + sortedKeyBufferBytes(len(receiver.Hash())) + estimatedSliceBaseBytes
+
+	for _, name := range []string{"keys", "values"} {
+		t.Run(name+"_memory", func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callHashMember(t, exec, receiver, name, nil, NewNil())
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+		})
+		t.Run(name+"_canceled", func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 1 << 30}
+			_, err := callHashMember(t, exec, receiver, name, nil, NewNil())
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("hash.%s canceled context error = %v, want context.Canceled", name, err)
+			}
+		})
+	}
+}
+
+func TestHashDeepTransformKeysHonorsSandboxDuringTraversal(t *testing.T) {
+	t.Parallel()
+
+	nested := NewInt(1)
+	for range 2_000 {
+		nested = NewArray([]Value{nested})
+	}
+	receiver := NewHash(map[string]Value{"root": nested})
+	exec := &Execution{ctx: context.Background(), quota: 10, memoryQuota: 64 << 20}
+	_, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, keyIdentityBlock())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+}
+
+func TestHashDeepTransformKeysReservesOutputBuffers(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeHashReceiver(2_000)
+	block := keyIdentityBlock()
+	baseExec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	base := baseExec.estimateMemoryUsage(receiver, block)
+	quota := base + hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))/2
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestHashBlocklessTransformTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 

@@ -1,9 +1,24 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
+
+func callStringMemberForTest(t *testing.T, exec *Execution, receiver Value, name string, args []Value) (Value, error) {
+	t.Helper()
+	member, err := stringMember(receiver, name)
+	if err != nil {
+		t.Fatalf("stringMember(%s): %v", name, err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("string member %s is not a builtin", name)
+	}
+	return builtin.Fn(exec, receiver, args, nil, NewNil())
+}
 
 func TestStringTemplateScanner(t *testing.T) {
 	t.Parallel()
@@ -53,4 +68,54 @@ func TestStringTemplateScanner(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStringTemplateHonorsMemoryQuotaWhileRendering(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{
+		StepQuota:        100_000,
+		MemoryQuotaBytes: 64 * 1024,
+	}, `
+def run(text, payload)
+  text.template({ value: payload })
+end
+`)
+
+	requireCallErrorContains(t, script, "run", []Value{
+		NewString(strings.Repeat("{{value}}", 128)),
+		NewString(strings.Repeat("x", 1024)),
+	}, CallOptions{}, "memory quota exceeded")
+}
+
+func TestStringTemplateHonorsCanceledContextWhileRendering(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 1_000_000}, `
+def run(text, payload)
+  text.template({ value: payload })
+end
+`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := script.Call(ctx, "run", []Value{
+		NewString(strings.Repeat("{{value}}", 128)),
+		NewString("x"),
+	}, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("string.template canceled context error = %v, want context.Canceled", err)
+	}
+}
+
+func TestFixedStringTransformsHonorMemoryQuotaBeforeMaterializing(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewString(strings.Repeat("x", 40*1024))
+	arg := NewString(strings.Repeat("y", 40*1024))
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 96 * 1024}
+	_, err := callStringMemberForTest(t, exec, receiver, "concat", []Value{arg})
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 64 * 1024}
+	_, err = callStringMemberForTest(t, exec, receiver, "reverse", nil)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }

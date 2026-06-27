@@ -244,6 +244,37 @@ func splitOnASCIIWhitespaceLimit(text string, limit int) []string {
 	return fields
 }
 
+func splitOnASCIIWhitespaceLimitCount(text string, limit int) int {
+	if text == "" {
+		return 0
+	}
+	if limit == 1 {
+		return 1
+	}
+	count := 0
+	i := 0
+	n := len(text)
+	for i < n {
+		for i < n && isRubyASCIISpace(text[i]) {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		if limit > 0 && count == limit-1 {
+			return limit
+		}
+		for i < n && !isRubyASCIISpace(text[i]) {
+			i++
+		}
+		count++
+	}
+	if limit != 0 && isRubyASCIISpace(text[n-1]) {
+		count++
+	}
+	return count
+}
+
 // splitEmptySeparator implements Ruby's String#split("") which splits a string
 // into its individual characters (runes). The limit argument matches Ruby:
 //
@@ -297,6 +328,28 @@ func splitEmptySeparator(text string, limit int) []string {
 	return fields
 }
 
+func splitEmptySeparatorCount(text string, limit int) int {
+	if text == "" {
+		return 0
+	}
+	if limit == 1 {
+		return 1
+	}
+	count := 0
+	for i := 0; i < len(text); {
+		count++
+		_, width := utf8.DecodeRuneInString(text[i:])
+		i += width
+	}
+	if limit > 1 && limit-1 < count {
+		return limit
+	}
+	if limit != 0 {
+		return count + 1
+	}
+	return count
+}
+
 // splitWithSeparator implements Ruby's String#split(sep, limit) for a non-empty
 // string separator. The limit argument matches Ruby:
 //
@@ -323,6 +376,86 @@ func splitWithSeparator(text, sep string, limit int) []string {
 		}
 		return parts[:end]
 	}
+}
+
+func splitWithSeparatorCount(text, sep string, limit int) int {
+	if text == "" {
+		return 0
+	}
+	if limit == 1 {
+		return 1
+	}
+	if limit > 1 {
+		count := 1
+		start := 0
+		for count < limit {
+			idx := strings.Index(text[start:], sep)
+			if idx < 0 {
+				return count
+			}
+			start += idx + len(sep)
+			count++
+		}
+		return count
+	}
+	count := 0
+	lastNonEmptyCount := 0
+	start := 0
+	for {
+		idx := strings.Index(text[start:], sep)
+		if idx < 0 {
+			count++
+			if text[start:] != "" {
+				lastNonEmptyCount = count
+			}
+			break
+		}
+		if text[start:start+idx] != "" {
+			lastNonEmptyCount = count + 1
+		}
+		count++
+		start += idx + len(sep)
+	}
+	if limit < 0 {
+		return count
+	}
+	return lastNonEmptyCount
+}
+
+func reserveStringSplitResult(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count int) (*arrayBuildAccumulator, error) {
+	if err := exec.checkStepBudgetFor(count); err != nil {
+		return nil, err
+	}
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	if count > 0 {
+		scratch := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(count, estimatedStringHeaderBytes))
+		if err := acc.reserveScratch(scratch); err != nil {
+			return nil, err
+		}
+	}
+	if err := acc.reserveSlots(count); err != nil {
+		return nil, err
+	}
+	return acc, nil
+}
+
+const stringSplitInitialCap = 256
+
+func stringSplitResult(exec *Execution, parts []string, acc *arrayBuildAccumulator) (Value, error) {
+	if err := exec.checkStepBudgetFor(len(parts)); err != nil {
+		return NewNil(), err
+	}
+	values := make([]Value, 0, min(len(parts), stringSplitInitialCap))
+	for _, part := range parts {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		values = append(values, NewString(part))
+		if err := acc.add(values[len(values)-1], cap(values)); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewArray(values), nil
 }
 
 func chompDefault(text string) string {
@@ -935,6 +1068,21 @@ func stringDowncase(text string, mode caseMode) string {
 	}
 }
 
+func projectedCaseTransformBytes(text string, mode caseMode) int {
+	if mode == caseModeASCII || !utf8.ValidString(text) {
+		return len(text)
+	}
+	return saturatingMul(len(text), 8)
+}
+
+func checkStringTransform(exec *Execution, projected int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if err := exec.step(); err != nil {
+		return err
+	}
+	var b strings.Builder
+	return exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, projected), receiver, args, kwargs, block)
+}
+
 // unicodeUpcase applies full Unicode uppercase mapping. A fresh Caser is built
 // per call because cases.Caser is not safe for concurrent use, and scripts may
 // run member methods from several goroutines via the task system.
@@ -1231,23 +1379,51 @@ func validateRegexReplacement(method, replacement string) error {
 	return nil
 }
 
-// literalPatternMatches reports whether a literal (non-regex) pattern occurs in
-// text. An empty pattern always matches (at least position 0, even on an empty
-// string), mirroring Ruby where "".sub!("", "x") performs a substitution. This
-// drives the bang forms' match decision for the literal template path so they
-// return the receiver whenever a substitution was performed and nil only on a
-// genuine no-match, rather than comparing the result bytes (which would wrongly
-// report nil when the replacement reproduces the original text).
-func literalPatternMatches(text, pattern string) bool {
-	if pattern == "" {
-		return true
+func validateLiteralReplacement(method, text, pattern, replacement string, all bool) (bool, error) {
+	if len(text) > maxRegexInputBytes {
+		return false, fmt.Errorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
-	return strings.Contains(text, pattern)
+	if len(pattern) > maxRegexInputBytes {
+		return false, fmt.Errorf("%s pattern exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
+	if len(replacement) > maxRegexInputBytes {
+		return false, fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
+	count := 0
+	if pattern == "" {
+		count = 1
+		if all {
+			count = utf8.RuneCountInString(text) + 1
+		}
+	} else if all {
+		count = strings.Count(text, pattern)
+	} else if strings.Contains(text, pattern) {
+		count = 1
+	}
+	if count == 0 {
+		return false, nil
+	}
+	outputLen := len(text)
+	consumed := saturatingMul(count, len(pattern))
+	if consumed > outputLen {
+		outputLen = 0
+	} else {
+		outputLen -= consumed
+	}
+	outputLen = saturatingAdd(outputLen, saturatingMul(count, len(replacement)))
+	if outputLen > maxRegexInputBytes {
+		return true, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+	}
+	return true, nil
 }
 
 func stringSub(method, text, pattern, replacement string, regex bool) (string, bool, error) {
 	if !regex {
-		return strings.Replace(text, pattern, replacement, 1), literalPatternMatches(text, pattern), nil
+		matched, err := validateLiteralReplacement(method, text, pattern, replacement, false)
+		if err != nil {
+			return "", false, err
+		}
+		return strings.Replace(text, pattern, replacement, 1), matched, nil
 	}
 	if err := validateRegexTextPattern(method, text, pattern); err != nil {
 		return "", false, err
@@ -1264,7 +1440,11 @@ func stringSub(method, text, pattern, replacement string, regex bool) (string, b
 
 func stringGSub(method, text, pattern, replacement string, regex bool) (string, bool, error) {
 	if !regex {
-		return strings.ReplaceAll(text, pattern, replacement), literalPatternMatches(text, pattern), nil
+		matched, err := validateLiteralReplacement(method, text, pattern, replacement, true)
+		if err != nil {
+			return "", false, err
+		}
+		return strings.ReplaceAll(text, pattern, replacement), matched, nil
 	}
 	if err := validateRegexTextPattern(method, text, pattern); err != nil {
 		return "", false, err
@@ -1613,7 +1793,26 @@ func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
 	}
 }
 
+func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if chunk == "" {
+		return nil
+	}
+	if err := exec.step(); err != nil {
+		return err
+	}
+	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(b, len(chunk)), receiver, args, kwargs, block); err != nil {
+		return err
+	}
+	b.Grow(len(chunk))
+	b.WriteString(chunk)
+	return nil
+}
+
 func stringTemplate(text string, context Value, strict bool) (string, error) {
+	return stringTemplateWithExecution(&Execution{}, text, context, strict, NewNil(), nil, nil, NewNil())
+}
+
+func stringTemplateWithExecution(exec *Execution, text string, context Value, strict bool, receiver Value, args []Value, kwargs map[string]Value, block Value) (string, error) {
 	var b strings.Builder
 	rendered := false
 	last := 0
@@ -1630,17 +1829,20 @@ func stringTemplate(text string, context Value, strict bool) (string, error) {
 			continue
 		}
 		if !rendered {
-			b.Grow(len(text))
 			rendered = true
 		}
-		b.WriteString(text[last:open])
+		if err := appendTemplateChunk(exec, &b, text[last:open], receiver, args, kwargs, block); err != nil {
+			return "", err
+		}
 		placeholder := text[open:end]
 		value, ok := stringTemplateLookup(context, keyPath)
 		if !ok {
 			if strict {
 				return "", fmt.Errorf("string.template missing placeholder %s", keyPath)
 			}
-			b.WriteString(placeholder)
+			if err := appendTemplateChunk(exec, &b, placeholder, receiver, args, kwargs, block); err != nil {
+				return "", err
+			}
 			last = end
 			search = end
 			continue
@@ -1649,14 +1851,18 @@ func stringTemplate(text string, context Value, strict bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		b.WriteString(segment)
+		if err := appendTemplateChunk(exec, &b, segment, receiver, args, kwargs, block); err != nil {
+			return "", err
+		}
 		last = end
 		search = end
 	}
 	if !rendered {
 		return text, nil
 	}
-	b.WriteString(text[last:])
+	if err := appendTemplateChunk(exec, &b, text[last:], receiver, args, kwargs, block); err != nil {
+		return "", err
+	}
 	return b.String(), nil
 }
 
@@ -1935,11 +2141,25 @@ func stringMemberQuery(property string) (Value, error) {
 		}), nil
 	case "concat":
 		return NewAutoBuiltin("string.concat", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			total := len(receiver.String())
 			var b strings.Builder
-			b.WriteString(receiver.String())
 			for _, arg := range args {
 				if arg.Kind() != KindString {
 					return NewNil(), fmt.Errorf("string.concat expects string arguments")
+				}
+				total = saturatingAdd(total, len(arg.String()))
+			}
+			if err := exec.checkContext(); err != nil {
+				return NewNil(), err
+			}
+			if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, total), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			b.Grow(total)
+			b.WriteString(receiver.String())
+			for _, arg := range args {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
 				}
 				b.WriteString(arg.String())
 			}
@@ -1947,10 +2167,24 @@ func stringMemberQuery(property string) (Value, error) {
 		}), nil
 	case "prepend":
 		return NewAutoBuiltin("string.prepend", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			total := len(receiver.String())
 			var b strings.Builder
 			for _, arg := range args {
 				if arg.Kind() != KindString {
 					return NewNil(), fmt.Errorf("string.prepend expects string arguments")
+				}
+				total = saturatingAdd(total, len(arg.String()))
+			}
+			if err := exec.checkContext(); err != nil {
+				return NewNil(), err
+			}
+			if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, total), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			b.Grow(total)
+			for _, arg := range args {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
 				}
 				b.WriteString(arg.String())
 			}
@@ -2625,12 +2859,19 @@ func stringMemberTextOps(property string) (Value, error) {
 			}
 			text := receiver.String()
 			var parts []string
+			count := 0
 			switch {
 			// An explicit nil separator behaves like the no-argument form,
 			// splitting on runs of ASCII whitespace, matching Ruby's
 			// String#split(nil).
 			case len(args) == 0 || args[0].IsNil():
+				count = splitOnASCIIWhitespaceLimitCount(text, limit)
+				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count)
+				if err != nil {
+					return NewNil(), err
+				}
 				parts = splitOnASCIIWhitespaceLimit(text, limit)
+				return stringSplitResult(exec, parts, acc)
 			case args[0].Kind() != KindString:
 				return NewNil(), fmt.Errorf("string.split separator must be string or nil")
 			// A single ASCII space is Ruby's AWK whitespace mode, not a literal
@@ -2639,17 +2880,31 @@ func stringMemberTextOps(property string) (Value, error) {
 			// " a  b ".split(" ", 2) yields ["a", "b "] rather than a leading
 			// empty field.
 			case args[0].String() == " ":
+				count = splitOnASCIIWhitespaceLimitCount(text, limit)
+				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count)
+				if err != nil {
+					return NewNil(), err
+				}
 				parts = splitOnASCIIWhitespaceLimit(text, limit)
+				return stringSplitResult(exec, parts, acc)
 			case args[0].String() == "":
+				count = splitEmptySeparatorCount(text, limit)
+				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count)
+				if err != nil {
+					return NewNil(), err
+				}
 				parts = splitEmptySeparator(text, limit)
+				return stringSplitResult(exec, parts, acc)
 			default:
-				parts = splitWithSeparator(text, args[0].String(), limit)
+				sep := args[0].String()
+				count = splitWithSeparatorCount(text, sep, limit)
+				acc, err := reserveStringSplitResult(exec, receiver, args, kwargs, block, count)
+				if err != nil {
+					return NewNil(), err
+				}
+				parts = splitWithSeparator(text, sep, limit)
+				return stringSplitResult(exec, parts, acc)
 			}
-			values := make([]Value, len(parts))
-			for i, part := range parts {
-				values[i] = NewString(part)
-			}
-			return NewArray(values), nil
 		}), nil
 	case "partition":
 		return NewAutoBuiltin("string.partition", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2820,7 +3075,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			rendered, err := stringTemplate(receiver.String(), args[0], strict)
+			rendered, err := stringTemplateWithExecution(exec, receiver.String(), args[0], strict, receiver, args, kwargs, block)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -3177,6 +3432,9 @@ func stringMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
+			if err := checkStringTransform(exec, projectedCaseTransformBytes(receiver.String(), mode), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			return NewString(stringUpcase(receiver.String(), mode)), nil
 		}), nil
 	case "upcase!":
@@ -3186,12 +3444,18 @@ func stringMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			original := receiver.String()
+			if err := checkStringTransform(exec, projectedCaseTransformBytes(original, mode), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			return stringBangResult(original, stringUpcase(original, mode)), nil
 		}), nil
 	case "downcase":
 		return NewAutoBuiltin("string.downcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			mode, err := parseCaseMode("downcase", args, true)
 			if err != nil {
+				return NewNil(), err
+			}
+			if err := checkStringTransform(exec, projectedCaseTransformBytes(receiver.String(), mode), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewString(stringDowncase(receiver.String(), mode)), nil
@@ -3203,12 +3467,18 @@ func stringMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			original := receiver.String()
+			if err := checkStringTransform(exec, projectedCaseTransformBytes(original, mode), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			return stringBangResult(original, stringDowncase(original, mode)), nil
 		}), nil
 	case "capitalize":
 		return NewAutoBuiltin("string.capitalize", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			mode, err := parseCaseMode("capitalize", args, false)
 			if err != nil {
+				return NewNil(), err
+			}
+			if err := checkStringTransform(exec, projectedCaseTransformBytes(receiver.String(), mode), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewString(stringCapitalize(receiver.String(), mode)), nil
@@ -3220,12 +3490,18 @@ func stringMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			original := receiver.String()
+			if err := checkStringTransform(exec, projectedCaseTransformBytes(original, mode), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			return stringBangResult(original, stringCapitalize(original, mode)), nil
 		}), nil
 	case "swapcase":
 		return NewAutoBuiltin("string.swapcase", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			mode, err := parseCaseMode("swapcase", args, false)
 			if err != nil {
+				return NewNil(), err
+			}
+			if err := checkStringTransform(exec, projectedCaseTransformBytes(receiver.String(), mode), receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			return NewString(stringSwapCase(receiver.String(), mode)), nil
@@ -3237,6 +3513,9 @@ func stringMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			original := receiver.String()
+			if err := checkStringTransform(exec, projectedCaseTransformBytes(original, mode), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			return stringBangResult(original, stringSwapCase(original, mode)), nil
 		}), nil
 	case "reverse":
@@ -3244,12 +3523,18 @@ func stringMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.reverse does not take arguments")
 			}
+			if err := checkStringTransform(exec, len(receiver.String()), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			return NewString(stringReverse(receiver.String())), nil
 		}), nil
 	case "reverse!":
 		return NewAutoBuiltin("string.reverse!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("string.reverse! does not take arguments")
+			}
+			if err := checkStringTransform(exec, len(receiver.String()), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			updated := stringReverse(receiver.String())
 			return stringBangResult(receiver.String(), updated), nil

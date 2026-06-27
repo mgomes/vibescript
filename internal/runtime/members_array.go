@@ -796,7 +796,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out = append(out, val)
-				if err := acc.add(val, cap(out)); err != nil {
+				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -865,7 +865,7 @@ func arrayMemberQuery(property string) (Value, error) {
 				// empty collections are dropped alongside nil and false.
 				if val.Truthy() {
 					out = append(out, val)
-					if err := acc.add(val, cap(out)); err != nil {
+					if err := acc.addConservative(val, cap(out)); err != nil {
 						return NewNil(), err
 					}
 				}
@@ -2279,8 +2279,11 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 	// past the slot-only backing check until fill returns.
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 
-	appendValue := func(val Value) error {
+	appendValue := func(val Value, conservative bool) error {
 		out = append(out, val)
+		if conservative {
+			return acc.addConservative(val, cap(out))
+		}
 		return acc.add(val, cap(out))
 	}
 
@@ -2310,21 +2313,21 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 			} else {
 				val = args[0]
 			}
-			if err := appendValue(val); err != nil {
+			if err := appendValue(val, runner != nil); err != nil {
 				return NewNil(), err
 			}
 		case i < len(arr):
 			// Outside the window but within the receiver: copy the original
 			// element unchanged (the prefix before the window or the tail after
 			// it).
-			if err := appendValue(arr[i]); err != nil {
+			if err := appendValue(arr[i], false); err != nil {
 				return NewNil(), err
 			}
 		default:
 			// Past the receiver's end but before the window: pad the gap with
 			// nil, the value Ruby inserts when fill grows the array past its old
 			// length.
-			if err := appendValue(NewNil()); err != nil {
+			if err := appendValue(NewNil(), false); err != nil {
 				return NewNil(), err
 			}
 		}

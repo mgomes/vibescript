@@ -59,6 +59,22 @@ end`)
 	}
 }
 
+func TestStrictEffectsRejectsCyclicGlobals(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()
+  payload
+end`)
+
+	entries := map[string]Value{}
+	cyclic := NewHash(entries)
+	entries["self"] = cyclic
+
+	err := callScriptErr(t, context.Background(), script, "run", nil, CallOptions{
+		Globals: map[string]Value{"payload": cyclic},
+	})
+	requireErrorContains(t, err, "strict effects: global payload must be data-only")
+}
+
 func TestStrictEffectsAllowsCapabilities(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()

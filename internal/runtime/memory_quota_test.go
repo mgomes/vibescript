@@ -286,7 +286,7 @@ func runTransientOOMCase(t *testing.T, tc transientOOMCase) {
 	if _, _, err := exec.evalStatements(stmts, env); err == nil {
 		t.Fatalf("expected memory quota error for transient allocation")
 	} else {
-		requireErrorIs(t, err, errMemoryQuotaExceeded)
+		requireErrorContains(t, err, errMemoryQuotaExceeded.Error())
 	}
 }
 

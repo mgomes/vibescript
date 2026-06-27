@@ -273,6 +273,20 @@ func (exec *Execution) checkProjectedStringBytes(payloadBytes int) error {
 	return nil
 }
 
+func (exec *Execution) checkProjectedStringBytesWithCallRoots(payloadBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	used := exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	used = saturatingAdd(used, estimatedValueBytes+estimatedStringHeaderBytes)
+	used = saturatingAdd(used, payloadBytes)
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 // checkProjectedValueRendering rejects a step that renders a value into a fresh
 // string (or streams it into a builder) before that string is built, when the
 // peak would exceed the memory quota. It charges three things that are all live at
@@ -594,6 +608,7 @@ func (exec *Execution) checkCollapsedPairBytesWithLiveBase(receiver, block Value
 type arrayBuildAccumulator struct {
 	exec    *Execution
 	est     *memoryEstimator
+	result  *memoryEstimator
 	base    int
 	payload int
 
@@ -685,6 +700,26 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	}
 
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
+
+	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
+// addConservative charges a block-produced result without deduplicating it
+// against the build baseline. That keeps in-place mutations of receiver-owned
+// containers visible to the quota while still deduplicating shared backings
+// across retained results.
+func (acc *arrayBuildAccumulator) addConservative(val Value, backingCap int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	if acc.result == nil {
+		acc.result = newMemoryEstimator()
+	}
+	acc.payload = saturatingAdd(acc.payload, acc.result.valuePayload(val))
 
 	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)

@@ -221,6 +221,31 @@ func TestStringBangMatchUnchangedReturnsReceiver(t *testing.T) {
 	}
 }
 
+func TestPlainStringReplacementEnforcesOutputLimit(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{
+		StepQuota:        100_000,
+		MemoryQuotaBytes: 8 << 20,
+	}, `
+def gsub_run(text, replacement)
+  text.gsub("a", replacement).size
+end
+
+def sub_run(text, replacement)
+  text.sub("", replacement).size
+end
+`)
+
+	requireCallErrorContains(t, script, "gsub_run", []Value{
+		NewString(strings.Repeat("a", 2_000)),
+		NewString(strings.Repeat("x", 1_000)),
+	}, CallOptions{}, "string.gsub output exceeds limit")
+	requireCallErrorContains(t, script, "sub_run", []Value{
+		NewString("abc"),
+		NewString(strings.Repeat("x", maxRegexInputBytes+1)),
+	}, CallOptions{}, "string.sub replacement exceeds limit")
+}
+
 // TestStringSubGsubMixedReplacementAndBlock verifies that supplying both a
 // replacement argument and a block is rejected for sub/gsub and their bang
 // variants, rather than silently honoring one over the other.
