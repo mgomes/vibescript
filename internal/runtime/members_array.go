@@ -2609,8 +2609,8 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 // pruned array and the deleted value as the hash { array:, deleted: }, mirroring
 // Array#pop's { array:, popped: } convention. Following Ruby, deleted is the
 // value itself when at least one match was removed and nil otherwise; an attached
-// block is invoked with no arguments on a miss and its result reported instead,
-// matching `arr.delete(obj) { default }`.
+// block is invoked with the searched-for value on a miss and its result reported
+// instead, matching `arr.delete(obj) { |o| default }`.
 func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("array.delete does not take keyword arguments")
@@ -2642,13 +2642,13 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		// so report the argument the caller searched for.
 		deleted = target
 	} else if valueBlock(block) != nil {
-		// On a miss Ruby invokes the block with no arguments and returns its
-		// result, matching `arr.delete(obj) { default }`.
+		// On a miss Ruby invokes the block with the searched-for value and returns
+		// its result, matching `arr.delete(obj) { |o| default }`.
 		runner, err := newBlockCallRunner(exec, block, "array.delete")
 		if err != nil {
 			return NewNil(), err
 		}
-		result, err := runner.call(nil)
+		result, err := runner.call([]Value{target})
 		if err != nil {
 			return NewNil(), err
 		}

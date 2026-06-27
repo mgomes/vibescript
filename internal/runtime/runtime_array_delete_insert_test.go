@@ -12,6 +12,10 @@ func TestArrayDelete(t *testing.T) {
     def delete_with_default(values, target)
       values.delete(target) { "missing" }
     end
+
+    def delete_with_param(values, target)
+      values.delete(target) { |o| o }
+    end
     `)
 
 	tests := []struct {
@@ -55,6 +59,15 @@ func TestArrayDelete(t *testing.T) {
 			args:        []Value{NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(2)},
 			wantArray:   []Value{NewInt(1)},
 			wantDeleted: NewInt(2),
+		},
+		{
+			// Ruby passes the searched-for value to the not-found block, so
+			// [1,2].delete(9) { |o| o } yields 9 rather than nil.
+			name:        "block receives the searched-for value on a miss",
+			function:    "delete_with_param",
+			args:        []Value{NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(9)},
+			wantArray:   []Value{NewInt(1), NewInt(2)},
+			wantDeleted: NewInt(9),
 		},
 	}
 
