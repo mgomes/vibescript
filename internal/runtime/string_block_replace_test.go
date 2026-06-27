@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -748,24 +749,133 @@ func TestLiteralBlockReplaceOutputLimit(t *testing.T) {
 	}
 }
 
-func TestLiteralBlockReplaceCapsInitialOutputCapacity(t *testing.T) {
-	t.Parallel()
+// TestLiteralBlockReplaceTinyOutputForHugeSource is the regression for the
+// reviewer's finding that the literal block replacer must not preallocate an
+// output buffer proportional to len(src). regex: false bypasses the regex
+// input-size cap, so src can be many times maxRegexInputBytes; the transient
+// allocation must track the bounded output the call accumulates, not the source
+// length.
+//
+// Two distinct properties are pinned, both with a source far over the 1 MiB cap:
+//
+//   - non-empty pattern (literalBlockReplace): replacing a huge literal token with
+//     a tiny block result must allocate only a few bytes. A reintroduced
+//     make([]byte, 0, len(src)) would allocate at least the multi-MiB source and
+//     trip the byte bound.
+//   - empty pattern (literalBlockReplaceEmpty): copying an over-cap source verbatim
+//     must stop at the shared output cap with the output-limit error while
+//     allocating only cap-bounded memory, never the full uncapped source.
+//
+// The allocation assertion is deterministic: the call runs in isolation (the test
+// is not parallel and Go pauses parallel tests while it runs), so the
+// process-global TotalAlloc delta reflects only this call plus negligible runtime
+// noise, well under the generous per-case bounds.
+func TestLiteralBlockReplaceTinyOutputForHugeSource(t *testing.T) {
+	// Not parallel: the allocation measurement reads the process-global TotalAlloc
+	// counter, so concurrent tests in this package would pollute the delta.
 
-	if got := boundedRegexOutputCapacity(maxRegexInputBytes + 1); got != maxRegexInputBytes {
-		t.Fatalf("boundedRegexOutputCapacity(over cap) = %d, want %d", got, maxRegexInputBytes)
+	// Far larger than the 1 MiB regex cap so a len(src)-sized preallocation would
+	// dwarf the bounded output every case produces.
+	const hugeLen = 8 * maxRegexInputBytes
+	hugeRun := strings.Repeat("p", hugeLen)
+
+	tests := []struct {
+		name      string
+		src       string
+		pattern   string
+		global    bool
+		yield     func(string) (string, error)
+		want      string // expected output when wantOutputLimit is false
+		wantMatch bool
+		// wantOutputLimit expects the shared output-cap error instead of a result,
+		// for the empty-pattern case whose verbatim copy of an over-cap source must
+		// stop at the cap rather than materialize the whole source.
+		wantOutputLimit bool
+		// maxTransientBytes bounds the bytes the single call may allocate. It is a
+		// small constant relative to hugeLen, so a reintroduced make([]byte, 0,
+		// len(src)) (>= hugeLen) trips the check while bounded growth passes.
+		maxTransientBytes uint64
+	}{
+		{
+			name:              "non-empty pattern sub tiny output",
+			src:               hugeRun,
+			pattern:           hugeRun,
+			global:            false,
+			yield:             func(string) (string, error) { return "R", nil },
+			want:              "R",
+			wantMatch:         true,
+			maxTransientBytes: maxRegexInputBytes,
+		},
+		{
+			name:              "non-empty pattern gsub tiny output",
+			src:               "X" + hugeRun,
+			pattern:           hugeRun,
+			global:            true,
+			yield:             func(string) (string, error) { return "R", nil },
+			want:              "XR",
+			wantMatch:         true,
+			maxTransientBytes: maxRegexInputBytes,
+		},
+		{
+			name:            "empty pattern gsub over-cap source stops at cap",
+			src:             hugeRun,
+			pattern:         "",
+			global:          true,
+			yield:           func(string) (string, error) { return "", nil },
+			wantOutputLimit: true,
+			// The verbatim copy is bounded at the 1 MiB cap; allow several times that
+			// for amortized geometric growth while still rejecting an alloc that scales
+			// with the multi-MiB source.
+			maxTransientBytes: 8 * maxRegexInputBytes,
+		},
 	}
-	src := strings.Repeat("p", maxRegexInputBytes+1024)
-	yield := func(string) (string, error) { return "R", nil }
-	got, matched, err := literalBlockReplace(src, src, false, yield)
-	if err != nil {
-		t.Fatalf("literalBlockReplace(oversized literal source) error = %v, want nil", err)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			var matched bool
+			var err error
+			alloc := allocBytes(func() {
+				got, matched, err = literalBlockReplace(tc.src, tc.pattern, tc.global, tc.yield)
+			})
+			if tc.wantOutputLimit {
+				if err == nil {
+					t.Fatalf("literalBlockReplace error = nil, want output-limit error")
+				}
+				if !strings.Contains(err.Error(), "output exceeds limit") {
+					t.Fatalf("literalBlockReplace error = %v, want output-limit error", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("literalBlockReplace error = %v, want nil", err)
+				}
+				if matched != tc.wantMatch {
+					t.Fatalf("literalBlockReplace matched = %v, want %v", matched, tc.wantMatch)
+				}
+				if got != tc.want {
+					if len(got) > 64 || len(tc.want) > 64 {
+						t.Fatalf("literalBlockReplace output length = %d, want %d", len(got), len(tc.want))
+					}
+					t.Fatalf("literalBlockReplace = %q, want %q", got, tc.want)
+				}
+			}
+			if alloc > tc.maxTransientBytes {
+				t.Fatalf("literalBlockReplace allocated %d bytes for a %d-byte source, want <= %d (no len(src) preallocation)", alloc, len(tc.src), tc.maxTransientBytes)
+			}
+		})
 	}
-	if !matched {
-		t.Fatal("literalBlockReplace(oversized literal source) matched = false, want true")
-	}
-	if got != "R" {
-		t.Fatalf("literalBlockReplace(oversized literal source) = %q, want R", got)
-	}
+}
+
+// allocBytes reports the total heap bytes allocated while running f. It reads the
+// cumulative TotalAlloc counter before and after, which counts every allocation f
+// makes regardless of whether it is later freed, so a transient len(src)-sized
+// buffer is visible even though it is collectable afterward.
+func allocBytes(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
 }
 
 // TestStringSubGsubLiteralBlockIgnoresPatternCap is the direct regression for

@@ -340,7 +340,13 @@ func literalBlockReplace(src, pattern string, global bool, yield func(match stri
 	if pattern == "" {
 		return literalBlockReplaceEmpty(src, global, yield)
 	}
-	out := make([]byte, 0, boundedRegexOutputCapacity(len(src)))
+	// The literal path deliberately bypasses the regex input-size cap, so src can
+	// be far larger than maxRegexInputBytes. Preallocating len(src) would force a
+	// large transient allocation even when a huge literal token is replaced by a
+	// tiny block result, so out starts empty and grows (amortized) only as far as
+	// the bounded output it actually accumulates, which appendBounded caps at
+	// maxRegexInputBytes.
+	var out []byte
 	start := 0
 	matched := false
 	for {
@@ -390,7 +396,9 @@ func literalBlockReplace(src, pattern string, global bool, yield func(match stri
 // so the returned matched flag is unconditionally true, matching Ruby where
 // "".gsub!("", "") returns the receiver rather than nil.
 func literalBlockReplaceEmpty(src string, global bool, yield func(match string) (string, error)) (string, bool, error) {
-	out := make([]byte, 0, boundedRegexOutputCapacity(len(src)))
+	// See literalBlockReplace: out starts empty so an oversized src cannot force a
+	// transient preallocation larger than the bounded output actually produced.
+	var out []byte
 	replacement, err := yield("")
 	if err != nil {
 		return "", false, err
@@ -425,13 +433,6 @@ func literalBlockReplaceEmpty(src string, global bool, yield func(match string) 
 		start = next
 	}
 	return string(out), true, nil
-}
-
-func boundedRegexOutputCapacity(sourceLen int) int {
-	if sourceLen > maxRegexInputBytes {
-		return maxRegexInputBytes
-	}
-	return sourceLen
 }
 
 // appendStringBounded appends s to out under the shared regex output cap and
