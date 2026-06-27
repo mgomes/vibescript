@@ -105,6 +105,14 @@ end
 
 def inner_single_with_double
   "#{'say "hi"'}"
+end
+
+def brace_in_deepest_string
+  "#{"#{"}"}"}"
+end
+
+def alternating_layers
+  "#{"a#{"b#{"c"}d"}e"}f"
 end`
 
 	script := compileScriptDefault(t, source)
@@ -120,6 +128,12 @@ end`
 		{fn: "method_call", want: "a, b"},
 		{fn: "escaped_inner", want: `a"b`},
 		{fn: "inner_single_with_double", want: `say "hi"`},
+		// A "}" inside the deepest nested string must stay literal text and not
+		// close the outer interpolation early. Ruby: "#{"#{"}"}"}" => "}".
+		{fn: "brace_in_deepest_string", want: "}"},
+		// Three interpolation layers, each adding surrounding text, must compose
+		// inside out. Ruby: "#{"a#{"b#{"c"}d"}e"}f" => "abcdef".
+		{fn: "alternating_layers", want: "abcdef"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.fn, func(t *testing.T) {

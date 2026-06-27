@@ -212,6 +212,55 @@ end`
 	}
 }
 
+// TestDoubleQuotedStringInterpolationDeeplyNested guards against the lexer or
+// findStringInterpolationEnd treating a quote inside a nested interpolation as
+// the end of the enclosing inner string. A "}" buried inside the deepest string
+// must not collapse the outer interpolation's brace depth; the whole expression
+// has to parse as a single interpolated string rather than spilling extra
+// tokens. The Ruby reference for "#{"#{"}"}"}" is the literal "}".
+func TestDoubleQuotedStringInterpolationDeeplyNested(t *testing.T) {
+	t.Parallel()
+	source := `def run
+  "#{"#{"}"}"}"
+end`
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn := program.Statements[0].(*ast.FunctionStmt)
+	if len(fn.Body) != 1 {
+		t.Fatalf("function body length = %d, want 1 (extra tokens leaked out of the string)", len(fn.Body))
+	}
+	stmt := fn.Body[0].(*ast.ExprStmt)
+	outer, ok := stmt.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("expression = %T, want *ast.InterpolatedString", stmt.Expr)
+	}
+	if len(outer.Parts) != 1 {
+		t.Fatalf("outer parts length = %d, want 1", len(outer.Parts))
+	}
+	outerExpr, ok := outer.Parts[0].(ast.StringExpr)
+	if !ok {
+		t.Fatalf("outer parts[0] = %T, want ast.StringExpr", outer.Parts[0])
+	}
+	middle, ok := outerExpr.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("outer parts[0].Expr = %T, want *ast.InterpolatedString", outerExpr.Expr)
+	}
+	if len(middle.Parts) != 1 {
+		t.Fatalf("middle parts length = %d, want 1", len(middle.Parts))
+	}
+	middleExpr, ok := middle.Parts[0].(ast.StringExpr)
+	if !ok {
+		t.Fatalf("middle parts[0] = %T, want ast.StringExpr", middle.Parts[0])
+	}
+	inner, ok := middleExpr.Expr.(*ast.StringLiteral)
+	if !ok || inner.Value != "}" {
+		t.Fatalf("middle parts[0].Expr = %#v, want string literal %q", middleExpr.Expr, "}")
+	}
+}
+
 func TestEscapedDoubleQuotedInterpolationMarkerStaysLiteral(t *testing.T) {
 	t.Parallel()
 	source := `def run
