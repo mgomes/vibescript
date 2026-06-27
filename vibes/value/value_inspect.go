@@ -398,10 +398,9 @@ func quotedStringByteLen(s string) int {
 // identifier renders as :name; any other name (containing spaces, punctuation,
 // or empty) is quoted as :"name" with the same escaping strings use, matching
 // the shape of Ruby's Symbol#inspect while staying within Vibescript's escape
-// set. The quoted form is a debug rendering rather than a re-parseable literal:
-// Vibescript has no quoted-symbol literal syntax, but such symbols can still
-// exist at runtime (for example a symbol restored from a quoted hash key), and
-// the quoted form keeps them unambiguous.
+// set. The quoted form is a re-parseable quoted-symbol literal: Vibescript
+// accepts :"name" anywhere a symbol literal is allowed, so the rendered symbol
+// round-trips as source.
 func inspectSymbol(name string) string {
 	if isBareIdentifier(name) {
 		return ":" + name

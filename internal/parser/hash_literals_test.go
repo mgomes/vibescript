@@ -214,6 +214,49 @@ func TestParserKeywordHashLabels(t *testing.T) {
 	}
 }
 
+// TestParserKeywordHashLabelsNoSpaceStringValue verifies that a label-capable
+// keyword whose colon abuts a quoted-string value (the no-space form
+// {rescue:"x"}) parses as a string-valued label rather than being misread as a
+// keyword followed by a quoted symbol. This guards the regression where quoted
+// symbol scanning consumed the separator colon after a reserved-word label.
+func TestParserKeywordHashLabelsNoSpaceStringValue(t *testing.T) {
+	t.Parallel()
+
+	keywords := []string{
+		"begin", "rescue", "ensure", "raise", "export",
+		"return", "class", "def", "enum", "end", "yield",
+		"if", "unless", "while", "until", "case", "when",
+	}
+
+	for _, keyword := range keywords {
+		t.Run(keyword, func(t *testing.T) {
+			t.Parallel()
+
+			source := "def run\n  {" + keyword + ":\"x\"}\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{
+					Expr: &ast.HashLiteral{
+						Pairs: []ast.HashPair{
+							{
+								Key:   &ast.SymbolLiteral{Name: keyword},
+								Value: &ast.StringLiteral{Value: "x"},
+							},
+						},
+					},
+				},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestParserWordBooleanHashKeys(t *testing.T) {
 	t.Parallel()
 

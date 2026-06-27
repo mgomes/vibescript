@@ -1711,6 +1711,8 @@ func (p *parser) blockParamUnionContinues() bool {
 	}
 
 	savedLexer := *p.l
+	savedLexer.bracketStack = append([]bracketFrame(nil), p.l.bracketStack...)
+	savedLexer.ternaryStack = append([]ternaryFrame(nil), p.l.ternaryStack...)
 	savedCur := p.curToken
 	savedPeek := p.peekToken
 	savedPeekPeek := p.peekPeek
