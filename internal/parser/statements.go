@@ -1346,8 +1346,15 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 		return p.parseAssignmentValue(target)
 	}
 
-	if isAssignmentOperator(p.peekToken.Type) && isAssignable(expr) {
-		return p.parseAssignmentValue(expr)
+	if isAssignmentOperator(p.peekToken.Type) {
+		if member, ok := expr.(*ast.MemberExpr); ok && member.Safe {
+			p.addParseError(expr.Pos(), "safe navigation cannot be used as an assignment target")
+			p.recoverAssignmentRemainder()
+			return nil
+		}
+		if isAssignable(expr) {
+			return p.parseAssignmentValue(expr)
+		}
 	}
 
 	return &ast.ExprStmt{Expr: expr, Position: expr.Pos()}
@@ -1565,8 +1572,12 @@ func (p *parser) peekEndsStatement(pos ast.Position) bool {
 }
 
 func isAssignable(expr ast.Expression) bool {
-	switch expr.(type) {
-	case *ast.Identifier, *ast.MemberExpr, *ast.IndexExpr, *ast.IvarExpr, *ast.ClassVarExpr:
+	switch e := expr.(type) {
+	case *ast.MemberExpr:
+		// Safe-navigation reads (`object&.prop`) are not valid assignment
+		// targets; only ordinary member accesses can be assigned.
+		return !e.Safe
+	case *ast.Identifier, *ast.IndexExpr, *ast.IvarExpr, *ast.ClassVarExpr:
 		return true
 	default:
 		return false

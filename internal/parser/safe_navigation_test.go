@@ -3,73 +3,192 @@ package parser
 import (
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+
+	"github.com/mgomes/vibescript/internal/ast"
 )
 
-func TestParserRejectsSafeNavigation(t *testing.T) {
+func TestLexerScansSafeNavigationOperator(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
+	tests := []struct {
 		name   string
 		source string
+		want   []ast.TokenType
 	}{
 		{
-			name: "member",
-			source: `def run
-  user = {name: "Ada"}
-  user&.name
-end`,
+			name:   "safe_navigation",
+			source: "user&.name",
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenSafeNav, ast.TokenIdent, ast.TokenEOF},
 		},
 		{
-			name: "nil_receiver",
-			source: `def run
-  nil&.name
-end`,
+			name:   "block_pass_stays_ampersand",
+			source: "&block",
+			want:   []ast.TokenType{ast.TokenAmpersand, ast.TokenIdent, ast.TokenEOF},
 		},
 		{
-			name: "method_call",
-			source: `def run
-  user&.profile("public")
-end`,
-		},
-		{
-			name: "call_argument",
-			source: `def run
-  inspect(user&.name, "fallback")
-end`,
-		},
-		{
-			name: "assignment",
-			source: `def run
-  user&.name = "Ada"
-end`,
-		},
-		{
-			name: "wrapped_method_call",
-			source: `def run
-  user&.
-    profile("public")
-  "fallback"
-end`,
+			name:   "logical_and_stays_and",
+			source: "a && b",
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenAnd, ast.TokenIdent, ast.TokenEOF},
 		},
 	}
-	for _, tc := range cases {
+
+	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
-			requireSingleSafeNavigationError(t, tc.source)
+			lex := newLexer(tc.source)
+			var got []ast.TokenType
+			for {
+				tok := lex.NextToken()
+				got = append(got, tok.Type)
+				if tok.Type == ast.TokenEOF {
+					break
+				}
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Fatalf("token stream mismatch (-want +got):\n%s", diff)
+			}
 		})
 	}
 }
 
-func requireSingleSafeNavigationError(t *testing.T, source string) {
-	t.Helper()
+func TestParserParsesSafeNavigationMemberRead(t *testing.T) {
+	t.Parallel()
 
-	_, errs := parseSource(t, source)
+	member := firstStatementExpr(t, `def run
+  user&.name
+end`).(*ast.MemberExpr)
+
+	if member == nil {
+		t.Fatal("expected member expression")
+	}
+	if !member.Safe {
+		t.Fatalf("member.Safe = false, want true")
+	}
+	if member.Property != "name" {
+		t.Fatalf("member.Property = %q, want %q", member.Property, "name")
+	}
+	object, ok := member.Object.(*ast.Identifier)
+	if !ok || object.Name != "user" {
+		t.Fatalf("member.Object = %#v, want identifier user", member.Object)
+	}
+}
+
+func TestParserParsesSafeNavigationMethodCall(t *testing.T) {
+	t.Parallel()
+
+	call := firstStatementExpr(t, `def run
+  user&.profile("public")
+end`).(*ast.CallExpr)
+
+	if !call.Safe {
+		t.Fatalf("call.Safe = false, want true")
+	}
+	member, ok := call.Callee.(*ast.MemberExpr)
+	if !ok {
+		t.Fatalf("call.Callee = %T, want *ast.MemberExpr", call.Callee)
+	}
+	if !member.Safe {
+		t.Fatalf("callee member.Safe = false, want true")
+	}
+	if member.Property != "profile" {
+		t.Fatalf("member.Property = %q, want %q", member.Property, "profile")
+	}
+	if len(call.Args) != 1 {
+		t.Fatalf("call.Args = %d, want 1", len(call.Args))
+	}
+}
+
+func TestParserOrdinaryMemberAccessIsNotSafe(t *testing.T) {
+	t.Parallel()
+
+	member := firstStatementExpr(t, `def run
+  user.name
+end`).(*ast.MemberExpr)
+
+	if member.Safe {
+		t.Fatalf("member.Safe = true, want false for ordinary access")
+	}
+}
+
+func TestParserParsesWrappedSafeNavigationCall(t *testing.T) {
+	t.Parallel()
+
+	fn := firstFunction(t, `def run
+  user&.
+    profile("public")
+  "fallback"
+end`)
+	if len(fn.Body) != 2 {
+		t.Fatalf("fn.Body = %d statements, want 2", len(fn.Body))
+	}
+	stmt, ok := fn.Body[0].(*ast.ExprStmt)
+	if !ok {
+		t.Fatalf("fn.Body[0] = %T, want *ast.ExprStmt", fn.Body[0])
+	}
+	call, ok := stmt.Expr.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("stmt.Expr = %T, want *ast.CallExpr", stmt.Expr)
+	}
+	if !call.Safe {
+		t.Fatalf("call.Safe = false, want true")
+	}
+}
+
+func TestParserParsesSafeNavigationAsCallArgument(t *testing.T) {
+	t.Parallel()
+
+	call := firstStatementExpr(t, `def run
+  inspect(user&.name, "fallback")
+end`).(*ast.CallExpr)
+
+	if len(call.Args) != 2 {
+		t.Fatalf("call.Args = %d, want 2", len(call.Args))
+	}
+	member, ok := call.Args[0].(*ast.MemberExpr)
+	if !ok {
+		t.Fatalf("call.Args[0] = %T, want *ast.MemberExpr", call.Args[0])
+	}
+	if !member.Safe {
+		t.Fatalf("argument member.Safe = false, want true")
+	}
+}
+
+func TestParserRejectsSafeNavigationAssignmentTarget(t *testing.T) {
+	t.Parallel()
+
+	_, errs := parseSource(t, `def run
+  user&.name = "Ada"
+end`)
 	if len(errs) != 1 {
-		t.Fatalf("parseSource(%q) errors = %d, want 1: %v", source, len(errs), errs)
+		t.Fatalf("expected 1 parse error, got %d: %v", len(errs), errs)
 	}
-	if got, want := errs[0].Error(), "safe navigation is not supported"; !strings.Contains(got, want) {
-		t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
+	if got, want := errs[0].Error(), "safe navigation cannot be used as an assignment target"; !strings.Contains(got, want) {
+		t.Fatalf("error = %q, want substring %q", got, want)
 	}
+}
+
+func firstFunction(t *testing.T, source string) *ast.FunctionStmt {
+	t.Helper()
+	program, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn, ok := program.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("program.Statements[0] = %T, want *ast.FunctionStmt", program.Statements[0])
+	}
+	return fn
+}
+
+func firstStatementExpr(t *testing.T, source string) ast.Expression {
+	t.Helper()
+	fn := firstFunction(t, source)
+	stmt, ok := fn.Body[0].(*ast.ExprStmt)
+	if !ok {
+		t.Fatalf("fn.Body[0] = %T, want *ast.ExprStmt", fn.Body[0])
+	}
+	return stmt.Expr
 }

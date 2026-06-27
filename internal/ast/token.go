@@ -68,6 +68,7 @@ const (
 	TokenColon     TokenType = ":"
 	TokenScope     TokenType = "::"
 	TokenDot       TokenType = "."
+	TokenSafeNav   TokenType = "&."
 	TokenRange     TokenType = ".."
 	TokenRangeExcl TokenType = "..."
 	TokenLParen    TokenType = "("

@@ -104,6 +104,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if err != nil {
 			return NewNil(), err
 		}
+		if e.Safe && obj.Kind() == KindNil {
+			return NewNil(), nil
+		}
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return NewNil(), err
 		}
