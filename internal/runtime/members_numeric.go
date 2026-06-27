@@ -17,6 +17,7 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
 	floatMemberNames = []string{
@@ -24,9 +25,10 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?",
 		"nan?", "infinite?", "finite?",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
-	moneyMemberNames = []string{"currency", "cents", "amount", "format"}
+	moneyMemberNames = []string{"currency", "cents", "amount", "format", "to_s", "string"}
 )
 
 var (
@@ -35,6 +37,7 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
 	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
@@ -257,11 +260,34 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return numericModulo("int.modulo", receiver, divisor)
 		}), nil
+	case "to_s", "string":
+		return newToStringBuiltin("int", property), nil
+	case "to_i":
+		return newIntIdentityBuiltin("int.to_i"), nil
+	case "to_f":
+		return NewAutoBuiltin("int.to_f", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if err := requireNullaryCall("int.to_f", args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			return NewFloat(float64(receiver.Int())), nil
+		}), nil
 	case "inspect":
 		return newInspectBuiltin("int"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown int method %s", property)
 	}
+}
+
+// newIntIdentityBuiltin returns the no-argument builtin backing Ruby's
+// Integer#to_i, which returns the receiver unchanged. name identifies the
+// builtin and its argument error.
+func newIntIdentityBuiltin(name string) Value {
+	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+		return receiver, nil
+	})
 }
 
 func (exec *Execution) floatMember(obj Value, property string, pos Position) (Value, error) {
@@ -416,6 +442,30 @@ func floatMemberBuiltin(property string) (Value, error) {
 				return NewNil(), err
 			}
 			return numericModulo("float.modulo", receiver, divisor)
+		}), nil
+	case "to_s", "string":
+		return newToStringBuiltin("float", property), nil
+	case "to_i":
+		return NewAutoBuiltin("float.to_i", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if err := requireNullaryCall("float.to_i", args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			// Ruby's Float#to_i truncates toward zero, unlike the strict global
+			// to_int which rejects a fractional float. floatToInt64Checked
+			// truncates after rejecting NaN, Infinity, and out-of-range
+			// magnitudes, matching Ruby's FloatDomainError for those cases.
+			n, err := floatToInt64Checked(receiver.Float(), "float.to_i")
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewInt(n), nil
+		}), nil
+	case "to_f":
+		return NewAutoBuiltin("float.to_f", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if err := requireNullaryCall("float.to_f", args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			return receiver, nil
 		}), nil
 	case "inspect":
 		return newInspectBuiltin("float"), nil
@@ -695,6 +745,8 @@ func moneyMember(m Money, property string) (Value, error) {
 		return NewInt(m.Cents()), nil
 	case "amount":
 		return NewString(m.String()), nil
+	case "to_s", "string":
+		return newToStringBuiltin("money", property), nil
 	default:
 		if member, ok := moneyBuiltinMembers.lookup(property, moneyMemberBuiltin); ok {
 			return member, nil
