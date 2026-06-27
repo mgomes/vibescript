@@ -184,13 +184,13 @@ func TestRespondToInstanceIvarsNeverRespond(t *testing.T) {
 func TestRespondToFromSelfSeesPrivate(t *testing.T) {
 	t.Parallel()
 
-	// Inside the receiver, respond_to? sees private methods even without the
-	// include_all flag, matching dispatch visibility. The bare and explicit
-	// self forms must agree.
+	// Inside the receiver, bare respond_to? sees private methods because it uses
+	// implicit receiver dispatch. An explicit self receiver follows public
+	// dispatch unless include_all is requested.
 	script := compileScript(t, `
     class User
       def check
-        [respond_to?(:secret), self.respond_to?(:secret)]
+        [respond_to?(:secret), self.respond_to?(:secret), self.respond_to?(:secret, true)]
       end
 
       private def secret
@@ -207,8 +207,8 @@ func TestRespondToFromSelfSeesPrivate(t *testing.T) {
 		t.Fatalf("run kind = %v, want array", got.Kind())
 	}
 	arr := got.Array()
-	if len(arr) != 2 || !arr[0].Bool() || !arr[1].Bool() {
-		t.Fatalf("respond_to? from self = %v, want [true, true]", arr)
+	if len(arr) != 3 || !arr[0].Bool() || arr[1].Bool() || !arr[2].Bool() {
+		t.Fatalf("respond_to? from self = %v, want [true, false, true]", arr)
 	}
 }
 

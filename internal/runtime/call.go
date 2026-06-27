@@ -761,13 +761,13 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		if err := exec.checkMemoryWith(receiver); err != nil {
 			return NewNil(), NewNil(), err
 		}
-		if directCallee, handled, err := exec.evalDirectMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
+		if directCallee, handled, err := exec.evalDirectPublicMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
 			if err != nil {
 				return NewNil(), NewNil(), err
 			}
 			return directCallee, receiver, nil
 		}
-		callee, err := exec.getMember(receiver, member.Property, member.Pos())
+		callee, err := exec.getPublicMember(receiver, member.Property, member.Pos())
 		if err != nil {
 			return NewNil(), NewNil(), err
 		}
@@ -811,7 +811,7 @@ func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env) (Va
 	return NewNil(), NewNil(), exec.errorAt(ident.Pos(), "undefined variable %s%s", ident.Name, didYouMean(ident.Name, env.visibleNames()))
 }
 
-func (exec *Execution) evalDirectMemberMethodCall(receiver Value, property string, pos Position) (Value, bool, error) {
+func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property string, pos Position) (Value, bool, error) {
 	switch receiver.Kind() {
 	case KindClass:
 		if property == "new" {
@@ -822,7 +822,7 @@ func (exec *Execution) evalDirectMemberMethodCall(receiver Value, property strin
 		if !ok {
 			return NewNil(), false, nil
 		}
-		if fn.Private && !exec.isCurrentReceiver(receiver) {
+		if fn.Private {
 			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
 		}
 		return NewFunction(fn), true, nil
@@ -832,7 +832,7 @@ func (exec *Execution) evalDirectMemberMethodCall(receiver Value, property strin
 		if !ok {
 			return NewNil(), false, nil
 		}
-		if fn.Private && !exec.isCurrentReceiver(receiver) {
+		if fn.Private {
 			return NewNil(), true, exec.errorAt(pos, "private method %s", property)
 		}
 		return NewFunction(fn), true, nil
@@ -1114,7 +1114,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 
 	var callee Value
 	resolution := calleeMemberValue
-	if directCallee, handled, err := exec.evalDirectMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
+	if directCallee, handled, err := exec.evalDirectPublicMemberMethodCall(receiver, member.Property, member.Pos()); handled || err != nil {
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1122,7 +1122,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		resolution = calleeMemberMethod
 	} else {
 		var err error
-		callee, err = exec.getMember(receiver, member.Property, member.Pos())
+		callee, err = exec.getPublicMember(receiver, member.Property, member.Pos())
 		if err != nil {
 			return NewNil(), err
 		}

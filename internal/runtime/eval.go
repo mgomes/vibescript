@@ -96,7 +96,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return NewNil(), err
 		}
-		member, err := exec.getMember(obj, e.Property, e.Pos())
+		member, err := exec.getPublicMember(obj, e.Property, e.Pos())
 		if err != nil {
 			return NewNil(), err
 		}

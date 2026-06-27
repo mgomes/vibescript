@@ -207,8 +207,9 @@ predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicat
   reports whether the receiver has a callable member named `name` (a symbol or a
   string). Data — hash keys, namespace constants, and instance variables — is not
   a method and reports `false`; namespace functions such as `Math.sqrt` report
-  `true`. Private methods report `false` unless the caller is the receiver itself
-  or `include_all` is `true`, matching `respond_to?`'s privacy rules.
+  `true`. Private methods report `false` unless the predicate is reached through
+  implicit receiver dispatch or `include_all` is `true`, matching
+  `respond_to?`'s privacy rules.
 - `is_a?(class) -> bool` and `kind_of?(class) -> bool` – report whether the
   receiver is an instance of the given script class. Without inheritance these
   test direct class identity; when a superclass chain is added they will also walk
