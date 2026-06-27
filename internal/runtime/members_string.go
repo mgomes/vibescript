@@ -1380,12 +1380,6 @@ func validateRegexReplacement(method, replacement string) error {
 }
 
 func validateLiteralReplacement(method, text, pattern, replacement string, all bool) (bool, error) {
-	if len(text) > maxRegexInputBytes {
-		return false, fmt.Errorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
-	}
-	if len(pattern) > maxRegexInputBytes {
-		return false, fmt.Errorf("%s pattern exceeds limit %d bytes", method, maxRegexInputBytes)
-	}
 	count := 0
 	if pattern == "" {
 		count = 1
