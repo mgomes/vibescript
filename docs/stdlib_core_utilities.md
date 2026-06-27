@@ -253,6 +253,8 @@ Unicode characters, not bytes, unless noted.
   nil` – substring by byte offset; negative offsets count from the end, an
   out-of-range start or negative length returns `nil`, and bytes are returned
   verbatim without UTF-8 normalization.
+- `clamp(min, max) -> string` – receiver bounded by lexicographic string
+  comparison; `nil` leaves one side open.
 - `hex -> int` – leading characters parsed as a hexadecimal integer (optional
   whitespace, sign, `0x` prefix, and underscore separators); `0` when no hex
   digit leads, and an `integer out of range` error past the `int64` bounds.
@@ -475,7 +477,9 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   and other values by equality. The optional block transforms each match.
 - `grep_v(pattern) { |item| } -> array` – elements that do not match `pattern`,
   with the same matching rules and optional transform block as `grep`.
-- `find { |item| } -> value | nil` – first element matching the block.
+- `find(ifnone = nil) { |item| } -> value | nil` – first element matching the
+  block; when no element matches and `ifnone` is a callable, returns
+  `ifnone.call`.
 - `find_index(value) -> int | nil` / `find_index { |item| } -> int | nil` –
   index of the first element equal to `value`, or the first index whose block is
   truthy. Alias for `index`; pass a value or a block, never both.
@@ -747,8 +751,9 @@ aliases, so `1.second` reads naturally.
 ### Numeric Helpers
 
 - `abs -> int` – absolute value; errors on the minimum 64-bit integer.
-- `clamp(min, max) -> int` – receiver bounded to `[min, max]`; both bounds
-  must be integers with `min <= max`.
+- `clamp(min, max) -> int | float` / `clamp(range) -> int` – receiver bounded
+  to the given bounds; integer and float bounds may be mixed, `nil` leaves one
+  side open, and range form accepts inclusive integer ranges.
 - `even? -> bool` – true for even integers.
 - `odd? -> bool` – true for odd integers.
 - `times { |i| } -> int` – run the block with `0..n-1`; returns the receiver.
@@ -812,8 +817,9 @@ Ruby's arbitrary-precision integers.
 ## Floats
 
 - `abs -> float` – absolute value.
-- `clamp(min, max) -> float` – receiver bounded to `[min, max]`; bounds may be
-  int or float with `min <= max`.
+- `clamp(min, max) -> int | float` / `clamp(range) -> float` – receiver
+  bounded to the given bounds; integer and float bounds may be mixed, `nil`
+  leaves one side open, and range form accepts inclusive integer ranges.
 - `round(ndigits = 0) -> int | float` – round half away from zero. With no
   argument or `0` it returns an `int`; positive `ndigits` keep the value a
   `float` rounded to that many fractional digits (`1.234.round(2)` is `1.23`);
@@ -1145,6 +1151,14 @@ Global functions and namespaces available in every script. See
   units, e.g. `money_cents(2550, "USD")`.
 - `now -> string` – current UTC instant as an RFC3339 string (use `Time.now`
   for a `time` value).
+- `loop { ... } -> value` – repeat the block until `break`; a `break value`
+  becomes the result and `next` starts the next iteration.
+- `format(pattern, *values) -> string` / `sprintf(pattern, *values) -> string`
+  – format common numeric and string values with percent format strings.
+- `rand(max = nil) -> number` – random float in `[0.0, 1.0)`, integer below a
+  positive integer bound, or integer inside an integer range.
+- `srand(seed = nil) -> int | nil` – seed this script call's `rand` sequence;
+  returns the previous explicit seed when one exists.
 - `sleep(seconds) -> int` – pause for non-negative numeric seconds, honoring
   host context cancellation and deadlines.
 - `uuid -> string` – RFC 9562 version 7 UUID.
