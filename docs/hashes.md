@@ -39,8 +39,13 @@ player = {
   "last name": "Lovelace"
 }
 
-player["first-name"] # "Ada"
+player["first-name"]  # "Ada"
+player[:"first-name"] # "Ada"
 ```
+
+Quoted keys are symbols in the same key space as shorthand labels, so a
+quoted-symbol literal reads them back: `player[:"first-name"]` and
+`player["first-name"]` both resolve the `:"first-name"` key.
 
 Reserved words are valid shorthand labels when followed by an explicit value, so
 keyword-shaped payload keys behave like any other label:

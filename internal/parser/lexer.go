@@ -234,6 +234,9 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 			return tok
 		}
+		if quote := l.peekRune(); quote == '"' || quote == '\'' {
+			return l.scanQuotedSymbol(tok)
+		}
 		if ast.IsIdentifierRune(l.peekRune()) {
 			l.readRune()
 			start := l.currentOffset()
@@ -734,6 +737,45 @@ func (l *lexer) readSingleQuotedString() (string, string) {
 			sb.WriteRune(l.ch)
 		}
 	}
+}
+
+// scanQuotedSymbol scans a quoted symbol literal such as :"foo-bar" or
+// :'foo bar', producing a TokenSymbol whose literal is the decoded name. It is
+// called with l.ch on the leading colon and the next rune being the opening
+// quote, and tok already carries the colon's position. The quoted body reuses
+// the string scanners, so single-quoted symbols take no escapes beyond \\ and
+// \', and double-quoted symbols decode the same \n, \t, \", and \\ escapes that
+// string literals do. Interpolation inside a double-quoted symbol is rejected:
+// dynamic symbols are out of scope, and accepting the raw #{...} text as a
+// literal name would silently produce the wrong symbol. An empty quoted symbol
+// (:"") is a valid symbol whose name is the empty string, mirroring Ruby.
+func (l *lexer) scanQuotedSymbol(tok ast.Token) ast.Token {
+	l.readRune()
+	switch l.ch {
+	case '"':
+		literal, interpolated, errMsg := l.readDoubleQuotedString()
+		switch {
+		case errMsg != "":
+			tok.Type = ast.TokenIllegal
+			tok.Literal = errMsg
+		case interpolated:
+			tok.Type = ast.TokenIllegal
+			tok.Literal = "interpolation is not allowed in a symbol literal"
+		default:
+			tok.Type = ast.TokenSymbol
+			tok.Literal = literal
+		}
+	case '\'':
+		literal, errMsg := l.readSingleQuotedString()
+		if errMsg != "" {
+			tok.Type = ast.TokenIllegal
+			tok.Literal = errMsg
+		} else {
+			tok.Type = ast.TokenSymbol
+			tok.Literal = literal
+		}
+	}
+	return tok
 }
 
 func (l *lexer) readPercentArrayLiteral() ([]string, string) {

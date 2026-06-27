@@ -20,7 +20,7 @@ Vibescript supports these literal/value categories:
 - `nil`, `true`, `false`
 - integers and floats (`1`, `42`, `3.14`)
 - strings (`"hello"`, `"hello #{name}"`)
-- symbols (`:name`)
+- symbols (`:name`, or quoted as `:"with-punctuation"` / `:'with spaces'`)
 - arrays (`[1, 2, 3]`)
 - hashes (`{name: "Ada", active: true}`)
 - ranges (`1..5`, `1...5`)
@@ -35,6 +35,14 @@ Double-quoted strings support `#{...}` interpolation. Each interpolation must
 contain one expression; the expression value is converted with the same string
 form used by `to_s`. Escape an interpolation marker as `\#{...}` for literal
 text. Single-quoted strings do not interpolate.
+
+Symbols are usually written bare (`:name`), but a quoted form lets a symbol hold
+punctuation, spaces, or be empty: `:"foo-bar"`, `:'foo bar'`, `:""`. Quoted
+symbols use the same escapes as the matching string quote (double-quoted symbols
+decode `\n`, `\t`, `\"`, `\\`; single-quoted symbols decode `\'` and `\\`).
+Interpolation is not supported in symbol literals, so `:"a#{b}"` is a parse
+error. `:"name"` is accepted anywhere a symbol literal is, and a quoted-string
+hash key such as `"foo-bar":` is the same symbol as `:"foo-bar"`.
 
 See `docs/arrays.md`, `docs/hashes.md`, `docs/strings.md`, `docs/durations.md`,
 and `docs/time.md` for full method coverage.
