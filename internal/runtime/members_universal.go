@@ -9,6 +9,7 @@ import (
 // the universal fallback in resolveMember. They back the Ruby-style methods that
 // Object defines for all values:
 //
+//   - itself — returns the receiver unchanged.
 //   - eql?/equal? — the equality predicates: `eql?` reports hash-key equality and
 //     `equal?` reports object identity.
 //   - tap/yield_self — the block helpers: `tap` yields the receiver to its block
@@ -21,26 +22,32 @@ import (
 // any class override) always take precedence, matching Ruby's overridable
 // Object-level helpers. Editor completion surfaces them on every receiver via
 // withUniversalMembers.
-var universalMemberNames = []string{"eql?", "equal?", "tap", "yield_self"}
+var universalMemberNames = []string{"itself", "eql?", "equal?", "tap", "yield_self"}
 
-// isUniversalMemberName reports whether property names one of the Object-level
+// isUniversalMember reports whether property names one of the Object-level
 // helpers that every value answers through the universal fallback.
-func isUniversalMemberName(property string) bool {
+func isUniversalMember(property string) bool {
 	switch property {
-	case "eql?", "equal?", "tap", "yield_self":
+	case "itself", "eql?", "equal?", "tap", "yield_self":
 		return true
 	default:
 		return false
 	}
 }
 
-// isUniversalPredicate reports whether property names one of the equality
-// predicates. The predicates are never stored data on a hash or object, so they
-// follow a different resolution order than the block helpers (see
-// universalPredicateAlwaysWins).
-func isUniversalPredicate(property string) bool {
+// isUniversalDataSafe reports whether property names a universal Object-level
+// helper that is never stored data on a hash or object, so it may be resolved
+// before typed dispatch on those receivers (see universalMemberAlwaysWins) and
+// reported as a cheap miss rather than routed through hashMember's miss path.
+//
+// itself, eql?, and equal? qualify: they are methods, not keys, so a hash entry
+// or data field of that name is unreachable as data and never shadows the
+// helper. The block helpers tap/yield_self do NOT qualify: a hash entry keyed
+// tap/yield_self is ordinary data the typed dispatch returns, so they fall back
+// only on a genuine miss.
+func isUniversalDataSafe(property string) bool {
 	switch property {
-	case "eql?", "equal?":
+	case "itself", "eql?", "equal?":
 		return true
 	default:
 		return false
@@ -49,10 +56,10 @@ func isUniversalPredicate(property string) bool {
 
 // isCallableMember reports whether a value stored under a member name is a
 // callable method export rather than plain data. Only functions and builtins
-// are invocable as methods, so only they may shadow a universal predicate; a
-// stored function/builtin keyed eql?/equal? is a module export or capability
-// method that overrides the predicate, while any other stored value is data
-// and must let the universal predicate answer.
+// are invocable as methods, so only they may shadow a universal helper; a stored
+// function/builtin keyed by a universal-helper name (itself/eql?/equal?/tap/
+// yield_self) is a module export or capability method that overrides the helper,
+// while any other stored value is data and must let the universal helper answer.
 func isCallableMember(val Value) bool {
 	switch val.Kind() {
 	case KindFunction, KindBuiltin:
@@ -67,12 +74,14 @@ func isCallableMember(val Value) bool {
 // members and any user-defined methods have failed to resolve property, so
 // existing members (including a class's own override) always take precedence.
 //
-// The equality predicates bind to the receiver: their builtins carry the
-// receiver's kind in their name so argument errors read naturally (for example
-// "int.eql? expects 1 argument"). The block helpers take the receiver at call
-// time, so they return a kind-agnostic auto-builtin.
+// itself and the equality predicates bind to the receiver: their builtins carry
+// the receiver's kind in their name so argument errors read naturally (for
+// example "int.eql? expects 1 argument"). The block helpers take the receiver at
+// call time, so they return a kind-agnostic auto-builtin.
 func universalMember(obj Value, property string) (Value, bool) {
 	switch property {
+	case "itself":
+		return bindItself(obj), true
 	case "eql?":
 		return bindEqualityPredicate("eql?", obj, Value.Eql), true
 	case "equal?":
@@ -116,6 +125,41 @@ func newUniversalBlockBuiltin(name string, returnReceiver bool) Value {
 		}
 		return result, nil
 	})
+}
+
+// bindItself builds the Ruby-style Object#itself member for a receiver. It is an
+// auto-invoked, zero-arity builtin: bare access (probe = obj.itself) invokes it
+// immediately and yields the receiver, matching Ruby where itself returns self
+// rather than a bound method. Because it auto-invokes, the builtin value is
+// never durably reachable — it is constructed, run, and discarded in the same
+// member access — so unlike the bound equality predicates it needs neither a
+// captured-value charge nor a clone hook. The receiver is returned unchanged, so
+// value ownership and the host-boundary isolation already established for it are
+// preserved without copying.
+func bindItself(receiver Value) Value {
+	name := fmt.Sprintf("%s.itself", receiver.Kind())
+	return NewAutoBuiltin(name, func(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if err := requireItselfCall(name, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+		return receiver, nil
+	})
+}
+
+// requireItselfCall enforces itself's zero-arity shape: no positional
+// arguments, no keyword arguments, and no block, mirroring Ruby's
+// Object#itself.
+func requireItselfCall(name string, args []Value, kwargs map[string]Value, block Value) error {
+	if len(kwargs) > 0 {
+		return fmt.Errorf("%s does not accept keyword arguments", name)
+	}
+	if valueBlock(block) != nil {
+		return fmt.Errorf("%s does not accept a block", name)
+	}
+	if len(args) > 0 {
+		return fmt.Errorf("%s expects 0 arguments, got %d", name, len(args))
+	}
+	return nil
 }
 
 // boundReceiver holds the receiver of a bound eql?/equal? predicate in a mutable

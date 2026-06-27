@@ -104,6 +104,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if err != nil {
 			return NewNil(), err
 		}
+		if e.Safe && obj.Kind() == KindNil {
+			return NewNil(), nil
+		}
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return NewNil(), err
 		}
@@ -490,6 +493,10 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 		result, err = divideValues(left, right)
 	case tokenPercent:
 		result, err = moduloValues(left, right)
+	case tokenShovel:
+		result, err = shovelValues(left, right)
+	case tokenAmpersand:
+		result, err = intersectValues(left, right)
 	case tokenEQ:
 		return NewBool(left.Equal(right)), nil
 	case tokenCaseEQ:
@@ -1303,18 +1310,22 @@ func (exec *Execution) evalArrayAppendAssignment(stmt *AssignStmt, env *Env) (Va
 		}
 		return exec.evalArrayPushAssignment(target.Name, value, env)
 	case *BinaryExpr:
-		if value.Operator != tokenPlus {
-			return NewNil(), false, nil
-		}
 		left, ok := value.Left.(*Identifier)
 		if !ok || left.Name != target.Name {
 			return NewNil(), false, nil
 		}
-		right, ok := value.Right.(*ArrayLiteral)
-		if !ok {
+		switch value.Operator {
+		case tokenPlus:
+			right, ok := value.Right.(*ArrayLiteral)
+			if !ok {
+				return NewNil(), false, nil
+			}
+			return exec.evalArrayConcatAppendAssignment(target.Name, value, right, env)
+		case tokenShovel:
+			return exec.evalArrayShovelAppendAssignment(target.Name, value, env)
+		default:
 			return NewNil(), false, nil
 		}
-		return exec.evalArrayConcatAppendAssignment(target.Name, value, right, env)
 	default:
 		return NewNil(), false, nil
 	}
@@ -1359,6 +1370,36 @@ func (exec *Execution) evalArrayConcatAppendAssignment(name string, expr *Binary
 	}
 
 	result := exec.assignArrayAppendResult(name, receiver.Array(), values, env)
+	if err := exec.checkMemoryWith(result); err != nil {
+		return NewNil(), true, exec.wrapError(err, expr.Pos())
+	}
+	return result, true, nil
+}
+
+// evalArrayShovelAppendAssignment handles the accumulator form
+// `values = values << element`, appending the single right-hand value to the
+// receiver through the shared backing buffer just like the push and concat
+// fast paths. The shovel operator never mutates in place, so this reassignment
+// is the idiomatic Vibescript accumulator and avoids re-copying the array on
+// every iteration.
+func (exec *Execution) evalArrayShovelAppendAssignment(name string, expr *BinaryExpr, env *Env) (Value, bool, error) {
+	receiver, ok := env.Get(name)
+	if !ok || receiver.Kind() != KindArray {
+		return NewNil(), false, nil
+	}
+	if err := exec.checkMemoryWith(receiver); err != nil {
+		return NewNil(), true, err
+	}
+
+	element, err := exec.evalExpressionWithAuto(expr.Right, env, true)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	if err := exec.checkMemoryWith(receiver, element); err != nil {
+		return NewNil(), true, err
+	}
+
+	result := exec.assignArrayAppendResult(name, receiver.Array(), []Value{element}, env)
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), true, exec.wrapError(err, expr.Pos())
 	}

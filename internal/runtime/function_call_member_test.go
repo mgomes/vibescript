@@ -193,16 +193,16 @@ func exportedFunctionValue(t *testing.T, script *Script, names ...string) Value 
 }
 
 // TestFunctionValueCallMemberSuggestion confirms the function member list is
-// wired into editor completion metadata, including the universal Object-level
-// helpers (eql?, equal?, tap, yield_self) that resolve on every value.
+// wired into editor completion metadata. The list carries the function-specific
+// call member alongside the universal Object-level helpers (itself, eql?,
+// equal?, tap, yield_self) exposed on every value kind.
 func TestFunctionValueCallMemberSuggestion(t *testing.T) {
 	t.Parallel()
 	names, ok := MemberCompletionNames()["function"]
 	if !ok {
 		t.Fatalf("MemberCompletionNames missing function entry")
 	}
-	want := append([]string{"call"}, universalMemberNames...)
-	if !slices.Equal(names, want) {
+	if want := append([]string{"call"}, universalMemberNames...); !slices.Equal(names, want) {
 		t.Fatalf("function member completion = %v, want %v", names, want)
 	}
 }
