@@ -285,6 +285,90 @@ func TestBlockGivenIgnoresShadowingBindings(t *testing.T) {
 	}
 }
 
+// TestBlockGivenSurvivesHostCloneInEscapedDefaultProc pins that a hash default
+// proc which captures the block of the method that produced it keeps that block
+// across the host boundary. The proc escapes one Script.Call (so its captured
+// environment is host-cloned on export) and is re-entered through another, where
+// a missing-key lookup runs it. Cloning the env for the host previously dropped
+// the call frame's hidden block slot, so block_given? flipped to false on
+// re-entry; this matches Ruby, where a block defined in a method called with a
+// block sees block_given? as true.
+func TestBlockGivenSurvivesHostCloneInEscapedDefaultProc(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def make
+  Hash.new { |_, _| block_given? }
+end
+
+def export_with_block
+  make { 1 }
+end
+
+def export_without_block
+  make
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	tests := []struct {
+		name     string
+		exporter string
+		want     Value
+	}{
+		{name: "producing method called with a block", exporter: "export_with_block", want: NewBool(true)},
+		{name: "producing method called without a block", exporter: "export_without_block", want: NewBool(false)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			exported := callScript(t, context.Background(), script, tt.exporter, nil, CallOptions{})
+			if exported.Kind() != KindHash {
+				t.Fatalf("%s returned %v, want a hash", tt.exporter, exported.Kind())
+			}
+			got := callScript(t, context.Background(), script, "lookup",
+				[]Value{exported, NewString("key")}, CallOptions{})
+			assertValueEqual(t, got, tt.want)
+		})
+	}
+}
+
+// TestYieldSurvivesHostCloneInEscapedDefaultProc pins that a hash default proc
+// which yields to the block of its producing method still finds that block after
+// crossing the host boundary. The proc escapes one Script.Call and is re-entered
+// through another; cloning the env for the host previously dropped the call
+// frame's hidden block slot, so yield raised "no block given" on re-entry.
+func TestYieldSurvivesHostCloneInEscapedDefaultProc(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def make
+  Hash.new { |_, k| yield k }
+end
+
+def export_hash
+  make { |k| "yielded-" + k }
+end
+
+def lookup(h, k)
+  h[k]
+end
+`)
+
+	exported := callScript(t, context.Background(), script, "export_hash", nil, CallOptions{})
+	if exported.Kind() != KindHash {
+		t.Fatalf("export_hash returned %v, want a hash", exported.Kind())
+	}
+
+	got := callScript(t, context.Background(), script, "lookup",
+		[]Value{exported, NewString("x")}, CallOptions{})
+	assertValueEqual(t, got, NewString("yielded-x"))
+}
+
 // TestYieldRejectsParamNamedBlock confirms a method that takes a __block__
 // parameter still reports "no block given" when called without a block, proving
 // yield never reads the parameter as the call's block.
