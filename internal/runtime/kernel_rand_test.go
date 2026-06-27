@@ -86,6 +86,21 @@ end`)
 	}
 }
 
+func TestKernelRandNilBoundMatchesOmittedBound(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  srand(42)
+  nil_bound = rand(nil)
+  srand(42)
+  omitted = rand
+  [nil_bound == omitted, nil_bound >= 0.0 && nil_bound < 1.0]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewBool(true), NewBool(true)})
+}
+
 func TestKernelRandSeededWideRangesAvoidEntropy(t *testing.T) {
 	t.Parallel()
 

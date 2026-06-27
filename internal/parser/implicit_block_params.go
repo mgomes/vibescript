@@ -194,6 +194,15 @@ func (u *implicitBlockParamUsage) recordAssignedTarget(target ast.Expression) {
 		for _, element := range t.Elements {
 			u.recordAssignedTarget(element.Target)
 		}
+	case *ast.MemberExpr:
+		u.visitExpression(t.Object, false)
+	case *ast.IndexExpr:
+		u.visitExpression(t.Object, false)
+		for _, index := range t.Indices {
+			u.visitExpression(index, false)
+		}
+	default:
+		u.visitExpression(target, false)
 	}
 }
 

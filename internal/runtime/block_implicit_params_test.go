@@ -93,3 +93,18 @@ end`)
 		}),
 	})
 }
+
+func TestImplicitBlockParamsInAssignmentTargets(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  records = [{seen: false}]
+  records.each { _1[:seen] = true }
+  records[0][:seen]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if !got.Equal(NewBool(true)) {
+		t.Fatalf("run = %#v, want true", got)
+	}
+}

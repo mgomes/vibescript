@@ -59,6 +59,16 @@ func TestParserInfersImplicitBlockParams(t *testing.T) {
 			source: `def run; [1].map { it = 10; it }; end`,
 			want:   nil,
 		},
+		{
+			name:   "member_assignment_target_uses_it",
+			source: `def run; items.each { it.name = "x" }; end`,
+			want:   []string{"it"},
+		},
+		{
+			name:   "index_assignment_target_uses_numbered",
+			source: `def run; items.each { _1[:seen] = true }; end`,
+			want:   []string{"_1"},
+		},
 	}
 
 	for _, tc := range tests {

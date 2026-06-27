@@ -105,6 +105,12 @@ func builtinRand(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		return NewFloat(f), nil
 	}
 	switch arg := args[0]; arg.Kind() {
+	case KindNil:
+		f, err := exec.randomFloat64()
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewFloat(f), nil
 	case KindInt:
 		limit := arg.Int()
 		if limit <= 0 {
