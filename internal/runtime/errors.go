@@ -169,6 +169,28 @@ func (exec *Execution) step() error {
 	return nil
 }
 
+// checkBudget reports whether execution may continue without charging a step. It
+// performs the same step-quota and cancellation checks as step, but
+// unconditionally (step only samples cancellation on a periodic slow path) and
+// without incrementing the step counter. Builtins that materialize or
+// preallocate a structure sized to the whole receiver call this before that bulk
+// work so an already-canceled context or already-exhausted step quota aborts the
+// allocation, rather than reserving the full backing and only observing the stop
+// condition once the per-element loop runs.
+func (exec *Execution) checkBudget() error {
+	if exec.quota > 0 && exec.steps >= exec.quota {
+		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
+	}
+	if exec.ctx != nil {
+		select {
+		case <-exec.ctx.Done():
+			return exec.ctx.Err()
+		default:
+		}
+	}
+	return nil
+}
+
 func (exec *Execution) errorAt(pos Position, format string, args ...any) error {
 	return exec.newRuntimeError(fmt.Sprintf(format, args...), pos)
 }

@@ -578,6 +578,16 @@ func hashMemberQuery(property string) (Value, error) {
 			// peak against MemoryQuotaBytes and honors a small StepQuota or a canceled
 			// context mid-loop, matching the neighboring hash walks rather than
 			// allocating everything before the runtime can reject it.
+			//
+			// Abort before materializing and sorting the keys when the context is
+			// already canceled or the step quota is already spent. The per-pair loop
+			// charges a step and observes cancellation, but the sortedHashKeysInto sort
+			// (O(n log n) CPU plus a scratch list) and the make below run first, so
+			// without this cheap up-front check a large hash could spend that work even
+			// when no quota or a generous MemoryQuotaBytes would let the projection pass.
+			if err := exec.checkBudget(); err != nil {
+				return NewNil(), err
+			}
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			scratch := sortedKeyBufferBytes(len(entries))
 			if err := acc.reserveScratch(scratch); err != nil {

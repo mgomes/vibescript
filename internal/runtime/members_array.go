@@ -1968,6 +1968,16 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 		}
 	}
 
+	// Abort before reserving anything when the context is already canceled or the
+	// step quota is already spent. The per-element loop charges a step and observes
+	// cancellation, but the make below reserves a map sized to the whole receiver
+	// first, so without this cheap up-front check a large receiver could trigger
+	// that full allocation even when no quota or a generous MemoryQuotaBytes would
+	// let the structural projection pass.
+	if err := exec.checkBudget(); err != nil {
+		return NewNil(), err
+	}
+
 	// The output holds at most one entry per element; duplicate keys collapse.
 	// Reject the build before reserving the backing map when that capacity alone
 	// already overflows the quota, mirroring the map-producing hash transforms.

@@ -330,6 +330,43 @@ func TestArrayToHashBareFormHonorsCancellation(t *testing.T) {
 	requireErrorIs(t, err, context.Canceled)
 }
 
+// TestArrayToHashChecksBudgetBeforePreallocating pins the up-front half of the P2
+// finding: with a large receiver, an already-canceled context, and no memory
+// quota, Array#to_h must abort before the make reserves a map sized to the whole
+// receiver. The per-element loop's first exec.step does poll the canceled context,
+// but only after that full-sized map is already allocated. Asserting exec.steps
+// stayed 0 distinguishes the up-front checkBudget from the in-loop step: without
+// the guard the loop runs its first step (after the make) and steps reaches 1.
+func TestArrayToHashChecksBudgetBeforePreallocating(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
+	_, err := callArrayMember(t, exec, largeArrayPairReceiver(4000), "to_h", nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+	if exec.steps != 0 {
+		t.Fatalf("expected to_h to abort before preallocating the output map (0 steps), but %d step(s) ran", exec.steps)
+	}
+}
+
+// TestArrayToHashChecksStepQuotaBeforePreallocating is the step-quota twin: an
+// already-spent step quota (steps == quota) must abort Array#to_h before the
+// output map is reserved. Pre-spending the quota and asserting steps never
+// advances past it pins the up-front checkBudget; without it the in-loop step
+// would increment past the quota before reporting the error, by which point the
+// full-sized map has already been allocated.
+func TestArrayToHashChecksStepQuotaBeforePreallocating(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1, steps: 1, memoryQuota: 0}
+	_, err := callArrayMember(t, exec, largeArrayPairReceiver(4000), "to_h", nil, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps != 1 {
+		t.Fatalf("expected to_h to abort before preallocating the output map (steps unchanged at 1), but steps reached %d", exec.steps)
+	}
+}
+
 // TestHashToArrayRejectsSlotBackingUpFront pins the slice-before-allocate half of
 // the P2 finding: Hash#to_a's make([]Value, 0, len(keys)) reserves the whole slot
 // backing in one allocation before the first per-pair charge could observe it, so
@@ -551,4 +588,42 @@ func TestHashToArrayHonorsCancellation(t *testing.T) {
 	exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
 	_, err := callHashMember(t, exec, largeHashReceiver(8), "to_a", nil, NewNil())
 	requireErrorIs(t, err, context.Canceled)
+}
+
+// TestHashToArrayChecksBudgetBeforeSorting pins the up-front half of the P2
+// finding: with a large hash, an already-canceled context, and no memory quota,
+// Hash#to_a must abort before materializing and sorting the keys (an O(n log n)
+// cost plus a scratch list) and before the make reserves the full output slice.
+// The per-pair loop's first exec.step does poll the canceled context, but only
+// after the sort and the slot backing have already run. Asserting exec.steps
+// stayed 0 distinguishes the up-front checkBudget from the in-loop step: without
+// the guard the loop runs its first step (after the sort) and steps reaches 1.
+func TestHashToArrayChecksBudgetBeforeSorting(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
+	_, err := callHashMember(t, exec, largeHashReceiver(4000), "to_a", nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+	if exec.steps != 0 {
+		t.Fatalf("expected to_a to abort before sorting the keys (0 steps), but %d step(s) ran", exec.steps)
+	}
+}
+
+// TestHashToArrayChecksStepQuotaBeforeSorting is the step-quota twin: an
+// already-spent step quota (steps == quota) must abort Hash#to_a before the sort
+// and the output-slice allocation. Pre-spending the quota and asserting steps
+// never advances past it pins the up-front checkBudget; without it the in-loop
+// step would increment past the quota before reporting the error, by which point
+// the sort and the full slot backing have already run.
+func TestHashToArrayChecksStepQuotaBeforeSorting(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1, steps: 1, memoryQuota: 0}
+	_, err := callHashMember(t, exec, largeHashReceiver(4000), "to_a", nil, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps != 1 {
+		t.Fatalf("expected to_a to abort before sorting the keys (steps unchanged at 1), but steps reached %d", exec.steps)
+	}
 }
