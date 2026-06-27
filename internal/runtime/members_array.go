@@ -2060,12 +2060,11 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	}
 
 	// Abort before reserving anything when the context is already canceled or the
-	// step quota is already spent. The per-element loop charges a step and observes
-	// cancellation, but the make below reserves a map sized to the whole receiver
-	// first, so without this cheap up-front check a large receiver could trigger
-	// that full allocation even when no quota or a generous MemoryQuotaBytes would
-	// let the structural projection pass.
-	if err := exec.checkBudget(); err != nil {
+	// remaining step quota cannot cover the per-element loop. The loop still
+	// charges each step, but the make below reserves a map sized to the whole
+	// receiver first, so without this up-front check a large receiver could trigger
+	// that full allocation even though the conversion is guaranteed to fail.
+	if err := exec.checkStepBudgetFor(len(arr)); err != nil {
 		return NewNil(), err
 	}
 

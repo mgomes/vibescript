@@ -367,6 +367,21 @@ func TestArrayToHashChecksStepQuotaBeforePreallocating(t *testing.T) {
 	}
 }
 
+// TestArrayToHashRejectsInsufficientStepQuotaBeforePreallocating covers the
+// positive-but-insufficient quota case: even when one step is available, a
+// receiver longer than the remaining quota cannot complete, so to_h must abort
+// before reserving the full output map.
+func TestArrayToHashRejectsInsufficientStepQuotaBeforePreallocating(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 40, memoryQuota: 0}
+	_, err := callArrayMember(t, exec, largeArrayPairReceiver(4000), "to_h", nil, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("expected to_h to abort before preallocating the output map (0 steps), but steps reached %d", exec.steps)
+	}
+}
+
 // TestHashToArrayRejectsSlotBackingUpFront pins the slice-before-allocate half of
 // the P2 finding: Hash#to_a's make([]Value, 0, len(keys)) reserves the whole slot
 // backing in one allocation before the first per-pair charge could observe it, so
