@@ -1,10 +1,12 @@
 package runtime
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"regexp"
 	"strconv"
 	"strings"
@@ -83,6 +85,138 @@ func builtinNow(exec *Execution, receiver Value, args []Value, kwargs map[string
 		return NewNil(), fmt.Errorf("now does not take arguments")
 	}
 	return NewString(time.Now().UTC().Format(time.RFC3339)), nil
+}
+
+func builtinRand(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("rand does not take keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("rand does not accept blocks")
+	}
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("rand expects at most one argument")
+	}
+	if len(args) == 0 {
+		f, err := exec.randomFloat64()
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewFloat(f), nil
+	}
+	switch arg := args[0]; arg.Kind() {
+	case KindInt:
+		limit := arg.Int()
+		if limit <= 0 {
+			return NewNil(), fmt.Errorf("rand integer bound must be positive")
+		}
+		n, err := exec.randomInt64n(uint64(limit))
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewInt(int64(n)), nil
+	case KindRange:
+		return exec.randomRangeValue(arg.Range())
+	default:
+		return NewNil(), fmt.Errorf("rand expects an integer bound or integer range")
+	}
+}
+
+func builtinSrand(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("srand does not take keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("srand does not accept blocks")
+	}
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("srand expects at most one seed")
+	}
+
+	previous := NewNil()
+	if exec.randSeeded {
+		previous = NewInt(exec.randSeed)
+	}
+
+	var seed int64
+	if len(args) == 0 || args[0].Kind() == KindNil {
+		raw, err := exec.randomUint64()
+		if err != nil {
+			return NewNil(), err
+		}
+		seed = int64(raw)
+	} else if args[0].Kind() == KindInt {
+		seed = args[0].Int()
+	} else {
+		return NewNil(), fmt.Errorf("srand seed must be integer or nil")
+	}
+	exec.randSource = rand.New(rand.NewSource(seed))
+	exec.randSeed = seed
+	exec.randSeeded = true
+	return previous, nil
+}
+
+func (exec *Execution) randomFloat64() (float64, error) {
+	if exec.randSource != nil {
+		return exec.randSource.Float64(), nil
+	}
+	raw, err := exec.randomUint64()
+	if err != nil {
+		return 0, err
+	}
+	return float64(raw>>11) / (1 << 53), nil
+}
+
+func (exec *Execution) randomRangeValue(rng Range) (Value, error) {
+	end := rng.End
+	if rng.Exclusive {
+		if end == math.MinInt64 {
+			return NewNil(), fmt.Errorf("rand range is empty")
+		}
+		end--
+	}
+	if end < rng.Start {
+		return NewNil(), fmt.Errorf("rand range is empty")
+	}
+	size := uint64(end) - uint64(rng.Start) + 1
+	var offset uint64
+	var err error
+	if size == 0 {
+		offset, err = exec.randomUint64()
+	} else {
+		offset, err = exec.randomInt64n(size)
+	}
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewInt(int64(uint64(rng.Start) + offset)), nil
+}
+
+func (exec *Execution) randomInt64n(limit uint64) (uint64, error) {
+	if limit == 0 {
+		return 0, fmt.Errorf("random integer limit must be positive")
+	}
+	if exec.randSource != nil && limit <= uint64(math.MaxInt64) {
+		return uint64(exec.randSource.Int63n(int64(limit))), nil
+	}
+	rejectAt := ^uint64(0) - (^uint64(0) % limit)
+	for {
+		raw, err := exec.randomUint64()
+		if err != nil {
+			return 0, err
+		}
+		if raw < rejectAt {
+			return raw % limit, nil
+		}
+	}
+}
+
+func (exec *Execution) randomUint64() (uint64, error) {
+	raw, err := exec.engine.randomBytes(exec.Context(), 8)
+	if err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint64(raw), nil
 }
 
 func builtinFormat(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
