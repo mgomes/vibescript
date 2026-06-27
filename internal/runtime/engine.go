@@ -253,6 +253,7 @@ func registerCoreBuiltins(engine *Engine) {
 		{name: "money_cents", fn: builtinMoneyCents},
 		{name: "require", fn: builtinRequire},
 		{name: "now", fn: builtinNow, autoInvoke: true},
+		{name: "sleep", fn: builtinSleep},
 		{name: "uuid", fn: builtinUUID, autoInvoke: true},
 		{name: "random_id", fn: builtinRandomID},
 		{name: "to_int", fn: builtinToInt},

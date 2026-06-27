@@ -50,7 +50,7 @@ Common enumerable helpers include:
 - `find` to locate the first matching item.
 - `find_index(value)` / `find_index { ... }` to locate the first matching index.
 - `reduce` to accumulate values, either with a block or with a symbol/string
-  operation shorthand (`[1, 2, 3].reduce("+")`, `["a", "b"].reduce(:concat)`).
+  operation shorthand (`[1, 2, 3].reduce(:+)`, `["a", "b"].reduce(:concat)`).
 - `first` / `last` to read an end element, or `first(n)` / `last(n)` to slice without mutating. The optional count is the only argument they accept; passing more than one positional argument or any keyword argument raises.
 - `take(n)` / `drop(n)` to keep or skip a prefix; both reject negative counts.
 - `zip(*arrays)` to combine arrays element-wise into rows, padding short arrays with `nil`.

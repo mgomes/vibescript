@@ -2,7 +2,7 @@ package runtime
 
 import "testing"
 
-func TestWordBooleanOperators(t *testing.T) {
+func TestSymbolicBooleanOperators(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def echo(**opts)
@@ -13,16 +13,16 @@ def run
   labels = {and: 1, or: 2, not: 3}
   kwargs = echo(and: 4, or: 5, not: 6)
   {
-    and_false: true and false,
-    and_value: "left" and "right",
-    and_short: nil and missing,
-    not_false_and_true: not false and true,
-    not_true_or_true: not true or true,
-    not_grouped_and: not (true and false),
+    and_false: true && false,
+    and_value: "left" && "right",
+    and_short: nil && missing,
+    not_false_and_true: !false && true,
+    not_true_or_true: !true || true,
+    not_grouped_and: !(true && false),
     symbolic_not: !false,
-    or_true: false or true,
-    or_value: "left" or missing,
-    precedence: true or false and false,
+    or_true: false || true,
+    or_value: "left" || missing,
+    precedence: true || false && false,
     hash_and: labels[:and],
     hash_or: labels[:or],
     hash_not: labels[:not],
@@ -69,7 +69,7 @@ def run
     false_branch: false ? missing_false : "no",
     nil_condition: nil ? missing_nil : "nil",
     value_condition: "present" ? 1 : 2,
-    precedence: false or true ? "selected" : missing_precedence,
+    precedence: false || true ? "selected" : missing_precedence,
     nested: false ? missing_nested : true ? "nested" : "miss",
     true_label: label(true),
     false_label: label(false),

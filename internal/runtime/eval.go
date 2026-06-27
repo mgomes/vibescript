@@ -96,7 +96,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return NewNil(), err
 		}
-		member, err := exec.getMember(obj, e.Property, e.Pos())
+		member, err := exec.getPublicMember(obj, e.Property, e.Pos())
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1170,7 +1170,7 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		}
 		for _, clause := range e.Clauses {
 			for _, value := range clause.Values {
-				if expressionCapturesCurrentEnv(value) {
+				if expressionCapturesCurrentEnv(value.Expr) {
 					return true
 				}
 			}
@@ -1274,7 +1274,7 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 	}
 
 	if fn, ok := methods[setterName]; ok {
-		if fn.Private && !exec.isCurrentReceiver(obj) {
+		if fn.Private {
 			return exec.errorAt(pos, "private method %s", setterName)
 		}
 		_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), pos)
@@ -1833,14 +1833,18 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 	for _, clause := range expr.Clauses {
 		matched := false
 		for _, candidateExpr := range clause.Values {
-			candidate, err := exec.evalExpression(candidateExpr, env)
+			candidate, err := exec.evalExpression(candidateExpr.Expr, env)
 			if err != nil {
 				return NewNil(), err
 			}
 			if err := exec.checkMemoryWith(candidate); err != nil {
 				return NewNil(), err
 			}
-			if caseWhenMatches(hasTarget, target, candidate) {
+			candidateMatched, err := exec.caseWhenValueMatches(hasTarget, target, candidate, candidateExpr.Splat, expr.Pos())
+			if err != nil {
+				return NewNil(), err
+			}
+			if candidateMatched {
 				matched = true
 				break
 			}
@@ -1870,6 +1874,27 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 	}
 
 	return NewNil(), nil
+}
+
+func (exec *Execution) caseWhenValueMatches(hasTarget bool, target, candidate Value, splat bool, pos Position) (bool, error) {
+	if !splat {
+		return caseWhenMatches(hasTarget, target, candidate), nil
+	}
+	if candidate.Kind() != KindArray {
+		return false, exec.errorAt(pos, "case when splat value must be an array")
+	}
+	for _, item := range candidate.Array() {
+		if err := exec.step(); err != nil {
+			return false, err
+		}
+		if err := exec.checkMemoryWith(item); err != nil {
+			return false, err
+		}
+		if caseWhenMatches(hasTarget, target, item) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func caseWhenMatches(hasTarget bool, target, candidate Value) bool {
@@ -2275,7 +2300,7 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return NewNil(), nil, err
 		}
-		member, err := exec.getMember(obj, t.Property, t.Pos())
+		member, err := exec.getPublicMember(obj, t.Property, t.Pos())
 		if err != nil {
 			return NewNil(), nil, err
 		}

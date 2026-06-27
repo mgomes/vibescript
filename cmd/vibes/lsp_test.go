@@ -12,6 +12,7 @@ import (
 
 	"github.com/mgomes/vibescript/internal/ast"
 	"github.com/mgomes/vibescript/vibes"
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 func TestRunCLIStartsLSPAndExitsOnEOF(t *testing.T) {
@@ -1099,6 +1100,28 @@ func TestBuiltinSignaturesMatchRegisteredBuiltins(t *testing.T) {
 		if _, ok := builtins[name]; !ok {
 			t.Errorf("builtinSignatures entry %q does not correspond to a registered builtin", name)
 		}
+	}
+
+	var missingCompletions []string
+	var missingSignatures []string
+	for name, builtin := range builtins {
+		if builtin.Kind() != value.KindBuiltin {
+			continue
+		}
+		if !slices.Contains(lspBuiltins, name) {
+			missingCompletions = append(missingCompletions, name)
+		}
+		if _, ok := builtinSignatures[name]; !ok {
+			missingSignatures = append(missingSignatures, name)
+		}
+	}
+	slices.Sort(missingCompletions)
+	slices.Sort(missingSignatures)
+	if len(missingCompletions) > 0 {
+		t.Errorf("registered builtin functions missing LSP completions: %v", missingCompletions)
+	}
+	if len(missingSignatures) > 0 {
+		t.Errorf("registered builtin functions missing LSP signatures: %v", missingSignatures)
 	}
 }
 

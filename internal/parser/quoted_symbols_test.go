@@ -224,9 +224,9 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 			want:   []ast.TokenType{ast.TokenReturn, ast.TokenSymbol},
 		},
 		{
-			name:   "word_boolean_keyword_label_no_space_stays_separator",
+			name:   "word_boolean_identifier_label_no_space_stays_separator",
 			source: `{and:"x"}`,
-			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenAnd, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenIdent, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
 		},
 		{
 			// Both ternary branches are quoted symbols; the separator colon sits
@@ -321,6 +321,51 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 			}
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Fatalf("token types for %q mismatch (-want +got):\n%s", tc.source, diff)
+			}
+		})
+	}
+}
+
+func TestLexerColonOperatorDisambiguation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   []ast.TokenType
+	}{
+		{
+			name:   "hash_label_plus_value",
+			source: `{a:+1}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenIdent, ast.TokenColon, ast.TokenPlus, ast.TokenInt, ast.TokenRBrace, ast.TokenEOF},
+		},
+		{
+			name:   "hash_label_minus_value",
+			source: `{a:-1}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenIdent, ast.TokenColon, ast.TokenMinus, ast.TokenInt, ast.TokenRBrace, ast.TokenEOF},
+		},
+		{
+			name:   "hash_label_bang_value",
+			source: `{a:!false}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenIdent, ast.TokenColon, ast.TokenBang, ast.TokenFalse, ast.TokenRBrace, ast.TokenEOF},
+		},
+		{
+			name:   "keyword_argument_minus_value",
+			source: `call(a:-1)`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenLParen, ast.TokenIdent, ast.TokenColon, ast.TokenMinus, ast.TokenInt, ast.TokenRParen, ast.TokenEOF},
+		},
+		{
+			name:   "spaced_operator_symbol",
+			source: `{a: :+}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenIdent, ast.TokenColon, ast.TokenSymbol, ast.TokenRBrace, ast.TokenEOF},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tokenTypes(tc.source); !cmp.Equal(got, tc.want) {
+				t.Fatalf("tokenTypes(%q) = %v, want %v", tc.source, got, tc.want)
 			}
 		})
 	}

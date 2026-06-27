@@ -149,9 +149,26 @@ class Helper
 end
 ```
 
-Private methods are callable only on the current receiver (the same instance or
-class context). Calls like `other.secret` raise a runtime `private method`
-error.
+Private methods are callable only with an implicit receiver. Inside a method,
+call `secret`, not `self.secret`; explicit receiver calls like `self.secret` or
+`other.secret` raise a runtime `private method` error.
+
+Private class methods use the same form with a `self.` method name:
+
+```vibe
+class Helper
+  private def self.build_secret
+    42
+  end
+
+  def self.build
+    build_secret
+  end
+end
+```
+
+Vibescript does not support Ruby's singleton-class syntax (`class << self`).
+Use `def self.name` or `private def self.name` inside the class body.
 
 ## Introspection
 

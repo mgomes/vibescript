@@ -207,8 +207,9 @@ predicate — `{ "respond_to?": 1 }.respond_to?(:keys)` still calls the predicat
   reports whether the receiver has a callable member named `name` (a symbol or a
   string). Data — hash keys, namespace constants, and instance variables — is not
   a method and reports `false`; namespace functions such as `Math.sqrt` report
-  `true`. Private methods report `false` unless the caller is the receiver itself
-  or `include_all` is `true`, matching `respond_to?`'s privacy rules.
+  `true`. Private methods report `false` unless the predicate is reached through
+  implicit receiver dispatch or `include_all` is `true`, matching
+  `respond_to?`'s privacy rules.
 - `is_a?(class) -> bool` and `kind_of?(class) -> bool` – report whether the
   receiver is an instance of the given script class. Without inheritance these
   test direct class identity; when a superclass chain is added they will also walk
@@ -485,10 +486,7 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   fold by sending `operation` to the accumulator with each element, like Ruby's
   `["a", "b"].reduce(:concat)`. `operation` is a symbol naming a method on the
   accumulator (`["a", "b"].reduce(:concat)`) or a string naming either a method
-  or a binary operator (`[1, 2, 3].reduce("+")`, also `-`, `*`, `/`, `%`, `**`).
-  Operator-symbol literals such as `:+` are not yet accepted because the lexer
-  cannot tokenize them; use the string form (`reduce("+")`) for now. That
-  shorthand is tracked in [#801](https://github.com/mgomes/vibescript/issues/801).
+  or a binary operator (`[1, 2, 3].reduce(:+)`, also `-`, `*`, `/`, `%`, `**`).
   With a block and a single argument, the block takes precedence and the lone
   argument is treated as `initial`. With two arguments (`reduce(initial,
   operation)`) the operation is always used and any block is ignored, matching
@@ -1147,6 +1145,8 @@ Global functions and namespaces available in every script. See
   units, e.g. `money_cents(2550, "USD")`.
 - `now -> string` – current UTC instant as an RFC3339 string (use `Time.now`
   for a `time` value).
+- `sleep(seconds) -> int` – pause for non-negative numeric seconds, honoring
+  host context cancellation and deadlines.
 - `uuid -> string` – RFC 9562 version 7 UUID.
 - `random_id(length = 16) -> string` – unbiased alphanumeric token; `length`
   must be between 1 and 1024.

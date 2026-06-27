@@ -1262,7 +1262,7 @@ func validateFuzzExpression(context string, expr Expression) error {
 				return fmt.Errorf("%s.clauses[%d] has no values", context, i)
 			}
 			for j, value := range clause.Values {
-				if err := validateFuzzExpression(fmt.Sprintf("%s.clauses[%d].values[%d]", context, i, j), value); err != nil {
+				if err := validateFuzzExpression(fmt.Sprintf("%s.clauses[%d].values[%d]", context, i, j), value.Expr); err != nil {
 					return err
 				}
 			}

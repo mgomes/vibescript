@@ -37,7 +37,7 @@ func quickTypeCheck(val Value, ty *TypeExpr) (bool, bool) {
 	if ty == nil {
 		return false, false
 	}
-	if ty.Nullable && val.Kind() == KindNil {
+	if ty.Nullable && val.Kind() == KindNil && ty.Kind != TypeUnknown {
 		return true, true
 	}
 
@@ -63,7 +63,7 @@ func quickTypeCheck(val Value, ty *TypeExpr) (bool, bool) {
 	case TypeMoney:
 		return true, val.Kind() == KindMoney
 	case TypeFunction:
-		return true, val.Kind() == KindFunction
+		return true, isCallableValue(val)
 	case TypeArray:
 		if len(ty.TypeArgs) == 0 {
 			return true, val.Kind() == KindArray
@@ -160,7 +160,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		defer delete(s.active, visit)
 	}
 
-	if ty.Nullable && val.Kind() == KindNil {
+	if ty.Nullable && val.Kind() == KindNil && ty.Kind != TypeUnknown {
 		return true, nil
 	}
 	switch ty.Kind {
@@ -250,7 +250,10 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		}
 		return true, nil
 	case TypeFunction:
-		return val.Kind() == KindFunction, nil
+		return isCallableValue(val), nil
+	case TypeEnum:
+		member := valueEnumValue(val)
+		return member != nil && member.Enum != nil && member.Enum.Name == ty.Name, nil
 	case TypeShape:
 		if val.Kind() != KindHash && val.Kind() != KindObject {
 			return false, nil
@@ -294,6 +297,15 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		return false, nil
 	default:
 		return false, fmt.Errorf("unknown type %s", ty.Name)
+	}
+}
+
+func isCallableValue(val Value) bool {
+	switch val.Kind() {
+	case KindFunction, KindBuiltin:
+		return true
+	default:
+		return false
 	}
 }
 

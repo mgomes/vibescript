@@ -56,6 +56,17 @@ end
 
 For time manipulation in Vibescript, use the `Time` object (`Time.now`, `Time.parse`, `Time.utc`, etc.). See `docs/time.md`.
 
+### `sleep(seconds)`
+
+Pauses the current call for a non-negative numeric duration in seconds. Floats
+are accepted for fractional seconds. The call returns the elapsed whole seconds
+and exits early with the call context's cancellation or deadline error when the
+host context is canceled.
+
+```vibe
+sleep(0.25)
+```
+
 ## Random IDs
 
 ### `uuid`

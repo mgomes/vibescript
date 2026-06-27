@@ -621,6 +621,10 @@ func TestPrivateMethodsAreNotSuggestedToOutsideCallers(t *testing.T) {
   def probe()
     self.secrez
   end
+
+  def probe_implicit()
+    secrez
+  end
 end
 
 def from_outside()
@@ -629,6 +633,10 @@ end
 
 def from_inside()
   Vault.new.probe
+end
+
+def from_inside_implicit()
+  Vault.new.probe_implicit
 end`)
 
 	outsideErr := callScriptErr(t, context.Background(), script, "from_outside", nil, CallOptions{})
@@ -638,7 +646,13 @@ end`)
 	}
 
 	insideErr := callScriptErr(t, context.Background(), script, "from_inside", nil, CallOptions{})
-	requireErrorContains(t, insideErr, `did you mean "secret"?`)
+	requireErrorContains(t, insideErr, "unknown member secrez")
+	if strings.Contains(insideErr.Error(), "secret") {
+		t.Fatalf("explicit self suggestion discloses private method: %v", insideErr)
+	}
+
+	implicitErr := callScriptErr(t, context.Background(), script, "from_inside_implicit", nil, CallOptions{})
+	requireErrorContains(t, implicitErr, `did you mean "secret"?`)
 }
 
 func TestModuleSuggestionsPreserveLiteralExtensions(t *testing.T) {

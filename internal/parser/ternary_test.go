@@ -45,7 +45,7 @@ func TestParserTernaryPrecedence(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
-  true or false ? 1 : 2 + 3
+  true || false ? 1 : 2 + 3
 end`
 
 	got, errs := parseSource(t, source)

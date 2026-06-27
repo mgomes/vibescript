@@ -383,8 +383,22 @@ func cloneCaseWhenClauses(clauses []CaseWhenClause) []CaseWhenClause {
 	out := make([]CaseWhenClause, len(clauses))
 	for i, clause := range clauses {
 		out[i] = CaseWhenClause{
-			Values: cloneExpressions(clause.Values),
+			Values: cloneCaseWhenValues(clause.Values),
 			Result: cloneExpression(clause.Result),
+		}
+	}
+	return out
+}
+
+func cloneCaseWhenValues(values []CaseWhenValue) []CaseWhenValue {
+	if values == nil {
+		return nil
+	}
+	out := make([]CaseWhenValue, len(values))
+	for i, value := range values {
+		out[i] = CaseWhenValue{
+			Expr:  cloneExpression(value.Expr),
+			Splat: value.Splat,
 		}
 	}
 	return out

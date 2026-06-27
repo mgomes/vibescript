@@ -205,49 +205,57 @@ func TestLexerStampsSourceAccurateTokenEnds(t *testing.T) {
 	}
 }
 
-// TestLexerSymbolSigilRequiresIdentifier pins the lexer's current symbol-literal
-// rule: `:` followed by an identifier rune lexes as a single TokenSymbol, but an
-// operator name such as `:+` does not, so it splits into a bare colon and the
-// operator token. This is why `Array#reduce(:+)` cannot be written in source yet;
-// supporting operator-symbol literals is tracked in #801. The docs and changelog
-// must keep documenting only the working forms (`reduce(:concat)`, `reduce("+")`)
-// until that lands.
-func TestLexerSymbolSigilRequiresIdentifier(t *testing.T) {
+func TestLexerSymbolSigilSupportsIdentifiersAndOperators(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name       string
-		source     string
-		wantFirst  ast.TokenType
-		wantSecond ast.TokenType
+		name        string
+		source      string
+		wantFirst   ast.TokenType
+		wantSecond  ast.TokenType
+		wantLiteral string
 	}{
 		{
-			name:       "identifier symbol lexes whole",
-			source:     ":concat",
-			wantFirst:  ast.TokenSymbol,
-			wantSecond: ast.TokenEOF,
+			name:        "identifier symbol lexes whole",
+			source:      ":concat",
+			wantFirst:   ast.TokenSymbol,
+			wantSecond:  ast.TokenEOF,
+			wantLiteral: "concat",
 		},
 		{
-			name:       "plus operator does not lex as symbol",
-			source:     ":+",
-			wantFirst:  ast.TokenColon,
-			wantSecond: ast.TokenPlus,
+			name:        "plus operator lexes as symbol",
+			source:      ":+",
+			wantFirst:   ast.TokenSymbol,
+			wantSecond:  ast.TokenEOF,
+			wantLiteral: "+",
 		},
 		{
-			name:       "star operator does not lex as symbol",
-			source:     ":*",
-			wantFirst:  ast.TokenColon,
-			wantSecond: ast.TokenAsterisk,
+			name:        "power operator lexes as symbol",
+			source:      ":**",
+			wantFirst:   ast.TokenSymbol,
+			wantSecond:  ast.TokenEOF,
+			wantLiteral: "**",
+		},
+		{
+			name:        "index operator lexes as symbol",
+			source:      ":[]",
+			wantFirst:   ast.TokenSymbol,
+			wantSecond:  ast.TokenEOF,
+			wantLiteral: "[]",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			lex := newLexer(tc.source)
-			if got := lex.NextToken(); got.Type != tc.wantFirst {
-				t.Fatalf("first token = %v, want %v", got.Type, tc.wantFirst)
+			got := lex.NextToken()
+			if got.Type != tc.wantFirst {
+				t.Fatalf("NextToken(%q) type = %v, want %v", tc.source, got.Type, tc.wantFirst)
+			}
+			if got.Literal != tc.wantLiteral {
+				t.Fatalf("NextToken(%q) literal = %q, want %q", tc.source, got.Literal, tc.wantLiteral)
 			}
 			if got := lex.NextToken(); got.Type != tc.wantSecond {
-				t.Fatalf("second token = %v, want %v", got.Type, tc.wantSecond)
+				t.Fatalf("second token after %q = %v, want %v", tc.source, got.Type, tc.wantSecond)
 			}
 		})
 	}

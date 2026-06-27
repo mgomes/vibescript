@@ -68,8 +68,8 @@ func newRespondToBuiltin(callerIsReceiver bool) Value {
 			includePrivate = args[1].Bool()
 		}
 		// Private methods are reported only when explicitly requested (Ruby's
-		// include_all) or when the caller is the receiver itself and so could
-		// already dispatch them.
+		// include_all) or when the predicate was reached through implicit receiver
+		// dispatch and so could already call them.
 		allowPrivate := includePrivate || callerIsReceiver
 		return NewBool(exec.respondsTo(receiver, method, allowPrivate)), nil
 	})

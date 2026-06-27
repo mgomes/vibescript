@@ -211,6 +211,82 @@ func TestDurationMethods(t *testing.T) {
 	compareArrays(t, comp, wantComp.Array())
 }
 
+func TestKernelSleepUsesContext(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def sleep_fraction
+  sleep(0.001)
+end
+
+def sleep_long
+  sleep(60)
+end
+
+def sleep_zero
+  sleep(0)
+end
+
+def sleep_missing
+  sleep()
+end
+
+def sleep_non_numeric
+  sleep("1")
+end
+
+def sleep_negative
+  sleep(-1)
+end
+
+def sleep_too_large
+  sleep(10000000000.0)
+end
+
+def sleep_rounded_overflow
+  sleep(9223372036.854776)
+end
+
+def sleep_keyword
+  sleep(0, duration: 1)
+end
+
+def sleep_block
+  sleep(0) do
+    1
+  end
+end
+`)
+
+	if got := callFunc(t, script, "sleep_fraction", nil); !got.Equal(NewInt(0)) {
+		t.Fatalf("sleep_fraction = %v, want 0", got)
+	}
+	if got := callFunc(t, script, "sleep_zero", nil); !got.Equal(NewInt(0)) {
+		t.Fatalf("sleep_zero = %v, want 0", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := callScriptErr(t, ctx, script, "sleep_long", nil, CallOptions{})
+	requireErrorIs(t, err, context.Canceled)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err = callScriptErr(t, ctx, script, "sleep_long", nil, CallOptions{})
+	requireErrorIs(t, err, context.DeadlineExceeded)
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("sleep cancellation took %s, want quick context exit", elapsed)
+	}
+
+	requireCallErrorContains(t, script, "sleep_missing", nil, CallOptions{}, "sleep expects one duration argument")
+	requireCallErrorContains(t, script, "sleep_non_numeric", nil, CallOptions{}, "sleep duration must be numeric")
+	requireCallErrorContains(t, script, "sleep_negative", nil, CallOptions{}, "sleep duration must be non-negative")
+	requireCallErrorContains(t, script, "sleep_too_large", nil, CallOptions{}, "sleep duration exceeds maximum")
+	requireCallErrorContains(t, script, "sleep_rounded_overflow", nil, CallOptions{}, "sleep duration exceeds maximum")
+	requireCallErrorContains(t, script, "sleep_keyword", nil, CallOptions{}, "sleep does not accept keyword arguments")
+	requireCallErrorContains(t, script, "sleep_block", nil, CallOptions{}, "sleep does not accept blocks")
+}
+
 func TestTimeFormatUsesGoLayout(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

@@ -30,4 +30,22 @@ planning:
 - Parser behavior for the frozen baseline is protected by
   `internal/runtime/syntax_freeze_test.go`.
 
+## Pre-1.0 Migration Notes
+
+### Word Boolean Operators
+
+Older pre-1.0 builds accepted Ruby's word boolean operators `and`, `or`, and
+`not`. These words are no longer reserved. They parse as ordinary identifiers so
+scripts can use them as function names, method names, and labels.
+
+Migrate boolean logic to the symbolic operators:
+
+- Replace `a and b` with `a && b`.
+- Replace `a or b` with `a || b`.
+- Replace `not expr` with `!(expr)`, adding parentheses around the intended
+  operand when needed.
+
+If older code relied on Ruby's lower-precedence word operators around
+assignment or ternaries, add explicit parentheses while migrating.
+
 For versioning semantics, see `docs/versioning.md`.

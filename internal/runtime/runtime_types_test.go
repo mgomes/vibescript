@@ -517,6 +517,77 @@ func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
 	requireCallErrorContains(t, script, "takes_nullable_union", []Value{NewInt(1)}, CallOptions{}, "argument v expected string | nil, got int")
 }
 
+func TestFunctionTypeAnnotationAcceptsCallableValues(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def takes_callable(fn: function)
+  fn
+end
+
+def inc(n)
+  n + 1
+end
+
+def script_function_ok
+  takes_callable(inc)(2)
+end
+
+def builtin_ok
+  takes_callable(assert)(true)
+end
+
+def block_rejected(&block)
+  takes_callable(block)
+end
+
+def call_block_rejected
+  block_rejected do |n|
+    n * 2
+  end
+end
+
+def block_annotation_rejected(&block: function)
+  block
+end
+
+def call_block_annotation_rejected
+  block_annotation_rejected do |n|
+    n * 2
+  end
+end
+
+def reject_non_callable
+  takes_callable(1)
+end
+`)
+
+	if got := callFunc(t, script, "script_function_ok", nil); !got.Equal(NewInt(3)) {
+		t.Fatalf("script function annotation = %v, want 3", got)
+	}
+	if got := callFunc(t, script, "builtin_ok", nil); got.Kind() != KindNil {
+		t.Fatalf("builtin function annotation = %v, want nil", got)
+	}
+	requireCallErrorContains(t, script, "call_block_rejected", nil, CallOptions{}, "argument fn expected function, got block")
+	requireCallErrorContains(t, script, "call_block_annotation_rejected", nil, CallOptions{}, "argument block expected function, got block")
+	requireCallErrorContains(t, script, "reject_non_callable", nil, CallOptions{}, "argument fn expected function, got int")
+}
+
+func TestNullableUnknownAnnotationsMustResolveBeforeAcceptingNil(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def arg_nil(value: Typo?)
+  value
+end
+
+def return_nil() -> Typo?
+  nil
+end
+`)
+
+	requireCallErrorContains(t, script, "arg_nil", []Value{NewNil()}, CallOptions{}, "unknown type Typo")
+	requireCallErrorContains(t, script, "return_nil", nil, CallOptions{}, "unknown type Typo")
+}
+
 func TestTypedFunctionsRejectCyclicHashInputWithoutInfiniteRecursion(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

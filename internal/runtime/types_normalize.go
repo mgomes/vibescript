@@ -25,10 +25,9 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		return NewNil(), fmt.Errorf("type normalization exceeded maximum depth")
 	}
 	ctx.depth++
-	if ty.Nullable && val.Kind() == KindNil {
+	if nullableNilCanBypassResolution(ty, val) {
 		return val, nil
 	}
-
 	switch ty.Kind {
 	case TypeAny:
 		return val, nil
@@ -69,7 +68,7 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 			return val, nil
 		}
 	case TypeFunction:
-		if val.Kind() == KindFunction {
+		if isCallableValue(val) {
 			return val, nil
 		}
 	case TypeArray:
@@ -90,6 +89,12 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 			}
 		}
 	case TypeEnum:
+		if ty.Nullable && val.Kind() == KindNil {
+			if _, err := resolveEnumType(ty, ctx); err != nil {
+				return NewNil(), err
+			}
+			return val, nil
+		}
 		return normalizeEnumForType(val, ty, ctx)
 	case TypeUnknown:
 		return NewNil(), fmt.Errorf("unknown type %s", ty.Name)
@@ -99,6 +104,10 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		Expected: formatTypeExpr(ty),
 		Actual:   formatValueTypeExpr(val),
 	}
+}
+
+func nullableNilCanBypassResolution(ty *TypeExpr, val Value) bool {
+	return ty.Nullable && val.Kind() == KindNil && ty.Kind != TypeUnknown && ty.Kind != TypeEnum
 }
 
 func normalizeArrayForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {

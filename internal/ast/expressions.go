@@ -267,9 +267,15 @@ type RangeExpr struct {
 func (e *RangeExpr) exprNode()     {}
 func (e *RangeExpr) Pos() Position { return e.Position }
 
+// CaseWhenValue represents one value in a case/when branch.
+type CaseWhenValue struct {
+	Expr  Expression
+	Splat bool
+}
+
 // CaseWhenClause represents a single when branch in a case expression.
 type CaseWhenClause struct {
-	Values []Expression
+	Values []CaseWhenValue
 	Result Expression
 }
 
