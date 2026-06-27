@@ -3,7 +3,9 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -516,7 +518,13 @@ func rawRelativePrefix(raw string) string {
 }
 
 func (e *Engine) readModuleSource(path string) ([]byte, error) {
-	info, err := os.Stat(path)
+	f, err := openModuleSource(path)
+	if err != nil {
+		return nil, fmt.Errorf("open module source %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat module source %s: %w", path, err)
 	}
@@ -526,7 +534,17 @@ func (e *Engine) readModuleSource(path string) ([]byte, error) {
 	if e.config.MaxSourceBytes > 0 && info.Size() > int64(e.config.MaxSourceBytes) {
 		return nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", info.Size(), e.config.MaxSourceBytes)
 	}
-	return os.ReadFile(path)
+	if e.config.MaxSourceBytes <= 0 || e.config.MaxSourceBytes == math.MaxInt {
+		return io.ReadAll(f)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, int64(e.config.MaxSourceBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > e.config.MaxSourceBytes {
+		return nil, fmt.Errorf("source exceeds maximum size (> %d bytes)", e.config.MaxSourceBytes)
+	}
+	return data, nil
 }
 
 func parseModuleRequest(name string) (moduleRequest, error) {

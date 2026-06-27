@@ -47,6 +47,165 @@ func callHashMember(t *testing.T, exec *Execution, receiver Value, name string, 
 	return builtin.Fn(exec, receiver, args, nil, block)
 }
 
+func TestHashKeysValuesHonorSandboxDuringMaterialization(t *testing.T) {
+	t.Parallel()
+	receiver := largeHashReceiver(2_000)
+	baseExec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	base := baseExec.estimateMemoryUsage(receiver)
+	quota := base + sortedKeyBufferBytes(len(receiver.Hash())) + estimatedSliceBaseBytes
+
+	for _, name := range []string{"keys", "values"} {
+		t.Run(name+"_memory", func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callHashMember(t, exec, receiver, name, nil, NewNil())
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+		})
+		t.Run(name+"_canceled", func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 1 << 30}
+			_, err := callHashMember(t, exec, receiver, name, nil, NewNil())
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("hash.%s canceled context error = %v, want context.Canceled", name, err)
+			}
+		})
+	}
+}
+
+func TestHashDeepTransformKeysHonorsSandboxDuringTraversal(t *testing.T) {
+	t.Parallel()
+
+	nested := NewInt(1)
+	for range 2_000 {
+		nested = NewArray([]Value{nested})
+	}
+	receiver := NewHash(map[string]Value{"root": nested})
+	exec := &Execution{ctx: context.Background(), quota: 10, memoryQuota: 64 << 20}
+	_, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, keyIdentityBlock())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+}
+
+func TestHashDeepTransformKeysReservesOutputBuffers(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeHashReceiver(2_000)
+	block := keyIdentityBlock()
+	baseExec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	base := baseExec.estimateMemoryUsage(receiver, block)
+	quota := base + hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))/2
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestHashDeepTransformKeysRetainedPayloadReservationTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{"root": NewInt(1)})
+	block := keyIdentityBlock()
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	retainedPayload := 1024
+	base := exec.hashCallRootBytes(receiver, nil, nil, block)
+
+	exec.memoryQuota = base + retainedPayload - 1
+	delta, err := reserveDeepTransformRetainedPayload(exec, retainedPayload, receiver, nil, nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if delta != 0 {
+		t.Fatalf("failed reservation delta = %d, want 0", delta)
+	}
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("failed reservation left %d scratch bytes reserved", exec.reservedScratchBytes)
+	}
+
+	exec.memoryQuota = base + retainedPayload
+	delta, err = reserveDeepTransformRetainedPayload(exec, retainedPayload, receiver, nil, nil, block)
+	if err != nil {
+		t.Fatalf("reserveDeepTransformRetainedPayload roomy quota error = %v", err)
+	}
+	if delta != retainedPayload {
+		t.Fatalf("reservation delta = %d, want %d", delta, retainedPayload)
+	}
+	exec.releaseLoopScratch(delta)
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("released reservation left %d scratch bytes reserved", exec.reservedScratchBytes)
+	}
+}
+
+func TestHashDeepTransformKeysDoesNotRechargeSharedLeafPayloads(t *testing.T) {
+	t.Parallel()
+
+	const payloadBytes = 512 * 1024
+	receiver := NewHash(map[string]Value{"leaf": NewString(strings.Repeat("x", payloadBytes))})
+	block := keyIdentityBlock()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))
+	quota := liveWithRoots + outputBytes + len("leaf") + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
+	if err != nil {
+		t.Fatalf("hash.deep_transform_keys with shared string leaf under deduped quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("hash.deep_transform_keys shared string leaf kind = %v, want hash", got.Kind())
+	}
+	if got.Hash()["leaf"].String() != receiver.Hash()["leaf"].String() {
+		t.Fatalf("hash.deep_transform_keys shared string leaf = %q, want original payload", got.Hash()["leaf"].String())
+	}
+}
+
+func TestHashDeepTransformKeysDoesNotRechargeSharedArrayLeafPayloads(t *testing.T) {
+	t.Parallel()
+
+	const payloadBytes = 512 * 1024
+	leaf := NewString(strings.Repeat("x", payloadBytes))
+	items := NewArray([]Value{leaf})
+	receiver := NewHash(map[string]Value{"items": items})
+	block := keyIdentityBlock()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))
+	quota := liveWithRoots + outputBytes + len("items") + deepTransformArrayBufferBytes(len(items.Array())) + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
+	if err != nil {
+		t.Fatalf("hash.deep_transform_keys with shared array leaf payload under deduped quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("hash.deep_transform_keys shared array leaf kind = %v, want hash", got.Kind())
+	}
+	gotItems := got.Hash()["items"]
+	if gotItems.Kind() != KindArray || len(gotItems.Array()) != 1 || gotItems.Array()[0].String() != leaf.String() {
+		t.Fatalf("hash.deep_transform_keys shared array leaf = %#v, want one original string leaf", gotItems)
+	}
+}
+
+func TestHashDeepTransformKeysDoesNotRechargePreReservedArrayBacking(t *testing.T) {
+	t.Parallel()
+
+	items := NewArray([]Value{NewInt(1)})
+	receiver := NewHash(map[string]Value{"items": items})
+	block := keyIdentityBlock()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	liveWithRoots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))
+	quota := liveWithRoots + outputBytes + len("items") + deepTransformArrayBufferBytes(len(items.Array()))
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
+	if err != nil {
+		t.Fatalf("hash.deep_transform_keys at pre-reserved array backing quota = %v, want success", err)
+	}
+	gotItems := got.Hash()["items"]
+	if gotItems.Kind() != KindArray || len(gotItems.Array()) != 1 || gotItems.Array()[0].Int() != 1 {
+		t.Fatalf("hash.deep_transform_keys array result = %#v, want [1]", gotItems)
+	}
+}
+
 func TestHashBlocklessTransformTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 

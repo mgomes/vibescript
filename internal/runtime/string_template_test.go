@@ -1,9 +1,25 @@
 package runtime
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+func callStringMemberForTest(t *testing.T, exec *Execution, receiver Value, name string, args []Value) (Value, error) {
+	t.Helper()
+	member, err := stringMember(receiver, name)
+	if err != nil {
+		t.Fatalf("stringMember(%s): %v", name, err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("string member %s is not a builtin", name)
+	}
+	return builtin.Fn(exec, receiver, args, nil, NewNil())
+}
 
 func TestStringTemplateScanner(t *testing.T) {
 	t.Parallel()
@@ -52,5 +68,115 @@ func TestStringTemplateScanner(t *testing.T) {
 				t.Fatalf("stringTemplate(%q) = %q, want %q", tc.text, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStringTemplateHonorsMemoryQuotaWhileRendering(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{
+		StepQuota:        100_000,
+		MemoryQuotaBytes: 64 * 1024,
+	}, `
+def run(text, payload)
+  text.template({ value: payload })
+end
+`)
+
+	requireCallErrorContains(t, script, "run", []Value{
+		NewString(strings.Repeat("{{value}}", 128)),
+		NewString(strings.Repeat("x", 1024)),
+	}, CallOptions{}, "memory quota exceeded")
+}
+
+func TestStringTemplateHonorsCanceledContextWhileRendering(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 1_000_000}, `
+def run(text, payload)
+  text.template({ value: payload })
+end
+`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := script.Call(ctx, "run", []Value{
+		NewString(strings.Repeat("{{value}}", 128)),
+		NewString("x"),
+	}, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("string.template canceled context error = %v, want context.Canceled", err)
+	}
+}
+
+func TestStringTemplateEmptySubstitutionsHonorStepQuota(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 20, MemoryQuotaBytes: 64 << 20}, `
+def run(text)
+  text.template({ value: "" })
+end
+`)
+
+	_, err := script.Call(context.Background(), "run", []Value{
+		NewString(strings.Repeat("{{value}}", 100)),
+	}, CallOptions{})
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+}
+
+func TestFixedStringTransformsHonorMemoryQuotaBeforeMaterializing(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewString(strings.Repeat("x", 40*1024))
+	arg := NewString(strings.Repeat("y", 40*1024))
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 96 * 1024}
+	_, err := callStringMemberForTest(t, exec, receiver, "concat", []Value{arg})
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	receiver = NewString(strings.Repeat("x", 16*1024))
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 48 * 1024}
+	_, err = callStringMemberForTest(t, exec, receiver, "reverse", nil)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestASCIICaseTransformsHonorScratchQuota(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewString(strings.Repeat("a", 16*1024))
+	args := []Value{NewSymbol("ascii")}
+	outputBytes, scratchBytes := projectedCaseTransformBytesAndScratch(receiver.String(), caseModeASCII)
+	var b strings.Builder
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 60}
+	quota := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	quota = saturatingAdd(quota, estimatedValueBytes+estimatedStringHeaderBytes)
+	quota = saturatingAdd(quota, projectedBuilderCap(&b, outputBytes))
+	quota = saturatingAdd(quota, scratchBytes) - 1
+
+	for _, method := range []string{"upcase", "downcase", "capitalize", "swapcase"} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callStringMemberForTest(t, exec, receiver, method, args)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+		})
+	}
+}
+
+func TestProjectedStringReverseBytesIncludesInvalidExpansionAndScratch(t *testing.T) {
+	t.Parallel()
+
+	outputBytes, scratchBytes := projectedStringReverseBytes("\xffa")
+	wantOutput := utf8.RuneLen(utf8.RuneError) + len("a")
+	if outputBytes != wantOutput {
+		t.Fatalf("projected reverse output bytes = %d, want %d", outputBytes, wantOutput)
+	}
+	wantScratch := estimatedSliceBaseBytes + 2*estimatedRuneBytes
+	if scratchBytes != wantScratch {
+		t.Fatalf("projected reverse scratch bytes = %d, want %d", scratchBytes, wantScratch)
+	}
+
+	outputBytes, scratchBytes = projectedCaseTransformBytesAndScratch("\xffa", caseModeDefault)
+	if outputBytes != 2 {
+		t.Fatalf("projected invalid-UTF8 case output bytes = %d, want 2", outputBytes)
+	}
+	if scratchBytes != byteBufferScratchBytes(2) {
+		t.Fatalf("projected invalid-UTF8 case scratch bytes = %d, want %d", scratchBytes, byteBufferScratchBytes(2))
 	}
 }

@@ -586,8 +586,10 @@ func markCapabilityBuiltins(val Value) {
 }
 
 type strictGlobalsScanner struct {
-	seenArrays map[sliceIdentity]struct{}
-	seenMaps   map[uintptr]struct{}
+	seenArrays  map[sliceIdentity]struct{}
+	seenMaps    map[uintptr]struct{}
+	stackArrays map[sliceIdentity]struct{}
+	stackMaps   map[uintptr]struct{}
 }
 
 func validateStrictGlobals(globals map[string]Value) error {
@@ -595,8 +597,10 @@ func validateStrictGlobals(globals map[string]Value) error {
 		return nil
 	}
 	scanner := strictGlobalsScanner{
-		seenArrays: make(map[sliceIdentity]struct{}),
-		seenMaps:   make(map[uintptr]struct{}),
+		seenArrays:  make(map[sliceIdentity]struct{}),
+		seenMaps:    make(map[uintptr]struct{}),
+		stackArrays: make(map[sliceIdentity]struct{}),
+		stackMaps:   make(map[uintptr]struct{}),
 	}
 	for name, val := range globals {
 		if scanner.containsCallable(val) {
@@ -618,9 +622,14 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 			Cap: cap(values),
 		}
 		if _, seen := s.seenArrays[id]; seen {
+			if _, cyclic := s.stackArrays[id]; cyclic {
+				return true
+			}
 			return false
 		}
 		s.seenArrays[id] = struct{}{}
+		s.stackArrays[id] = struct{}{}
+		defer delete(s.stackArrays, id)
 		return slices.ContainsFunc(values, s.containsCallable)
 	case KindHash, KindObject:
 		entries := val.Hash()
@@ -633,9 +642,14 @@ func (s *strictGlobalsScanner) containsCallable(val Value) bool {
 			ptr = reflect.ValueOf(entries).Pointer()
 		}
 		if _, seen := s.seenMaps[ptr]; seen {
+			if _, cyclic := s.stackMaps[ptr]; cyclic {
+				return true
+			}
 			return false
 		}
 		s.seenMaps[ptr] = struct{}{}
+		s.stackMaps[ptr] = struct{}{}
+		defer delete(s.stackMaps, ptr)
 		for _, item := range entries {
 			if s.containsCallable(item) {
 				return true

@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -77,7 +79,7 @@ func TestSplitOnASCIIWhitespace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := splitOnASCIIWhitespaceLimit(tt.in, 0)
+			got := splitOnASCIIWhitespaceLimit(tt.in, 0, splitOnASCIIWhitespaceLimitCount(tt.in, 0))
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Fatalf("splitOnASCIIWhitespaceLimit(%q, 0) mismatch (-want +got):\n%s", tt.in, diff)
 			}
@@ -113,7 +115,7 @@ func TestSplitEmptySeparator(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := splitEmptySeparator(tt.in, tt.limit)
+			got := splitEmptySeparator(tt.in, tt.limit, splitEmptySeparatorCount(tt.in, tt.limit))
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Fatalf("splitEmptySeparator(%q, %d) mismatch (-want +got):\n%s", tt.in, tt.limit, diff)
 			}
@@ -471,20 +473,88 @@ func TestSplitHelpers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var got []string
+			var count int
 			switch tt.mode {
 			case "ws":
-				got = splitOnASCIIWhitespaceLimit(tt.text, tt.limit)
+				count = splitOnASCIIWhitespaceLimitCount(tt.text, tt.limit)
+				got = splitOnASCIIWhitespaceLimit(tt.text, tt.limit, count)
 			case "empty":
-				got = splitEmptySeparator(tt.text, tt.limit)
+				count = splitEmptySeparatorCount(tt.text, tt.limit)
+				got = splitEmptySeparator(tt.text, tt.limit, count)
 			case "sep":
-				got = splitWithSeparator(tt.text, tt.sep, tt.limit)
+				count = splitWithSeparatorCount(tt.text, tt.sep, tt.limit)
+				got = splitWithSeparator(tt.text, tt.sep, tt.limit, count)
 			default:
 				t.Fatalf("unknown mode %q", tt.mode)
 			}
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Fatalf("split helper mismatch (-want +got):\n%s", diff)
 			}
+			if len(got) != count {
+				t.Fatalf("split helper len = %d, want count %d", len(got), count)
+			}
+			if cap(got) != count {
+				t.Fatalf("split helper cap = %d, want reserved count %d", cap(got), count)
+			}
 		})
+	}
+}
+
+func TestSplitWithSeparatorDefaultAvoidsTrimmedTrailingEmptyAllocation(t *testing.T) {
+	text := "x" + strings.Repeat(",", 200_000)
+	var got []string
+	alloc := allocBytes(func() {
+		count := splitWithSeparatorCount(text, ",", 0)
+		got = splitWithSeparator(text, ",", 0, count)
+	})
+	if diff := cmp.Diff([]string{"x"}, got); diff != "" {
+		t.Fatalf("splitWithSeparator trailing trim mismatch (-want +got):\n%s", diff)
+	}
+	if alloc > 512*1024 {
+		t.Fatalf("splitWithSeparator allocated %d bytes trimming trailing empty fields, want <= %d", alloc, 512*1024)
+	}
+}
+
+func TestSplitEmptySeparatorReservesOffsetScratch(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Repeat("a", 4_096)
+	receiver := NewString(text)
+	args := []Value{NewString("")}
+	count := splitEmptySeparatorCount(text, 0)
+	offsetScratch := splitEmptySeparatorOffsetScratchBytes(text, 0)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 60}
+	acc := newArrayBuildAccumulator(probe, receiver, args, nil, NewNil())
+	quota := saturatingAdd(acc.projected(count), stringSplitPartsScratchBytes(count))
+	quota = saturatingAdd(quota, offsetScratch) - 1
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callStringMemberForTest(t, exec, receiver, "split", args)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestStringSplitResultUsesReservedCapacity(t *testing.T) {
+	t.Parallel()
+
+	const count = 257
+	parts := make([]string, count)
+	receiver := NewString("")
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 60}
+	acc := newArrayBuildAccumulator(probe, receiver, nil, nil, NewNil())
+	quota := saturatingAdd(acc.projected(count), stringSplitPartsScratchBytes(count))
+	quota = saturatingAdd(quota, count*estimatedStringHeaderBytes)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	acc, err := reserveStringSplitResult(exec, receiver, nil, nil, NewNil(), count, 0)
+	if err != nil {
+		t.Fatalf("reserveStringSplitResult exact quota error = %v", err)
+	}
+	got, err := stringSplitResult(exec, parts, acc)
+	if err != nil {
+		t.Fatalf("stringSplitResult exact reserved quota error = %v", err)
+	}
+	if len(got.Array()) != count || cap(got.Array()) != count {
+		t.Fatalf("stringSplitResult len/cap = %d/%d, want %d/%d", len(got.Array()), cap(got.Array()), count, count)
 	}
 }
 

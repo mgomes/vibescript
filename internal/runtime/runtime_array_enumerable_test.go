@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -162,6 +163,37 @@ func arrayFilterMapBuiltin(t *testing.T) BuiltinFunc {
 // charges no steps through runner.call.
 func emptyBlockValue() Value {
 	return NewBlock(nil, nil, newEnv(nil))
+}
+
+func TestArrayBuildAccumulatorConservativelyChargesMutatedBaselineContainer(t *testing.T) {
+	t.Parallel()
+
+	backing := make([]Value, 1, 2)
+	backing[0] = NewInt(1)
+	receiverElement := NewArray(backing[:1:2])
+	receiver := NewArray([]Value{receiverElement})
+	mutated := NewArray(append(backing[:1:2], NewString(strings.Repeat("x", 32*1024))))
+
+	probeExec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	dedup := newArrayBuildAccumulator(probeExec, receiver, nil, nil, NewNil())
+	if err := dedup.add(mutated, 1); err != nil {
+		t.Fatalf("deduplicating add with high quota = %v, want nil", err)
+	}
+	dedupUsed := dedup.projected(1)
+
+	conservative := newArrayBuildAccumulator(probeExec, receiver, nil, nil, NewNil())
+	if err := conservative.addConservative(mutated, 1); err != nil {
+		t.Fatalf("conservative add with high quota = %v, want nil", err)
+	}
+	conservativeUsed := conservative.projected(1)
+	if conservativeUsed <= dedupUsed {
+		t.Fatalf("conservative usage = %d, want greater than deduplicated usage %d", conservativeUsed, dedupUsed)
+	}
+
+	quota := dedupUsed + (conservativeUsed-dedupUsed)/2
+	limited := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	err := newArrayBuildAccumulator(limited, receiver, nil, nil, NewNil()).addConservative(mutated, 1)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 // TestArrayFilterMapEmptyBlockParticipatesInStepQuota guards against an empty

@@ -152,19 +152,45 @@ func exclusionSetBytes(count int) int {
 	return saturatingAdd(estimatedMapBaseBytes, saturatingMul(count, estimatedMapEntryBytes+estimatedStringHeaderBytes))
 }
 
-func deepTransformKeys(exec *Execution, value, block Value) (Value, error) {
-	return deepTransformKeysWithState(exec, value, block, &deepTransformState{
+func deepTransformArrayBufferBytes(count int) int {
+	return saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
+}
+
+func deepTransformKeys(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	return deepTransformKeysWithState(exec, receiver, receiver, args, kwargs, block, &deepTransformState{
 		seenHashes: make(map[uintptr]struct{}),
 		seenArrays: make(map[uintptr]struct{}),
 	})
 }
 
+func reserveDeepTransformRetainedPayload(exec *Execution, payloadBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
+	if payloadBytes <= 0 {
+		return 0, nil
+	}
+	delta := exec.reserveLoopScratch(payloadBytes)
+	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+		exec.releaseLoopScratch(delta)
+		return 0, err
+	}
+	return delta, nil
+}
+
 type deepTransformState struct {
 	seenHashes map[uintptr]struct{}
 	seenArrays map[uintptr]struct{}
+	depth      int
 }
 
-func deepTransformKeysWithState(exec *Execution, value, block Value, state *deepTransformState) (Value, error) {
+func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []Value, kwargs map[string]Value, block Value, state *deepTransformState) (Value, error) {
+	if err := exec.step(); err != nil {
+		return NewNil(), err
+	}
+	if state.depth >= maxJSONNestingDepth {
+		return NewNil(), fmt.Errorf("hash.deep_transform_keys nesting exceeds limit %d", maxJSONNestingDepth)
+	}
+	state.depth++
+	defer func() { state.depth-- }()
+
 	switch value.Kind() {
 	case KindHash, KindObject:
 		entries := value.Hash()
@@ -176,24 +202,60 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 			state.seenHashes[id] = struct{}{}
 			defer delete(state.seenHashes, id)
 		}
+		scratchBytes := sortedKeyBufferBytes(len(entries))
+		delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), scratchBytes))
+		defer exec.releaseLoopScratch(delta)
+		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+		acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 		out := make(map[string]Value, len(entries))
 		var blockArg [1]Value
 		var keyBuf [smallHashKeyBufferSize]string
 		for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			prefixDelta, err := reserveDeepTransformRetainedPayload(exec, acc.retainedPayloadBytes(), receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
 			blockArg[0] = NewSymbol(key)
 			nextKeyValue, err := exec.CallBlock(block, blockArg[:])
 			if err != nil {
+				exec.releaseLoopScratch(prefixDelta)
+				return NewNil(), err
+			}
+			if err := exec.checkContext(); err != nil {
+				exec.releaseLoopScratch(prefixDelta)
 				return NewNil(), err
 			}
 			nextKey, err := valueToHashKey(nextKeyValue)
 			if err != nil {
+				exec.releaseLoopScratch(prefixDelta)
 				return NewNil(), fmt.Errorf("hash.deep_transform_keys block must return symbol or string")
 			}
-			nextValue, err := deepTransformKeysWithState(exec, entries[key], block, state)
+			keyDelta, err := reserveDeepTransformRetainedPayload(exec, len(nextKey), receiver, args, kwargs, block)
+			if err != nil {
+				exec.releaseLoopScratch(prefixDelta)
+				return NewNil(), err
+			}
+			nextValue, err := deepTransformKeysWithState(exec, entries[key], receiver, args, kwargs, block, state)
+			exec.releaseLoopScratch(keyDelta)
+			exec.releaseLoopScratch(prefixDelta)
 			if err != nil {
 				return NewNil(), err
 			}
 			out[nextKey] = nextValue
+			if err := acc.addSynthesizedKey(nextKey); err != nil {
+				return NewNil(), err
+			}
+			// The value is a recursive transform result, not an arbitrary block
+			// result: charge fresh containers while deduplicating unchanged leaves
+			// already held by the receiver.
+			if err := acc.addBaselineDeduped(nextValue); err != nil {
+				return NewNil(), err
+			}
 		}
 		return NewHash(out), nil
 	case KindArray:
@@ -206,13 +268,33 @@ func deepTransformKeysWithState(exec *Execution, value, block Value, state *deep
 			state.seenArrays[id] = struct{}{}
 			defer delete(state.seenArrays, id)
 		}
-		out := make([]Value, len(items))
-		for i, item := range items {
-			nextValue, err := deepTransformKeysWithState(exec, item, block, state)
+		delta := exec.reserveLoopScratch(deepTransformArrayBufferBytes(len(items)))
+		defer exec.releaseLoopScratch(delta)
+		if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+		acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+		out := make([]Value, 0, len(items))
+		for _, item := range items {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			retainedDelta, err := reserveDeepTransformRetainedPayload(exec, acc.retainedPayloadBytes(), receiver, args, kwargs, block)
 			if err != nil {
 				return NewNil(), err
 			}
-			out[i] = nextValue
+			nextValue, err := deepTransformKeysWithState(exec, item, receiver, args, kwargs, block, state)
+			exec.releaseLoopScratch(retainedDelta)
+			if err != nil {
+				return NewNil(), err
+			}
+			out = append(out, nextValue)
+			// deep_transform_keys carries leaf values through unchanged; use the
+			// baseline-deduped accumulator path rather than the conservative
+			// block-result path.
+			if err := acc.addToReservedBacking(nextValue); err != nil {
+				return NewNil(), err
+			}
 		}
 		return NewArray(out), nil
 	default:
@@ -309,11 +391,27 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.keys does not take arguments")
 			}
 			entries := receiver.Hash()
+			if err := exec.checkStepBudgetFor(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveScratch(sortedKeyBufferBytes(len(entries))); err != nil {
+				return NewNil(), err
+			}
+			if err := acc.reserveSlots(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			var keyBuf [smallHashKeyBufferSize]string
 			keys := sortedHashKeysInto(entries, keyBuf[:])
-			values := make([]Value, len(keys))
-			for i, k := range keys {
-				values[i] = NewSymbol(k)
+			values := make([]Value, 0, len(keys))
+			for _, k := range keys {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				values = append(values, NewSymbol(k))
+				if err := acc.add(values[len(values)-1], cap(values)); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(values), nil
 		}), nil
@@ -323,11 +421,27 @@ func hashMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("hash.values does not take arguments")
 			}
 			entries := receiver.Hash()
+			if err := exec.checkStepBudgetFor(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveScratch(sortedKeyBufferBytes(len(entries))); err != nil {
+				return NewNil(), err
+			}
+			if err := acc.reserveSlots(len(entries)); err != nil {
+				return NewNil(), err
+			}
 			var keyBuf [smallHashKeyBufferSize]string
 			keys := sortedHashKeysInto(entries, keyBuf[:])
-			values := make([]Value, len(keys))
-			for i, k := range keys {
-				values[i] = entries[k]
+			values := make([]Value, 0, len(keys))
+			for _, k := range keys {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				values = append(values, entries[k])
+				if err := acc.add(values[len(values)-1], cap(values)); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(values), nil
 		}), nil
@@ -1508,7 +1622,7 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), err
 				}
 				out = append(out, val)
-				if err := acc.add(val, cap(out)); err != nil {
+				if err := acc.addConservative(val, cap(out)); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -1596,7 +1710,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := ensureBlock(block, "hash.deep_transform_keys"); err != nil {
 				return NewNil(), err
 			}
-			return deepTransformKeys(exec, receiver, block)
+			return deepTransformKeys(exec, receiver, args, kwargs, block)
 		}), nil
 	case "remap_keys":
 		return NewBuiltin("hash.remap_keys", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

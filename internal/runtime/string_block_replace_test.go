@@ -221,6 +221,93 @@ func TestStringBangMatchUnchangedReturnsReceiver(t *testing.T) {
 	}
 }
 
+func TestPlainStringReplacementEnforcesOutputLimit(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{
+		StepQuota:        100_000,
+		MemoryQuotaBytes: 8 << 20,
+	}, `
+def gsub_run(text, replacement)
+  text.gsub("a", replacement).size
+end
+
+def sub_run(text, replacement)
+  text.sub("", replacement).size
+end
+
+def no_match_gsub(text, replacement)
+  text.gsub("z", replacement)
+end
+
+def no_match_gsub_bang(text, replacement)
+  text.gsub!("z", replacement)
+end
+
+def literal_gsub(text, pattern)
+  text.gsub(pattern, "R")
+end
+
+def literal_sub(text, pattern)
+  text.sub(pattern, "R")
+end
+
+def literal_gsub_noop(text, pattern)
+  text.gsub(pattern, pattern)
+end
+
+def literal_sub_noop(text, pattern)
+  text.sub(pattern, pattern)
+end
+	`)
+
+	requireCallErrorContains(t, script, "gsub_run", []Value{
+		NewString(strings.Repeat("a", 2_000)),
+		NewString(strings.Repeat("x", 1_000)),
+	}, CallOptions{}, "string.gsub output exceeds limit")
+	requireCallErrorContains(t, script, "sub_run", []Value{
+		NewString("abc"),
+		NewString(strings.Repeat("x", maxRegexInputBytes+1)),
+	}, CallOptions{}, "string.sub replacement exceeds limit")
+
+	huge := NewString(strings.Repeat("x", maxRegexInputBytes+1))
+	got := callFunc(t, script, "no_match_gsub", []Value{NewString("abc"), huge})
+	if got.Kind() != KindString || got.String() != "abc" {
+		t.Fatalf("no-match gsub with huge replacement = %#v, want original string", got)
+	}
+	got = callFunc(t, script, "no_match_gsub_bang", []Value{NewString("abc"), huge})
+	if got.Kind() != KindNil {
+		t.Fatalf("no-match gsub! with huge replacement = %#v, want nil", got)
+	}
+
+	bigLiteral := strings.Repeat("p", maxRegexInputBytes+1)
+	got = callFunc(t, script, "literal_gsub", []Value{NewString("abc"), NewString(bigLiteral)})
+	if got.Kind() != KindString || got.String() != "abc" {
+		t.Fatalf("gsub with unmatched oversized literal pattern = %#v, want original string", got)
+	}
+	got = callFunc(t, script, "literal_gsub", []Value{NewString(bigLiteral), NewString(bigLiteral)})
+	if got.Kind() != KindString || got.String() != "R" {
+		t.Fatalf("gsub collapsing oversized source = %#v, want replacement", got)
+	}
+	got = callFunc(t, script, "literal_sub", []Value{NewString(bigLiteral), NewString(bigLiteral)})
+	if got.Kind() != KindString || got.String() != "R" {
+		t.Fatalf("sub collapsing oversized source = %#v, want replacement", got)
+	}
+	got = callFunc(t, script, "literal_gsub_noop", []Value{NewString(bigLiteral), NewString(bigLiteral)})
+	if got.Kind() != KindString || got.String() != bigLiteral {
+		t.Fatalf("gsub no-op oversized literal = %#v, want original string", got)
+	}
+	got = callFunc(t, script, "literal_sub_noop", []Value{NewString(bigLiteral), NewString(bigLiteral)})
+	if got.Kind() != KindString || got.String() != bigLiteral {
+		t.Fatalf("sub no-op oversized literal = %#v, want original string", got)
+	}
+
+	hugeRun := strings.Repeat("a", maxRegexInputBytes+1)
+	got = callFunc(t, script, "literal_gsub_noop", []Value{NewString(hugeRun), NewString("a")})
+	if got.Kind() != KindString || got.String() != hugeRun {
+		t.Fatalf("gsub no-op over-cap output = %#v, want original string", got)
+	}
+}
+
 // TestStringSubGsubMixedReplacementAndBlock verifies that supplying both a
 // replacement argument and a block is rejected for sub/gsub and their bang
 // variants, rather than silently honoring one over the other.
