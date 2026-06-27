@@ -437,6 +437,136 @@ end`,
 	}
 }
 
+// When '#' is the delimiter, a percent array passed as a parenless call
+// argument must close at the first unescaped '#' just like the direct-literal
+// form. Verified against Ruby: collect %W#hi there# => ["hi", "there"],
+// collect %i#a b# => [:a, :b], collect %W#a\#b c# => ["a#b", "c"].
+func TestParserPercentArrayParenlessArgumentHashDelimiter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name:   "uppercase_words_plain",
+			source: "def run\n  collect %W#hi there#\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "hi"},
+				&ast.StringLiteral{Value: "there"},
+			}},
+		},
+		{
+			name:   "lowercase_symbols_plain",
+			source: "def run\n  collect %i#a b#\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.SymbolLiteral{Name: "a"},
+				&ast.SymbolLiteral{Name: "b"},
+			}},
+		},
+		{
+			name:   "uppercase_words_escaped_hash",
+			source: "def run\n  collect %W#a\\#b c#\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "a#b"},
+				&ast.StringLiteral{Value: "c"},
+			}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{&ast.ExprStmt{Expr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args:   []ast.Expression{tc.wantExpr},
+				KwArgs: []ast.KeywordArg{},
+			}}}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// scanPercentArrayLiteralAt drives the parenless-argument scan path. When '#' is
+// the delimiter the first unescaped '#' must close the literal, so the "#{"
+// interpolation special-casing must not steal it. Without this guard the scanner
+// consumed the "#{...}" span and ran to EOF, yielding a spurious interpolated
+// entry (or failing to recognize the literal at all). The scanner is exercised
+// directly because, after a '#'-closed literal, a trailing '{' would otherwise
+// be parsed as a block attached to the array, obscuring the entries under test.
+// Verified against Ruby, where %W#a#{b}# closes at the second '#' (=> ["a"]) and
+// the trailing "#{...}" begins a comment.
+func TestScanPercentArrayLiteralHashDelimiterClosesBeforeInterpolation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		input       string
+		wantKind    rune
+		wantEntries []string
+	}{
+		{
+			name:        "uppercase_words_hash_brace_does_not_interpolate",
+			input:       "%W#a#{b}#",
+			wantKind:    'W',
+			wantEntries: []string{"a"},
+		},
+		{
+			name:        "uppercase_symbols_hash_brace_does_not_interpolate",
+			input:       "%I#a#{b}#",
+			wantKind:    'I',
+			wantEntries: []string{"a"},
+		},
+		{
+			name:        "uppercase_words_trailing_words_after_interpolation_marker",
+			input:       "%W#a #{b} c#",
+			wantKind:    'W',
+			wantEntries: []string{"a"},
+		},
+		{
+			// Entries are returned with escapes intact; the parser resolves "\#"
+			// to a literal '#' later. The escaped '#' must not close the literal,
+			// but the following unescaped '#' (before "#{c}") must, so the "#{c}"
+			// span is never mistaken for interpolation.
+			name:        "escaped_hash_is_literal_then_first_hash_closes",
+			input:       "%W#a\\#b#{c}#",
+			wantKind:    'W',
+			wantEntries: []string{"a\\#b"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			kind, entries, endOffset, ok := scanPercentArrayLiteralAt(tc.input, 0)
+			if !ok {
+				t.Fatalf("scanPercentArrayLiteralAt(%q) ok = false, want true", tc.input)
+			}
+			if kind != tc.wantKind {
+				t.Fatalf("scanPercentArrayLiteralAt(%q) kind = %q, want %q", tc.input, kind, tc.wantKind)
+			}
+			if diff := cmp.Diff(tc.wantEntries, entries); diff != "" {
+				t.Fatalf("scanPercentArrayLiteralAt(%q) entries mismatch (-want +got):\n%s", tc.input, diff)
+			}
+			// The literal must close at the first unescaped '#', leaving the
+			// remaining "#{...}#" (or "{...}#") suffix unconsumed.
+			if got := tc.input[endOffset:]; len(got) == 0 {
+				t.Fatalf("scanPercentArrayLiteralAt(%q) consumed to EOF; want it to stop at the closing '#'", tc.input)
+			}
+		})
+	}
+}
+
 // A local named W/I keeps %W/%I parsing as modulo against an index/call, the
 // same disambiguation the lowercase forms use.
 func TestParserLocalModuloBeforeCompactUppercaseWIIdentifiers(t *testing.T) {
