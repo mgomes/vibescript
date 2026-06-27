@@ -362,7 +362,7 @@ func TestArrayReduceEmptyBodyAccRestTripsMemoryQuota(t *testing.T) {
 	}
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	baseline := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	baseline := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
 	full, tailOnly := reduceAccRestChargeBytes(seed, NewInt(1))
 	const headroom = 16 * 1024
 	quota := baseline + tailOnly + headroom
@@ -394,7 +394,7 @@ func TestArrayReduceEmptyBodyAccRestFitsWhenAccFitsQuota(t *testing.T) {
 	block := emptyAccRestReduceBlock()
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	baseline := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	baseline := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
 	full, _ := reduceAccRestChargeBytes(seed, NewInt(1))
 	quota := baseline + full + 64*1024
 
@@ -433,7 +433,7 @@ func TestArrayReduceNoSeedAccRestNotDoubleCharged(t *testing.T) {
 	// The true peak is the receiver (which already holds the first element) plus the
 	// fresh tail copy. The accumulator IS the first element, already inside the
 	// receiver, so it contributes nothing beyond the receiver.
-	roots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
 	tail := NewArray(slicesClone(first.Array()[1:]))
 	est := newMemoryEstimator()
 	est.value(receiver)

@@ -452,7 +452,7 @@ func TestArrayEachNestedRestEmptyBodyTripsMemoryQuota(t *testing.T) {
 	// Size the quota to admit the live roots (receiver plus block) and a little
 	// headroom, but not the fresh tail copy the rest collects.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	roots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
 	quota := roots + 16*1024
 
 	member, err := arrayMember(receiver, "each")
@@ -508,7 +508,7 @@ func TestArrayEachNestedRestRejectsBeforeAllocatingTail(t *testing.T) {
 	// pre- and a post-allocation check reject here; the distinguishing signal is the
 	// bytes allocated before the rejection, measured below.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	roots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
 	quota := roots + 16*1024
 
 	member, err := arrayMember(receiver, "each")
@@ -578,7 +578,7 @@ func TestCallBlockNestedRestArgTripsMemoryQuota(t *testing.T) {
 	quota := tailCharge + headroom
 
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
-	correctRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), args, nil, block)
+	correctRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), NewNil(), args, nil, block)
 	if correctRoots+tailCharge <= quota {
 		t.Fatalf("test setup expects the argument-inclusive peak (%d) to exceed the quota (%d)", correctRoots+tailCharge, quota)
 	}

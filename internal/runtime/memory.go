@@ -19,6 +19,7 @@ const (
 	estimatedEnvBytes          = int(unsafe.Sizeof(Env{}))
 	estimatedInstanceBytes     = 16
 	estimatedBlockBytes        = 24
+	estimatedBuiltinBytes      = int(unsafe.Sizeof(Builtin{}))
 	estimatedCallFrameBytes    = 48
 	estimatedModuleContextSize = 24
 )
@@ -51,6 +52,7 @@ type memoryEstimator struct {
 	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
 	seenBlocks    map[*Block]struct{}
+	seenBuiltins  map[*Builtin]struct{}
 
 	// journal, when non-nil, records every seen-set entry a walk newly inserts so
 	// the walk can be rolled back to the estimator's prior state. It backs the
@@ -79,6 +81,7 @@ type estimatorJournal struct {
 	classes   []*ClassDef
 	instances []*Instance
 	blocks    []*Block
+	builtins  []*Builtin
 }
 
 type stringIdentity struct {
@@ -101,6 +104,7 @@ func (est *memoryEstimator) reset() {
 	clear(est.seenClasses)
 	clear(est.seenInstances)
 	clear(est.seenBlocks)
+	clear(est.seenBuiltins)
 }
 
 // probe walks val against the estimator's current seen-set to measure val's
@@ -149,6 +153,9 @@ func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
 	for _, blk := range j.blocks {
 		delete(est.seenBlocks, blk)
 	}
+	for _, builtin := range j.builtins {
+		delete(est.seenBuiltins, builtin)
+	}
 }
 
 func (exec *Execution) memoryEstimatorForCheck() *memoryEstimator {
@@ -173,12 +180,12 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 	return nil
 }
 
-func (exec *Execution) checkMemoryWithCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	used := exec.estimateMemoryUsageForCallRoots(receiver, args, kwargs, block)
+	used := exec.estimateMemoryUsageForCallRoots(callee, receiver, args, kwargs, block)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
@@ -650,7 +657,7 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	// Measure the baseline through a throwaway estimator so the results-only
 	// estimator stays empty: the base must be counted, but the results estimator
 	// must not dedup later block results against the call roots it walked.
-	acc.base = exec.estimateMemoryUsageForCallRoots(receiver, args, kwargs, block)
+	acc.base = exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
 	// The output is a single hash, so fold its empty-map overhead plus the
 	// hashData wrapper every KindHash allocates into the baseline; add then
 	// charges only the per-entry growth.
@@ -1057,11 +1064,14 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	return total
 }
 
-func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+func (exec *Execution) estimateMemoryUsageForCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
 	est := exec.memoryEstimatorForCheck()
 
 	total := exec.estimateMemoryUsageBase(est)
 
+	if callee.Kind() != KindNil {
+		total += est.value(callee)
+	}
 	if receiver.Kind() != KindNil {
 		total += est.value(receiver)
 	}
@@ -1333,8 +1343,41 @@ func (est *memoryEstimator) value(val Value) int {
 		}
 		size += estimatedStringHeaderBytes*3 + len(blk.moduleKey) + len(blk.modulePath) + len(blk.moduleRoot)
 		size += est.env(blk.Env)
-	case KindFunction, KindBuiltin:
-		// Functions and builtins are compile-time/static artifacts for memory quotas.
+	case KindFunction:
+		// Functions are compile-time/static artifacts for memory quotas.
+	case KindBuiltin:
+		// Static stdlib builtins are singletons reachable once, so they stay
+		// free. A builtin that closes over runtime values, though, is a
+		// dynamically allocated probe a script can mint in a loop (for example
+		// pushing `1.eql?` or `obj.equal?` into an array): each member access
+		// allocates a fresh *Builtin plus its CapturedValues backing. Charge that
+		// per-probe structure — the Builtin struct and the slice backing — so the
+		// quota accounts for the allocation itself, not just its captured
+		// payloads (which are effectively zero for scalar receivers). Then charge
+		// the captured payloads on top. Dedup by builtin pointer guards against
+		// revisiting the same builtin; recursing through est.value dedups each
+		// captured value against any independently reachable copy via the existing
+		// seen* maps, so a receiver that is also reachable elsewhere is charged
+		// only once.
+		builtin := valueBuiltin(val)
+		if builtin == nil || len(builtin.CapturedValues) == 0 {
+			return size
+		}
+		if _, seen := est.seenBuiltins[builtin]; seen {
+			return size
+		}
+		if est.seenBuiltins == nil {
+			est.seenBuiltins = make(map[*Builtin]struct{})
+		}
+		est.seenBuiltins[builtin] = struct{}{}
+		if est.journal != nil {
+			est.journal.builtins = append(est.journal.builtins, builtin)
+		}
+		size = saturatingAdd(size, estimatedBuiltinBytes)
+		size = saturatingAdd(size, sliceStructuralBytes(builtin.CapturedValues))
+		for _, captured := range builtin.CapturedValues {
+			size = saturatingAdd(size, est.valuePayload(captured))
+		}
 	}
 
 	return size

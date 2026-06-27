@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -86,21 +85,33 @@ end`,
 	}
 }
 
-func TestParserTrailingHashCommaPreservesMissingValueDiagnostic(t *testing.T) {
+// TestParserTrailingHashCommaWithValueOmission verifies that a trailing comma
+// after an omitted label value still expands to the local-variable shorthand,
+// so {a:,} is parsed as {a: a} just like {a:}.
+func TestParserTrailingHashCommaWithValueOmission(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
   {a:,}
 end`
-	_, errs := parseSource(t, source)
-	if len(errs) == 0 {
-		t.Fatalf("parseSource(%q) errors = none, want missing hash value diagnostic", source)
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
 	}
 
-	for _, err := range errs {
-		if strings.Contains(err.Error(), "missing value for hash key a") {
-			return
-		}
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.HashLiteral{
+				Pairs: []ast.HashPair{
+					{
+						Key:   &ast.SymbolLiteral{Name: "a"},
+						Value: &ast.Identifier{Name: "a"},
+					},
+				},
+			},
+		},
 	}
-	t.Fatalf("parseSource(%q) errors = %v, want missing value for hash key a", source, errs)
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
 }
