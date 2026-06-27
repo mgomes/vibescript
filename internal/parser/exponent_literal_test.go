@@ -47,6 +47,34 @@ func TestLexerExponentLiterals(t *testing.T) {
 	}
 }
 
+// TestLexerMalformedExponentLiterals pins that exponent suffixes with a
+// dangling underscore tokenize as a single illegal token carrying the
+// diagnostic, mirroring Ruby's "trailing `_' in number" rejection, rather
+// than splitting into a float plus a stray identifier.
+func TestLexerMalformedExponentLiterals(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{name: "trailing underscore", source: "1e3_"},
+		{name: "doubled underscore", source: "1e3__4"},
+		{name: "underscore before digits", source: "1e_3"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tok := newLexer(tc.source).NextToken()
+			if tok.Type != ast.TokenIllegal {
+				t.Fatalf("token type = %v, want %v (literal %q)", tok.Type, ast.TokenIllegal, tok.Literal)
+			}
+			if !strings.Contains(tok.Literal, "malformed exponent") {
+				t.Fatalf("token literal = %q, want substring %q", tok.Literal, "malformed exponent")
+			}
+		})
+	}
+}
+
 // TestParserExponentLiteralValues confirms exponent literals parse to floats
 // with the value Ruby produces, including overflow that saturates to infinity.
 func TestParserExponentLiteralValues(t *testing.T) {
@@ -122,6 +150,8 @@ func TestParserMalformedExponentLiterals(t *testing.T) {
 		{name: "missing exponent digits", source: "1e", wantMsg: "malformed exponent"},
 		{name: "sign without digits", source: "1e+", wantMsg: "malformed exponent"},
 		{name: "underscore before digits", source: "1e_3", wantMsg: "malformed exponent"},
+		{name: "trailing underscore", source: "1e3_", wantMsg: "malformed exponent"},
+		{name: "doubled underscore", source: "1e3__4", wantMsg: "malformed exponent"},
 		{name: "fraction after exponent", source: "1e3.5", wantMsg: "expected member name"},
 	}
 	for _, tc := range tests {

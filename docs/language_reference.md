@@ -30,10 +30,11 @@ Numeric literals accept underscores as visual separators between digits
 (`1_000`, `1_000.50`). Floats may use scientific notation with an `e`/`E`
 marker, an optional sign, and one or more exponent digits (`1e3`, `1.5e-2`,
 `1E6`, `1e1_0`). Any literal carrying an exponent is a float even without a
-decimal point, matching Ruby (`1e3` is `1000.0`). A literal whose exponent
-overflows the 64-bit float range saturates to `Infinity`. Partial exponent
-forms such as `1e`, `1e+`, and `1e_3` are reported as parse errors rather than
-splitting into an integer followed by an identifier.
+decimal point, matching Ruby (`1e3` is `1000.0`). Exponent underscores are
+visual separators only between two digits. A literal whose exponent overflows
+the 64-bit float range saturates to `Infinity`. Malformed exponent forms such
+as `1e`, `1e+`, `1e_3`, `1e3_`, and `1e3__4` are reported as parse errors
+rather than splitting into an integer followed by an identifier.
 
 Hash literals support label keys (`name:`) and quoted string keys (`"name":`).
 Ruby's hash rocket syntax (`=>`) is not supported.

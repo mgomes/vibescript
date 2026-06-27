@@ -617,9 +617,10 @@ done:
 // readExponent consumes an exponent suffix beginning at the e/E marker,
 // which must be the lexer's current peek rune. It appends the consumed
 // runes (minus visual-separator underscores) to sb and returns a
-// diagnostic when the suffix is malformed. A malformed suffix is one that
-// lacks any exponent digit, so its marker, sign, and any stray runes are
-// consumed to keep the span over the offending text.
+// diagnostic when the suffix is malformed. A malformed suffix either lacks
+// any exponent digit (1e, 1e+, 1e_3) or carries an underscore that is not
+// wedged between two digits (1e3_, 1e3__4); in both cases the marker, sign,
+// and any stray runes are consumed to keep the span over the offending text.
 func (l *lexer) readExponent(sb *strings.Builder) string {
 	marker := l.peekRune()
 	l.readRune()
@@ -637,12 +638,16 @@ func (l *lexer) readExponent(sb *strings.Builder) string {
 	for {
 		switch r := l.peekRune(); {
 		case r == '_':
-			// Underscores are visual separators; keep them only between digits.
+			// Underscores are visual separators only between two digits. A
+			// trailing or doubled underscore (1e3_, 1e3__4) is malformed, so
+			// consume it and report rather than letting the parser lex the
+			// dangling underscore as a separate identifier.
 			if unicode.IsDigit(l.ch) && unicode.IsDigit(l.peekRuneN(1)) {
 				l.readRune()
 				continue
 			}
-			return ""
+			l.readRune()
+			return "malformed exponent in numeric literal: underscore must sit between exponent digits"
 		case unicode.IsDigit(r):
 			l.readRune()
 			sb.WriteRune(r)
