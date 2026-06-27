@@ -292,6 +292,13 @@ func valueToInt64(val Value) (int64, error) { return value.ValueToInt64(val) }
 
 func formatFloat(f float64) string { return value.FormatFloat(f) }
 
+// errStringRenderTruncated re-exports value.ErrStringRenderTruncated so runtime
+// callers that render a composite under a byte budget (such as the String#sub /
+// gsub block forms bounding a block result before it is spliced into the result)
+// can recognize a truncated rendering with errors.Is without importing the value
+// package directly.
+var errStringRenderTruncated = value.ErrStringRenderTruncated
+
 func parseMoneyLiteral(input string) (Money, error) { return value.ParseMoneyLiteral(input) }
 
 func newMoneyFromCents(cents int64, currency string) (Money, error) {
@@ -756,6 +763,13 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 	})
 	for name, val := range env.statics {
 		clone.DefineStatic(name, cloneValueForHostWithState(val, state))
+	}
+	// A call frame captured by an escaped closure carries the block its method
+	// received in a hidden slot; clone it so a closure or default proc that
+	// crosses the host boundary still resolves yield and block_given? to that
+	// block on re-entry instead of seeing no block.
+	if env.hasCallBlock {
+		clone.setCallBlock(cloneValueForHostWithState(env.callBlock, state))
 	}
 	return clone
 }

@@ -147,15 +147,27 @@ type ScopeExpr struct {
 func (e *ScopeExpr) exprNode()     {}
 func (e *ScopeExpr) Pos() Position { return e.Position }
 
-// IndexExpr represents a bracket-index access (e.g. arr[0]).
+// IndexExpr represents a bracket-index access (e.g. arr[0]). Indices holds the
+// one or more comma-separated selectors between the brackets, supporting Ruby's
+// single-index (arr[i]), start/length (arr[start, length]), and range
+// (arr[range]) forms.
 type IndexExpr struct {
 	Object   Expression
-	Index    Expression
+	Indices  []Expression
 	Position Position
 }
 
 func (e *IndexExpr) exprNode()     {}
 func (e *IndexExpr) Pos() Position { return e.Position }
+
+// IndexPos returns the source position of the i-th selector for diagnostics,
+// falling back to the bracket position when i is out of range.
+func (e *IndexExpr) IndexPos(i int) Position {
+	if i < 0 || i >= len(e.Indices) {
+		return e.Position
+	}
+	return e.Indices[i].Pos()
+}
 
 // DestructureElement represents one target in a destructuring assignment. An
 // anonymous rest target (a bare "*") has a nil Target with Rest set true; its

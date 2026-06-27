@@ -165,8 +165,8 @@ end`,
 				Left:     &ast.Identifier{Name: "total"},
 				Operator: ast.TokenPercent,
 				Right: &ast.IndexExpr{
-					Object: &ast.Identifier{Name: "w"},
-					Index:  &ast.IntegerLiteral{Value: 0},
+					Object:  &ast.Identifier{Name: "w"},
+					Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 				},
 			},
 		},
@@ -179,8 +179,8 @@ end`,
 				Left:     &ast.Identifier{Name: "total"},
 				Operator: ast.TokenPercent,
 				Right: &ast.IndexExpr{
-					Object: &ast.Identifier{Name: "w"},
-					Index:  &ast.IntegerLiteral{Value: 0},
+					Object:  &ast.Identifier{Name: "w"},
+					Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 				},
 			},
 		},
@@ -268,8 +268,8 @@ end`
 			Left:     &ast.Identifier{Name: "total"},
 			Operator: ast.TokenPercent,
 			Right: &ast.IndexExpr{
-				Object: &ast.Identifier{Name: "w"},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.Identifier{Name: "w"},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 		}},
 	}
@@ -390,8 +390,8 @@ end`
 			Left:     &ast.Identifier{Name: "total"},
 			Operator: ast.TokenPercent,
 			Right: &ast.IndexExpr{
-				Object: &ast.Identifier{Name: "w"},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.Identifier{Name: "w"},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 		}},
 	}
@@ -431,8 +431,8 @@ end`
 			Left:     &ast.Identifier{Name: "w"},
 			Operator: ast.TokenPercent,
 			Right: &ast.IndexExpr{
-				Object: &ast.Identifier{Name: "w"},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.Identifier{Name: "w"},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 		}},
 	}
@@ -474,8 +474,8 @@ end`
 			Left:     &ast.Identifier{Name: "err"},
 			Operator: ast.TokenPercent,
 			Right: &ast.IndexExpr{
-				Object: &ast.Identifier{Name: "w"},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.Identifier{Name: "w"},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 		}},
 	}
@@ -515,8 +515,8 @@ end`
 			Left:     &ast.Identifier{Name: "total"},
 			Operator: ast.TokenPercent,
 			Right: &ast.IndexExpr{
-				Object: &ast.Identifier{Name: "w"},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.Identifier{Name: "w"},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 		}},
 	}
@@ -585,8 +585,8 @@ total %w[0]`
 		Left:     &ast.Identifier{Name: "total"},
 		Operator: ast.TokenPercent,
 		Right: &ast.IndexExpr{
-			Object: &ast.Identifier{Name: "w"},
-			Index:  &ast.IntegerLiteral{Value: 0},
+			Object:  &ast.Identifier{Name: "w"},
+			Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 		},
 	}}
 	if diff := cmp.Diff(wantStmt, got.Statements[1], astCmpOpts); diff != "" {
@@ -633,8 +633,8 @@ end`
 		Left:     &ast.Identifier{Name: "total"},
 		Operator: ast.TokenPercent,
 		Right: &ast.IndexExpr{
-			Object: &ast.Identifier{Name: "w"},
-			Index:  &ast.IntegerLiteral{Value: 0},
+			Object:  &ast.Identifier{Name: "w"},
+			Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 		},
 	}
 	if diff := cmp.Diff(want, exprPart.Expr, astCmpOpts); diff != "" {
@@ -677,8 +677,8 @@ end`
 		Left:     &ast.Identifier{Name: "total"},
 		Operator: ast.TokenPercent,
 		Right: &ast.IndexExpr{
-			Object: &ast.Identifier{Name: "w"},
-			Index:  &ast.IntegerLiteral{Value: 0},
+			Object:  &ast.Identifier{Name: "w"},
+			Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 		},
 	}
 	if diff := cmp.Diff(want, xParam.DefaultVal, astCmpOpts); diff != "" {
@@ -700,8 +700,8 @@ func TestParserPercentArrayArgumentBindsTrailingPostfix(t *testing.T) {
 			name:   "index",
 			source: "def run\n  collect %w[a][0]\nend",
 			wantArg: &ast.IndexExpr{
-				Object: &ast.ArrayLiteral{Elements: []ast.Expression{&ast.StringLiteral{Value: "a"}}},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.ArrayLiteral{Elements: []ast.Expression{&ast.StringLiteral{Value: "a"}}},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 		},
 		{

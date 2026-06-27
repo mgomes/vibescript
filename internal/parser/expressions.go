@@ -1231,15 +1231,30 @@ func (p *parser) parseScopeExpression(object ast.Expression) ast.Expression {
 
 func (p *parser) parseIndexExpression(object ast.Expression) ast.Expression {
 	pos := p.curToken.Pos
+	if p.peekToken.Type == ast.TokenRBracket {
+		p.addParseError(p.peekToken.Pos, "index expression requires at least one selector")
+		return nil
+	}
 	p.nextToken()
+	indices := []ast.Expression{}
 	index := p.parseExpression(lowestPrec)
 	if index == nil {
 		return nil
 	}
+	indices = append(indices, index)
+	for p.peekToken.Type == ast.TokenComma {
+		p.nextToken()
+		p.nextToken()
+		next := p.parseExpression(lowestPrec)
+		if next == nil {
+			return nil
+		}
+		indices = append(indices, next)
+	}
 	if !p.expectPeek(ast.TokenRBracket) {
 		return nil
 	}
-	return &ast.IndexExpr{Object: object, Index: index, Position: pos}
+	return &ast.IndexExpr{Object: object, Indices: indices, Position: pos}
 }
 
 func isMemberNameToken(tok ast.Token) bool {
