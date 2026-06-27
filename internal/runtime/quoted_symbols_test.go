@@ -62,6 +62,53 @@ func TestQuotedSymbolValues(t *testing.T) {
 	}
 }
 
+// TestColonBeforeQuotedStringStaysSeparator verifies that a colon followed by a
+// quoted string keeps acting as a label or ternary separator when it is not in
+// expression-start position. Quoted-symbol scanning must not swallow the
+// separator, so the no-space forms {name:"Ada"}, call(name:"Ada"), and
+// flag ? 1 :"no" must still evaluate to the string value rather than a symbol.
+func TestColonBeforeQuotedStringStaysSeparator(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   Value
+	}{
+		{
+			name:   "hash_label_string_value",
+			source: `def run; ({name:"Ada"})[:name]; end`,
+			want:   NewString("Ada"),
+		},
+		{
+			name:   "keyword_argument_string_value",
+			source: "def greet(name:)\n  name\nend\ndef run\n  greet(name:\"Ada\")\nend",
+			want:   NewString("Ada"),
+		},
+		{
+			name:   "ternary_true_branch",
+			source: `def run; true ? "yes" :"no"; end`,
+			want:   NewString("yes"),
+		},
+		{
+			name:   "ternary_false_branch",
+			source: `def run; false ? "yes" :"no"; end`,
+			want:   NewString("no"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.source)
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(tc.want) {
+				t.Fatalf("run() = %s, want %s", got.Inspect(), tc.want.Inspect())
+			}
+		})
+	}
+}
+
 // TestQuotedSymbolHashKeyIsSymbol verifies that a quoted-string hash key parses
 // to a symbol key, matching Ruby, so it can be read back with a quoted symbol.
 func TestQuotedSymbolHashKeyIsSymbol(t *testing.T) {

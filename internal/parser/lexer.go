@@ -235,7 +235,7 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 			return tok
 		}
-		if quote := l.peekRune(); quote == '"' || quote == '\'' {
+		if quote := l.peekRune(); (quote == '"' || quote == '\'') && l.colonStartsQuotedSymbol() {
 			return l.scanQuotedSymbol(tok)
 		}
 		if ast.IsIdentifierRune(l.peekRune()) {
@@ -850,6 +850,25 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 			return true
 		}
 		return !canEndExpressionToken(l.lastToken.Type)
+	}
+	return !canEndExpressionToken(l.lastToken.Type)
+}
+
+// colonStartsQuotedSymbol reports whether a colon followed by a quote should be
+// lexed as a quoted symbol literal (:"foo") rather than a label separator that
+// happens to precede a quoted string. A colon introduces a symbol only in
+// expression-start position; when it follows a token that can end an expression
+// it is the hash, keyword-argument, or ternary separator, and the trailing quote
+// belongs to a separate string value. A colon that begins a logical line (only
+// leading whitespace before it) is always expression-start because lastToken
+// still holds the previous line's final token; Ruby likewise reads a
+// line-leading :"..." as a symbol, not a separator. This mirrors how
+// canStartPercentArrayLiteral disambiguates %w[...] from the modulo operator and
+// keeps previously valid no-space label forms like {name:"Ada"},
+// call(name:"Ada"), and flag ? 1 :"no" parsing as separator + string.
+func (l *lexer) colonStartsQuotedSymbol() bool {
+	if l.atLineLeadingWhitespace() {
+		return true
 	}
 	return !canEndExpressionToken(l.lastToken.Type)
 }

@@ -51,6 +51,158 @@ func TestLexerQuotedSymbolLiterals(t *testing.T) {
 	}
 }
 
+// TestLexerColonQuoteDisambiguation verifies that a colon followed by a quote is
+// lexed as a quoted symbol only in expression-start position. When the colon is a
+// hash, keyword-argument, or ternary separator that happens to precede a quoted
+// string value, it must stay a TokenColon followed by a TokenString so the
+// no-space label and ternary forms that predate quoted symbols keep parsing.
+func TestLexerColonQuoteDisambiguation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   []ast.TokenType
+	}{
+		{
+			name:   "hash_label_no_space_stays_separator",
+			source: `{name:"Ada"}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenIdent, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
+		},
+		{
+			name:   "keyword_argument_no_space_stays_separator",
+			source: `call(name:"Ada")`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenLParen, ast.TokenIdent, ast.TokenColon, ast.TokenString, ast.TokenRParen},
+		},
+		{
+			name:   "ternary_alternate_no_space_stays_separator",
+			source: `flag ? 1 :"no"`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenQuestion, ast.TokenInt, ast.TokenColon, ast.TokenString},
+		},
+		{
+			name:   "quoted_string_label_unaffected",
+			source: `{"foo-bar": 1}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenString, ast.TokenColon, ast.TokenInt, ast.TokenRBrace},
+		},
+		{
+			name:   "primary_position_is_symbol",
+			source: `:"foo-bar"`,
+			want:   []ast.TokenType{ast.TokenSymbol},
+		},
+		{
+			name:   "after_assign_is_symbol",
+			source: `x = :"sym"`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenAssign, ast.TokenSymbol},
+		},
+		{
+			name:   "after_open_bracket_is_symbol",
+			source: `[:"a-b"]`,
+			want:   []ast.TokenType{ast.TokenLBracket, ast.TokenSymbol, ast.TokenRBracket},
+		},
+		{
+			name:   "after_comma_is_symbol",
+			source: `a, :"b"`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenComma, ast.TokenSymbol},
+		},
+		{
+			name:   "after_return_is_symbol",
+			source: `return :"x"`,
+			want:   []ast.TokenType{ast.TokenReturn, ast.TokenSymbol},
+		},
+		{
+			// Both ternary branches are quoted symbols; the separator colon sits
+			// between two symbols, so it must stay a separator while the branches
+			// are symbols.
+			name:   "ternary_with_symbol_branches",
+			source: `flag ? :"a" : :"b"`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenQuestion, ast.TokenSymbol, ast.TokenColon, ast.TokenSymbol},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			lex := newLexer(tc.source)
+			var got []ast.TokenType
+			for {
+				tok := lex.NextToken()
+				if tok.Type == ast.TokenEOF {
+					break
+				}
+				got = append(got, tok.Type)
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Fatalf("token types for %q mismatch (-want +got):\n%s", tc.source, diff)
+			}
+		})
+	}
+}
+
+// TestParserColonQuoteSeparatorValues verifies that the no-space label and
+// ternary forms whose value starts with a quote parse into the expected nodes,
+// not a quoted-symbol misread. These guard the regression where quoted-symbol
+// scanning consumed the separator colon.
+func TestParserColonQuoteSeparatorValues(t *testing.T) {
+	t.Parallel()
+
+	t.Run("hash_label_string_value", func(t *testing.T) {
+		t.Parallel()
+		want := []ast.Statement{
+			&ast.ExprStmt{Expr: &ast.HashLiteral{Pairs: []ast.HashPair{{
+				Key:   &ast.SymbolLiteral{Name: "name"},
+				Value: &ast.StringLiteral{Value: "Ada"},
+			}}}},
+		}
+		got, errs := parseSource(t, "def run\n  {name:\"Ada\"}\nend")
+		if len(errs) != 0 {
+			t.Fatalf("parseSource errors = %v, want none", errs)
+		}
+		if diff := cmp.Diff(want, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+			t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("keyword_argument_string_value", func(t *testing.T) {
+		t.Parallel()
+		got, errs := parseSource(t, "def run\n  greet(name:\"Ada\")\nend")
+		if len(errs) != 0 {
+			t.Fatalf("parseSource errors = %v, want none", errs)
+		}
+		body := parsedFunctionBody(t, got)
+		call := body[0].(*ast.ExprStmt).Expr.(*ast.CallExpr)
+		if len(call.Args) != 0 {
+			t.Fatalf("call positional args = %d, want 0", len(call.Args))
+		}
+		if len(call.KwArgs) != 1 {
+			t.Fatalf("call keyword args = %d, want 1", len(call.KwArgs))
+		}
+		if call.KwArgs[0].Name != "name" {
+			t.Fatalf("keyword name = %q, want %q", call.KwArgs[0].Name, "name")
+		}
+		str, ok := call.KwArgs[0].Value.(*ast.StringLiteral)
+		if !ok || str.Value != "Ada" {
+			t.Fatalf("keyword value = %#v, want StringLiteral(Ada)", call.KwArgs[0].Value)
+		}
+	})
+
+	t.Run("ternary_string_alternate", func(t *testing.T) {
+		t.Parallel()
+		got, errs := parseSource(t, "def run\n  flag ? 1 :\"no\"\nend")
+		if len(errs) != 0 {
+			t.Fatalf("parseSource errors = %v, want none", errs)
+		}
+		body := parsedFunctionBody(t, got)
+		cond, ok := body[0].(*ast.ExprStmt).Expr.(*ast.ConditionalExpr)
+		if !ok {
+			t.Fatalf("top expression = %T, want *ast.ConditionalExpr", body[0].(*ast.ExprStmt).Expr)
+		}
+		str, ok := cond.Alternate.(*ast.StringLiteral)
+		if !ok || str.Value != "no" {
+			t.Fatalf("ternary alternate = %#v, want StringLiteral(no)", cond.Alternate)
+		}
+	})
+}
+
 // TestParserQuotedSymbolLiterals verifies that quoted symbols parse into the
 // same SymbolLiteral node as bare symbols, anywhere a symbol literal is allowed.
 func TestParserQuotedSymbolLiterals(t *testing.T) {
@@ -125,8 +277,9 @@ func TestParserQuotedSymbolInterpolationRejected(t *testing.T) {
 		got.WriteString(err.Error())
 		got.WriteByte('\n')
 	}
-	if !strings.Contains(got.String(), "invalid token") {
-		t.Fatalf("parseSource(%q) errors = %s, want substring %q", source, got.String(), "invalid token")
+	const wantMsg = "interpolation is not allowed in a symbol literal"
+	if !strings.Contains(got.String(), wantMsg) {
+		t.Fatalf("parseSource(%q) errors = %s, want substring %q", source, got.String(), wantMsg)
 	}
 }
 
