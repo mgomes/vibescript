@@ -754,42 +754,57 @@ func skipEscapedByte(raw string, i int) int {
 	return i + 2
 }
 
+// findStringInterpolationEnd locates the byte index of the "}" that closes the
+// interpolation whose body begins at start (just past the opening "#{"). It
+// maintains a stack of interpolation and string contexts so nested
+// double-quoted strings, single-quoted strings, and further interpolations
+// balance correctly, mirroring the lexer's consumeInterpolation. It returns
+// false when the body is never closed before the end of raw.
 func findStringInterpolationEnd(raw string, start int) (int, bool) {
-	depth := 1
-	for i := start; i < len(raw); {
-		switch raw[i] {
-		case '\\':
-			i = skipEscapedByte(raw, i)
-		case '\'', '"':
-			next, ok := skipQuotedInterpolationString(raw, i)
-			if !ok {
-				return 0, false
-			}
-			i = next
-		case '{':
-			depth++
-			i++
-		case '}':
-			depth--
-			if depth == 0 {
-				return i, true
-			}
-			i++
-		default:
-			i++
-		}
+	// stack frames mirror consumeInterpolation: interpolation contexts track
+	// unmatched "{" via braceDepth, string contexts hold their delimiting quote.
+	type context struct {
+		isInterp   bool
+		quote      byte
+		braceDepth int
 	}
-	return 0, false
-}
+	stack := []context{{isInterp: true}}
 
-func skipQuotedInterpolationString(raw string, start int) (int, bool) {
-	quote := raw[start]
-	for i := start + 1; i < len(raw); {
+	for i := start; i < len(raw); {
+		top := &stack[len(stack)-1]
+		if top.isInterp {
+			switch raw[i] {
+			case '{':
+				top.braceDepth++
+			case '}':
+				if top.braceDepth > 0 {
+					top.braceDepth--
+				} else {
+					stack = stack[:len(stack)-1]
+					if len(stack) == 0 {
+						return i, true
+					}
+				}
+			case '"', '\'':
+				stack = append(stack, context{quote: raw[i]})
+			}
+			i++
+			continue
+		}
+
 		switch raw[i] {
 		case '\\':
 			i = skipEscapedByte(raw, i)
-		case quote:
-			return i + 1, true
+		case top.quote:
+			stack = stack[:len(stack)-1]
+			i++
+		case '#':
+			if top.quote == '"' && i+1 < len(raw) && raw[i+1] == '{' {
+				stack = append(stack, context{isInterp: true})
+				i += 2
+			} else {
+				i++
+			}
 		default:
 			i++
 		}
