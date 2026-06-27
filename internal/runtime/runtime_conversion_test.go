@@ -292,6 +292,92 @@ func TestArrayToHashHonorsMemoryQuota(t *testing.T) {
 	requireCallRuntimeErrorType(t, converts, "run", []Value{pairsArr}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+// largeArrayPairReceiver builds an array of count distinct [symbol, int] pairs
+// suitable for the bare form of Array#to_h, where every element is already a
+// two-element pair so no block is needed.
+func largeArrayPairReceiver(count int) Value {
+	pairs := make([]Value, count)
+	for i := range count {
+		pairs[i] = NewArray([]Value{NewSymbol("k" + strconv.Itoa(i)), NewInt(int64(i))})
+	}
+	return NewArray(pairs)
+}
+
+// TestArrayToHashBareFormHonorsStepQuota pins the bare-form half of the P2
+// finding: Array#to_h with no block (runner is nil) must charge a step per
+// element so a tiny step quota stops it mid-loop. Before the fix the step charge
+// lived inside the block-only branch, so the bare form converted every pair
+// without touching the step quota and a huge pairs.to_h ran to completion.
+func TestArrayToHashBareFormHonorsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 40, memoryQuota: 64 << 20}
+	_, err := callArrayMember(t, exec, largeArrayPairReceiver(2_000), "to_h", nil, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+}
+
+// TestArrayToHashBareFormHonorsCancellation verifies the bare form's per-element
+// step check observes a canceled context, so a sandboxed pairs.to_h cannot keep
+// converting after cancellation. step polls the context on its first call, so
+// even a tiny array aborts.
+func TestArrayToHashBareFormHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
+	_, err := callArrayMember(t, exec, largeArrayPairReceiver(8), "to_h", nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+}
+
+// TestHashToArrayRejectsSlotBackingUpFront pins the slice-before-allocate half of
+// the P2 finding: Hash#to_a's make([]Value, 0, len(keys)) reserves the whole slot
+// backing in one allocation before the first per-pair charge could observe it, so
+// a receiver that fits the quota but whose output slice does not could transiently
+// exceed MemoryQuotaBytes. The build must be rejected before that allocation, not
+// after. Sizing the quota to admit the receiver and the sorted-key scratch but not
+// the full slot backing makes the up-front reserveSlots the only thing that can
+// reject the build.
+//
+// The per-pair acc.add charges cap(pairs) (= len(keys) once make has reserved it),
+// so it would also report the over-quota condition; the distinguishing signal is
+// that reserveSlots rejects BEFORE the loop runs its first exec.step(), so no step
+// is consumed. Asserting exec.steps stayed 0 pins the up-front rejection: without
+// it the first step runs (and the full backing is already allocated) before add
+// reports the error.
+func TestHashToArrayRejectsSlotBackingUpFront(t *testing.T) {
+	t.Parallel()
+
+	const count = 4000
+	receiver := largeHashReceiver(count)
+
+	// Build the baseline the accumulator sees (call roots plus the scratch buffer)
+	// with a probe, then size the quota to clear it with slim headroom while still
+	// falling short of the full slot backing. The slot backing alone
+	// (estimatedValueBytes per key plus the slice base) must overflow the headroom
+	// so reserveSlots rejects before make allocates it.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, NewNil())
+	baseline := roots + sortedKeyBufferBytes(count)
+	slotBacking := estimatedValueBytes + estimatedSliceBaseBytes + count*estimatedValueBytes
+	quota := baseline + slotBacking/4
+	if quota >= baseline+slotBacking {
+		t.Fatalf("test setup expects the slot backing (%d) to exceed the headroom above the baseline (%d)", slotBacking, quota-baseline)
+	}
+
+	fits := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if err := fits.checkCallMemoryRoots(receiver, nil, nil, NewNil()); err != nil {
+		t.Fatalf("receiver should fit under quota %d: %v", quota, err)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "to_a", nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("expected the slot backing to be rejected before the loop allocates it (0 steps), but %d step(s) ran", exec.steps)
+	}
+}
+
 // callArrayMember resolves an array member builtin and invokes it directly so the
 // conversion tests can supply a controlled Execution, mirroring callHashMember.
 // The builtins are pure functions of (exec, receiver, args, kwargs, block).

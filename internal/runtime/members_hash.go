@@ -530,6 +530,15 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			var keyBuf [smallHashKeyBufferSize]string
 			keys := sortedHashKeysInto(entries, keyBuf[:])
+			// make below reserves the whole len(keys) slot backing in one allocation
+			// before the first acc.add can charge it, so a receiver that fits the quota
+			// but whose output slice does not could transiently exceed MemoryQuotaBytes.
+			// Reject the full backing up front so that allocation never happens; the
+			// final length is known exactly, so this never rejects a build the per-pair
+			// checks would accept.
+			if err := acc.reserveSlots(len(keys)); err != nil {
+				return NewNil(), err
+			}
 			pairs := make([]Value, 0, len(keys))
 			for _, key := range keys {
 				// Charge a step per pair so materializing a large hash participates in

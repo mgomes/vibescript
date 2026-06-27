@@ -1903,15 +1903,17 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	out := make(map[string]Value, len(arr))
 	var blockArg [1]Value
 	for _, item := range arr {
+		// Charge a step per element so even the bare form, where runner is nil and
+		// no block statements run, participates in the step quota and observes
+		// cancellation while converting a large receiver. runner.call only charges
+		// steps for the statements the block evaluates, and the bare form evaluates
+		// none, so without this a huge pairs.to_h could run to completion despite a
+		// canceled context or a tiny StepQuota.
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
 		pair := item
 		if runner != nil {
-			// Charge a step per yield so an empty or trivial block body cannot
-			// starve the step quota or cancellation checks while traversing a
-			// large receiver; runner.call only charges steps for the statements
-			// it evaluates, and an empty block evaluates none.
-			if err := exec.step(); err != nil {
-				return NewNil(), err
-			}
 			blockArg[0] = item
 			mapped, err := runner.call(blockArg[:])
 			if err != nil {
