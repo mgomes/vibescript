@@ -69,10 +69,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
-				return NewNil(), exec.errorAt(pos, "break cannot cross call boundary")
+				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
 			}
 			if errors.Is(err, errLoopNext) {
-				return NewNil(), exec.errorAt(pos, "next cannot cross call boundary")
+				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
 			}
 			return NewNil(), err
 		}
@@ -134,10 +134,10 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 		}
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
-				return NewNil(), exec.errorAt(pos, "break cannot cross call boundary")
+				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
 			}
 			if errors.Is(err, errLoopNext) {
-				return NewNil(), exec.errorAt(pos, "next cannot cross call boundary")
+				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
 			}
 			return NewNil(), exec.wrapError(err, pos)
 		}
@@ -1175,10 +1175,10 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 	result, err := callBuiltinMemberDirect(exec, receiver, property, args, kwargs, block)
 	if err != nil {
 		if errors.Is(err, errLoopBreak) {
-			return NewNil(), exec.errorAt(call.Pos(), "break cannot cross call boundary")
+			return NewNil(), exec.localJumpErrorAt(call.Pos(), "break cannot cross call boundary")
 		}
 		if errors.Is(err, errLoopNext) {
-			return NewNil(), exec.errorAt(call.Pos(), "next cannot cross call boundary")
+			return NewNil(), exec.localJumpErrorAt(call.Pos(), "next cannot cross call boundary")
 		}
 		return NewNil(), exec.wrapError(err, call.Pos())
 	}
@@ -1301,7 +1301,7 @@ func (exec *Execution) validateCallShape(fn *ScriptFunction, args []Value, kwarg
 					usedKw[param.Name] = true
 				}
 			} else if param.DefaultVal == nil {
-				return exec.errorAt(pos, "missing keyword argument %s", param.Name)
+				return exec.argumentErrorAt(pos, "missing keyword argument %s", param.Name)
 			}
 		case ParamRest:
 			argIdx = len(args)
@@ -1322,7 +1322,7 @@ func (exec *Execution) validateCallShape(fn *ScriptFunction, args []Value, kwarg
 					usedKw[param.Name] = true
 				}
 			} else if param.DefaultVal == nil {
-				return exec.errorAt(pos, "missing argument %s", param.Name)
+				return exec.argumentErrorAt(pos, "missing argument %s", param.Name)
 			}
 		default:
 			return exec.errorAt(pos, "unknown parameter kind for %s", param.Name)
@@ -1330,12 +1330,12 @@ func (exec *Execution) validateCallShape(fn *ScriptFunction, args []Value, kwarg
 	}
 
 	if argIdx < len(args) {
-		return exec.errorAt(pos, "unexpected positional arguments")
+		return exec.argumentErrorAt(pos, "unexpected positional arguments")
 	}
 	if usedKw != nil {
 		for name := range kwargs {
 			if !usedKw[name] {
-				return exec.errorAt(pos, "unexpected keyword argument %s", name)
+				return exec.argumentErrorAt(pos, "unexpected keyword argument %s", name)
 			}
 		}
 	}
@@ -1375,7 +1375,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 				}
 				val = defaultVal
 			} else {
-				return exec.errorAt(pos, "missing keyword argument %s", param.Name)
+				return exec.argumentErrorAt(pos, "missing keyword argument %s", param.Name)
 			}
 		case ParamRest:
 			rest := append([]Value(nil), args[argIdx:]...)
@@ -1415,7 +1415,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 				}
 				val = defaultVal
 			} else {
-				return exec.errorAt(pos, "missing argument %s", param.Name)
+				return exec.argumentErrorAt(pos, "missing argument %s", param.Name)
 			}
 		default:
 			return exec.errorAt(pos, "unknown parameter kind for %s", param.Name)

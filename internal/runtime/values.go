@@ -888,7 +888,7 @@ func divideValues(left, right Value) (Value, error) {
 	switch {
 	case left.Kind() == KindInt && right.Kind() == KindInt:
 		if right.Int() == 0 {
-			return NewNil(), errors.New("division by zero")
+			return NewNil(), newTypedRuntimeError(runtimeErrorTypeZeroDiv, errors.New("division by zero"))
 		}
 		quotient, ok := floorDivIntChecked(left.Int(), right.Int())
 		if !ok {
@@ -903,7 +903,7 @@ func divideValues(left, right Value) (Value, error) {
 		return NewFloat(left.Float() / right.Float()), nil
 	case left.Kind() == KindDuration && right.Kind() == KindDuration:
 		if right.Duration().Seconds() == 0 {
-			return NewNil(), errors.New("division by zero")
+			return NewNil(), newTypedRuntimeError(runtimeErrorTypeZeroDiv, errors.New("division by zero"))
 		}
 		return NewFloat(float64(left.Duration().Seconds()) / float64(right.Duration().Seconds())), nil
 	case left.Kind() == KindDuration && (right.Kind() == KindInt || right.Kind() == KindFloat):
@@ -912,7 +912,7 @@ func divideValues(left, right Value) (Value, error) {
 			return NewNil(), err
 		}
 		if secs == 0 {
-			return NewNil(), errors.New("division by zero")
+			return NewNil(), newTypedRuntimeError(runtimeErrorTypeZeroDiv, errors.New("division by zero"))
 		}
 		quotient, ok := divInt64Checked(left.Duration().Seconds(), secs)
 		if !ok {

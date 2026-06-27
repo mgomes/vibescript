@@ -1236,7 +1236,7 @@ func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value V
 func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
 	block, ok := env.lookupCallBlock()
 	if !ok || block.Kind() == KindNil {
-		return NewNil(), exec.errorAt(expr.Pos(), "no block given")
+		return NewNil(), exec.localJumpErrorAt(expr.Pos(), "no block given")
 	}
 	args := make([]Value, 0, len(expr.Args))
 	for _, arg := range expr.Args {
@@ -1280,10 +1280,10 @@ func (exec *Execution) assignToMember(obj Value, property string, value Value, p
 		_, err := exec.callFunction(fn, obj, []Value{value}, nil, NewNil(), pos)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
-				return exec.errorAt(pos, "break cannot cross call boundary")
+				return exec.localJumpErrorAt(pos, "break cannot cross call boundary")
 			}
 			if errors.Is(err, errLoopNext) {
-				return exec.errorAt(pos, "next cannot cross call boundary")
+				return exec.localJumpErrorAt(pos, "next cannot cross call boundary")
 			}
 		}
 		return err
@@ -2508,20 +2508,58 @@ func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, e
 }
 
 func rescuedErrorValue(err error) Value {
-	fields := map[string]Value{
-		"type":       NewString(classifyRuntimeErrorType(err)),
-		"message":    NewString(err.Error()),
-		"code_frame": NewString(""),
-	}
+	errType := classifyRuntimeErrorType(err)
+	message := err.Error()
+	codeFrame := ""
+	var backtrace []Value
 
 	var runtimeErr *RuntimeError
 	if errors.As(err, &runtimeErr) {
-		fields["type"] = NewString(classifyRuntimeErrorType(runtimeErr))
-		fields["message"] = NewString(runtimeErr.Message)
-		fields["code_frame"] = NewString(runtimeErr.CodeFrame)
+		errType = classifyRuntimeErrorType(runtimeErr)
+		message = runtimeErr.Message
+		codeFrame = runtimeErr.CodeFrame
+		backtrace = runtimeErrorBacktrace(runtimeErr)
 	}
 
+	fields := map[string]Value{
+		"type":       NewString(errType),
+		"class":      NewString(errType),
+		"message":    NewString(message),
+		"to_s":       NewString(message),
+		"code_frame": NewString(codeFrame),
+		"backtrace":  NewArray(backtrace),
+	}
 	return NewObject(fields)
+}
+
+func runtimeErrorBacktrace(err *RuntimeError) []Value {
+	if err == nil || len(err.Frames) == 0 {
+		return nil
+	}
+	frames := make([]Value, 0, len(err.Frames))
+	for _, frame := range err.Frames {
+		frames = append(frames, NewString(formatRuntimeBacktraceFrame(frame)))
+	}
+	return frames
+}
+
+func formatRuntimeBacktraceFrame(frame StackFrame) string {
+	location := ""
+	switch {
+	case frame.Source != "" && frame.Pos.Line > 0 && frame.Pos.Column > 0:
+		location = fmt.Sprintf("%s:%d:%d", frame.Source, frame.Pos.Line, frame.Pos.Column)
+	case frame.Source != "" && frame.Pos.Line > 0:
+		location = fmt.Sprintf("%s:%d", frame.Source, frame.Pos.Line)
+	case frame.Source != "":
+		location = frame.Source
+	case frame.Pos.Line > 0 && frame.Pos.Column > 0:
+		location = fmt.Sprintf("%d:%d", frame.Pos.Line, frame.Pos.Column)
+	case frame.Pos.Line > 0:
+		location = fmt.Sprintf("line %d", frame.Pos.Line)
+	default:
+		location = "<script>"
+	}
+	return fmt.Sprintf("%s:in `%s`", location, frame.Function)
 }
 
 func isLoopControlSignal(err error) bool {
@@ -2560,6 +2598,9 @@ func rescueTypeMatchesErrorKind(ty *TypeExpr, errKind string) bool {
 	}
 	if canonical == runtimeErrorTypeBase {
 		return true
+	}
+	if canonical == runtimeErrorTypeStandard {
+		return errKind != runtimeErrorTypeLimit
 	}
 	return canonical == errKind
 }
