@@ -51,6 +51,41 @@ end`)
 	})
 }
 
+// TestPercentInterpolatedArrayLiteralDelimiterInsideInterpolation confirms that
+// a delimiter character appearing inside a %W/%I interpolation expression—even
+// when nested in a quoted string—does not close the literal early, so the entry
+// evaluates to the interpolated value rather than being truncated. The expected
+// values match Ruby:
+//
+//	%W[#{"]"}]          => ["]"]
+//	%W[#{"]"}foo bar]   => ["]foo", "bar"]
+//	%I{#{"}"}}          => [:"}"]
+//	%W(#{"("}x #{")"}y) => ["(x", ")y"]
+//	%W[a#{"b#{x}c"}d e] => ["abzcd", "e"]
+func TestPercentInterpolatedArrayLiteralDelimiterInsideInterpolation(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  x = "z"
+  [
+    %W[#{"]"}],
+    %W[#{"]"}foo bar],
+    %I{#{"}"}},
+    %W(#{"("}x #{")"}y),
+    %W[a#{"b#{x}c"}d e],
+  ]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewArray([]Value{NewString("]")}),
+		NewArray([]Value{NewString("]foo"), NewString("bar")}),
+		NewArray([]Value{NewSymbol("}")}),
+		NewArray([]Value{NewString("(x"), NewString(")y")}),
+		NewArray([]Value{NewString("abzcd"), NewString("e")}),
+	})
+}
+
 // TestPercentInterpolatedSymbolArrayProducesSymbols guards that interpolated %I
 // entries are genuine symbols, not strings: Vibescript symbol/string equality
 // is kind-sensitive.

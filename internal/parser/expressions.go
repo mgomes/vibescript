@@ -1125,6 +1125,22 @@ func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bo
 			}
 			continue
 		}
+		// Skip over #{...} interpolation spans for the interpolating forms so a
+		// delimiter inside an interpolation expression (including one nested in a
+		// quoted string, e.g. %W[#{"]"}]) does not close the literal early. The
+		// span is matched with the same string-aware logic used elsewhere.
+		if interpolating && r == '#' && idx < len(input) && input[idx] == '{' {
+			raw.WriteRune(r)
+			raw.WriteByte('{')
+			idx++
+			end, ok := findStringInterpolationEnd(input, idx)
+			if !ok {
+				return 0, nil, 0, false
+			}
+			raw.WriteString(input[idx : end+1])
+			idx = end + 1
+			continue
+		}
 		if paired && r == open {
 			depth++
 		}

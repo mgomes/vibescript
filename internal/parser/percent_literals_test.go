@@ -239,6 +239,137 @@ end`
 	}
 }
 
+// A delimiter that appears inside a %W/%I interpolation expression—including one
+// nested in a quoted string such as %W[#{"]"}]—must not close the literal early.
+// The scanner skips over #{...} spans the same way ordinary double-quoted string
+// interpolation does, so these forms parse as a single interpolated entry rather
+// than truncating at the inner delimiter. Both the direct-literal lexer path and
+// the parenless-argument scan path are exercised. Verified against Ruby:
+// %W[#{"]"}] => ["]"], %W[#{"]"}foo bar] => ["]foo", "bar"], %I{#{"}"}} => [:"}"].
+func TestParserPercentInterpolatedArrayLiteralDelimiterInsideInterpolation(t *testing.T) {
+	t.Parallel()
+
+	interpClose := &ast.InterpolatedString{Parts: []ast.StringPart{
+		ast.StringExpr{Expr: &ast.StringLiteral{Value: "]"}},
+	}}
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name:   "bracket_in_string_only_entry",
+			source: "def run\n  %W[#{\"]\"}]\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				interpClose,
+			}},
+		},
+		{
+			name:   "bracket_in_string_with_trailing_words",
+			source: "def run\n  %W[#{\"]\"}foo bar]\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.InterpolatedString{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: &ast.StringLiteral{Value: "]"}},
+					ast.StringText{Text: "foo"},
+				}},
+				&ast.StringLiteral{Value: "bar"},
+			}},
+		},
+		{
+			name:   "brace_delimiter_with_brace_in_string",
+			source: "def run\n  %I{#{\"}\"}}\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.InterpolatedSymbol{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: &ast.StringLiteral{Value: "}"}},
+				}},
+			}},
+		},
+		{
+			name:   "paren_delimiter_with_parens_in_strings",
+			source: "def run\n  %W(#{\"(\"}x #{\")\"}y)\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.InterpolatedString{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: &ast.StringLiteral{Value: "("}},
+					ast.StringText{Text: "x"},
+				}},
+				&ast.InterpolatedString{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: &ast.StringLiteral{Value: ")"}},
+					ast.StringText{Text: "y"},
+				}},
+			}},
+		},
+		{
+			name:   "parenless_argument_bracket_in_string",
+			source: "def run\n  collect %W[#{\"]\"}foo bar]\nend",
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.InterpolatedString{Parts: []ast.StringPart{
+							ast.StringExpr{Expr: &ast.StringLiteral{Value: "]"}},
+							ast.StringText{Text: "foo"},
+						}},
+						&ast.StringLiteral{Value: "bar"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: tc.wantExpr},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// A %W/%I entry may interpolate an expression whose body contains a nested
+// double-quoted string with its own #{...} interpolation; the delimiter scan
+// must descend through both before accepting the closing delimiter. Verified
+// against Ruby: x="z"; %W[a#{"b#{x}c"}d e] => ["abzcd", "e"].
+func TestParserPercentInterpolatedArrayLiteralNestedInterpolation(t *testing.T) {
+	t.Parallel()
+
+	source := "def run\n  %W[a#{\"b#{x}c\"}d e]\nend"
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringText{Text: "a"},
+				ast.StringExpr{Expr: &ast.InterpolatedString{Parts: []ast.StringPart{
+					ast.StringText{Text: "b"},
+					ast.StringExpr{Expr: &ast.Identifier{Name: "x"}},
+					ast.StringText{Text: "c"},
+				}}},
+				ast.StringText{Text: "d"},
+			}},
+			&ast.StringLiteral{Value: "e"},
+		}}},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // %W/%I parse as parenless call arguments after a non-local callee, mirroring
 // the lowercase forms and exercising the argument scan path.
 func TestParserPercentInterpolatedArrayParenlessCallArguments(t *testing.T) {

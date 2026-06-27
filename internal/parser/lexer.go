@@ -1084,6 +1084,12 @@ func (l *lexer) readSingleQuotedString() (string, string) {
 // the entries are split on interpolation-aware whitespace and returned with
 // their #{...} markers and escape sequences intact for the parser to expand;
 // otherwise the lowercase splitting that strips %w-style escapes is applied.
+//
+// For the interpolating forms the delimiter scan skips over #{...} spans using
+// the same string-aware logic the parser applies (findStringInterpolationEnd),
+// so a delimiter that appears inside an interpolation expression—including one
+// nested in a quoted string such as %W[#{"]"}]—does not close the literal
+// early.
 func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 	l.readRune()
 	l.readRune()
@@ -1106,6 +1112,13 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 				l.readRune()
 				raw.WriteRune(l.ch)
 			}
+		case '#':
+			raw.WriteRune(l.ch)
+			if interpolating && l.peekRune() == '{' {
+				if msg := l.consumePercentArrayInterpolation(&raw); msg != "" {
+					return nil, msg
+				}
+			}
 		default:
 			if paired && l.ch == open {
 				depth++
@@ -1123,6 +1136,31 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 			raw.WriteRune(l.ch)
 		}
 	}
+}
+
+// consumePercentArrayInterpolation copies a #{...} interpolation span inside an
+// interpolating percent array literal into raw verbatim. The caller has already
+// written the leading '#' and confirmed the next rune is '{'. The matching
+// close brace is located with findStringInterpolationEnd so that quoted strings
+// and nested braces inside the expression do not prematurely end the span; the
+// runes are then consumed individually to keep the lexer's line and column
+// tracking accurate across the (possibly multiline) interpolation. It returns
+// an error message when the interpolation is unterminated.
+func (l *lexer) consumePercentArrayInterpolation(raw *strings.Builder) string {
+	l.readRune() // consume '{'
+	raw.WriteRune(l.ch)
+	end, ok := findStringInterpolationEnd(l.input, l.offset)
+	if !ok {
+		return "unterminated string interpolation in percent array literal"
+	}
+	for l.offset <= end {
+		l.readRune()
+		if l.ch == 0 {
+			return "unterminated string interpolation in percent array literal"
+		}
+		raw.WriteRune(l.ch)
+	}
+	return ""
 }
 
 func isPercentLiteralDelimiter(r rune) bool {
