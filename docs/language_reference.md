@@ -33,8 +33,10 @@ Ranges with `..` include the final endpoint. Ranges with `...` exclude it.
 
 Double-quoted strings support `#{...}` interpolation. Each interpolation must
 contain one expression; the expression value is converted with the same string
-form used by `to_s`. Escape an interpolation marker as `\#{...}` for literal
-text. Single-quoted strings do not interpolate.
+form used by `to_s`. The expression may contain its own double-quoted strings
+and even nested interpolations (for example `"#{name || "guest"}"`); the
+interpolation extends to its matching `}`. Escape an interpolation marker as
+`\#{...}` for literal text. Single-quoted strings do not interpolate.
 
 Symbols are usually written bare (`:name`), but a quoted form lets a symbol hold
 punctuation, spaces, or be empty: `:"foo-bar"`, `:'foo bar'`, `:""`. Quoted
