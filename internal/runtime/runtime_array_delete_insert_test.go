@@ -178,7 +178,7 @@ func TestArrayShift(t *testing.T) {
 			function:    "shift_n",
 			args:        []Value{NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(0)},
 			wantArray:   []Value{NewInt(1), NewInt(2)},
-			wantShifted: NewNil(),
+			wantShifted: NewArray([]Value{}),
 		},
 		{
 			name:        "shift(n) clamps to the array length",

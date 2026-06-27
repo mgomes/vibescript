@@ -2571,9 +2571,13 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 	}
 	arr := receiver.Array()
 	if count == 0 {
+		// count == 0 is only reachable through the explicit-count form shift(0);
+		// bare shift() defaults count to 1. Ruby's [1, 2].shift(0) returns [], so
+		// report an empty array, keeping shifted typed as an array for every
+		// explicit-count call rather than nil only in the zero case.
 		return NewHash(map[string]Value{
 			"array":   NewArray(arr),
-			"shifted": NewNil(),
+			"shifted": NewArray([]Value{}),
 		}), nil
 	}
 	if len(arr) == 0 {

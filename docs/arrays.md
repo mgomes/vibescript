@@ -77,6 +77,7 @@ survive.
 [3].unshift(1, 2)           # [1, 2, 3]
 [1, 2, 3].shift             # {array: [2, 3], shifted: 1}
 [1, 2, 3].shift(2)          # {array: [3], shifted: [1, 2]}
+[1, 2, 3].shift(0)          # {array: [1, 2, 3], shifted: []}
 [1, 2, 2, 3].delete(2)      # {array: [1, 3], deleted: 2}
 [1, 2, 3].delete(9)         # {array: [1, 2, 3], deleted: nil}
 [1, 2, 3].insert(1, "x")    # [1, "x", 2, 3]
