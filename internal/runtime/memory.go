@@ -827,6 +827,10 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 	return saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
 }
 
+func (acc *arrayBuildAccumulator) retainedPayloadBytes() int {
+	return acc.payload
+}
+
 // hashBuildAccumulator charges the memory of an output map assembled entry by
 // entry against the quota without re-walking the whole map on each insertion.
 // Hash transforms whose block returns fresh heap values (transform_values and
@@ -1158,6 +1162,10 @@ func (acc *hashBuildAccumulator) checkQuota() error {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
+}
+
+func (acc *hashBuildAccumulator) retainedPayloadBytes() int {
+	return acc.built
 }
 
 // blockBindCharge charges the fresh memory a block's destructuring parameters

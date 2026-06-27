@@ -100,6 +100,39 @@ func TestHashDeepTransformKeysReservesOutputBuffers(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestHashDeepTransformKeysRetainedPayloadReservationTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{"root": NewInt(1)})
+	block := keyIdentityBlock()
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	retainedPayload := 1024
+	base := exec.hashCallRootBytes(receiver, nil, nil, block)
+
+	exec.memoryQuota = base + retainedPayload - 1
+	delta, err := reserveDeepTransformRetainedPayload(exec, retainedPayload, receiver, nil, nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if delta != 0 {
+		t.Fatalf("failed reservation delta = %d, want 0", delta)
+	}
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("failed reservation left %d scratch bytes reserved", exec.reservedScratchBytes)
+	}
+
+	exec.memoryQuota = base + retainedPayload
+	delta, err = reserveDeepTransformRetainedPayload(exec, retainedPayload, receiver, nil, nil, block)
+	if err != nil {
+		t.Fatalf("reserveDeepTransformRetainedPayload roomy quota error = %v", err)
+	}
+	if delta != retainedPayload {
+		t.Fatalf("reservation delta = %d, want %d", delta, retainedPayload)
+	}
+	exec.releaseLoopScratch(delta)
+	if exec.reservedScratchBytes != 0 {
+		t.Fatalf("released reservation left %d scratch bytes reserved", exec.reservedScratchBytes)
+	}
+}
+
 func TestHashBlocklessTransformTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 

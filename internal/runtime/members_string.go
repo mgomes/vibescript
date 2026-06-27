@@ -1830,11 +1830,11 @@ func stringTemplateScalarValue(value Value, keyPath string) (string, error) {
 }
 
 func appendTemplateChunk(exec *Execution, b *strings.Builder, chunk string, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	if chunk == "" {
-		return nil
-	}
 	if err := exec.step(); err != nil {
 		return err
+	}
+	if chunk == "" {
+		return nil
 	}
 	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(b, len(chunk)), receiver, args, kwargs, block); err != nil {
 		return err

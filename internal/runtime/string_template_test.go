@@ -107,6 +107,20 @@ end
 	}
 }
 
+func TestStringTemplateEmptySubstitutionsHonorStepQuota(t *testing.T) {
+	t.Parallel()
+	script := compileScriptWithConfig(t, Config{StepQuota: 20, MemoryQuotaBytes: 64 << 20}, `
+def run(text)
+  text.template({ value: "" })
+end
+`)
+
+	_, err := script.Call(context.Background(), "run", []Value{
+		NewString(strings.Repeat("{{value}}", 100)),
+	}, CallOptions{})
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+}
+
 func TestFixedStringTransformsHonorMemoryQuotaBeforeMaterializing(t *testing.T) {
 	t.Parallel()
 

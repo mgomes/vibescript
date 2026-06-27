@@ -163,6 +163,18 @@ func deepTransformKeys(exec *Execution, receiver Value, args []Value, kwargs map
 	})
 }
 
+func reserveDeepTransformRetainedPayload(exec *Execution, payloadBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
+	if payloadBytes <= 0 {
+		return 0, nil
+	}
+	delta := exec.reserveLoopScratch(payloadBytes)
+	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+		exec.releaseLoopScratch(delta)
+		return 0, err
+	}
+	return delta, nil
+}
+
 type deepTransformState struct {
 	seenHashes map[uintptr]struct{}
 	seenArrays map[uintptr]struct{}
@@ -204,19 +216,33 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 			if err := exec.step(); err != nil {
 				return NewNil(), err
 			}
-			blockArg[0] = NewSymbol(key)
-			nextKeyValue, err := exec.CallBlock(block, blockArg[:])
+			prefixDelta, err := reserveDeepTransformRetainedPayload(exec, acc.retainedPayloadBytes(), receiver, args, kwargs, block)
 			if err != nil {
 				return NewNil(), err
 			}
+			blockArg[0] = NewSymbol(key)
+			nextKeyValue, err := exec.CallBlock(block, blockArg[:])
+			if err != nil {
+				exec.releaseLoopScratch(prefixDelta)
+				return NewNil(), err
+			}
 			if err := exec.checkContext(); err != nil {
+				exec.releaseLoopScratch(prefixDelta)
 				return NewNil(), err
 			}
 			nextKey, err := valueToHashKey(nextKeyValue)
 			if err != nil {
+				exec.releaseLoopScratch(prefixDelta)
 				return NewNil(), fmt.Errorf("hash.deep_transform_keys block must return symbol or string")
 			}
+			keyDelta, err := reserveDeepTransformRetainedPayload(exec, len(nextKey), receiver, args, kwargs, block)
+			if err != nil {
+				exec.releaseLoopScratch(prefixDelta)
+				return NewNil(), err
+			}
 			nextValue, err := deepTransformKeysWithState(exec, entries[key], receiver, args, kwargs, block, state)
+			exec.releaseLoopScratch(keyDelta)
+			exec.releaseLoopScratch(prefixDelta)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -250,7 +276,12 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 			if err := exec.step(); err != nil {
 				return NewNil(), err
 			}
+			retainedDelta, err := reserveDeepTransformRetainedPayload(exec, acc.retainedPayloadBytes(), receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
 			nextValue, err := deepTransformKeysWithState(exec, item, receiver, args, kwargs, block, state)
+			exec.releaseLoopScratch(retainedDelta)
 			if err != nil {
 				return NewNil(), err
 			}
