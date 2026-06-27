@@ -500,6 +500,26 @@ func pairElementExpr(fromParam bool, captureName string, captured Value, env *En
 	return &ast.Identifier{Name: captureName, Position: pos}
 }
 
+func transientToHPairBlock(pairCap int) Value {
+	pos := ast.Position{Line: 1, Column: 1}
+	env := newEnv(nil)
+	env.Define("make_pair", NewBuiltin("make_pair", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return freshToHPair(pairCap), nil
+	}))
+	body := []ast.Statement{&ast.ExprStmt{Position: pos, Expr: &ast.CallExpr{
+		Position: pos,
+		Callee:   &ast.Identifier{Name: "make_pair", Position: pos},
+	}}}
+	return NewBlock([]ast.Param{{Name: "k"}}, body, env)
+}
+
+func freshToHPair(pairCap int) Value {
+	pair := make([]Value, 2, pairCap)
+	pair[0] = NewSymbol("")
+	pair[1] = NewInt(1)
+	return NewArray(pair)
+}
+
 // TestArrayToHashBlockChargesSynthesizedKeys pins the P1 finding on this PR: the
 // block form's synthesized keys must be charged as entries are inserted, not left
 // to a post-call check. A block that maps each large distinct element to a fresh
@@ -575,6 +595,31 @@ func TestArrayToHashBlockChargesSynthesizedValues(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected the accumulated block values to trip the quota, but the build produced a hash with %d entries", len(got.Hash()))
 	}
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestArrayToHashBlockChargesTransientPair pins the peak-memory half of the block
+// form: the block's returned two-element pair is live while the preallocated
+// output map backing is also live, even though the final hash retains only the
+// pair's key and value. Each piece fits alone; the combined peak must not.
+func TestArrayToHashBlockChargesTransientPair(t *testing.T) {
+	t.Parallel()
+
+	const pairCap = 4096
+	receiver := NewArray([]Value{NewInt(1)})
+	block := transientToHPairBlock(pairCap)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	output := roots + estimatedEmptyOutputHashBytes + estimatedMapEntryStructuralBytes
+	pairBytes := newMemoryEstimator().value(freshToHPair(pairCap))
+	quota := output + pairBytes - 1
+	if quota <= output {
+		t.Fatalf("test setup expects transient pair bytes (%d) to leave a quota above output-only bytes (%d)", pairBytes, output)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, exec, receiver, "to_h", nil, block)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 

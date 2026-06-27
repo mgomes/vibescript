@@ -2117,6 +2117,9 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 			if err != nil {
 				return NewNil(), err
 			}
+			if err := acc.checkTransient(mapped); err != nil {
+				return NewNil(), err
+			}
 			pair = mapped
 		}
 		if pair.Kind() != KindArray {
