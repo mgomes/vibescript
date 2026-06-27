@@ -24,6 +24,14 @@ type parser struct {
 	statementNesting int
 	typeDepth        int
 	localScopes      []localScope
+
+	// shapeStructurallyInvalid records that the most recent parseTypeShape
+	// rejected a brace group whose field values all parsed as types but whose
+	// shape structure was malformed (a duplicate field or a missing field
+	// separator). It lets the parameter-list speculation in
+	// bracedGroupIsShapeType keep such a clearly-shape-like diagnostic instead
+	// of silently reinterpreting the braces as a hash-literal default.
+	shapeStructurallyInvalid bool
 }
 
 // localScope records the local names declared within a single lexical
@@ -147,6 +155,46 @@ func (p *parser) reprimeAt(offset int, last ast.Token) {
 	p.curToken = last
 	p.peekToken = p.l.NextToken()
 	p.peekPeek = p.l.NextToken()
+}
+
+// parserSnapshot captures the parser state needed to roll back a
+// speculative parse. The lexer is captured by value because lexer holds
+// no mutable references beyond the immutable input string, so a value
+// copy is a complete, independent snapshot. errorCount records how many
+// diagnostics existed before the speculation so any added during it can
+// be discarded on rollback.
+type parserSnapshot struct {
+	lexer      lexer
+	curToken   ast.Token
+	peekToken  ast.Token
+	peekPeek   ast.Token
+	typeDepth  int
+	errorCount int
+}
+
+// snapshot records the current parser state for a later restore. It is
+// the basis for bounded speculative parsing: try a parse, and if it does
+// not pan out, restore and parse the alternative.
+func (p *parser) snapshot() parserSnapshot {
+	return parserSnapshot{
+		lexer:      *p.l,
+		curToken:   p.curToken,
+		peekToken:  p.peekToken,
+		peekPeek:   p.peekPeek,
+		typeDepth:  p.typeDepth,
+		errorCount: len(p.errors),
+	}
+}
+
+// restore rewinds the parser to a previously captured snapshot,
+// discarding any tokens consumed and diagnostics recorded since.
+func (p *parser) restore(s parserSnapshot) {
+	*p.l = s.lexer
+	p.curToken = s.curToken
+	p.peekToken = s.peekToken
+	p.peekPeek = s.peekPeek
+	p.typeDepth = s.typeDepth
+	p.errors = p.errors[:s.errorCount]
 }
 
 // Parse lexes and parses the given source text and returns the

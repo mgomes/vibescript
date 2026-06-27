@@ -46,6 +46,82 @@ func valueToInt(val Value) (int, error) {
 	}
 }
 
+// digPath walks args as a nested lookup path, descending one level per path
+// component. It traverses hashes and objects by symbol/string key and arrays by
+// integer index, returning nil as soon as a key is absent or an index is out of
+// range. This mirrors Ruby's Hash#dig and Array#dig semantics while staying
+// within Vibescript's symbol/string hash-key and non-negative array-index model.
+//
+// Each hash step is a full `[]` access: a missing key consults that hash's
+// Ruby-style default (a default value returned without inserting, or a default
+// proc invoked with the hash and key, which may store), and dig then descends
+// into whatever the default resolves to. This matches MRI, where
+// Hash.new(0).dig(:missing) returns 0 and a default proc fires per missing dig
+// step. Objects never carry defaults, so a missing object key yields nil.
+//
+// Two behaviors are deliberate divergences from MRI Ruby:
+//
+//   - Indexing an array with a non-integer path component is a type error, like
+//     Ruby's "no implicit conversion into Integer" TypeError. A hash or object
+//     keyed by a non-symbol/string component instead returns nil, because such a
+//     value can never be a key under Vibescript's hash-key model, so it is simply
+//     absent (Ruby returns nil there too).
+//   - Continuing a path through a scalar (a non-collection that does not respond
+//     to dig) returns nil rather than raising. Vibescript has always done this
+//     for Hash#dig, and keeping it avoids surprising scripts that probe deeper
+//     than the data nests. MRI instead raises a TypeError once a non-collection
+//     default (for example the 0 from Hash.new(0)) is dug into further.
+//
+// name is the caller's method name (for example "array.dig") used in error
+// messages.
+func (exec *Execution) digPath(name string, current Value, args []Value) (Value, error) {
+	for _, arg := range args {
+		switch current.Kind() {
+		case KindHash, KindObject:
+			key, err := valueToHashKey(arg)
+			if err != nil {
+				return NewNil(), nil
+			}
+			next, ok := current.Hash()[key]
+			if !ok {
+				// A missing hash key is a [] access that consults the hash's
+				// default (objects carry none, so they stay nil). The resolved
+				// default becomes the next value to descend into, exactly as
+				// MRI digs into the result of each step's [] access.
+				if current.Kind() != KindHash {
+					return NewNil(), nil
+				}
+				resolved, err := exec.hashDefaultForKey(current, arg)
+				if err != nil {
+					return NewNil(), err
+				}
+				current = resolved
+				continue
+			}
+			current = next
+		case KindArray:
+			if arg.Kind() != KindInt && arg.Kind() != KindFloat {
+				return NewNil(), fmt.Errorf("%s array index must be integer", name)
+			}
+			index, err := valueToInt(arg)
+			if err != nil {
+				return NewNil(), fmt.Errorf("%s array index must be integer", name)
+			}
+			if arg.Kind() == KindFloat && math.Trunc(arg.Float()) != arg.Float() {
+				return NewNil(), fmt.Errorf("%s array index must be integer", name)
+			}
+			arr := current.Array()
+			if index < 0 || index >= len(arr) {
+				return NewNil(), nil
+			}
+			current = arr[index]
+		default:
+			return NewNil(), nil
+		}
+	}
+	return current, nil
+}
+
 // errNegativeCount signals that a count argument was numeric but negative.
 // Callers detect it with errors.Is to emit a method-specific message.
 var errNegativeCount = errors.New("count must not be negative")

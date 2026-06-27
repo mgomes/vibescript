@@ -20,7 +20,9 @@ func TestCompileMalformedCallTargetDoesNotPanic(t *testing.T) {
 
 func TestParseErrorIncludesCodeFrameAndMissingValueMessage(t *testing.T) {
 	t.Parallel()
-	err := compileScriptErrorDefault(t, "def broken()\n  {foo: }\nend\n")
+	// Quoted keys do not support value omission (label keys do), so this is a
+	// stable case for the missing-value diagnostic and its code frame.
+	err := compileScriptErrorDefault(t, "def broken()\n  {\"foo\": }\nend\n")
 	msg := err.Error()
 	if !strings.Contains(msg, "missing value for hash key foo") {
 		t.Fatalf("expected missing hash value parse error, got: %s", msg)
@@ -28,7 +30,7 @@ func TestParseErrorIncludesCodeFrameAndMissingValueMessage(t *testing.T) {
 	if !strings.Contains(msg, "--> line 2, column") {
 		t.Fatalf("expected codeframe line marker, got: %s", msg)
 	}
-	if !strings.Contains(msg, "{foo: }") {
+	if !strings.Contains(msg, "{\"foo\": }") {
 		t.Fatalf("expected source line in codeframe, got: %s", msg)
 	}
 }
@@ -201,9 +203,9 @@ func TestMethodErrorHandling(t *testing.T) {
 			errMsg: "index must be integer",
 		},
 		{
-			name:   "array.any? with argument",
-			script: `def run() [1].any?(1) end`,
-			errMsg: "array.any? does not take arguments",
+			name:   "array.any? with too many arguments",
+			script: `def run() [1].any?(1, 2) end`,
+			errMsg: "array.any? accepts at most one value argument",
 		},
 		{
 			name:   "array.sort with incomparable values",
@@ -447,9 +449,9 @@ end`,
 			errMsg: "expects at least one key",
 		},
 		{
-			name:   "hash.dig with unsupported key type",
-			script: `def run() {a: 1}.dig(1) end`,
-			errMsg: "path keys must be symbol or string",
+			name:   "hash.dig with non-integer array index",
+			script: `def run() {a: [1]}.dig(:a, "0") end`,
+			errMsg: "hash.dig array index must be integer",
 		},
 		{
 			name:   "hash.each without block",

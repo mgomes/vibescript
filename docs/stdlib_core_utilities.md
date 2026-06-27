@@ -46,6 +46,94 @@ These members are available on every value, regardless of kind.
 nil.itself     # nil
 ```
 
+## Universal Predicates
+
+Every value answers two equality predicates in addition to the `==` operator.
+They report `false` rather than raising when the kinds differ, and a class may
+override them with its own methods of the same name.
+
+- `eql?(other) -> bool` – hash-key equality. True only when both operands share
+  a kind and compare equal, so `1.eql?(1.0)` is `false` even though both are
+  numerically one. Composites (arrays, hashes) compare by content.
+- `equal?(other) -> bool` – object identity. Immutable scalars (`nil`, `bool`,
+  `int`, `float`, `string`, `symbol`, money, duration, time, range) are
+  identical when they share a kind and value, so `1.equal?(1)` is `true`.
+  Mutable composites (arrays, hashes), script instances, enums, and enum values
+  are identical only when they refer to the same backing object. Two enum values
+  that compare `==` (and `eql?`) because they share an owner and member name are
+  still not `equal?` when they hold distinct storage — for example, a value
+  cloned out to the host and handed back by a capability.
+
+```vibe
+1 == 1        # true
+1.eql?(1)     # true
+1.eql?(1.0)   # false (Int never eql-matches a Float)
+1.equal?(1)   # true
+
+a = [1, 2, 3]
+b = a
+c = [1, 2, 3]
+a.eql?(c)     # true  (same contents)
+a.equal?(b)   # true  (same object)
+a.equal?(c)   # false (distinct objects)
+```
+
+Empty arrays are the one identity exception: an empty array has no element
+storage to alias, so all empty arrays report `equal?` to one another
+(`[].equal?([])` is `true`). Empty hashes remain distinct objects
+(`{}.equal?({})` is `false`).
+
+A NaN float is `equal?` to itself even though `==` never holds for NaN. Because
+floats carry no distinct identity, any two NaN floats are also `equal?`, keeping
+the predicate reflexive (`x = 0.0 / 0.0; x.equal?(x)` is `true`).
+
+## Debug Representation
+
+Every core value kind responds to `inspect`, returning a `string` debug
+rendering. Unlike the output rendering used by string interpolation (which is
+the `to_s` form), `inspect` keeps quotes and escaping so the result is
+unambiguous; for strings, arrays, and hashes the rendering also parses back as a
+Vibescript literal.
+
+- `inspect -> string` – available on `nil`, booleans, integers, floats,
+  strings, symbols, arrays, and hashes (`inspect` takes no arguments and no
+  block). Namespace and host objects share the hash member methods, so `inspect`
+  renders their fields with the same hash form.
+
+| Kind | `to_s` (interpolated) | `inspect` |
+| --- | --- | --- |
+| `nil` | (empty) | `nil` |
+| `true` | `true` | `true` |
+| `42` | `42` | `42` |
+| `:ok` | `ok` | `:ok` |
+| `"a\nb"` | `a` then `b` on the next line | `"a\nb"` |
+| `[1, "x", nil]` | `[1, x, ]` | `[1, "x", nil]` |
+| `{ a: 1, b: "x" }` | `{a: 1, b: x}` | `{a: 1, b: "x"}` |
+
+```vibe
+"a\nb".inspect       # "\"a\\nb\""  (the six characters: " a \ n b ")
+[1, "x", nil].inspect # "[1, \"x\", nil]"
+{ a: 1, b: "x" }.inspect # "{a: 1, b: \"x\"}"
+:ok.inspect          # ":ok"
+nil.inspect          # "nil"
+```
+
+Strings are double-quoted and escape `\\`, `\"`, `\n`, `\t`, and the
+interpolation marker `\#{`; any other byte is written verbatim, since
+Vibescript's double-quoted literals have no `\r`/`\xNN`/`\uNNNN` escapes (so the
+rendering stays a parseable literal rather than emitting an escape the language
+cannot decode). Hash keys render in Vibescript's colon-label form (`name:`, or
+`"with space":` when the key is not a bare identifier) rather than Ruby's
+unsupported hash-rocket syntax, so an inspected hash parses back as a Vibescript
+literal. Because hashes iterate in Go's map order, the entry order of an
+inspected hash is not stable across calls. Symbols render as `:name`, or as
+`:"name"` (Ruby's shape) when the name is not a bare identifier — the quoted form
+is a debug rendering for symbols (such as those created from a quoted hash key)
+that have no bare-symbol literal syntax, not a re-parseable literal. Cycles
+render as `<cycle>`. The rendered length is charged against the sandbox memory
+quota before the string is built, so inspecting a huge composite fails with a
+quota error instead of allocating an oversized result.
+
 ## Strings
 
 See [strings.md](strings.md) for worked examples. Indexes and lengths count
@@ -71,6 +159,8 @@ Unicode characters, not bytes, unless noted.
 - `oct -> int` – leading characters parsed using a base inferred from a
   `0x`/`0b`/`0o`/`0d` prefix (octal by default); same lenient parsing,
   zero-on-failure, and `int64` overflow behavior as `hex`.
+- `inspect -> string` – double-quoted, escaped debug rendering (see
+  [Debug Representation](#debug-representation)).
 
 ### Conversion
 
@@ -98,7 +188,10 @@ Unicode characters, not bytes, unless noted.
   `true` when `pattern` matches at or after the character `offset`, else
   `false`. Anchors keep the full-string context across the offset; an offset
   past the end yields `false`, and negative offsets are rejected.
-- `scan(pattern) -> array` – all non-overlapping full regex matches.
+- `scan(pattern) -> array` – every non-overlapping regex match. With no capture
+  groups the result is an array of full match strings; with one or more groups
+  each match contributes a nested array of its captured substrings (`nil` for an
+  optional group that did not participate), mirroring Ruby.
 
 `match`, `match?`, and `scan` treat `pattern` as a regex and enforce the
 [regex guard limits](#guard-limits).
@@ -221,6 +314,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 - `size -> int` – element count.
 - `length -> int` – alias for `size`.
 - `empty? -> bool` – true when the array has no elements.
+- `inspect -> string` – debug rendering with each element inspected
+  recursively (see [Debug Representation](#debug-representation)).
 
 ### Iteration
 
@@ -281,6 +376,10 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   never both.
 - `fetch(index, default = nil) -> value` – element at `index`, or
   `default`/`nil` when out of bounds.
+- `dig(*path) -> value | nil` – nested lookup following `path`. Each component
+  descends one level: an integer index into an array or a symbol/string key
+  into a hash, so a single `dig` can traverse mixed array/hash data. `nil` when
+  any step is missing or out of range; a non-integer array index raises.
 - `count -> int` – element count.
 - `count(value) -> int` – occurrences of `value`.
 - `count { |item| } -> int` – elements for which the block is truthy.
@@ -290,12 +389,22 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   truthy.
 - `none? { |item| } -> bool` – true when no element (or block result) is
   truthy.
+- `any?(pattern)`, `all?(pattern)`, `none?(pattern) -> bool` – test each element
+  against `pattern` with case equality (`===`), so range patterns test
+  membership (`[2].any?(1..3)` is true). A `pattern` argument takes precedence
+  over an attached block.
+- `one? { |item| } -> bool` – true when exactly one element (or block result)
+  is truthy.
 
 ### Building and Slicing
 
 - `push(*values) -> array` – new array with `values` appended. Accepts zero
   values: bare `push` and `push()` are no-ops that return the array unchanged,
   matching Ruby.
+- `append(*values) -> array` – Ruby-style alias for `push`.
+- `prepend(*values) -> array` – new array with `values` inserted at the front in
+  order, so `[3].prepend(1, 2)` is `[1, 2, 3]`. Bare `prepend` and `prepend()`
+  return the array unchanged.
 - `pop(n = nil) -> hash` – returns `{ array:, popped: }`; bare `pop` pops one
   element (`popped` is the value or `nil`), `pop(n)` pops up to `n` elements
   (`popped` is an array).
@@ -387,6 +496,8 @@ methods.
 - `include?(key) -> bool` – alias for `key?`.
 - `value?(value) -> bool` – true when any stored value equals `value` using `==`.
 - `has_value?(value) -> bool` – alias for `value?`.
+- `inspect -> string` – debug rendering using colon-label keys with each value
+  inspected recursively (see [Debug Representation](#debug-representation)).
 
 ### Access
 
@@ -395,8 +506,10 @@ methods.
 - `fetch_values(*keys) { |key| } -> array` – values for `keys` in requested
   order. Raises `key not found` for any missing key; when a block is given it is
   called with each missing key and its result is used instead.
-- `dig(*keys) -> value | nil` – nested lookup following `keys`; `nil` when any
-  step is missing.
+- `dig(*path) -> value | nil` – nested lookup following `path`. Each component
+  descends one level: a symbol/string key into a hash or an integer index into
+  an array, so a single `dig` can traverse mixed hash/array data. `nil` when any
+  step is missing or out of range; a non-integer array index raises.
 - `keys -> array` – symbol keys in sorted order.
 - `values -> array` – values in sorted key order.
 
@@ -503,6 +616,8 @@ aliases, so `1.second` reads naturally.
 - `modulo(n) -> int|float` – the `%` operator as a method: the result's sign
   follows the divisor (floored division). Integer operands yield an integer;
   any float operand yields a float; a zero divisor errors.
+- `inspect -> string` – the integer's debug rendering (same digits as `to_s`;
+  see [Debug Representation](#debug-representation)).
 
 `round`, `floor`, and `ceil` accept an optional Integer precision. As in Ruby,
 the precision must fit a 32-bit signed integer (Ruby reads it through `NUM2INT`),
@@ -545,6 +660,9 @@ Ruby's arbitrary-precision integers.
   (truncated division); a zero divisor errors.
 - `modulo(n) -> float` – the `%` operator as a method: the result's sign
   follows the divisor (floored division); a zero divisor errors.
+- `inspect -> string` – the float's debug rendering (same text as `to_s`,
+  including `Infinity`/`-Infinity`/`NaN`; see
+  [Debug Representation](#debug-representation)).
 
 Float division by zero with the `/` operator follows IEEE 754 like Ruby:
 `1.0 / 0` is `Infinity`, `-1.0 / 0` is `-Infinity`, and `0.0 / 0.0` is `NaN`.
@@ -712,7 +830,10 @@ formatting. Times also support `time + duration`, `time - duration`,
 
 - `format(layout) -> string` – format with a Go layout string (reference time
   `Mon Jan 2 15:04:05 MST 2006`).
-- `strftime` – not supported; raises an error directing you to `format`.
+- `strftime(format) -> string` – format with a Ruby-style percent format string
+  (e.g. `"%Y-%m-%d %H:%M:%S"`). Supports the common directive subset; unknown
+  directives pass through verbatim, while a trailing `%` with no directive raises
+  a runtime error. See [time.md](time.md) for the directive table.
 
 ### Comparison and Rounding
 
@@ -975,6 +1096,7 @@ members (`match`, `match?`, `scan`, `sub`, `gsub`, and their `!` variants):
 | `JSON.parse` / `JSON.stringify` nesting depth | 10,000 arrays/objects |
 | Regex pattern size (`Regex.*`, `match`, `match?`, `scan`, `sub`/`gsub` with `regex: true`) | 16 KiB |
 | Regex text, replacement, and output size | 1 MiB |
+| `scan` match-index table (worst case) | 256 MiB |
 | `random_id` length | 1024 characters |
 
 Exceeding a limit raises a runtime error naming the offending guard.

@@ -36,6 +36,33 @@ func (e *assertionFailureError) Error() string {
 	return e.message
 }
 
+// privateMemberError marks a member-resolution failure that occurred because the
+// member exists but is private to the receiver. It wraps the formatted runtime
+// error so callers still surface the full "private method" message, while member
+// dispatch can distinguish it from a genuine unknown-member miss via errors.As.
+// The universal members rely on that distinction so a private override of
+// itself/eql?/equal? still raises instead of falling through to the builtin.
+type privateMemberError struct {
+	err error
+}
+
+func (e *privateMemberError) Error() string { return e.err.Error() }
+
+func (e *privateMemberError) Unwrap() error { return e.err }
+
+// privateMemberAccess wraps a formatted "private method" runtime error so member
+// resolution can recognize it as a privacy block rather than a missing member.
+func privateMemberAccess(err error) error {
+	return &privateMemberError{err: err}
+}
+
+// isPrivateMemberError reports whether err signals a member blocked by privacy,
+// as opposed to a member that does not exist on the receiver at all.
+func isPrivateMemberError(err error) bool {
+	var private *privateMemberError
+	return errors.As(err, &private)
+}
+
 const (
 	runtimeErrorTypeBase      = ast.RuntimeErrorTypeBase
 	runtimeErrorTypeAssertion = ast.RuntimeErrorTypeAssertion
@@ -50,37 +77,7 @@ var (
 	errLoopNext            = errors.New("loop next")
 	errStepQuotaExceeded   = errors.New("step quota exceeded")
 	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
-	// errPrivateMember marks a member-resolution failure caused by private-method
-	// visibility rather than an absent member. resolveMember inspects it so a
-	// universal member such as itself never masks an access-control denial: a
-	// private method named itself must report the same private-method error in
-	// both the no-paren and parenthesized call forms.
-	errPrivateMember = errors.New("private member")
 )
-
-// privateMemberError reports that member resolution found a method but denied it
-// for privacy. It renders identically to any other runtime error while wrapping
-// errPrivateMember so resolveMember can tell denial apart from a genuinely
-// missing member.
-type privateMemberError struct {
-	runtime error
-}
-
-func (e *privateMemberError) Error() string { return e.runtime.Error() }
-
-func (e *privateMemberError) Unwrap() error { return errPrivateMember }
-
-// As lets errors.As reach the embedded *RuntimeError, so error classification
-// keeps treating a private-method denial as a base runtime error.
-func (e *privateMemberError) As(target any) bool {
-	return errors.As(e.runtime, target)
-}
-
-// privateMemberErrorAt builds a private-method denial that renders like a normal
-// runtime error at pos but is detectable through errors.Is(err, errPrivateMember).
-func (exec *Execution) privateMemberErrorAt(pos Position, property string) error {
-	return &privateMemberError{runtime: exec.errorAt(pos, "private method %s", property)}
-}
 
 // Error returns the error message with a code frame and formatted stack trace.
 func (re *RuntimeError) Error() string {

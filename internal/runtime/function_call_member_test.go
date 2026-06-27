@@ -194,8 +194,8 @@ func exportedFunctionValue(t *testing.T, script *Script, names ...string) Value 
 
 // TestFunctionValueCallMemberSuggestion confirms the function member list is
 // wired into editor completion metadata. The list carries the function-specific
-// call member alongside the universal members (such as itself) exposed on every
-// value kind.
+// call member alongside the universal members (itself, eql?, equal?) exposed on
+// every value kind.
 func TestFunctionValueCallMemberSuggestion(t *testing.T) {
 	t.Parallel()
 	names, ok := MemberCompletionNames()["function"]

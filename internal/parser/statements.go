@@ -888,6 +888,19 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 			param.Kind = ast.ParamKeyword
 			return param, pos, true
 		}
+		// `name: default` declares an optional keyword-only parameter, while
+		// `name: Type` declares a typed positional parameter. The token after
+		// the colon disambiguates the two forms; see colonIntroducesKeywordDefault.
+		if kind == ast.ParamNormal && !param.IsIvar && p.colonIntroducesKeywordDefault(options) {
+			param.Kind = ast.ParamKeyword
+			p.nextToken()
+			if options.lineLimitedDefaults {
+				param.DefaultVal = p.parseLineExpressionUntil(lowestPrec, ast.TokenComma)
+			} else {
+				param.DefaultVal = p.parseExpression(lowestPrec)
+			}
+			return param, pos, true
+		}
 		p.nextToken()
 		param.Type = p.parseTypeExpr()
 		if param.Type == nil {
@@ -928,6 +941,348 @@ func (p *parser) peekEndsRequiredKeywordParam(options paramParseOptions) bool {
 	default:
 		return options.lineLimitedDefaults && p.peekToken.Pos.Line != p.curToken.Pos.Line
 	}
+}
+
+// colonIntroducesKeywordDefault reports whether the token sequence following a
+// parameter's `:` introduces an optional keyword-only default value rather than
+// a type annotation. It is consulted only after peekEndsRequiredKeywordParam has
+// ruled out the bare `name:` required-keyword form, so the colon is always
+// followed by at least one more token here.
+//
+// Vibescript overloads the post-colon position: `name: Type` is a typed
+// positional parameter while `name: default` is an optional keyword-only
+// parameter. The decision rests on whether the colon is followed by something
+// that can begin a type annotation:
+//
+//   - A value-only token (a literal, prefix operator, grouping, etc.) cannot
+//     start a type, so it begins a default value.
+//   - `nil` reads as a default value (`a: nil`), matching Ruby and the stdlib's
+//     documented optional keywords; a bare `nil` positional type is useless.
+//     A `|` continuation keeps it a type, so a nil-leading union annotation
+//     (`a: nil | int`) parses as the union rather than a `nil` default.
+//   - `{` opens either a shape type (`name: { field: Type }`) or a hash literal
+//     default (`name: { key: value }`). The two share a `{ name: X }` skeleton,
+//     so a bounded speculative parse decides: the brace group reads as a shape
+//     type only when it parses as one and is followed by a parameter boundary,
+//     otherwise it is a hash default.
+//   - A bare identifier is the genuinely ambiguous case. It reads as a type when
+//     it stands alone at a parameter boundary or continues as a type (`<` for
+//     generic arguments on a container type, `|` for a union). Otherwise the
+//     identifier begins an expression (`a + 1`, `helper(x)`, `obj.value`) and is
+//     treated as a default value.
+func (p *parser) colonIntroducesKeywordDefault(options paramParseOptions) bool {
+	switch p.peekToken.Type {
+	case ast.TokenNil:
+		// A bare `nil` is a default value, but a `|` continuation makes it the
+		// head of a nil-leading union type annotation (`a: nil | int`).
+		return p.peekPeek.Type != ast.TokenPipe
+	case ast.TokenLBrace:
+		return !p.bracedGroupIsShapeType(options)
+	case ast.TokenIdent:
+		return p.identAfterColonStartsExpression(options)
+	default:
+		return prefixParserKind(p.peekToken.Type) != prefixParserNone
+	}
+}
+
+// bracedGroupIsShapeType reports whether the brace group beginning at
+// peekToken is a shape type rather than a hash literal default. The two
+// share a `{ field: X }` skeleton, so a bounded speculative parse decides:
+// the group is a shape type only when the whole group parses as one,
+// because a shape type's field values are themselves types all the way
+// down. `{ x: int }` parses as a shape, while `{ retry: 3 }` does not (an
+// integer is not a type) and `{ a: { b: 1 } }` does not (the nested
+// integer is not a type), so both are hash defaults.
+//
+// A clean shape parse is necessary but not sufficient: a hash default
+// whose values happen to be type names (`{ x: int }.merge(...)`) parses
+// as a shape but continues with a postfix expression. The group is a
+// shape type only when it also reaches a parameter boundary (`,` `)` `=`,
+// or the line-limited terminators), so a postfix continuation marks the
+// group as a hash default instead.
+//
+// The empty group `{}` is treated as a hash default rather than an empty
+// shape type. An empty shape type as a parameter annotation is degenerate
+// (it accepts only an empty hash), whereas `opts: {}` is the common
+// Ruby-style empty-hash default. An empty *nested* shape is degenerate for
+// the same reason: `{ headers: {} }` reads as a shape whose `headers` field
+// accepts only an empty hash, but the Ruby-style intent is the hash default
+// `def f(opts: { headers: {} })`. shapeHasEmptyNestedShape marks such groups
+// as hash defaults too, mirroring the top-level `{}` case at any depth.
+//
+// A clean shape parse with a bare `nil` field type is likewise degenerate:
+// `{ previous: nil }` reads as a shape whose `previous` field accepts only
+// nil, but the Ruby-style intent is the hash default
+// `def f(opts: { previous: nil })`. shapeHasDegenerateNilField marks such
+// groups as hash defaults; a nullable union field (`{ previous: int | nil }`)
+// is a legitimate shape and is left untouched.
+//
+// The parser state is fully restored afterward regardless of the outcome,
+// leaving the real parse to proceed from the colon.
+func (p *parser) bracedGroupIsShapeType(options paramParseOptions) bool {
+	if p.peekPeek.Type == ast.TokenRBrace {
+		return false
+	}
+
+	saved := p.snapshot()
+	defer p.restore(saved)
+
+	p.nextToken()
+	shape := p.parseTypeExpr()
+	if shape == nil {
+		// A clean failure where the contents were not types (`{ retry: 3 }`)
+		// is a hash default. A structural shape error (`{ id: string, id: int }`)
+		// instead has field values that all parsed as types, so the braces are a
+		// malformed shape annotation, not a hash default: route them to the type
+		// path so the real parse re-emits the shape diagnostic rather than
+		// silently turning a typed positional parameter into a keyword default.
+		return p.shapeStructurallyInvalid
+	}
+	if len(p.errors) != saved.errorCount {
+		return false
+	}
+	if shapeHasDegenerateNilField(shape) {
+		return false
+	}
+	if shapeHasEmptyNestedShape(shape) {
+		return false
+	}
+	if p.shapeFieldNamesLocalValue(shape) {
+		return false
+	}
+	return p.typeAnnotationBoundaryFollows(options)
+}
+
+// shapeFieldNamesLocalValue reports whether ty is a shape type with a bare
+// identifier field type that names a local value in scope, looking through
+// nested shapes.
+//
+// A bare identifier field such as the `a` in `{ sum: a }` parses cleanly as a
+// type atom, so the speculative shape parse alone cannot tell `def f(opts: {
+// status: pending })` (a shape whose `status` field is the `pending` enum type)
+// from `def g(a:, b: { sum: a })` (a hash default whose `sum` value references
+// the earlier keyword parameter `a`). When the identifier names a value already
+// in scope it is a value reference, so the brace group is a hash default rather
+// than a shape type. This mirrors identAfterColonStartsExpression and
+// identLessThanStartsExpression, which already treat a bare identifier naming a
+// local value as the head of a default expression.
+//
+// A bare identifier whose spelling matches a built-in type (such as the `time`
+// in `def f(time:, opts: { start: time })`) parses to that built-in's kind
+// (TypeTime here) while keeping the original literal in Name, so the check
+// inspects the name rather than the kind. This covers common parameter names
+// like time, string, int, hash, and array.
+//
+// The check targets bare atoms only. A union field (`{ x: a | b }`) stays a
+// type because `|` continues a type annotation; a nullable atom (`{ x: a? }`)
+// is type syntax; and an identifier appearing as a generic type argument
+// (`{ x: array<a> }`) is a genuine type, matching how those forms are
+// disambiguated outside shapes.
+func (p *parser) shapeFieldNamesLocalValue(ty *ast.TypeExpr) bool {
+	if ty == nil || ty.Kind != ast.TypeShape {
+		return false
+	}
+	for _, fieldType := range ty.Shape {
+		if fieldType == nil {
+			continue
+		}
+		if p.typeAtomNamesLocalValue(fieldType) {
+			return true
+		}
+		if p.shapeFieldNamesLocalValue(fieldType) {
+			return true
+		}
+	}
+	return false
+}
+
+// typeAtomNamesLocalValue reports whether ty is a bare named type atom whose
+// spelling names a local value in scope. A bare atom is a single identifier
+// with no type modifiers: it carries no generic arguments, is not nullable, and
+// is neither a shape nor a union (those forms are unambiguous type syntax). The
+// spelling is checked rather than the resolved kind so that an identifier
+// matching a built-in type name (resolved to that built-in's kind) is still
+// recognized as a value reference when it names a local.
+func (p *parser) typeAtomNamesLocalValue(ty *ast.TypeExpr) bool {
+	if ty == nil || ty.Name == "" || ty.Nullable || len(ty.TypeArgs) > 0 {
+		return false
+	}
+	switch ty.Kind {
+	case ast.TypeShape, ast.TypeUnion:
+		return false
+	default:
+		return p.isLocalName(ty.Name)
+	}
+}
+
+// bracedFieldIsHashDefault reports whether a braced-group field value, parsed as
+// a type expression during the speculative shape parse, actually reads as a hash
+// default rather than a shape field type. A value qualifies when it is:
+//
+//   - a bare identifier naming a local value (typeAtomNamesLocalValue),
+//   - a bare `nil` atom (the degenerate field type recognized by
+//     shapeHasDegenerateNilField),
+//   - an empty shape `{}` (the degenerate empty-hash default), or
+//   - a nested shape that is itself a hash default, i.e. one with a degenerate
+//     `nil` field (shapeHasDegenerateNilField), an empty nested shape
+//     (shapeHasEmptyNestedShape), or a field naming a local value
+//     (shapeFieldNamesLocalValue).
+//
+// The nested-shape cases mirror the disambiguation bracedGroupIsShapeType
+// applies to the whole group, so a nested value like `{ previous: nil }` or
+// `{ sum: a }` is recognized as a hash default at any depth, not only when it is
+// the outermost group.
+//
+// parseTypeShape uses it on the repeated values of a duplicate key so that a
+// group like `{ previous: nil, previous: nil }`, `{ x: a, x: a }`, or
+// `{ x: { previous: nil }, x: { previous: nil } }` is left to fall back to a
+// hash default instead of being marked a structural shape error.
+func (p *parser) bracedFieldIsHashDefault(ty *ast.TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	if ty.Kind == ast.TypeNil {
+		return true
+	}
+	if typeIsEmptyShape(ty) {
+		return true
+	}
+	if p.typeAtomNamesLocalValue(ty) {
+		return true
+	}
+	return shapeHasDegenerateNilField(ty) ||
+		shapeHasEmptyNestedShape(ty) ||
+		p.shapeFieldNamesLocalValue(ty)
+}
+
+// shapeHasDegenerateNilField reports whether ty is a shape type with a field
+// whose type is the bare `nil` atom, looking through nested shapes.
+//
+// A `nil`-only field type accepts solely the value nil, which is degenerate as
+// a positional annotation, so a group like `{ previous: nil }` is the common
+// Ruby-style hash default (`def f(opts: { previous: nil })`) rather than a
+// shape type. The check targets the bare atom only: a nullable union such as
+// `{ previous: int | nil }` is a legitimate shape field and is left untouched.
+func shapeHasDegenerateNilField(ty *ast.TypeExpr) bool {
+	if ty == nil || ty.Kind != ast.TypeShape {
+		return false
+	}
+	for _, fieldType := range ty.Shape {
+		if fieldType == nil {
+			continue
+		}
+		if fieldType.Kind == ast.TypeNil || shapeHasDegenerateNilField(fieldType) {
+			return true
+		}
+	}
+	return false
+}
+
+// typeIsEmptyShape reports whether ty is the empty shape `{}`, i.e. a shape
+// type with no fields. An empty shape is degenerate as a parameter annotation
+// (it accepts only an empty hash), so it is the Ruby-style empty-hash default
+// rather than a meaningful shape type, matching the top-level `{}` handling in
+// bracedGroupIsShapeType.
+func typeIsEmptyShape(ty *ast.TypeExpr) bool {
+	return ty != nil && ty.Kind == ast.TypeShape && len(ty.Shape) == 0
+}
+
+// shapeHasEmptyNestedShape reports whether ty is a shape type with a field
+// whose type is an empty shape `{}`, looking through nested shapes.
+//
+// An empty shape field type accepts solely an empty hash, which is degenerate
+// as a positional annotation, so a group like `{ headers: {} }` is the common
+// Ruby-style hash default (`def f(opts: { headers: {} })`) rather than a shape
+// type. This mirrors shapeHasDegenerateNilField for the empty-shape case,
+// extending the top-level `{}` handling in bracedGroupIsShapeType to any depth.
+func shapeHasEmptyNestedShape(ty *ast.TypeExpr) bool {
+	if ty == nil || ty.Kind != ast.TypeShape {
+		return false
+	}
+	for _, fieldType := range ty.Shape {
+		if fieldType == nil {
+			continue
+		}
+		if typeIsEmptyShape(fieldType) || shapeHasEmptyNestedShape(fieldType) {
+			return true
+		}
+	}
+	return false
+}
+
+// typeAnnotationBoundaryFollows reports whether peekToken terminates a
+// parameter's type annotation. Valid terminators are a comma or closing
+// paren (the next parameter or the list end), an `=` introducing a
+// `name: Type = default` positional default, and, for line-limited
+// parameter lists, the constructs that end such a list.
+func (p *parser) typeAnnotationBoundaryFollows(options paramParseOptions) bool {
+	switch p.peekToken.Type {
+	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign:
+		return true
+	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
+		return options.lineLimitedDefaults
+	default:
+		return options.lineLimitedDefaults && p.peekToken.Pos.Line != p.curToken.Pos.Line
+	}
+}
+
+// identAfterColonStartsExpression reports whether an identifier that follows a
+// parameter's `:` begins a default-value expression rather than a bare type
+// name. The token after the identifier decides: a parameter boundary keeps the
+// identifier a standalone type, `|` continues it as a union type, `<` is
+// disambiguated by identLessThanStartsExpression on whether the identifier is a
+// value, and anything else (other binary operators, calls, member access,
+// indexing) makes it the head of an expression.
+func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool {
+	switch p.peekPeek.Type {
+	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign, ast.TokenPipe:
+		// A boundary (`,` `)`), an `=` introducing a `name: Type = default`
+		// positional default, or a `|` union continuation all keep the
+		// identifier a type name.
+		return false
+	case ast.TokenLT:
+		return p.identLessThanStartsExpression()
+	case ast.TokenThinArrow, ast.TokenSemicolon, ast.TokenEOF:
+		return !options.lineLimitedDefaults
+	default:
+		if options.lineLimitedDefaults && p.peekPeek.Pos.Line != p.peekToken.Pos.Line {
+			return false
+		}
+		return true
+	}
+}
+
+// identLessThanStartsExpression reports whether `ident <` (with ident at
+// peekToken) begins a default-value expression rather than continuing a
+// generic type annotation.
+//
+// A built-in generic container name (`array`, `hash`, `object`) always
+// continues as a type: `<` opens its type arguments and nothing else can.
+// This takes precedence over any value local that shadows the name, so
+// `def f(array, values: array<int>)` keeps `array<int>` a generic type
+// even though an earlier parameter is named `array`. Built-in generic
+// type parsing is never shadowed by value locals.
+//
+// Otherwise the `<` is a comparison only when the identifier names a
+// value, i.e. a local already in scope such as an earlier keyword
+// parameter, so `def f(limit:, ok: limit < 10)` reads as a default
+// expression. Failing both, the identifier is a (scalar or enum) type
+// name and `<` produces the clear "does not accept type arguments"
+// diagnostic rather than a misparsed comparison.
+func (p *parser) identLessThanStartsExpression() bool {
+	if isGenericContainerTypeName(p.peekToken.Literal) {
+		return false
+	}
+	return p.isLocalName(p.peekToken.Literal)
+}
+
+// isGenericContainerTypeName reports whether name resolves to a built-in
+// container type that accepts angle-bracket type arguments (`array<...>`,
+// `hash<...>`, `object<...>`). These are the only types parseTypeAtom lets
+// carry type arguments, so a following `<` always continues the type.
+func isGenericContainerTypeName(name string) bool {
+	kind, _ := resolveType(name)
+	return kind == ast.TypeArray || kind == ast.TypeHash
 }
 
 func parameterNameExpectation(kind ast.ParamKind) string {
@@ -1062,13 +1417,13 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 			return nil
 		}
 		pos = first.Pos()
-		elements = append(elements, ast.DestructureElement{Target: first})
+		elements = append(elements, ast.DestructureElement{Target: first, Position: first.Pos()})
 	} else {
 		element, ok := p.parseDestructureElement()
 		if !ok {
 			return nil
 		}
-		pos = element.Target.Pos()
+		pos = element.Position
 		seenRest = element.Rest
 		elements = append(elements, element)
 	}
@@ -1082,7 +1437,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 		}
 		if element.Rest {
 			if seenRest {
-				p.addParseError(element.Target.Pos(), "duplicate rest assignment target")
+				p.addParseError(element.Position, "duplicate rest assignment target")
 				return nil
 			}
 			seenRest = true
@@ -1096,6 +1451,12 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
 	rest := false
 	if p.curToken.Type == ast.TokenAsterisk {
+		restPos := p.curToken.Pos
+		// A bare "*" not followed by a target is an anonymous (discard) rest.
+		// Leave curToken on "*" so the caller's lookahead sees the terminator.
+		if isAnonymousRestTerminator(p.peekToken.Type) {
+			return ast.DestructureElement{Rest: true, Position: restPos}, true
+		}
 		rest = true
 		p.nextToken()
 	}
@@ -1104,7 +1465,20 @@ func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
 	if target == nil {
 		return ast.DestructureElement{}, false
 	}
-	return ast.DestructureElement{Target: target, Rest: rest}, true
+	return ast.DestructureElement{Target: target, Rest: rest, Position: target.Pos()}, true
+}
+
+// isAnonymousRestTerminator reports whether tt ends a bare "*" destructuring
+// target, leaving an anonymous (discard) rest with no bound name. A "*" is
+// anonymous when the next token closes the target list (an assignment operator),
+// continues it (a comma), or closes a nested target group (")" or "]").
+func isAnonymousRestTerminator(tt ast.TokenType) bool {
+	switch tt {
+	case ast.TokenComma, ast.TokenRParen, ast.TokenRBracket:
+		return true
+	default:
+		return isAssignmentOperator(tt)
+	}
 }
 
 func (p *parser) parseDestructureSingleTarget() ast.Expression {

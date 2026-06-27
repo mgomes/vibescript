@@ -71,6 +71,16 @@ var RuntimeStringer func(v Value) (string, bool)
 // kinds falls back to pointer identity of the underlying payload.
 var RuntimeEqualer func(left, right Value) (bool, bool)
 
+// RuntimeIdenticaler is the hook used by Value.Identical to compare
+// runtime-only kinds by backing-storage identity. It differs from
+// RuntimeEqualer because some runtime kinds (notably enums and enum values)
+// define Equal as structural equivalence: two independently cloned enum
+// members that share an owner script and name compare Equal, yet they do not
+// share storage and so must not be Identical. The vibes package installs this
+// hook during initialization. If unset, identity for those kinds falls back to
+// the same comparison Value.Equal uses.
+var RuntimeIdenticaler func(left, right Value) (bool, bool)
+
 // String returns the string representation of v.
 func (v Value) String() string {
 	switch v.kind {
@@ -249,7 +259,7 @@ func (v Value) appendString(buf *strings.Builder, state *valueStringState, limit
 		// than emit a result one byte over the cap.
 		return appendByteBounded(buf, ']', limit)
 	case KindHash:
-		entries := v.data.(map[string]Value)
+		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return appendBounded(buf, "{}", limit)
 		}
@@ -380,7 +390,7 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 		}
 		return total
 	case KindHash:
-		entries := v.data.(map[string]Value)
+		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose)
 		}
@@ -463,7 +473,7 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 		}
 		return total, nil
 	case KindHash:
-		entries := v.data.(map[string]Value)
+		entries := v.hashEntries()
 		if len(entries) == 0 {
 			return len(hashOpen) + len(hashClose), nil
 		}
@@ -527,11 +537,114 @@ func (v Value) Truthy() bool {
 	case KindArray:
 		return len(v.data.([]Value)) > 0
 	case KindHash:
-		return len(v.data.(map[string]Value)) > 0
+		return len(v.hashEntries()) > 0
 	case KindEnum, KindEnumValue, KindClass, KindInstance:
 		return true
 	default:
 		return true
+	}
+}
+
+// Eql reports whether v and other are equal under hash-key semantics: they
+// must share the same kind and compare equal, so an Int never eql-matches a
+// Float even when their numeric values coincide. It backs the Ruby-style
+// `eql?` predicate. Because Equal already requires matching kinds (Vibescript
+// `==` performs no cross-kind numeric coercion), Eql currently coincides with
+// Equal; it exists as a distinct, documented contract aligned with hash-key
+// equality rather than with broad value equivalence.
+func (v Value) Eql(other Value) bool {
+	if v.kind != other.kind {
+		return false
+	}
+	return v.Equal(other)
+}
+
+// Identical reports whether v and other refer to the same object, backing the
+// Ruby-style `equal?` predicate. Immutable value kinds (nil, bool, int, float,
+// string, symbol, money, duration, time, range) are identical when they share
+// the same kind and value, since the language exposes no distinct identities
+// for equal immutables. Mutable composites (array, hash, object) and
+// runtime-only kinds (function, builtin, block, class, instance, enum, enum
+// value) are identical only when they share the same backing storage, so two
+// independently constructed composites with equal contents are not identical.
+//
+// NaN floats are the one immutable case where value equality is not enough:
+// IEEE NaN != NaN, so deferring to Equal would make x.equal?(x) false for a NaN
+// receiver and break reflexivity. Identity treats any two NaN floats as
+// identical, keeping equal? reflexive while matching the value-identity model
+// floats already follow.
+//
+// Empty arrays are the one principled exception: any two empty arrays report
+// identical regardless of their backing storage. This is harmless because an
+// empty array has no element storage to alias — appending to one never affects
+// another — so they behave as a single value-like empty rather than as distinct
+// mutable objects. Backing pointers alone cannot establish this, because an
+// empty result preallocated with spare capacity (for example array.select
+// starting from make([]Value, 0, len(arr))) carries its own non-zerobase pointer
+// and a different capacity than a literal []; only a length check captures the
+// contract. Empty hashes and objects stay distinct because every hash carries
+// its own hashData wrapper (NewHash allocates a fresh one per call) and NewObject
+// allocates a fresh backing map for nil input, so each empty composite has a
+// distinct identity rather than collapsing onto a shared zero pointer.
+func (v Value) Identical(other Value) bool {
+	if v.kind != other.kind {
+		return false
+	}
+	switch v.kind {
+	case KindFloat:
+		// Float identity is value identity in Vibescript: the language exposes no
+		// distinct object for two floats with the same value, so 1.5.equal?(1.5)
+		// is true. IEEE equality would break the identity contract's reflexivity
+		// for NaN (NaN == NaN is false), so treat any two NaN floats as identical;
+		// every other float defers to value equality.
+		if math.IsNaN(v.Float()) || math.IsNaN(other.Float()) {
+			return math.IsNaN(v.Float()) && math.IsNaN(other.Float())
+		}
+		return v.Float() == other.Float()
+	case KindArray:
+		left := v.data.([]Value)
+		right := other.data.([]Value)
+		// All empty arrays are identical: an empty array has no element storage
+		// to alias, so appending to one never affects another, and they behave as
+		// a single value-like empty. Comparing backing pointers is not enough,
+		// because an empty result preallocated with spare capacity (for example
+		// array.select starting from make([]Value, 0, len(arr))) carries its own
+		// non-zerobase pointer and a different capacity than a literal [].
+		if len(left) == 0 && len(right) == 0 {
+			return true
+		}
+		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer() &&
+			len(left) == len(right) && cap(left) == cap(right)
+	case KindHash:
+		// A KindHash payload is a *hashData wrapper, so identity is the wrapper's
+		// pointer rather than its entry map. Two hashes that share an entry map but
+		// carry different default metadata are distinct objects, and each NewHash
+		// call allocates a fresh wrapper, so independently constructed hashes (even
+		// empty ones) are never identical.
+		return HashIdentity(v) == HashIdentity(other)
+	case KindObject:
+		left := v.data.(map[string]Value)
+		right := other.data.(map[string]Value)
+		return reflect.ValueOf(left).Pointer() == reflect.ValueOf(right).Pointer()
+	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
+		// These runtime kinds already compare by backing-pointer identity in
+		// Equal (via RuntimeEqualer), which is exactly the identity contract
+		// equal? wants, so delegating keeps the two predicates consistent.
+		return v.Equal(other)
+	case KindEnum, KindEnumValue:
+		// Enum and enum-value Equal is structural: two independently cloned
+		// members that share an owner script and name compare Equal even though
+		// they hold distinct backing storage (for example, a value cloned out to
+		// the host and returned by a capability). equal? must report identity,
+		// so consult RuntimeIdenticaler, which compares backing pointers.
+		if RuntimeIdenticaler != nil {
+			if result, ok := RuntimeIdenticaler(v, other); ok {
+				return result
+			}
+		}
+		return v.Equal(other)
+	default:
+		return v.Equal(other)
 	}
 }
 

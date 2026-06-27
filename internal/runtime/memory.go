@@ -5,10 +5,13 @@ import (
 	"math"
 	"reflect"
 	"unsafe"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 const (
 	estimatedValueBytes        = int(unsafe.Sizeof(Value{}))
+	estimatedIntBytes          = int(unsafe.Sizeof(int(0)))
 	estimatedStringHeaderBytes = 16
 	estimatedSliceBaseBytes    = 24
 	estimatedMapBaseBytes      = 48
@@ -16,9 +19,18 @@ const (
 	estimatedEnvBytes          = int(unsafe.Sizeof(Env{}))
 	estimatedInstanceBytes     = 16
 	estimatedBlockBytes        = 24
+	estimatedBuiltinBytes      = int(unsafe.Sizeof(Builtin{}))
 	estimatedCallFrameBytes    = 48
 	estimatedModuleContextSize = 24
 )
+
+// estimatedHashDataBytes is the heap footprint of the hashData wrapper every
+// KindHash value allocates around its entry map to carry Ruby-style default
+// metadata (a default value and/or a default proc). The entry map and default
+// payloads are charged separately; this is the wrapper struct itself, which the
+// estimate would otherwise miss for workloads that retain many small hashes (an
+// array of Hash.new or empty literals).
+const estimatedHashDataBytes = value.HashDataBytes
 
 // estimatedMapEntryStructuralBytes is the per-entry structural footprint a
 // map[string]Value reserves for one slot regardless of what its key and value
@@ -34,11 +46,13 @@ type memoryEstimator struct {
 	seenFrozen    *Env
 	seenEnvs      map[*Env]struct{}
 	seenMaps      map[uintptr]struct{}
+	seenHashData  map[uintptr]struct{}
 	seenSlices    map[uintptr]struct{}
 	seenStrings   map[stringIdentity]struct{}
 	seenClasses   map[*ClassDef]struct{}
 	seenInstances map[*Instance]struct{}
 	seenBlocks    map[*Block]struct{}
+	seenBuiltins  map[*Builtin]struct{}
 }
 
 type stringIdentity struct {
@@ -54,11 +68,13 @@ func (est *memoryEstimator) reset() {
 	est.seenFrozen = nil
 	clear(est.seenEnvs)
 	clear(est.seenMaps)
+	clear(est.seenHashData)
 	clear(est.seenSlices)
 	clear(est.seenStrings)
 	clear(est.seenClasses)
 	clear(est.seenInstances)
 	clear(est.seenBlocks)
+	clear(est.seenBuiltins)
 }
 
 func (exec *Execution) memoryEstimatorForCheck() *memoryEstimator {
@@ -83,12 +99,12 @@ func (exec *Execution) checkMemoryWith(extras ...Value) error {
 	return nil
 }
 
-func (exec *Execution) checkMemoryWithCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	used := exec.estimateMemoryUsageForCallRoots(receiver, args, kwargs, block)
+	used := exec.estimateMemoryUsageForCallRoots(callee, receiver, args, kwargs, block)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
@@ -118,26 +134,28 @@ func (exec *Execution) checkProjectedStringBytes(payloadBytes int) error {
 	return nil
 }
 
-// checkProjectedInterpolatedValue rejects an interpolation step that would exceed
-// the memory quota before the rendered value is streamed into the builder. It
-// charges three things that are all live at the peak of the write: the
-// execution's reachable roots (the base), the interpolated value's own footprint,
-// and the string the rendering is being streamed into (its header plus
-// payloadBytes of rendered output).
+// checkProjectedValueRendering rejects a step that renders a value into a fresh
+// string (or streams it into a builder) before that string is built, when the
+// peak would exceed the memory quota. It charges three things that are all live at
+// the peak of the write: the execution's reachable roots (the base), the rendered
+// value's own footprint, and the result string (its header plus payloadBytes of
+// rendered output). It backs both string interpolation and the `inspect` builtin,
+// which share the shape "value stays live while its rendering materializes."
 //
-// The value's footprint matters because the interpolated expression may produce
-// a temporary that is not reachable from any environment — a function return, or
-// an array/hash literal constructed inline. Such a temporary lives only on the Go
-// call stack while WriteStringTo copies its rendering, so estimateMemoryUsageBase
-// never sees it, yet it is real memory held alongside the growing builder. Without
-// charging it, base+output and base+value could each fit the quota while
-// base+value+output exceeds it, letting a huge temporary stream past the limit.
+// The value's footprint matters because the rendered expression may produce a
+// temporary that is not reachable from any environment — a function return, an
+// array/hash literal constructed inline, or a receiver like `[big].inspect`. Such
+// a temporary lives only on the Go call stack while its rendering is copied, so
+// estimateMemoryUsageBase never sees it, yet it is real memory held alongside the
+// new string. Without charging it, base+output and base+value could each fit the
+// quota while base+value+output exceeds it, letting a huge temporary render past
+// the limit.
 //
 // val is charged through the same estimator that walks the base, so a value that
-// IS reachable from an environment (an existing variable interpolated directly) is
+// IS reachable from an environment (an existing variable rendered directly) is
 // deduplicated against the base and contributes only its already-counted footprint
-// once, leaving the small-interpolation fast path unchanged.
-func (exec *Execution) checkProjectedInterpolatedValue(val Value, payloadBytes int) error {
+// once, leaving the small-render fast path unchanged.
+func (exec *Execution) checkProjectedValueRendering(val Value, payloadBytes int) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
@@ -163,14 +181,46 @@ func (exec *Execution) checkProjectedInterpolatedValue(val Value, payloadBytes i
 // count is the number of int values the array would hold; each int value
 // contributes only the base Value size.
 func (exec *Execution) checkProjectedIntArrayBytes(count int) error {
+	return exec.checkProjectedIntArrayBytesWithLive(count, 0, NewNil())
+}
+
+// checkProjectedIntArrayBytesWithLive is checkProjectedIntArrayBytes for a
+// projection that must also account for memory that is already allocated but not
+// reachable from any environment root, so estimateMemoryUsageBase cannot see it.
+// Destructuring assignment uses it: while assignDestructure runs, the evaluated
+// right-hand side (liveRoot) is held only on the Go call stack — a function or
+// capability return, or an array literal — and a defensive snapshot of it
+// (liveSlots) may have been copied into another Go-local slice. Both are live at
+// the peak of the array this check guards (a named rest's captured window), yet
+// neither is reachable from an environment, so the base walk misses them.
+//
+// liveRoot is the live right-hand-side value, charged through the same estimator
+// that walks the base so a right-hand side that IS reachable from an environment
+// (an existing variable destructured directly) deduplicates against the base and
+// contributes only its already-counted footprint once. A nil liveRoot (the
+// builtin callers, which have no off-stack right-hand side) charges nothing.
+// liveSlots is the snapshot's slot count; its slot array is charged structurally
+// because the snapshot shares element payloads with liveRoot, which already
+// charged them. Charging all three projects the true peak (base + right-hand side
+// + snapshot + array), which the per-statement check would otherwise miss because
+// the right-hand side and snapshot are gone by the time control returns from the
+// assignment.
+func (exec *Execution) checkProjectedIntArrayBytesWithLive(count, liveSlots int, liveRoot Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
 	est := exec.memoryEstimatorForCheck()
 	used := exec.estimateMemoryUsageBase(est)
+	if liveRoot.Kind() != KindNil {
+		used = saturatingAdd(used, est.value(liveRoot))
+	}
 	est.reset()
 
+	if liveSlots > 0 {
+		used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
+		used = saturatingAdd(used, saturatingMul(liveSlots, estimatedValueBytes))
+	}
 	used = saturatingAdd(used, estimatedValueBytes+estimatedSliceBaseBytes)
 	used = saturatingAdd(used, saturatingMul(count, estimatedValueBytes))
 	if used > exec.memoryQuota {
@@ -238,18 +288,22 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 }
 
 // checkProjectedHashWalkBytes rejects a pure hash iterator (each, each_key,
-// each_value) before it allocates its sorted-key scratch buffer. These iterators
-// return the receiver and build no derived map, so their only allocation beyond
-// the live call roots is the scratch key list (see sortedKeyBufferBytes); they
-// must not be charged an output map they never create. scratchBytes is the heap
-// footprint of that key list. Charging a phantom empty map here would falsely
-// reject a quota that exactly fits the receiver, block, and scratch.
-func (exec *Execution) checkProjectedHashWalkBytes(scratchBytes int, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+// each_value, and the `for k, v in hash` statement) before it walks the receiver.
+// These iterators return the receiver and build no derived map, so they must not
+// be charged an output map they never create; charging a phantom empty map here
+// would falsely reject a quota that exactly fits the receiver and block.
+//
+// The sorted-key scratch buffer these iterators materialize stays live while
+// their body runs, so callers reserve it through reserveLoopScratch before this
+// check rather than passing it here: the reservation folds the scratch into the
+// live baseline (hashCallRootBytes measures it), which both charges it at this
+// preflight and keeps every memory check inside the body aware of it.
+func (exec *Execution) checkProjectedHashWalkBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	used := saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), scratchBytes)
+	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
 	if used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
@@ -321,6 +375,27 @@ func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwa
 	return acc
 }
 
+// reserveScratch folds a fixed scratch allocation into the baseline so it is held
+// against the quota for the build's entire lifetime, and rejects the build if the
+// reservation alone already overflows. Builders that keep a Go-local scratch
+// buffer live while the result accumulates (String#scan holds the engine's whole
+// [][]int match table the entire time it materializes per-match result elements
+// from it) reserve that buffer here so its bytes coexist with every accumulated
+// element at peak. Without the reservation a build could keep both the scratch and
+// the growing result live and exceed the quota by the scratch size before the
+// per-element check observed it. scratchBytes is the heap footprint of that live
+// buffer.
+func (acc *arrayBuildAccumulator) reserveScratch(scratchBytes int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, scratchBytes)
+	if acc.base > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // add charges a newly appended element and rejects the build if the result's
 // projected memory exceeds the quota. backingCap is the capacity of the result's
 // backing slice after the append; its slot array is charged from that capacity
@@ -330,7 +405,9 @@ func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwa
 // Elements aliased by a baseline root (for example filter_map returning an
 // element of its receiver unchanged) are deduplicated by the persistent
 // estimator, so their backing is charged once, exactly as the post-call check
-// would.
+// would. Scratch buffers held live for the build's duration are charged via
+// reserveScratch, which folds them into the baseline so they are counted
+// alongside the growing result rather than separately.
 func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
@@ -338,12 +415,39 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
 
-	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(backingCap, estimatedValueBytes))
-	used := saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
-	if used > acc.exec.memoryQuota {
+	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
+}
+
+// reserveSlots rejects the build up front when a backing slice of slotCount Value
+// slots would already overflow the quota on top of the baseline (exec's reachable
+// roots plus the call roots) and the payload accumulated so far. Builtins that can
+// derive a large lower bound on the result length before emitting it — such as a
+// range selector in Array#values_at expanding to a billion padded positions — use
+// it to fail fast instead of charging the same slots one append at a time. It
+// charges only the slot array, not per-element payloads (those are added by add as
+// each element is appended), so it never rejects a result add would accept.
+func (acc *arrayBuildAccumulator) reserveSlots(slotCount int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	if used := acc.projected(slotCount); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
+// projected returns the build's live footprint if its backing slice held slotCount
+// Value slots: the baseline (exec's reachable roots plus the call roots), the slot
+// array sized to slotCount, and the payloads accumulated so far. add and
+// reserveSlots share it so the per-append and up-front checks charge the slot array
+// identically.
+func (acc *arrayBuildAccumulator) projected(slotCount int) int {
+	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
+	return saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
 }
 
 // hashBuildAccumulator charges the memory of an output map assembled entry by
@@ -422,10 +526,11 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	// Measure the baseline through a throwaway estimator so the results-only
 	// estimator stays empty: the base must be counted, but the results estimator
 	// must not dedup later block results against the call roots it walked.
-	acc.base = exec.estimateMemoryUsageForCallRoots(receiver, args, kwargs, block)
-	// The output is a single map, so fold its empty-map overhead into the baseline;
-	// add then charges only the per-entry growth.
-	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes)
+	acc.base = exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	// The output is a single hash, so fold its empty-map overhead plus the
+	// hashData wrapper every KindHash allocates into the baseline; add then
+	// charges only the per-entry growth.
+	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	acc.est = newMemoryEstimator()
 	return acc
 }
@@ -563,12 +668,13 @@ func (exec *Execution) hashCallRootBytes(receiver Value, args []Value, kwargs ma
 }
 
 // projectedHashBaseBytes estimates the live footprint a hash transform holds
-// before it reserves its output map: the call-root usage plus the empty map's
-// structural overhead. maxProjectedHashEntries builds on it so the entry budget
-// and the byte check agree on the same baseline. Callers that build no output map
-// (the pure iterators) use hashCallRootBytes directly instead.
+// before it reserves its output map: the call-root usage plus the empty hash's
+// structural overhead (the empty map plus the hashData wrapper every KindHash
+// allocates). maxProjectedHashEntries builds on it so the entry budget and the
+// byte check agree on the same baseline. Callers that build no output map (the
+// pure iterators) use hashCallRootBytes directly instead.
 func (exec *Execution) projectedHashBaseBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
-	return saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), estimatedValueBytes+estimatedMapBaseBytes)
+	return saturatingAdd(exec.hashCallRootBytes(receiver, args, kwargs, block), estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 }
 
 // maxProjectedHashEntries returns the largest output-map entry count that
@@ -610,11 +716,14 @@ func (exec *Execution) estimateMemoryUsage(extras ...Value) int {
 	return total
 }
 
-func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) int {
+func (exec *Execution) estimateMemoryUsageForCallRoots(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) int {
 	est := exec.memoryEstimatorForCheck()
 
 	total := exec.estimateMemoryUsageBase(est)
 
+	if callee.Kind() != KindNil {
+		total += est.value(callee)
+	}
 	if receiver.Kind() != KindNil {
 		total += est.value(receiver)
 	}
@@ -632,8 +741,37 @@ func (exec *Execution) estimateMemoryUsageForCallRoots(receiver Value, args []Va
 	return total
 }
 
+// reserveLoopScratch folds a Go-local scratch allocation into the live memory
+// baseline so it is charged by every memory check for as long as it is held,
+// then returns the bytes actually reserved so releaseLoopScratch can subtract
+// exactly that amount. A hash-walking loop (the `for k, v in hash` statement and
+// Hash#each / each_key / each_value) materializes a sorted-key scratch slice that
+// stays live on the Go stack while its body runs. The body executes arbitrary
+// code with its own memory checks, but those checks measure only exec's reachable
+// roots and so never see this scratch slice; without reserving it, a body that
+// allocates near the quota could pass its own checks while the true peak (roots +
+// scratch + body allocation) exceeds the quota by the scratch size. Folding the
+// scratch into estimateMemoryUsageBase for the loop's duration makes every check
+// inside the body account for it.
+//
+// The return value is the delta applied, which equals scratchBytes unless the
+// reservation saturates at math.MaxInt; releaseLoopScratch must be passed that
+// delta so nested reservations stay perfectly balanced even under saturation.
+func (exec *Execution) reserveLoopScratch(scratchBytes int) int {
+	reserved := saturatingAdd(exec.reservedScratchBytes, scratchBytes)
+	delta := reserved - exec.reservedScratchBytes
+	exec.reservedScratchBytes = reserved
+	return delta
+}
+
+// releaseLoopScratch returns reserved scratch bytes to the baseline once the loop
+// that held them has finished. delta is the value reserveLoopScratch returned.
+func (exec *Execution) releaseLoopScratch(delta int) {
+	exec.reservedScratchBytes -= delta
+}
+
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
-	total := 0
+	total := exec.reservedScratchBytes
 
 	total += est.env(exec.root)
 	for _, env := range exec.envStack {
@@ -786,6 +924,20 @@ func (est *memoryEstimator) value(val Value) int {
 		size += est.slice(val.Array())
 	case KindHash, KindObject:
 		size += est.hash(val.Hash())
+		// A KindHash wraps its entry map in a hashData struct to carry optional
+		// Ruby-style default metadata; that wrapper is a real per-hash heap
+		// allocation outside the entry map, so it counts toward the quota too.
+		// Charged once per distinct wrapper identity so two values sharing the
+		// same hashData are not double counted. Objects use a bare map with no
+		// wrapper, so hashWrapperBytes returns 0 for them.
+		size += est.hashWrapperBytes(val)
+		// A KindHash may retain Ruby-style default metadata (a default value
+		// and/or a default proc) outside its entry map. Those payloads are
+		// reachable state — a script can hold a large array or string solely
+		// through a Hash.new(big) default — so they count toward the quota too.
+		// Objects never carry defaults, so these accessors return nil for them.
+		size += est.valuePayload(hashDefaultValue(val))
+		size += est.valuePayload(hashDefaultProc(val))
 	case KindClass:
 		cl := valueClass(val)
 		if cl == nil {
@@ -831,8 +983,38 @@ func (est *memoryEstimator) value(val Value) int {
 		}
 		size += estimatedStringHeaderBytes*3 + len(blk.moduleKey) + len(blk.modulePath) + len(blk.moduleRoot)
 		size += est.env(blk.Env)
-	case KindFunction, KindBuiltin:
-		// Functions and builtins are compile-time/static artifacts for memory quotas.
+	case KindFunction:
+		// Functions are compile-time/static artifacts for memory quotas.
+	case KindBuiltin:
+		// Static stdlib builtins are singletons reachable once, so they stay
+		// free. A builtin that closes over runtime values, though, is a
+		// dynamically allocated probe a script can mint in a loop (for example
+		// pushing `1.eql?` or `obj.equal?` into an array): each member access
+		// allocates a fresh *Builtin plus its CapturedValues backing. Charge that
+		// per-probe structure — the Builtin struct and the slice backing — so the
+		// quota accounts for the allocation itself, not just its captured
+		// payloads (which are effectively zero for scalar receivers). Then charge
+		// the captured payloads on top. Dedup by builtin pointer guards against
+		// revisiting the same builtin; recursing through est.value dedups each
+		// captured value against any independently reachable copy via the existing
+		// seen* maps, so a receiver that is also reachable elsewhere is charged
+		// only once.
+		builtin := valueBuiltin(val)
+		if builtin == nil || len(builtin.CapturedValues) == 0 {
+			return size
+		}
+		if _, seen := est.seenBuiltins[builtin]; seen {
+			return size
+		}
+		if est.seenBuiltins == nil {
+			est.seenBuiltins = make(map[*Builtin]struct{})
+		}
+		est.seenBuiltins[builtin] = struct{}{}
+		size = saturatingAdd(size, estimatedBuiltinBytes)
+		size = saturatingAdd(size, sliceStructuralBytes(builtin.CapturedValues))
+		for _, captured := range builtin.CapturedValues {
+			size = saturatingAdd(size, est.valuePayload(captured))
+		}
 	}
 
 	return size
@@ -948,6 +1130,29 @@ func sliceBackingIdentity(values []Value) uintptr {
 		return 0
 	}
 	return uintptr(unsafe.Pointer(unsafe.SliceData(values)))
+}
+
+// hashWrapperBytes charges the hashData wrapper a KindHash value allocates
+// around its entry map, deduplicated on the wrapper's identity so two values
+// that share the same wrapper count it once. It returns 0 for KindObject (a
+// bare map with no wrapper) and for any value whose wrapper identity is
+// unavailable, mirroring how est.hash dedups the entry map on its own pointer.
+func (est *memoryEstimator) hashWrapperBytes(val Value) int {
+	if val.Kind() != KindHash {
+		return 0
+	}
+	id := hashIdentity(val)
+	if id == 0 {
+		return estimatedHashDataBytes
+	}
+	if _, seen := est.seenHashData[id]; seen {
+		return 0
+	}
+	if est.seenHashData == nil {
+		est.seenHashData = make(map[uintptr]struct{})
+	}
+	est.seenHashData[id] = struct{}{}
+	return estimatedHashDataBytes
 }
 
 func (est *memoryEstimator) hash(values map[string]Value) int {

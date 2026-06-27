@@ -28,6 +28,16 @@ func cloneBuiltinSet(src map[*Builtin]struct{}) map[*Builtin]struct{} {
 	return out
 }
 
+// revokedCapabilityBuiltin returns a builtin that fails closed when invoked. The
+// inbound rebinder substitutes it for a per-call capability grant a re-entering
+// closure captured, so a closure that copied a capability into a local cannot
+// reach the originating call's capability from a call that never granted it.
+func revokedCapabilityBuiltin(name string) Value {
+	return NewBuiltin(name, func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		return NewNil(), fmt.Errorf("capability %s was not granted to this call", name)
+	})
+}
+
 func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) (Value, error) {
 	switch val.Kind() {
 	case KindFunction:
@@ -229,7 +239,33 @@ type callFunctionRebinder struct {
 	seenFunctions map[*ScriptFunction]*ScriptFunction
 	seenInstances map[*Instance]Value
 	seenArrays    map[sliceIdentity]Value
-	seenMaps      map[uintptr]map[string]Value
+	// seenHashes caches rebound KindHash values keyed on the source hash's wrapper
+	// identity. A hash reachable through several paths in the inbound graph rebinds
+	// to one wrapper and keeps its identity, so a bound predicate rebound to that
+	// same wrapper still reports identity against the rebound receiver. Keying on
+	// the entry map alone would rebuild a fresh wrapper per path and break identity,
+	// since hash identity is the wrapper.
+	seenHashes map[uintptr]Value
+	// seenHashEntries caches the rebound entry map keyed on the source hash's entry
+	// map pointer. Two distinct hash wrappers may intentionally share one mutable
+	// entry map (a host can build `a := NewHash(shared); b := NewHash(shared)`);
+	// index assignment mutates that map in place, so a callee that does `a[:x] = 1`
+	// must see the write through b. The wrapper cache cannot preserve this -- the
+	// two wrappers have distinct identities -- so the entry-map cache lets both
+	// rebound wrappers point at one cloned entry map and keep the aliasing.
+	seenHashEntries map[uintptr]map[string]Value
+	seenMaps        map[uintptr]map[string]Value
+	seenBlocks      map[*Block]Value
+	seenEnvs        map[*Env]*Env
+	// seenBoundBuiltins caches the rebound clone of a receiver-bound predicate
+	// (a bound eql?/equal?) keyed on the source builtin pointer. Rebinding such a
+	// builtin reconstructs a fresh *Builtin around the rebound receiver, so the
+	// same source builtin reached through two paths (two globals, two array slots)
+	// would otherwise produce two distinct clones. equal? compares builtins by
+	// backing pointer, so those distinct clones would wrongly report not-identical;
+	// caching the clone keeps aliases of one bound predicate identical across the
+	// host boundary.
+	seenBoundBuiltins map[*Builtin]Value
 }
 
 func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*ClassDef, callEnums map[string]*EnumDef) *callFunctionRebinder {
@@ -243,6 +279,48 @@ func newCallFunctionRebinder(script *Script, root *Env, callClasses map[string]*
 
 func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	switch val.Kind() {
+	case KindBuiltin:
+		builtin := valueBuiltin(val)
+		if builtin == nil {
+			return val
+		}
+		// A receiver-bound predicate (a bound eql?/equal?) rebinds to the rebound
+		// clone of its captured receiver. The receiver flows through the same
+		// rebinder, so it dedups with the same receiver appearing elsewhere in the
+		// inbound graph and the rebound predicate reports identity against it. The
+		// clone is reserved and cached before the receiver rebinds, so a receiver
+		// graph that reaches the predicate bound to it (for example `[p, a]` where
+		// `a[0]` is the same `p = a.eql?`) dedups against the reserved clone instead
+		// of minting a second one the outer call would then overwrite — which would
+		// make the callee observe arg[0].equal?(arg[1][0]) == false even though the
+		// inbound graph held one predicate object. Left unchanged, the predicate
+		// would keep comparing against the receiver's pre-rebind wrapper while the
+		// receiver passed alongside rebinds to a fresh one.
+		if builtin.BoundReceiver != nil {
+			if clone, ok := r.seenBoundBuiltins[builtin]; ok {
+				return clone
+			}
+			clone, clonedCell := builtin.BoundReceiver.reserve()
+			if r.seenBoundBuiltins == nil {
+				r.seenBoundBuiltins = make(map[*Builtin]Value)
+			}
+			r.seenBoundBuiltins[builtin] = clone
+			reboundReceiver := r.rebindValue(builtin.BoundReceiver.receiver.value)
+			setBoundReceiver(valueBuiltin(clone), clonedCell, reboundReceiver)
+			return clone
+		}
+		// A capability copied into a local (for example `cap = jobs` captured by a
+		// Hash.new default proc) would otherwise survive re-rooting and stay
+		// callable, letting a missing-key lookup invoke a capability the re-entering
+		// call never granted -- the ambient root is re-rooted but a local snapshot
+		// bypasses that lookup. Revoke the captured grant so invoking it fails
+		// closed; a free reference to the live capability global still resolves
+		// through the re-rooted ambient root. All other builtins are preserved
+		// unchanged.
+		if !builtin.Capability {
+			return val
+		}
+		return revokedCapabilityBuiltin(builtin.Name)
 	case KindInstance:
 		inst := valueInstance(val)
 		if inst == nil || inst.Class == nil || inst.Class.owner != r.script {
@@ -311,6 +389,32 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		r.seenFunctions[fn] = clone
 		return NewFunction(clone)
+	case KindBlock:
+		// A block (e.g. a hash default proc) that escaped a prior call and is
+		// passed back in must resolve globals, capabilities, per-call function
+		// clones, and builtins against the live call root, not the stale snapshot
+		// captured when it escaped -- otherwise a missing-key lookup could read a
+		// previous call's globals or invoke a capability the current call never
+		// granted. Re-root only the ambient root of its captured environment onto
+		// the current call, preserving any local frames the block legitimately
+		// closed over (e.g. a `prefix` parameter of the function that produced the
+		// hash). Block parameters (e.g. the hash and key) bind at call time and
+		// are unaffected.
+		blk := valueBlock(val)
+		if blk == nil || blk.owner != r.script || blk.Env == r.root {
+			return val
+		}
+		if clone, ok := r.seenBlocks[blk]; ok {
+			return clone
+		}
+		clone := *blk
+		clone.Env = r.rebindCapturedEnv(blk.Env)
+		cloneVal := wrapBlock(&clone)
+		if r.seenBlocks == nil {
+			r.seenBlocks = make(map[*Block]Value)
+		}
+		r.seenBlocks[blk] = cloneVal
+		return cloneVal
 	case KindArray:
 		items := val.Array()
 		id := sliceIdentity{
@@ -332,20 +436,66 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 		}
 		return clonedArray
 	case KindHash:
+		id := hashIdentity(val)
+		if id != 0 {
+			if clone, seen := r.seenHashes[id]; seen {
+				return clone
+			}
+		}
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
-		if cloneMap, seen := r.seenMaps[ptr]; seen {
-			return NewHash(cloneMap)
+		entriesPtr := reflect.ValueOf(entries).Pointer()
+		// A distinct wrapper that shares this entry map already cloned it; reuse
+		// that cloned map so both rebound wrappers mutate one map in place and the
+		// host's intentional aliasing survives rebinding. The shared map is already
+		// fully populated, so skip the fill loop -- only a fresh wrapper (with this
+		// wrapper's own rebound defaults) is built around it.
+		sharedEntries, sharedSeen := r.seenHashEntries[entriesPtr]
+		clonedEntries := sharedEntries
+		if !sharedSeen {
+			clonedEntries = make(map[string]Value, len(entries))
 		}
-		clonedEntries := make(map[string]Value, len(entries))
-		if r.seenMaps == nil {
-			r.seenMaps = make(map[uintptr]map[string]Value)
+		defaultValue := hashDefaultValue(val)
+		defaultProc := hashDefaultProc(val)
+		hasDefault := !defaultValue.IsNil() || !defaultProc.IsNil()
+		var cloned Value
+		if hasDefault {
+			cloned = NewHashWithDefault(clonedEntries, NewNil(), NewNil())
+		} else {
+			cloned = NewHash(clonedEntries)
 		}
-		r.seenMaps[ptr] = clonedEntries
-		for key, item := range entries {
-			clonedEntries[key] = r.rebindValue(item)
+		// Register the wrapper before rebinding defaults or entries so a hash that
+		// contains itself -- whether through an entry or through a default that
+		// reaches the hash (e.g. Hash.new { |_, _| h }) -- rebinds against this
+		// clone rather than recursing forever or rebinding a second wrapper.
+		if id != 0 {
+			if r.seenHashes == nil {
+				r.seenHashes = make(map[uintptr]Value)
+			}
+			r.seenHashes[id] = cloned
 		}
-		return NewHash(clonedEntries)
+		if !sharedSeen && entriesPtr != 0 {
+			if r.seenHashEntries == nil {
+				r.seenHashEntries = make(map[uintptr]map[string]Value)
+			}
+			r.seenHashEntries[entriesPtr] = clonedEntries
+		}
+		if hasDefault {
+			clonedDefaultValue := NewNil()
+			clonedDefaultProc := NewNil()
+			if !defaultValue.IsNil() {
+				clonedDefaultValue = r.rebindValue(defaultValue)
+			}
+			if !defaultProc.IsNil() {
+				clonedDefaultProc = r.rebindValue(defaultProc)
+			}
+			cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
+		}
+		if !sharedSeen {
+			for key, item := range entries {
+				clonedEntries[key] = r.rebindValue(item)
+			}
+		}
+		return cloned
 	case KindObject:
 		entries := val.Hash()
 		ptr := reflect.ValueOf(entries).Pointer()
@@ -364,6 +514,43 @@ func (r *callFunctionRebinder) rebindValue(val Value) Value {
 	default:
 		return val
 	}
+}
+
+// rebindCapturedEnv re-roots the captured environment of an escaped closure onto
+// the current call. A closure that escaped a prior Script.Call captures a chain
+// of local frames (e.g. the parameters of the function that produced it) that
+// bottoms out in the originating call's ambient root (globals, capabilities,
+// per-call function clones). Only that ambient root is stale; the local frames
+// hold values the closure legitimately closed over and must be preserved. Each
+// local frame is cloned so the live call cannot mutate the escaped closure's
+// captured state, its bound values are rebound (they may reference per-call
+// functions, classes, or further escaped closures), and the deepest local
+// frame's parent is re-rooted onto the current call root. If the closure captured
+// the ambient root directly (no local frames), the current root replaces it.
+func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
+	// Re-root at the originating call's ambient root (and discard the builtin
+	// proto beneath it): the live call root carries the current globals,
+	// capabilities, per-call function clones, and chains to the live proto.
+	if env == nil || env.callRoot {
+		return r.root
+	}
+	if clone, ok := r.seenEnvs[env]; ok {
+		return clone
+	}
+	clone := newEnvWithCapacity(nil, env.dynamicLen())
+	clone.assignBoundary = env.assignBoundary
+	if r.seenEnvs == nil {
+		r.seenEnvs = make(map[*Env]*Env)
+	}
+	r.seenEnvs[env] = clone
+	clone.parent = r.rebindCapturedEnv(env.parent)
+	env.rangeDynamicBindings(func(name string, val Value) {
+		clone.Define(name, r.rebindValue(val))
+	})
+	env.rangeStaticBindings(func(name string, val Value) {
+		clone.DefineStatic(name, r.rebindValue(val))
+	})
+	return clone
 }
 
 func (r *callFunctionRebinder) rebindValues(values []Value) []Value {
@@ -435,6 +622,12 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 			if len(scope.contracts) > 0 {
 				scope.roots = append(scope.roots, rebound)
 			}
+			// Mark every builtin this adapter exposes as a per-call capability
+			// grant. The marker lets the inbound rebinder revoke a captured grant
+			// when a closure (for example a Hash.new default proc that copied a
+			// capability into a local) escapes and re-enters a later call that did
+			// not grant the same capability.
+			markCapabilityBuiltins(rebound)
 			// Skip the ambient global chain (root + ancestors) when walking a
 			// capability-supplied closure's captured environment, matching the
 			// pre/post-call scanners above. Otherwise a contract method whose
@@ -750,13 +943,48 @@ func (exec *Execution) evalCallBlock(call *CallExpr, env *Env) (Value, error) {
 }
 
 func (exec *Execution) checkCallMemoryRoots(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
-	if receiver.Kind() == KindNil && len(kwargs) == 0 && block.IsNil() {
-		if len(args) == 0 {
-			return nil
+	return exec.checkCallMemoryRootsWithCallee(NewNil(), receiver, args, kwargs, block)
+}
+
+// checkCallMemoryRootsWithCallee charges the live call roots — the callee,
+// receiver, arguments, keyword arguments, and block — against the memory quota
+// before the call runs.
+//
+// The callee is included because a bound predicate builtin captures its receiver
+// (see universalMember): the captured payload is reachable only through the
+// callee value, not through the call's own receiver. A stored probe such as
+// `probe = huge.eql?` is charged because the variable keeps the builtin in the
+// environment, but an immediately invoked temporary callee such as
+// `make_probe()(huge_arg)` lives only on the Go call stack, so without charging
+// it here the captured receiver plus the outer arguments could exceed the quota
+// unseen. Passing the callee through the same estimator deduplicates it against
+// the environment, so a callee that is also reachable from a variable is counted
+// once and the common static callee — a function, or a builtin with no captures —
+// adds nothing.
+func (exec *Execution) checkCallMemoryRootsWithCallee(callee, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if !calleeCapturesRoots(callee) {
+		if receiver.Kind() == KindNil && len(kwargs) == 0 && block.IsNil() {
+			if len(args) == 0 {
+				return nil
+			}
+			return exec.checkMemoryWith(args...)
 		}
-		return exec.checkMemoryWith(args...)
+		return exec.checkMemoryWithCallRoots(NewNil(), receiver, args, kwargs, block)
 	}
-	return exec.checkMemoryWithCallRoots(receiver, args, kwargs, block)
+	return exec.checkMemoryWithCallRoots(callee, receiver, args, kwargs, block)
+}
+
+// calleeCapturesRoots reports whether a callee value carries captured runtime
+// values that the call roots must charge — that is, a bound builtin (such as a
+// stored or temporary eql?/equal? predicate) whose Fn closes over a receiver.
+// Static callees (functions, or builtins without captures) carry no extra
+// payload, so the common call path skips charging them.
+func calleeCapturesRoots(callee Value) bool {
+	if callee.Kind() != KindBuiltin {
+		return false
+	}
+	builtin := valueBuiltin(callee)
+	return builtin != nil && len(builtin.CapturedValues) > 0
 }
 
 func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
@@ -781,7 +1009,7 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
+	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
 
@@ -837,7 +1065,7 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
+	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
 
@@ -868,7 +1096,7 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 		return NewNil(), err
 	}
 
-	result, err := callBuiltinMemberDirect(receiver, property, args, kwargs, block)
+	result, err := callBuiltinMemberDirect(exec, receiver, property, args, kwargs, block)
 	if err != nil {
 		if errors.Is(err, errLoopBreak) {
 			return NewNil(), exec.errorAt(call.Pos(), "break cannot cross call boundary")
@@ -895,12 +1123,12 @@ func canCallBuiltinMemberDirect(receiver Value, property string) bool {
 	}
 }
 
-func callBuiltinMemberDirect(receiver Value, property string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+func callBuiltinMemberDirect(exec *Execution, receiver Value, property string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	switch receiver.Kind() {
 	case KindDuration:
 		return callDurationMemberDirect(receiver.Duration(), property, args, kwargs, block)
 	case KindTime:
-		return callTimeMemberDirect(receiver.Time(), property, args, kwargs, block)
+		return callTimeMemberDirect(exec, receiver.Time(), property, args, kwargs, block)
 	default:
 		return NewNil(), fmt.Errorf("unsupported member access on %s", receiver.Kind())
 	}
@@ -974,7 +1202,81 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	return val, nil
 }
 
+// validateCallShape checks that args and kwargs can satisfy fn's parameters
+// before any default is evaluated. It reproduces the positional and keyword
+// consumption of the binding loop so it reports the same missing-argument,
+// leftover-positional, and unexpected-keyword errors, but it touches no default
+// expression. Surfacing these mismatches first keeps a defaulted parameter's
+// side effects, errors, or step-quota cost from masking a call that can never
+// bind, such as f(1) against def f(a: expensive()) or an omitted required
+// keyword that follows a defaulted one.
+func (exec *Execution) validateCallShape(fn *ScriptFunction, args []Value, kwargs map[string]Value, pos Position) error {
+	var usedKw map[string]bool
+	if len(kwargs) > 0 {
+		usedKw = make(map[string]bool, len(kwargs))
+	}
+	argIdx := 0
+
+	for _, param := range fn.Params {
+		switch param.Kind {
+		case ParamKeyword:
+			if _, ok := kwargs[param.Name]; ok {
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal == nil {
+				return exec.errorAt(pos, "missing keyword argument %s", param.Name)
+			}
+		case ParamRest:
+			argIdx = len(args)
+		case ParamKeywordRest:
+			for name := range kwargs {
+				if usedKw != nil {
+					usedKw[name] = true
+				}
+			}
+		case ParamBlock:
+			// A block parameter binds from the call environment, never from the
+			// positional or keyword arguments, so it imposes no shape constraint.
+		case ParamNormal:
+			if argIdx < len(args) {
+				argIdx++
+			} else if _, ok := kwargs[param.Name]; ok {
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal == nil {
+				return exec.errorAt(pos, "missing argument %s", param.Name)
+			}
+		default:
+			return exec.errorAt(pos, "unknown parameter kind for %s", param.Name)
+		}
+	}
+
+	if argIdx < len(args) {
+		return exec.errorAt(pos, "unexpected positional arguments")
+	}
+	if usedKw != nil {
+		for name := range kwargs {
+			if !usedKw[name] {
+				return exec.errorAt(pos, "unexpected keyword argument %s", name)
+			}
+		}
+	}
+	return nil
+}
+
 func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Value, kwargs map[string]Value, pos Position) error {
+	// Validate the whole call shape before binding so that no parameter default
+	// is evaluated when the call can never bind successfully. A default may have
+	// side effects, raise an error, or consume the step quota, and evaluating it
+	// would mask the real arity or keyword mismatch. validateCallShape mirrors
+	// the binding loop's positional/keyword bookkeeping without evaluating any
+	// default expression.
+	if err := exec.validateCallShape(fn, args, kwargs, pos); err != nil {
+		return err
+	}
+
 	var usedKw map[string]bool
 	if len(kwargs) > 0 {
 		usedKw = make(map[string]bool, len(kwargs))
@@ -985,13 +1287,19 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 		var val Value
 		switch param.Kind {
 		case ParamKeyword:
-			kw, ok := kwargs[param.Name]
-			if !ok {
+			if kw, ok := kwargs[param.Name]; ok {
+				val = kw
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
+			} else if param.DefaultVal != nil {
+				defaultVal, err := exec.evalExpressionWithAuto(param.DefaultVal, env, true)
+				if err != nil {
+					return err
+				}
+				val = defaultVal
+			} else {
 				return exec.errorAt(pos, "missing keyword argument %s", param.Name)
-			}
-			val = kw
-			if usedKw != nil {
-				usedKw[param.Name] = true
 			}
 		case ParamRest:
 			rest := append([]Value(nil), args[argIdx:]...)

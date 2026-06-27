@@ -251,6 +251,24 @@ func NewArray(a []Value) Value { return value.NewArray(a) }
 // NewHash returns a hash (map) Value.
 func NewHash(h map[string]Value) Value { return value.NewHash(h) }
 
+// NewHashWithDefault returns a hash Value carrying Ruby-style default metadata
+// (a default value and/or a default proc consulted on missing-key lookup).
+func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Value {
+	return value.NewHashWithDefault(h, defaultValue, defaultProc)
+}
+
+// hashDefaultValue returns the default value configured for a hash, or nil.
+func hashDefaultValue(v Value) Value { return value.HashDefaultValue(v) }
+
+// hashDefaultProc returns the default proc (a KindBlock value) configured for a
+// hash, or nil.
+func hashDefaultProc(v Value) Value { return value.HashDefaultProc(v) }
+
+// hashIdentity returns a stable identity for a hash wrapper (entries plus
+// default metadata), or 0 when v is not a hash. Scanners that must also visit
+// hash defaults key their seen-set on this rather than the bare entry map.
+func hashIdentity(v Value) uintptr { return value.HashIdentity(v) }
+
 // NewSymbol returns a symbol Value.
 func NewSymbol(name string) Value { return value.NewSymbol(name) }
 
@@ -312,11 +330,61 @@ func parseTimeString(input, layout string, hasLayout bool, loc *time.Location) (
 }
 
 type hostValueCloneState struct {
-	arrays    map[sliceIdentity]Value
-	maps      map[uintptr]map[string]Value
-	instances map[*Instance]Value
-	classes   map[*ClassDef]*ClassDef
-	envs      map[*Env]*Env
+	arrays map[sliceIdentity]Value
+	// hashes caches cloned KindHash values keyed on the source hash's wrapper
+	// identity, so a hash reachable through several paths in the returned graph
+	// clones to one wrapper and keeps its identity. Caching only the entry map
+	// would rebuild a fresh wrapper per path, and since hash identity is the
+	// wrapper, the clones would wrongly compare not-identical. This also dedups a
+	// hash that contains itself.
+	hashes map[uintptr]Value
+	// hashEntries caches the cloned entry map keyed on the source hash's entry map
+	// pointer. Two distinct hash wrappers may intentionally share one mutable entry
+	// map; index assignment mutates that map in place, so both cloned wrappers must
+	// point at one cloned entry map to keep the host's aliasing. The wrapper cache
+	// cannot do this because the wrappers have distinct identities.
+	hashEntries map[uintptr]map[string]Value
+	maps        map[uintptr]map[string]Value
+	instances   map[*Instance]Value
+	classes     map[*ClassDef]*ClassDef
+	envs        map[*Env]*Env
+	// boundBuiltins caches the clone of a receiver-bound predicate (a bound
+	// eql?/equal?) keyed on the source builtin pointer. Cloning such a builtin
+	// rebuilds a fresh *Builtin around the cloned receiver, so the same source
+	// builtin reachable through several paths in the returned graph would otherwise
+	// clone to distinct *Builtin values. equal? compares builtins by backing
+	// pointer, so those distinct clones would wrongly report not-identical; caching
+	// the clone keeps aliases of one bound predicate identical across the host
+	// boundary.
+	boundBuiltins map[*Builtin]Value
+	// plainBuiltins caches the clone of a plain (non receiver-bound) builtin keyed
+	// on the source builtin pointer. cloneBuiltinValue mints a fresh *Builtin for
+	// each occurrence, so the same builtin reachable through several paths in the
+	// returned graph (for example `p = JSON.parse; [p, p]`) would otherwise clone to
+	// distinct *Builtin values. equal? compares builtins by backing pointer, so
+	// those distinct clones would wrongly report not-identical; caching the clone
+	// keeps aliases of one plain builtin identical across the host boundary, just
+	// like the bound-builtin, function, and enum caches above.
+	plainBuiltins map[*Builtin]Value
+	// functions caches the clone of a script function keyed on the source
+	// *ScriptFunction. cloneFunctionForHostWithState rebuilds a fresh
+	// *ScriptFunction (with a cloned environment), so the same function reachable
+	// through several paths in the returned graph (for example [inc, inc]) would
+	// otherwise clone to distinct pointers. equal? compares functions by backing
+	// pointer, so those distinct clones would wrongly report not-identical; caching
+	// the clone keeps aliases of one function identical across the host boundary.
+	// The clone is reserved before its environment is cloned so a function whose
+	// captured environment reaches the function itself (a recursive closure)
+	// dedups against the reserved clone instead of recursing forever.
+	functions map[*ScriptFunction]*ScriptFunction
+	// enums caches the clone of an enum definition keyed on the source *EnumDef.
+	// cloneEnumDef rebuilds a fresh *EnumDef (and fresh *EnumValueDef members), so
+	// the same enum or enum member reachable through several paths in the returned
+	// graph (for example [Status::Draft, Status::Draft]) would otherwise clone to
+	// distinct pointers. equal? compares enums and members by backing pointer, so
+	// those distinct clones would wrongly report not-identical; caching the clone
+	// keeps aliases of one enum member identical across the host boundary.
+	enums map[*EnumDef]*EnumDef
 }
 
 type hostValueScanState struct {
@@ -348,6 +416,20 @@ func compositeValueNeedsHostClone(val Value) bool {
 		}
 		return false
 	case KindHash, KindObject:
+		// A hash carrying a Ruby-style default proc (a block) must be cloned even
+		// when its entries do not, so the proc closes over the cloned environment
+		// rather than the live one as it crosses the host boundary. A default
+		// value may itself be (or reach) a clone-needing value through an
+		// arbitrarily deep, possibly cyclic graph, so escalate to the stateful
+		// scan rather than recursing without shared state here.
+		if val.Kind() == KindHash {
+			if !hashDefaultProc(val).IsNil() {
+				return true
+			}
+			if !hashDefaultValue(val).IsNil() {
+				return valueNeedsHostCloneWithFreshState(val)
+			}
+		}
 		entries := val.Hash()
 		if len(entries) == 0 {
 			return false
@@ -364,6 +446,22 @@ func compositeValueNeedsHostClone(val Value) bool {
 	default:
 		return valueNeedsHostClone(val)
 	}
+}
+
+// hashDefaultNeedsHostClone reports whether a hash's default metadata requires a
+// host clone: a default proc is always a block (clone-needed), and a default
+// value is clone-needed when it directly is or can contain a runtime value. It
+// threads the caller's scan state so a default value that cycles back to its own
+// hash (e.g. d = {}; h = Hash.new(d); d[:h] = h) terminates instead of
+// recursing forever.
+func hashDefaultNeedsHostClone(val Value, state hostValueScanState) bool {
+	if !hashDefaultProc(val).IsNil() {
+		return true
+	}
+	if def := hashDefaultValue(val); !def.IsNil() {
+		return valueNeedsHostCloneWithState(def, state)
+	}
+	return false
 }
 
 func valueNeedsHostCloneWithFreshState(val Value) bool {
@@ -417,12 +515,26 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 		return false
 	case KindHash, KindObject:
 		entries := val.Hash()
-		ptr := reflect.ValueOf(entries).Pointer()
+		// Key on the whole hash wrapper (or the entry-map pointer for objects) so
+		// two wrappers sharing an entry map but carrying distinct defaults are each
+		// scanned: a second wrapper's clone-needing default is not skipped, and a
+		// default cycling back to this wrapper terminates at the seen check.
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
 		if ptr != 0 {
 			if _, ok := state.maps[ptr]; ok {
 				return false
 			}
 			state.maps[ptr] = struct{}{}
+		}
+		// A default proc or clone-needing default value forces a clone even when
+		// the entries do not need one; only KindHash carries defaults. The wrapper
+		// is marked seen above first, so a default value cycling back to this hash
+		// terminates at the seen check.
+		if val.Kind() == KindHash && hashDefaultNeedsHostClone(val, state) {
+			return true
 		}
 		for _, item := range entries {
 			if valueNeedsHostCloneWithState(item, state) {
@@ -437,11 +549,17 @@ func valueNeedsHostCloneWithState(val Value, state hostValueScanState) bool {
 
 func cloneValueForHost(val Value) Value {
 	state := hostValueCloneState{
-		arrays:    make(map[sliceIdentity]Value),
-		maps:      make(map[uintptr]map[string]Value),
-		instances: make(map[*Instance]Value),
-		classes:   make(map[*ClassDef]*ClassDef),
-		envs:      make(map[*Env]*Env),
+		arrays:        make(map[sliceIdentity]Value),
+		hashes:        make(map[uintptr]Value),
+		hashEntries:   make(map[uintptr]map[string]Value),
+		maps:          make(map[uintptr]map[string]Value),
+		instances:     make(map[*Instance]Value),
+		classes:       make(map[*ClassDef]*ClassDef),
+		envs:          make(map[*Env]*Env),
+		boundBuiltins: make(map[*Builtin]Value),
+		plainBuiltins: make(map[*Builtin]Value),
+		functions:     make(map[*ScriptFunction]*ScriptFunction),
+		enums:         make(map[*EnumDef]*EnumDef),
 	}
 	return cloneValueForHostWithState(val, state)
 }
@@ -470,7 +588,7 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		}
 		return cloned
 	case KindHash:
-		return cloneHostMapValue(val, state, NewHash)
+		return cloneHostHashValue(val, state)
 	case KindObject:
 		return cloneHostMapValue(val, state, NewObject)
 	case KindFunction:
@@ -498,13 +616,16 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		return cloned
 	case KindEnum:
 		enumDef := valueEnum(val)
-		return NewEnum(cloneEnumDef(enumDef, enumOwner(enumDef)))
+		if enumDef == nil {
+			return val
+		}
+		return NewEnum(cloneEnumForHost(enumDef, state))
 	case KindEnumValue:
 		member := valueEnumValue(val)
 		if member == nil || member.Enum == nil {
 			return val
 		}
-		enumClone := cloneEnumDef(member.Enum, enumOwner(member.Enum))
+		enumClone := cloneEnumForHost(member.Enum, state)
 		if memberClone, ok := enumClone.Members[member.Name]; ok {
 			return NewEnumValue(memberClone)
 		}
@@ -523,22 +644,70 @@ func cloneValueForHostWithState(val Value, state hostValueCloneState) Value {
 		clone.Env = cloneEnvForHost(block.Env, state)
 		return value.NewValue(KindBlock, &clone)
 	case KindBuiltin:
-		return cloneBuiltinValue(val)
+		return cloneBuiltinForHost(val, state)
 	default:
 		return val
 	}
+}
+
+// cloneBuiltinForHost clones a builtin for the host boundary. A receiver-bound
+// predicate (one carrying BoundReceiver) is rebuilt around the clone of its
+// captured receiver, walked through state so it dedups with the same receiver
+// appearing elsewhere in the returned graph. The clone is reserved and cached
+// before the receiver is cloned, so a receiver graph that reaches the predicate
+// bound to it (for example `[p, a]` where `a` stores `p = a.eql?`) dedups against
+// the reserved clone instead of minting a second one the outer call would then
+// overwrite — which would make pre-clone aliases report not-identical after the
+// boundary. Without rebinding at all the cloned predicate's Fn would keep
+// comparing against the pre-clone receiver, so a re-entering probe(clonedReceiver)
+// would wrongly report not-identical. Plain builtins have no runtime-cloneable
+// state, so they fall back to the shallow copy, memoized on the source builtin so
+// aliases of one callable (for example `p = JSON.parse; [p, p]`) stay identical
+// across the boundary.
+func cloneBuiltinForHost(val Value, state hostValueCloneState) Value {
+	builtin := valueBuiltin(val)
+	if builtin == nil {
+		return cloneBuiltinValue(val)
+	}
+	if builtin.BoundReceiver == nil {
+		if clone, ok := state.plainBuiltins[builtin]; ok {
+			return clone
+		}
+		clone := cloneBuiltinValue(val)
+		if state.plainBuiltins != nil {
+			state.plainBuiltins[builtin] = clone
+		}
+		return clone
+	}
+	if clone, ok := state.boundBuiltins[builtin]; ok {
+		return clone
+	}
+	clone, clonedCell := builtin.BoundReceiver.reserve()
+	if state.boundBuiltins != nil {
+		state.boundBuiltins[builtin] = clone
+	}
+	clonedReceiver := cloneValueForHostWithState(builtin.BoundReceiver.receiver.value, state)
+	setBoundReceiver(valueBuiltin(clone), clonedCell, clonedReceiver)
+	return clone
 }
 
 func cloneFunctionForHostWithState(fn *ScriptFunction, state hostValueCloneState) *ScriptFunction {
 	if fn == nil {
 		return nil
 	}
-	clone := *fn
+	if clone, ok := state.functions[fn]; ok {
+		return clone
+	}
+	clone := &ScriptFunction{}
+	if state.functions != nil {
+		state.functions[fn] = clone
+	}
+	*clone = *fn
 	clone.Params = cloneParams(fn.Params)
 	clone.ReturnTy = cloneTypeExpr(fn.ReturnTy)
 	clone.Body = cloneStatements(fn.Body)
 	clone.Env = cloneEnvForHost(fn.Env, state)
-	return &clone
+	return clone
 }
 
 func cloneClassForHostWithState(classDef *ClassDef, state hostValueCloneState) *ClassDef {
@@ -577,6 +746,8 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 		return clone
 	}
 	clone := newEnvWithCapacity(nil, env.dynamicLen())
+	clone.assignBoundary = env.assignBoundary
+	clone.callRoot = env.callRoot
 	state.envs[env] = clone
 	clone.parent = cloneEnvForHost(env.parent, state)
 	env.rangeDynamicBindings(func(name string, val Value) {
@@ -586,6 +757,70 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 		clone.DefineStatic(name, cloneValueForHostWithState(val, state))
 	}
 	return clone
+}
+
+// cloneHostHashValue clones a KindHash value, preserving and deep-cloning its
+// Ruby-style default metadata (default value and default proc) so a hash that
+// crosses the host boundary keeps its missing-key behavior and its proc closes
+// over the cloned environment rather than the live one. The cloned hash is
+// cached on its source wrapper identity so a hash reachable through several
+// paths (or one that contains itself) clones to a single wrapper and keeps its
+// object identity across the boundary.
+func cloneHostHashValue(val Value, state hostValueCloneState) Value {
+	id := hashIdentity(val)
+	if id != 0 {
+		if clone, ok := state.hashes[id]; ok {
+			return clone
+		}
+	}
+	entries := val.Hash()
+	entriesPtr := reflect.ValueOf(entries).Pointer()
+	// A distinct wrapper that shares this entry map already cloned it; reuse that
+	// cloned map so both cloned wrappers mutate one map in place and the host's
+	// intentional aliasing survives the boundary. The shared map is already fully
+	// populated, so skip the fill loop -- only a fresh wrapper (with this wrapper's
+	// own cloned defaults) is built around it.
+	sharedEntries, sharedSeen := state.hashEntries[entriesPtr]
+	clonedEntries := sharedEntries
+	if !sharedSeen {
+		clonedEntries = make(map[string]Value, len(entries))
+	}
+	defaultValue := hashDefaultValue(val)
+	defaultProc := hashDefaultProc(val)
+	hasDefault := !defaultValue.IsNil() || !defaultProc.IsNil()
+	var cloned Value
+	if hasDefault {
+		cloned = NewHashWithDefault(clonedEntries, NewNil(), NewNil())
+	} else {
+		cloned = NewHash(clonedEntries)
+	}
+	// Register the wrapper before cloning defaults or entries so a hash that
+	// contains itself -- whether through an entry or through a default that
+	// reaches the hash (e.g. Hash.new { |_, _| h }) -- dedups against this clone
+	// rather than recursing forever or cloning a second wrapper.
+	if id != 0 {
+		state.hashes[id] = cloned
+	}
+	if !sharedSeen && entriesPtr != 0 {
+		state.hashEntries[entriesPtr] = clonedEntries
+	}
+	if hasDefault {
+		clonedDefaultValue := NewNil()
+		clonedDefaultProc := NewNil()
+		if !defaultValue.IsNil() {
+			clonedDefaultValue = cloneValueForHostWithState(defaultValue, state)
+		}
+		if !defaultProc.IsNil() {
+			clonedDefaultProc = cloneValueForHostWithState(defaultProc, state)
+		}
+		cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
+	}
+	if !sharedSeen {
+		for key, item := range entries {
+			clonedEntries[key] = cloneValueForHostWithState(item, state)
+		}
+	}
+	return cloned
 }
 
 func cloneHostMapValue(val Value, state hostValueCloneState, construct func(map[string]Value) Value) Value {
@@ -613,6 +848,26 @@ func enumOwner(enumDef *EnumDef) *Script {
 	return enumDef.owner
 }
 
+// cloneEnumForHost clones an enum definition for the host boundary, memoizing the
+// clone on its source *EnumDef so the same enum (and therefore the same members)
+// reachable through several paths in one returned graph clones once. equal?
+// compares enums and members by backing pointer, so reusing the cached clone keeps
+// aliases of one enum member identical after the boundary; cloning per occurrence
+// would mint distinct pointers that wrongly report not-identical.
+func cloneEnumForHost(enumDef *EnumDef, state hostValueCloneState) *EnumDef {
+	if enumDef == nil {
+		return nil
+	}
+	if clone, ok := state.enums[enumDef]; ok {
+		return clone
+	}
+	clone := cloneEnumDef(enumDef, enumOwner(enumDef))
+	if state.enums != nil {
+		state.enums[enumDef] = clone
+	}
+	return clone
+}
+
 // Builtin represents a built-in function callable from Vibescript. It
 // remains defined in the vibes package because BuiltinFunc references
 // the runtime *Execution type.
@@ -630,6 +885,33 @@ type Builtin struct {
 	// keyword options hash just like `fn(...)`. Method and constructor wrappers
 	// leave this false to keep parenthesized keyword binding strict.
 	DirectCallAlias bool
+	// CapturedValues holds runtime values the builtin's Fn closes over and keeps
+	// alive for as long as the builtin is reachable. The memory estimator charges
+	// their payloads so a stored bound builtin (for example `probe = big.eql?`,
+	// which captures its receiver) cannot retain arbitrarily large structures
+	// outside the runtime memory quota. Builtins that close over no runtime values
+	// leave this nil and stay free, as before.
+	CapturedValues []Value
+	// BoundReceiver, when non-nil, marks the builtin a receiver-bound predicate (a
+	// bound eql?/equal?) and exposes a two-phase clone. The universal predicates
+	// read the value they were resolved from through a mutable cell, so a plain
+	// clone of the Fn keeps comparing against the pre-clone receiver. When
+	// Script.Call host-clones a returned graph (or re-roots an inbound one) that
+	// holds both a receiver and a predicate bound to it, the clone walk reserves an
+	// empty clone, registers it, recurses to clone the receiver, then installs the
+	// cloned receiver via this hook. Reserving before recursing keeps a receiver
+	// graph that reaches the predicate bound to it (for example `[p, a]` where `a`
+	// stores `p = a.eql?`) deduplicated to one clone, so a re-entering
+	// `probe(clonedReceiver)` still reports identity. Builtins with no bound
+	// receiver leave this nil.
+	BoundReceiver *boundReceiverClone
+	// Capability marks a builtin a capability adapter exposed for a single
+	// Script.Call. Capability grants are per call: when a closure that captured
+	// one (for example a `Hash.new { ... }` default proc copying a capability
+	// into a local) escapes and re-enters a later call, the inbound rebinder
+	// revokes the captured grant so a missing-key lookup cannot invoke a
+	// capability the re-entering call never granted.
+	Capability bool
 }
 
 // BuiltinFunc is the Go function signature for built-in Vibescript functions.
@@ -653,6 +935,13 @@ func NewBlock(params []Param, body []Statement, env *Env) Value {
 	return value.NewValue(KindBlock, &Block{Params: params, Body: body, Env: env})
 }
 
+// wrapBlock returns a block Value over an existing *Block, used by the inbound
+// rebinder to surface a re-rooted block clone without re-deriving the block's
+// module metadata.
+func wrapBlock(blk *Block) Value {
+	return value.NewValue(KindBlock, blk)
+}
+
 // NewEnum returns an enum definition Value.
 func NewEnum(def *EnumDef) Value { return value.NewValue(KindEnum, def) }
 
@@ -674,6 +963,16 @@ func newBuiltin(name string, fn BuiltinFunc, autoInvoke bool) Value {
 
 // NewBuiltin returns a builtin function Value.
 func NewBuiltin(name string, fn BuiltinFunc) Value { return newBuiltin(name, fn, false) }
+
+// NewCapturingBuiltin returns a builtin function Value whose Fn closes over the
+// given runtime values. The captured values are recorded on the builtin so the
+// memory estimator charges their payloads while the builtin is reachable,
+// keeping closures such as a bound predicate's receiver inside the memory quota.
+func NewCapturingBuiltin(name string, fn BuiltinFunc, captured ...Value) Value {
+	val := newBuiltin(name, fn, false)
+	valueBuiltin(val).CapturedValues = captured
+	return val
+}
 
 // NewAutoBuiltin returns a builtin function Value that auto-invokes without parentheses.
 func NewAutoBuiltin(name string, fn BuiltinFunc) Value { return newBuiltin(name, fn, true) }
@@ -792,7 +1091,23 @@ func runtimeValueEqual(left, right Value) (bool, bool) {
 	return false, false
 }
 
+// runtimeValueIdentical compares enum and enum-value kinds by backing-pointer
+// identity, backing the Ruby-style equal? predicate. Their Equal comparison is
+// structural (same owner script and name), so two distinct clones can be Equal
+// without sharing storage; identity must instead require the same backing
+// pointer. Installed at init time on value.RuntimeIdenticaler.
+func runtimeValueIdentical(left, right Value) (bool, bool) {
+	switch left.Kind() {
+	case KindEnum:
+		return valueEnum(left) == valueEnum(right), true
+	case KindEnumValue:
+		return valueEnumValue(left) == valueEnumValue(right), true
+	}
+	return false, false
+}
+
 func init() {
 	value.RuntimeStringer = runtimeValueString
 	value.RuntimeEqualer = runtimeValueEqual
+	value.RuntimeIdenticaler = runtimeValueIdentical
 }

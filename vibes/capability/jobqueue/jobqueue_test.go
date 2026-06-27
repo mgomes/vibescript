@@ -198,6 +198,30 @@ func TestParseEnqueueOptionsClonesExtraKwargs(t *testing.T) {
 	}
 }
 
+func TestParseEnqueueOptionsPreservesHashDefault(t *testing.T) {
+	t.Parallel()
+
+	// A hash carrying a Ruby-style default value must keep that default after the
+	// defensive clone, otherwise the host receives a plain hash that returns nil
+	// for missing keys instead of the configured default.
+	withDefault := value.NewHashWithDefault(
+		map[string]value.Value{"present": value.NewInt(1)},
+		value.NewInt(42),
+		value.NewNil(),
+	)
+	kwargs := map[string]value.Value{"meta": withDefault}
+
+	opts, err := ParseEnqueueOptions("jobs", kwargs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := value.HashDefaultValue(opts.Kwargs["meta"])
+	if got.Kind() != value.KindInt || got.Int() != 42 {
+		t.Fatalf("clone dropped hash default: got %s", got)
+	}
+}
+
 func TestParseEnqueueOptionsRejectsInvalidValues(t *testing.T) {
 	t.Parallel()
 
@@ -251,6 +275,24 @@ func TestParseEnqueueOptionsRejectsInvalidValues(t *testing.T) {
 			name:    "cyclic_extra_kwarg",
 			kwargs:  map[string]value.Value{"loop": value.NewHash(cyclic)},
 			wantErr: "jobs.enqueue keyword loop must not contain cyclic references",
+		},
+		{
+			// A hash carrying a default proc (a runtime-only block) outside its
+			// entry map must be rejected: the proc is a script callable that the
+			// data-only scan would miss if it walked only the entries.
+			name: "default_proc_extra_kwarg",
+			kwargs: map[string]value.Value{
+				"opts": value.NewHashWithDefault(map[string]value.Value{}, value.NewNil(), value.NewValue(value.KindBlock, struct{}{})),
+			},
+			wantErr: "jobs.enqueue keyword opts must be data-only",
+		},
+		{
+			// A hash default value that is itself a callable must also be rejected.
+			name: "default_value_callable_extra_kwarg",
+			kwargs: map[string]value.Value{
+				"opts": value.NewHashWithDefault(map[string]value.Value{}, callable, value.NewNil()),
+			},
+			wantErr: "jobs.enqueue keyword opts must be data-only",
 		},
 	}
 

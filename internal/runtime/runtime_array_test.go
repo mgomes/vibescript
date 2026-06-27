@@ -565,6 +565,118 @@ func TestArrayCountValueIgnoresBlock(t *testing.T) {
 	}
 }
 
+func TestArrayPredicateValueArgument(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		// any?(value): true when at least one element matches; empty is false.
+		{name: "any hit", expr: "[1, 2, 3].any?(2)", want: true},
+		{name: "any miss", expr: "[1, 2, 3].any?(9)", want: false},
+		{name: "any empty", expr: "[].any?(1)", want: false},
+		{name: "any matches falsy element", expr: "[nil, false].any?(false)", want: true},
+		{name: "any cross type no match", expr: "[1, 2, 3].any?(\"2\")", want: false},
+		// Range patterns are matched with case equality (===), so the argument
+		// tests membership rather than object identity.
+		{name: "any range hit", expr: "[2].any?(1..3)", want: true},
+		{name: "any range miss", expr: "[5].any?(1..3)", want: false},
+		{name: "any range exclusive boundary", expr: "[3].any?(1...3)", want: false},
+		// all?(value): true when every element matches; empty is vacuously true.
+		{name: "all hit", expr: "[1, 1, 1].all?(1)", want: true},
+		{name: "all miss", expr: "[1, 2, 1].all?(1)", want: false},
+		{name: "all empty", expr: "[].all?(1)", want: true},
+		{name: "all range hit", expr: "[1, 2].all?(1..3)", want: true},
+		{name: "all range miss", expr: "[1, 4].all?(1..3)", want: false},
+		// none?(value): true when no element matches; empty is vacuously true.
+		{name: "none hit", expr: "[3, 4].none?(1)", want: true},
+		{name: "none miss", expr: "[1, 2].none?(1)", want: false},
+		{name: "none empty", expr: "[].none?(1)", want: true},
+		{name: "none range hit", expr: "[4, 5].none?(1..3)", want: true},
+		{name: "none range miss", expr: "[2, 5].none?(1..3)", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			got := callFunc(t, script, "run", nil)
+			if got.Kind() != KindBool {
+				t.Fatalf("%s expected bool, got %v", tc.expr, got.Kind())
+			}
+			if got.Bool() != tc.want {
+				t.Fatalf("%s = %v, want %v", tc.expr, got.Bool(), tc.want)
+			}
+		})
+	}
+}
+
+func TestArrayPredicateValueArgumentIgnoresBlock(t *testing.T) {
+	t.Parallel()
+	// As in Ruby, an explicit value argument takes precedence over an attached
+	// block: the call succeeds and the block is never invoked.
+	cases := []struct {
+		name string
+		expr string
+		want bool
+	}{
+		{name: "any?", expr: "[1, 2, 1, 3].any?(1) do |v| raise \"block must not run\" end", want: true},
+		{name: "all?", expr: "[1, 1].all?(1) do |v| raise \"block must not run\" end", want: true},
+		{name: "none?", expr: "[3, 4].none?(1) do |v| raise \"block must not run\" end", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			got := callFunc(t, script, "run", nil)
+			if got.Kind() != KindBool || got.Bool() != tc.want {
+				t.Fatalf("%s = %#v, want %v", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestArrayPredicateRejectsExtraArguments(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "any?", expr: "[1, 2, 3].any?(1, 2)", want: "array.any? accepts at most one value argument"},
+		{name: "all?", expr: "[1, 2, 3].all?(1, 2)", want: "array.all? accepts at most one value argument"},
+		{name: "none?", expr: "[1, 2, 3].none?(1, 2)", want: "array.none? accepts at most one value argument"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+func TestArrayPredicateRejectsKeywordArguments(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "any?", expr: "[1].any?(1, unexpected: true)", want: "array.any? does not take keyword arguments"},
+		{name: "all?", expr: "[1].all?(1, unexpected: true)", want: "array.all? does not take keyword arguments"},
+		{name: "none?", expr: "[1].none?(1, unexpected: true)", want: "array.none? does not take keyword arguments"},
+		{name: "any? without value", expr: "[1].any?(unexpected: true)", want: "array.any? does not take keyword arguments"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend\n")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
 func TestArrayFlattenDepthArguments(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -651,6 +763,411 @@ func TestArrayConcatAndSubtract(t *testing.T) {
 
 	subtracted := callFunc(t, script, "subtract", []Value{first, second})
 	compareArrays(t, subtracted, []Value{NewInt(1)})
+}
+
+func TestArrayValuesAt(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def lookup(values)
+      values.values_at(0, -1, 9)
+    end
+
+    def lookup_negative(values)
+      values.values_at(-1, -2, -3)
+    end
+
+    def lookup_duplicates(values)
+      values.values_at(0, 0, 1, 1)
+    end
+
+    def lookup_empty(values)
+      values.values_at
+    end
+
+    def lookup_out_of_range(values)
+      values.values_at(3, -4)
+    end
+
+    def lookup_float(values)
+      values.values_at(1.5, -1.9)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+
+	t.Run("returns values in request order with nil for misses", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup", []Value{values})
+		compareArrays(t, got, []Value{NewInt(10), NewInt(30), NewNil()})
+	})
+
+	t.Run("negative indexes count from the end", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_negative", []Value{values})
+		compareArrays(t, got, []Value{NewInt(30), NewInt(20), NewInt(10)})
+	})
+
+	t.Run("duplicate indexes repeat their values", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_duplicates", []Value{values})
+		compareArrays(t, got, []Value{NewInt(10), NewInt(10), NewInt(20), NewInt(20)})
+	})
+
+	t.Run("no indexes returns empty array", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_empty", []Value{values})
+		compareArrays(t, got, []Value{})
+	})
+
+	t.Run("out-of-range indexes yield nil", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_out_of_range", []Value{values})
+		compareArrays(t, got, []Value{NewNil(), NewNil()})
+	})
+
+	t.Run("float indexes truncate toward zero like Ruby", func(t *testing.T) {
+		t.Parallel()
+		got := callFunc(t, script, "lookup_float", []Value{values})
+		compareArrays(t, got, []Value{NewInt(20), NewInt(30)})
+	})
+}
+
+func TestArrayValuesAtRejectsNonIntegerArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def lookup_string(values)
+      values.values_at("0")
+    end
+
+    def lookup_keyword(values)
+      values.values_at(index: 0)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	requireCallErrorContains(t, script, "lookup_string", []Value{values}, CallOptions{}, "array.values_at index must be integer")
+	requireCallErrorContains(t, script, "lookup_keyword", []Value{values}, CallOptions{}, "array.values_at does not take keyword arguments")
+}
+
+func TestArrayValuesAtRangeSelectors(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def in_bounds(values)
+      values.values_at(0..1)
+    end
+
+    def mixed_range_and_int(values)
+      values.values_at(0..1, -1)
+    end
+
+    def exclusive(values)
+      values.values_at(0...2)
+    end
+
+    def end_past_length(values)
+      values.values_at(0..5)
+    end
+
+    def partial_out_of_range(values)
+      values.values_at(2..5)
+    end
+
+    def begin_at_length(values)
+      values.values_at(3..7)
+    end
+
+    def fully_out_of_range(values)
+      values.values_at(5..7)
+    end
+
+    def negative_bounds(values)
+      values.values_at(-2..-1)
+    end
+
+    def negative_begin_past_start(values)
+      values.values_at(-3..5)
+    end
+
+    def empty_begin_after_end(values)
+      values.values_at(2..0)
+    end
+
+    def empty_exclusive(values)
+      values.values_at(0...0)
+    end
+
+    def negative_empty(values)
+      values.values_at(-1..-3)
+    end
+
+    def full_via_negative_end(values)
+      values.values_at(0..-1)
+    end
+
+    def interleaved(values)
+      values.values_at(0, 1..2, -1)
+    end
+
+    def float_range(values)
+      values.values_at(0.5..2.9)
+    end
+
+    def max_int_singleton(values)
+      values.values_at(9223372036854775807..9223372036854775807)
+    end
+
+    def max_int_singleton_exclusive(values)
+      values.values_at(9223372036854775807...9223372036854775807)
+    end
+
+    def near_max_int_pair(values)
+      values.values_at(9223372036854775806..9223372036854775807)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	nilV := NewNil()
+
+	cases := []struct {
+		name string
+		fn   string
+		want []Value
+	}{
+		{"range within bounds", "in_bounds", []Value{NewInt(10), NewInt(20)}},
+		{"range mixed with negative int", "mixed_range_and_int", []Value{NewInt(10), NewInt(20), NewInt(30)}},
+		{"exclusive range", "exclusive", []Value{NewInt(10), NewInt(20)}},
+		{"range end past length pads nil", "end_past_length", []Value{NewInt(10), NewInt(20), NewInt(30), nilV, nilV, nilV}},
+		{"partial out of range pads nil", "partial_out_of_range", []Value{NewInt(30), nilV, nilV, nilV}},
+		{"begin at length pads nil", "begin_at_length", []Value{nilV, nilV, nilV, nilV, nilV}},
+		{"fully out of range pads nil", "fully_out_of_range", []Value{nilV, nilV, nilV}},
+		{"negative bounds", "negative_bounds", []Value{NewInt(20), NewInt(30)}},
+		{"negative begin with end past length", "negative_begin_past_start", []Value{NewInt(10), NewInt(20), NewInt(30), nilV, nilV, nilV}},
+		{"begin after end is empty", "empty_begin_after_end", []Value{}},
+		{"exclusive empty range", "empty_exclusive", []Value{}},
+		{"negative reversed range is empty", "negative_empty", []Value{}},
+		{"full range via negative end", "full_via_negative_end", []Value{NewInt(10), NewInt(20), NewInt(30)}},
+		{"int and range interleaved flatten in order", "interleaved", []Value{NewInt(10), NewInt(20), NewInt(30), NewInt(30)}},
+		{"float range bounds truncate toward zero", "float_range", []Value{NewInt(10), NewInt(20), NewInt(30)}},
+		// An inclusive range ending at MaxInt64 must report its true (tiny) span
+		// rather than overflowing the exclusive-end calculation and rejecting the
+		// call. The selected position is far past the receiver, so it pads with nil.
+		{"max int singleton pads nil", "max_int_singleton", []Value{nilV}},
+		{"max int singleton exclusive is empty", "max_int_singleton_exclusive", []Value{}},
+		{"near max int inclusive pair pads nil", "near_max_int_pair", []Value{nilV, nilV}},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, []Value{values})
+			compareArrays(t, got, tc.want)
+		})
+	}
+}
+
+func TestArrayValuesAtRangeOnEmptyReceiver(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def inclusive(values)
+      values.values_at(0..2)
+    end
+
+    def full(values)
+      values.values_at(0..-1)
+    end
+    `)
+
+	empty := NewArray([]Value{})
+	nilV := NewNil()
+
+	got := callFunc(t, script, "inclusive", []Value{empty})
+	compareArrays(t, got, []Value{nilV, nilV, nilV})
+
+	got = callFunc(t, script, "full", []Value{empty})
+	compareArrays(t, got, []Value{})
+}
+
+func TestArrayValuesAtRejectsNegativeBeginPastStart(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def out_of_range(values)
+      values.values_at(-4..-1)
+    end
+
+    def out_of_range_empty_window(values)
+      values.values_at(-4..-5)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	requireCallErrorContains(t, script, "out_of_range", []Value{values}, CallOptions{}, "array.values_at range -4..-1 out of range")
+	// Ruby rejects a negative begin past the start even when the window would be
+	// empty, so the begin check runs before any emptiness short-circuit.
+	requireCallErrorContains(t, script, "out_of_range_empty_window", []Value{values}, CallOptions{}, "array.values_at range -4..-5 out of range")
+}
+
+func TestArrayValuesAtRangeRejectsGenuinelyHugeMaxIntWindow(t *testing.T) {
+	t.Parallel()
+
+	// An inclusive range beginning at zero and ending at MaxInt64 spans one past
+	// the representable int64 maximum: its window genuinely cannot be materialized,
+	// so it must still be rejected even though the singleton MaxInt64..MaxInt64
+	// case now succeeds. This guards against a fix that simply stopped rejecting
+	// every MaxInt64 endpoint.
+	script := compileScript(t, `
+    def huge_inclusive(values)
+      values.values_at(0..9223372036854775807)
+    end
+    `)
+
+	values := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	requireCallErrorContains(t, script, "huge_inclusive", []Value{values}, CallOptions{}, "array.values_at window is too large")
+}
+
+func TestArrayValuesAtRangeTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// A range selector pads positions past the receiver with nil, so a huge
+	// window would reserve a backing slice that dwarfs the quota. The projected
+	// check rejects the call before the slice is built rather than the
+	// statement-level check catching it after the allocation already happened.
+	receiver := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 8 * 1024}
+	hugeRange := NewRange(Range{Start: 0, End: 100_000_000})
+	_, err = builtin.Fn(exec, receiver, []Value{hugeRange}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestArrayValuesAtScalarSelectorsReserveBackingUpFront(t *testing.T) {
+	t.Parallel()
+
+	// Many scalar selectors size the result's initial backing slice to their count
+	// (bounded by arrayValuesAtInitialCap). When that slot array alone overflows the
+	// quota, the build must be rejected before make reserves the backing rather than
+	// letting make transiently allocate it and the first emit report the overrun
+	// afterward. The empty receiver makes every selected element nil with no payload,
+	// so only the reserved slot array can trip the quota, isolating the up-front
+	// reservation as the cause.
+	receiver := NewArray([]Value{})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	args := make([]Value, 200)
+	for i := range args {
+		args[i] = NewInt(0)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 4096}
+	_, err = builtin.Fn(exec, receiver, args, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	// step() runs once per emitted element, so a zero step count proves the build was
+	// rejected by the up-front reserveSlots before make allocated the backing and
+	// before any element was appended. A reservation deferred until the first emit
+	// would have stepped once over the already-allocated slot array.
+	if exec.steps != 0 {
+		t.Fatalf("values_at stepped %d times before rejecting the backing reservation; want 0 (reservation must precede make)", exec.steps)
+	}
+}
+
+func TestArrayValuesAtRangeChargesEphemeralReceiver(t *testing.T) {
+	t.Parallel()
+
+	// The receiver is reachable only through the call roots (an array literal or
+	// capability result invoked immediately), so its payload is invisible to
+	// estimateMemoryUsageBase. A range selector pads positions past the receiver
+	// with fresh nil slots, and the projected check must charge those slots on top
+	// of the live receiver: a quota that admits the result backing alone but not the
+	// receiver plus the backing has to be rejected before the padded window
+	// materializes. Without seeding the receiver into the projection's baseline the
+	// backing could grow another full quota beyond a receiver that already consumes
+	// most of it, with the excess only caught after materialization.
+	big := func() string { return string(make([]byte, 2000)) }
+	receiver := NewArray([]Value{
+		NewString(big()),
+		NewString(big()),
+		NewString(big()),
+		NewString(big()),
+	})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	// The receiver payload (~8.3 KB) fits under the quota, and the padded window's
+	// backing (~6.5 KB for 201 slots) fits under it too, but their sum does not.
+	// A projection that ignored the receiver would admit the backing and overrun.
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 12 * 1024}
+	paddedRange := NewRange(Range{Start: 0, End: 200})
+	_, err = builtin.Fn(exec, receiver, []Value{paddedRange}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestArrayValuesAtRangeTripsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	// A huge range selector pads positions past the receiver with nil one slot at
+	// a time. With the memory quota disabled the up-front projection passes, so the
+	// per-element step() is what bounds the materialization: a small step quota
+	// must abort the call instead of running through every padded position.
+	receiver := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1024, memoryQuota: 0}
+	hugeRange := NewRange(Range{Start: 0, End: 100_000_000})
+	_, err = builtin.Fn(exec, receiver, []Value{hugeRange}, nil, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+}
+
+func TestArrayValuesAtRangeHonorsCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	// step() polls cancellation on its first invocation, so a canceled context
+	// aborts the expansion before the huge padded window materializes, even with
+	// both quotas effectively disabled.
+	receiver := NewArray([]Value{NewInt(10), NewInt(20), NewInt(30)})
+	member, err := arrayMember(receiver, "values_at")
+	if err != nil {
+		t.Fatalf("arrayMember(values_at): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member values_at is not a builtin")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 0}
+	hugeRange := NewRange(Range{Start: 0, End: 100_000_000})
+	_, err = builtin.Fn(exec, receiver, []Value{hugeRange}, nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
 }
 
 func TestArrayUniqUsesScalarKeysAndCompositeFallback(t *testing.T) {
@@ -1038,5 +1555,229 @@ func TestArrayIndexFamilyErrors(t *testing.T) {
 			script := compileScript(t, "def run() "+tt.expr+" end")
 			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
 		})
+	}
+}
+
+func TestArrayAppendAndPrepend(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def append_call(values, a, b)
+      values.append(a, b)
+    end
+
+    def append_none(values)
+      values.append
+    end
+
+    def prepend_call(values, a, b)
+      values.prepend(a, b)
+    end
+
+    def prepend_one(values, a)
+      values.prepend(a)
+    end
+
+    def prepend_none(values)
+      values.prepend
+    end
+    `)
+
+	tests := []struct {
+		name     string
+		function string
+		args     []Value
+		want     []Value
+	}{
+		{
+			name:     "append adds values in order to the end",
+			function: "append_call",
+			args:     []Value{NewArray([]Value{NewInt(1)}), NewInt(2), NewInt(3)},
+			want:     []Value{NewInt(1), NewInt(2), NewInt(3)},
+		},
+		{
+			name:     "append with no values returns the array unchanged",
+			function: "append_none",
+			args:     []Value{NewArray([]Value{NewInt(1), NewInt(2)})},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+		{
+			name:     "prepend inserts values in order at the front",
+			function: "prepend_call",
+			args:     []Value{NewArray([]Value{NewInt(3)}), NewInt(1), NewInt(2)},
+			want:     []Value{NewInt(1), NewInt(2), NewInt(3)},
+		},
+		{
+			name:     "prepend a single value at the front",
+			function: "prepend_one",
+			args:     []Value{NewArray([]Value{NewInt(2)}), NewInt(1)},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+		{
+			name:     "prepend onto an empty array",
+			function: "prepend_call",
+			args:     []Value{NewArray([]Value{}), NewInt(1), NewInt(2)},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+		{
+			name:     "prepend with no values returns the array unchanged",
+			function: "prepend_none",
+			args:     []Value{NewArray([]Value{NewInt(1), NewInt(2)})},
+			want:     []Value{NewInt(1), NewInt(2)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compareArrays(t, callFunc(t, script, tt.function, tt.args), tt.want)
+		})
+	}
+}
+
+func TestArrayAppendIsNonMutating(t *testing.T) {
+	t.Parallel()
+	// append and prepend mirror push: they return a new array and leave the
+	// receiver untouched, matching Vibescript's non-mutating collection model.
+	script := compileScript(t, `
+    def append_preserves_source(values, extra)
+      appended = values.append(extra)
+      { source: values, appended: appended }
+    end
+
+    def prepend_preserves_source(values, extra)
+      prepended = values.prepend(extra)
+      { source: values, prepended: prepended }
+    end
+    `)
+
+	appended := callFunc(t, script, "append_preserves_source",
+		[]Value{NewArray([]Value{NewInt(1), NewInt(2)}), NewInt(3)}).Hash()
+	compareArrays(t, appended["source"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, appended["appended"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+
+	prepended := callFunc(t, script, "prepend_preserves_source",
+		[]Value{NewArray([]Value{NewInt(2), NewInt(3)}), NewInt(1)}).Hash()
+	compareArrays(t, prepended["source"], []Value{NewInt(2), NewInt(3)})
+	compareArrays(t, prepended["prepended"], []Value{NewInt(1), NewInt(2), NewInt(3)})
+}
+
+func TestArrayAppendPrependRejectKeywordArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def append_keyword(values)
+      values.append(foo: 1)
+    end
+
+    def prepend_keyword(values)
+      values.prepend(foo: 1)
+    end
+    `)
+
+	base := []Value{NewArray([]Value{NewInt(1), NewInt(2)})}
+	requireCallErrorContains(t, script, "append_keyword", base, CallOptions{},
+		"array.append does not take keyword arguments")
+	requireCallErrorContains(t, script, "prepend_keyword", base, CallOptions{},
+		"array.prepend does not take keyword arguments")
+}
+
+func TestArrayAppendAssignmentReturnsFreshArray(t *testing.T) {
+	t.Parallel()
+	// append is a documented non-mutating helper. Unlike push, x = x.append(i)
+	// must not route through the accumulator fast path that reuses a hidden
+	// backing buffer: every append has to return a fresh array so escaped
+	// aliases never observe later appends. Accumulation in a loop still works
+	// because each iteration starts from the previous (independent) result.
+	script := compileScript(t, `
+    def append_accumulate(n)
+      out = []
+      for i in 1..n
+        out = out.append(i)
+      end
+      out
+    end
+
+    def append_alias()
+      a = [1]
+      b = a
+      a = a.append(2)
+      b[0] = 9
+      { a: a, b: b }
+    end
+
+    def repeated_append_alias()
+      a = []
+      a = a.append(1)
+      a = a.append(2)
+      a = a.append(3)
+      b = a
+      a = a.append(4)
+      b[0] = 9
+      { a: a, b: b }
+    end
+    `)
+
+	want := []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5)}
+	compareArrays(t, callFunc(t, script, "append_accumulate", []Value{NewInt(5)}), want)
+
+	aliased := callFunc(t, script, "append_alias", nil).Hash()
+	compareArrays(t, aliased["a"], []Value{NewInt(1), NewInt(2)})
+	compareArrays(t, aliased["b"], []Value{NewInt(9)})
+
+	// Several appends grow the result past its exact length before b escapes via
+	// b = a, then a appends once more. b must retain [9, 2, 3] and a [1, 2, 3, 4]:
+	// append never lets an escaped alias observe a later append.
+	repeated := callFunc(t, script, "repeated_append_alias", nil).Hash()
+	compareArrays(t, repeated["a"], []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
+	compareArrays(t, repeated["b"], []Value{NewInt(9), NewInt(2), NewInt(3)})
+}
+
+// TestArrayAppendAssignmentStaysOffPushFastPath pins the routing contract behind
+// append's non-mutating guarantee. push is the accumulator pattern, so
+// x = x.push(i) is allowed to retain a hidden backing buffer on x and reuse it
+// for the next push. append is documented non-mutating: routing x = x.append(i)
+// through that shared buffer would make the optimization's correctness depend on
+// the read-escape guard that drops the buffer whenever x is read elsewhere.
+// Excluding append from the fast path removes that dependency, so append must
+// never leave a retained append buffer behind. This white-box check fails if
+// append is ever re-added to evalArrayAppendAssignment's fast path.
+func TestArrayAppendAssignmentStaysOffPushFastPath(t *testing.T) {
+	t.Parallel()
+
+	retainedBufferAfter := func(t *testing.T, method string) bool {
+		t.Helper()
+		script := compileScriptDefault(t, "def run()\n  nil\nend")
+		root := newEnv(nil)
+		exec := newExecutionForCall(script, context.Background(), root, CallOptions{})
+		env := newEnv(root)
+		env.Define("a", NewArray([]Value{NewInt(1)}))
+
+		// a = a.<method>(2), driven through the real statement dispatcher so the
+		// fast path and its normal-evaluation fallback both behave as in scripts.
+		stmt := &AssignStmt{
+			Target: &Identifier{Name: "a"},
+			Value: &CallExpr{
+				Callee: &MemberExpr{
+					Object:   &Identifier{Name: "a"},
+					Property: method,
+				},
+				Args: []Expression{&IntegerLiteral{Value: 2}},
+			},
+		}
+
+		if _, _, err := exec.evalStatement(stmt, env); err != nil {
+			t.Fatalf("evalStatement(a = a.%s(2)): %v", method, err)
+		}
+		got, _ := env.Get("a")
+		compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
+
+		_, retained := env.arrayAppendBuffer("a")
+		return retained
+	}
+
+	if !retainedBufferAfter(t, "push") {
+		t.Fatal("push must retain a backing buffer for the accumulator fast path")
+	}
+	if retainedBufferAfter(t, "append") {
+		t.Fatal("append must not retain a fast-path backing buffer; it must return a fresh array")
 	}
 }

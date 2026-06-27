@@ -59,6 +59,21 @@ x, (y, z) = [1, [2, 3]]
 Missing values bind as `nil`, extra values are ignored unless captured by a
 `*rest` target, and scalar right-hand values are treated as one value.
 
+A bare `*` is an anonymous rest target: it discards the values it captures
+without binding a name, which is useful for ignoring leading, trailing, or
+interior values:
+
+```vibe
+first, * = [1, 2, 3]
+head, *, tail = [1, 2, 3, 4]
+```
+
+A leading `*` discards the values before the named targets:
+
+```vibe
+*, last = [1, 2, 3]
+```
+
 Index assignment is supported for mutable collections:
 
 ```vibe
@@ -103,6 +118,58 @@ def charge(amount: int, currency: string = "USD") -> hash
   {amount: amount, currency: currency}
 end
 ```
+
+### Parameter forms
+
+A parameter's spelling chooses how it receives a value. The token after the
+colon disambiguates the keyword and typed forms:
+
+| Form | Meaning |
+| --- | --- |
+| `name` | required positional parameter |
+| `name = default` | optional positional parameter |
+| `name: Type` | typed positional parameter |
+| `name: Type = default` | typed positional parameter with a default |
+| `name:` | required keyword-only parameter |
+| `name: default` | optional keyword-only parameter |
+| `*rest` | captures extra positional arguments |
+| `**rest` | captures extra keyword arguments |
+| `&block` | captures a passed block |
+
+A keyword-only parameter is bound only by a matching keyword label; it never
+accepts a positional argument. The optional form supplies its default when the
+label is omitted, and a later default may reference an earlier parameter:
+
+```vibe
+def connect(host:, port: 8080, scheme: "https", timeout: port * 2)
+  "#{scheme}://#{host}:#{port}"
+end
+
+connect(host: "example.com")            # uses port 8080, scheme "https"
+connect(host: "example.com", port: 443) # overrides port
+```
+
+Because `name: Type` declares a typed positional parameter, a bare identifier
+after the colon resolves as a type name, not a keyword default: write `a: int`
+for a typed positional and `a: 0` for an optional keyword. The `name: nil`
+spelling is the optional keyword default `nil`, matching Ruby and the stdlib's
+documented optional keywords; a bare `nil` positional type would be useless.
+A nil-leading union annotation (`a: nil | int`) is the exception: the `|`
+continuation keeps the colon a type, so it declares a typed positional
+parameter rather than a `nil` keyword default. When a keyword default must
+reference another name on its own, wrap it in parentheses (`a: (other)`) so it
+parses as an expression.
+
+A keyword default may be a full expression, including one that references an
+earlier parameter with a comparison (`def f(limit:, ok: limit < 10)`). A `{ ... }`
+default is a hash literal whenever its contents are values rather than types, so
+`def f(opts: { retry: 3 })` and `def f(opts: {})` both declare hash defaults. An
+empty hash is degenerate as a shape field, so a nested empty hash is a hash
+default too (`def f(opts: { headers: {} })`). A hash value may reference an
+earlier parameter directly, including as a bare identifier
+(`def g(a:, b: { sum: a })`); no parentheses are needed inside the braces. The
+`name: { field: Type }` spelling, whose field values are themselves types, stays
+a typed positional parameter with a shape type.
 
 ### Function values
 
@@ -252,6 +319,8 @@ Core operator families:
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`
 - Case equality: `===`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
+- Unary sign: prefix `-` negates a number; prefix `+` is the identity on
+  numbers and strings
 - Conditional: `condition ? when_true : when_false`
 
 The spaceship operator `<=>` returns `-1`, `0`, or `1` for ordered operands and
@@ -282,6 +351,21 @@ Inspect those special values with `Float#nan?`, `Float#infinite?`, and
 precedence as `&&`, and `or` has the same precedence as `||`. Ternary
 conditionals have lower precedence than `or`, associate to the right, and
 evaluate only the selected branch.
+
+Prefix `+` mirrors Ruby's unary plus: it returns integers, floats, and strings
+unchanged and raises on any other operand. Because Vibescript strings are
+immutable values, `+"x"` yields the same string value.
+
+A leading `+` or `-` at the start of a fresh line follows Vibescript's
+indented-continuation rule, which is shared with `-` and intentionally differs
+from Ruby. When the sign sits flush against its operand it begins a new
+statement (`total\n+amount` parses as two statements, matching Ruby). When the
+sign is separated from its operand by surrounding whitespace it continues the
+previous line as a binary operator (`total\n + amount` is addition). Ruby treats
+both forms as a new statement and would instead parse `total\n + amount` as the
+two statements `total` and `+amount`; Vibescript deliberately supports the
+spaced form as an explicit operator continuation so multi-line arithmetic can be
+indented under its first operand.
 
 ## Control Flow
 

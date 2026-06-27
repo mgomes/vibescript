@@ -277,9 +277,13 @@ func TestParserTypeErrorCases(t *testing.T) {
 		wantErr string
 	}{
 		{
+			// A shape type in a return-type position is unambiguous (no hash
+			// default competes there), so the duplicate-field diagnostic is
+			// asserted here rather than in a parameter, where `{ ... }` is the
+			// optional-keyword hash-default form.
 			name: "duplicate_shape_field",
-			source: `def run(payload: { id: string, id: int })
-  payload
+			source: `def run() -> { id: string, id: int }
+  {}
 end`,
 			wantErr: "duplicate shape field id",
 		},
@@ -305,9 +309,12 @@ end`,
 			wantErr: "hash type expects exactly 2 type arguments",
 		},
 		{
+			// As with duplicate_shape_field, the invalid-field-name diagnostic is
+			// asserted in a return-type position, where `{ ... }` is unambiguously
+			// a shape type rather than an optional-keyword hash default.
 			name: "symbolic_boolean_shape_field",
-			source: `def run(payload: { &&: bool })
-  payload
+			source: `def run() -> { &&: bool }
+  {}
 end`,
 			wantErr: "shape field name",
 		},

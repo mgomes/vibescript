@@ -157,6 +157,23 @@ Returns true when the string has no characters:
 "hello".empty? # false
 ```
 
+### `inspect`
+
+Returns a double-quoted, escaped debug rendering of the string, distinct from
+the raw text that interpolation emits. It escapes `\\`, `\"`, `\n`, `\t`, and the
+interpolation marker `\#{`; any other byte (including a carriage return) is
+written verbatim, since Vibescript's double-quoted literals have no `\r`, `\xNN`,
+or `\uNNNN` escapes. The result therefore round-trips as a Vibescript literal:
+
+```vibe
+"hello".inspect   # "\"hello\""
+"a\nb".inspect    # "\"a\\nb\""
+"say \"hi\"".inspect # "\"say \\\"hi\\\"\""
+```
+
+`inspect` is available on every core value kind; see
+[Debug Representation](stdlib_core_utilities.md#debug-representation).
+
 ### `to_sym` / `intern`
 
 Returns the symbol named by the string, mirroring Ruby's `String#to_sym` and its
@@ -476,11 +493,28 @@ the end of the string yields `false` rather than an error. Unlike Ruby,
 
 ### `scan(pattern)`
 
-Regex scan returning all full matches:
+Regex scan returning every non-overlapping match. As in Ruby, the result shape
+depends on the number of capture groups in `pattern`:
+
+- No groups: an array of the full match strings.
+- One or more groups: an array with one entry per match, each holding that
+  match's captured substrings. An optional group that did not participate in
+  the match becomes `nil`, distinct from a group that matched an empty string.
 
 ```vibe
-"ID-12 ID-34".scan("ID-[0-9]+") # ["ID-12", "ID-34"]
+"ID-12 ID-34".scan("ID-[0-9]+")  # ["ID-12", "ID-34"]
+"a1 b2".scan("([a-z])([0-9])")   # [["a", "1"], ["b", "2"]]
+"a-b-c".scan("(\\w)(-)?")        # [["a", "-"], ["b", "-"], ["c", nil]]
+"abc".scan("z")                   # []
 ```
+
+A pattern with many capture groups over a large subject can force the regex engine
+to materialize a huge match-index table, so `scan` rejects up front when that table's
+worst case would exceed a fixed 256 MiB host cap (see the Guard Limits table in
+[stdlib_core_utilities.md](stdlib_core_utilities.md#guard-limits)). The bound is
+derived from the subject length and the pattern's minimum match length, so ordinary
+sparse scans — a pattern that matches little or nothing over a modest string — are
+never rejected regardless of the memory quota.
 
 ### `index(substring, offset = 0)`
 
@@ -731,7 +765,7 @@ When there is no change, bang methods return `nil`.
 
 ## Splitting
 
-### `split(separator = nil)`
+### `split(separator = nil, limit = 0)`
 
 Splits a string into an array of strings.
 
@@ -754,11 +788,21 @@ full Unicode whitespace table as delimiters:
 "a b".split  # ["a b"] (non-breaking space is preserved)
 ```
 
-**With separator:** Splits on the specified string:
+**With separator:** Splits on the specified string. By default trailing empty
+fields are removed, matching Ruby's default `String#split`:
 
 ```vibe
 "a,b,c".split(",")        # ["a", "b", "c"]
 "path/to/file".split("/") # ["path", "to", "file"]
+"a,b,".split(",")         # ["a", "b"] (trailing empty removed)
+```
+
+**With an empty separator:** Splits the string into its individual characters
+(runes), matching Ruby's `String#split("")`:
+
+```vibe
+"abc".split("")   # ["a", "b", "c"]
+"héllo".split("") # ["h", "é", "l", "l", "o"]
 ```
 
 **With an explicit `nil` separator:** Behaves exactly like the no-argument
@@ -769,7 +813,46 @@ form, splitting on runs of ASCII whitespace, matching Ruby's
 " a  b ".split(nil) # ["a", "b"]
 ```
 
+**With a single space separator:** A separator of exactly `" "` is Ruby's AWK
+whitespace mode rather than a literal split on the space character. It collapses
+runs of ASCII whitespace, discards leading whitespace, and honors the limit just
+like the `nil` form, so it never produces a leading empty field:
+
+```vibe
+" a  b ".split(" ")    # ["a", "b"]
+" a  b ".split(" ", 2) # ["a", "b "]
+```
+
 Any other non-string separator raises an error.
+
+**With a `limit`:** The optional second argument controls how many fields are
+returned and whether trailing empty fields are kept, matching Ruby:
+
+- A **positive** limit returns at most that many fields, leaving the remainder
+  unsplit in the final field. A limit of `1` returns the whole string unchanged.
+- The default **`0`** removes trailing empty fields.
+- A **negative** limit preserves every field, including trailing empties.
+
+```vibe
+"a,b,c,d".split(",", 2)  # ["a", "b,c,d"]
+"a,b,c".split(",", 1)    # ["a,b,c"]
+"a,b,".split(",", -1)    # ["a", "b", ""]
+"a,b,".split(",", 0)     # ["a", "b"]
+```
+
+The limit applies to every separator mode. With the whitespace default a
+positive limit keeps the unsplit remainder in the final field, and a non-zero
+limit preserves a single trailing empty field when the string ends in
+whitespace:
+
+```vibe
+"  a b c  ".split(nil, 2)  # ["a", "b c  "]
+"  a b c  ".split(nil, -1) # ["a", "b", "c", ""]
+"abc".split("", -1)        # ["a", "b", "c", ""]
+```
+
+An empty string always yields an empty array, regardless of the limit. A
+non-integer limit raises an error.
 
 ### `partition(separator)`
 

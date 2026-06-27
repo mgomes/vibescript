@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"testing"
@@ -122,7 +123,8 @@ func TestItselfReturnsReceiver(t *testing.T) {
 // host-boundary isolation already established for the receiver are preserved.
 func TestItselfPreservesReferenceIdentity(t *testing.T) {
 	t.Parallel()
-	member, ok := universalMember("itself")
+	hash := NewHash(map[string]Value{"k": NewInt(1)})
+	member, ok := universalMember(hash, "itself")
 	if !ok {
 		t.Fatal("universalMember(itself) did not resolve")
 	}
@@ -130,8 +132,10 @@ func TestItselfPreservesReferenceIdentity(t *testing.T) {
 	if builtin == nil {
 		t.Fatal("itself member is not a builtin")
 	}
+	if !builtin.AutoInvoke {
+		t.Fatal("itself member must auto-invoke so bare access returns the receiver")
+	}
 
-	hash := NewHash(map[string]Value{"k": NewInt(1)})
 	got, err := builtin.Fn(&Execution{}, hash, nil, nil, NewNil())
 	if err != nil {
 		t.Fatalf("itself returned error: %v", err)
@@ -162,8 +166,9 @@ func TestItselfTakesPrecedenceOverHashKey(t *testing.T) {
 func TestItselfRejectsArguments(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		source string
+		name    string
+		source  string
+		wantErr string
 	}{
 		{
 			name: "positional argument",
@@ -172,6 +177,7 @@ func TestItselfRejectsArguments(t *testing.T) {
           5.itself(1)
         end
       `,
+			wantErr: "int.itself expects 0 arguments, got 1",
 		},
 		{
 			name: "keyword argument",
@@ -180,6 +186,18 @@ func TestItselfRejectsArguments(t *testing.T) {
           5.itself(x: 1)
         end
       `,
+			wantErr: "int.itself does not accept keyword arguments",
+		},
+		{
+			name: "block argument",
+			source: `
+        def run
+          5.itself do |x|
+            x
+          end
+        end
+      `,
+			wantErr: "int.itself does not accept a block",
 		},
 	}
 
@@ -187,7 +205,7 @@ func TestItselfRejectsArguments(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, tt.source)
-			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "itself does not take arguments")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.wantErr)
 		})
 	}
 }
@@ -349,4 +367,89 @@ func TestItselfInMemberCompletion(t *testing.T) {
 			t.Errorf("MemberCompletionNames[%q] = %v, missing itself", receiver, names)
 		}
 	}
+}
+
+// TestItselfObjectDataFieldNotShadowing confirms a KindObject that is an ordinary
+// data object — the shape hosts and capabilities return — does not let a stored
+// non-callable "itself" field shadow the universal builtin. Member dispatch must
+// resolve the universal itself builtin (returning the object), while the stored
+// field stays readable as data through index access. A callable stored under the
+// same name (a module/capability method export) must still shadow, so namespace
+// exports remain reachable. This mirrors the eql?/equal? data-field behavior.
+func TestItselfObjectDataFieldNotShadowing(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, "def run()\n  nil\nend")
+	exec := newExecutionForCall(script, context.Background(), newEnv(nil), CallOptions{})
+
+	dataField := NewInt(7)
+	obj := NewObject(map[string]Value{"itself": dataField})
+
+	member, err := exec.resolveMember(obj, "itself", Position{}, false)
+	if err != nil {
+		t.Fatalf("resolveMember(itself) on data object: %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("itself on a data object resolved to %v, want the universal builtin; a data field must not shadow it", member.Kind())
+	}
+	got, err := builtin.Fn(exec, obj, nil, nil, NewNil())
+	if err != nil {
+		t.Fatalf("invoking resolved itself against the object: %v", err)
+	}
+	if !got.Identical(obj) {
+		t.Fatalf("obj.itself returned %v, want the receiver; the universal builtin must answer for a data object", got.Kind())
+	}
+	// The field is still readable as data through index access.
+	if stored, ok := obj.Hash()["itself"]; !ok || !stored.Equal(dataField) {
+		t.Fatalf("data field itself no longer readable as data: got %v ok=%v", stored, ok)
+	}
+
+	// A callable stored under the same name is a method export and must shadow.
+	callable := NewAutoBuiltin("export.itself", func(*Execution, Value, []Value, map[string]Value, Value) (Value, error) {
+		return NewString("export itself"), nil
+	})
+	namespace := NewObject(map[string]Value{"itself": callable})
+	exported, err := exec.resolveMember(namespace, "itself", Position{}, false)
+	if err != nil {
+		t.Fatalf("resolveMember(itself) on namespace object: %v", err)
+	}
+	if !exported.Identical(callable) {
+		t.Fatalf("a callable itself export was not resolved as the stored member; module exports must remain reachable")
+	}
+}
+
+// TestItselfObjectDataFieldEndToEnd is the script-level counterpart to
+// TestItselfObjectDataFieldNotShadowing: a host hands a data object carrying an
+// itself field to a script, which must observe the receiver through member
+// dispatch while still reading the field as data through index access.
+func TestItselfObjectDataFieldEndToEnd(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def run(obj)
+  [obj.itself["itself"], obj["itself"]]
+end`)
+
+	obj := NewObject(map[string]Value{"itself": NewInt(5)})
+	result, err := script.Call(context.Background(), "run", []Value{obj}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	compareArrays(t, result, []Value{NewInt(5), NewInt(5)})
+}
+
+// TestItselfHashKeyDoesNotShadow confirms a stored hash entry keyed "itself" is
+// data, not a member: itself returns the hash itself, and the entry stays
+// readable through index access. This complements TestItselfTakesPrecedenceOver-
+// HashKey by checking the data path explicitly through resolveMember.
+func TestItselfHashKeyDoesNotShadow(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def run(h)
+  [h.itself["itself"], h["itself"]]
+end`)
+
+	h := NewHash(map[string]Value{"itself": NewInt(3)})
+	result, err := script.Call(context.Background(), "run", []Value{h}, CallOptions{})
+	if err != nil {
+		t.Fatalf("call failed: %v", err)
+	}
+	compareArrays(t, result, []Value{NewInt(3), NewInt(3)})
 }

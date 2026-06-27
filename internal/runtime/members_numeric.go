@@ -17,12 +17,14 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"inspect",
 	}
 	floatMemberNames = []string{
 		"abs", "clamp", "round", "floor", "ceil",
 		"zero?", "positive?", "negative?", "nonzero?",
 		"nan?", "infinite?", "finite?",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"inspect",
 	}
 	moneyMemberNames = []string{"currency", "cents", "amount", "format"}
 )
@@ -33,6 +35,7 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"inspect",
 	}
 	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
 	floatBuiltinMembers     = newMemberTable(floatMemberNames)
@@ -244,6 +247,8 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return numericModulo("int.modulo", receiver, divisor)
 		}), nil
+	case "inspect":
+		return newInspectBuiltin("int"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown int method %s", property)
 	}
@@ -402,6 +407,8 @@ func floatMemberBuiltin(property string) (Value, error) {
 			}
 			return numericModulo("float.modulo", receiver, divisor)
 		}), nil
+	case "inspect":
+		return newInspectBuiltin("float"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown float method %s", property)
 	}

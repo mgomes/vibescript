@@ -1,0 +1,28 @@
+- **Added: Ruby-style `Hash.new` defaults and `Hash#default` / `Hash#default_proc` readers.**
+  `Hash.new(default)` builds a hash that returns `default` for a missing `[]`
+  lookup without inserting it, and `Hash.new { |hash, key| ... }` installs a
+  default proc invoked on a missing-key lookup (which inserts only if its body
+  assigns one). The value and block forms are mutually exclusive, and bare
+  `Hash.new` matches a `{}` literal with a `nil` default. `default` returns the
+  configured default value (never running the proc, matching Ruby) and
+  `default_proc` returns the configured proc. `[]` access, `dig`, and
+  `values_at` all consult the default for a missing key (each is a `[]` lookup in
+  Ruby), so `Hash.new(0).dig(:missing)` is `0` and a default proc fires per miss;
+  `fetch` keeps ignoring the default, matching Ruby. The default travels with
+  the hash through index assignment and is copied onto the result of `merge`
+  (and its `update` / `merge!` aliases); every other transform returns a plain
+  hash with no default. A default proc that escapes one `Script.Call` and is
+  passed back into another (as an argument, global, or task-inherited hash) is
+  re-rooted onto the current call, so a missing-key lookup resolves globals,
+  capabilities, and functions against the current invocation rather than the
+  stale environment it was created in, while still keeping any local variables
+  the proc legitimately closed over (such as a parameter of the function that
+  built the hash). A capability copied into a local that the proc captured (for
+  example `cap = jobs`) is revoked on re-entry rather than preserved, so a
+  missing-key lookup cannot invoke a capability the re-entering call never
+  granted; a free reference to the live capability global still resolves through
+  the re-rooted ambient root. Because a missing-key lookup returns the default, the default
+  is part of a typed hash's value type: validating a hash against
+  `hash<key, value>` requires the default value to match `value` (the validated
+  default travels with the normalized hash) and rejects a hash carrying a default
+  proc, whose result cannot be type-checked.
