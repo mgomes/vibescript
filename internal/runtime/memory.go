@@ -111,6 +111,64 @@ func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []V
 	return nil
 }
 
+// checkAccumulatorWithCallRoots rejects a fold step whose running accumulator,
+// together with the builtin's live call roots and any extra Go-local values that
+// coexist with it at the step's peak, would exceed the memory quota. Builtins
+// that grow a single Go-local accumulator value from a non-rooted receiver —
+// Array#sum building a string or array total — use it instead of the plain
+// checkMemoryWith(accumulator). The receiver, args, and block stay live on the Go
+// call stack for the builtin's whole run yet are invisible to
+// estimateMemoryUsageBase, so a check that charged only the accumulator could
+// admit a peak (call roots + accumulator) that exceeds the quota until the
+// builtin returns. Charging the accumulator and the call roots through one
+// deduplicating estimator keeps the running check consistent with the pre-call
+// checkCallMemoryRoots: an accumulator that aliases the receiver or an argument
+// is counted once, matching the real shared backing.
+//
+// liveExtras are additional values that are live on the Go call stack alongside
+// the new accumulator at the step's allocation peak but are not reachable from
+// any call root. Array#sum passes both the prior total and the contribution it
+// just produced: arraySumAdd builds the next accumulator from a fresh copy of the
+// old total and the contribution, so the old total, the contribution, and the new
+// accumulator all coexist at the peak. The prior total is the critical case once
+// it has grown across iterations into a large string or array reachable only from
+// that Go-local — the base walk never sees it. Without charging both extras, a
+// quota above call roots + new accumulator but below call roots + old total +
+// contribution + new accumulator would admit a step whose true peak exceeds the
+// limit. Each extra is charged through the same deduplicating estimator, so an
+// extra that aliases a receiver element or the accumulator itself is counted once,
+// matching the real shared backing.
+func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value, args []Value, kwargs map[string]Value, block Value, liveExtras ...Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	used = saturatingAdd(used, est.value(accumulator))
+	if receiver.Kind() != KindNil {
+		used = saturatingAdd(used, est.value(receiver))
+	}
+	for _, arg := range args {
+		used = saturatingAdd(used, est.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		used = saturatingAdd(used, est.value(kwarg))
+	}
+	if !block.IsNil() {
+		used = saturatingAdd(used, est.value(block))
+	}
+	for _, extra := range liveExtras {
+		used = saturatingAdd(used, est.value(extra))
+	}
+	est.reset()
+
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 // checkProjectedStringBytes rejects allocations that would exceed the memory
 // quota before the string is built. Builtins that grow a string by a
 // user-controlled amount (such as the padding helpers) use it to fail fast

@@ -170,8 +170,7 @@ func (l *lexer) scanToken() ast.Token {
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral()
 				if err != "" {
-					tok.Type = ast.TokenIllegal
-					tok.Literal = err
+					setDiagnostic(&tok, err)
 				} else {
 					tok.Type = ast.TokenWords
 					tok.Literal = encodePercentLiteralEntries(entries)
@@ -184,8 +183,7 @@ func (l *lexer) scanToken() ast.Token {
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral()
 				if err != "" {
-					tok.Type = ast.TokenIllegal
-					tok.Literal = err
+					setDiagnostic(&tok, err)
 				} else {
 					tok.Type = ast.TokenSymbols
 					tok.Literal = encodePercentLiteralEntries(entries)
@@ -367,8 +365,7 @@ func (l *lexer) scanToken() ast.Token {
 	case '"':
 		literal, interpolated, err := l.readDoubleQuotedString()
 		if err != "" {
-			tok.Type = ast.TokenIllegal
-			tok.Literal = err
+			setDiagnostic(&tok, err)
 		} else if interpolated {
 			tok.Type = ast.TokenInterpolatedString
 			tok.Literal = literal
@@ -379,8 +376,7 @@ func (l *lexer) scanToken() ast.Token {
 	case '\'':
 		literal, err := l.readSingleQuotedString()
 		if err != "" {
-			tok.Type = ast.TokenIllegal
-			tok.Literal = err
+			setDiagnostic(&tok, err)
 		} else {
 			tok.Type = ast.TokenString
 			tok.Literal = literal
@@ -420,8 +416,7 @@ func (l *lexer) scanToken() ast.Token {
 			num := l.readNumber()
 			switch {
 			case num.errMsg != "":
-				tok.Type = ast.TokenIllegal
-				tok.Literal = num.errMsg
+				setDiagnostic(&tok, num.errMsg)
 			case num.isFloat:
 				tok.Type = ast.TokenFloat
 				tok.Literal = num.literal
@@ -468,6 +463,16 @@ func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
 	return ast.Token{Type: tt, Literal: literal, Pos: ast.Position{Line: l.line, Column: l.column}}
 }
 
+// setDiagnostic turns tok into an illegal token carrying msg as a lexer
+// diagnostic, preserving the token's already-stamped position. The parser
+// surfaces such literals verbatim, so the message must be human-readable
+// rather than the raw offending source text.
+func setDiagnostic(tok *ast.Token, msg string) {
+	tok.Type = ast.TokenIllegal
+	tok.Literal = msg
+	tok.Diagnostic = true
+}
+
 func (l *lexer) skipWhitespaceAndComments() (ast.Token, bool) {
 	for {
 		switch l.ch {
@@ -483,7 +488,7 @@ func (l *lexer) skipWhitespaceAndComments() (ast.Token, bool) {
 			}
 			pos := ast.Position{Line: l.line, Column: l.column}
 			if err := l.skipBlockComment(); err != "" {
-				return ast.Token{Type: ast.TokenIllegal, Literal: err, Pos: pos}, true
+				return ast.Token{Type: ast.TokenIllegal, Literal: err, Pos: pos, Diagnostic: true}, true
 			}
 			continue
 		default:
@@ -573,8 +578,8 @@ func (l *lexer) readIdentifier() string {
 
 // numberToken is the lexer's classification of a scanned numeric literal.
 // On success errMsg is empty and literal carries the underscore-stripped
-// digits (prefix included for based literals); on failure errMsg holds an
-// "invalid numeric literal" diagnostic and the literal is undefined.
+// digits (prefix included for based literals); on failure errMsg holds a
+// human-readable diagnostic and the literal is undefined.
 type numberToken struct {
 	literal string
 	isFloat bool
@@ -601,9 +606,22 @@ func (l *lexer) readNumber() numberToken {
 	return l.readDecimalNumber()
 }
 
+// readDecimalNumber lexes a decimal integer or float beginning at the
+// current rune. It returns the normalized literal (with visual-separator
+// underscores stripped), whether the literal is a float, and a non-empty
+// diagnostic when the literal is malformed.
+//
+// A literal is a float when it carries a decimal point or an exponent
+// suffix. Exponent notation mirrors Ruby: an optional sign follows the
+// e/E marker and at least one exponent digit is required, with underscores
+// permitted only between digits. Malformed exponents such as 1e, 1e+, or
+// 1e_3 yield a diagnostic instead of silently splitting into an integer
+// followed by an identifier.
 func (l *lexer) readDecimalNumber() numberToken {
 	var sb strings.Builder
+	var errMsg string
 	hasDot := false
+	hasExponent := false
 
 	// current rune is part of the number
 	sb.WriteRune(l.ch)
@@ -621,10 +639,16 @@ func (l *lexer) readDecimalNumber() numberToken {
 				continue
 			}
 			goto done
-		case r == '.' && !hasDot && unicode.IsDigit(l.peekRuneN(1)):
+		case r == '.' && !hasDot && !hasExponent && unicode.IsDigit(l.peekRuneN(1)):
 			hasDot = true
 			l.readRune()
 			sb.WriteRune('.')
+		case (r == 'e' || r == 'E') && !hasExponent && l.exponentMarkerAhead():
+			if msg := l.readExponent(&sb); msg != "" {
+				errMsg = msg
+				goto done
+			}
+			hasExponent = true
 		case unicode.IsDigit(r):
 			l.readRune()
 			sb.WriteRune(r)
@@ -634,9 +658,125 @@ func (l *lexer) readDecimalNumber() numberToken {
 	}
 
 done:
+	if errMsg == "" {
+		if msg := l.rejectNumberSuffix(); msg != "" {
+			errMsg = msg
+		}
+	}
 	literal := sb.String()
 	l.readRune()
-	return numberToken{literal: literal, isFloat: hasDot}
+	return numberToken{literal: literal, isFloat: hasDot || hasExponent, errMsg: errMsg}
+}
+
+// rejectNumberSuffix guards the boundary just past a numeric literal. A number
+// that directly abuts an identifier (no intervening whitespace or operator),
+// such as 1e3foo, 123abc, or 1.5x, is malformed: Ruby reports a syntax error
+// rather than splitting it into a number followed by an identifier. A keyword
+// suffix is left intact because Ruby permits adjacency there (5if cond and
+// 1e3if cond lex as the number followed by a modifier keyword). When the suffix
+// is a plain identifier it is consumed so the whole offending run becomes a
+// single diagnostic token instead of fragmenting into a stray identifier.
+//
+// It must be called at the done boundary while l.ch still holds the literal's
+// final rune, so l.peekRune reports the first rune after the number.
+func (l *lexer) rejectNumberSuffix() string {
+	if !ast.IsIdentifierStart(l.peekRune()) {
+		return ""
+	}
+	start := l.offset
+	end := start
+	for end < len(l.input) {
+		r, w := utf8.DecodeRuneInString(l.input[end:])
+		if !ast.IsIdentifierRune(r) {
+			break
+		}
+		end += w
+	}
+	if ast.LookupIdent(l.input[start:end]) != ast.TokenIdent {
+		return ""
+	}
+	for l.offset < end {
+		l.readRune()
+	}
+	return "malformed numeric literal: identifier cannot immediately follow a number"
+}
+
+// exponentMarkerAhead reports whether the e/E rune at l.peekRune actually
+// opens an exponent suffix rather than abutting an identifier. Mirroring Ruby,
+// the marker begins an exponent when immediately followed by a digit or by a
+// sign (+/-). A sign commits to the exponent even without a following digit, so
+// 1e+ is reported as a malformed exponent. Otherwise the e/E belongs to a
+// trailing identifier (5end keeps the end keyword while 5elf and 1e_3 fall to
+// the numeric suffix guard) rather than being mis-lexed as a malformed exponent.
+//
+// The marker must be the lexer's current peek rune, so peekRuneN(1) is the rune
+// immediately after it.
+func (l *lexer) exponentMarkerAhead() bool {
+	next := l.peekRuneN(1)
+	return unicode.IsDigit(next) || next == '+' || next == '-'
+}
+
+// readExponent consumes an exponent suffix beginning at the e/E marker,
+// which must be the lexer's current peek rune. It appends the consumed
+// runes (minus visual-separator underscores) to sb and returns a
+// diagnostic when the suffix is malformed. A malformed suffix either lacks
+// any exponent digit (1e+, where the sign commits to an exponent) or carries
+// an underscore that is not wedged between two digits (1e3_, 1e3__4); in both
+// cases the marker, sign, and any stray runes are consumed to keep the span
+// over the offending text.
+func (l *lexer) readExponent(sb *strings.Builder) string {
+	marker := l.peekRune()
+	l.readRune()
+	sb.WriteRune(marker)
+
+	if sign := l.peekRune(); sign == '+' || sign == '-' {
+		l.readRune()
+		sb.WriteRune(sign)
+	}
+
+	if !unicode.IsDigit(l.peekRune()) {
+		// The suffix opens with a non-digit (1e_3, 1e+_3). Consume the rest of
+		// the malformed tail so the whole offending sequence becomes one illegal
+		// token instead of leaving a stray identifier for the parser to choke
+		// on, which would cascade into unrelated diagnostics in delimited
+		// contexts such as [1e_3].
+		l.consumeExponentTail()
+		return "malformed exponent in numeric literal: expected digits after '" + string(marker) + "'"
+	}
+
+	for {
+		switch r := l.peekRune(); {
+		case r == '_':
+			// Underscores are visual separators only between two digits. A
+			// trailing or doubled underscore (1e3_, 1e3__4) is malformed, so
+			// consume the rest of the offending tail and report rather than
+			// letting the parser lex the dangling underscore as a separate
+			// identifier.
+			if unicode.IsDigit(l.ch) && unicode.IsDigit(l.peekRuneN(1)) {
+				l.readRune()
+				continue
+			}
+			l.readRune()
+			l.consumeExponentTail()
+			return "malformed exponent in numeric literal: underscore must sit between exponent digits"
+		case unicode.IsDigit(r):
+			l.readRune()
+			sb.WriteRune(r)
+		default:
+			return ""
+		}
+	}
+}
+
+// consumeExponentTail advances past the run of identifier runes (letters,
+// digits, and underscores) that follows a malformed exponent marker. It keeps
+// the diagnostic token's span over the entire offending sequence so a malformed
+// exponent never fragments into a separate identifier token, mirroring Ruby's
+// single "trailing sign/underscore" error for inputs such as 1e+foo or 5e+end.
+func (l *lexer) consumeExponentTail() {
+	for ast.IsIdentifierRune(l.peekRune()) {
+		l.readRune()
+	}
 }
 
 // readPrefixedNumber scans a based literal whose leading '0' is the current

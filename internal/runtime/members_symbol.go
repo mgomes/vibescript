@@ -7,7 +7,7 @@ import "fmt"
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every listed
 // name resolves.
 var (
-	symbolMemberNames    = []string{"inspect", "id2name", "to_s", "to_sym"}
+	symbolMemberNames    = []string{"inspect", "id2name", "to_s", "string", "to_sym"}
 	symbolBuiltinMembers = newMemberTable(symbolMemberNames)
 )
 
@@ -22,18 +22,18 @@ func symbolMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "inspect":
 		return newInspectBuiltin("symbol"), nil
-	case "id2name", "to_s":
+	case "id2name", "to_s", "string":
 		name := "symbol." + property
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			return NewString(receiver.String()), nil
 		}), nil
 	case "to_sym":
 		return NewAutoBuiltin("symbol.to_sym", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("symbol.to_sym does not take arguments")
+			if err := requireNullaryCall("symbol.to_sym", args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			return receiver, nil
 		}), nil
