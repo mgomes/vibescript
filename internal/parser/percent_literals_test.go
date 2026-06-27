@@ -370,6 +370,128 @@ func TestParserPercentInterpolatedArrayLiteralNestedInterpolation(t *testing.T) 
 	}
 }
 
+// A %W/%I interpolation expression may itself contain a nested percent-array
+// literal whose delimiter or body holds the outer literal's closing delimiter,
+// such as %W[#{%w[}]}]. The interpolation scan drives the lexer, so the nested
+// literal is consumed as a single token and its "}" does not close the
+// interpolation early. A bare "%" that the lexer reads as modulo is left alone,
+// so %W[#{a % w}] still parses as an interpolated modulo expression. Both the
+// direct-literal path and the double-quoted-string path are exercised. Verified
+// against Ruby:
+//
+//	%W[#{%w[}]}]     => ["[\"}\"]"]
+//	%I[#{%i[}]}]     => [:"[:\"}\"]"]
+//	"x#{%w[}]}"      => "x[\"}\"]"
+//	a=10; w=3; %W[#{a % w}] => ["1"]
+func TestParserPercentInterpolatedArrayLiteralNestedPercentLiteral(t *testing.T) {
+	t.Parallel()
+
+	nestedWords := &ast.ArrayLiteral{Elements: []ast.Expression{
+		&ast.StringLiteral{Value: "}"},
+	}}
+	nestedSymbols := &ast.ArrayLiteral{Elements: []ast.Expression{
+		&ast.SymbolLiteral{Name: "}"},
+	}}
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name:   "words_with_nested_words_holding_close_delimiter",
+			source: "def run\n  %W[#{%w[}]}]\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.InterpolatedString{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: nestedWords},
+				}},
+			}},
+		},
+		{
+			name:   "symbols_with_nested_symbols_holding_close_delimiter",
+			source: "def run\n  %I[#{%i[}]}]\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.InterpolatedSymbol{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: nestedSymbols},
+				}},
+			}},
+		},
+		{
+			name:   "words_with_leading_and_trailing_words",
+			source: "def run\n  %W[head #{%w[a b]} tail]\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.StringLiteral{Value: "head"},
+				&ast.InterpolatedString{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.StringLiteral{Value: "a"},
+						&ast.StringLiteral{Value: "b"},
+					}}},
+				}},
+				&ast.StringLiteral{Value: "tail"},
+			}},
+		},
+		{
+			name:   "double_quoted_string_with_nested_words",
+			source: "def run\n  \"x#{%w[}]}\"\nend",
+			wantExpr: &ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringText{Text: "x"},
+				ast.StringExpr{Expr: nestedWords},
+			}},
+		},
+		{
+			name:   "parenless_argument_with_nested_words",
+			source: "def run\n  collect %W[head #{%w[a b]} tail]\nend",
+			wantExpr: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "collect"},
+				Args: []ast.Expression{
+					&ast.ArrayLiteral{Elements: []ast.Expression{
+						&ast.StringLiteral{Value: "head"},
+						&ast.InterpolatedString{Parts: []ast.StringPart{
+							ast.StringExpr{Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
+								&ast.StringLiteral{Value: "a"},
+								&ast.StringLiteral{Value: "b"},
+							}}},
+						}},
+						&ast.StringLiteral{Value: "tail"},
+					}},
+				},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name:   "bare_percent_stays_modulo",
+			source: "def run\n  a = 10\n  w = 3\n  %W[#{a % w}]\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.InterpolatedString{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: &ast.BinaryExpr{
+						Left:     &ast.Identifier{Name: "a"},
+						Operator: ast.TokenPercent,
+						Right:    &ast.Identifier{Name: "w"},
+					}},
+				}},
+			}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			body := parsedFunctionBody(t, got)
+			lastStmt := body[len(body)-1]
+			wantStmt := &ast.ExprStmt{Expr: tc.wantExpr}
+			if diff := cmp.Diff(wantStmt, lastStmt, astCmpOpts); diff != "" {
+				t.Fatalf("final statement mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 // %W/%I parse as parenless call arguments after a non-local callee, mirroring
 // the lowercase forms and exercising the argument scan path.
 func TestParserPercentInterpolatedArrayParenlessCallArguments(t *testing.T) {

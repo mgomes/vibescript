@@ -86,6 +86,57 @@ end`)
 	})
 }
 
+// TestPercentInterpolatedArrayLiteralNestedPercentLiteral confirms that a
+// nested percent-array literal inside a %W/%I (or double-quoted) interpolation
+// expression is consumed whole, so a closing-delimiter character inside the
+// nested literal's body does not truncate the outer literal. A bare "%" that is
+// modulo is left untouched. The expected values use Vibescript's array
+// stringification (a comma-separated list without per-element quoting); the
+// significance is that each nested array is interpolated intact rather than
+// being truncated at the inner "}" or "]":
+//
+//	%W[#{%w[}]}]             => ["[}]"]
+//	%W[head #{%w[a b]} tail] => ["head", "[a, b]", "tail"]
+//	"x#{%w[}]}"              => "x[}]"
+//	a=10; w=3; %W[#{a % w}]  => ["1"]
+func TestPercentInterpolatedArrayLiteralNestedPercentLiteral(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  a = 10
+  w = 3
+  [
+    %W[#{%w[}]}],
+    %W[head #{%w[a b]} tail],
+    "x#{%w[}]}",
+    %W[#{a % w}],
+  ]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewArray([]Value{NewString("[}]")}),
+		NewArray([]Value{NewString("head"), NewString("[a, b]"), NewString("tail")}),
+		NewString("x[}]"),
+		NewArray([]Value{NewString("1")}),
+	})
+}
+
+// TestPercentInterpolatedSymbolArrayWithNestedSymbolLiteral confirms the %I form
+// also descends through a nested percent-symbol literal in its interpolation and
+// produces a genuine symbol. Verified against Ruby: %I[#{%i[}]}] => [:"[:\"}\"]"].
+func TestPercentInterpolatedSymbolArrayWithNestedSymbolLiteral(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  syms = %I[#{%i[}]}]
+  [syms[0] == :draft, syms.length]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewBool(false), NewInt(1)})
+}
+
 // TestPercentArrayLiteralHashDelimiter confirms '#' works as a percent-array
 // delimiter for every form. The interpolation handling for the uppercase
 // forms must not consume the closing '#'. An escaped "\#" stays literal, and

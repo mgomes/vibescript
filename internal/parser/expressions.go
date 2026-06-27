@@ -817,69 +817,37 @@ func interpolationMarkerEscaped(raw string, hash int) bool {
 	return backslashes%2 == 1
 }
 
-func skipEscapedByte(raw string, i int) int {
-	if i+1 >= len(raw) {
-		return len(raw)
-	}
-	return i + 2
-}
-
 // findStringInterpolationEnd locates the byte index of the "}" that closes the
 // interpolation whose body begins at start (just past the opening "#{"). It
-// maintains a stack of interpolation and string contexts so nested
-// double-quoted strings, single-quoted strings, and further interpolations
-// balance correctly, mirroring the lexer's consumeInterpolation. It returns
-// false when the body is never closed before the end of raw.
+// drives the lexer over the body so that every construct the language
+// understands—double- and single-quoted strings, nested "#{...}"
+// interpolations, and percent-array literals such as %w/%i/%W/%I—is consumed as
+// a single unit. This means a "}" that appears inside one of those constructs
+// (for example %W[#{%w[}]}]) does not prematurely close the interpolation, and
+// a bare "%" remains the modulo operator wherever the lexer would treat it as
+// one. It returns false when the body is never closed before the end of raw.
 func findStringInterpolationEnd(raw string, start int) (int, bool) {
-	// stack frames mirror consumeInterpolation: interpolation contexts track
-	// unmatched "{" via braceDepth, string contexts hold their delimiting quote.
-	type context struct {
-		isInterp   bool
-		quote      byte
-		braceDepth int
-	}
-	stack := []context{{isInterp: true}}
+	lex := newLexer(raw)
+	lex.seek(start, ast.Token{})
 
-	for i := start; i < len(raw); {
-		top := &stack[len(stack)-1]
-		if top.isInterp {
-			switch raw[i] {
-			case '{':
-				top.braceDepth++
-			case '}':
-				if top.braceDepth > 0 {
-					top.braceDepth--
-				} else {
-					stack = stack[:len(stack)-1]
-					if len(stack) == 0 {
-						return i, true
-					}
-				}
-			case '"', '\'':
-				stack = append(stack, context{quote: raw[i]})
+	depth := 0
+	for {
+		tok := lex.NextToken()
+		switch tok.Type {
+		case ast.TokenEOF, ast.TokenIllegal:
+			return 0, false
+		case ast.TokenLBrace:
+			depth++
+		case ast.TokenRBrace:
+			if depth == 0 {
+				// The lexer has consumed the closing "}"; currentOffset now
+				// points at the rune after it, so the "}" itself sits one byte
+				// back ("}" is always a single byte).
+				return lex.currentOffset() - 1, true
 			}
-			i++
-			continue
-		}
-
-		switch raw[i] {
-		case '\\':
-			i = skipEscapedByte(raw, i)
-		case top.quote:
-			stack = stack[:len(stack)-1]
-			i++
-		case '#':
-			if top.quote == '"' && i+1 < len(raw) && raw[i+1] == '{' {
-				stack = append(stack, context{isInterp: true})
-				i += 2
-			} else {
-				i++
-			}
-		default:
-			i++
+			depth--
 		}
 	}
-	return 0, false
 }
 
 func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position) (ast.Expression, bool) {

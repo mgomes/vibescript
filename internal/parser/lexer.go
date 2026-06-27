@@ -979,78 +979,44 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 }
 
 // consumeInterpolation reads the body of a "#{...}" interpolation that the
-// caller has just opened (the leading "#{" is already consumed) and appends
-// every rune up to and including the matching "}" to raw. It maintains a stack
-// of interpolation and string contexts so that nested double-quoted strings,
-// single-quoted strings, and further interpolations balance correctly instead
-// of guessing where the enclosing string ends. The decoded builder is not
-// updated because an interpolated string always returns its raw text; the
-// parser re-scans it with the same nesting rules in findStringInterpolationEnd.
+// caller has just opened (the leading "#{" is already consumed, so l.ch holds
+// the "{") and appends every rune up to and including the matching "}" to raw.
+// The decoded builder is not updated because an interpolated string always
+// returns its raw text; the parser re-scans it with the same rules in
+// findStringInterpolationEnd.
 //
-// It returns an error message when the input ends before every context closes.
+// It returns an error message when the input ends before the interpolation
+// closes.
 func (l *lexer) consumeInterpolation(raw *strings.Builder) string {
-	// stack holds the open contexts. isInterp reports whether a context is an
-	// interpolation expression (true) or a string literal (false). For
-	// interpolation contexts braceDepth tracks unmatched "{" so that an inner
-	// "}" only closes the interpolation once its own braces are balanced. For
-	// string contexts quote holds the delimiting rune so the matching closing
-	// quote can be recognized.
-	type context struct {
-		isInterp   bool
-		quote      rune
-		braceDepth int
+	if !l.copyInterpolationBody(raw) {
+		return "unterminated string"
 	}
-	stack := []context{{isInterp: true}}
+	return ""
+}
 
-	for {
+// copyInterpolationBody copies an in-progress "#{...}" interpolation body into
+// raw. It must be called with the opening "{" already consumed and written, so
+// l.ch holds that "{" and l.offset points at the first rune of the body. The
+// matching close brace is located with findStringInterpolationEnd, which drives
+// the lexer over the body so nested double- and single-quoted strings, further
+// interpolations, and percent-array literals (such as %W[#{%w[}]}]) balance
+// correctly instead of guessing where the span ends. The runes are then copied
+// one at a time to keep the lexer's line and column tracking accurate across the
+// (possibly multiline) span. It reports whether the interpolation closed before
+// the end of input.
+func (l *lexer) copyInterpolationBody(raw *strings.Builder) bool {
+	end, ok := findStringInterpolationEnd(l.input, l.offset)
+	if !ok {
+		return false
+	}
+	for l.offset <= end {
 		l.readRune()
 		if l.ch == 0 {
-			return "unterminated string"
+			return false
 		}
 		raw.WriteRune(l.ch)
-
-		top := &stack[len(stack)-1]
-		if top.isInterp {
-			switch l.ch {
-			case '{':
-				top.braceDepth++
-			case '}':
-				if top.braceDepth > 0 {
-					top.braceDepth--
-				} else {
-					stack = stack[:len(stack)-1]
-					if len(stack) == 0 {
-						return ""
-					}
-				}
-			case '"', '\'':
-				stack = append(stack, context{quote: l.ch})
-			}
-			continue
-		}
-
-		// Inside a string literal.
-		switch l.ch {
-		case '\\':
-			// A backslash escapes the next rune so an escaped quote does not
-			// close the string. Single-quoted strings only treat \' and \\ as
-			// escapes, but consuming the following rune is harmless for balance
-			// because no other escape can introduce or close a context.
-			if l.peekRune() != 0 {
-				l.readRune()
-				raw.WriteRune(l.ch)
-			}
-		case top.quote:
-			stack = stack[:len(stack)-1]
-		case '#':
-			// Only double-quoted strings interpolate; single quotes are literal.
-			if top.quote == '"' && l.peekRune() == '{' {
-				l.readRune()
-				raw.WriteRune(l.ch)
-				stack = append(stack, context{isInterp: true})
-			}
-		}
 	}
+	return true
 }
 
 func (l *lexer) readSingleQuotedString() (string, string) {
@@ -1161,25 +1127,13 @@ func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 
 // consumePercentArrayInterpolation copies a #{...} interpolation span inside an
 // interpolating percent array literal into raw verbatim. The caller has already
-// written the leading '#' and confirmed the next rune is '{'. The matching
-// close brace is located with findStringInterpolationEnd so that quoted strings
-// and nested braces inside the expression do not prematurely end the span; the
-// runes are then consumed individually to keep the lexer's line and column
-// tracking accurate across the (possibly multiline) interpolation. It returns
-// an error message when the interpolation is unterminated.
+// written the leading '#' and confirmed the next rune is '{'. It returns an
+// error message when the interpolation is unterminated.
 func (l *lexer) consumePercentArrayInterpolation(raw *strings.Builder) string {
 	l.readRune() // consume '{'
 	raw.WriteRune(l.ch)
-	end, ok := findStringInterpolationEnd(l.input, l.offset)
-	if !ok {
+	if !l.copyInterpolationBody(raw) {
 		return "unterminated string interpolation in percent array literal"
-	}
-	for l.offset <= end {
-		l.readRune()
-		if l.ch == 0 {
-			return "unterminated string interpolation in percent array literal"
-		}
-		raw.WriteRune(l.ch)
 	}
 	return ""
 }
