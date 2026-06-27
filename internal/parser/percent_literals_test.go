@@ -526,6 +526,11 @@ func TestParserParenlessPercentArrayArgumentInInterpolationDelimiters(t *testing
 			&ast.StringLiteral{Value: "}"},
 		}}
 	}
+	symbolsClose := func() ast.Expression {
+		return &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.SymbolLiteral{Name: "}"},
+		}}
+	}
 	call := func(arg ast.Expression) ast.Expression {
 		return &ast.CallExpr{
 			Callee: &ast.Identifier{Name: "collect"},
@@ -565,6 +570,27 @@ func TestParserParenlessPercentArrayArgumentInInterpolationDelimiters(t *testing
 		{
 			name:   "interpolating_argument_holds_close_delimiter",
 			source: "def run\n  \"#{collect %W[}]}\"\nend",
+			wantExpr: &ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringExpr{Expr: call(wordsClose())},
+			}},
+		},
+		{
+			name:   "interpolating_argument_bang_delimiter_holds_close_delimiter",
+			source: "def run\n  \"#{collect %W!}!}\"\nend",
+			wantExpr: &ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringExpr{Expr: call(wordsClose())},
+			}},
+		},
+		{
+			name:   "interpolating_symbol_argument_bang_delimiter_holds_close_delimiter",
+			source: "def run\n  \"#{collect %I!}!}\"\nend",
+			wantExpr: &ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringExpr{Expr: call(symbolsClose())},
+			}},
+		},
+		{
+			name:   "interpolating_argument_hash_delimiter_holds_close_delimiter",
+			source: "def run\n  \"#{collect %W#}#}\"\nend",
 			wantExpr: &ast.InterpolatedString{Parts: []ast.StringPart{
 				ast.StringExpr{Expr: call(wordsClose())},
 			}},

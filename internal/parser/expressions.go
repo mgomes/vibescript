@@ -840,6 +840,12 @@ func findStringInterpolationEnd(raw string, start int) (int, bool) {
 		switch tok.Type {
 		case ast.TokenEOF, ast.TokenIllegal:
 			return 0, false
+		case ast.TokenPercent:
+			percentOffset := start + lex.currentOffset() - 1
+			kind, _, endOffset, ok := scanPercentArrayLiteralAt(raw, percentOffset)
+			if ok && interpolationPercentArrayArgumentScanCanAdvance(raw, endOffset) {
+				lex.seek(endOffset-start, ast.Token{Type: percentArrayLiteralTokenType(kind)})
+			}
 		case ast.TokenLParen:
 			parenDepth++
 		case ast.TokenRParen:
@@ -866,6 +872,29 @@ func findStringInterpolationEnd(raw string, start int) (int, bool) {
 				return start + lex.currentOffset() - 1, true
 			}
 		}
+	}
+}
+
+func interpolationPercentArrayArgumentScanCanAdvance(raw string, endOffset int) bool {
+	if endOffset >= len(raw) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(raw[endOffset:])
+	return r != '"' && r != '\''
+}
+
+func percentArrayLiteralTokenType(kind rune) ast.TokenType {
+	switch kind {
+	case 'w':
+		return ast.TokenWords
+	case 'i':
+		return ast.TokenSymbols
+	case 'W':
+		return ast.TokenInterpWords
+	case 'I':
+		return ast.TokenInterpSymbols
+	default:
+		return ast.TokenIllegal
 	}
 }
 
