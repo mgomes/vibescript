@@ -78,7 +78,7 @@ func durationMember(d Duration, property string, pos Position) (Value, error) {
 	case "to_i":
 		return NewInt(d.Seconds()), nil
 	case "to_s", "string":
-		return NewString(d.String()), nil
+		return newToStringBuiltin("duration", property), nil
 	case "format":
 		return NewString(d.String()), nil
 	case "nil?":
@@ -249,7 +249,7 @@ func timeMember(t time.Time, property string) (Value, error) {
 			return callTimeEql(t, args, kwargs)
 		}), nil
 	case "to_s", "string":
-		return NewString(t.Format(time.RFC3339Nano)), nil
+		return newToStringBuiltin("time", property), nil
 	case "nil?":
 		return newNilPredicateBuiltin("time"), nil
 	case "to_a":

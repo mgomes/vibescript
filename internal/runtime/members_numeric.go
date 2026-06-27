@@ -625,7 +625,7 @@ func moneyMember(m Money, property string) (Value, error) {
 	case "amount":
 		return NewString(m.String()), nil
 	case "to_s", "string":
-		return NewString(m.String()), nil
+		return newToStringBuiltin("money", property), nil
 	default:
 		if member, ok := moneyBuiltinMembers.lookup(property, moneyMemberBuiltin); ok {
 			return member, nil
