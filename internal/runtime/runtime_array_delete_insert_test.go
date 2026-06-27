@@ -108,6 +108,49 @@ func TestArrayDeleteIsNonMutating(t *testing.T) {
 	}
 }
 
+// TestArrayDeleteReturnsStoredElement guards that delete reports the element
+// actually removed rather than the caller's search argument. Ruby's Array#delete
+// returns the deleted object, so when a stored element is Equal to but a distinct
+// object from the argument the caller must get back the stored element. Vibescript
+// arrays are mutable through index assignment, so the test mutates the returned
+// deleted element and asserts the separately built search argument is untouched:
+// that can only hold if delete returned the stored element, not the argument.
+func TestArrayDeleteReturnsStoredElement(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def delete_nested
+      stored = [1, 2]
+      search = [1, 2]
+      result = [stored].delete(search)
+      deleted = result[:deleted]
+      deleted[0] = 999
+      { deleted: deleted, search: search }
+    end
+
+    def delete_returns_last_match
+      first = ["x"]
+      last = ["x"]
+      search = ["x"]
+      result = [first, last].delete(search)
+      deleted = result[:deleted]
+      deleted[0] = "mutated"
+      { first: first, last: last }
+    end
+    `)
+
+	nested := callFunc(t, script, "delete_nested", nil).Hash()
+	compareArrays(t, nested["deleted"], []Value{NewInt(999), NewInt(2)})
+	// The search argument must be untouched; mutating the returned element only
+	// affects the search value when delete wrongly returns the argument.
+	compareArrays(t, nested["search"], []Value{NewInt(1), NewInt(2)})
+
+	lastMatch := callFunc(t, script, "delete_returns_last_match", nil).Hash()
+	// Ruby returns the last deleted element, so mutating the result touches the
+	// last equal element rather than the first.
+	compareArrays(t, lastMatch["first"], []Value{NewString("x")})
+	compareArrays(t, lastMatch["last"], []Value{NewString("mutated")})
+}
+
 func TestArrayDeleteErrors(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

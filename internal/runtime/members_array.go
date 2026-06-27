@@ -2622,10 +2622,12 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 // arrayDelete implements Ruby's Array#delete, removing every element equal to the
 // given value. Vibescript collections are non-mutating, so it returns both the
 // pruned array and the deleted value as the hash { array:, deleted: }, mirroring
-// Array#pop's { array:, popped: } convention. Following Ruby, deleted is the
-// value itself when at least one match was removed and nil otherwise; an attached
-// block is invoked with the searched-for value on a miss and its result reported
-// instead, matching `arr.delete(obj) { |o| default }`.
+// Array#pop's { array:, popped: } convention. Following Ruby, deleted is the last
+// removed element itself when at least one match was removed and nil otherwise;
+// reporting the stored element (rather than the search argument) lets callers
+// recover a removed value that is Equal to but distinct from the argument. An
+// attached block is invoked with the searched-for value on a miss and its result
+// reported instead, matching `arr.delete(obj) { |o| default }`.
 func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("array.delete does not take keyword arguments")
@@ -2637,9 +2639,15 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	arr := receiver.Array()
 	out := make([]Value, 0, len(arr))
 	found := false
+	var matched Value
 	for _, item := range arr {
 		if item.Equal(target) {
 			found = true
+			// Track the matched element itself so the result reports the stored
+			// object rather than the caller's search argument. Ruby's Array#delete
+			// returns the last deleted element, which lets callers recover or
+			// mutate a removed value that is Equal to but distinct from target.
+			matched = item
 			continue
 		}
 		out = append(out, item)
@@ -2653,9 +2661,9 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	}
 	deleted := NewNil()
 	if found {
-		// Ruby returns the deleted object itself rather than the matched element,
-		// so report the argument the caller searched for.
-		deleted = target
+		// Report the actual element removed (the last match), mirroring Ruby's
+		// Array#delete which returns the deleted object, not the search argument.
+		deleted = matched
 	} else if valueBlock(block) != nil {
 		// On a miss Ruby invokes the block with the searched-for value and returns
 		// its result, matching `arr.delete(obj) { |o| default }`.
