@@ -961,8 +961,12 @@ func arrayMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("array.slice", arraySlice), nil
 	case "fetch":
 		return NewAutoBuiltin("array.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			hasBlock := valueBlock(block) != nil
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("array.fetch expects index and optional default")
+			}
+			if len(args) == 2 && hasBlock {
+				return NewNil(), fmt.Errorf("array.fetch does not accept both a default and a block")
 			}
 			index, err := valueToInt(args[0])
 			if err != nil {
@@ -972,13 +976,21 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.fetch index must be integer")
 			}
 			arr := receiver.Array()
-			if index >= 0 && index < len(arr) {
-				return arr[index], nil
+			normalized := index
+			if normalized < 0 {
+				normalized += len(arr)
+			}
+			if normalized >= 0 && normalized < len(arr) {
+				return arr[normalized], nil
+			}
+			if hasBlock {
+				blockArg := [1]Value{NewInt(int64(index))}
+				return exec.CallBlock(block, blockArg[:])
 			}
 			if len(args) == 2 {
 				return args[1], nil
 			}
-			return NewNil(), nil
+			return NewNil(), fmt.Errorf("array.fetch index %d outside of array bounds: %d...%d", index, -len(arr), len(arr))
 		}), nil
 	case "values_at":
 		return NewAutoBuiltin("array.values_at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
