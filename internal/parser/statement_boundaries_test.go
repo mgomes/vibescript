@@ -241,8 +241,8 @@ end`
 		&ast.AssignStmt{
 			Target: &ast.Identifier{Name: "item"},
 			Value: &ast.IndexExpr{
-				Object: &ast.Identifier{Name: "items"},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.Identifier{Name: "items"},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 		},
 	}
@@ -372,7 +372,7 @@ func TestParserLineInitialSplatAssignmentStartsNewStatement(t *testing.T) {
 			assignment: "*rest, self[0] = values",
 			wantTarget: &ast.DestructureTarget{Elements: []ast.DestructureElement{
 				{Target: &ast.Identifier{Name: "rest"}, Rest: true},
-				{Target: &ast.IndexExpr{Object: &ast.Identifier{Name: "self"}, Index: &ast.IntegerLiteral{Value: 0}}},
+				{Target: &ast.IndexExpr{Object: &ast.Identifier{Name: "self"}, Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}}}},
 			}},
 		},
 		{

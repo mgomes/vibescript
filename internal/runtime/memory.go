@@ -192,6 +192,64 @@ func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []V
 	return nil
 }
 
+// checkAccumulatorWithCallRoots rejects a fold step whose running accumulator,
+// together with the builtin's live call roots and any extra Go-local values that
+// coexist with it at the step's peak, would exceed the memory quota. Builtins
+// that grow a single Go-local accumulator value from a non-rooted receiver —
+// Array#sum building a string or array total — use it instead of the plain
+// checkMemoryWith(accumulator). The receiver, args, and block stay live on the Go
+// call stack for the builtin's whole run yet are invisible to
+// estimateMemoryUsageBase, so a check that charged only the accumulator could
+// admit a peak (call roots + accumulator) that exceeds the quota until the
+// builtin returns. Charging the accumulator and the call roots through one
+// deduplicating estimator keeps the running check consistent with the pre-call
+// checkCallMemoryRoots: an accumulator that aliases the receiver or an argument
+// is counted once, matching the real shared backing.
+//
+// liveExtras are additional values that are live on the Go call stack alongside
+// the new accumulator at the step's allocation peak but are not reachable from
+// any call root. Array#sum passes both the prior total and the contribution it
+// just produced: arraySumAdd builds the next accumulator from a fresh copy of the
+// old total and the contribution, so the old total, the contribution, and the new
+// accumulator all coexist at the peak. The prior total is the critical case once
+// it has grown across iterations into a large string or array reachable only from
+// that Go-local — the base walk never sees it. Without charging both extras, a
+// quota above call roots + new accumulator but below call roots + old total +
+// contribution + new accumulator would admit a step whose true peak exceeds the
+// limit. Each extra is charged through the same deduplicating estimator, so an
+// extra that aliases a receiver element or the accumulator itself is counted once,
+// matching the real shared backing.
+func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value, args []Value, kwargs map[string]Value, block Value, liveExtras ...Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	used = saturatingAdd(used, est.value(accumulator))
+	if receiver.Kind() != KindNil {
+		used = saturatingAdd(used, est.value(receiver))
+	}
+	for _, arg := range args {
+		used = saturatingAdd(used, est.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		used = saturatingAdd(used, est.value(kwarg))
+	}
+	if !block.IsNil() {
+		used = saturatingAdd(used, est.value(block))
+	}
+	for _, extra := range liveExtras {
+		used = saturatingAdd(used, est.value(extra))
+	}
+	est.reset()
+
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 // checkProjectedStringBytes rejects allocations that would exceed the memory
 // quota before the string is built. Builtins that grow a string by a
 // user-controlled amount (such as the padding helpers) use it to fail fast
@@ -493,6 +551,14 @@ type arrayBuildAccumulator struct {
 	est     *memoryEstimator
 	base    int
 	payload int
+
+	// Call roots retained so checkTransient can re-seed a throwaway estimator
+	// with the same baseline the build was snapshotted against, deduplicating a
+	// transient yielded value against memory already charged in base.
+	receiver Value
+	args     []Value
+	kwargs   map[string]Value
+	block    Value
 }
 
 // newArrayBuildAccumulator snapshots the execution's current live memory —
@@ -507,7 +573,13 @@ type arrayBuildAccumulator struct {
 // reflects what checkCallMemoryRoots charged before the call: a nil receiver,
 // nil kwargs, and nil block are skipped, mirroring estimateMemoryUsageForCallRoots.
 func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *arrayBuildAccumulator {
-	acc := &arrayBuildAccumulator{exec: exec}
+	acc := &arrayBuildAccumulator{
+		exec:     exec,
+		receiver: receiver,
+		args:     args,
+		kwargs:   kwargs,
+		block:    block,
+	}
 	if exec.memoryQuota <= 0 {
 		return acc
 	}
@@ -575,6 +647,50 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	return nil
 }
 
+// checkTransient rejects the build when a freshly allocated value yielded to the
+// block (and live only for that call) would push the peak footprint over the
+// quota. Builders that synthesize a per-iteration argument the result does not
+// retain — hash.map_with_index allocates a fresh [key, value] pair to yield —
+// use it so the live pair is charged alongside the accumulating result, matching
+// how each_with_index charges its yielded pair before invoking the block.
+//
+// The transient is measured against a throwaway estimator re-seeded with the
+// build's call roots, so memory already counted in base (the receiver value the
+// pair wraps) deduplicates away and only the transient's fresh allocation is
+// added. Using a throwaway estimator rather than the persistent results-only one
+// keeps the transient's backing out of the seen-set: it is freed before the next
+// iteration, and recording it could let a later value reusing that address be
+// dedup'd to nothing. backingCap is the result backing's current capacity so the
+// peak charges base, the result slots, the payloads so far, and the live
+// transient together.
+func (acc *arrayBuildAccumulator) checkTransient(transient Value, backingCap int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := acc.exec.memoryEstimatorForCheck()
+	defer est.reset()
+	acc.exec.estimateMemoryUsageBase(est)
+	if acc.receiver.Kind() != KindNil {
+		est.value(acc.receiver)
+	}
+	for _, arg := range acc.args {
+		est.value(arg)
+	}
+	for _, kwarg := range acc.kwargs {
+		est.value(kwarg)
+	}
+	if !acc.block.IsNil() {
+		est.value(acc.block)
+	}
+
+	transientBytes := est.value(transient)
+	if used := saturatingAdd(acc.projected(backingCap), transientBytes); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // reserveSlots rejects the build up front when a backing slice of slotCount Value
 // slots would already overflow the quota on top of the baseline (exec's reachable
 // roots plus the call roots) and the payload accumulated so far. Builtins that can
@@ -607,8 +723,8 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 // hashBuildAccumulator charges the memory of an output map assembled entry by
 // entry against the quota without re-walking the whole map on each insertion.
 // Hash transforms whose block returns fresh heap values (transform_values and
-// transform_keys, where each block call can yield an arbitrarily large string
-// or nested collection, and the merge conflict block) use it so accumulated
+// transform_keys, where each block call can yield an arbitrarily large string or
+// nested collection, and the merge conflict block) use it so accumulated
 // payloads count toward the quota during construction, not only after the
 // builtin returns.
 //
@@ -663,6 +779,14 @@ type hashBuildAccumulator struct {
 	est   *memoryEstimator
 	base  int
 	built int
+
+	// Call roots retained so checkTransient can re-seed a throwaway estimator
+	// with the same baseline the build was snapshotted against, deduplicating a
+	// transient block result against memory already charged in base.
+	receiver Value
+	args     []Value
+	kwargs   map[string]Value
+	block    Value
 }
 
 // newHashBuildAccumulator snapshots the execution's current live memory plus the
@@ -677,7 +801,13 @@ type hashBuildAccumulator struct {
 // in-place-mutated receiver container returned by a block is charged at its full
 // current size rather than treated as already accounted.
 func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *hashBuildAccumulator {
-	acc := &hashBuildAccumulator{exec: exec}
+	acc := &hashBuildAccumulator{
+		exec:     exec,
+		receiver: receiver,
+		args:     args,
+		kwargs:   kwargs,
+		block:    block,
+	}
 	if exec.memoryQuota <= 0 {
 		return acc
 	}
@@ -690,6 +820,137 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	acc.base = exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
 	acc.est = newMemoryEstimator()
 	return acc
+}
+
+type hashLiteralBuildAccumulator struct {
+	exec          *Execution
+	est           *memoryEstimator
+	base          int
+	retained      int
+	replacing     bool
+	keyPayloads   map[string]int
+	valuePayloads map[string]int
+}
+
+// newHashLiteralBuildAccumulator snapshots the current execution roots for a
+// hash literal. Literal values are plain expression results, not block callbacks
+// that may mutate baseline containers in place, so an alias such as
+// `big = ...; {a: big}` should be charged like the final hash: the new map
+// structure and key bytes are fresh, while big's backing remains counted once.
+func newHashLiteralBuildAccumulator(exec *Execution) *hashLiteralBuildAccumulator {
+	acc := &hashLiteralBuildAccumulator{exec: exec}
+	if exec.memoryQuota <= 0 {
+		return acc
+	}
+
+	acc.est = newMemoryEstimator()
+	acc.base = exec.estimateMemoryUsageBase(acc.est)
+	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
+	return acc
+}
+
+func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
+	return acc.checkQuota()
+}
+
+func (acc *hashLiteralBuildAccumulator) addDistinctEntry(key string, val Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	acc.retained = saturatingAdd(acc.retained, acc.est.valuePayload(val))
+	acc.retained = saturatingAdd(acc.retained, acc.est.stringPayloadSize(key))
+	return acc.checkQuota()
+}
+
+// replaceEntry switches duplicate-key literals to per-key retained accounting.
+// Distinct-key literals stay on the seeded-estimator fast path; once a duplicate
+// appears, retained charges must become subtractable so overwritten values stop
+// contributing after the replacement.
+func (acc *hashLiteralBuildAccumulator) replaceEntry(key string, val Value, current map[string]Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	if !acc.replacing {
+		acc.rebuildRetainedEntries(current)
+	}
+
+	keyPayload, valuePayload := acc.entryPayloads(key, val)
+	incoming := saturatingAdd(keyPayload, valuePayload)
+	if used := saturatingAdd(saturatingAdd(acc.base, acc.retained), incoming); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+
+	prior := saturatingAdd(acc.keyPayloads[key], acc.valuePayloads[key])
+	acc.retained -= prior
+	if acc.retained < 0 {
+		acc.retained = 0
+	}
+	acc.retained = saturatingAdd(acc.retained, incoming)
+	if acc.keyPayloads == nil {
+		acc.keyPayloads = make(map[string]int)
+		acc.valuePayloads = make(map[string]int)
+	}
+	acc.keyPayloads[key] = keyPayload
+	acc.valuePayloads[key] = valuePayload
+	return acc.checkQuota()
+}
+
+func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[string]Value) {
+	acc.retained = 0
+	acc.keyPayloads = make(map[string]int, len(current))
+	acc.valuePayloads = make(map[string]int, len(current))
+	for key, val := range current {
+		keyPayload, valuePayload := acc.entryPayloads(key, val)
+		acc.keyPayloads[key] = keyPayload
+		acc.valuePayloads[key] = valuePayload
+		acc.retained = saturatingAdd(acc.retained, saturatingAdd(keyPayload, valuePayload))
+	}
+	acc.est = nil
+	acc.replacing = true
+}
+
+func (acc *hashLiteralBuildAccumulator) entryPayloads(key string, val Value) (int, int) {
+	est := newMemoryEstimator()
+	acc.exec.estimateMemoryUsageBase(est)
+	valuePayload := est.valuePayload(val)
+	keyPayload := est.stringPayloadSize(key)
+	return keyPayload, valuePayload
+}
+
+func (acc *hashLiteralBuildAccumulator) checkQuota() error {
+	used := saturatingAdd(acc.base, acc.retained)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
+// reserveBacking folds the structural footprint of a preallocated output map
+// into the baseline so the whole backing is held against the quota from the
+// first block call, and rejects the build if the reservation alone already
+// overflows. Use it for hash builds that have not already reserved their output
+// map through reserveLoopScratch. Hash transforms reserve output and scratch
+// before constructing the accumulator so the block bind-charge baseline can see
+// those Go-local buffers; array.to_h's block form has no transform scratch and
+// reserves its output map here instead.
+//
+// capacity is the slot count passed to make. The key and value PAYLOADS are
+// charged incrementally by add/addSynthesizedKey, which after this reservation
+// add only the payload beyond the structural slot already counted, so nothing is
+// double counted: base ends at call roots + empty map + capacity*slot, and built
+// ends at the sum of per-entry payloads.
+func (acc *hashBuildAccumulator) reserveBacking(capacity int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
+	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
+	return acc.checkQuota()
 }
 
 // add charges a write whose VALUE is a block result to the output map and rejects
@@ -746,6 +1007,40 @@ func (acc *hashBuildAccumulator) addSynthesizedKey(key string) error {
 
 	acc.built = saturatingAdd(acc.built, acc.est.stringPayloadSize(key))
 	return acc.checkQuota()
+}
+
+// checkTransient rejects the build when a freshly allocated value returned by a
+// block, but not retained as part of the output map, would push the peak
+// footprint over the quota. Array#to_h's block form uses it for the temporary
+// two-element pair returned by each block call: the output map backing is already
+// live and reserved in base, while the pair array itself is only live until its
+// key and value are extracted.
+func (acc *hashBuildAccumulator) checkTransient(transient Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := acc.exec.memoryEstimatorForCheck()
+	defer est.reset()
+	acc.exec.estimateMemoryUsageBase(est)
+	if acc.receiver.Kind() != KindNil {
+		est.value(acc.receiver)
+	}
+	for _, arg := range acc.args {
+		est.value(arg)
+	}
+	for _, kwarg := range acc.kwargs {
+		est.value(kwarg)
+	}
+	if !acc.block.IsNil() {
+		est.value(acc.block)
+	}
+
+	used := saturatingAdd(saturatingAdd(acc.base, acc.built), est.value(transient))
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
 }
 
 // checkQuota rejects the build when the live baseline plus the accumulated output
@@ -1221,6 +1516,15 @@ func (est *memoryEstimator) env(env *Env) int {
 	for name, val := range env.values {
 		size += estimatedStringHeaderBytes + len(name)
 		size += est.mapBindingValue(val)
+	}
+	if env.hasCallBlock {
+		// A call frame's supplied block lives in a hidden slot rather than a
+		// named binding, but for an escaped closure or default proc it can be
+		// the only reference to a block that closes over large data. Charge its
+		// payload (the block struct and its captured env) so the quota still
+		// accounts for it; the value header is already part of estimatedEnvBytes,
+		// and a frame that received no block charges nothing.
+		size += est.valuePayload(env.callBlock)
 	}
 	size += est.env(env.parent)
 	return size

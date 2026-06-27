@@ -13,8 +13,8 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var hashMemberNames = []string{
-	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "default", "default_proc",
-	"merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
+	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a", "default", "default_proc",
+	"merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 	"inspect",
 }
 
@@ -33,9 +33,9 @@ func hashMember(obj Value, property string) (Value, error) {
 
 func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "default", "default_proc":
+	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "to_a", "default", "default_proc":
 		return hashMemberQuery(property)
-	case "merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
+	case "merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
 	case "inspect":
 		return newInspectBuiltin("hash"), nil
@@ -343,6 +343,7 @@ func hashMemberQuery(property string) (Value, error) {
 		}), nil
 	case "fetch":
 		return NewAutoBuiltin("hash.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			hasBlock := valueBlock(block) != nil
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("hash.fetch expects key and optional default")
 			}
@@ -353,10 +354,17 @@ func hashMemberQuery(property string) (Value, error) {
 			if value, ok := receiver.Hash()[key]; ok {
 				return value, nil
 			}
+			// A block supersedes a default value argument, matching Ruby's
+			// Hash#fetch: when both are supplied the block is invoked on a
+			// miss and the default argument is ignored.
+			if hasBlock {
+				blockArg := [1]Value{args[0]}
+				return exec.CallBlock(block, blockArg[:])
+			}
 			if len(args) == 2 {
 				return args[1], nil
 			}
-			return NewNil(), nil
+			return NewNil(), fmt.Errorf("hash.fetch key not found: %s", formatMissingHashKey(args[0]))
 		}), nil
 	case "fetch_values":
 		return NewAutoBuiltin("hash.fetch_values", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -475,6 +483,53 @@ func hashMemberQuery(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
+	case "each_with_index":
+		return NewAutoBuiltin("hash.each_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.each_with_index does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.each_with_index does not take keyword arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "hash.each_with_index", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			entries := receiver.Hash()
+			// each_with_index walks a materialized sorted key list to yield entries
+			// deterministically. Reserve that scratch buffer against the quota for the
+			// walk's whole lifetime; the iterator returns the receiver and builds no
+			// derived map, so it is charged the receiver baseline plus the live scratch
+			// rather than a phantom output map. Yielding the [key, value] pair builds a
+			// fresh two-element array per entry, which the per-pair memory check below
+			// charges as the body runs.
+			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+			defer exec.releaseLoopScratch(delta)
+			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			var blockArgs [2]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for i, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation, matching each.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				// Ruby's Hash#each_with_index yields the [key, value] pair as the first
+				// block parameter and the index as the second.
+				pair := NewArray([]Value{NewSymbol(key), entries[key]})
+				if err := exec.checkMemoryWith(pair); err != nil {
+					return NewNil(), err
+				}
+				blockArgs[0] = pair
+				blockArgs[1] = NewInt(int64(i))
+				if _, err := runner.call(blockArgs[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
 	case "each_key":
 		return NewAutoBuiltin("hash.each_key", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
@@ -560,6 +615,71 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 			}
 			return receiver, nil
+		}), nil
+	case "to_a":
+		return NewAutoBuiltin("hash.to_a", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.to_a does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.to_a does not take keyword arguments")
+			}
+			entries := receiver.Hash()
+			// Materialize the [key, value] pairs in Vibescript's deterministic
+			// (sorted-key) iteration order, matching keys/values/each. Keys
+			// reconstruct as symbols, as everywhere a hash key surfaces as a value.
+			//
+			// The pairs alias the receiver's values, but the output slice, the one
+			// pair array per entry, and the sorted-key scratch buffer are all fresh
+			// allocations the post-call result check would only observe after the
+			// whole structure was built. A receiver that fits the quota can still
+			// have a [key, value] materialization that does not, so charge the build
+			// incrementally through an array accumulator (seeded with the receiver, so
+			// aliased values dedup against it) and step per entry. This bounds the
+			// peak against MemoryQuotaBytes and honors a small StepQuota or a canceled
+			// context mid-loop, matching the neighboring hash walks rather than
+			// allocating everything before the runtime can reject it.
+			//
+			// Abort before materializing and sorting the keys when the context is
+			// already canceled or the remaining step quota cannot cover one step per
+			// entry. The per-pair loop charges a step per entry and observes
+			// cancellation, but the sortedHashKeysInto sort is O(n log n), so without
+			// this cheap up-front check a large hash could spend that work even when the
+			// loop is guaranteed to exhaust the step quota partway. Bounding on
+			// len(entries) (not just one remaining step) keeps a sandboxed caller from
+			// spending O(n log n) CPU on a projection that cannot fit the remaining
+			// steps; the per-pair step still enforces the quota, so this never rejects a
+			// build the loop would accept.
+			if err := exec.checkStepBudgetFor(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			scratch := sortedKeyBufferBytes(len(entries))
+			if err := acc.reserveScratch(scratch); err != nil {
+				return NewNil(), err
+			}
+			// The output length is known before the keys are sorted. Reserve the full
+			// slot backing before sortedHashKeysInto so a build that cannot fit the
+			// result slice does not spend the sort or allocate the key scratch first.
+			if err := acc.reserveSlots(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			var keyBuf [smallHashKeyBufferSize]string
+			keys := sortedHashKeysInto(entries, keyBuf[:])
+			pairs := make([]Value, 0, len(keys))
+			for _, key := range keys {
+				// Charge a step per pair so materializing a large hash participates in
+				// the step quota and observes cancellation before the result is fully
+				// assembled.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				pairs = append(pairs, NewArray([]Value{NewSymbol(key), entries[key]}))
+				if err := acc.add(pairs[len(pairs)-1], cap(pairs)); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewArray(pairs), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)
@@ -1218,6 +1338,78 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 			}
 			return NewHash(out), nil
+		}), nil
+	case "map_with_index":
+		return NewAutoBuiltin("hash.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.map_with_index does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.map_with_index does not take keyword arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "hash.map_with_index", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			entries := receiver.Hash()
+			// map_with_index keeps an arbitrary block result per entry, so charge the
+			// growing result incrementally rather than only after the call: a block
+			// returning an individually quota-sized value per entry could otherwise pile
+			// up past the quota before the post-call check ran. The accumulator's
+			// baseline includes the live receiver and block (held on the Go stack during
+			// the call), and reserveScratch folds in the sorted key list that stays live
+			// for the whole build so it is charged alongside the accumulating result.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveScratch(sortedKeyBufferBytes(len(entries))); err != nil {
+				return NewNil(), err
+			}
+			// Reject the build before reserving the backing slice when its len(entries)
+			// slots would already overflow the quota on top of the baseline and the
+			// sorted key scratch just reserved. map keeps one result per entry, so the
+			// backing reaches len(entries) Value slots regardless of the block; make
+			// would otherwise reserve all of them as a Go-local slice (invisible to the
+			// quota) before the first acc.add projected cap(out), letting a large hash
+			// transiently allocate a full result backing that should have been rejected
+			// up front, mirroring array.map_with_index.
+			if err := acc.reserveSlots(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			out := make([]Value, 0, len(entries))
+			var blockArgs [2]Value
+			var keyBuf [smallHashKeyBufferSize]string
+			for i, key := range sortedHashKeysInto(entries, keyBuf[:]) {
+				// Charge a step per entry so an empty block still consumes the step
+				// quota and observes cancellation; runner.call charges no step for a
+				// blockless body.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				// Ruby yields the [key, value] pair as the first block parameter and the
+				// index as the second; the index follows the deterministic sorted key
+				// order Vibescript uses for every block-based hash iterator.
+				pair := NewArray([]Value{NewSymbol(key), entries[key]})
+				// Charge the fresh pair against the quota before yielding: it is live
+				// alongside the accumulating result for the block's duration, so without
+				// this a block whose result fits but whose live pair does not could run
+				// past the sandbox memory limit. Mirrors hash.each_with_index, which
+				// charges its yielded pair the same way. cap(out) is the result backing
+				// before this iteration's append, so the peak charges the pair on top of
+				// the result built so far.
+				if err := acc.checkTransient(pair, cap(out)); err != nil {
+					return NewNil(), err
+				}
+				blockArgs[0] = pair
+				blockArgs[1] = NewInt(int64(i))
+				val, err := runner.call(blockArgs[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				out = append(out, val)
+				if err := acc.add(val, cap(out)); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewArray(out), nil
 		}), nil
 	case "transform_keys":
 		return NewAutoBuiltin("hash.transform_keys", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

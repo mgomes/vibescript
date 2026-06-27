@@ -39,6 +39,22 @@ def subtract_values(first, second)
   first - second
 end
 
+def shovel_value(values, extra)
+  values << extra
+end
+
+def accumulate_with_shovel(values)
+  result = []
+  for value in values
+    result = result << value
+  end
+  result
+end
+
+def intersect_values(first, second)
+  first & second
+end
+
 def include_value(values, value)
   values.include?(value)
 end

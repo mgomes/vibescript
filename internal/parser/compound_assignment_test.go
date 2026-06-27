@@ -36,8 +36,8 @@ end`
 		},
 		&ast.AssignStmt{
 			Target: &ast.IndexExpr{
-				Object: &ast.Identifier{Name: "items"},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.Identifier{Name: "items"},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 			Value:    &ast.IntegerLiteral{Value: 3},
 			Operator: ast.TokenAsterisk,

@@ -105,8 +105,13 @@ type CallExpr struct {
 	// only collapses their keyword arguments into an options hash for the
 	// parenless form.
 	Parenthesized bool
-	Block         *BlockLiteral
-	Position      Position
+	// Safe reports whether the call used the safe-navigation operator
+	// (`receiver&.method(...)`). When set and the receiver evaluates to nil,
+	// the runtime short-circuits the call to nil instead of dispatching. It is
+	// meaningful only when Callee is a *MemberExpr whose Safe flag is also set.
+	Safe     bool
+	Block    *BlockLiteral
+	Position Position
 }
 
 func (e *CallExpr) exprNode()     {}
@@ -122,6 +127,10 @@ type KeywordArg struct {
 type MemberExpr struct {
 	Object   Expression
 	Property string
+	// Safe reports whether the access used the safe-navigation operator
+	// (`object&.prop`). When set and the object evaluates to nil, the runtime
+	// short-circuits the access to nil instead of looking up the member.
+	Safe     bool
 	Position Position
 }
 
@@ -138,15 +147,27 @@ type ScopeExpr struct {
 func (e *ScopeExpr) exprNode()     {}
 func (e *ScopeExpr) Pos() Position { return e.Position }
 
-// IndexExpr represents a bracket-index access (e.g. arr[0]).
+// IndexExpr represents a bracket-index access (e.g. arr[0]). Indices holds the
+// one or more comma-separated selectors between the brackets, supporting Ruby's
+// single-index (arr[i]), start/length (arr[start, length]), and range
+// (arr[range]) forms.
 type IndexExpr struct {
 	Object   Expression
-	Index    Expression
+	Indices  []Expression
 	Position Position
 }
 
 func (e *IndexExpr) exprNode()     {}
 func (e *IndexExpr) Pos() Position { return e.Position }
+
+// IndexPos returns the source position of the i-th selector for diagnostics,
+// falling back to the bracket position when i is out of range.
+func (e *IndexExpr) IndexPos(i int) Position {
+	if i < 0 || i >= len(e.Indices) {
+		return e.Position
+	}
+	return e.Indices[i].Pos()
+}
 
 // DestructureElement represents one target in a destructuring assignment. An
 // anonymous rest target (a bare "*") has a nil Target with Rest set true; its
@@ -311,3 +332,15 @@ func (StringExpr) isStringPart() {}
 
 func (s *InterpolatedString) exprNode()     {}
 func (s *InterpolatedString) Pos() Position { return s.Position }
+
+// InterpolatedSymbol represents a symbol whose name is built from an
+// interpolating literal (e.g. an entry of a %I[...] array). The parts are
+// evaluated like an interpolated string and the resulting text becomes the
+// symbol's name.
+type InterpolatedSymbol struct {
+	Parts    []StringPart
+	Position Position
+}
+
+func (s *InterpolatedSymbol) exprNode()     {}
+func (s *InterpolatedSymbol) Pos() Position { return s.Position }

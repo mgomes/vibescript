@@ -74,11 +74,6 @@ func (p *parser) continueExpressionParse(left ast.Expression, precedence, limitL
 			return left
 		}
 
-		if p.peekToken.Type == ast.TokenAmpersand && p.peekPeek.Type == ast.TokenDot {
-			p.recoverUnsupportedSafeNavigation()
-			return left
-		}
-
 		if p.canParseParenlessCall(left, precedence, lineLimited) {
 			left = p.parseParenlessCallExpression(left)
 			if left == nil {
@@ -125,49 +120,6 @@ func (p *parser) peekStopsLineExpression() bool {
 	return false
 }
 
-func (p *parser) recoverUnsupportedSafeNavigation() {
-	start := p.peekToken
-	end := p.peekPeek.End
-	if end == (ast.Position{}) {
-		end = tokenEnd(start)
-	}
-	p.addParseErrorSpan(start.Pos, end, "safe navigation is not supported; use an explicit nil check")
-
-	p.nextToken()
-	p.nextToken()
-	recoveryLine := start.Pos.Line
-	if p.peekToken.Type != ast.TokenEOF && p.peekToken.Pos.Line > recoveryLine {
-		recoveryLine = p.peekToken.Pos.Line
-	}
-	nesting := 0
-	for p.peekToken.Type != ast.TokenEOF {
-		if nesting == 0 && isSafeNavigationRecoveryStop(p.peekToken.Type) {
-			return
-		}
-		if nesting == 0 && p.peekToken.Pos.Line > recoveryLine && !p.lineLimitedContinuationToken(p.peekToken) {
-			return
-		}
-		p.nextToken()
-		switch p.curToken.Type {
-		case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace:
-			nesting++
-		case ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
-			if nesting > 0 {
-				nesting--
-			}
-		}
-	}
-}
-
-func isSafeNavigationRecoveryStop(tt ast.TokenType) bool {
-	switch tt {
-	case ast.TokenComma, ast.TokenRParen, ast.TokenRBracket, ast.TokenRBrace:
-		return true
-	default:
-		return false
-	}
-}
-
 func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, lineLimited bool) bool {
 	if !lineLimited || precedence != lowestPrec {
 		return false
@@ -184,7 +136,44 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 	if p.peekStartsParenlessKeywordLabel() {
 		return true
 	}
+	if p.peekToken.Type == ast.TokenAmpersand {
+		// "&" is both the binary intersection operator and the (unsupported)
+		// block-pass / symbol-to-proc sigil. Ruby disambiguates by spacing:
+		// "foo &bar" passes a block while "foo & bar", "foo&bar", and a
+		// trailing "&" line continuation are all the binary operator. Only the
+		// block-pass shape starts a parenless argument here so the helpful
+		// block-pass diagnostic still fires; the operator shapes fall through
+		// to the infix path.
+		return p.peekAmpersandStartsBlockPass()
+	}
 	return isParenlessArgumentStart(p.peekToken.Type)
+}
+
+// peekAmpersandStartsBlockPass reports whether the lookahead "&" has the
+// spacing Ruby reads as a block-pass argument ("foo &bar") rather than the
+// binary intersection operator. Ruby disambiguates purely by spacing: the
+// block-pass shape requires the "&" to be separated from the callee yet flush
+// against its operand. Concretely both of these must hold:
+//
+//   - The "&" is detached from the callee. "foo &bar" is a block-pass, while
+//     "foo&bar" (flush on both sides) is the binary operator, so a "&" that
+//     abuts the callee on the same line is never a block-pass.
+//   - The operand is flush against the "&" on the same line. "foo & bar" is the
+//     binary operator, and a trailing "&" that ends the line is the intersection
+//     line-continuation operator (see lineLimitedContinuationToken); neither is
+//     a block-pass.
+func (p *parser) peekAmpersandStartsBlockPass() bool {
+	if p.peekToken.Type != ast.TokenAmpersand {
+		return false
+	}
+	calleeFlush := p.peekToken.Pos.Line == p.curToken.End.Line &&
+		p.peekToken.Pos.Column == p.curToken.End.Column
+	if calleeFlush {
+		return false
+	}
+	operandFlush := p.peekPeek.Pos.Line == p.peekToken.Pos.Line &&
+		p.peekPeek.Pos.Column == p.peekToken.End.Column
+	return operandFlush
 }
 
 // peekStartsParenlessKeywordLabel reports whether the lookahead begins a
@@ -337,6 +326,8 @@ const (
 	prefixParserInterpolatedStringLiteral
 	prefixParserPercentWordsLiteral
 	prefixParserPercentSymbolsLiteral
+	prefixParserPercentInterpWordsLiteral
+	prefixParserPercentInterpSymbolsLiteral
 	prefixParserBooleanLiteral
 	prefixParserNilLiteral
 	prefixParserSymbolLiteral
@@ -368,6 +359,10 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserPercentWordsLiteral
 	case ast.TokenSymbols:
 		return prefixParserPercentSymbolsLiteral
+	case ast.TokenInterpWords:
+		return prefixParserPercentInterpWordsLiteral
+	case ast.TokenInterpSymbols:
+		return prefixParserPercentInterpSymbolsLiteral
 	case ast.TokenTrue, ast.TokenFalse:
 		return prefixParserBooleanLiteral
 	case ast.TokenNil:
@@ -415,6 +410,10 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parsePercentWordsLiteral()
 	case prefixParserPercentSymbolsLiteral:
 		return p.parsePercentSymbolsLiteral()
+	case prefixParserPercentInterpWordsLiteral:
+		return p.parsePercentInterpWordsLiteral()
+	case prefixParserPercentInterpSymbolsLiteral:
+		return p.parsePercentInterpSymbolsLiteral()
 	case prefixParserBooleanLiteral:
 		return p.parseBooleanLiteral()
 	case prefixParserNilLiteral:
@@ -464,7 +463,7 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 	switch tt {
 	case ast.TokenPlus, ast.TokenMinus, ast.TokenSlash, ast.TokenAsterisk, ast.TokenPower, ast.TokenPercent,
 		ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
-		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr:
+		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenShovel, ast.TokenAmpersand:
 		return infixParserInfixExpression
 	case ast.TokenQuestion:
 		return infixParserConditionalExpression
@@ -472,7 +471,7 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 		return infixParserRangeExpression
 	case ast.TokenLParen:
 		return infixParserCallExpression
-	case ast.TokenDot:
+	case ast.TokenDot, ast.TokenSafeNav:
 		return infixParserMemberExpression
 	case ast.TokenScope:
 		return infixParserScopeExpression
@@ -510,7 +509,7 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 
 func (p *parser) lineLimitedContinuationToken(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenDot, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion:
+	case ast.TokenDot, ast.TokenSafeNav, ast.TokenScope, ast.TokenSlash, ast.TokenPower, ast.TokenPercent, ast.TokenRange, ast.TokenRangeExcl, ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE, ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenQuestion, ast.TokenShovel, ast.TokenAmpersand:
 		return true
 	case ast.TokenAsterisk:
 		// A line that begins with "*" continues the previous expression as a
@@ -722,7 +721,7 @@ func (p *parser) parseIdentifier() ast.Expression {
 }
 
 func (p *parser) parseIntegerLiteral() ast.Expression {
-	value, err := strconv.ParseInt(p.curToken.Literal, 10, 64)
+	value, err := parseIntegerToken(p.curToken.Literal)
 	if err != nil {
 		p.addParseError(p.curToken.Pos, "invalid integer literal")
 		return nil
@@ -730,11 +729,34 @@ func (p *parser) parseIntegerLiteral() ast.Expression {
 	return &ast.IntegerLiteral{Value: value, Position: p.curToken.Pos}
 }
 
+// parseIntegerToken converts a lexer-produced integer literal into its value.
+// The lexer strips underscore separators and validates digit sets, so the
+// only remaining work is choosing the radix from any Ruby base prefix. Plain
+// decimal literals are parsed in base 10 so a leading zero stays decimal
+// rather than being read as octal.
+func parseIntegerToken(literal string) (int64, error) {
+	if len(literal) >= 2 && literal[0] == '0' {
+		switch literal[1] {
+		case 'd', 'D':
+			return strconv.ParseInt(literal[2:], 10, 64)
+		case 'x', 'X', 'b', 'B', 'o', 'O':
+			return strconv.ParseInt(literal, 0, 64)
+		}
+	}
+	return strconv.ParseInt(literal, 10, 64)
+}
+
 func (p *parser) parseFloatLiteral() ast.Expression {
 	value, err := strconv.ParseFloat(p.curToken.Literal, 64)
 	if err != nil {
-		p.addParseError(p.curToken.Pos, "invalid float literal")
-		return nil
+		// An out-of-range exponent overflows to +/-Infinity, which Ruby
+		// accepts as a literal value rather than a syntax error. ParseFloat
+		// still returns the correct signed infinity alongside ErrRange, so
+		// only a genuine syntax error (ErrSyntax) is rejected here.
+		if !errors.Is(err, strconv.ErrRange) {
+			p.addParseError(p.curToken.Pos, "invalid float literal")
+			return nil
+		}
 	}
 	return &ast.FloatLiteral{Value: value, Position: p.curToken.Pos}
 }
@@ -795,69 +817,85 @@ func interpolationMarkerEscaped(raw string, hash int) bool {
 	return backslashes%2 == 1
 }
 
-func skipEscapedByte(raw string, i int) int {
-	if i+1 >= len(raw) {
-		return len(raw)
-	}
-	return i + 2
-}
-
 // findStringInterpolationEnd locates the byte index of the "}" that closes the
 // interpolation whose body begins at start (just past the opening "#{"). It
-// maintains a stack of interpolation and string contexts so nested
-// double-quoted strings, single-quoted strings, and further interpolations
-// balance correctly, mirroring the lexer's consumeInterpolation. It returns
-// false when the body is never closed before the end of raw.
+// drives the lexer over the body so that every construct the language
+// understands—double- and single-quoted strings, nested "#{...}"
+// interpolations, and percent-array literals such as %w/%i/%W/%I—is consumed as
+// a single unit. This means a "}" that appears inside one of those constructs
+// (for example %W[#{%w[}]}]) does not prematurely close the interpolation, and
+// a bare "%" remains the modulo operator wherever the lexer would treat it as
+// one. It returns false when the body is never closed before the end of raw.
 func findStringInterpolationEnd(raw string, start int) (int, bool) {
-	// stack frames mirror consumeInterpolation: interpolation contexts track
-	// unmatched "{" via braceDepth, string contexts hold their delimiting quote.
-	type context struct {
-		isInterp   bool
-		quote      byte
-		braceDepth int
+	if start < 0 || start > len(raw) {
+		return 0, false
 	}
-	stack := []context{{isInterp: true}}
+	lex := newLexer(raw[start:])
 
-	for i := start; i < len(raw); {
-		top := &stack[len(stack)-1]
-		if top.isInterp {
-			switch raw[i] {
-			case '{':
-				top.braceDepth++
-			case '}':
-				if top.braceDepth > 0 {
-					top.braceDepth--
-				} else {
-					stack = stack[:len(stack)-1]
-					if len(stack) == 0 {
-						return i, true
-					}
-				}
-			case '"', '\'':
-				stack = append(stack, context{quote: raw[i]})
+	braceDepth := 0
+	bracketDepth := 0
+	parenDepth := 0
+	for {
+		tok := lex.NextToken()
+		switch tok.Type {
+		case ast.TokenEOF, ast.TokenIllegal:
+			return 0, false
+		case ast.TokenPercent:
+			percentOffset := start + lex.currentOffset() - 1
+			kind, _, endOffset, ok := scanPercentArrayLiteralAt(raw, percentOffset)
+			if ok && interpolationPercentArrayArgumentScanCanAdvance(raw, endOffset) {
+				lex.seek(endOffset-start, ast.Token{Type: percentArrayLiteralTokenType(kind)})
 			}
-			i++
-			continue
-		}
-
-		switch raw[i] {
-		case '\\':
-			i = skipEscapedByte(raw, i)
-		case top.quote:
-			stack = stack[:len(stack)-1]
-			i++
-		case '#':
-			if top.quote == '"' && i+1 < len(raw) && raw[i+1] == '{' {
-				stack = append(stack, context{isInterp: true})
-				i += 2
-			} else {
-				i++
+		case ast.TokenLParen:
+			parenDepth++
+		case ast.TokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
 			}
-		default:
-			i++
+		case ast.TokenLBracket:
+			bracketDepth++
+		case ast.TokenRBracket:
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case ast.TokenLBrace:
+			braceDepth++
+		case ast.TokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+				continue
+			}
+			if bracketDepth == 0 && parenDepth == 0 {
+				// The lexer has consumed the closing "}"; currentOffset now
+				// points at the rune after it, so the "}" itself sits one byte
+				// back ("}" is always a single byte).
+				return start + lex.currentOffset() - 1, true
+			}
 		}
 	}
-	return 0, false
+}
+
+func interpolationPercentArrayArgumentScanCanAdvance(raw string, endOffset int) bool {
+	if endOffset >= len(raw) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(raw[endOffset:])
+	return r != '"' && r != '\''
+}
+
+func percentArrayLiteralTokenType(kind rune) ast.TokenType {
+	switch kind {
+	case 'w':
+		return ast.TokenWords
+	case 'i':
+		return ast.TokenSymbols
+	case 'W':
+		return ast.TokenInterpWords
+	case 'I':
+		return ast.TokenInterpSymbols
+	default:
+		return ast.TokenIllegal
+	}
 }
 
 func (p *parser) parseStringInterpolationExpression(raw string, pos ast.Position) (ast.Expression, bool) {
@@ -950,6 +988,20 @@ func (p *parser) parsePercentArrayLiteralArgument() ast.Expression {
 		case 'i':
 			elements[i] = &ast.SymbolLiteral{Name: entry, Position: pos}
 			litType = ast.TokenSymbols
+		case 'W':
+			element, ok := p.interpolatedWordElement(entry, pos)
+			if !ok {
+				return nil
+			}
+			elements[i] = element
+			litType = ast.TokenInterpWords
+		case 'I':
+			element, ok := p.interpolatedSymbolElement(entry, pos)
+			if !ok {
+				return nil
+			}
+			elements[i] = element
+			litType = ast.TokenInterpSymbols
 		}
 	}
 	// The lexer already speculatively tokenized the literal's interior
@@ -983,6 +1035,74 @@ func (p *parser) parsePercentSymbolsLiteral() ast.Expression {
 	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
 }
 
+func (p *parser) parsePercentInterpWordsLiteral() ast.Expression {
+	entries := decodePercentLiteralEntries(p.curToken.Literal)
+	elements := make([]ast.Expression, 0, len(entries))
+	for _, entry := range entries {
+		element, ok := p.interpolatedWordElement(entry, p.curToken.Pos)
+		if !ok {
+			return nil
+		}
+		elements = append(elements, element)
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
+func (p *parser) parsePercentInterpSymbolsLiteral() ast.Expression {
+	entries := decodePercentLiteralEntries(p.curToken.Literal)
+	elements := make([]ast.Expression, 0, len(entries))
+	for _, entry := range entries {
+		element, ok := p.interpolatedSymbolElement(entry, p.curToken.Pos)
+		if !ok {
+			return nil
+		}
+		elements = append(elements, element)
+	}
+	return &ast.ArrayLiteral{Elements: elements, Position: p.curToken.Pos}
+}
+
+// interpolatedWordElement builds a single %W entry. Entries without an
+// embedded expression collapse to a plain string literal so they match the
+// AST produced by %w; entries with interpolation become an InterpolatedString.
+func (p *parser) interpolatedWordElement(entry string, pos ast.Position) (ast.Expression, bool) {
+	parts, ok := p.parseInterpolatedStringParts(entry, pos)
+	if !ok {
+		return nil, false
+	}
+	if text, plain := staticStringPart(parts); plain {
+		return &ast.StringLiteral{Value: text, Position: pos}, true
+	}
+	return &ast.InterpolatedString{Parts: parts, Position: pos}, true
+}
+
+// interpolatedSymbolElement builds a single %I entry. Entries without an
+// embedded expression collapse to a plain symbol literal so they match the
+// AST produced by %i; entries with interpolation become an InterpolatedSymbol.
+func (p *parser) interpolatedSymbolElement(entry string, pos ast.Position) (ast.Expression, bool) {
+	parts, ok := p.parseInterpolatedStringParts(entry, pos)
+	if !ok {
+		return nil, false
+	}
+	if text, plain := staticStringPart(parts); plain {
+		return &ast.SymbolLiteral{Name: text, Position: pos}, true
+	}
+	return &ast.InterpolatedSymbol{Parts: parts, Position: pos}, true
+}
+
+// staticStringPart returns the literal text and true when parts hold no
+// embedded expression, so a %W/%I entry can collapse to a plain literal.
+func staticStringPart(parts []ast.StringPart) (string, bool) {
+	switch len(parts) {
+	case 0:
+		return "", true
+	case 1:
+		if text, ok := parts[0].(ast.StringText); ok {
+			return text.Text, true
+		}
+	}
+	return "", false
+}
+
 func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bool) {
 	if start < 0 || start >= len(input) || input[start] != '%' {
 		return 0, nil, 0, false
@@ -992,9 +1112,10 @@ func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bo
 		return 0, nil, 0, false
 	}
 	kind, width := utf8.DecodeRuneInString(input[idx:])
-	if kind != 'w' && kind != 'i' {
+	if kind != 'w' && kind != 'i' && kind != 'W' && kind != 'I' {
 		return 0, nil, 0, false
 	}
+	interpolating := kind == 'W' || kind == 'I'
 	idx += width
 	if idx >= len(input) {
 		return 0, nil, 0, false
@@ -1020,12 +1141,34 @@ func scanPercentArrayLiteralAt(input string, start int) (rune, []string, int, bo
 			}
 			continue
 		}
+		// Skip over #{...} interpolation spans for the interpolating forms so a
+		// delimiter inside an interpolation expression (including one nested in a
+		// quoted string, e.g. %W[#{"]"}]) does not close the literal early. The
+		// span is matched with the same string-aware logic used elsewhere. When
+		// '#' is itself the closing delimiter it must close the literal instead of
+		// being treated as interpolation, mirroring Ruby where %W#a #{b}# closes at
+		// the first '#'.
+		if interpolating && close != '#' && r == '#' && idx < len(input) && input[idx] == '{' {
+			raw.WriteRune(r)
+			raw.WriteByte('{')
+			idx++
+			end, ok := findStringInterpolationEnd(input, idx)
+			if !ok {
+				return 0, nil, 0, false
+			}
+			raw.WriteString(input[idx : end+1])
+			idx = end + 1
+			continue
+		}
 		if paired && r == open {
 			depth++
 		}
 		if r == close {
 			depth--
 			if depth == 0 {
+				if interpolating {
+					return kind, splitInterpolatedPercentLiteralWords(raw.String()), idx, true
+				}
 				return kind, splitPercentLiteralWords(raw.String(), open, close), idx, true
 			}
 		}
@@ -1188,12 +1331,21 @@ func (p *parser) parseMemberExpression(object ast.Expression) ast.Expression {
 	if object == nil {
 		return nil
 	}
+	safe := p.curToken.Type == ast.TokenSafeNav
 	p.nextToken()
 	if !isMemberNameToken(p.curToken) {
 		p.errorExpected(p.curToken, "member name")
 		return nil
 	}
-	return &ast.MemberExpr{Object: object, Property: p.curToken.Literal, Position: object.Pos()}
+	return &ast.MemberExpr{Object: object, Property: p.curToken.Literal, Safe: safe, Position: object.Pos()}
+}
+
+// isSafeMemberCallee reports whether a call's callee is a member access that
+// used the safe-navigation operator (`receiver&.method`). Such calls propagate
+// the safe flag so the runtime short-circuits to nil when the receiver is nil.
+func isSafeMemberCallee(callee ast.Expression) bool {
+	member, ok := callee.(*ast.MemberExpr)
+	return ok && member.Safe
 }
 
 func (p *parser) parseScopeExpression(object ast.Expression) ast.Expression {
@@ -1210,15 +1362,30 @@ func (p *parser) parseScopeExpression(object ast.Expression) ast.Expression {
 
 func (p *parser) parseIndexExpression(object ast.Expression) ast.Expression {
 	pos := p.curToken.Pos
+	if p.peekToken.Type == ast.TokenRBracket {
+		p.addParseError(p.peekToken.Pos, "index expression requires at least one selector")
+		return nil
+	}
 	p.nextToken()
+	indices := []ast.Expression{}
 	index := p.parseExpression(lowestPrec)
 	if index == nil {
 		return nil
 	}
+	indices = append(indices, index)
+	for p.peekToken.Type == ast.TokenComma {
+		p.nextToken()
+		p.nextToken()
+		next := p.parseExpression(lowestPrec)
+		if next == nil {
+			return nil
+		}
+		indices = append(indices, next)
+	}
 	if !p.expectPeek(ast.TokenRBracket) {
 		return nil
 	}
-	return &ast.IndexExpr{Object: object, Index: index, Position: pos}
+	return &ast.IndexExpr{Object: object, Indices: indices, Position: pos}
 }
 
 func isMemberNameToken(tok ast.Token) bool {
@@ -1566,7 +1733,7 @@ func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {
 	if function == nil {
 		return nil
 	}
-	expr := &ast.CallExpr{Callee: function, Position: function.Pos()}
+	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function)}
 	args := []ast.Expression{}
 	kwargs := []ast.KeywordArg{}
 
@@ -1619,7 +1786,7 @@ func (p *parser) parseParenlessCallExpression(function ast.Expression) ast.Expre
 	if function == nil {
 		return nil
 	}
-	expr := &ast.CallExpr{Callee: function, Position: function.Pos()}
+	expr := &ast.CallExpr{Callee: function, Position: function.Pos(), Safe: isSafeMemberCallee(function)}
 	args := []ast.Expression{}
 	kwargs := []ast.KeywordArg{}
 	keywordOptionsHash := false
@@ -1657,7 +1824,7 @@ func (p *parser) callWithBlock(callee ast.Expression, block *ast.BlockLiteral) a
 	if existing, ok := callee.(*ast.CallExpr); ok {
 		call = existing
 	} else {
-		call = &ast.CallExpr{Callee: callee, Position: callee.Pos()}
+		call = &ast.CallExpr{Callee: callee, Position: callee.Pos(), Safe: isSafeMemberCallee(callee)}
 	}
 	call.Block = block
 	return call

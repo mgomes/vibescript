@@ -147,6 +147,20 @@ func TestLexerStampsSourceAccurateTokenEnds(t *testing.T) {
 			wantEnd: ast.Position{Line: 1, Column: 15},
 		},
 		{
+			name:    "percent_interpolated_word_array_span_includes_delimiters",
+			source:  "%W[alpha beta]",
+			tokType: ast.TokenInterpWords,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 15},
+		},
+		{
+			name:    "percent_interpolated_symbol_array_span_includes_delimiters",
+			source:  "%I[alpha beta]",
+			tokType: ast.TokenInterpSymbols,
+			wantPos: ast.Position{Line: 1, Column: 1},
+			wantEnd: ast.Position{Line: 1, Column: 15},
+		},
+		{
 			name:    "ivar_span_includes_sigil",
 			source:  "@count",
 			tokType: ast.TokenIvar,
