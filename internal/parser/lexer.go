@@ -481,6 +481,12 @@ func (l *lexer) currentOffset() int {
 // gating that depends on the preceding token (such as percent-literal and
 // newline handling) behaves as if that token had just been scanned.
 func (l *lexer) seek(offset int, last ast.Token) {
+	structuralOffset := offset
+	if start, ok := sourceOffsetForPosition(l.input, last.Pos); ok && start < offset {
+		structuralOffset = start
+	}
+	bracketDepth, ternaryStack := lexerStructuralStateBefore(l.input, structuralOffset)
+
 	l.offset = 0
 	l.width = 0
 	l.line = 1
@@ -488,11 +494,30 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	l.prevLine = 0
 	l.prevColumn = 0
 	l.ch = 0
+	l.bracketDepth = bracketDepth
+	l.ternaryStack = ternaryStack
 	l.readRune()
 	for l.currentOffset() < offset && l.ch != 0 {
 		l.readRune()
 	}
 	l.lastToken = last
+}
+
+func lexerStructuralStateBefore(input string, offset int) (int, []int) {
+	scan := newLexer(input)
+	for scan.ch != 0 {
+		if _, ok := scan.skipWhitespaceAndComments(); ok {
+			continue
+		}
+		if scan.currentOffset() >= offset {
+			break
+		}
+		tok := scan.NextToken()
+		if tok.Type == ast.TokenEOF {
+			break
+		}
+	}
+	return scan.bracketDepth, append([]int(nil), scan.ternaryStack...)
 }
 
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {

@@ -489,6 +489,27 @@ func TestParserLineLeadingTernaryStringAlternate(t *testing.T) {
 	}
 }
 
+func TestParserPercentArrayReprimeClearsTernaryStateBeforeQuotedSymbol(t *testing.T) {
+	t.Parallel()
+
+	source := "def run\n  emit %w?foo? ? 1 :\"no\"\n  :\"sym\"\nend"
+	got, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	body := parsedFunctionBody(t, got)
+	if len(body) != 2 {
+		t.Fatalf("function body length = %d, want 2", len(body))
+	}
+	if _, ok := body[0].(*ast.ExprStmt).Expr.(*ast.CallExpr); !ok {
+		t.Fatalf("first expression = %T, want *ast.CallExpr", body[0].(*ast.ExprStmt).Expr)
+	}
+	sym, ok := body[1].(*ast.ExprStmt).Expr.(*ast.SymbolLiteral)
+	if !ok || sym.Name != "sym" {
+		t.Fatalf("second expression = %#v, want SymbolLiteral(sym)", body[1].(*ast.ExprStmt).Expr)
+	}
+}
+
 // TestParserQuotedSymbolLiterals verifies that quoted symbols parse into the
 // same SymbolLiteral node as bare symbols, anywhere a symbol literal is allowed.
 func TestParserQuotedSymbolLiterals(t *testing.T) {
