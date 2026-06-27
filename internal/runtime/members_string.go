@@ -6,6 +6,7 @@ import (
 	"math"
 	"regexp"
 	"regexp/syntax"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -24,7 +25,7 @@ var stringMemberNames = []string{
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "codepoints", "each_char", "each_line", "each_byte", "each_codepoint", "template",
 	"center", "ljust", "rjust",
 	"inspect",
-	"to_sym", "intern",
+	"to_sym", "intern", "to_s", "string", "to_i", "to_f", "nil?",
 }
 
 var stringBuiltinMembers = newMemberTable(stringMemberNames)
@@ -48,26 +49,73 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberPadding(property)
 	case "inspect":
 		return newInspectBuiltin("string"), nil
-	case "to_sym", "intern":
+	case "to_sym", "intern", "to_s", "string", "to_i", "to_f":
 		return stringMemberConversions(property)
+	case "nil?":
+		return newNilPredicateBuiltin("string"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}
 }
 
-// stringMemberConversions builds the string-to-symbol conversion members.
-// Ruby's String#to_sym and its alias String#intern both return the symbol
-// whose name is the receiver, so any string contents (including empty) yield a
-// symbol verbatim without further validation.
+// stringMemberConversions builds the string conversion members. Ruby's
+// String#to_sym and its alias String#intern both return the symbol whose name is
+// the receiver, so any string contents (including empty) yield a symbol verbatim
+// without further validation. String#to_s and Vibescript's documented `.string`
+// idiom return the receiver unchanged. String#to_i and String#to_f parse a
+// numeric string with the same strict semantics as the global to_int/to_float
+// builtins: unlike Ruby's lenient String#to_i (which ignores trailing garbage and
+// yields 0 on failure), an empty or non-numeric string raises so a malformed
+// value never silently becomes 0 when crossing a typed boundary.
 func stringMemberConversions(property string) (Value, error) {
+	name := "string." + property
 	switch property {
 	case "to_sym", "intern":
-		name := "string." + property
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("%s does not take arguments", name)
 			}
 			return NewSymbol(receiver.String()), nil
+		}), nil
+	case "to_s", "string":
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			}
+			return receiver, nil
+		}), nil
+	case "to_i":
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			}
+			s := strings.TrimSpace(receiver.String())
+			if s == "" {
+				return NewNil(), fmt.Errorf("%s expects a numeric string", name)
+			}
+			n, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				return NewNil(), fmt.Errorf("%s expects a base-10 integer string", name)
+			}
+			return NewInt(n), nil
+		}), nil
+	case "to_f":
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			}
+			s := strings.TrimSpace(receiver.String())
+			if s == "" {
+				return NewNil(), fmt.Errorf("%s expects a numeric string", name)
+			}
+			f, err := strconv.ParseFloat(s, 64)
+			if err != nil {
+				return NewNil(), fmt.Errorf("%s expects a numeric string", name)
+			}
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return NewNil(), fmt.Errorf("%s expects a finite numeric string", name)
+			}
+			return NewFloat(f), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)

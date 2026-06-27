@@ -197,6 +197,31 @@ the source string:
 See `id2name` / `to_s` on a symbol (in `docs/stdlib_core_utilities.md`) for the
 reverse direction.
 
+### `to_s` / `string`
+
+`to_s` returns the receiver itself (Ruby's `String#to_s`); `string` is the alias
+the [typing docs](typing.md) use as Vibescript's conversion idiom:
+
+```vibe
+"id".to_s   # "id"
+"id".string # "id"
+```
+
+### `to_i` / `to_f`
+
+Parse the string as a base-10 integer or finite float. Surrounding whitespace is
+trimmed first. Unlike Ruby's lenient `String#to_i`/`String#to_f` (which skip
+trailing characters and return `0`/`0.0` on failure), these are strict like the
+global `to_int`/`to_float`: an empty, non-numeric, or (for `to_f`) non-finite
+string raises rather than silently yielding zero, so a malformed value cannot
+slip through a typed boundary unnoticed.
+
+```vibe
+"42".to_i  # 42
+" -7 ".to_i # -7
+"3.5".to_f # 3.5
+```
+
 ### `strip`
 
 Removes leading and trailing whitespace:

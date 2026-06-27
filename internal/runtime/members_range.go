@@ -16,7 +16,7 @@ const rangeMaterializeInitialCap = 4096
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var rangeMemberNames = []string{
-	"cover?", "include?", "member?", "first", "last", "size", "exclude_end?", "to_a",
+	"cover?", "include?", "member?", "first", "last", "size", "exclude_end?", "to_a", "nil?",
 }
 
 func (exec *Execution) rangeMember(obj Value, property string, pos Position) (Value, error) {
@@ -33,6 +33,8 @@ func (exec *Execution) rangeMember(obj Value, property string, pos Position) (Va
 		return rangeMemberExcludeEnd(), nil
 	case "to_a":
 		return rangeMemberToArray(), nil
+	case "nil?":
+		return newNilPredicateBuiltin("range"), nil
 	default:
 		return NewNil(), exec.errorAt(pos, "unknown range method %s%s", property, didYouMean(property, rangeMemberNames))
 	}

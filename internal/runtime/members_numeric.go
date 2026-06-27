@@ -17,6 +17,7 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"to_s", "string", "to_i", "to_f", "nil?",
 		"inspect",
 	}
 	floatMemberNames = []string{
@@ -24,9 +25,10 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?",
 		"nan?", "infinite?", "finite?",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"to_s", "string", "to_i", "to_f", "nil?",
 		"inspect",
 	}
-	moneyMemberNames = []string{"currency", "cents", "amount", "format"}
+	moneyMemberNames = []string{"currency", "cents", "amount", "format", "to_s", "string", "nil?"}
 )
 
 var (
@@ -35,11 +37,12 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
+		"to_s", "string", "to_i", "to_f", "nil?",
 		"inspect",
 	}
 	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
 	floatBuiltinMembers     = newMemberTable(floatMemberNames)
-	moneyBuiltinMemberNames = []string{"format"}
+	moneyBuiltinMemberNames = []string{"format", "nil?"}
 	moneyBuiltinMembers     = newMemberTable(moneyBuiltinMemberNames)
 )
 
@@ -247,11 +250,36 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return numericModulo("int.modulo", receiver, divisor)
 		}), nil
+	case "to_s", "string":
+		return newToStringBuiltin("int", property), nil
+	case "to_i":
+		return newIntIdentityBuiltin("int.to_i"), nil
+	case "to_f":
+		return NewAutoBuiltin("int.to_f", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("int.to_f does not take arguments")
+			}
+			return NewFloat(float64(receiver.Int())), nil
+		}), nil
+	case "nil?":
+		return newNilPredicateBuiltin("int"), nil
 	case "inspect":
 		return newInspectBuiltin("int"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown int method %s", property)
 	}
+}
+
+// newIntIdentityBuiltin returns the no-argument builtin backing Ruby's
+// Integer#to_i, which returns the receiver unchanged. name identifies the
+// builtin and its argument error.
+func newIntIdentityBuiltin(name string) Value {
+	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) > 0 {
+			return NewNil(), fmt.Errorf("%s does not take arguments", name)
+		}
+		return receiver, nil
+	})
 }
 
 func (exec *Execution) floatMember(obj Value, property string, pos Position) (Value, error) {
@@ -407,6 +435,32 @@ func floatMemberBuiltin(property string) (Value, error) {
 			}
 			return numericModulo("float.modulo", receiver, divisor)
 		}), nil
+	case "to_s", "string":
+		return newToStringBuiltin("float", property), nil
+	case "to_i":
+		return NewAutoBuiltin("float.to_i", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("float.to_i does not take arguments")
+			}
+			// Ruby's Float#to_i truncates toward zero, unlike the strict global
+			// to_int which rejects a fractional float. floatToInt64Checked
+			// truncates after rejecting NaN, Infinity, and out-of-range
+			// magnitudes, matching Ruby's FloatDomainError for those cases.
+			n, err := floatToInt64Checked(receiver.Float(), "float.to_i")
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewInt(n), nil
+		}), nil
+	case "to_f":
+		return NewAutoBuiltin("float.to_f", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("float.to_f does not take arguments")
+			}
+			return receiver, nil
+		}), nil
+	case "nil?":
+		return newNilPredicateBuiltin("float"), nil
 	case "inspect":
 		return newInspectBuiltin("float"), nil
 	default:
@@ -570,6 +624,8 @@ func moneyMember(m Money, property string) (Value, error) {
 		return NewInt(m.Cents()), nil
 	case "amount":
 		return NewString(m.String()), nil
+	case "to_s", "string":
+		return NewString(m.String()), nil
 	default:
 		if member, ok := moneyBuiltinMembers.lookup(property, moneyMemberBuiltin); ok {
 			return member, nil
@@ -584,6 +640,8 @@ func moneyMemberBuiltin(property string) (Value, error) {
 		return NewAutoBuiltin("money.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return NewString(receiver.Money().String()), nil
 		}), nil
+	case "nil?":
+		return newNilPredicateBuiltin("money"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown money member %s", property)
 	}

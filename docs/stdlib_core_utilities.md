@@ -76,6 +76,32 @@ render as `<cycle>`. The rendered length is charged against the sandbox memory
 quota before the string is built, so inspecting a huge composite fails with a
 quota error instead of allocating an oversized result.
 
+## Universal Methods
+
+Every core value kind (`nil`, booleans, integers, floats, strings, symbols,
+arrays, hashes, ranges, money, durations, and times) responds to these
+Ruby-style methods in addition to `inspect`:
+
+- `nil? -> bool` – `true` only for `nil`, `false` for every other value
+  (Ruby's `Object#nil?`).
+- `to_s -> string` – the value's display rendering (the `to_s` form used by
+  string interpolation). For strings it returns the receiver; for symbols,
+  durations, and times it matches the kind-specific `to_s` documented below.
+- `string -> string` – alias for `to_s`; the documented Vibescript conversion
+  idiom used in [typing.md](typing.md) (for example `id.string`).
+
+All three take no arguments. Strings additionally parse numeric text with
+`to_i`/`to_f` (see [Conversion](#conversion)), and integers and floats convert
+between numeric kinds with `to_i`/`to_f` (see [Integers](#integers) and
+[Floats](#floats)).
+
+```vibe
+42.nil?     # false
+nil.nil?    # true
+42.string   # "42"
+:ok.to_s    # "ok"
+```
+
 ## Strings
 
 See [strings.md](strings.md) for worked examples. Indexes and lengths count
@@ -109,6 +135,21 @@ Unicode characters, not bytes, unless noted.
 - `to_sym -> symbol` – the symbol named by the string. Any contents are
   accepted verbatim, including whitespace, punctuation, and the empty string.
 - `intern -> symbol` – alias for `to_sym`.
+- `to_s -> string` – the receiver itself (Ruby's `String#to_s`).
+- `string -> string` – alias for `to_s`; the documented Vibescript conversion
+  idiom (see [typing.md](typing.md)).
+- `to_i -> int` – parse a base-10 integer. Unlike Ruby's lenient `String#to_i`
+  (which ignores trailing characters and returns `0` on failure), this is strict
+  like the global `to_int`: surrounding whitespace is trimmed, but an empty or
+  non-integer string raises rather than silently yielding `0`.
+- `to_f -> float` – parse a finite float with the same strict semantics as the
+  global `to_float`; an empty, non-numeric, or non-finite string raises.
+
+```vibe
+"42".to_i  # 42
+"3.5".to_f # 3.5
+"id".string # "id"
+```
 
 ### Search and Matching
 
@@ -558,6 +599,11 @@ aliases, so `1.second` reads naturally.
 - `modulo(n) -> int|float` – the `%` operator as a method: the result's sign
   follows the divisor (floored division). Integer operands yield an integer;
   any float operand yields a float; a zero divisor errors.
+- `to_s -> string` – the integer's display digits (Ruby's `Integer#to_s`).
+- `string -> string` – alias for `to_s`.
+- `to_i -> int` – the receiver itself.
+- `to_f -> float` – the value as a float.
+- `nil? -> bool` – always `false`.
 - `inspect -> string` – the integer's debug rendering (same digits as `to_s`;
   see [Debug Representation](#debug-representation)).
 
@@ -602,6 +648,12 @@ Ruby's arbitrary-precision integers.
   (truncated division); a zero divisor errors.
 - `modulo(n) -> float` – the `%` operator as a method: the result's sign
   follows the divisor (floored division); a zero divisor errors.
+- `to_s -> string` – the float's display text (Ruby's `Float#to_s`).
+- `string -> string` – alias for `to_s`.
+- `to_i -> int` – truncate toward zero (Ruby's `Float#to_i`); a non-finite or
+  out-of-range value raises rather than producing garbage.
+- `to_f -> float` – the receiver itself.
+- `nil? -> bool` – always `false`.
 - `inspect -> string` – the float's debug rendering (same text as `to_s`,
   including `Infinity`/`-Infinity`/`NaN`; see
   [Debug Representation](#debug-representation)).
@@ -641,6 +693,7 @@ support arithmetic and comparison operators.
 - `cents -> int` – total amount in minor units.
 - `amount -> string` – formatted amount with currency, e.g. `"100.50 USD"`.
 - `format -> string` – same as `amount`.
+- `to_s` / `string` -> string – same as `amount`.
 
 ```vibe
 m = money("100.50 USD")
@@ -686,6 +739,7 @@ Each returns a `float`. Months use 30-day and years 365-day approximations.
 - `parts -> hash` – `{ days:, hours:, minutes:, seconds: }` breakdown.
 - `to_i -> int` – total seconds.
 - `to_s -> string` – seconds string, e.g. `"5400s"`.
+- `string -> string` – alias for `to_s`.
 - `format -> string` – same as `to_s`.
 - `eql?(other) -> bool` – true when both durations span the same seconds.
 
@@ -750,6 +804,7 @@ formatting. Times also support `time + duration`, `time - duration`,
 - `to_f -> float` – epoch seconds with fractional part.
 - `to_r -> float` – same as `to_f` (rationals are not supported).
 - `to_s -> string` – RFC3339Nano representation.
+- `string -> string` – alias for `to_s`.
 - `to_a -> array` – positional tuple `[sec, min, hour, mday, month, year, wday,
   yday, isdst, zone]`, matching Ruby's field order and the receiver's zone.
 - `iso8601(ndigits = 0)` / `xmlschema(ndigits = 0)` / `rfc3339(ndigits = 0)` -> string – RFC3339 representation. With no argument it emits whole seconds; a non-negative `ndigits` appends that many fractional-second digits, truncated toward zero (matching Ruby's `Time#iso8601`). `xmlschema` is an alias for `iso8601`. Negative, non-integer, or out-of-range (above 100 digits) precision raises a runtime error.
@@ -796,6 +851,7 @@ Symbols (`:name`) expose the Ruby string/symbol conversion helpers:
 
 - `id2name -> string` – the symbol's name as a string.
 - `to_s -> string` – alias for `id2name`.
+- `string -> string` – alias for `to_s`.
 - `to_sym -> symbol` – returns the receiver unchanged.
 
 `"name".to_sym` and `:name.to_s` round-trip between the two representations.

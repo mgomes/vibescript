@@ -15,7 +15,7 @@ var (
 	durationMemberNames = []string{
 		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
 		"in_seconds", "in_minutes", "in_hours", "in_days", "in_weeks", "in_months", "in_years",
-		"iso8601", "parts", "to_i", "to_s", "format", "eql?",
+		"iso8601", "parts", "to_i", "to_s", "string", "format", "eql?", "nil?",
 		"after", "since", "from_now", "ago", "before", "until",
 	}
 	timeMemberNames = []string{
@@ -23,7 +23,7 @@ var (
 		"wday", "yday", "hash", "utc_offset", "gmt_offset", "gmtoff", "to_f", "to_i", "tv_sec", "to_r", "zone",
 		"utc?", "gmt?", "dst?", "isdst",
 		"sunday?", "monday?", "tuesday?", "wednesday?", "thursday?", "friday?", "saturday?",
-		"<=>", "eql?", "to_s", "to_a", "iso8601", "xmlschema", "rfc3339", "httpdate", "rfc2822", "rfc822", "format", "strftime",
+		"<=>", "eql?", "to_s", "string", "nil?", "to_a", "iso8601", "xmlschema", "rfc3339", "httpdate", "rfc2822", "rfc822", "format", "strftime",
 		"getutc", "getgm", "getlocal", "utc", "gmtime", "localtime", "round", "ceil", "floor",
 	}
 )
@@ -77,10 +77,12 @@ func durationMember(d Duration, property string, pos Position) (Value, error) {
 		}), nil
 	case "to_i":
 		return NewInt(d.Seconds()), nil
-	case "to_s":
+	case "to_s", "string":
 		return NewString(d.String()), nil
 	case "format":
 		return NewString(d.String()), nil
+	case "nil?":
+		return newNilPredicateBuiltin("duration"), nil
 	case "eql?":
 		return NewBuiltin("duration.eql?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return callDurationEql(d, args, kwargs)
@@ -246,8 +248,10 @@ func timeMember(t time.Time, property string) (Value, error) {
 		return NewBuiltin("time.eql?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return callTimeEql(t, args, kwargs)
 		}), nil
-	case "to_s":
+	case "to_s", "string":
 		return NewString(t.Format(time.RFC3339Nano)), nil
+	case "nil?":
+		return newNilPredicateBuiltin("time"), nil
 	case "to_a":
 		return timeToArray(t), nil
 	case "iso8601", "xmlschema", "rfc3339":
