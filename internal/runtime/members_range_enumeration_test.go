@@ -69,6 +69,39 @@ func TestRangeStep(t *testing.T) {
 	}
 }
 
+func TestRangeStepSparseStrideRespectsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	// A sparse stride over a wide span must only charge the sandbox step quota
+	// for the values it actually yields, not for the skipped integers. Each
+	// expression yields a handful of values, so a tiny step quota is ample; the
+	// old implementation walked every intermediate integer and would exhaust the
+	// quota long before completing.
+	tests := []struct {
+		name string
+		expr string
+		want int64
+	}{
+		// Yields 1, 500001, 1000001: the trailing value lands one past End and is
+		// excluded, so acc = 1 + 500001 = 500002.
+		{"ascending sparse stride", "(1..1000000).step(500000) { |i| acc = acc + i }", 500002},
+		// Yields 1000000, 500000, 0: the trailing value lands one before End and is
+		// excluded, so acc = 1000000 + 500000 = 1500000.
+		{"descending sparse stride", "(1000000..1).step(500000) { |i| acc = acc + i }", 1500000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := "def run()\n  acc = 0\n  " + tc.expr + "\n  acc\nend"
+			script := compileScriptWithConfig(t, Config{StepQuota: 100, MemoryQuotaBytes: 64 << 20}, source)
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(NewInt(tc.want)) {
+				t.Fatalf("%s = %v, want %d", tc.expr, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRangeMap(t *testing.T) {
 	t.Parallel()
 

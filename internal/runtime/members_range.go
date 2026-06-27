@@ -141,6 +141,15 @@ func rangeMemberEach() Value {
 // rangeMemberStep yields every nth integer in the range to the block, starting
 // at the range's start, and returns the range. The step must be a positive
 // integer, matching Ruby's ArgumentError on a zero or negative Range#step.
+//
+// Iteration advances the current value by the stride directly rather than
+// visiting every intermediate integer, so a sparse step over a wide span only
+// charges the sandbox step quota for the values it actually yields. This
+// mirrors Integer#step and keeps `(1..1_000_000).step(1_000_000)` usable. The
+// stride is applied in the range's iteration direction — ascending when
+// Start <= End, descending otherwise — and the next value is computed with
+// checked arithmetic so a span reaching MaxInt64/MinInt64 stops cleanly rather
+// than wrapping around.
 func rangeMemberStep() Value {
 	return NewAutoBuiltin("range.step", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		if len(args) != 1 {
@@ -160,26 +169,38 @@ func rangeMemberStep() Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		rng := receiver.Range()
+		ascending := rng.Start <= rng.End
+		// Descending ranges advance by the stride in the negative direction; the
+		// stride magnitude is identical, so the signed delta is just negated.
+		delta := stride
+		if !ascending {
+			delta = -stride
+		}
+		current := rng.Start
 		var blockArg [1]Value
-		// countdown selects every stride-th element: it yields when zero and
-		// resets, so the start is always yielded and intermediate elements are
-		// skipped. This keeps the per-step quota accounting from rangeForEach for
-		// every iterated element while only invoking the block on the selected
-		// ones.
-		countdown := int64(0)
-		err = exec.rangeForEach(receiver.Range(), func(value int64) (bool, error) {
-			if countdown == 0 {
-				blockArg[0] = NewInt(value)
-				if _, err := runner.call(blockArg[:]); err != nil {
-					return false, err
+		for {
+			if ascending {
+				if !rangeLoopAscendingContinues(current, rng) {
+					break
 				}
-				countdown = stride
+			} else if !rangeLoopDescendingContinues(current, rng) {
+				break
 			}
-			countdown--
-			return false, nil
-		})
-		if err != nil {
-			return NewNil(), err
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			blockArg[0] = NewInt(current)
+			if _, err := runner.call(blockArg[:]); err != nil {
+				return NewNil(), err
+			}
+			next, ok := addInt64Checked(current, delta)
+			if !ok {
+				// The next value would wrap past the int64 range, so no further value
+				// can be in bounds; stop cleanly rather than wrapping around.
+				break
+			}
+			current = next
 		}
 		return receiver, nil
 	})

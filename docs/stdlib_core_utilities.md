@@ -927,7 +927,9 @@ grows.
 
 - `each { |i| } -> range` – run the block with each integer; returns the range.
 - `step(n) { |i| } -> range` – run the block with every `n`-th integer starting
-  at the range's start; `n` must be a positive integer. Returns the range.
+  at the range's start; `n` must be a positive integer. Iteration advances by the
+  stride directly, so a sparse step over a wide span only charges the step quota
+  for the values it yields. Returns the range.
 - `map { |i| } -> array` – collect the block's result for each integer.
 - `select { |i| } -> array` / `reject { |i| } -> array` – keep the integers for
   which the block is truthy (`select`) or falsy (`reject`).
