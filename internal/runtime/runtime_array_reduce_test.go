@@ -66,6 +66,16 @@ func TestArrayReduceSymbolShorthand(t *testing.T) {
 			source: `def run(); [[1], [2], [3]].reduce(:union); end`,
 			want:   NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
 		},
+		{
+			name:   "string operator shovel appends each element",
+			source: `def run(); [[1], 2, 3].reduce("<<"); end`,
+			want:   NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
+		},
+		{
+			name:   "string operator intersection",
+			source: `def run(); [[1, 2, 3], [2, 3], [2, 3, 4]].reduce("&"); end`,
+			want:   NewArray([]Value{NewInt(2), NewInt(3)}),
+		},
 	}
 
 	for _, tc := range cases {
