@@ -13,11 +13,35 @@ words = %w[alpha beta gamma]
 statuses = %i[draft published archived]
 ```
 
+The lowercase forms (`%w`, `%i`) are literal: whitespace separates the entries
+and only delimiters, whitespace, and the backslash itself can be escaped, so a
+sequence such as `\n` stays as the two characters `\` and `n`.
+
+The uppercase forms (`%W`, `%I`) apply double-quoted string semantics to each
+entry. They expand `#{...}` interpolation and process the usual escape
+sequences (`\t`, `\n`, and so on), while still splitting entries on whitespace
+that is neither escaped nor inside an interpolation. `%W` produces strings and
+`%I` produces symbols:
+
+```vibe
+name = "Ada"
+greeting = %W[hello #{name} world]      # ["hello", "Ada", "world"]
+labels   = %I[hello #{name} world]      # [:hello, :Ada, :world]
+spaced   = %W[a #{1 + 2} d]             # ["a", "3", "d"]
+escaped  = %W[tab\there a\ b]           # ["tab\there", "a b"]
+```
+
+Any of `[]`, `()`, `{}`, `<>`, or a repeated non-alphanumeric delimiter work
+for every form (`%W(a b)`, `%I{x y}`).
+
 ## Transformations
 
 Common enumerable helpers include:
 
 - `map` to transform elements.
+- `map_with_index` to transform elements while also passing each element's
+  0-based index to the block (`["a", "b"].map_with_index { |value, index| [value, index] }`
+  is `[["a", 0], ["b", 1]]`). It takes no arguments and requires a block.
 - `filter_map` to transform elements and keep only the truthy results in one
   pass, dropping falsy block returns (the fused equivalent of `map` then a
   truthiness filter).
@@ -38,9 +62,10 @@ Common enumerable helpers include:
 - `shift` / `shift(n)` removes element(s) from the front. Because the array is not mutated, it returns a `{ array:, shifted: }` hash mirroring `pop`: bare `shift` removes one element (`shifted` is the value or `nil` on an empty array) and `shift(n)` removes up to `n` (`shifted` is an array). `n` must be a non-negative integer.
 - `delete(value)` removes every element equal to `value`, returning a `{ array:, deleted: }` hash. Following Ruby, `deleted` is the last removed element when at least one match was removed and `nil` otherwise; when an element is equal to but a distinct object from `value` you get back the stored element, not your search argument. `delete(value) { default }` reports the block result on a miss instead.
 - `insert(index, *values)` returns a new array with `values` inserted before the element at `index`. A negative index counts back from the end and inserts *after* that element, so `insert(-1, x)` appends; an index past the end pads the gap with `nil`. A negative index whose magnitude exceeds the length raises. Inserting no values returns the array unchanged.
-- `sum` to total numeric arrays.
+- `sum` to total an array. `sum` starts from `0`; `sum(initial)` starts from `initial` (so `[1, 2, 3].sum(10)` is `16` and `["a", "b"].sum("")` is `"ab"`). A block transforms each element before it is added, so `[1, 2, 3].sum { |n| n * 2 }` is `12` and `sum(initial) { ... }` combines both. Each addition must operate on compatible operands, mirroring Ruby's `+`: summing a string with a non-string (such as the default `0` accumulator against string elements) raises rather than silently coercing the operands.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays. No argument, `nil`, or a negative depth flattens fully; `0` returns a shallow copy; a positive depth flattens that many levels and a `Float` depth is truncated to an integer. A nonnumeric depth raises.
+- `to_h` to build a hash from an array of two-element `[key, value]` pairs (the inverse of `Hash#to_a`). Keys convert through the same symbol/string hash-key rules used everywhere else, and duplicate keys keep the last pair. A block form `to_h { |element| [key, value] }` maps each element to its pair, so the receiver's elements need not already be pairs. A non-array element, a pair that is not exactly two elements, or a key that is not a symbol or string raises. In the block form the synthesized keys and values are charged against the memory quota as entries are inserted, so a block that produces fresh content per element cannot grow the result past the quota before the build completes.
 - `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
 - `chunk(size)` to split into fixed-size slices.
 - `window(size)` to build overlapping windows.
@@ -87,6 +112,7 @@ survive.
 [1].insert(3, "x")          # [1, nil, nil, "x"]
 [1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 [[1, 2], [3, 4]].transpose  # [[1, 3], [2, 4]]
+[[:a, 1], [:b, 2]].to_h     # { a: 1, b: 2 }
 [1, 2, 3].fill(0)           # [0, 0, 0]
 [1, 2, 3].fill(0, 1, 2)     # [1, 0, 0]
 [1, 2, 3].fill("x", 1..2)   # [1, "x", "x"]
@@ -182,34 +208,43 @@ end
 
 ## Indexed access
 
-- `at(index)` returns the single element at `index`, counting a negative index
-  back from the end. An out-of-range index returns `nil` rather than raising, so
-  it never goes out of bounds the way bracket access does. It agrees with
-  `[index]` for every in-range non-negative index.
-- `slice(index)` mirrors `at(index)`, returning the single element (or `nil`
-  out of range).
-- `slice(start, length)` returns a new subarray of up to `length` elements
+Bracket access mirrors Ruby's `Array#[]` across three selector shapes, and
+`at` and `slice` are method-call spellings of the same behavior.
+
+- `array[index]` returns the single element at `index`, counting a negative
+  index back from the end. An out-of-range index returns `nil` rather than
+  raising (`[10, 20, 30][-1]` is `30`, `[1][5]` is `nil`).
+- `array[start, length]` returns a new subarray of up to `length` elements
   starting at `start`. A negative `start` counts back from the end. A `start`
   exactly equal to the length with a non-negative `length` yields `[]`, while a
   `start` past the length or a negative `length` returns `nil`. An oversized
   `length` is clamped to the remaining elements.
-- `slice(range)` returns a new subarray selected by the range bounds, aligning
-  with the range slicing already available for strings. Negative bounds count
-  back from the end, an exclusive range drops its end, an end before begin yields
-  `[]`, and a begin past the length returns `nil`.
+- `array[range]` returns a new subarray selected by the range bounds. Negative
+  bounds count back from the end, an exclusive range drops its end, an end before
+  begin yields `[]`, and a begin past the length returns `nil`.
+- `at(index)` is the single-index form spelled as a method call; it agrees with
+  `[index]` for every index.
+- `slice(index)` mirrors `at(index)`; `slice(start, length)` and `slice(range)`
+  mirror the two-argument and range bracket forms.
+
+A negative index also works on the left of an assignment (`array[-1] = value`
+updates the last element); an index outside the array raises rather than
+auto-extending it.
 
 Indexes and lengths accept `Float` values, which are truncated toward zero like
 Ruby's `to_int`; any other type raises. The subarray forms always return a fresh
 copy, so mutating the result never touches the original array.
 
 ```vibe
+[10, 20, 30][-1]            # 30
+[1][5]                      # nil
+[10, 20, 30, 40][1, 2]      # [20, 30]
+[10, 20, 30][3, 1]          # [] (start at the length)
+[10, 20, 30][4, 1]          # nil (start past the length)
+[1, 2, 3, 4][1..2]          # [2, 3]
+[1, 2, 3, 4][-3..-1]        # [2, 3, 4]
 [10, 20, 30].at(-1)         # 30
-[10, 20, 30].at(9)          # nil
 [10, 20, 30, 40].slice(1, 2) # [20, 30]
-[10, 20, 30].slice(3, 1)    # [] (start at the length)
-[10, 20, 30].slice(4, 0)    # nil (start past the length)
-[1, 2, 3, 4].slice(1..2)    # [2, 3]
-[1, 2, 3, 4].slice(-3..-1)  # [2, 3, 4]
 ```
 
 ## Prefix and pattern filtering
@@ -251,6 +286,8 @@ receiver.
 - `each_cons(n)` yields every sliding window of length `n`; an array shorter than
   `n` yields nothing. `n` must be a positive integer. Returns `nil`.
 - `reverse_each` yields values from last to first and returns the receiver.
+- `each_with_index` yields each element along with its 0-based index and returns
+  the receiver. It takes no arguments and requires a block.
 - `cycle(n)` yields the whole array `n` times. A non-positive `n` yields nothing.
   Omitting `n` or passing `nil` cycles forever; the step quota and context
   cancellation bound the otherwise unbounded loop. Returns `nil`.
@@ -277,6 +314,9 @@ end                                 # yields 3, 2, 1
 [1, 2].cycle(2) do |value|
   value + 1
 end                                 # yields 1, 2, 1, 2
+["a", "b"].each_with_index do |value, index|
+  [value, index]
+end                                 # yields ("a", 0) then ("b", 1)
 ```
 
 ## Ordering and grouping

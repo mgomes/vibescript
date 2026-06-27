@@ -204,9 +204,15 @@ content and integers do not match equal-looking floats.
 
 ## Access helpers
 
-- `fetch(key, default=nil)` to supply defaults for missing keys.
+- `fetch(key, default)` returns the value for `key`. Like Ruby, a missing key is
+  treated as exceptional: when no `default` argument and no block are supplied,
+  `fetch` raises `key not found`. Supply a `default` to return instead of
+  raising, or pass a block to compute the fallback from the requested key. When
+  both a `default` and a block are supplied, the block supersedes the default and
+  is evaluated on a miss, matching Ruby. Use `[]` or `dig` when a missing key
+  should yield `nil` rather than raise.
 - `fetch_values(*keys)` returns the values for several keys at once, in the
-  requested order. Unlike `fetch`, it raises when a key is absent. Pass a block
+  requested order. Like `fetch`, it raises when a key is absent. Pass a block
   to compute a replacement for each missing key instead of raising.
 - `dig(*path)` for nested lookup. A path component descends one level: a
   symbol or string key into a hash, or an integer index into an array, so a
@@ -231,6 +237,11 @@ end
 
 ```vibe
 { a: 1, b: 2 }.values_at(:b, :c, :a)           # [2, nil, 1]
+{ a: 1, b: 2 }.fetch(:b)                        # 2
+{ a: 1 }.fetch(:missing)                        # raises "key not found: :missing"
+{ a: 1 }.fetch(:missing, 99)                    # 99
+{ a: 1 }.fetch(:missing) { |k| k }             # :missing
+{ a: 1 }.fetch(:missing, 99) { |k| k }         # :missing (block supersedes default)
 { a: 1, b: 2 }.fetch_values(:a, :b)            # [1, 2]
 { a: 1 }.fetch_values(:a, :missing)            # raises "key not found: :missing"
 { a: 1 }.fetch_values(:a, :missing) { |k| k }  # [1, :missing]
@@ -338,9 +349,30 @@ end
 
 - `keys` and `values`
 - `each`, `each_key`, `each_value`
+- `to_a` returns the `[key, value]` pairs as a nested array, with keys exposed as
+  symbols. It is the inverse of `Array#to_h` and equivalent to `flatten(0)`. The
+  materialization charges its output (the pair arrays and the sorted key scratch)
+  against the memory quota as the pairs accumulate, and charges the step quota per
+  pair while honoring context cancellation, so a large hash stays bounded rather
+  than allocating the whole nested array before the runtime can reject it.
 
-`keys`, `values`, `flatten`, and block-based hash iteration process entries in
-sorted key order for deterministic behavior.
+```vibe
+{ a: 1, b: 2 }.to_a # [[:a, 1], [:b, 2]]
+```
+
+- `each_with_index` yields each entry's `[key, value]` pair (keys exposed as
+  symbols) plus its 0-based index and returns the receiver. Matching Ruby's
+  `Hash#each_with_index`, the pair is the first block parameter and the index the
+  second, so `{ b: 2, a: 1 }.each_with_index { |pair, index| ... }` yields
+  `([:a, 1], 0)` then `([:b, 2], 1)`.
+- `map_with_index` yields the same `[key, value]` pair plus index and collects
+  each block result into a new array (`{ b: 2, a: 1 }.map_with_index { |pair, index| [pair[0], index] }`
+  is `[[:a, 0], [:b, 1]]`). It takes no arguments and requires a block.
+
+`keys`, `values`, `flatten`, `to_a`, and block-based hash iteration process
+entries in sorted key order for deterministic behavior. Because the index follows
+that sorted order, it stays stable across runs even though Go map storage is
+unordered.
 
 A `for` loop may also iterate a hash directly, mirroring Ruby's loop over
 `each`. Each iteration binds a two-element `[key, value]` pair (keys exposed as

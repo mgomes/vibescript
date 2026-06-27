@@ -266,6 +266,17 @@ func freshArrayBlockValue(width int) Value {
 	return NewBlock(nil, body, newEnv(nil))
 }
 
+// freshStringBlockValue builds a block whose body is a single string literal of
+// `payloadBytes` bytes. The literal's backing lives in the AST, which the memory
+// estimator never walks, so every invocation yields a large string value that is
+// reachable only as the Go-local block result — exactly the off-stack contribution
+// Array#sum holds while it builds the next accumulator.
+func freshStringBlockValue(payloadBytes int) Value {
+	pos := Position{Line: 1, Column: 1}
+	body := []Statement{&ExprStmt{Expr: &StringLiteral{Value: string(make([]byte, payloadBytes)), Position: pos}, Position: pos}}
+	return NewBlock(nil, body, newEnv(nil))
+}
+
 // TestArrayFilterMapChargesAccumulatedResultsDuringIteration guards against the
 // accumulating result array escaping the memory quota while the loop runs. The
 // out slice is local, so it is invisible to step()'s slow-path checkMemory() and

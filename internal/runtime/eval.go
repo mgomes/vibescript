@@ -15,6 +15,11 @@ const (
 	maxInt64FloatExclusive = 9223372036854775808.0
 )
 
+// blockGivenName is the reserved Kernel-style predicate that reports whether the
+// current call was supplied a block, mirroring Ruby's block_given?. It is
+// resolved before ordinary variable lookup so it cannot be shadowed.
+const blockGivenName = "block_given?"
+
 func (exec *Execution) evalExpression(expr Expression, env *Env) (Value, error) {
 	return exec.evalExpressionWithAuto(expr, env, true)
 }
@@ -25,6 +30,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	}
 	switch e := expr.(type) {
 	case *Identifier:
+		if e.Name == blockGivenName {
+			return NewBool(blockGivenInCurrentCall(env)), nil
+		}
 		val, ok := env.Get(e.Name)
 		if !ok {
 			// allow implicit self method lookup
@@ -53,6 +61,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return NewString(e.Value), nil
 	case *InterpolatedString:
 		return exec.evalInterpolatedStringLiteral(e, env)
+	case *InterpolatedSymbol:
+		return exec.evalInterpolatedSymbolLiteral(e, env)
 	case *BoolLiteral:
 		return NewBool(e.Value), nil
 	case *NilLiteral:
@@ -60,33 +70,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *SymbolLiteral:
 		return NewSymbol(e.Name), nil
 	case *ArrayLiteral:
-		elems := make([]Value, len(e.Elements))
-		for i, el := range e.Elements {
-			val, err := exec.evalExpressionWithAuto(el, env, true)
-			if err != nil {
-				return NewNil(), err
-			}
-			elems[i] = val
-		}
-		return NewArray(elems), nil
+		return exec.evalArrayLiteral(e, env)
 	case *HashLiteral:
-		entries := make(map[string]Value, len(e.Pairs))
-		for _, pair := range e.Pairs {
-			keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
-			if err != nil {
-				return NewNil(), err
-			}
-			key, err := valueToHashKey(keyVal)
-			if err != nil {
-				return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
-			}
-			val, err := exec.evalExpressionWithAuto(pair.Value, env, true)
-			if err != nil {
-				return NewNil(), err
-			}
-			entries[key] = val
-		}
-		return NewHash(entries), nil
+		return exec.evalHashLiteral(e, env)
 	case *UnaryExpr:
 		return exec.evalUnaryExpr(e, env)
 	case *BinaryExpr:
@@ -173,24 +159,42 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 }
 
 func (exec *Execution) evalInterpolatedStringLiteral(lit *InterpolatedString, env *Env) (Value, error) {
+	text, err := exec.buildInterpolatedString(lit.Parts, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(text), nil
+}
+
+func (exec *Execution) evalInterpolatedSymbolLiteral(lit *InterpolatedSymbol, env *Env) (Value, error) {
+	name, err := exec.buildInterpolatedString(lit.Parts, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewSymbol(name), nil
+}
+
+// buildInterpolatedString materializes the text of an interpolated string or
+// symbol from its parts, honoring the sandbox step and memory quotas.
+func (exec *Execution) buildInterpolatedString(parts []StringPart, env *Env) (string, error) {
 	var sb strings.Builder
-	for _, part := range lit.Parts {
+	for _, part := range parts {
 		switch p := part.(type) {
 		case StringText:
 			if err := exec.appendInterpolatedChunk(&sb, p.Text); err != nil {
-				return NewNil(), err
+				return "", err
 			}
 		case StringExpr:
 			val, err := exec.evalExpressionWithAuto(p.Expr, env, true)
 			if err != nil {
-				return NewNil(), err
+				return "", err
 			}
 			if err := exec.appendInterpolatedValue(&sb, val); err != nil {
-				return NewNil(), err
+				return "", err
 			}
 		}
 	}
-	return NewString(sb.String()), nil
+	return sb.String(), nil
 }
 
 // appendInterpolatedChunk writes a literal text chunk to the interpolation
@@ -322,6 +326,78 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	return nil
 }
 
+// evalArrayLiteral evaluates an array literal element by element, charging each
+// new element against the memory quota as it lands in the Go-local backing slice.
+// Each evaluated element stays live in that slice until NewArray binds it, so the
+// running footprint must include every element gathered so far; a literal whose
+// elements are fresh temporaries (for example [big[0, n], big[0, n]], where each
+// bracket slice is a fresh copy invisible to the base estimator) would otherwise
+// stack several copies past the quota before any later statement check observed
+// them. The accumulator snapshots the baseline once and charges each element
+// incrementally, deduplicating elements aliased by an environment root.
+func (exec *Execution) evalArrayLiteral(e *ArrayLiteral, env *Env) (Value, error) {
+	acc := newArrayBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	elems := make([]Value, 0, len(e.Elements))
+	for _, el := range e.Elements {
+		val, err := exec.evalExpressionWithAuto(el, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		elems = append(elems, val)
+		if err := acc.add(val, cap(elems)); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewArray(elems), nil
+}
+
+// evalHashLiteral evaluates a hash literal pair by pair, charging each new entry
+// against the memory quota as it lands in the Go-local map. The partially built
+// map is reachable from no environment until NewHash binds it, so the running
+// footprint must include every entry inserted so far; a literal whose values are
+// fresh temporaries (for example {a: big[0, n], b: big[0, n]}) would otherwise
+// stack several copies past the quota before any later statement check observed
+// them. The accumulator reserves the entry backing up front and charges each
+// entry's key and value payloads incrementally, deduplicating payloads aliased by
+// an environment root.
+func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) {
+	var acc *hashLiteralBuildAccumulator
+	if exec.memoryQuota > 0 {
+		acc = newHashLiteralBuildAccumulator(exec)
+		if err := acc.reserveBacking(len(e.Pairs)); err != nil {
+			return NewNil(), err
+		}
+	}
+	entries := make(map[string]Value, len(e.Pairs))
+	for _, pair := range e.Pairs {
+		keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		key, err := valueToHashKey(keyVal)
+		if err != nil {
+			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
+		}
+		val, err := exec.evalExpressionWithAuto(pair.Value, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		if acc != nil {
+			_, replacing := entries[key]
+			if replacing || acc.replacing {
+				err = acc.replaceEntry(key, val, entries)
+			} else {
+				err = acc.addDistinctEntry(key, val)
+			}
+			if err != nil {
+				return NewNil(), err
+			}
+		}
+		entries[key] = val
+	}
+	return NewHash(entries), nil
+}
+
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 	right, err := exec.evalExpressionWithAuto(e.Right, env, true)
 	if err != nil {
@@ -365,58 +441,228 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	if err := exec.checkMemoryWith(obj); err != nil {
 		return NewNil(), err
 	}
-	idx, err := exec.evalExpressionWithAuto(e.Index, env, true)
+	indices, err := exec.evalIndexSelectors(e, obj, env)
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(idx); err != nil {
+	result, err := exec.evalIndexValue(e, obj, indices)
+	if err != nil {
 		return NewNil(), err
 	}
-	return exec.evalIndexValue(e, obj, idx)
+	// The start/length and range forms return a fresh subarray or substring that
+	// lives only on the Go stack here; an enclosing literal keeps prior elements
+	// in Go-local slots its own per-element check cannot see, so a form such as
+	// [big[0, n], big[0, n]] could stack several slice copies past the quota
+	// before a later statement check observed them. Charge the receiver, the live
+	// selectors, and the fresh result together so the peak is rejected at the
+	// source. The estimator deduplicates the receiver and any env-reachable
+	// selectors, so a plain element read (which returns an aliased value, not a
+	// fresh allocation) charges nothing beyond what the earlier checks already did.
+	// Skip building the charge slice entirely when no quota is enforced, keeping
+	// the common indexed read allocation-free.
+	if exec.memoryQuota > 0 {
+		chargeable := make([]Value, 0, len(indices)+2)
+		chargeable = append(chargeable, obj)
+		chargeable = append(chargeable, indices...)
+		chargeable = append(chargeable, result)
+		if err := exec.checkMemoryWith(chargeable...); err != nil {
+			return NewNil(), err
+		}
+	}
+	return result, nil
 }
 
-func (exec *Execution) evalIndexValue(e *IndexExpr, obj, idx Value) (Value, error) {
+// evalIndexSelectors evaluates every selector between the brackets, charging
+// the receiver together with the accumulated selectors against the memory quota
+// as each materializes. The receiver stays live in the caller's obj while
+// selectors are evaluated, yet a fresh receiver (a large literal hash/array
+// indexed inline) is not reachable from any environment, so the base walk never
+// sees it; charging it alongside the selectors here rejects a peak of receiver +
+// selectors at the source rather than after evalIndexValue, whose arity/type
+// error would otherwise skip the later combined check and mask the quota breach.
+// Every evaluated selector also stays live in indices until dispatch, so each
+// check must account for all selectors gathered so far; charging only the
+// current one would undercount a multi-selector form whose earlier selectors are
+// still resident (the parser permits arbitrary comma-separated selectors). The
+// estimator deduplicates against the reachable roots, so the receiver and any
+// selector already bound to an environment each contribute their footprint only
+// once.
+func (exec *Execution) evalIndexSelectors(e *IndexExpr, obj Value, env *Env) ([]Value, error) {
+	indices := make([]Value, 0, len(e.Indices))
+	// Reuse a single charge buffer (receiver followed by the live selectors) across
+	// iterations so a multi-selector read allocates it at most once, and skip it
+	// entirely when no quota is enforced to keep the common indexed read
+	// allocation-free.
+	var charge []Value
+	if exec.memoryQuota > 0 {
+		charge = make([]Value, 1, len(e.Indices)+1)
+		charge[0] = obj
+	}
+	for _, expr := range e.Indices {
+		idx, err := exec.evalExpressionWithAuto(expr, env, true)
+		if err != nil {
+			return nil, err
+		}
+		indices = append(indices, idx)
+		if exec.memoryQuota > 0 {
+			charge = append(charge[:1], indices...)
+			if err := exec.checkMemoryWith(charge...); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return indices, nil
+}
+
+// evalIndexValue performs a bracket read against an already-evaluated receiver
+// and selectors. Arrays and strings support Ruby's single-index (with negative
+// indexing), start/length, and range forms; an out-of-range single index yields
+// nil rather than raising, matching Array#[] and String#[]. Hashes and objects
+// take exactly one key.
+func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) (Value, error) {
 	switch obj.Kind() {
 	case KindString:
-		i, err := valueToInt(idx)
-		if err != nil {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
-		}
-		runes := []rune(obj.String())
-		if i < 0 || i >= len(runes) {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "string index out of bounds")
-		}
-		return NewString(string(runes[i])), nil
+		return exec.indexString(e, obj.String(), indices)
 	case KindArray:
-		i, err := valueToInt(idx)
-		if err != nil {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
-		}
-		arr := obj.Array()
-		if i < 0 || i >= len(arr) {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "array index out of bounds")
-		}
-		return arr[i], nil
+		return exec.indexArray(e, obj, indices)
 	case KindHash, KindObject:
-		key, err := valueToHashKey(idx)
-		if err != nil {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
-		}
-		val, ok := obj.Hash()[key]
-		if ok {
-			return val, nil
-		}
-		// A missing key consults the hash's Ruby-style default. Only KindHash
-		// carries default metadata (objects never do), so a missing object key
-		// stays nil. A default proc takes precedence over a default value and is
-		// invoked with (hash, key); the key keeps its original symbol/string
-		// value so the proc can render it the way Ruby does.
-		if obj.Kind() == KindHash {
-			return exec.hashMissingKeyDefault(obj, idx, e.Index.Pos())
-		}
-		return NewNil(), nil
+		return exec.indexHash(e, obj, indices)
 	default:
 		return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
+	}
+}
+
+// indexArray implements arr[...] reads. The single-selector form mirrors
+// Array#[]: a single integer (negative counts from the end) returns the element
+// or nil when out of range, while a range returns a fresh subarray or nil when
+// the begin bound falls outside the array. The two-selector form is Array#[]
+// start/length, returning a fresh subarray or nil.
+func (exec *Execution) indexArray(e *IndexExpr, receiver Value, indices []Value) (Value, error) {
+	arr := receiver.Array()
+	switch len(indices) {
+	case 1:
+		if indices[0].Kind() == KindRange {
+			window, ok := arraySliceRangeWindow(len(arr), indices[0].Range())
+			if !ok {
+				return NewNil(), nil
+			}
+			if err := exec.reserveArraySliceSlots(receiver, indices, window.length); err != nil {
+				return NewNil(), err
+			}
+			return NewArray(copyArraySliceWindow(arr, window)), nil
+		}
+		index, err := exec.indexSelectorToInt(e, indices[0], 0)
+		if err != nil {
+			return NewNil(), err
+		}
+		return arrayElementAt(arr, index), nil
+	case 2:
+		start, err := exec.indexSelectorToInt(e, indices[0], 0)
+		if err != nil {
+			return NewNil(), err
+		}
+		length, err := exec.indexSelectorToInt(e, indices[1], 1)
+		if err != nil {
+			return NewNil(), err
+		}
+		window, ok := arraySliceStartLengthWindow(len(arr), start, length)
+		if !ok {
+			return NewNil(), nil
+		}
+		if err := exec.reserveArraySliceSlots(receiver, indices, window.length); err != nil {
+			return NewNil(), err
+		}
+		return NewArray(copyArraySliceWindow(arr, window)), nil
+	default:
+		return NewNil(), exec.errorAt(e.Position, "array index expects one index, a start and length, or a range")
+	}
+}
+
+func (exec *Execution) reserveArraySliceSlots(receiver Value, indices []Value, slotCount int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	return newArrayBuildAccumulator(exec, receiver, indices, nil, NewNil()).reserveSlots(slotCount)
+}
+
+// indexString implements str[...] reads as rune (character) operations. The
+// single-selector form mirrors String#[]: a single integer (negative counts
+// from the end) returns the one-character substring or nil when out of range,
+// while a range returns a substring or nil. The two-selector form is String#[]
+// start/length.
+func (exec *Execution) indexString(e *IndexExpr, text string, indices []Value) (Value, error) {
+	switch len(indices) {
+	case 1:
+		if indices[0].Kind() == KindRange {
+			substr, ok := stringRuneRangeSlice(text, indices[0].Range())
+			if !ok {
+				return NewNil(), nil
+			}
+			return NewString(substr), nil
+		}
+		index, err := exec.indexSelectorToInt(e, indices[0], 0)
+		if err != nil {
+			return NewNil(), err
+		}
+		return stringSliceCharAt(text, index), nil
+	case 2:
+		start, err := exec.indexSelectorToInt(e, indices[0], 0)
+		if err != nil {
+			return NewNil(), err
+		}
+		length, err := exec.indexSelectorToInt(e, indices[1], 1)
+		if err != nil {
+			return NewNil(), err
+		}
+		substr, ok := stringRuneSlice(text, start, length)
+		if !ok {
+			return NewNil(), nil
+		}
+		return NewString(substr), nil
+	default:
+		return NewNil(), exec.errorAt(e.Position, "string index expects one index, a start and length, or a range")
+	}
+}
+
+// indexHash implements hash[key] and object[key] reads. Hashes and objects take
+// exactly one key; supplying multiple selectors is rejected because neither type
+// has Ruby slicing semantics.
+func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Value, error) {
+	if len(indices) != 1 {
+		return NewNil(), exec.errorAt(e.Position, "%s index expects a single key", obj.Kind())
+	}
+	idx := indices[0]
+	key, err := valueToHashKey(idx)
+	if err != nil {
+		return NewNil(), exec.errorAt(e.IndexPos(0), "%s", err.Error())
+	}
+	val, ok := obj.Hash()[key]
+	if ok {
+		return val, nil
+	}
+	// A missing key consults the hash's Ruby-style default. Only KindHash
+	// carries default metadata (objects never do), so a missing object key
+	// stays nil. A default proc takes precedence over a default value and is
+	// invoked with (hash, key); the key keeps its original symbol/string
+	// value so the proc can render it the way Ruby does.
+	if obj.Kind() == KindHash {
+		return exec.hashMissingKeyDefault(obj, idx, e.IndexPos(0))
+	}
+	return NewNil(), nil
+}
+
+// indexSelectorToInt converts the selector at position i to an integer index,
+// reporting the selector's own source position on failure.
+func (exec *Execution) indexSelectorToInt(e *IndexExpr, idx Value, i int) (int, error) {
+	switch idx.Kind() {
+	case KindInt, KindFloat:
+		n, err := valueToInt(idx)
+		if err != nil {
+			return 0, exec.errorAt(e.IndexPos(i), "%s", err.Error())
+		}
+		return n, nil
+	default:
+		return 0, exec.errorAt(e.IndexPos(i), "index must be integer")
 	}
 }
 
@@ -817,7 +1063,15 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 	case *ScopeExpr:
 		return expressionCapturesCurrentEnv(e.Object)
 	case *IndexExpr:
-		return expressionCapturesCurrentEnv(e.Object) || expressionCapturesCurrentEnv(e.Index)
+		if expressionCapturesCurrentEnv(e.Object) {
+			return true
+		}
+		for _, index := range e.Indices {
+			if expressionCapturesCurrentEnv(index) {
+				return true
+			}
+		}
+		return false
 	case *DestructureTarget:
 		for _, elem := range e.Elements {
 			if expressionCapturesCurrentEnv(elem.Target) {
@@ -870,16 +1124,22 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		}
 		return false
 	case *InterpolatedString:
-		for _, part := range e.Parts {
-			stringExpr, ok := part.(StringExpr)
-			if ok && expressionCapturesCurrentEnv(stringExpr.Expr) {
-				return true
-			}
-		}
-		return false
+		return stringPartsCaptureCurrentEnv(e.Parts)
+	case *InterpolatedSymbol:
+		return stringPartsCaptureCurrentEnv(e.Parts)
 	default:
 		return true
 	}
+}
+
+func stringPartsCaptureCurrentEnv(parts []StringPart) bool {
+	for _, part := range parts {
+		stringExpr, ok := part.(StringExpr)
+		if ok && expressionCapturesCurrentEnv(stringExpr.Expr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value) error {
@@ -897,7 +1157,7 @@ func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value V
 }
 
 func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
-	block, ok := env.Get("__block__")
+	block, ok := env.lookupCallBlock()
 	if !ok || block.Kind() == KindNil {
 		return NewNil(), exec.errorAt(expr.Pos(), "no block given")
 	}
@@ -1008,14 +1268,11 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return err
 		}
-		idx, err := exec.evalExpression(t.Index, env)
+		indices, err := exec.evalIndexSelectors(t, obj, env)
 		if err != nil {
 			return err
 		}
-		if err := exec.checkMemoryWith(idx); err != nil {
-			return err
-		}
-		return exec.assignToEvaluatedIndex(t, obj, idx, value)
+		return exec.assignToEvaluatedIndex(t, obj, indices, value)
 	default:
 		return exec.errorAt(target.Pos(), "invalid assignment target")
 	}
@@ -1033,23 +1290,38 @@ func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Va
 	}
 }
 
-func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value Value) error {
+// assignToEvaluatedIndex writes value at a bracket target. Array assignment
+// accepts a single integer index, counting a negative index back from the end
+// (Ruby's arr[-1] = x); an index outside the array raises rather than
+// auto-extending. Hash and object assignment store under a single key. Slice
+// assignment (start/length or range targets) is not supported.
+func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indices []Value, value Value) error {
 	switch obj.Kind() {
 	case KindArray:
+		if len(indices) != 1 {
+			return exec.errorAt(target.Position, "array index assignment expects a single index")
+		}
 		arr := obj.Array()
-		i, err := valueToInt(idx)
+		i, err := exec.indexSelectorToInt(target, indices[0], 0)
 		if err != nil {
-			return exec.errorAt(target.Index.Pos(), "%s", err.Error())
+			return err
 		}
-		if i < 0 || i >= len(arr) {
-			return exec.errorAt(target.Index.Pos(), "array index out of bounds")
+		pos := i
+		if pos < 0 {
+			pos += len(arr)
 		}
-		arr[i] = value
+		if pos < 0 || pos >= len(arr) {
+			return exec.errorAt(target.IndexPos(0), "array index out of bounds")
+		}
+		arr[pos] = value
 		return nil
 	case KindHash, KindObject:
-		key, err := valueToHashKey(idx)
+		if len(indices) != 1 {
+			return exec.errorAt(target.Position, "%s index assignment expects a single key", obj.Kind())
+		}
+		key, err := valueToHashKey(indices[0])
 		if err != nil {
-			return exec.errorAt(target.Index.Pos(), "%s", err.Error())
+			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
 		}
 		obj.Hash()[key] = value
 		return nil
@@ -1921,19 +2193,16 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return NewNil(), nil, err
 		}
-		idx, err := exec.evalExpressionWithAuto(t.Index, env, true)
+		indices, err := exec.evalIndexSelectors(t, obj, env)
 		if err != nil {
 			return NewNil(), nil, err
 		}
-		if err := exec.checkMemoryWith(idx); err != nil {
-			return NewNil(), nil, err
-		}
-		current, err := exec.evalIndexValue(t, obj, idx)
+		current, err := exec.evalIndexValue(t, obj, indices)
 		if err != nil {
 			return NewNil(), nil, err
 		}
 		return current, func(value Value) error {
-			return exec.assignToEvaluatedIndex(t, obj, idx, value)
+			return exec.assignToEvaluatedIndex(t, obj, indices, value)
 		}, nil
 	case *IvarExpr, *ClassVarExpr:
 		current, err := exec.evalExpression(t, env)

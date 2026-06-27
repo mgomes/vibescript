@@ -169,6 +169,34 @@ func (exec *Execution) step() error {
 	return nil
 }
 
+// checkStepBudgetFor reports whether at least n more steps may be charged
+// without exhausting the step quota, and whether the context is still live. It
+// is used by builtins that will charge one step per element of a known-size
+// receiver: when the remaining quota cannot cover all n steps the per-element
+// loop is guaranteed to fail, so rejecting up front lets such a builtin skip bulk
+// work (for example sorting a hash's keys) that the loop would otherwise perform
+// before the first step() fails. A non-positive n performs only the cancellation
+// check, so callers can pass a receiver length directly even when it is zero
+// without requiring an element step that the loop would never charge. Like step,
+// the per-element charge still observes the quota and cancellation, so this is
+// purely an early-out and never accepts a build the loop would reject.
+func (exec *Execution) checkStepBudgetFor(n int) error {
+	if n < 0 {
+		n = 0
+	}
+	if n > 0 && exec.quota > 0 && exec.quota-exec.steps < n {
+		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
+	}
+	if exec.ctx != nil {
+		select {
+		case <-exec.ctx.Done():
+			return exec.ctx.Err()
+		default:
+		}
+	}
+	return nil
+}
+
 func (exec *Execution) errorAt(pos Position, format string, args ...any) error {
 	return exec.newRuntimeError(fmt.Sprintf(format, args...), pos)
 }

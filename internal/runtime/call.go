@@ -8,6 +8,15 @@ import (
 	"strings"
 )
 
+// blockGivenInCurrentCall reports whether the call that owns env was supplied a
+// block, mirroring Ruby's block_given?. It returns false at the top level and in
+// calls that received no block. The block is read from the enclosing call
+// frame's dedicated slot, so a script binding cannot shadow the predicate.
+func blockGivenInCurrentCall(env *Env) bool {
+	block, ok := env.lookupCallBlock()
+	return ok && block.Kind() != KindNil
+}
+
 func valueCanContainBuiltins(val Value) bool {
 	switch val.Kind() {
 	case KindBuiltin, KindArray, KindHash, KindObject, KindClass, KindInstance, KindFunction, KindBlock:
@@ -175,11 +184,11 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 }
 
 func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
-	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+2)
+	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+1)
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
 	}
-	callEnv.Define("__block__", block)
+	callEnv.setCallBlock(block)
 	if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
 		return NewNil(), err
 	}
@@ -550,6 +559,12 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 	env.rangeStaticBindings(func(name string, val Value) {
 		clone.DefineStatic(name, r.rebindValue(val))
 	})
+	// A call frame captured by an escaped closure carries the block its method
+	// received; preserve and rebind it so a re-entering closure's yield or
+	// block_given? still resolves to that block re-rooted onto the live call.
+	if env.hasCallBlock {
+		clone.setCallBlock(r.rebindValue(env.callBlock))
+	}
 	return clone
 }
 
@@ -684,6 +699,11 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 
 func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctionRebinder, fn *ScriptFunction, args []Value, keywords map[string]Value) (*Env, error) {
 	callEnv := newEnvWithCapacity(root, len(fn.Params))
+	// The host entry call never supplies a block, but the frame is still a call
+	// frame: mark it with a nil block so block_given? reports false, yield
+	// raises, and a &block parameter binds nil, keeping the invariant that every
+	// call frame carries its own block slot.
+	callEnv.setCallBlock(NewNil())
 	callArgs := rebinder.rebindValues(args)
 	callKeywords := rebinder.rebindKeywords(keywords)
 	if err := exec.bindFunctionArgs(fn, callEnv, callArgs, callKeywords, fn.Pos); err != nil {
@@ -748,11 +768,41 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		return callee, receiver, nil
 	}
 
+	if ident, ok := call.Callee.(*Identifier); ok {
+		return exec.evalIdentifierCallTarget(ident, env)
+	}
+
 	callee, err := exec.evalExpressionWithAuto(call.Callee, env, false)
 	if err != nil {
 		return NewNil(), NewNil(), err
 	}
 	return callee, NewNil(), nil
+}
+
+// evalIdentifierCallTarget resolves a bare identifier used as a call target. A
+// local variable binds with a nil receiver (it is a free-standing callable),
+// while an identifier that falls through to an implicit-self member binds self
+// as the receiver so builtins resolved off self (such as the universal
+// introspection predicates) receive the correct receiver.
+func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env) (Value, Value, error) {
+	// Mirror the per-expression step charged by evalExpressionWithAuto, which
+	// this branch replaces for identifier callees, so step accounting (and the
+	// statement position a step-quota limit reports) is unchanged.
+	if err := exec.step(); err != nil {
+		return NewNil(), NewNil(), err
+	}
+	if val, ok := env.Get(ident.Name); ok {
+		env.clearArrayAppendBuffer(ident.Name)
+		return val, NewNil(), nil
+	}
+	if self, hasSelf := env.Get("self"); hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+		member, err := exec.getMember(self, ident.Name, ident.Pos())
+		if err != nil {
+			return NewNil(), NewNil(), err
+		}
+		return member, self, nil
+	}
+	return NewNil(), NewNil(), exec.errorAt(ident.Pos(), "undefined variable %s%s", ident.Name, didYouMean(ident.Name, env.visibleNames()))
 }
 
 func (exec *Execution) evalDirectMemberMethodCall(receiver Value, property string, pos Position) (Value, bool, error) {
@@ -992,6 +1042,10 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		return exec.evalMemberCallExpr(call, member, env)
 	}
 
+	if ident, ok := call.Callee.(*Identifier); ok && ident.Name == blockGivenName {
+		return exec.evalBlockGivenCall(call, env)
+	}
+
 	callee, receiver, err := exec.evalCallTarget(call, env)
 	if err != nil {
 		return NewNil(), err
@@ -1021,6 +1075,19 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+// evalBlockGivenCall handles the parenthesized block_given?() form. Like Ruby's
+// Kernel#block_given?, it accepts no arguments and reports whether the enclosing
+// call was supplied a block.
+func (exec *Execution) evalBlockGivenCall(call *CallExpr, env *Env) (Value, error) {
+	if len(call.Args) != 0 || len(call.KwArgs) != 0 {
+		return NewNil(), exec.errorAt(call.Pos(), "%s takes no arguments", blockGivenName)
+	}
+	if call.Block != nil {
+		return NewNil(), exec.errorAt(call.Pos(), "%s does not accept a block", blockGivenName)
+	}
+	return NewBool(blockGivenInCurrentCall(env)), nil
 }
 
 func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
@@ -1321,8 +1388,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 			}
 			val = NewHash(rest)
 		case ParamBlock:
-			block, ok := env.Get("__block__")
-			if ok {
+			if block, ok := env.lookupCallBlock(); ok {
 				val = block
 			} else {
 				val = NewNil()

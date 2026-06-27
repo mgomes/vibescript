@@ -124,9 +124,9 @@ func TestItselfReturnsReceiver(t *testing.T) {
 func TestItselfPreservesReferenceIdentity(t *testing.T) {
 	t.Parallel()
 	hash := NewHash(map[string]Value{"k": NewInt(1)})
-	member, ok := universalMember(hash, "itself")
+	member, ok := universalValueMember(hash, "itself")
 	if !ok {
-		t.Fatal("universalMember(itself) did not resolve")
+		t.Fatal("universalValueMember(itself) did not resolve")
 	}
 	builtin := valueBuiltin(member)
 	if builtin == nil {

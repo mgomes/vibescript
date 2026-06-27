@@ -153,6 +153,28 @@ Private methods are callable only on the current receiver (the same instance or
 class context). Calls like `other.secret` raise a runtime `private method`
 error.
 
+## Introspection
+
+Instances respond to the Ruby-style introspection predicates `is_a?`,
+`kind_of?`, `instance_of?`, and `respond_to?`:
+
+```vibe
+class User
+end
+
+user = User.new
+user.is_a?(User)            # true
+user.instance_of?(User)     # true
+user.respond_to?(:greet)    # false  (no such method)
+```
+
+`is_a?`/`kind_of?`/`instance_of?` currently test direct class identity (there is
+no inheritance yet), so all three agree. `respond_to?` reports public methods;
+private methods report `false` externally but `true` when the receiver checks
+itself (or when called with `respond_to?(name, true)`). Instance variables are
+attributes, not methods, so they never respond. These predicates are documented
+in full in [stdlib_core_utilities.md](stdlib_core_utilities.md#object-introspection).
+
 ## Common Errors
 
 - Calling a missing method: `unknown member ...` / `unknown class member ...`

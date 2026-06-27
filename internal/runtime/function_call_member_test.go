@@ -1,8 +1,9 @@
 package runtime
 
 import (
-	"slices"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // TestFunctionValueCall covers Ruby-style fn.call(...) on script function
@@ -194,15 +195,17 @@ func exportedFunctionValue(t *testing.T, script *Script, names ...string) Value 
 
 // TestFunctionValueCallMemberSuggestion confirms the function member list is
 // wired into editor completion metadata. The list carries the function-specific
-// call member alongside the universal members (itself, eql?, equal?) exposed on
-// every value kind.
+// call member alongside the universal Object-level helpers (itself, nil?, eql?,
+// equal?, tap, yield_self) and the introspection predicates (respond_to?, is_a?,
+// kind_of?, instance_of?) exposed on every value kind.
 func TestFunctionValueCallMemberSuggestion(t *testing.T) {
 	t.Parallel()
 	names, ok := MemberCompletionNames()["function"]
 	if !ok {
 		t.Fatalf("MemberCompletionNames missing function entry")
 	}
-	if want := append([]string{"call"}, universalMemberNames...); !slices.Equal(names, want) {
-		t.Fatalf("function member completion = %v, want %v", names, want)
+	want := append([]string{"call"}, universalMemberNames...)
+	if diff := cmp.Diff(want, names); diff != "" {
+		t.Fatalf("function member completion mismatch (-want +got):\n%s", diff)
 	}
 }

@@ -18,13 +18,31 @@ Use this with focused guides in `docs/` for deeper examples.
 Vibescript supports these literal/value categories:
 
 - `nil`, `true`, `false`
-- integers and floats (`1`, `42`, `3.14`, `0xFF`, `0b1010`)
+- integers and floats (`1`, `42`, `3.14`, `1e3`, `1.5e-2`, `0xFF`, `0b1010`)
 - strings (`"hello"`, `"hello #{name}"`)
 - symbols (`:name`)
 - arrays (`[1, 2, 3]`)
 - hashes (`{name: "Ada", active: true}`)
 - ranges (`1..5`, `1...5`)
 - duration literals (`5.minutes`, `2.days`)
+
+Numeric literals accept underscores as visual separators between digits
+(`1_000`, `1_000.50`). Floats may use scientific notation with an `e`/`E`
+marker, an optional sign, and one or more exponent digits (`1e3`, `1.5e-2`,
+`1E6`, `1e1_0`). Any literal carrying an exponent is a float even without a
+decimal point, matching Ruby (`1e3` is `1000.0`). Exponent underscores are
+visual separators only between two digits. A literal whose exponent overflows
+the 64-bit float range saturates to `Infinity`. An `e`/`E` only opens an
+exponent when followed by a sign or digit; otherwise it begins a trailing
+identifier, so `5end` keeps the `end` keyword while `1e` and `1e_3` are
+rejected by the rule below.
+
+A numeric literal may not directly abut an identifier. Forms such as `1e3foo`,
+`123abc`, and `1.5x` are reported as parse errors rather than splitting into a
+number followed by an identifier, matching Ruby. A keyword suffix is exempt
+because Ruby keeps the keyword (`5if cond` and `1e3if cond` are valid modifier
+statements). Committed-but-malformed exponents (`1e+`, `1e3_`, `1e3__4`) are
+likewise reported as parse errors.
 
 Hash literals support label keys (`name:`) and quoted string keys (`"name":`).
 Ruby's hash rocket syntax (`=>`) is not supported.
@@ -84,12 +102,19 @@ A leading `*` discards the values before the named targets:
 *, last = [1, 2, 3]
 ```
 
-Index assignment is supported for mutable collections:
+Index assignment is supported for mutable collections. Array targets accept a
+negative index, which counts back from the end:
 
 ```vibe
 items = [1, 2, 3]
 items[0] = 10
+items[-1] = 30
 ```
+
+Reading with `[]` mirrors Ruby's `Array#[]` and `String#[]`, including negative
+indexes, `value[start, length]`, and `value[range]` slices; see
+[Arrays](arrays.md#indexed-access) and [Strings](strings.md#bracket-access-stringselector)
+for the full semantics.
 
 Compound assignment is supported for single assignment targets, including
 variables, member targets, and index targets:
@@ -120,6 +145,9 @@ Function features:
 - Optional type annotations.
 - Optional return type annotations.
 - Optional block parameters.
+
+Run a supplied block with `yield`, and ask `block_given?` whether the current
+call was given one before yielding. See `docs/blocks.md` for details.
 
 Typed signature example:
 

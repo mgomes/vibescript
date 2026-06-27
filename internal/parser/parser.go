@@ -325,7 +325,11 @@ func (e *parseError) End() ast.Position { return e.end }
 func (e *parseError) Message() string { return e.msg }
 
 func (p *parser) errorExpected(tok ast.Token, expected string) {
-	if tok.Type == ast.TokenIllegal {
+	// Diagnostic illegal tokens carry a human-readable lexer message in the
+	// literal (such as a malformed numeric literal); surface it verbatim so
+	// the cause is clear. Plain illegal characters carry only the raw source
+	// rune, so they fall back to the generic "expected X, got invalid token".
+	if tok.Type == ast.TokenIllegal && tok.Diagnostic {
 		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
 		return
 	}
@@ -333,10 +337,11 @@ func (p *parser) errorExpected(tok ast.Token, expected string) {
 }
 
 func (p *parser) errorUnexpected(tok ast.Token) {
-	// The lexer stamps illegal tokens with a descriptive diagnostic in
-	// Literal (e.g. "invalid numeric literal"); surface it directly rather
-	// than the generic "unexpected token invalid token".
-	if tok.Type == ast.TokenIllegal && tok.Literal != "" {
+	// Diagnostic illegal tokens carry a human-readable lexer message in the
+	// literal (such as a malformed numeric literal); surface it verbatim so
+	// the cause is clear. Plain illegal characters carry only the raw source
+	// rune, so they fall back to the generic "unexpected token invalid token".
+	if tok.Type == ast.TokenIllegal && tok.Diagnostic {
 		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
 		return
 	}
@@ -377,6 +382,10 @@ func tokenLabel(tt ast.TokenType) string {
 		return "percent word array"
 	case ast.TokenSymbols:
 		return "percent symbol array"
+	case ast.TokenInterpWords:
+		return "percent interpolated word array"
+	case ast.TokenInterpSymbols:
+		return "percent interpolated symbol array"
 	case ast.TokenSemicolon:
 		return "\";\""
 	case ast.TokenIvar:

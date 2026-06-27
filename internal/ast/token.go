@@ -34,6 +34,8 @@ const (
 	TokenSymbol             TokenType = "SYMBOL"
 	TokenWords              TokenType = "WORDS"
 	TokenSymbols            TokenType = "SYMBOLS"
+	TokenInterpWords        TokenType = "INTERP_WORDS"
+	TokenInterpSymbols      TokenType = "INTERP_SYMBOLS"
 
 	TokenAssign         TokenType = "="
 	TokenPlusAssign     TokenType = "+="
@@ -128,6 +130,11 @@ type Token struct {
 	// stamped by the lexer from the source text. It is the zero
 	// Position only for EOF.
 	End source.Position
+	// Diagnostic marks an illegal token whose Literal is a human-readable
+	// lexer diagnostic (such as a malformed numeric literal) rather than the
+	// raw offending source text. The parser surfaces such literals verbatim,
+	// while plain illegal characters fall back to a generic message.
+	Diagnostic bool
 }
 
 var keywordTokenTypes = map[string]TokenType{
