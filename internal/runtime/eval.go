@@ -370,18 +370,24 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 }
 
 // evalIndexSelectors evaluates every selector between the brackets, charging
-// each against the memory quota as it materializes.
+// the accumulated selectors against the memory quota as each materializes.
+// Every evaluated selector stays live in indices until dispatch, so each check
+// must account for all selectors gathered so far; charging only the current one
+// would undercount a multi-selector form whose earlier selectors are still
+// resident (the parser permits arbitrary comma-separated selectors). The
+// estimator deduplicates against the reachable roots, so a selector already
+// bound to an environment contributes its footprint only once.
 func (exec *Execution) evalIndexSelectors(e *IndexExpr, env *Env) ([]Value, error) {
-	indices := make([]Value, len(e.Indices))
-	for i, expr := range e.Indices {
+	indices := make([]Value, 0, len(e.Indices))
+	for _, expr := range e.Indices {
 		idx, err := exec.evalExpressionWithAuto(expr, env, true)
 		if err != nil {
 			return nil, err
 		}
-		if err := exec.checkMemoryWith(idx); err != nil {
+		indices = append(indices, idx)
+		if err := exec.checkMemoryWith(indices...); err != nil {
 			return nil, err
 		}
-		indices[i] = idx
 	}
 	return indices, nil
 }

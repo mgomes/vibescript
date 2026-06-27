@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -366,6 +367,76 @@ func TestMemoryQuotaDestructureNamedRestChargesLiveRHS(t *testing.T) {
 	// over-reject a legitimate assignment.
 	if err := run(base + rhsBytes + 2*restBytes); err != nil {
 		t.Fatalf("assignment with room for the live RHS and rest window returned error: %v", err)
+	}
+}
+
+// TestMemoryQuotaIndexSelectorsChargeAllLiveSelectors covers the finding that a
+// multi-selector bracket expression must charge every selector evaluated so far,
+// not just the current one. Each selector stays live in the indices slice until
+// dispatch, so an over-arity form such as h[big1, big2] holds both large keys
+// resident at its peak. The parser admits arbitrary comma-separated selectors,
+// so a quota just above one large selector used to pass both per-selector checks
+// (each charged base + that one selector) and only then report the arity error,
+// even though both large keys were resident. The check now charges the
+// accumulated selectors, so the second selector overflows before dispatch.
+func TestMemoryQuotaIndexSelectorsChargeAllLiveSelectors(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	const selectorCount = 1200
+	const element = "abcdefghij"
+
+	// h[<big array literal>, <big array literal>]: a hash receiver indexed with two
+	// large array-literal selectors. Each literal evaluates to an array reachable
+	// from no environment, so it lives only on the Go stack inside the indices slice
+	// until the over-arity error fires. The receiver is a tiny hash, keeping every
+	// charged byte attributable to the selectors.
+	buildExpr := func() *IndexExpr {
+		return &IndexExpr{
+			Object: &HashLiteral{Position: pos},
+			Indices: []Expression{
+				buildLargeStringArrayLiteral(selectorCount, element, pos),
+				buildLargeStringArrayLiteral(selectorCount, element, pos),
+			},
+			Position: pos,
+		}
+	}
+
+	probeExec := &Execution{quota: 10000, memoryQuota: 0, moduleLoading: make(map[string]bool)}
+	base := probeExec.estimateMemoryUsage()
+
+	selectorBytes := estimateLargeStringArray(selectorCount, element)
+
+	run := func(quota int) error {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		_, err := exec.evalIndexExpr(buildExpr(), newEnv(nil))
+		return err
+	}
+
+	// A quota comfortably above base + one selector (so the first selector's check
+	// passes) but below base + both selectors must reject. Before the fix the second
+	// selector's check charged only base + that one selector — under this quota — so
+	// both passed and the arity error fired with both large keys resident. The fix
+	// charges base + both selectors, overflowing before dispatch. The reject quota
+	// stays strictly above base + one selector so the rejection can only come from
+	// the accumulated-selector accounting, not the first check.
+	rejectQuota := base + selectorBytes + selectorBytes/2
+	if rejectQuota <= base+selectorBytes {
+		t.Fatalf("reject quota %d does not exceed base+selector %d; widen the selector", rejectQuota, base+selectorBytes)
+	}
+	if err := run(rejectQuota); err == nil {
+		t.Fatalf("expected memory quota error when the second selector lands on top of the live first selector")
+	} else {
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	}
+
+	// A quota with headroom for base + both selectors must surface the arity error
+	// rather than the quota error, proving the charge does not over-reject a
+	// legitimately-sized (if mis-arity) bracket expression.
+	if err := run(base + 2*selectorBytes + 4*estimatedSliceBaseBytes); err == nil {
+		t.Fatalf("expected arity error when both selectors fit the quota")
+	} else if errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("did not expect memory quota error when both selectors fit the quota: %v", err)
 	}
 }
 
