@@ -1230,17 +1230,124 @@ func TestArraySubtractUsesScalarKeysAndCompositeFallback(t *testing.T) {
 	})
 }
 
-func TestArraySumRejectsNonNumeric(t *testing.T) {
+func TestArraySum(t *testing.T) {
 	t.Parallel()
-	script := compileScriptDefault(t, `
-    def bad()
-      ["a"].sum()
-    end
-    `)
 
-	_, err := script.Call(context.Background(), "bad", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected runtime error for non-numeric sum")
+	tests := []struct {
+		name string
+		body string
+		want Value
+	}{
+		{
+			name: "plain integer sum",
+			body: `[1, 2, 3].sum()`,
+			want: NewInt(6),
+		},
+		{
+			name: "empty array sums to zero",
+			body: `[].sum()`,
+			want: NewInt(0),
+		},
+		{
+			name: "mixed numeric promotes to float",
+			body: `[1, 2.5].sum()`,
+			want: NewFloat(3.5),
+		},
+		{
+			name: "initial value seeds the accumulator",
+			body: `[1, 2, 3].sum(10)`,
+			want: NewInt(16),
+		},
+		{
+			name: "initial value used when array is empty",
+			body: `[].sum(5)`,
+			want: NewInt(5),
+		},
+		{
+			name: "float initial promotes the result",
+			body: `[1, 2, 3].sum(0.5)`,
+			want: NewFloat(6.5),
+		},
+		{
+			name: "block adds each transformed element",
+			body: `[1, 2, 3].sum { |n| n * 2 }`,
+			want: NewInt(12),
+		},
+		{
+			name: "block maps non-numeric elements to numbers",
+			body: `["a", "bb", "ccc"].sum { |s| s.length() }`,
+			want: NewInt(6),
+		},
+		{
+			name: "initial and block combine",
+			body: `[1, 2, 3].sum(10) { |n| n * 2 }`,
+			want: NewInt(22),
+		},
+		{
+			name: "string initial concatenates elements",
+			body: `["a", "b", "c"].sum("")`,
+			want: NewString("abc"),
+		},
+		{
+			name: "string initial with block concatenates block results",
+			body: `["a", "b", "c"].sum("") { |s| s.upcase() }`,
+			want: NewString("ABC"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tt.body+"\nend\n")
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(tt.want) {
+				t.Fatalf("%s = %#v, want %#v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestArraySumErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "default initial cannot add strings",
+			body: `["a", "b"].sum()`,
+			want: "array.sum cannot add incompatible values",
+		},
+		{
+			name: "numeric initial cannot add a string element",
+			body: `[1].sum("a")`,
+			want: "array.sum cannot add incompatible values",
+		},
+		{
+			name: "block result type must be compatible",
+			body: `[1].sum("x") { |n| n }`,
+			want: "array.sum cannot add incompatible values",
+		},
+		{
+			name: "rejects more than one positional argument",
+			body: `[1].sum(1, 2)`,
+			want: "array.sum accepts at most an initial value",
+		},
+		{
+			name: "rejects keyword arguments",
+			body: `[1].sum(foo: 1)`,
+			want: "array.sum does not take keyword arguments",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tt.body+"\nend\n")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
+		})
 	}
 }
 

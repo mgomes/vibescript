@@ -34,7 +34,7 @@ Common enumerable helpers include:
 - `push`/`pop` for building or removing values while keeping the original array untouched.
 - `append(*values)` is a Ruby-style alias for `push`, returning a new array with the values added to the end in order.
 - `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`).
-- `sum` to total numeric arrays.
+- `sum` to total an array. `sum` starts from `0`; `sum(initial)` starts from `initial` (so `[1, 2, 3].sum(10)` is `16` and `["a", "b"].sum("")` is `"ab"`). A block transforms each element before it is added, so `[1, 2, 3].sum { |n| n * 2 }` is `12` and `sum(initial) { ... }` combines both. Each addition must operate on compatible operands, mirroring Ruby's `+`: summing a string with a non-string (such as the default `0` accumulator against string elements) raises rather than silently coercing the operands.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays. No argument, `nil`, or a negative depth flattens fully; `0` returns a shallow copy; a positive depth flattens that many levels and a `Float` depth is truncated to an integer. A nonnumeric depth raises.
 - `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
