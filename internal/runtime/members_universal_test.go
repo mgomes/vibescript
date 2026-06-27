@@ -555,6 +555,44 @@ end`)
 	}
 }
 
+// TestPlainBuiltinAliasIdentityAcrossScriptCalls is the plain-builtin counterpart
+// to TestEqualPredicateAliasIdentityAcrossScriptCalls, exercising the finding's
+// exact scenario end to end through Script.Call: one call binds a plain (non
+// receiver-bound) builtin to a local and returns it through two array slots
+// (`p = JSON.parse; [p, p]`), and a second call receives that host-cloned graph
+// and compares the two aliases with equal?. cloneBuiltinForHost mints a fresh
+// *Builtin per occurrence, so without memoizing the clone on the source builtin
+// the two slots would cross the host boundary as distinct pointers; equal?
+// compares builtins by backing pointer, so the aliases would wrongly report
+// not-identical even though they were one callable inside the script.
+func TestPlainBuiltinAliasIdentityAcrossScriptCalls(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def export_probe
+  p = JSON.parse
+  [p, p]
+end
+
+def check(pair)
+  pair[0].equal?(pair[1])
+end`)
+
+	exported, err := script.Call(context.Background(), "export_probe", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("export_probe failed: %v", err)
+	}
+	if exported.Kind() != KindArray {
+		t.Fatalf("expected array result, got %#v", exported)
+	}
+
+	result, err := script.Call(context.Background(), "check", []Value{exported}, CallOptions{})
+	if err != nil {
+		t.Fatalf("check failed: %v", err)
+	}
+	if result.Kind() != KindBool || !result.Bool() {
+		t.Fatalf("two aliases of one plain builtin reported %#v; they must stay equal? across the host boundary", result)
+	}
+}
+
 // TestHostCloneHashPreservesSharedIdentity confirms a hash reachable through two
 // paths in a returned graph clones to a single wrapper, so the two cloned
 // references stay equal? to each other. Caching only the entry map would rebuild
