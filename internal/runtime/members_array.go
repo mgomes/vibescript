@@ -2502,6 +2502,9 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			if count == 0 {
+				if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(len(arr)); err != nil {
+					return NewNil(), err
+				}
 				// Return a copy of the receiver rather than wrapping its backing
 				// slice, so mutating the returned array through index assignment
 				// cannot reach the source.
@@ -2525,17 +2528,26 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if count > len(arr) {
 				count = len(arr)
 			}
-			remaining := make([]Value, len(arr)-count)
+			remainingLen := len(arr) - count
+			returnsRemovedArray := count != 1 || len(args) != 0
+			if returnsRemovedArray {
+				if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(remainingLen, count); err != nil {
+					return NewNil(), err
+				}
+			} else if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(remainingLen); err != nil {
+				return NewNil(), err
+			}
+			remaining := make([]Value, remainingLen)
 			copy(remaining, arr[:len(arr)-count])
-			removed := make([]Value, count)
-			copy(removed, arr[len(arr)-count:])
 			result := map[string]Value{
 				"array": NewArray(remaining),
 			}
-			if count == 1 && len(args) == 0 {
-				result["popped"] = removed[0]
-			} else {
+			if returnsRemovedArray {
+				removed := make([]Value, count)
+				copy(removed, arr[len(arr)-count:])
 				result["popped"] = NewArray(removed)
+			} else {
+				result["popped"] = arr[len(arr)-1]
 			}
 			return NewHash(result), nil
 		}), nil
@@ -2886,6 +2898,9 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 	}
 	arr := receiver.Array()
 	if count == 0 {
+		if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(len(arr)); err != nil {
+			return NewNil(), err
+		}
 		// count == 0 is only reachable through the explicit-count form shift(0);
 		// bare shift() defaults count to 1. Ruby's [1, 2].shift(0) returns [], so
 		// report an empty array, keeping shifted typed as an array for every
@@ -2912,17 +2927,26 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 	if count > len(arr) {
 		count = len(arr)
 	}
-	removed := make([]Value, count)
-	copy(removed, arr[:count])
-	remaining := make([]Value, len(arr)-count)
+	remainingLen := len(arr) - count
+	returnsShiftedArray := count != 1 || len(args) != 0
+	if returnsShiftedArray {
+		if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(remainingLen, count); err != nil {
+			return NewNil(), err
+		}
+	} else if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlotArrays(remainingLen); err != nil {
+		return NewNil(), err
+	}
+	remaining := make([]Value, remainingLen)
 	copy(remaining, arr[count:])
 	result := map[string]Value{
 		"array": NewArray(remaining),
 	}
-	if count == 1 && len(args) == 0 {
-		result["shifted"] = removed[0]
-	} else {
+	if returnsShiftedArray {
+		removed := make([]Value, count)
+		copy(removed, arr[:count])
 		result["shifted"] = NewArray(removed)
+	} else {
+		result["shifted"] = arr[0]
 	}
 	return NewHash(result), nil
 }
@@ -2950,6 +2974,9 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	found := false
 	var matched Value
 	for _, item := range arr {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
 		if item.Equal(target) {
 			found = true
 			// Track the matched element itself so the result reports the stored

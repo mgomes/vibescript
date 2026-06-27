@@ -160,7 +160,7 @@ func TestArrayDeleteMissTripsMemoryQuota(t *testing.T) {
 	const count = 20_000
 	receiver := largeIntArray(count)
 	target := NewInt(-1)
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 62}
 	acc := newArrayBuildAccumulator(probe, receiver, []Value{target}, nil, NewNil())
 	quota := acc.projected(count) - 1
 	if acc.base > quota {
@@ -182,7 +182,7 @@ func TestArrayDeleteAllMatchesFitsBelowFullCopyQuota(t *testing.T) {
 	}
 	receiver := NewArray(items)
 	target := NewInt(1)
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 62}
 	acc := newArrayBuildAccumulator(probe, receiver, []Value{target}, nil, NewNil())
 	quota := acc.projected(count) - 1
 	if acc.base > quota {
@@ -199,6 +199,20 @@ func TestArrayDeleteAllMatchesFitsBelowFullCopyQuota(t *testing.T) {
 	if diff := valueDiff(NewInt(1), result["deleted"]); diff != "" {
 		t.Fatalf("deleted mismatch (-want +got):\n%s", diff)
 	}
+}
+
+func TestArrayDeleteAllMatchesHonorsStepQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 1_000
+	items := make([]Value, count)
+	for i := range items {
+		items[i] = NewInt(1)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 64, memoryQuota: 1 << 30}
+	_, err := arrayDelete(exec, NewArray(items), []Value{NewInt(1)}, nil, NewNil())
+	requireErrorIs(t, err, errStepQuotaExceeded)
 }
 
 func TestArrayDeleteErrors(t *testing.T) {
@@ -575,6 +589,46 @@ func TestArrayInsertCountsLiveCallRoots(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 	if exec.steps != 0 {
 		t.Fatalf("steps = %d, want insert rejected before building the result", exec.steps)
+	}
+}
+
+func TestArrayNoopRemovalPreflightsReceiverCopy(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 20_000
+
+	receiver := largeIntArray(receiverSize)
+	args := []Value{NewInt(0)}
+	tests := []struct {
+		name   string
+		member string
+	}{
+		{"pop(0)", "pop"},
+		{"shift(0)", "shift"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 62}
+			acc := newArrayBuildAccumulator(probe, receiver, args, nil, NewNil())
+			quota := acc.projected(receiverSize) - 1
+			if acc.base > quota {
+				t.Fatalf("test setup call roots = %d exceed quota = %d", acc.base, quota)
+			}
+
+			fits := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			if err := fits.checkCallMemoryRoots(receiver, args, nil, NewNil()); err != nil {
+				t.Fatalf("receiver and count should fit under quota %d: %v", quota, err)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callArrayMember(t, exec, receiver, tt.member, args, NewNil())
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("steps = %d, want %s rejected before copying the receiver", exec.steps, tt.name)
+			}
+		})
 	}
 }
 

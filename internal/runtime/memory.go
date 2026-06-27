@@ -546,11 +546,22 @@ func (acc *arrayBuildAccumulator) checkTransient(transient Value, backingCap int
 // charges only the slot array, not per-element payloads (those are added by add as
 // each element is appended), so it never rejects a result add would accept.
 func (acc *arrayBuildAccumulator) reserveSlots(slotCount int) error {
+	return acc.reserveSlotArrays(slotCount)
+}
+
+// reserveSlotArrays rejects a build when several result arrays will be live
+// together, such as Array#pop returning both the remaining and removed arrays.
+func (acc *arrayBuildAccumulator) reserveSlotArrays(slotCounts ...int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	if used := acc.projected(slotCount); used > acc.exec.memoryQuota {
+	used := saturatingAdd(acc.base, acc.payload)
+	for _, slotCount := range slotCounts {
+		backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
+		used = saturatingAdd(used, backing)
+	}
+	if used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
