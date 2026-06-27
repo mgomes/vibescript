@@ -110,15 +110,55 @@ func TestParserHashRocketSingleError(t *testing.T) {
 	}
 }
 
-// TestParserHashMissingValueSingleError verifies that a hash entry with a
-// label key but no value recovers cleanly and continues parsing the remaining
-// pairs, yielding only the missing-value diagnostic.
-func TestParserHashMissingValueSingleError(t *testing.T) {
+// TestParserHashValueOmission verifies that a label key with no value expands
+// to a reference to the local variable of the same name, matching Ruby's hash
+// value omission shorthand ({name:} is sugar for {name: name}).
+func TestParserHashValueOmission(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  {name:, age:, role: "dev"}
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.HashLiteral{
+				Pairs: []ast.HashPair{
+					{
+						Key:   &ast.SymbolLiteral{Name: "name"},
+						Value: &ast.Identifier{Name: "name"},
+					},
+					{
+						Key:   &ast.SymbolLiteral{Name: "age"},
+						Value: &ast.Identifier{Name: "age"},
+					},
+					{
+						Key:   &ast.SymbolLiteral{Name: "role"},
+						Value: &ast.StringLiteral{Value: "dev"},
+					},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestParserHashStringKeyValueOmissionRejected verifies that value omission is
+// limited to label keys. Quoted keys such as {"name":} have no matching local
+// to read, so they keep the missing-value diagnostic, matching Ruby.
+func TestParserHashStringKeyValueOmissionRejected(t *testing.T) {
 	t.Parallel()
 
 	sources := []string{
-		`{name:}`,
-		`{name:, other: 1}`,
+		`{"name":}`,
+		`{"name":, other: 1}`,
 	}
 
 	for _, source := range sources {
