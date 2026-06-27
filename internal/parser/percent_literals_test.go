@@ -614,8 +614,8 @@ func TestParserLocalModuloSurvivesInterpolationScan(t *testing.T) {
 			Left:     &ast.Identifier{Name: "a"},
 			Operator: ast.TokenPercent,
 			Right: &ast.IndexExpr{
-				Object: &ast.Identifier{Name: "w"},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.Identifier{Name: "w"},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 		}},
 	}}
@@ -856,8 +856,8 @@ end`
 			Left:     &ast.Identifier{Name: "total"},
 			Operator: ast.TokenPercent,
 			Right: &ast.IndexExpr{
-				Object: &ast.Identifier{Name: "W"},
-				Index:  &ast.IntegerLiteral{Value: 0},
+				Object:  &ast.Identifier{Name: "W"},
+				Indices: []ast.Expression{&ast.IntegerLiteral{Value: 0}},
 			},
 		}},
 	}
@@ -1656,8 +1656,8 @@ end`
 		Left:     &ast.Identifier{Name: "total"},
 		Operator: ast.TokenPercent,
 		Right: &ast.IndexExpr{
-			Object: &ast.Identifier{Name: "w"},
-			Index:  &ast.StringLiteral{Value: "]"},
+			Object:  &ast.Identifier{Name: "w"},
+			Indices: []ast.Expression{&ast.StringLiteral{Value: "]"}},
 		},
 	}
 	if diff := cmp.Diff(want, exprPart.Expr, astCmpOpts); diff != "" {
