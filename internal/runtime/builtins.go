@@ -85,6 +85,55 @@ func builtinNow(exec *Execution, receiver Value, args []Value, kwargs map[string
 	return NewString(time.Now().UTC().Format(time.RFC3339)), nil
 }
 
+func builtinFormat(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	return formatStringBuiltin("format", args, kwargs, block)
+}
+
+func builtinSprintf(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	return formatStringBuiltin("sprintf", args, kwargs, block)
+}
+
+func formatStringBuiltin(name string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("%s does not accept blocks", name)
+	}
+	if len(args) == 0 {
+		return NewNil(), fmt.Errorf("%s expects a format string", name)
+	}
+	if args[0].Kind() != KindString {
+		return NewNil(), fmt.Errorf("%s expects a string format", name)
+	}
+	return formatStringValues(args[0].String(), args[1:])
+}
+
+func formatStringValues(pattern string, values []Value) (Value, error) {
+	args := make([]any, len(values))
+	for i, val := range values {
+		args[i] = formatStringArgument(val)
+	}
+	return NewString(fmt.Sprintf(pattern, args...)), nil
+}
+
+func formatStringArgument(val Value) any {
+	switch val.Kind() {
+	case KindInt:
+		return val.Int()
+	case KindFloat:
+		return val.Float()
+	case KindString, KindSymbol:
+		return val.String()
+	case KindBool:
+		return val.Bool()
+	case KindNil:
+		return nil
+	default:
+		return val.String()
+	}
+}
+
 func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) != 1 {
 		return NewNil(), fmt.Errorf("sleep expects one duration argument")

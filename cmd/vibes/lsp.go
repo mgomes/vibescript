@@ -31,12 +31,14 @@ var lspKeywords = ast.Keywords()
 
 var lspBuiltins = []string{
 	"assert",
+	"format",
 	"money",
 	"money_cents",
 	"now",
 	"random_id",
 	"require",
 	"sleep",
+	"sprintf",
 	"to_float",
 	"to_int",
 	"uuid",
@@ -1246,12 +1248,14 @@ func appendAssignmentTargetNames(names *[]string, target ast.Expression) {
 // builtins by tests so the table cannot go stale against renames.
 var builtinSignatures = map[string]string{
 	"assert":      "assert(condition, message = nil) -> nil",
+	"format":      "format(format_string, *values) -> string",
 	"money":       `money("12.34 USD") -> money`,
 	"money_cents": "money_cents(cents, currency) -> money",
 	"now":         "now -> string",
 	"random_id":   "random_id(length = 16) -> string",
 	"require":     `require(module, as: nil) -> object`,
 	"sleep":       "sleep(seconds) -> int",
+	"sprintf":     "sprintf(format_string, *values) -> string",
 	"to_float":    "to_float(value) -> float",
 	"to_int":      "to_int(value) -> int",
 	"uuid":        "uuid -> string",

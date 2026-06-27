@@ -931,6 +931,13 @@ func divideValues(left, right Value) (Value, error) {
 }
 
 func moduloValues(left, right Value) (Value, error) {
+	if left.Kind() == KindString {
+		values := []Value{right}
+		if right.Kind() == KindArray {
+			values = right.Array()
+		}
+		return formatStringValues(left.String(), values)
+	}
 	if left.Kind() == KindInt && right.Kind() == KindInt {
 		if right.Int() == 0 {
 			return NewNil(), errors.New("modulo by zero")
