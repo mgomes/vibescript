@@ -887,9 +887,10 @@ type hashBuildAccumulator struct {
 	// call roots, and the output map plus scratch the caller reserved through
 	// reserveLoopScratch before the accumulator was built. built is the running byte
 	// total charged for the per-entry key/value payloads as the output is assembled.
-	est   *memoryEstimator
-	base  int
-	built int
+	est     *memoryEstimator
+	baseEst *memoryEstimator
+	base    int
+	built   int
 
 	// Call roots retained so checkTransient can re-seed a throwaway estimator
 	// with the same baseline the build was snapshotted against, deduplicating a
@@ -922,13 +923,28 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	if exec.memoryQuota <= 0 {
 		return acc
 	}
-	// Measure the baseline through a throwaway estimator so the results-only
+	// Measure the baseline through a dedicated estimator so the results-only
 	// estimator stays empty: the base must be counted, but the results estimator
 	// must not dedup later block results against the call roots it walked. The
-	// baseline already includes the output map and scratch the caller reserved via
-	// reserveLoopScratch (estimateMemoryUsageBase reads the reservation), so the
-	// empty-map overhead is not folded in again here.
-	acc.base = exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
+	// baseline estimator is retained for recursive transforms whose results are
+	// runtime-built containers that may still share unchanged leaves with the
+	// receiver. The baseline already includes the output map and scratch the caller
+	// reserved via reserveLoopScratch (estimateMemoryUsageBase reads the
+	// reservation), so the empty-map overhead is not folded in again here.
+	acc.baseEst = newMemoryEstimator()
+	acc.base = exec.estimateMemoryUsageBase(acc.baseEst)
+	if receiver.Kind() != KindNil {
+		acc.base = saturatingAdd(acc.base, acc.baseEst.value(receiver))
+	}
+	for _, arg := range args {
+		acc.base = saturatingAdd(acc.base, acc.baseEst.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		acc.base = saturatingAdd(acc.base, acc.baseEst.value(kwarg))
+	}
+	if !block.IsNil() {
+		acc.base = saturatingAdd(acc.base, acc.baseEst.value(block))
+	}
 	acc.est = newMemoryEstimator()
 	return acc
 }
@@ -1093,6 +1109,21 @@ func (acc *hashBuildAccumulator) add(val Value) error {
 	}
 
 	acc.built = saturatingAdd(acc.built, acc.est.valuePayload(val))
+	return acc.checkQuota()
+}
+
+// addBaselineDeduped charges a runtime-built value while deduplicating unchanged
+// leaves already reachable from the transform's call roots. Use it for recursive
+// transforms such as deep_transform_keys, where the runtime synthesizes fresh
+// container structure but carries original leaf values through unchanged. Do not
+// use it for arbitrary block results: a block can mutate a baseline container in
+// place and return it, and those results need add's conservative unseeded walk.
+func (acc *hashBuildAccumulator) addBaselineDeduped(val Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	acc.built = saturatingAdd(acc.built, acc.baseEst.valuePayload(val))
 	return acc.checkQuota()
 }
 

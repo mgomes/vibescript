@@ -133,6 +133,57 @@ func TestHashDeepTransformKeysRetainedPayloadReservationTripsMemoryQuota(t *test
 	}
 }
 
+func TestHashDeepTransformKeysDoesNotRechargeSharedLeafPayloads(t *testing.T) {
+	t.Parallel()
+
+	const payloadBytes = 512 * 1024
+	receiver := NewHash(map[string]Value{"leaf": NewString(strings.Repeat("x", payloadBytes))})
+	block := keyIdentityBlock()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))
+	quota := liveWithRoots + outputBytes + len("leaf") + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
+	if err != nil {
+		t.Fatalf("hash.deep_transform_keys with shared string leaf under deduped quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("hash.deep_transform_keys shared string leaf kind = %v, want hash", got.Kind())
+	}
+	if got.Hash()["leaf"].String() != receiver.Hash()["leaf"].String() {
+		t.Fatalf("hash.deep_transform_keys shared string leaf = %q, want original payload", got.Hash()["leaf"].String())
+	}
+}
+
+func TestHashDeepTransformKeysDoesNotRechargeSharedArrayLeafPayloads(t *testing.T) {
+	t.Parallel()
+
+	const payloadBytes = 512 * 1024
+	leaf := NewString(strings.Repeat("x", payloadBytes))
+	items := NewArray([]Value{leaf})
+	receiver := NewHash(map[string]Value{"items": items})
+	block := keyIdentityBlock()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))
+	quota := liveWithRoots + outputBytes + len("items") + deepTransformArrayBufferBytes(len(items.Array())) + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
+	if err != nil {
+		t.Fatalf("hash.deep_transform_keys with shared array leaf payload under deduped quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("hash.deep_transform_keys shared array leaf kind = %v, want hash", got.Kind())
+	}
+	gotItems := got.Hash()["items"]
+	if gotItems.Kind() != KindArray || len(gotItems.Array()) != 1 || gotItems.Array()[0].String() != leaf.String() {
+		t.Fatalf("hash.deep_transform_keys shared array leaf = %#v, want one original string leaf", gotItems)
+	}
+}
+
 func TestHashBlocklessTransformTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 

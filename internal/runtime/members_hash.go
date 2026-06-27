@@ -250,7 +250,10 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 			if err := acc.addSynthesizedKey(nextKey); err != nil {
 				return NewNil(), err
 			}
-			if err := acc.add(nextValue); err != nil {
+			// The value is a recursive transform result, not an arbitrary block
+			// result: charge fresh containers while deduplicating unchanged leaves
+			// already held by the receiver.
+			if err := acc.addBaselineDeduped(nextValue); err != nil {
 				return NewNil(), err
 			}
 		}
@@ -286,7 +289,10 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 				return NewNil(), err
 			}
 			out = append(out, nextValue)
-			if err := acc.addConservative(nextValue, 0); err != nil {
+			// deep_transform_keys carries leaf values through unchanged; use the
+			// baseline-deduped accumulator path rather than the conservative
+			// block-result path.
+			if err := acc.add(nextValue, 0); err != nil {
 				return NewNil(), err
 			}
 		}
