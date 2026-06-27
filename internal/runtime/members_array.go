@@ -1842,6 +1842,97 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	return acc, nil
 }
 
+// arraySum totals an array, mirroring Ruby's Array#sum forms:
+//
+//	values.sum                       # start from 0, add each element
+//	values.sum(initial)              # start from initial, add each element
+//	values.sum { |item| ... }        # start from 0, add each block result
+//	values.sum(initial) { |item| ... } # combine both
+//
+// The optional positional argument seeds the accumulator and an optional block
+// transforms each element before it is added. Like Ruby's `+`, each addition
+// must operate on compatible operands, so mixing a string with a non-string (or
+// any other unsupported pair) raises instead of silently coercing the operands.
+func arraySum(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.sum does not take keyword arguments")
+	}
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("array.sum accepts at most an initial value")
+	}
+
+	total := NewInt(0)
+	if len(args) == 1 {
+		total = args[0]
+	}
+
+	var runner *blockCallRunner
+	if valueBlock(block) != nil {
+		var err error
+		runner, err = newBlockCallRunner(exec, block, "array.sum")
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+
+	arr := receiver.Array()
+	var blockArg [1]Value
+	for _, item := range arr {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		contribution := item
+		if runner != nil {
+			blockArg[0] = item
+			result, err := runner.call(blockArg[:])
+			if err != nil {
+				return NewNil(), err
+			}
+			contribution = result
+		}
+		next, err := arraySumAdd(total, contribution)
+		if err != nil {
+			return NewNil(), err
+		}
+		// Both the prior total and the contribution stay live on the Go stack
+		// alongside next: arraySumAdd builds next from a fresh copy (a new string
+		// buffer or a new slice backing) of the old total and the contribution, so
+		// all three coexist at this step's peak. The prior total matters most when it
+		// has grown across iterations into a large string or array that is reachable
+		// only from this Go-local — the base walk never sees it, so a quota above the
+		// new accumulator alone but below old_total + new accumulator would otherwise
+		// admit a step whose true peak exceeds the limit. Charge both as live extras
+		// so the step is rejected here rather than only after the builtin returns. The
+		// estimator dedups each, so the blockless case (contribution is a receiver
+		// element) and an int seed (a scalar prior total) add nothing meaningful.
+		if err := exec.checkAccumulatorWithCallRoots(next, receiver, args, kwargs, block, total, contribution); err != nil {
+			return NewNil(), err
+		}
+		total = next
+	}
+	return total, nil
+}
+
+// arraySumAdd adds one contribution into the running total for array.sum. It
+// reuses addValues for the actual arithmetic but rejects the asymmetric
+// string-coercion addValues allows (e.g. 0 + "a"), matching Ruby's strict `+`
+// where a string and a non-string cannot be summed together.
+func arraySumAdd(total, contribution Value) (Value, error) {
+	isString := func(v Value) bool { return v.Kind() == KindString }
+	if isString(total) != isString(contribution) {
+		return NewNil(), errArraySumIncompatible
+	}
+	sum, err := addValues(total, contribution)
+	if err != nil {
+		return NewNil(), errArraySumIncompatible
+	}
+	return sum, nil
+}
+
+// errArraySumIncompatible is returned when array.sum encounters operands that
+// cannot be added together, such as summing a string with a number.
+var errArraySumIncompatible = errors.New("array.sum cannot add incompatible values")
+
 // reduceOperationName extracts an operation name from a reduce argument. Ruby
 // accepts both symbols and strings here (`reduce(:+)` and `reduce("+")`) and
 // raises a TypeError ("not a symbol nor a string") for anything else.
@@ -2504,23 +2595,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "sum":
-		return NewAutoBuiltin("array.sum", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			arr := receiver.Array()
-			total := NewInt(0)
-			for _, item := range arr {
-				switch item.Kind() {
-				case KindInt, KindFloat:
-				default:
-					return NewNil(), fmt.Errorf("array.sum supports numeric values")
-				}
-				sum, err := addValues(total, item)
-				if err != nil {
-					return NewNil(), fmt.Errorf("array.sum supports numeric values")
-				}
-				total = sum
-			}
-			return total, nil
-		}), nil
+		return NewAutoBuiltin("array.sum", arraySum), nil
 	case "compact":
 		return NewAutoBuiltin("array.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
