@@ -381,6 +381,9 @@ func (s *capabilityContractScanner) scanClosureEnv(env *Env, visit func(Value)) 
 		for _, item := range env.statics {
 			visit(item)
 		}
+		if env.hasCallBlock {
+			visit(env.callBlock)
+		}
 	}
 }
 
