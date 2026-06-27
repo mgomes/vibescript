@@ -237,6 +237,97 @@ end`
 	}
 }
 
+// TestParserIntersectionSpacingShapes pins the spacing disambiguation between
+// the binary intersection operator and the (unsupported) block-pass argument
+// after a local identifier or a member expression. Ruby reads only "foo &bar"
+// (detached from the callee, flush against the operand) as a block-pass; the
+// flush-both-sides "foo&bar", the spaced "foo & bar", and the trailing "&"
+// line continuation are all the binary operator.
+func TestParserIntersectionSpacingShapes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+	}{
+		{name: "flush_both_sides_local", expr: "values&other"},
+		{name: "flush_both_sides_member", expr: "self.values&other"},
+		{name: "spaced_local", expr: "values & other"},
+		{name: "spaced_member", expr: "self.values & other"},
+		{name: "trailing_continuation_local", expr: "values &\n    other"},
+		{name: "trailing_continuation_member", expr: "self.values &\n    other"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := "def run\n  values = [1, 2, 3]\n  " + tc.expr + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+			}
+
+			body := parsedFunctionBody(t, got)
+			if len(body) != 2 {
+				t.Fatalf("function body has %d statements, want 2", len(body))
+			}
+			stmt, ok := body[1].(*ast.ExprStmt)
+			if !ok {
+				t.Fatalf("second statement is %T, want *ast.ExprStmt", body[1])
+			}
+			binary, ok := stmt.Expr.(*ast.BinaryExpr)
+			if !ok {
+				t.Fatalf("expression is %T, want *ast.BinaryExpr", stmt.Expr)
+			}
+			if binary.Operator != ast.TokenAmpersand {
+				t.Fatalf("operator = %q, want %q", binary.Operator, ast.TokenAmpersand)
+			}
+			if _, ok := binary.Right.(*ast.Identifier); !ok {
+				t.Fatalf("right operand is %T, want *ast.Identifier", binary.Right)
+			}
+		})
+	}
+}
+
+// TestParserBlockPassShapeReportsDiagnostic confirms the spacing rule still
+// surfaces the helpful block-pass diagnostic for the "foo &bar" shape, where
+// the ampersand is detached from the callee but flush against the operand,
+// after both a local identifier and a member expression.
+func TestParserBlockPassShapeReportsDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "after_identifier",
+			source: `def run
+  collect &block
+end`,
+		},
+		{
+			name: "after_member",
+			source: `def run
+  self.collect &block
+end`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, errs := parseSource(t, tc.source)
+			if len(errs) == 0 {
+				t.Fatal("expected a parse error for ampersand block-pass shape")
+			}
+			if !strings.Contains(errs[0].Error(), "ampersand block forwarding") {
+				t.Fatalf("error = %q, want block-pass diagnostic", errs[0].Error())
+			}
+		})
+	}
+}
+
 // TestParserFlushAmpersandReportsBlockPass confirms the spacing rule still
 // surfaces the helpful block-pass diagnostic for the flush form "foo &block",
 // which Ruby reads as passing a block rather than the binary operator.

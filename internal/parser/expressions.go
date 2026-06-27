@@ -187,28 +187,41 @@ func (p *parser) canParseParenlessCall(left ast.Expression, precedence int, line
 	if p.peekToken.Type == ast.TokenAmpersand {
 		// "&" is both the binary intersection operator and the (unsupported)
 		// block-pass / symbol-to-proc sigil. Ruby disambiguates by spacing:
-		// "foo & bar" is the binary operator while "foo &bar" passes a block.
-		// Only the flush form starts a parenless argument here so the helpful
-		// block-pass diagnostic still fires; the spaced form falls through to
-		// the infix operator path.
+		// "foo &bar" passes a block while "foo & bar", "foo&bar", and a
+		// trailing "&" line continuation are all the binary operator. Only the
+		// block-pass shape starts a parenless argument here so the helpful
+		// block-pass diagnostic still fires; the operator shapes fall through
+		// to the infix path.
 		return p.peekAmpersandStartsBlockPass()
 	}
 	return isParenlessArgumentStart(p.peekToken.Type)
 }
 
-// peekAmpersandStartsBlockPass reports whether the lookahead "&" is flush
-// against its operand on the same line, the shape Ruby reads as a block-pass
-// argument ("foo &bar") rather than the binary intersection operator
-// ("foo & bar"). A trailing "&" with nothing after it on the line is treated
-// as a block-pass shape so the diagnostic still reports the missing operand.
+// peekAmpersandStartsBlockPass reports whether the lookahead "&" has the
+// spacing Ruby reads as a block-pass argument ("foo &bar") rather than the
+// binary intersection operator. Ruby disambiguates purely by spacing: the
+// block-pass shape requires the "&" to be separated from the callee yet flush
+// against its operand. Concretely both of these must hold:
+//
+//   - The "&" is detached from the callee. "foo &bar" is a block-pass, while
+//     "foo&bar" (flush on both sides) is the binary operator, so a "&" that
+//     abuts the callee on the same line is never a block-pass.
+//   - The operand is flush against the "&" on the same line. "foo & bar" is the
+//     binary operator, and a trailing "&" that ends the line is the intersection
+//     line-continuation operator (see lineLimitedContinuationToken); neither is
+//     a block-pass.
 func (p *parser) peekAmpersandStartsBlockPass() bool {
 	if p.peekToken.Type != ast.TokenAmpersand {
 		return false
 	}
-	if p.peekPeek.Pos.Line != p.peekToken.Pos.Line {
-		return true
+	calleeFlush := p.peekToken.Pos.Line == p.curToken.End.Line &&
+		p.peekToken.Pos.Column == p.curToken.End.Column
+	if calleeFlush {
+		return false
 	}
-	return p.peekPeek.Pos.Column == p.peekToken.End.Column
+	operandFlush := p.peekPeek.Pos.Line == p.peekToken.Pos.Line &&
+		p.peekPeek.Pos.Column == p.peekToken.End.Column
+	return operandFlush
 }
 
 // peekStartsParenlessKeywordLabel reports whether the lookahead begins a

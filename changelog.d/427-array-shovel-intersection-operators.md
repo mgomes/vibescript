@@ -5,7 +5,9 @@
   fast path as `push` and `+`. `array & other` returns the elements common to
   both arrays with duplicates removed and the left array's order preserved
   (`[1, 1, 2, 3] & [1, 3, 4]` is `[1, 3]`). Following Ruby, `+` binds tighter
-  than `<<`, which binds tighter than `&`, and a spaced `&` is the intersection
-  operator while a flush `&block` is still reported as an unsupported block
-  pass. Both operators require array operands and the reduce shorthand accepts
-  `"<<"` and `"&"`.
+  than `<<`, which binds tighter than `&`. Mirroring Ruby's spacing rule, only an
+  `&` detached from the callee yet flush against its operand (`call &block`) is
+  reported as an unsupported block pass; every other shape is the intersection
+  operator, including the spaced `items & others`, the flush `items&others`, and
+  a trailing `&` line continuation. Both operators require array operands and the
+  reduce shorthand accepts `"<<"` and `"&"`.

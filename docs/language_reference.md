@@ -348,9 +348,12 @@ arrays are immutable, `<<` does not mutate the receiver like Ruby's shovel does:
 it returns a new array, so accumulate by reassigning (`values = values << x`),
 the same idiom used with `push` and `+`. Following Ruby, `+` binds tighter than
 `<<`, which binds tighter than `&`. The `&` operator is disambiguated from the
-(unsupported) block-pass sigil by spacing: a spaced `&` (`items & others`) is
-the intersection operator, while a flush `&` against its operand (`call &block`)
-is read as a block pass and reported as unsupported. See
+(unsupported) block-pass sigil by spacing, exactly as Ruby does: only an `&`
+that is detached from the callee yet flush against its operand (`call &block`)
+is read as a block pass and reported as unsupported. Every other shape is the
+intersection operator, including a spaced `&` (`items & others`), an `&` flush
+on both sides (`items&others`), and a trailing `&` that continues the
+expression onto the next line. See
 [Arrays](arrays.md#set-like-operations) for details.
 
 Operator precedence follows conventional arithmetic/boolean ordering.

@@ -267,6 +267,48 @@ func TestArrayIntersectionOperator(t *testing.T) {
 	}
 }
 
+// TestArrayIntersectionSpacingShapes locks in end-to-end evaluation of the
+// intersection operator across the spacing shapes the parser must read as the
+// binary operator: flush on both sides ("left&right") and a trailing "&" line
+// continuation. Only the detached-but-flush "left &right" shape is a block-pass.
+func TestArrayIntersectionSpacingShapes(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def flush_both_sides()
+      left = [1, 2, 3]
+      right = [2, 3, 4]
+      left&right
+    end
+
+    def trailing_continuation()
+      left = [1, 2, 3]
+      right = [2, 3, 4]
+      left &
+        right
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+	}{
+		{name: "flush both sides", fn: "flush_both_sides"},
+		{name: "trailing continuation", fn: "trailing_continuation"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, tc.fn, nil)
+			want := NewArray([]Value{NewInt(2), NewInt(3)})
+			if diff := valueDiff(want, got); diff != "" {
+				t.Fatalf("intersection mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestCollectionOperatorErrors(t *testing.T) {
 	t.Parallel()
 
