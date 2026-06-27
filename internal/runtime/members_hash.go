@@ -980,8 +980,15 @@ func hashMemberTransforms(property string) (Value, error) {
 					}
 					deleted = result
 				}
-				// The hash is unchanged on a miss, so return a copy without
-				// reserving room to grow.
+				// The hash is unchanged on a miss, so the copy holds every entry.
+				// Preflight that copy against the quota before reserving it, matching
+				// store, replace, slice, and the other map-producing transforms; the
+				// post-call memory check only runs after the allocation, so without
+				// this a delete on a large hash near the quota could transiently
+				// exceed MemoryQuotaBytes instead of returning a quota error.
+				if err := exec.checkProjectedHashBytes(len(base), receiver, args, kwargs, block); err != nil {
+					return NewNil(), err
+				}
 				out := make(map[string]Value, len(base))
 				for k, v := range base {
 					if err := exec.step(); err != nil {
@@ -995,9 +1002,14 @@ func hashMemberTransforms(property string) (Value, error) {
 				}), nil
 			}
 			// The result drops exactly one entry, so it is never larger than the
-			// receiver; no growth projection is needed. Copy entry by entry so
+			// receiver; no growth projection is needed. Preflight that copy against
+			// the quota before reserving it, matching store, replace, and slice; the
+			// post-call check only runs after the allocation. Copy entry by entry so
 			// deleting from a large hash charges a step per copied entry and honors
-			// cancellation, matching store, replace, and slice.
+			// cancellation.
+			if err := exec.checkProjectedHashBytes(len(base)-1, receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
 			out := make(map[string]Value, len(base)-1)
 			for k, v := range base {
 				if err := exec.step(); err != nil {

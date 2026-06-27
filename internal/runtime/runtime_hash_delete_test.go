@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestHashDelete(t *testing.T) {
 	t.Parallel()
@@ -128,4 +131,46 @@ func TestHashDeleteErrors(t *testing.T) {
 		"hash.delete key must be symbol or string")
 	requireCallErrorContains(t, script, "keyword", base, CallOptions{},
 		"hash.delete does not accept keyword arguments")
+}
+
+// TestHashDeleteRejectsWhenCopyExceedsQuota proves delete preflights the result
+// copy against the memory quota before reserving it, matching store, replace, and
+// slice. delete returns a new hash, so it allocates a near-full copy on both the
+// present-key path (len(base)-1) and the miss path (len(base)). Without the
+// preflight those allocations would run before the statement-level memory check,
+// letting a delete on a large hash near the quota transiently exceed it. The quota
+// is sized to admit the receiver baseline but fall short of the projected copy, so
+// the preflight is the sole reason each call is rejected.
+func TestHashDeleteRejectsWhenCopyExceedsQuota(t *testing.T) {
+	t.Parallel()
+
+	const count = 5_000
+	receiver := largeHashReceiver(count)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	projectedBase := probe.projectedHashBaseBytes(receiver, nil, nil, NewNil())
+
+	// The present path copies len(base)-1 entries; size the quota to admit the
+	// baseline plus all but one of those entries, so the copy's last entry is what
+	// pushes past the quota. The miss path copies one more entry still, so the same
+	// quota rejects it too.
+	presentEntries := count - 1
+	quota := projectedBase + (presentEntries-1)*estimatedMapEntryStructuralBytes
+	if quota <= projectedBase {
+		t.Fatalf("test setup expects a quota above the receiver baseline, got %d <= %d", quota, projectedBase)
+	}
+
+	t.Run("present key", func(t *testing.T) {
+		t.Parallel()
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callHashMember(t, exec, receiver, "delete", []Value{NewString("k0")}, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	})
+
+	t.Run("missing key", func(t *testing.T) {
+		t.Parallel()
+		exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+		_, err := callHashMember(t, exec, receiver, "delete", []Value{NewString("absent")}, NewNil())
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	})
 }
