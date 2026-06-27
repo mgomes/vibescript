@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -533,7 +534,7 @@ func (e *Engine) readModuleSource(path string) ([]byte, error) {
 	if e.config.MaxSourceBytes > 0 && info.Size() > int64(e.config.MaxSourceBytes) {
 		return nil, fmt.Errorf("source exceeds maximum size (%d > %d bytes)", info.Size(), e.config.MaxSourceBytes)
 	}
-	if e.config.MaxSourceBytes <= 0 {
+	if e.config.MaxSourceBytes <= 0 || e.config.MaxSourceBytes == math.MaxInt {
 		return io.ReadAll(f)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, int64(e.config.MaxSourceBytes)+1))

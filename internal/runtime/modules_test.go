@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -375,6 +376,27 @@ end`,
 				}
 			}
 		})
+	}
+}
+
+func TestRequireModuleWithMaxSourceBytesAtMaxInt(t *testing.T) {
+	t.Parallel()
+
+	root := tempModuleTree(t, moduleFile{
+		path: "helper.vibe",
+		content: `def value()
+  42
+end`,
+	})
+	engine := MustNewEngine(Config{ModulePaths: []string{root}, MaxSourceBytes: math.MaxInt})
+	script := compileScriptWithEngine(t, engine, `def run()
+  helper = require("helper")
+  helper.value()
+end`)
+
+	result := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if !result.Equal(NewInt(42)) {
+		t.Fatalf("require with MaxSourceBytes math.MaxInt = %#v, want 42", result)
 	}
 }
 
