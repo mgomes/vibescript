@@ -31,6 +31,7 @@ type lexer struct {
 	prevColumn int
 
 	ch        rune
+	prevToken ast.Token
 	lastToken ast.Token
 
 	// bracketDepth counts the open `(`, `[`, and `{` brackets the lexer has
@@ -41,19 +42,24 @@ type lexer struct {
 	// array, or paren group opened after the `?`.
 	bracketDepth int
 
-	// ternaryStack holds the bracket nesting level recorded at each ternary
-	// `?` whose separator `:` has not yet been scanned. A `:` in
-	// expression-end position closes the innermost pending ternary only when it
-	// sits at that ternary's nesting level; such a `:` is the ternary separator
-	// rather than a quoted symbol or label introducer. Tagging each `?` with
-	// its level keeps a label `:` inside a hash, array, or paren group opened
-	// after the `?` (a deeper level) from being mistaken for the separator. The
-	// lexer reads ahead of the parser, but this stack only relates `?` tokens
-	// to the colons the lexer itself scans, so it stays self-consistent. The
-	// parser captures and restores it with the rest of the lexer value during
-	// speculative parsing; snapshot and restore deep-copy the slice so a
-	// rolled-back speculation cannot leak pushes or pops into the live lexer.
-	ternaryStack []int
+	// ternaryStack holds each ternary `?` whose separator `:` has not yet been
+	// scanned. A `:` in expression-end position closes the innermost pending
+	// ternary only when it sits at that ternary's bracket nesting level; such a
+	// `:` is the ternary separator rather than a quoted symbol or label
+	// introducer. Tagging each `?` with its level keeps a label `:` inside a
+	// hash, array, or paren group opened after the `?` (a deeper level) from
+	// being mistaken for the separator. The lexer reads ahead of the parser, but
+	// this stack only relates `?` tokens to the colons the lexer itself scans, so
+	// it stays self-consistent. The parser captures and restores it with the
+	// rest of the lexer value during speculative parsing; snapshot and restore
+	// deep-copy the slice so a rolled-back speculation cannot leak pushes or pops
+	// into the live lexer.
+	ternaryStack []ternaryFrame
+}
+
+type ternaryFrame struct {
+	bracketDepth         int
+	parenlessKeywordCall bool
 }
 
 func newLexer(input string) *lexer {
@@ -113,6 +119,7 @@ func (l *lexer) NextToken() ast.Token {
 	tok := l.scanToken()
 	if tok.Type != ast.TokenEOF {
 		tok.End = ast.Position{Line: l.prevLine, Column: l.prevColumn + 1}
+		l.prevToken = l.lastToken
 		l.lastToken = tok
 	}
 	return tok
@@ -412,7 +419,7 @@ func (l *lexer) scanToken() ast.Token {
 		}
 	case '?':
 		tok = l.makeToken(ast.TokenQuestion, "?")
-		l.ternaryStack = append(l.ternaryStack, l.bracketDepth)
+		l.ternaryStack = append(l.ternaryStack, ternaryFrame{bracketDepth: l.bracketDepth})
 		l.readRune()
 	case '|':
 		if l.peekRune() == '|' {
@@ -526,10 +533,11 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	for l.currentOffset() < offset && l.ch != 0 {
 		l.readRune()
 	}
+	l.prevToken = ast.Token{}
 	l.lastToken = last
 }
 
-func lexerStructuralStateBefore(input string, offset int) (int, []int) {
+func lexerStructuralStateBefore(input string, offset int) (int, []ternaryFrame) {
 	scan := newLexer(input)
 	for scan.ch != 0 {
 		if _, ok := scan.skipWhitespaceAndComments(); ok {
@@ -543,7 +551,7 @@ func lexerStructuralStateBefore(input string, offset int) (int, []int) {
 			break
 		}
 	}
-	return scan.bracketDepth, append([]int(nil), scan.ternaryStack...)
+	return scan.bracketDepth, append([]ternaryFrame(nil), scan.ternaryStack...)
 }
 
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
@@ -1262,7 +1270,7 @@ func (l *lexer) closeBracket() {
 	if l.bracketDepth > 0 {
 		l.bracketDepth--
 	}
-	for len(l.ternaryStack) > 0 && l.ternaryStack[len(l.ternaryStack)-1] > l.bracketDepth {
+	for len(l.ternaryStack) > 0 && l.ternaryStack[len(l.ternaryStack)-1].bracketDepth > l.bracketDepth {
 		l.ternaryStack = l.ternaryStack[:len(l.ternaryStack)-1]
 	}
 }
@@ -1285,10 +1293,54 @@ func (l *lexer) colonClosesTernary() bool {
 	if len(l.ternaryStack) == 0 {
 		return false
 	}
-	if l.ternaryStack[len(l.ternaryStack)-1] != l.bracketDepth {
+	top := &l.ternaryStack[len(l.ternaryStack)-1]
+	if top.bracketDepth != l.bracketDepth {
+		return false
+	}
+	if l.labelColonBelongsToParenlessKeywordCall(*top) && l.labelColonPrecedesTernarySeparator() {
+		top.parenlessKeywordCall = true
 		return false
 	}
 	return canEndExpressionToken(l.lastToken.Type)
+}
+
+func (l *lexer) labelColonBelongsToParenlessKeywordCall(frame ternaryFrame) bool {
+	if !l.colonAbutsPreviousToken() || !isLabelNameToken(l.lastToken) {
+		return false
+	}
+	if frame.parenlessKeywordCall {
+		return true
+	}
+	return l.labelFollowsParenlessCallee()
+}
+
+func (l *lexer) labelFollowsParenlessCallee() bool {
+	if !canEndExpressionToken(l.prevToken.Type) {
+		return false
+	}
+	if l.prevToken.End.Line != l.lastToken.Pos.Line {
+		return false
+	}
+	return l.prevToken.End.Column < l.lastToken.Pos.Column
+}
+
+func (l *lexer) labelColonPrecedesTernarySeparator() bool {
+	scan := *l
+	scan.ternaryStack = append([]ternaryFrame(nil), l.ternaryStack...)
+	outerDepth := len(scan.ternaryStack)
+
+	scan.readRune()
+	for {
+		beforeDepth := len(scan.ternaryStack)
+		tok := scan.NextToken()
+		switch tok.Type {
+		case ast.TokenEOF, ast.TokenIllegal, ast.TokenSemicolon:
+			return false
+		}
+		if beforeDepth >= outerDepth && len(scan.ternaryStack) < outerDepth {
+			return true
+		}
+	}
 }
 
 // colonStartsQuotedSymbol reports whether a colon followed by a quote should be

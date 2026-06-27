@@ -178,7 +178,7 @@ type parserSnapshot struct {
 // not pan out, restore and parse the alternative.
 func (p *parser) snapshot() parserSnapshot {
 	captured := *p.l
-	captured.ternaryStack = append([]int(nil), p.l.ternaryStack...)
+	captured.ternaryStack = append([]ternaryFrame(nil), p.l.ternaryStack...)
 	return parserSnapshot{
 		lexer:      captured,
 		curToken:   p.curToken,
@@ -196,7 +196,7 @@ func (p *parser) snapshot() parserSnapshot {
 // retained snapshot if it is restored more than once.
 func (p *parser) restore(s parserSnapshot) {
 	*p.l = s.lexer
-	p.l.ternaryStack = append([]int(nil), s.lexer.ternaryStack...)
+	p.l.ternaryStack = append([]ternaryFrame(nil), s.lexer.ternaryStack...)
 	p.curToken = s.curToken
 	p.peekToken = s.peekToken
 	p.peekPeek = s.peekPeek

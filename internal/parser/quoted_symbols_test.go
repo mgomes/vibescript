@@ -80,6 +80,22 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 			want:   []ast.TokenType{ast.TokenIdent, ast.TokenQuestion, ast.TokenInt, ast.TokenColon, ast.TokenString},
 		},
 		{
+			name:   "ternary_parenless_keyword_label_does_not_close",
+			source: `flag ? emit name:"Ada" :"no"`,
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenIdent, ast.TokenIdent,
+				ast.TokenColon, ast.TokenString, ast.TokenColon, ast.TokenString,
+			},
+		},
+		{
+			name:   "compact_identifier_ternary_clears_before_quoted_symbol",
+			source: "flag ? value:\"no\"\n:\"sym\"",
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenIdent, ast.TokenColon,
+				ast.TokenString, ast.TokenSymbol,
+			},
+		},
+		{
 			name:   "quoted_string_label_unaffected",
 			source: `{"foo-bar": 1}`,
 			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenString, ast.TokenColon, ast.TokenInt, ast.TokenRBrace},
@@ -369,6 +385,69 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 		str, ok := cond.Alternate.(*ast.StringLiteral)
 		if !ok || str.Value != "no" {
 			t.Fatalf("ternary alternate = %#v, want StringLiteral(no)", cond.Alternate)
+		}
+	})
+
+	t.Run("ternary_parenless_keyword_call_consequent", func(t *testing.T) {
+		t.Parallel()
+		got, errs := parseSource(t, "def run\n  flag ? emit first: 1, name:\"Ada\" :\"no\"\nend")
+		if len(errs) != 0 {
+			t.Fatalf("parseSource errors = %v, want none", errs)
+		}
+		body := parsedFunctionBody(t, got)
+		cond, ok := body[0].(*ast.ExprStmt).Expr.(*ast.ConditionalExpr)
+		if !ok {
+			t.Fatalf("top expression = %T, want *ast.ConditionalExpr", body[0].(*ast.ExprStmt).Expr)
+		}
+		call, ok := cond.Consequent.(*ast.CallExpr)
+		if !ok {
+			t.Fatalf("ternary consequent = %#v, want *ast.CallExpr", cond.Consequent)
+		}
+		if len(call.Args) != 0 {
+			t.Fatalf("call positional args = %d, want 0", len(call.Args))
+		}
+		if len(call.KwArgs) != 2 {
+			t.Fatalf("call keyword args = %d, want 2", len(call.KwArgs))
+		}
+		if call.KwArgs[0].Name != "first" || call.KwArgs[1].Name != "name" {
+			t.Fatalf("call keyword names = %q, %q; want first, name", call.KwArgs[0].Name, call.KwArgs[1].Name)
+		}
+		first, ok := call.KwArgs[0].Value.(*ast.IntegerLiteral)
+		if !ok || first.Value != 1 {
+			t.Fatalf("first keyword value = %#v, want IntegerLiteral(1)", call.KwArgs[0].Value)
+		}
+		name, ok := call.KwArgs[1].Value.(*ast.StringLiteral)
+		if !ok || name.Value != "Ada" {
+			t.Fatalf("name keyword value = %#v, want StringLiteral(Ada)", call.KwArgs[1].Value)
+		}
+		str, ok := cond.Alternate.(*ast.StringLiteral)
+		if !ok || str.Value != "no" {
+			t.Fatalf("ternary alternate = %#v, want StringLiteral(no)", cond.Alternate)
+		}
+	})
+
+	t.Run("compact_identifier_ternary_then_quoted_symbol", func(t *testing.T) {
+		t.Parallel()
+		source := "def run\n  flag ? value:\"no\"\n  :\"sym\"\nend"
+		got, errs := parseSource(t, source)
+		if len(errs) != 0 {
+			t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+		}
+		body := parsedFunctionBody(t, got)
+		if len(body) != 2 {
+			t.Fatalf("function body length = %d, want 2", len(body))
+		}
+		cond, ok := body[0].(*ast.ExprStmt).Expr.(*ast.ConditionalExpr)
+		if !ok {
+			t.Fatalf("first expression = %T, want *ast.ConditionalExpr", body[0].(*ast.ExprStmt).Expr)
+		}
+		str, ok := cond.Alternate.(*ast.StringLiteral)
+		if !ok || str.Value != "no" {
+			t.Fatalf("ternary alternate = %#v, want StringLiteral(no)", cond.Alternate)
+		}
+		sym, ok := body[1].(*ast.ExprStmt).Expr.(*ast.SymbolLiteral)
+		if !ok || sym.Name != "sym" {
+			t.Fatalf("second expression = %#v, want SymbolLiteral(sym)", body[1].(*ast.ExprStmt).Expr)
 		}
 	})
 
