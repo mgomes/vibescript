@@ -171,6 +171,11 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 			want:   []ast.TokenType{ast.TokenIdent, ast.TokenSymbol},
 		},
 		{
+			name:   "grouped_parenless_call_argument_is_symbol",
+			source: `(emit :"foo-bar")`,
+			want:   []ast.TokenType{ast.TokenLParen, ast.TokenIdent, ast.TokenSymbol, ast.TokenRParen},
+		},
+		{
 			// The same parenless-call form on a method receiver.
 			name:   "parenless_method_call_argument_is_symbol",
 			source: `obj.emit :"foo-bar"`,
@@ -639,6 +644,15 @@ func TestParserParenlessCallQuotedSymbolArgument(t *testing.T) {
 		{
 			name:   "bare_receiver",
 			source: "def run\n  emit :\"foo-bar\"\nend",
+			want: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "emit"},
+				Args:   []ast.Expression{&ast.SymbolLiteral{Name: "foo-bar"}},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name:   "grouped_bare_receiver",
+			source: "def run\n  (emit :\"foo-bar\")\nend",
 			want: &ast.CallExpr{
 				Callee: &ast.Identifier{Name: "emit"},
 				Args:   []ast.Expression{&ast.SymbolLiteral{Name: "foo-bar"}},

@@ -65,7 +65,8 @@ type ternaryFrame struct {
 }
 
 type bracketFrame struct {
-	token ast.TokenType
+	token         ast.TokenType
+	callArguments bool
 }
 
 func newLexer(input string) *lexer {
@@ -1278,8 +1279,12 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 // and would otherwise linger and mis-match a later colon. The depth is floored
 // at zero so unbalanced input cannot drive it negative.
 func (l *lexer) openBracket(tt ast.TokenType) {
+	frame := bracketFrame{token: tt}
+	if tt == ast.TokenLParen && canEndExpressionToken(l.lastToken.Type) && l.lastToken.End.Line == l.line {
+		frame.callArguments = true
+	}
 	l.bracketDepth++
-	l.bracketStack = append(l.bracketStack, bracketFrame{token: tt})
+	l.bracketStack = append(l.bracketStack, frame)
 }
 
 func (l *lexer) closeBracket() {
@@ -1295,10 +1300,18 @@ func (l *lexer) closeBracket() {
 }
 
 func (l *lexer) currentBracketType() ast.TokenType {
-	if len(l.bracketStack) == 0 {
+	frame, ok := l.currentBracketFrame()
+	if !ok {
 		return ast.TokenIllegal
 	}
-	return l.bracketStack[len(l.bracketStack)-1].token
+	return frame.token
+}
+
+func (l *lexer) currentBracketFrame() (bracketFrame, bool) {
+	if len(l.bracketStack) == 0 {
+		return bracketFrame{}, false
+	}
+	return l.bracketStack[len(l.bracketStack)-1], true
 }
 
 // colonClosesTernary reports whether the colon currently under l.ch is the
@@ -1402,13 +1415,17 @@ func (l *lexer) colonSeparatesQuotedValue() bool {
 }
 
 func (l *lexer) labelFollowsHashOrParenthesizedArgumentStart() bool {
+	frame, ok := l.currentBracketFrame()
+	if !ok {
+		return false
+	}
 	switch l.prevToken.Type {
 	case ast.TokenLBrace:
-		return l.currentBracketType() == ast.TokenLBrace
+		return frame.token == ast.TokenLBrace
 	case ast.TokenLParen:
-		return l.currentBracketType() == ast.TokenLParen
+		return frame.token == ast.TokenLParen && frame.callArguments
 	case ast.TokenComma:
-		return l.currentBracketType() == ast.TokenLBrace || l.currentBracketType() == ast.TokenLParen
+		return frame.token == ast.TokenLBrace || (frame.token == ast.TokenLParen && frame.callArguments)
 	default:
 		return false
 	}
