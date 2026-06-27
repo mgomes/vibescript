@@ -2,19 +2,20 @@ package runtime
 
 import "fmt"
 
-// universalMemberNames lists the predicates exposed on every value via the
-// universal fallback in resolveMember. They back the Ruby-style equality
-// predicates that Object defines for all values: `eql?` for hash-key equality
-// and `equal?` for object identity. Unlike the per-type member tables these are
-// resolved centrally, after type-specific members and user-defined methods, so
-// a class may still override them with its own definitions.
-var universalMemberNames = []string{"eql?", "equal?"}
+// universalMemberNames lists the members exposed on every value via the
+// universal fallback in resolveMember. They back the Ruby-style members that
+// Object defines for all values: `itself` returns the receiver, `eql?` is
+// hash-key equality, and `equal?` is object identity. Unlike the per-type
+// member tables these are resolved centrally, after type-specific members and
+// user-defined methods, so a class may still override them with its own
+// definitions.
+var universalMemberNames = []string{"itself", "eql?", "equal?"}
 
-// isUniversalPredicate reports whether property names one of the equality
-// predicates that every value answers through the universal fallback.
-func isUniversalPredicate(property string) bool {
+// isUniversalMember reports whether property names one of the members that every
+// value answers through the universal fallback.
+func isUniversalMember(property string) bool {
 	switch property {
-	case "eql?", "equal?":
+	case "itself", "eql?", "equal?":
 		return true
 	default:
 		return false
@@ -23,10 +24,10 @@ func isUniversalPredicate(property string) bool {
 
 // isCallableMember reports whether a value stored under a member name is a
 // callable method export rather than plain data. Only functions and builtins
-// are invocable as methods, so only they may shadow a universal predicate; a
-// stored function/builtin keyed eql?/equal? is a module export or capability
-// method that overrides the predicate, while any other stored value is data
-// and must let the universal predicate answer.
+// are invocable as methods, so only they may shadow a universal member; a
+// stored function/builtin keyed itself/eql?/equal? is a module export or
+// capability method that overrides the member, while any other stored value is
+// data and must let the universal member answer.
 func isCallableMember(val Value) bool {
 	switch val.Kind() {
 	case KindFunction, KindBuiltin:
@@ -36,14 +37,16 @@ func isCallableMember(val Value) bool {
 	}
 }
 
-// universalMember resolves the equality predicates that apply uniformly across
-// all value kinds. It is consulted only after a value's own type-specific
-// members and any user-defined methods have failed to resolve property, so
-// existing members (including a class's own eql?/equal?) always take precedence.
-// The returned builtins carry the receiver's kind in their name so argument
-// errors read naturally (for example "int.eql? expects 1 argument").
+// universalMember resolves the members that apply uniformly across all value
+// kinds. It is consulted only after a value's own type-specific members and any
+// user-defined methods have failed to resolve property, so existing members
+// (including a class's own itself/eql?/equal?) always take precedence. The
+// returned builtins carry the receiver's kind in their name so argument errors
+// read naturally (for example "int.eql? expects 1 argument").
 func universalMember(obj Value, property string) (Value, bool) {
 	switch property {
+	case "itself":
+		return bindItself(obj), true
 	case "eql?":
 		return bindEqualityPredicate("eql?", obj, Value.Eql), true
 	case "equal?":
@@ -51,6 +54,41 @@ func universalMember(obj Value, property string) (Value, bool) {
 	default:
 		return NewNil(), false
 	}
+}
+
+// bindItself builds the Ruby-style Object#itself member for a receiver. It is an
+// auto-invoked, zero-arity builtin: bare access (probe = obj.itself) invokes it
+// immediately and yields the receiver, matching Ruby where itself returns self
+// rather than a bound method. Because it auto-invokes, the builtin value is
+// never durably reachable — it is constructed, run, and discarded in the same
+// member access — so unlike the bound equality predicates it needs neither a
+// captured-value charge nor a clone hook. The receiver is returned unchanged, so
+// value ownership and the host-boundary isolation already established for it are
+// preserved without copying.
+func bindItself(receiver Value) Value {
+	name := fmt.Sprintf("%s.itself", receiver.Kind())
+	return NewAutoBuiltin(name, func(_ *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if err := requireItselfCall(name, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+		return receiver, nil
+	})
+}
+
+// requireItselfCall enforces itself's zero-arity shape: no positional
+// arguments, no keyword arguments, and no block, mirroring Ruby's
+// Object#itself.
+func requireItselfCall(name string, args []Value, kwargs map[string]Value, block Value) error {
+	if len(kwargs) > 0 {
+		return fmt.Errorf("%s does not accept keyword arguments", name)
+	}
+	if valueBlock(block) != nil {
+		return fmt.Errorf("%s does not accept a block", name)
+	}
+	if len(args) > 0 {
+		return fmt.Errorf("%s expects 0 arguments, got %d", name, len(args))
+	}
+	return nil
 }
 
 // boundReceiver holds the receiver of a bound eql?/equal? predicate in a mutable
