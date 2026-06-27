@@ -1219,6 +1219,135 @@ func stringGSub(method, text, pattern, replacement string, regex bool) (string, 
 	return rubyRegexGSub(re, text, replacement, method)
 }
 
+// compileStringPatternRegex compiles pattern for the block forms of String#sub
+// and String#gsub, honoring the same regex keyword as the template forms. A
+// literal pattern (regex == false) is quoted so it matches verbatim, mirroring
+// the strings.Replace path the template forms take, while regex == true compiles
+// pattern directly. Routing the literal case through the regex iterator gives the
+// block forms Ruby's per-position empty-pattern behavior
+// ("abc".gsub("") { "-" } => "-a-b-c-") for free, identical to the literal
+// template path. The original pattern and text are size-checked first so an
+// oversized subject or pattern is rejected before compilation.
+func compileStringPatternRegex(method, text, pattern string, regex bool) (*regexp.Regexp, error) {
+	if err := validateRegexTextPattern(method, text, pattern); err != nil {
+		return nil, err
+	}
+	compiled := pattern
+	if !regex {
+		compiled = regexp.QuoteMeta(pattern)
+	}
+	re, err := compileCachedRegex(compiled)
+	if err != nil {
+		return nil, fmt.Errorf("%s invalid regex: %w", method, err)
+	}
+	return re, nil
+}
+
+// stringSubBlock implements the block form of String#sub: it replaces the first
+// match with the string form of the value the block returns for that match,
+// yielding the whole matched substring to the block (Ruby's group 0). yield
+// charges the sandbox step quota and invokes the user block per match.
+func stringSubBlock(method, text, pattern string, regex bool, yield func(match string) (string, error)) (string, error) {
+	re, err := compileStringPatternRegex(method, text, pattern, regex)
+	if err != nil {
+		return "", err
+	}
+	return rubyRegexSubWith(re, text, method, rubyBlockReplacer(text, yield))
+}
+
+// stringGSubBlock implements the block form of String#gsub: it replaces every
+// match with the string form of the value the block returns for each match,
+// yielding the whole matched substring to the block (Ruby's group 0). yield
+// charges the sandbox step quota and invokes the user block per match.
+func stringGSubBlock(method, text, pattern string, regex bool, yield func(match string) (string, error)) (string, error) {
+	re, err := compileStringPatternRegex(method, text, pattern, regex)
+	if err != nil {
+		return "", err
+	}
+	return rubyRegexGSubWith(re, text, method, rubyBlockReplacer(text, yield))
+}
+
+// stringReplaceBlockYield builds the per-match callback rubyBlockReplacer needs
+// from a user block: it charges one step per match (so a flood of matches cannot
+// starve the step quota or cancellation checks), invokes the block with the
+// matched substring, and returns the block result's string form. It is shared by
+// the block forms of String#sub and String#gsub.
+func stringReplaceBlockYield(exec *Execution, runner *blockCallRunner) func(match string) (string, error) {
+	var blockArg [1]Value
+	return func(match string) (string, error) {
+		if err := exec.step(); err != nil {
+			return "", err
+		}
+		blockArg[0] = NewString(match)
+		result, err := runner.call(blockArg[:])
+		if err != nil {
+			return "", err
+		}
+		return result.String(), nil
+	}
+}
+
+// stringReplaceResult drives String#sub, String#sub!, String#gsub, and
+// String#gsub!, dispatching between the template form (pattern plus replacement
+// string) and the block form (pattern plus a replacement block). global selects
+// gsub-style all-match replacement over sub-style first-match replacement, and
+// the template/block functions carry that distinction into the shared regex
+// helpers. The pattern is always required and must be a string.
+//
+// Passing both a replacement argument and a block, or supplying neither, is
+// rejected: a block form takes only the pattern, while the template form takes
+// the pattern and a string replacement. Rejecting the mixed form keeps the two
+// replacement sources from silently disagreeing, matching the issue's "invalid
+// mixed replacement-argument plus block" requirement.
+func stringReplaceResult(
+	exec *Execution,
+	method string,
+	receiver Value,
+	args []Value,
+	kwargs map[string]Value,
+	block Value,
+	global bool,
+) (string, error) {
+	regex, err := stringRegexOption(strings.TrimPrefix(method, "string."), kwargs)
+	if err != nil {
+		return "", err
+	}
+	if len(args) < 1 {
+		return "", fmt.Errorf("%s expects a pattern", method)
+	}
+	if args[0].Kind() != KindString {
+		return "", fmt.Errorf("%s pattern must be string", method)
+	}
+	text := receiver.String()
+	pattern := args[0].String()
+
+	if valueBlock(block) != nil {
+		if len(args) != 1 {
+			return "", fmt.Errorf("%s cannot take both a replacement argument and a block", method)
+		}
+		runner, err := newBlockCallRunner(exec, block, method)
+		if err != nil {
+			return "", err
+		}
+		yield := stringReplaceBlockYield(exec, runner)
+		if global {
+			return stringGSubBlock(method, text, pattern, regex, yield)
+		}
+		return stringSubBlock(method, text, pattern, regex, yield)
+	}
+
+	if len(args) != 2 {
+		return "", fmt.Errorf("%s expects pattern and replacement", method)
+	}
+	if args[1].Kind() != KindString {
+		return "", fmt.Errorf("%s replacement must be string", method)
+	}
+	if global {
+		return stringGSub(method, text, pattern, args[1].String(), regex)
+	}
+	return stringSub(method, text, pattern, args[1].String(), regex)
+}
+
 func stringBangResult(original, updated string) Value {
 	if updated == original {
 		return NewNil()
@@ -1863,6 +1992,8 @@ func stringMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			if indices == nil {
+				// Ruby's String#match returns nil and never invokes the block when
+				// there is no match, so the block form short-circuits here too.
 				return NewNil(), nil
 			}
 			values := make([]Value, len(indices)/2)
@@ -1875,7 +2006,19 @@ func stringMemberQuery(property string) (Value, error) {
 				}
 				values[i] = NewString(text[start:end])
 			}
-			return NewArray(values), nil
+			matchData := NewArray(values)
+			if valueBlock(block) != nil {
+				// Ruby's String#match(pattern) { |m| ... } yields the match data and
+				// returns the block's result. Vibescript represents match data as the
+				// [full, capture1, ...] array, so the same value indexes as the
+				// non-block result (m[0] is the whole match, m[1] the first capture).
+				runner, err := newBlockCallRunner(exec, block, "string.match")
+				if err != nil {
+					return NewNil(), err
+				}
+				return runner.call([]Value{matchData})
+			}
+			return matchData, nil
 		}), nil
 	case "match?":
 		return NewAutoBuiltin("string.match?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2064,6 +2207,10 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 
 	allMatches := re.FindAllStringSubmatchIndex(text, -1)
 
+	if valueBlock(block) != nil {
+		return stringScanBlock(exec, text, groups, allMatches, receiver, block)
+	}
+
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	// The engine's index table stays live the whole time the result is built from
 	// it, so charge its actual footprint into the accumulator's baseline; the
@@ -2088,6 +2235,34 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	}
 
 	return NewArray(out), nil
+}
+
+// stringScanBlock implements the block form of String#scan: it yields each match
+// element to the block -- the full match string when the pattern has no capture
+// groups, otherwise an array of that match's captured substrings, exactly the
+// shape the non-block scan returns -- and returns the receiver string, matching
+// Ruby. The block's own result is discarded. A step is charged per match so a
+// flood of matches cannot starve the step quota or cancellation checks. Because
+// the result is the receiver rather than an accumulated array, no result array is
+// built or charged here; each match element is materialized only for the duration
+// of its block call, and any structures the block retains are accounted for by
+// the block's own evaluation.
+func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]int, receiver, block Value) (Value, error) {
+	runner, err := newBlockCallRunner(exec, block, "string.scan")
+	if err != nil {
+		return NewNil(), err
+	}
+	var blockArg [1]Value
+	for _, loc := range allMatches {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArg[0] = stringScanElement(text, loc, groups)
+		if _, err := runner.call(blockArg[:]); err != nil {
+			return NewNil(), err
+		}
+	}
+	return receiver, nil
 }
 
 // guardRegexScanIndexFootprint rejects a scan whose worst-case
@@ -2257,20 +2432,7 @@ func stringMemberTextOps(property string) (Value, error) {
 	switch property {
 	case "sub":
 		return NewAutoBuiltin("string.sub", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 2 {
-				return NewNil(), fmt.Errorf("string.sub expects pattern and replacement")
-			}
-			regex, err := stringRegexOption("sub", kwargs)
-			if err != nil {
-				return NewNil(), err
-			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.sub pattern must be string")
-			}
-			if args[1].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.sub replacement must be string")
-			}
-			updated, err := stringSub("string.sub", receiver.String(), args[0].String(), args[1].String(), regex)
+			updated, err := stringReplaceResult(exec, "string.sub", receiver, args, kwargs, block, false)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2278,20 +2440,7 @@ func stringMemberTextOps(property string) (Value, error) {
 		}), nil
 	case "sub!":
 		return NewAutoBuiltin("string.sub!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 2 {
-				return NewNil(), fmt.Errorf("string.sub! expects pattern and replacement")
-			}
-			regex, err := stringRegexOption("sub!", kwargs)
-			if err != nil {
-				return NewNil(), err
-			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.sub! pattern must be string")
-			}
-			if args[1].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.sub! replacement must be string")
-			}
-			updated, err := stringSub("string.sub!", receiver.String(), args[0].String(), args[1].String(), regex)
+			updated, err := stringReplaceResult(exec, "string.sub!", receiver, args, kwargs, block, false)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2299,20 +2448,7 @@ func stringMemberTextOps(property string) (Value, error) {
 		}), nil
 	case "gsub":
 		return NewAutoBuiltin("string.gsub", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 2 {
-				return NewNil(), fmt.Errorf("string.gsub expects pattern and replacement")
-			}
-			regex, err := stringRegexOption("gsub", kwargs)
-			if err != nil {
-				return NewNil(), err
-			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.gsub pattern must be string")
-			}
-			if args[1].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.gsub replacement must be string")
-			}
-			updated, err := stringGSub("string.gsub", receiver.String(), args[0].String(), args[1].String(), regex)
+			updated, err := stringReplaceResult(exec, "string.gsub", receiver, args, kwargs, block, true)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2320,20 +2456,7 @@ func stringMemberTextOps(property string) (Value, error) {
 		}), nil
 	case "gsub!":
 		return NewAutoBuiltin("string.gsub!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 2 {
-				return NewNil(), fmt.Errorf("string.gsub! expects pattern and replacement")
-			}
-			regex, err := stringRegexOption("gsub!", kwargs)
-			if err != nil {
-				return NewNil(), err
-			}
-			if args[0].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.gsub! pattern must be string")
-			}
-			if args[1].Kind() != KindString {
-				return NewNil(), fmt.Errorf("string.gsub! replacement must be string")
-			}
-			updated, err := stringGSub("string.gsub!", receiver.String(), args[0].String(), args[1].String(), regex)
+			updated, err := stringReplaceResult(exec, "string.gsub!", receiver, args, kwargs, block, true)
 			if err != nil {
 				return NewNil(), err
 			}

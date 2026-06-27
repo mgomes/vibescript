@@ -126,6 +126,8 @@ Unicode characters, not bytes, unless noted.
   end (`size + offset`) and yields `nil` when it falls before the start.
 - `match(pattern) -> array | nil` – regex match returning
   `[full, capture1, ...]` (unmatched groups are `nil`); `nil` when no match.
+  Given a block, yields the match data and returns the block's result, or `nil`
+  without invoking the block when there is no match.
 - `match?(pattern, offset = 0) -> bool` – allocation-light predicate returning
   `true` when `pattern` matches at or after the character `offset`, else
   `false`. Anchors keep the full-string context across the offset; an offset
@@ -133,7 +135,8 @@ Unicode characters, not bytes, unless noted.
 - `scan(pattern) -> array` – every non-overlapping regex match. With no capture
   groups the result is an array of full match strings; with one or more groups
   each match contributes a nested array of its captured substrings (`nil` for an
-  optional group that did not participate), mirroring Ruby.
+  optional group that did not participate), mirroring Ruby. Given a block, yields
+  each match (using the same per-match shape) and returns the receiver string.
 
 `match`, `match?`, and `scan` treat `pattern` as a regex and enforce the
 [regex guard limits](#guard-limits).
@@ -210,9 +213,11 @@ then truncated at a character boundary to fill the span.
 ### Replacement, Splitting, and Templating
 
 - `sub(pattern, replacement, regex: false) -> string` – replace the first
-  occurrence of `pattern`.
+  occurrence of `pattern`. Given a block instead of `replacement`, the block
+  receives the matched substring and its result replaces the match.
 - `gsub(pattern, replacement, regex: false) -> string` – replace every
-  occurrence of `pattern`.
+  occurrence of `pattern`. Given a block instead of `replacement`, the block
+  receives each matched substring and its result replaces that match.
 - `split(separator = nil) -> array` – split on runs of ASCII whitespace
   (space, tab, newline, vertical tab, form feed, carriage return; dropping empty
   fields) without arguments, or on `separator` when given. Like Ruby, the
@@ -238,6 +243,13 @@ last participating group, `\k<name>` a named group, and `\\` a literal
 backslash. `$1` and `$&` are literal text, matching Ruby. See
 [String#sub replacement backreferences](strings.md#replacement-backreferences)
 for the full table. The regex [guard limits](#guard-limits) still apply.
+
+The block forms of `sub`/`gsub` honor the same `regex` keyword (defaulting to
+literal matching) and reject being given both a `replacement` argument and a
+block. `scan(pattern)` and `match(pattern)` also accept blocks: `scan` yields
+each match and returns the receiver, while `match` yields the match data and
+returns the block's result (or `nil`, without invoking the block, when there is
+no match). See [Strings](strings.md) for examples.
 
 ### Bang Variants
 

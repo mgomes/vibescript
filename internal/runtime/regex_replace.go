@@ -275,16 +275,56 @@ func appendRubyNamedGroup(dst []byte, re *regexp.Regexp, src string, loc []int, 
 	return expanded, end, nil
 }
 
+// rubyMatchReplacer produces a single match's replacement and appends it to dst,
+// returning the grown buffer. loc holds the match's submatch byte indices in the
+// FindStringSubmatchIndex layout (loc[0:2] is the whole match). The template form
+// expands a Ruby replacement string; the block form (sub/gsub with a block)
+// yields the matched text to a user block and appends the block's result. Both
+// rubyRegexSub and rubyRegexGSub drive their iteration through this replacer so
+// the empty-match advancement and the shared output-size guard are written once.
+type rubyMatchReplacer func(dst []byte, loc []int) ([]byte, error)
+
+// rubyTemplateReplacer adapts a Ruby replacement template to a rubyMatchReplacer.
+func rubyTemplateReplacer(re *regexp.Regexp, template, src string) rubyMatchReplacer {
+	return func(dst []byte, loc []int) ([]byte, error) {
+		return rubyAppendReplacement(dst, re, template, src, loc)
+	}
+}
+
+// rubyBlockReplacer adapts a per-match block call to a rubyMatchReplacer. yield
+// receives the whole-match substring (Ruby's group 0, what String#sub and
+// String#gsub pass to the block) and returns the value the block produced; the
+// value's string form is appended, bounded by the shared output guard so a block
+// returning a huge string cannot allocate past the cap. The yield callback also
+// charges the sandbox step/cancellation quota per match.
+func rubyBlockReplacer(src string, yield func(match string) (string, error)) rubyMatchReplacer {
+	return func(dst []byte, loc []int) ([]byte, error) {
+		replacement, err := yield(src[loc[0]:loc[1]])
+		if err != nil {
+			return nil, err
+		}
+		return appendBounded(dst, replacement)
+	}
+}
+
 // rubyRegexSub replaces the first match of re in src using the Ruby-style
 // replacement template, enforcing the shared regex output-size guard. It is the
 // Ruby-semantics counterpart of the first-match path that previously relied on
 // Go's ExpandString.
 func rubyRegexSub(re *regexp.Regexp, src, template, method string) (string, error) {
+	return rubyRegexSubWith(re, src, method, rubyTemplateReplacer(re, template, src))
+}
+
+// rubyRegexSubWith replaces the first match of re in src with the result of
+// replace, enforcing the shared regex output-size guard. It backs both the
+// template form (rubyRegexSub) and the block form, which differ only in how each
+// match's replacement is produced.
+func rubyRegexSubWith(re *regexp.Regexp, src, method string, replace rubyMatchReplacer) (string, error) {
 	loc := re.FindStringSubmatchIndex(src)
 	if loc == nil {
 		return src, nil
 	}
-	replaced, err := rubyAppendReplacement(nil, re, template, src, loc)
+	replaced, err := replace(nil, loc)
 	if err != nil {
 		return "", fmt.Errorf("%s %w", method, err)
 	}
@@ -300,6 +340,14 @@ func rubyRegexSub(re *regexp.Regexp, src, template, method string) (string, erro
 // (empty-match advancement and the output-size guard); only the per-match
 // expansion differs, using Ruby substitution rules instead of Go's.
 func rubyRegexGSub(re *regexp.Regexp, src, template, method string) (string, error) {
+	return rubyRegexGSubWith(re, src, method, rubyTemplateReplacer(re, template, src))
+}
+
+// rubyRegexGSubWith replaces every match of re in src with the result of replace,
+// sharing the empty-match advancement and output-size guard with the template
+// form (rubyRegexGSub). Only the per-match replacement differs between the
+// template and block forms.
+func rubyRegexGSubWith(re *regexp.Regexp, src, method string, replace rubyMatchReplacer) (string, error) {
 	out := make([]byte, 0, len(src))
 	lastAppended := 0
 	searchStart := 0
@@ -326,7 +374,7 @@ func rubyRegexGSub(re *regexp.Regexp, src, template, method string) (string, err
 			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
 		out = append(out, src[lastAppended:loc[0]]...)
-		expanded, err := rubyAppendReplacement(out, re, template, src, loc)
+		expanded, err := replace(out, loc)
 		if err != nil {
 			return "", fmt.Errorf("%s %w", method, err)
 		}
