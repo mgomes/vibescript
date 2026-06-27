@@ -703,7 +703,7 @@ func TestHashExpandedHelpers(t *testing.T) {
         values: record.values,
         fetch_hit: record.fetch(:a),
         fetch_default: record.fetch(:missing, 99),
-        fetch_nil: record.fetch(:missing),
+        fetch_block: record.fetch(:missing) { |key| key },
         dig_hit: nested.dig(:user, :profile, :name),
         dig_miss: nested.dig(:user, :profile, :missing),
         dig_through_scalar: nested.dig(:user, :profile, :name, :length),
@@ -754,8 +754,8 @@ func TestHashExpandedHelpers(t *testing.T) {
 	if !got["fetch_default"].Equal(NewInt(99)) {
 		t.Fatalf("fetch_default mismatch: %v", got["fetch_default"])
 	}
-	if got["fetch_nil"].Kind() != KindNil {
-		t.Fatalf("fetch_nil expected nil, got %v", got["fetch_nil"])
+	if !got["fetch_block"].Equal(NewSymbol("missing")) {
+		t.Fatalf("fetch_block mismatch: %v", got["fetch_block"])
 	}
 	if got["dig_hit"].Kind() != KindString || got["dig_hit"].String() != "Alex" {
 		t.Fatalf("dig_hit mismatch: %v", got["dig_hit"])
@@ -886,6 +886,102 @@ func TestHashFetchValuesErrors(t *testing.T) {
 			name:    "unsupported key type rejected",
 			source:  `def run() { a: 1 }.fetch_values([1]) end`,
 			wantErr: "hash.fetch_values keys must be symbol or string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.wantErr)
+		})
+	}
+}
+
+func TestHashFetch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   Value
+	}{
+		{
+			name:   "present key returns value",
+			source: `def run() { a: 1, b: 2 }.fetch(:b) end`,
+			want:   NewInt(2),
+		},
+		{
+			name:   "string key collides with symbol key",
+			source: `def run() { a: 1 }.fetch("a") end`,
+			want:   NewInt(1),
+		},
+		{
+			name:   "missing key uses explicit default",
+			source: `def run() { a: 1 }.fetch(:missing, 99) end`,
+			want:   NewInt(99),
+		},
+		{
+			name:   "missing key evaluates block default",
+			source: `def run() { a: 1 }.fetch(:missing) { |key| key } end`,
+			want:   NewSymbol("missing"),
+		},
+		{
+			name:   "present key skips block",
+			source: `def run() { a: 1 }.fetch(:a) { |key| :unused } end`,
+			want:   NewInt(1),
+		},
+		{
+			name:   "block supersedes default on miss",
+			source: `def run() { a: 1 }.fetch(:missing, 99) { |key| key } end`,
+			want:   NewSymbol("missing"),
+		},
+		{
+			name:   "present key ignores default and block",
+			source: `def run() { a: 1 }.fetch(:a, 99) { |key| :unused } end`,
+			want:   NewInt(1),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tt.source)
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(tt.want) {
+				t.Fatalf("fetch = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHashFetchErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		source  string
+		wantErr string
+	}{
+		{
+			name:    "missing symbol key without default or block raises",
+			source:  `def run() { a: 1 }.fetch(:missing) end`,
+			wantErr: "hash.fetch key not found: :missing",
+		},
+		{
+			name:    "missing string key without default or block raises",
+			source:  `def run() { a: 1 }.fetch("missing") end`,
+			wantErr: `hash.fetch key not found: "missing"`,
+		},
+		{
+			name:    "unsupported key type rejected",
+			source:  `def run() { a: 1 }.fetch([1]) end`,
+			wantErr: "hash.fetch key must be symbol or string",
+		},
+		{
+			name:    "too many positional arguments rejected",
+			source:  `def run() { a: 1 }.fetch(:a, 1, 2) end`,
+			wantErr: "hash.fetch expects key and optional default",
 		},
 	}
 
