@@ -105,8 +105,13 @@ type CallExpr struct {
 	// only collapses their keyword arguments into an options hash for the
 	// parenless form.
 	Parenthesized bool
-	Block         *BlockLiteral
-	Position      Position
+	// Safe reports whether the call used the safe-navigation operator
+	// (`receiver&.method(...)`). When set and the receiver evaluates to nil,
+	// the runtime short-circuits the call to nil instead of dispatching. It is
+	// meaningful only when Callee is a *MemberExpr whose Safe flag is also set.
+	Safe     bool
+	Block    *BlockLiteral
+	Position Position
 }
 
 func (e *CallExpr) exprNode()     {}
@@ -122,6 +127,10 @@ type KeywordArg struct {
 type MemberExpr struct {
 	Object   Expression
 	Property string
+	// Safe reports whether the access used the safe-navigation operator
+	// (`object&.prop`). When set and the object evaluates to nil, the runtime
+	// short-circuits the access to nil instead of looking up the member.
+	Safe     bool
 	Position Position
 }
 

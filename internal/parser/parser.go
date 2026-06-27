@@ -231,6 +231,8 @@ const (
 	precEquality
 	precComparison
 	precRange
+	precBitAnd
+	precShift
 	precSum
 	precProduct
 	precPrefix
@@ -252,6 +254,8 @@ var precedences = map[ast.TokenType]int{
 	ast.TokenSpaceship: precComparison,
 	ast.TokenRange:     precRange,
 	ast.TokenRangeExcl: precRange,
+	ast.TokenAmpersand: precBitAnd,
+	ast.TokenShovel:    precShift,
 	ast.TokenPlus:      precSum,
 	ast.TokenMinus:     precSum,
 	ast.TokenSlash:     precProduct,
@@ -260,6 +264,7 @@ var precedences = map[ast.TokenType]int{
 	ast.TokenPower:     precPower,
 	ast.TokenLParen:    precCall,
 	ast.TokenDot:       precCall,
+	ast.TokenSafeNav:   precCall,
 	ast.TokenScope:     precCall,
 	ast.TokenLBracket:  precCall,
 	ast.TokenDo:        precCall,

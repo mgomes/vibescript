@@ -324,17 +324,28 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 			tok = l.makeToken(ast.TokenLTE, string(first)+string(l.ch))
 			l.readRune()
+		} else if l.peekRune() == '<' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenShovel, string(first)+string(l.ch))
+			l.readRune()
 		} else {
 			tok = l.makeToken(ast.TokenLT, "<")
 			l.readRune()
 		}
 	case '&':
-		if l.peekRune() == '&' {
+		switch l.peekRune() {
+		case '&':
 			first := l.ch
 			l.readRune()
 			tok = l.makeToken(ast.TokenAnd, string(first)+string(l.ch))
 			l.readRune()
-		} else {
+		case '.':
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenSafeNav, string(first)+string(l.ch))
+			l.readRune()
+		default:
 			tok = l.makeToken(ast.TokenAmpersand, "&")
 			l.readRune()
 		}
@@ -402,16 +413,16 @@ func (l *lexer) scanToken() ast.Token {
 			tok.Literal = literal
 			return tok
 		case unicode.IsDigit(l.ch):
-			literal, isFloat, errMsg := l.readNumber()
+			num := l.readNumber()
 			switch {
-			case errMsg != "":
-				setDiagnostic(&tok, errMsg)
-			case isFloat:
+			case num.errMsg != "":
+				setDiagnostic(&tok, num.errMsg)
+			case num.isFloat:
 				tok.Type = ast.TokenFloat
-				tok.Literal = literal
+				tok.Literal = num.literal
 			default:
 				tok.Type = ast.TokenInt
-				tok.Literal = literal
+				tok.Literal = num.literal
 			}
 			return tok
 		default:
@@ -565,9 +576,40 @@ func (l *lexer) readIdentifier() string {
 	return literal
 }
 
-// readNumber lexes a numeric literal. It returns the normalized literal
-// (with visual-separator underscores stripped), whether the literal is a
-// float, and a non-empty diagnostic when the literal is malformed.
+// numberToken is the lexer's classification of a scanned numeric literal.
+// On success errMsg is empty and literal carries the underscore-stripped
+// digits (prefix included for based literals); on failure errMsg holds a
+// human-readable diagnostic and the literal is undefined.
+type numberToken struct {
+	literal string
+	isFloat bool
+	errMsg  string
+}
+
+const invalidNumericLiteral = "invalid numeric literal"
+
+// readNumber scans a numeric literal beginning at the current rune. It
+// recognizes Ruby-style base prefixes (0x/0X, 0b/0B, 0o/0O, 0d/0D) in
+// addition to decimal integers and floats. Underscores are accepted as
+// visual separators only between adjacent digits and are stripped from the
+// returned literal. A prefix must be followed by at least one valid digit
+// and the literal must not be immediately followed by an identifier rune;
+// either violation yields an invalid-numeric-literal diagnostic so the
+// caller can emit a precise parse error instead of leaving a stray
+// identifier behind.
+func (l *lexer) readNumber() numberToken {
+	if l.ch == '0' {
+		if prefix, base, ok := basePrefix(l.peekRune()); ok {
+			return l.readPrefixedNumber(prefix, base)
+		}
+	}
+	return l.readDecimalNumber()
+}
+
+// readDecimalNumber lexes a decimal integer or float beginning at the
+// current rune. It returns the normalized literal (with visual-separator
+// underscores stripped), whether the literal is a float, and a non-empty
+// diagnostic when the literal is malformed.
 //
 // A literal is a float when it carries a decimal point or an exponent
 // suffix. Exponent notation mirrors Ruby: an optional sign follows the
@@ -575,8 +617,9 @@ func (l *lexer) readIdentifier() string {
 // permitted only between digits. Malformed exponents such as 1e, 1e+, or
 // 1e_3 yield a diagnostic instead of silently splitting into an integer
 // followed by an identifier.
-func (l *lexer) readNumber() (literal string, isFloat bool, errMsg string) {
+func (l *lexer) readDecimalNumber() numberToken {
 	var sb strings.Builder
+	var errMsg string
 	hasDot := false
 	hasExponent := false
 
@@ -620,9 +663,9 @@ done:
 			errMsg = msg
 		}
 	}
-	literal = sb.String()
+	literal := sb.String()
 	l.readRune()
-	return literal, hasDot || hasExponent, errMsg
+	return numberToken{literal: literal, isFloat: hasDot || hasExponent, errMsg: errMsg}
 }
 
 // rejectNumberSuffix guards the boundary just past a numeric literal. A number
@@ -734,6 +777,116 @@ func (l *lexer) consumeExponentTail() {
 	for ast.IsIdentifierRune(l.peekRune()) {
 		l.readRune()
 	}
+}
+
+// readPrefixedNumber scans a based literal whose leading '0' is the current
+// rune and whose base marker (x/b/o/d) is the next rune. base reports the
+// numeric radix and prefix carries the marker rune for the returned literal.
+func (l *lexer) readPrefixedNumber(prefix rune, base int) numberToken {
+	var sb strings.Builder
+	sb.WriteByte('0')
+	sb.WriteRune(prefix)
+
+	// Consume the '0' and the prefix marker so the current rune sits on the
+	// first body character of the literal.
+	l.readRune()
+
+	digits := 0
+	for {
+		r := l.peekRune()
+		switch {
+		case r == '_':
+			// Underscores are valid only between two body digits.
+			if isBaseDigit(l.peekRuneN(1), base) && digits > 0 {
+				l.readRune()
+				continue
+			}
+			return l.invalidPrefixedNumber()
+		case isBaseDigit(r, base):
+			l.readRune()
+			sb.WriteRune(r)
+			digits++
+		default:
+			goto done
+		}
+	}
+
+done:
+	if digits == 0 {
+		return l.invalidPrefixedNumber()
+	}
+	// A based literal followed directly by a name rune (an out-of-range digit, a
+	// stray letter, or a leading-underscore name) is never valid; the fractional
+	// dot is likewise rejected since based literals are integers. The '?' and '!'
+	// suffixes are excluded: they are operators (e.g. the ternary '?') that
+	// terminate the literal rather than glue onto it, matching how the decimal
+	// path leaves "1?2:3" as an integer followed by the ternary.
+	next := l.peekRune()
+	if isNumericTrailRune(next) || (next == '.' && isBaseDigit(l.peekRuneN(1), 10)) {
+		return l.invalidPrefixedNumber()
+	}
+	literal := sb.String()
+	l.readRune()
+	return numberToken{literal: literal}
+}
+
+// invalidPrefixedNumber consumes the remaining identifier and fractional runes
+// of a malformed based literal so the lexer resumes scanning past it, then
+// reports the invalid-numeric-literal diagnostic.
+func (l *lexer) invalidPrefixedNumber() numberToken {
+	for isNumericTrailRune(l.peekRune()) {
+		l.readRune()
+	}
+	if l.peekRune() == '.' && unicode.IsDigit(l.peekRuneN(1)) {
+		l.readRune()
+		for isNumericTrailRune(l.peekRune()) {
+			l.readRune()
+		}
+	}
+	l.readRune()
+	return numberToken{errMsg: invalidNumericLiteral}
+}
+
+// isNumericTrailRune reports whether r, appearing immediately after a numeric
+// literal, indicates a malformed literal (a digit, letter, or underscore glued
+// onto the digits) rather than a following operator. Unlike
+// ast.IsIdentifierRune it excludes the '?' and '!' method-name suffixes, since
+// those are operator runes (the ternary '?', logical negation '!') that
+// terminate the literal instead of extending it.
+func isNumericTrailRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+// basePrefix maps a base-marker rune to its prefix rune and radix.
+func basePrefix(r rune) (prefix rune, base int, ok bool) {
+	switch r {
+	case 'x', 'X':
+		return r, 16, true
+	case 'b', 'B':
+		return r, 2, true
+	case 'o', 'O':
+		return r, 8, true
+	case 'd', 'D':
+		return r, 10, true
+	default:
+		return 0, 0, false
+	}
+}
+
+// isBaseDigit reports whether r is a valid digit in the given radix.
+func isBaseDigit(r rune, base int) bool {
+	var v int
+	switch {
+	case r >= '0' && r <= '9':
+		v = int(r - '0')
+	case r >= 'a' && r <= 'f':
+		v = int(r-'a') + 10
+	case r >= 'A' && r <= 'F':
+		v = int(r-'A') + 10
+	default:
+		return false
+	}
+	return v < base
 }
 
 func (l *lexer) readDoubleQuotedString() (string, bool, string) {
