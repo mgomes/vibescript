@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1532,6 +1534,52 @@ func TestRandomIdentifierBuiltinsHonorCancellationAfterFullEntropyRead(t *testin
 				t.Fatalf("%s entropy reads = %d, want 1", tc.name, reads)
 			}
 		})
+	}
+}
+
+func TestRandomReadFuncIsSerialized(t *testing.T) {
+	t.Parallel()
+
+	var inRead atomic.Bool
+	var overlapped atomic.Bool
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(_ context.Context, p []byte) (int, error) {
+			entered := inRead.CompareAndSwap(false, true)
+			if !entered {
+				overlapped.Store(true)
+			} else {
+				defer inRead.Store(false)
+			}
+			time.Sleep(2 * time.Millisecond)
+			for i := range p {
+				p[i] = byte(i)
+			}
+			return len(p), nil
+		},
+	})
+
+	const workers = 32
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			<-start
+			_, err := engine.randomBytes(context.Background(), 16)
+			errs <- err
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("randomBytes failed: %v", err)
+		}
+	}
+	if overlapped.Load() {
+		t.Fatal("RandomReadFunc calls overlapped")
 	}
 }
 

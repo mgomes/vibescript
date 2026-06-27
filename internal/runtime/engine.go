@@ -141,16 +141,16 @@ func (e *Engine) randomBytes(ctx context.Context, n int) ([]byte, error) {
 		return nil, err
 	}
 	buf := make([]byte, n)
+	e.randomMu.Lock()
+	defer e.randomMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if e.config.RandomReadFunc != nil {
 		if err := readFullContext(ctx, e.config.RandomReadFunc, buf); err != nil {
 			return nil, err
 		}
 		return buf, nil
-	}
-	e.randomMu.Lock()
-	defer e.randomMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return nil, err
 	}
 	if _, err := io.ReadFull(e.config.RandomReader, buf); err != nil {
 		return nil, fmt.Errorf("random source failed: %w", err)
