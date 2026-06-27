@@ -16,3 +16,9 @@
   counted in the receiver, so the accumulator charge now deduplicates against the
   receiver: a large first element is charged once, not twice, so a quota that fits
   the real peak is no longer wrongly rejected.
+- **Fixed: rest-collecting block parameters reject an over-quota tail before
+  allocating it.** A block such as `[[huge...]].each { |(head, *tail)| }` copies the
+  collected tail into a fresh backing slice when it binds `tail`. The bind charge now
+  preflights that window against the memory quota before the copy, so a quota smaller
+  than a single copied tail rejects the walk before the backing is materialized
+  instead of allocating the whole tail first and only then reporting the overflow.

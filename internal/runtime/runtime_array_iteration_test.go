@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	goruntime "runtime"
 	"testing"
 )
 
@@ -461,6 +462,80 @@ func TestArrayEachNestedRestEmptyBodyTripsMemoryQuota(t *testing.T) {
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	_, err = valueBuiltin(member).Fn(exec, receiver, nil, nil, block)
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestArrayEachNestedRestRejectsBeforeAllocatingTail pins the #808 P1 fix: a
+// rest-collecting block parameter must reject an over-quota tail BEFORE the
+// destructurer materializes it, not after. assignDestructure copies a named rest's
+// window into a fresh make([]Value, len(window)) backing; the bind charge now
+// preflights that window against the quota before the copy. Without the preflight a
+// quota below a single copied tail still produced errMemoryQuotaExceeded -- but only
+// AFTER the make+copy already allocated the full tail (the OOM/escape the finding
+// flagged). This test sizes the quota below one tail copy and measures the bytes the
+// rejected walk allocates: a pre-allocation gate keeps that far below the tail's
+// backing, while a post-allocation check would allocate the whole tail before
+// rejecting, failing the byte ceiling. It is the array-side companion to
+// TestArrayEachNestedRestEmptyBodyTripsMemoryQuota, which only asserts the rejection.
+func TestArrayEachNestedRestRejectsBeforeAllocatingTail(t *testing.T) {
+	// Not parallel: this test reads process-wide allocation counters and must not
+	// race other goroutines' allocations.
+
+	pos := Position{Line: 1, Column: 1}
+	// |(head, *tail)| with an EMPTY body: only the bind charge observes the fresh
+	// tail copy, so the preflight is the sole gate before the make+copy.
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	block := NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil))
+
+	// One element whose tail dwarfs the quota: binding |(head, *tail)| would copy
+	// tailLen Value slots into a fresh backing. tailLen = elementLen - 1 (head takes
+	// the first slot).
+	const elementLen = 2_000_000
+	const tailLen = elementLen - 1
+	element := make([]Value, elementLen)
+	for i := range element {
+		element[i] = NewInt(int64(i))
+	}
+	receiver := NewArray([]Value{NewArray(element)})
+
+	// Size the quota to admit the live call roots (receiver plus block) plus a little
+	// headroom, but far below the fresh tail backing the rest would collect. Both a
+	// pre- and a post-allocation check reject here; the distinguishing signal is the
+	// bytes allocated before the rejection, measured below.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.estimateMemoryUsageForCallRoots(receiver, nil, nil, block)
+	quota := roots + 16*1024
+
+	member, err := arrayMember(receiver, "each")
+	if err != nil {
+		t.Fatalf("arrayMember(each): %v", err)
+	}
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	_, err = valueBuiltin(member).Fn(exec, receiver, nil, nil, block)
+	goruntime.ReadMemStats(&after)
+
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	// A post-allocation check would make+copy the whole tail (tailLen Value slots)
+	// before rejecting. The pre-allocation gate never reaches that make, so the
+	// rejected walk allocates only bookkeeping. Use a generous ceiling (a tenth of
+	// the tail backing) to stay robust against unrelated allocation noise while still
+	// failing loudly if the full tail is ever materialized before the check.
+	const fullTailBytes = uint64(tailLen) * uint64(estimatedValueBytes)
+	const ceiling = fullTailBytes / 10
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("rejected walk allocated %d bytes, want <= %d (a copied tail would be %d): the rest window was materialized before the quota check",
+			allocated, ceiling, fullTailBytes)
+	}
 }
 
 // TestCallBlockNestedRestArgTripsMemoryQuota covers the capability-adapter side of

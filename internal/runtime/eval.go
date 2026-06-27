@@ -948,18 +948,19 @@ func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value V
 		// against the seeded arguments and charge essentially nothing.
 		return charge.charge(value)
 	case *DestructureTarget:
-		// Walk the destructure with the host-facing AssignDestructure (which charges
-		// nothing on its own) and charge every bound leaf through the per-call bind
-		// charge instead. blockBindCharge probes each fresh leaf against the
-		// persistent root estimator -- which already holds the iterator's Go-stack
-		// receiver -- so a rest backing is charged its real, dedup-aware footprint
-		// against the receiver the master destructureCharge cannot see (its liveRoot
-		// is only the single yielded value, not the whole receiver). Using
-		// exec.assignDestructure here would add a redundant, receiver-blind structural
-		// charge on top of the more accurate probe.
-		return AssignDestructure(t, value, func(target Expression, value Value) error {
+		// Walk the destructure with the block charge's own destructureCharge and charge
+		// every bound leaf through the per-call bind charge. The destructureCharge
+		// preflights a named rest's backing against the quota BEFORE assignDestructure
+		// makes+copies it, so a single huge tail cannot materialize under a quota below
+		// one copied window before the post-bind charge observes it. The post-bind
+		// charge then probes each fresh leaf against the persistent root estimator --
+		// which already holds the iterator's Go-stack receiver -- so a rest backing is
+		// charged its real, dedup-aware footprint against the receiver the standalone
+		// exec.assignDestructure charge cannot see (its liveRoot is only the single
+		// yielded value, not the whole receiver).
+		return assignDestructure(t, value, func(target Expression, value Value) error {
 			return exec.bindBlockParamTarget(env, target, value, charge)
-		})
+		}, charge.destructureCharge())
 	default:
 		return exec.errorAt(target.Pos(), "invalid block parameter target")
 	}

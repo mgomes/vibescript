@@ -909,6 +909,51 @@ func (c *blockBindCharge) charge(value Value) error {
 	return nil
 }
 
+// projectRestWindow rejects a destructure rest backing of count Value slots
+// BEFORE assignDestructure allocates it. assignDestructure copies the collected
+// window into a fresh make([]Value, count) backing before binding it; without this
+// preflight a quota smaller than one such backing would let the copy materialize
+// (a single huge tail, |(head, *tail)| over a [[huge...]], with an empty block
+// body whose own checks never run) and the post-bind charge would only observe the
+// over-budget array after it already escaped. Projecting the window's structural
+// footprint -- a slice header plus count Value slots, the same shape the estimator
+// charges a fresh slice backing -- on top of this call's baseline and everything
+// already bound this call mirrors the check-before-materialize discipline the
+// standalone assignDestructure path uses (checkProjectedIntArrayBytesWithLive).
+//
+// The window's elements alias the yielded value (already seeded into the per-call
+// estimator and counted in the baseline through the receiver and call roots), so
+// only the backing's genuinely new slots are projected, not a second copy of the
+// element payloads. The post-bind charge still runs on the bound array afterward to
+// account for its real, dedup-aware footprint; this is the pre-allocation gate.
+func (c *blockBindCharge) projectRestWindow(count int) error {
+	if c == nil {
+		return nil
+	}
+	window := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
+	if saturatingAdd(saturatingAdd(c.baseline, c.built), window) > c.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+	}
+	return nil
+}
+
+// destructureCharge returns the rest-window preflight assignDestructure consults
+// before allocating a named rest's backing slice. A nil charge (no memory quota or
+// a block with no rest-collecting parameter) admits every window, matching the host
+// AssignDestructure path that runs outside a quota. The liveSlots and liveRoot
+// arguments the destructurer threads are unused here: block parameters bind only
+// identifiers and nested destructures (never an index or member write), so the
+// snapshot path that produces a live Go-stack slot array never runs during block
+// binding -- the only off-baseline memory is the rest backing this preflight gates.
+func (c *blockBindCharge) destructureCharge() destructureCharge {
+	if c == nil {
+		return destructureCharge{check: noopDestructureCheck}
+	}
+	return destructureCharge{check: func(count, _ int, _ Value) error {
+		return c.projectRestWindow(count)
+	}}
+}
+
 // blockBindsRest reports whether any of the block's parameters destructure a value
 // and collect a rest, the only binding shape AssignDestructure materializes into a
 // fresh, source-sized backing slice. Used to skip the per-call bind charge for the
