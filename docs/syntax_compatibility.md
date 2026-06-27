@@ -13,8 +13,8 @@ planning:
   parameters.
 - Optional return type annotations (`-> type`).
 - Class declarations with class/instance methods and variables.
-- Core literals: `nil`, booleans, numbers, strings, symbols, arrays, hashes,
-  and ranges.
+- Core literals: `nil`, booleans, numbers (decimal plus `0x`/`0b`/`0o`/`0d`
+  base prefixes), strings, symbols, arrays, hashes, and ranges.
 - Assignment to variables, indexes, members, and destructuring targets.
 - Control flow: `if`/`elsif`/`else`, `unless`/`else`, `while`, `until`,
   `for ... in`, `break`, `next`, and `return`.
