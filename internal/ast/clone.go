@@ -310,6 +310,10 @@ func cloneExpression(expr Expression) Expression {
 		clone := *e
 		clone.Parts = cloneStringParts(e.Parts)
 		return &clone
+	case *InterpolatedSymbol:
+		clone := *e
+		clone.Parts = cloneStringParts(e.Parts)
+		return &clone
 	default:
 		return expr
 	}

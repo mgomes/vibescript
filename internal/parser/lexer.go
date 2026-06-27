@@ -168,7 +168,7 @@ func (l *lexer) scanToken() ast.Token {
 		switch l.peekRune() {
 		case 'w':
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
-				entries, err := l.readPercentArrayLiteral()
+				entries, err := l.readPercentArrayLiteral(false)
 				if err != "" {
 					setDiagnostic(&tok, err)
 				} else {
@@ -181,11 +181,37 @@ func (l *lexer) scanToken() ast.Token {
 			}
 		case 'i':
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
-				entries, err := l.readPercentArrayLiteral()
+				entries, err := l.readPercentArrayLiteral(false)
 				if err != "" {
 					setDiagnostic(&tok, err)
 				} else {
 					tok.Type = ast.TokenSymbols
+					tok.Literal = encodePercentLiteralEntries(entries)
+				}
+			} else {
+				tok = l.makeToken(ast.TokenPercent, "%")
+				l.readRune()
+			}
+		case 'W':
+			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
+				entries, err := l.readPercentArrayLiteral(true)
+				if err != "" {
+					setDiagnostic(&tok, err)
+				} else {
+					tok.Type = ast.TokenInterpWords
+					tok.Literal = encodePercentLiteralEntries(entries)
+				}
+			} else {
+				tok = l.makeToken(ast.TokenPercent, "%")
+				l.readRune()
+			}
+		case 'I':
+			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
+				entries, err := l.readPercentArrayLiteral(true)
+				if err != "" {
+					setDiagnostic(&tok, err)
+				} else {
+					tok.Type = ast.TokenInterpSymbols
 					tok.Literal = encodePercentLiteralEntries(entries)
 				}
 			} else {
@@ -951,78 +977,44 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 }
 
 // consumeInterpolation reads the body of a "#{...}" interpolation that the
-// caller has just opened (the leading "#{" is already consumed) and appends
-// every rune up to and including the matching "}" to raw. It maintains a stack
-// of interpolation and string contexts so that nested double-quoted strings,
-// single-quoted strings, and further interpolations balance correctly instead
-// of guessing where the enclosing string ends. The decoded builder is not
-// updated because an interpolated string always returns its raw text; the
-// parser re-scans it with the same nesting rules in findStringInterpolationEnd.
+// caller has just opened (the leading "#{" is already consumed, so l.ch holds
+// the "{") and appends every rune up to and including the matching "}" to raw.
+// The decoded builder is not updated because an interpolated string always
+// returns its raw text; the parser re-scans it with the same rules in
+// findStringInterpolationEnd.
 //
-// It returns an error message when the input ends before every context closes.
+// It returns an error message when the input ends before the interpolation
+// closes.
 func (l *lexer) consumeInterpolation(raw *strings.Builder) string {
-	// stack holds the open contexts. isInterp reports whether a context is an
-	// interpolation expression (true) or a string literal (false). For
-	// interpolation contexts braceDepth tracks unmatched "{" so that an inner
-	// "}" only closes the interpolation once its own braces are balanced. For
-	// string contexts quote holds the delimiting rune so the matching closing
-	// quote can be recognized.
-	type context struct {
-		isInterp   bool
-		quote      rune
-		braceDepth int
+	if !l.copyInterpolationBody(raw) {
+		return "unterminated string"
 	}
-	stack := []context{{isInterp: true}}
+	return ""
+}
 
-	for {
+// copyInterpolationBody copies an in-progress "#{...}" interpolation body into
+// raw. It must be called with the opening "{" already consumed and written, so
+// l.ch holds that "{" and l.offset points at the first rune of the body. The
+// matching close brace is located with findStringInterpolationEnd, which drives
+// the lexer over the body so nested double- and single-quoted strings, further
+// interpolations, and percent-array literals (such as %W[#{%w[}]}]) balance
+// correctly instead of guessing where the span ends. The runes are then copied
+// one at a time to keep the lexer's line and column tracking accurate across the
+// (possibly multiline) span. It reports whether the interpolation closed before
+// the end of input.
+func (l *lexer) copyInterpolationBody(raw *strings.Builder) bool {
+	end, ok := findStringInterpolationEnd(l.input, l.offset)
+	if !ok {
+		return false
+	}
+	for l.offset <= end {
 		l.readRune()
 		if l.ch == 0 {
-			return "unterminated string"
+			return false
 		}
 		raw.WriteRune(l.ch)
-
-		top := &stack[len(stack)-1]
-		if top.isInterp {
-			switch l.ch {
-			case '{':
-				top.braceDepth++
-			case '}':
-				if top.braceDepth > 0 {
-					top.braceDepth--
-				} else {
-					stack = stack[:len(stack)-1]
-					if len(stack) == 0 {
-						return ""
-					}
-				}
-			case '"', '\'':
-				stack = append(stack, context{quote: l.ch})
-			}
-			continue
-		}
-
-		// Inside a string literal.
-		switch l.ch {
-		case '\\':
-			// A backslash escapes the next rune so an escaped quote does not
-			// close the string. Single-quoted strings only treat \' and \\ as
-			// escapes, but consuming the following rune is harmless for balance
-			// because no other escape can introduce or close a context.
-			if l.peekRune() != 0 {
-				l.readRune()
-				raw.WriteRune(l.ch)
-			}
-		case top.quote:
-			stack = stack[:len(stack)-1]
-		case '#':
-			// Only double-quoted strings interpolate; single quotes are literal.
-			if top.quote == '"' && l.peekRune() == '{' {
-				l.readRune()
-				raw.WriteRune(l.ch)
-				stack = append(stack, context{isInterp: true})
-			}
-		}
 	}
+	return true
 }
 
 func (l *lexer) readSingleQuotedString() (string, string) {
@@ -1051,7 +1043,18 @@ func (l *lexer) readSingleQuotedString() (string, string) {
 	}
 }
 
-func (l *lexer) readPercentArrayLiteral() ([]string, string) {
+// readPercentArrayLiteral consumes a %w/%i/%W/%I percent-array literal and
+// returns its entries. When interpolating is true (the uppercase %W/%I forms)
+// the entries are split on interpolation-aware whitespace and returned with
+// their #{...} markers and escape sequences intact for the parser to expand;
+// otherwise the lowercase splitting that strips %w-style escapes is applied.
+//
+// For the interpolating forms the delimiter scan skips over #{...} spans using
+// the same string-aware logic the parser applies (findStringInterpolationEnd),
+// so a delimiter that appears inside an interpolation expression—including one
+// nested in a quoted string such as %W[#{"]"}]—does not close the literal
+// early.
+func (l *lexer) readPercentArrayLiteral(interpolating bool) ([]string, string) {
 	l.readRune()
 	l.readRune()
 	open := l.ch
@@ -1062,6 +1065,25 @@ func (l *lexer) readPercentArrayLiteral() ([]string, string) {
 
 	depth := 1
 	var raw strings.Builder
+
+	// closed reports whether the current rune is the closing delimiter that
+	// balances the literal. When it returns true the literal is finished and
+	// the consumed runes have already been split into entries.
+	closed := func() (entries []string, done bool) {
+		if l.ch != close {
+			return nil, false
+		}
+		depth--
+		if depth != 0 {
+			return nil, false
+		}
+		l.readRune()
+		if interpolating {
+			return splitInterpolatedPercentLiteralWords(raw.String()), true
+		}
+		return splitPercentLiteralWords(raw.String(), open, close), true
+	}
+
 	for {
 		l.readRune()
 		switch l.ch {
@@ -1073,20 +1095,45 @@ func (l *lexer) readPercentArrayLiteral() ([]string, string) {
 				l.readRune()
 				raw.WriteRune(l.ch)
 			}
+		case '#':
+			// A '#' chosen as the delimiter still closes the literal, so only
+			// treat "#{" as interpolation when '#' is not the closing rune.
+			// This mirrors Ruby, where %W#a #{b}# closes at the first '#'
+			// instead of interpolating.
+			if interpolating && close != '#' && l.peekRune() == '{' {
+				raw.WriteRune(l.ch)
+				if msg := l.consumePercentArrayInterpolation(&raw); msg != "" {
+					return nil, msg
+				}
+				continue
+			}
+			if entries, done := closed(); done {
+				return entries, ""
+			}
+			raw.WriteRune(l.ch)
 		default:
 			if paired && l.ch == open {
 				depth++
 			}
-			if l.ch == close {
-				depth--
-				if depth == 0 {
-					l.readRune()
-					return splitPercentLiteralWords(raw.String(), open, close), ""
-				}
+			if entries, done := closed(); done {
+				return entries, ""
 			}
 			raw.WriteRune(l.ch)
 		}
 	}
+}
+
+// consumePercentArrayInterpolation copies a #{...} interpolation span inside an
+// interpolating percent array literal into raw verbatim. The caller has already
+// written the leading '#' and confirmed the next rune is '{'. It returns an
+// error message when the interpolation is unterminated.
+func (l *lexer) consumePercentArrayInterpolation(raw *strings.Builder) string {
+	l.readRune() // consume '{'
+	raw.WriteRune(l.ch)
+	if !l.copyInterpolationBody(raw) {
+		return "unterminated string interpolation in percent array literal"
+	}
+	return ""
 }
 
 func isPercentLiteralDelimiter(r rune) bool {
@@ -1111,7 +1158,8 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 func canEndExpressionToken(tt ast.TokenType) bool {
 	switch tt {
 	case ast.TokenIdent, ast.TokenInt, ast.TokenFloat, ast.TokenString, ast.TokenInterpolatedString,
-		ast.TokenSymbol, ast.TokenWords, ast.TokenSymbols, ast.TokenTrue, ast.TokenFalse, ast.TokenNil,
+		ast.TokenSymbol, ast.TokenWords, ast.TokenSymbols, ast.TokenInterpWords, ast.TokenInterpSymbols,
+		ast.TokenTrue, ast.TokenFalse, ast.TokenNil,
 		ast.TokenSelf, ast.TokenIvar, ast.TokenClassVar, ast.TokenRParen, ast.TokenRBracket,
 		ast.TokenRBrace, ast.TokenEnd:
 		return true
@@ -1200,6 +1248,67 @@ func splitPercentLiteralWords(raw string, open, close rune) []string {
 
 func isPercentWordEscapable(r, open, close rune) bool {
 	return unicode.IsSpace(r) || r == '\\' || r == open || r == close
+}
+
+// splitInterpolatedPercentLiteralWords splits the interior of a %W/%I literal
+// into words. Unlike the lowercase splitter it leaves escape sequences and
+// #{...} interpolation markers intact so the parser can apply double-quoted
+// string semantics per entry. Whitespace splits words unless it is escaped or
+// appears inside an interpolation, matching Ruby's handling of `%W[a #{b c} d]`.
+// Interpolation spans are scanned with the same string-aware logic the parser
+// uses (findStringInterpolationEnd) so quotes and nested braces inside #{...}
+// do not prematurely terminate a word.
+func splitInterpolatedPercentLiteralWords(raw string) []string {
+	var words []string
+	var sb strings.Builder
+	inWord := false
+
+	flush := func() {
+		if !inWord {
+			return
+		}
+		words = append(words, sb.String())
+		sb.Reset()
+		inWord = false
+	}
+
+	for i := 0; i < len(raw); {
+		switch {
+		case raw[i] == '\\':
+			sb.WriteByte(raw[i])
+			i++
+			if i < len(raw) {
+				_, size := utf8.DecodeRuneInString(raw[i:])
+				sb.WriteString(raw[i : i+size])
+				i += size
+			}
+			inWord = true
+		case raw[i] == '#' && i+1 < len(raw) && raw[i+1] == '{':
+			end, ok := findStringInterpolationEnd(raw, i+2)
+			if !ok {
+				// Unterminated interpolation: copy the rest verbatim and let
+				// the parser report the error against the full entry.
+				sb.WriteString(raw[i:])
+				i = len(raw)
+			} else {
+				sb.WriteString(raw[i : end+1])
+				i = end + 1
+			}
+			inWord = true
+		default:
+			r, size := utf8.DecodeRuneInString(raw[i:])
+			if unicode.IsSpace(r) {
+				flush()
+			} else {
+				sb.WriteString(raw[i : i+size])
+				inWord = true
+			}
+			i += size
+		}
+	}
+
+	flush()
+	return words
 }
 
 // ast.Identifier classification and keyword lookup are now provided by

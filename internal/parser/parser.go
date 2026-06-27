@@ -382,6 +382,10 @@ func tokenLabel(tt ast.TokenType) string {
 		return "percent word array"
 	case ast.TokenSymbols:
 		return "percent symbol array"
+	case ast.TokenInterpWords:
+		return "percent interpolated word array"
+	case ast.TokenInterpSymbols:
+		return "percent interpolated symbol array"
 	case ast.TokenSemicolon:
 		return "\";\""
 	case ast.TokenIvar:
