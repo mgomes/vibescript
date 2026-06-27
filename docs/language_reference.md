@@ -32,9 +32,17 @@ marker, an optional sign, and one or more exponent digits (`1e3`, `1.5e-2`,
 `1E6`, `1e1_0`). Any literal carrying an exponent is a float even without a
 decimal point, matching Ruby (`1e3` is `1000.0`). Exponent underscores are
 visual separators only between two digits. A literal whose exponent overflows
-the 64-bit float range saturates to `Infinity`. Malformed exponent forms such
-as `1e`, `1e+`, `1e_3`, `1e3_`, and `1e3__4` are reported as parse errors
-rather than splitting into an integer followed by an identifier.
+the 64-bit float range saturates to `Infinity`. An `e`/`E` only opens an
+exponent when followed by a sign or digit; otherwise it begins a trailing
+identifier, so `5end` keeps the `end` keyword while `1e` and `1e_3` are
+rejected by the rule below.
+
+A numeric literal may not directly abut an identifier. Forms such as `1e3foo`,
+`123abc`, and `1.5x` are reported as parse errors rather than splitting into a
+number followed by an identifier, matching Ruby. A keyword suffix is exempt
+because Ruby keeps the keyword (`5if cond` and `1e3if cond` are valid modifier
+statements). Committed-but-malformed exponents (`1e+`, `1e3_`, `1e3__4`) are
+likewise reported as parse errors.
 
 Hash literals support label keys (`name:`) and quoted string keys (`"name":`).
 Ruby's hash rocket syntax (`=>`) is not supported.

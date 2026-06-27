@@ -47,9 +47,10 @@ func TestLexerExponentLiterals(t *testing.T) {
 	}
 }
 
-// TestLexerMalformedExponentLiterals pins that exponent suffixes with a
-// dangling underscore tokenize as a single illegal token carrying the
-// diagnostic, mirroring Ruby's "trailing `_' in number" rejection, rather
+// TestLexerMalformedExponentLiterals pins that a committed exponent suffix
+// (one whose marker is followed by a sign or digit) with a missing digit or a
+// dangling underscore tokenizes as a single illegal token carrying the
+// diagnostic, mirroring Ruby's "trailing `+'/`_' in number" rejection, rather
 // than splitting into a float plus a stray identifier.
 func TestLexerMalformedExponentLiterals(t *testing.T) {
 	t.Parallel()
@@ -59,7 +60,9 @@ func TestLexerMalformedExponentLiterals(t *testing.T) {
 	}{
 		{name: "trailing underscore", source: "1e3_"},
 		{name: "doubled underscore", source: "1e3__4"},
-		{name: "underscore before digits", source: "1e_3"},
+		{name: "sign without digits", source: "1e+"},
+		{name: "minus sign without digits", source: "1e-"},
+		{name: "sign then underscore", source: "1e+_3"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,10 +78,87 @@ func TestLexerMalformedExponentLiterals(t *testing.T) {
 	}
 }
 
-// TestLexerMalformedExponentConsumesTail pins that a malformed exponent
-// swallows its entire offending tail, so the lexer never leaves a stray
-// identifier behind. Without this, [1e_3] would emit ILLEGAL then a separate
-// "_3" identifier token, fragmenting one malformed literal into two tokens.
+// TestLexerNumberAbuttingIdentifier pins Ruby's rule that a numeric literal
+// directly followed by an identifier rune is a malformed numeric literal rather
+// than a number split from a trailing identifier. An e/E that is not followed by
+// a sign or digit is an ordinary identifier rune, so 1e and 1e_3 fall here too.
+// A keyword suffix is exempt because Ruby keeps the keyword (5end, 5if cond).
+func TestLexerNumberAbuttingIdentifier(t *testing.T) {
+	t.Parallel()
+	malformed := []struct {
+		name   string
+		source string
+	}{
+		{name: "integer mantissa with identifier", source: "1e3foo"},
+		{name: "plain integer with identifier", source: "123foo"},
+		{name: "decimal mantissa with identifier", source: "1.5foo"},
+		{name: "marker without exponent", source: "1e"},
+		{name: "marker before underscore", source: "1e_3"},
+		{name: "marker before non-keyword letters", source: "5elf"},
+		{name: "trailing underscore identifier", source: "1_foo"},
+		{name: "doubled exponent marker", source: "1e3e4"},
+	}
+	for _, tc := range malformed {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			l := newLexer(tc.source)
+			tok := l.NextToken()
+			if tok.Type != ast.TokenIllegal {
+				t.Fatalf("token type = %v, want %v (literal %q)", tok.Type, ast.TokenIllegal, tok.Literal)
+			}
+			if !strings.Contains(tok.Literal, "malformed numeric literal") {
+				t.Fatalf("token literal = %q, want substring %q", tok.Literal, "malformed numeric literal")
+			}
+			// The whole offending run becomes one diagnostic token, leaving
+			// nothing for a follow-on identifier.
+			if next := l.NextToken(); next.Type != ast.TokenEOF {
+				t.Fatalf("token after malformed literal = %v %q, want EOF", next.Type, next.Literal)
+			}
+		})
+	}
+}
+
+// TestLexerNumberAbuttingKeyword pins that a numeric literal directly followed
+// by a keyword keeps the keyword as its own token, matching Ruby where forms
+// like 5if cond and 5end lex as the number followed by the keyword rather than
+// a malformed literal. An e/E marker that opens a keyword (5end) must not be
+// mistaken for an exponent.
+func TestLexerNumberAbuttingKeyword(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		source      string
+		wantNumber  ast.TokenType
+		wantNumLit  string
+		wantKeyword ast.TokenType
+	}{
+		{name: "integer then end", source: "5end", wantNumber: ast.TokenInt, wantNumLit: "5", wantKeyword: ast.TokenEnd},
+		{name: "integer then if", source: "5if", wantNumber: ast.TokenInt, wantNumLit: "5", wantKeyword: ast.TokenIf},
+		{name: "float then if", source: "1e3if", wantNumber: ast.TokenFloat, wantNumLit: "1e3", wantKeyword: ast.TokenIf},
+		{name: "integer then true", source: "5true", wantNumber: ast.TokenInt, wantNumLit: "5", wantKeyword: ast.TokenTrue},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			l := newLexer(tc.source)
+			number := l.NextToken()
+			if number.Type != tc.wantNumber || number.Literal != tc.wantNumLit {
+				t.Fatalf("number token = %v %q, want %v %q", number.Type, number.Literal, tc.wantNumber, tc.wantNumLit)
+			}
+			keyword := l.NextToken()
+			if keyword.Type != tc.wantKeyword {
+				t.Fatalf("keyword token = %v %q, want %v", keyword.Type, keyword.Literal, tc.wantKeyword)
+			}
+		})
+	}
+}
+
+// TestLexerMalformedExponentConsumesTail pins that a committed-but-malformed
+// exponent swallows its entire offending tail, so the lexer never leaves a stray
+// identifier behind. Without this, [1e+_3] would emit ILLEGAL then a separate
+// "_3" identifier token, fragmenting one malformed literal into two tokens. The
+// tail includes trailing letters (1e+foo, 5e+end) so Ruby's single "trailing
+// `+'" rejection is preserved instead of fragmenting into a keyword/identifier.
 func TestLexerMalformedExponentConsumesTail(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -86,8 +166,9 @@ func TestLexerMalformedExponentConsumesTail(t *testing.T) {
 		source      string
 		wantLiteral string
 	}{
-		{name: "underscore before digits", source: "1e_3", wantLiteral: "malformed exponent in numeric literal: expected digits after 'e'"},
 		{name: "sign then underscore before digits", source: "1e+_3", wantLiteral: "malformed exponent in numeric literal: expected digits after 'e'"},
+		{name: "sign then identifier", source: "1e+foo", wantLiteral: "malformed exponent in numeric literal: expected digits after 'e'"},
+		{name: "sign then keyword", source: "5e+end", wantLiteral: "malformed exponent in numeric literal: expected digits after 'e'"},
 		{name: "trailing underscore", source: "1e3_", wantLiteral: "malformed exponent in numeric literal: underscore must sit between exponent digits"},
 		{name: "doubled underscore", source: "1e3__4", wantLiteral: "malformed exponent in numeric literal: underscore must sit between exponent digits"},
 	}
@@ -111,23 +192,37 @@ func TestLexerMalformedExponentConsumesTail(t *testing.T) {
 	}
 }
 
-// TestParserMalformedExponentInDelimitedContext pins that a malformed exponent
-// inside brackets reports exactly the one malformed-exponent diagnostic rather
-// than cascading into spurious "expected ]" and "unexpected ]" errors caused by
-// a leftover identifier token.
-func TestParserMalformedExponentInDelimitedContext(t *testing.T) {
+// TestParserMalformedNumericInDelimitedContext pins that a malformed numeric
+// literal inside brackets reports exactly one diagnostic rather than cascading
+// into spurious "expected ]" and "unexpected ]" errors caused by a leftover
+// identifier token. Both the committed-exponent path (1e+_3) and the
+// number-abutting-identifier path (1e_3) must consume their entire offending run.
+func TestParserMalformedNumericInDelimitedContext(t *testing.T) {
 	t.Parallel()
-	_, errs := parseSource(t, "[1e_3]")
-	if len(errs) != 1 {
-		var sb strings.Builder
-		for _, err := range errs {
-			sb.WriteString(err.Error())
-			sb.WriteByte('\n')
-		}
-		t.Fatalf("parseSource([1e_3]) produced %d errors, want 1:\n%s", len(errs), sb.String())
+	tests := []struct {
+		name    string
+		source  string
+		wantMsg string
+	}{
+		{name: "committed exponent", source: "[1e+_3]", wantMsg: "malformed exponent"},
+		{name: "number abutting identifier", source: "[1e_3]", wantMsg: "malformed numeric literal"},
 	}
-	if !strings.Contains(errs[0].Error(), "malformed exponent") {
-		t.Fatalf("error = %q, want substring %q", errs[0].Error(), "malformed exponent")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, errs := parseSource(t, tc.source)
+			if len(errs) != 1 {
+				var sb strings.Builder
+				for _, err := range errs {
+					sb.WriteString(err.Error())
+					sb.WriteByte('\n')
+				}
+				t.Fatalf("parseSource(%q) produced %d errors, want 1:\n%s", tc.source, len(errs), sb.String())
+			}
+			if !strings.Contains(errs[0].Error(), tc.wantMsg) {
+				t.Fatalf("error = %q, want substring %q", errs[0].Error(), tc.wantMsg)
+			}
+		})
 	}
 }
 
@@ -221,9 +316,12 @@ end`
 
 // TestParserMalformedExponentLiterals pins the issue's hardening requirement:
 // partial exponent forms report a clear diagnostic at the offending literal
-// instead of silently lexing the suffix as an identifier. The fraction case
-// rides the existing trailing-fraction diagnostic (a well-formed 1e3 followed
-// by a stray .5), so it carries a different but equally clear message.
+// instead of silently lexing the suffix as an identifier. Forms whose e/E marker
+// is not followed by a sign or digit (1e, 1e_3) are not exponents at all but a
+// number abutting an identifier, so they carry the numeric-literal diagnostic.
+// The fraction case rides the existing trailing-fraction diagnostic (a
+// well-formed 1e3 followed by a stray .5), so it carries a different but equally
+// clear message.
 func TestParserMalformedExponentLiterals(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -231,11 +329,12 @@ func TestParserMalformedExponentLiterals(t *testing.T) {
 		source  string
 		wantMsg string
 	}{
-		{name: "missing exponent digits", source: "1e", wantMsg: "malformed exponent"},
+		{name: "missing exponent digits", source: "1e", wantMsg: "malformed numeric literal"},
 		{name: "sign without digits", source: "1e+", wantMsg: "malformed exponent"},
-		{name: "underscore before digits", source: "1e_3", wantMsg: "malformed exponent"},
+		{name: "underscore before digits", source: "1e_3", wantMsg: "malformed numeric literal"},
 		{name: "trailing underscore", source: "1e3_", wantMsg: "malformed exponent"},
 		{name: "doubled underscore", source: "1e3__4", wantMsg: "malformed exponent"},
+		{name: "identifier after exponent", source: "1e3foo", wantMsg: "malformed numeric literal"},
 		{name: "fraction after exponent", source: "1e3.5", wantMsg: "expected member name"},
 	}
 	for _, tc := range tests {
@@ -284,6 +383,67 @@ func TestParserExponentMarkerDoesNotShadowMethodCalls(t *testing.T) {
 	}
 	if _, ok := member.Object.(*ast.IntegerLiteral); !ok {
 		t.Fatalf("member object = %T, want *ast.IntegerLiteral", member.Object)
+	}
+}
+
+// TestParserNumberAbuttingModifierKeyword pins that a numeric literal directly
+// followed by a modifier keyword parses as the modifier statement, matching Ruby
+// where 5if cond and 1e3if cond are valid. The numeric-suffix guard must exempt
+// keyword suffixes so these forms are not rejected as malformed literals.
+func TestParserNumberAbuttingModifierKeyword(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		source    string
+		wantValue any
+	}{
+		{name: "integer if modifier", source: "5if true", wantValue: int64(5)},
+		{name: "float if modifier", source: "1e3if true", wantValue: float64(1000)},
+		{name: "integer while modifier", source: "5while false", wantValue: int64(5)},
+		{name: "integer unless modifier", source: "5unless false", wantValue: int64(5)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+			if len(got.Statements) != 1 {
+				t.Fatalf("parseSource(%q) statements = %d, want 1", tc.source, len(got.Statements))
+			}
+			var body []ast.Statement
+			switch stmt := got.Statements[0].(type) {
+			case *ast.IfStmt:
+				body = stmt.Consequent
+				if len(body) == 0 {
+					body = stmt.Alternate
+				}
+			case *ast.WhileStmt:
+				body = stmt.Body
+			default:
+				t.Fatalf("statement = %T, want a modifier statement", got.Statements[0])
+			}
+			if len(body) != 1 {
+				t.Fatalf("modifier body = %d statements, want 1", len(body))
+			}
+			expr, ok := body[0].(*ast.ExprStmt)
+			if !ok {
+				t.Fatalf("modifier body = %T, want *ast.ExprStmt", body[0])
+			}
+			switch want := tc.wantValue.(type) {
+			case int64:
+				lit, ok := expr.Expr.(*ast.IntegerLiteral)
+				if !ok || lit.Value != want {
+					t.Fatalf("modifier body expr = %#v, want IntegerLiteral %d", expr.Expr, want)
+				}
+			case float64:
+				lit, ok := expr.Expr.(*ast.FloatLiteral)
+				if !ok || lit.Value != want {
+					t.Fatalf("modifier body expr = %#v, want FloatLiteral %v", expr.Expr, want)
+				}
+			}
+		})
 	}
 }
 

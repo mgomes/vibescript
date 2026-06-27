@@ -600,7 +600,7 @@ func (l *lexer) readNumber() (literal string, isFloat bool, errMsg string) {
 			hasDot = true
 			l.readRune()
 			sb.WriteRune('.')
-		case (r == 'e' || r == 'E') && !hasExponent:
+		case (r == 'e' || r == 'E') && !hasExponent && l.exponentMarkerAhead():
 			if msg := l.readExponent(&sb); msg != "" {
 				errMsg = msg
 				goto done
@@ -615,18 +615,72 @@ func (l *lexer) readNumber() (literal string, isFloat bool, errMsg string) {
 	}
 
 done:
+	if errMsg == "" {
+		if msg := l.rejectNumberSuffix(); msg != "" {
+			errMsg = msg
+		}
+	}
 	literal = sb.String()
 	l.readRune()
 	return literal, hasDot || hasExponent, errMsg
+}
+
+// rejectNumberSuffix guards the boundary just past a numeric literal. A number
+// that directly abuts an identifier (no intervening whitespace or operator),
+// such as 1e3foo, 123abc, or 1.5x, is malformed: Ruby reports a syntax error
+// rather than splitting it into a number followed by an identifier. A keyword
+// suffix is left intact because Ruby permits adjacency there (5if cond and
+// 1e3if cond lex as the number followed by a modifier keyword). When the suffix
+// is a plain identifier it is consumed so the whole offending run becomes a
+// single diagnostic token instead of fragmenting into a stray identifier.
+//
+// It must be called at the done boundary while l.ch still holds the literal's
+// final rune, so l.peekRune reports the first rune after the number.
+func (l *lexer) rejectNumberSuffix() string {
+	if !ast.IsIdentifierStart(l.peekRune()) {
+		return ""
+	}
+	start := l.offset
+	end := start
+	for end < len(l.input) {
+		r, w := utf8.DecodeRuneInString(l.input[end:])
+		if !ast.IsIdentifierRune(r) {
+			break
+		}
+		end += w
+	}
+	if ast.LookupIdent(l.input[start:end]) != ast.TokenIdent {
+		return ""
+	}
+	for l.offset < end {
+		l.readRune()
+	}
+	return "malformed numeric literal: identifier cannot immediately follow a number"
+}
+
+// exponentMarkerAhead reports whether the e/E rune at l.peekRune actually
+// opens an exponent suffix rather than abutting an identifier. Mirroring Ruby,
+// the marker begins an exponent when immediately followed by a digit or by a
+// sign (+/-). A sign commits to the exponent even without a following digit, so
+// 1e+ is reported as a malformed exponent. Otherwise the e/E belongs to a
+// trailing identifier (5end keeps the end keyword while 5elf and 1e_3 fall to
+// the numeric suffix guard) rather than being mis-lexed as a malformed exponent.
+//
+// The marker must be the lexer's current peek rune, so peekRuneN(1) is the rune
+// immediately after it.
+func (l *lexer) exponentMarkerAhead() bool {
+	next := l.peekRuneN(1)
+	return unicode.IsDigit(next) || next == '+' || next == '-'
 }
 
 // readExponent consumes an exponent suffix beginning at the e/E marker,
 // which must be the lexer's current peek rune. It appends the consumed
 // runes (minus visual-separator underscores) to sb and returns a
 // diagnostic when the suffix is malformed. A malformed suffix either lacks
-// any exponent digit (1e, 1e+, 1e_3) or carries an underscore that is not
-// wedged between two digits (1e3_, 1e3__4); in both cases the marker, sign,
-// and any stray runes are consumed to keep the span over the offending text.
+// any exponent digit (1e+, where the sign commits to an exponent) or carries
+// an underscore that is not wedged between two digits (1e3_, 1e3__4); in both
+// cases the marker, sign, and any stray runes are consumed to keep the span
+// over the offending text.
 func (l *lexer) readExponent(sb *strings.Builder) string {
 	marker := l.peekRune()
 	l.readRune()
@@ -671,18 +725,14 @@ func (l *lexer) readExponent(sb *strings.Builder) string {
 	}
 }
 
-// consumeExponentTail advances past the run of digits and underscores that
-// follows a malformed exponent marker. It keeps the diagnostic token's span
-// over the entire offending sequence so a malformed exponent never fragments
-// into a separate identifier token.
+// consumeExponentTail advances past the run of identifier runes (letters,
+// digits, and underscores) that follows a malformed exponent marker. It keeps
+// the diagnostic token's span over the entire offending sequence so a malformed
+// exponent never fragments into a separate identifier token, mirroring Ruby's
+// single "trailing sign/underscore" error for inputs such as 1e+foo or 5e+end.
 func (l *lexer) consumeExponentTail() {
-	for {
-		switch r := l.peekRune(); {
-		case unicode.IsDigit(r), r == '_':
-			l.readRune()
-		default:
-			return
-		}
+	for ast.IsIdentifierRune(l.peekRune()) {
+		l.readRune()
 	}
 }
 
