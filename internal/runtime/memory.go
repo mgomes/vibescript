@@ -569,8 +569,8 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 // hashBuildAccumulator charges the memory of an output map assembled entry by
 // entry against the quota without re-walking the whole map on each insertion.
 // Hash transforms whose block returns fresh heap values (transform_values and
-// transform_keys, where each block call can yield an arbitrarily large string
-// or nested collection, and the merge conflict block) use it so accumulated
+// transform_keys, where each block call can yield an arbitrarily large string or
+// nested collection, and the merge conflict block) use it so accumulated
 // payloads count toward the quota during construction, not only after the
 // builtin returns.
 //
@@ -649,6 +649,114 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	acc.est = newMemoryEstimator()
 	return acc
+}
+
+type hashLiteralBuildAccumulator struct {
+	exec          *Execution
+	est           *memoryEstimator
+	base          int
+	retained      int
+	replacing     bool
+	keyPayloads   map[string]int
+	valuePayloads map[string]int
+}
+
+// newHashLiteralBuildAccumulator snapshots the current execution roots for a
+// hash literal. Literal values are plain expression results, not block callbacks
+// that may mutate baseline containers in place, so an alias such as
+// `big = ...; {a: big}` should be charged like the final hash: the new map
+// structure and key bytes are fresh, while big's backing remains counted once.
+func newHashLiteralBuildAccumulator(exec *Execution) *hashLiteralBuildAccumulator {
+	acc := &hashLiteralBuildAccumulator{exec: exec}
+	if exec.memoryQuota <= 0 {
+		return acc
+	}
+
+	acc.est = newMemoryEstimator()
+	acc.base = exec.estimateMemoryUsageBase(acc.est)
+	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
+	return acc
+}
+
+func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
+	return acc.checkQuota()
+}
+
+func (acc *hashLiteralBuildAccumulator) addDistinctEntry(key string, val Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	acc.retained = saturatingAdd(acc.retained, acc.est.valuePayload(val))
+	acc.retained = saturatingAdd(acc.retained, acc.est.stringPayloadSize(key))
+	return acc.checkQuota()
+}
+
+// replaceEntry switches duplicate-key literals to per-key retained accounting.
+// Distinct-key literals stay on the seeded-estimator fast path; once a duplicate
+// appears, retained charges must become subtractable so overwritten values stop
+// contributing after the replacement.
+func (acc *hashLiteralBuildAccumulator) replaceEntry(key string, val Value, current map[string]Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	if !acc.replacing {
+		acc.rebuildRetainedEntries(current)
+	}
+
+	keyPayload, valuePayload := acc.entryPayloads(key, val)
+	incoming := saturatingAdd(keyPayload, valuePayload)
+	if used := saturatingAdd(saturatingAdd(acc.base, acc.retained), incoming); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+
+	prior := saturatingAdd(acc.keyPayloads[key], acc.valuePayloads[key])
+	acc.retained -= prior
+	if acc.retained < 0 {
+		acc.retained = 0
+	}
+	acc.retained = saturatingAdd(acc.retained, incoming)
+	if acc.keyPayloads == nil {
+		acc.keyPayloads = make(map[string]int)
+		acc.valuePayloads = make(map[string]int)
+	}
+	acc.keyPayloads[key] = keyPayload
+	acc.valuePayloads[key] = valuePayload
+	return acc.checkQuota()
+}
+
+func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[string]Value) {
+	acc.retained = 0
+	acc.keyPayloads = make(map[string]int, len(current))
+	acc.valuePayloads = make(map[string]int, len(current))
+	for key, val := range current {
+		keyPayload, valuePayload := acc.entryPayloads(key, val)
+		acc.keyPayloads[key] = keyPayload
+		acc.valuePayloads[key] = valuePayload
+		acc.retained = saturatingAdd(acc.retained, saturatingAdd(keyPayload, valuePayload))
+	}
+	acc.est = nil
+	acc.replacing = true
+}
+
+func (acc *hashLiteralBuildAccumulator) entryPayloads(key string, val Value) (int, int) {
+	est := newMemoryEstimator()
+	acc.exec.estimateMemoryUsageBase(est)
+	valuePayload := est.valuePayload(val)
+	keyPayload := est.stringPayloadSize(key)
+	return keyPayload, valuePayload
+}
+
+func (acc *hashLiteralBuildAccumulator) checkQuota() error {
+	used := saturatingAdd(acc.base, acc.retained)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
 }
 
 // reserveScratch folds a fixed scratch allocation into the baseline so it is held

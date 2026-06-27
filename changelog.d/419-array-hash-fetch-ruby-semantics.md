@@ -8,5 +8,6 @@
   evaluated on a miss, matching Ruby (`[].fetch(0, 7) { 9 }` returns `9`).
   `Array#fetch` also accepts negative
   indices, counting from the end like `at`. For nil-on-miss array lookups use
-  `at`, `slice`, or `dig` (array `[]` raises on out-of-range or negative
-  indices); for hashes use `[]` or `dig`.
+  `[]`, `at`, `slice`, or `dig` (array `[]` counts negative indices from the end
+  and returns `nil` out of range, like Ruby's `Array#[]`); for hashes use `[]`
+  or `dig`. Use `fetch` when a miss should raise instead.

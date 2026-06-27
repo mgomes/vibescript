@@ -599,6 +599,33 @@ falls before the start of the string:
 "hello".rindex("l", -9)        # nil
 ```
 
+### Bracket access (`string[selector]`)
+
+Bracket access mirrors Ruby's `String#[]` and is rune-aware, so it operates on
+characters rather than bytes. It is the operator spelling of the integer, range,
+and start/length forms of [`slice`](#sliceselector-length--nil):
+
+- `string[index]` returns a single character; a negative index counts back from
+  the end, and an index at or past the length returns `nil`;
+- `string[start, length]` returns up to `length` characters starting at `start`
+  (negative `start` counts from the end), with the same empty-string, clamping,
+  and `nil` rules as `slice`;
+- `string[range]` returns the selected substring, with Ruby-compatible negative
+  bounds.
+
+```vibe
+"abcd"[-1]     # "d"
+"abcd"[10]     # nil
+"abcd"[1, 2]   # "bc"
+"abcd"[1..2]   # "bc"
+"abcd"[1...2]  # "b"
+"héllo"[1]     # "é"
+```
+
+Strings are immutable, so there is no bracket assignment; build a new string
+with [`slice`](#sliceselector-length--nil), [`sub`](#subpattern-replacement-regex-false),
+or concatenation instead.
+
 ### `slice(selector, length = nil)`
 
 Extracts a character or substring, returning `nil` when the selector falls
