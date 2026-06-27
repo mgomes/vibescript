@@ -20,7 +20,9 @@ func TestCompileMalformedCallTargetDoesNotPanic(t *testing.T) {
 
 func TestParseErrorIncludesCodeFrameAndMissingValueMessage(t *testing.T) {
 	t.Parallel()
-	err := compileScriptErrorDefault(t, "def broken()\n  {foo: }\nend\n")
+	// Quoted keys do not support value omission (label keys do), so this is a
+	// stable case for the missing-value diagnostic and its code frame.
+	err := compileScriptErrorDefault(t, "def broken()\n  {\"foo\": }\nend\n")
 	msg := err.Error()
 	if !strings.Contains(msg, "missing value for hash key foo") {
 		t.Fatalf("expected missing hash value parse error, got: %s", msg)
@@ -28,7 +30,7 @@ func TestParseErrorIncludesCodeFrameAndMissingValueMessage(t *testing.T) {
 	if !strings.Contains(msg, "--> line 2, column") {
 		t.Fatalf("expected codeframe line marker, got: %s", msg)
 	}
-	if !strings.Contains(msg, "{foo: }") {
+	if !strings.Contains(msg, "{\"foo\": }") {
 		t.Fatalf("expected source line in codeframe, got: %s", msg)
 	}
 }

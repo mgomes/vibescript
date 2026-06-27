@@ -603,6 +603,63 @@ end
 	}
 }
 
+// TestHostCloneHashDefaultBackReferenceStaysSingleWrapper pins that a hash whose
+// default value reaches the hash itself host-clones to a single wrapper. The
+// host-return clone path used to clone the default before recording the source
+// hash in its seen-set, so the d[:h] back-edge cloned a second wrapper and the
+// returned hash's default pointed at that clone rather than the returned hash;
+// equal? then observed the wrong object. Registering the wrapper before walking
+// the default makes the back-reference dedup against the returned hash.
+func TestHostCloneHashDefaultBackReferenceStaysSingleWrapper(t *testing.T) {
+	t.Parallel()
+
+	// d is a plain hash; h is Hash.new(d), so h's default value is d. Closing
+	// d[:h] = h forms the back-edge h.default(=d) -> d[:h](=h).
+	dEntries := map[string]Value{}
+	d := NewHash(dEntries)
+	h := NewHashWithDefault(map[string]Value{}, d, NewNil())
+	dEntries["h"] = h
+
+	cloned := cloneValueForHost(h)
+	if cloned.Identical(h) {
+		t.Fatal("cloned hash shares identity with the original; test cannot observe the clone")
+	}
+	clonedDefault := hashDefaultValue(cloned)
+	if clonedDefault.Kind() != KindHash {
+		t.Fatalf("cloned default = %v, want the cloned default hash", clonedDefault.Kind())
+	}
+	back := clonedDefault.Hash()["h"]
+	if !back.Identical(cloned) {
+		t.Fatal("the default's back-reference cloned to a second wrapper; the host-return clone must register the wrapper before walking its default")
+	}
+}
+
+// TestInboundRebindHashDefaultBackReferenceStaysSingleWrapper pins the same
+// invariant for the inbound rebinder: a host-supplied hash whose default value
+// reaches the hash itself must rebind to a single wrapper, so a script reading
+// h.default[:h] gets the same object the callee received. The rebinder used to
+// rebind the default before recording the source wrapper in seenHashes, so the
+// back-edge rebound to a second wrapper and h.equal?(h.default[:h]) was false.
+func TestInboundRebindHashDefaultBackReferenceStaysSingleWrapper(t *testing.T) {
+	t.Parallel()
+
+	dEntries := map[string]Value{}
+	d := NewHash(dEntries)
+	h := NewHashWithDefault(map[string]Value{}, d, NewNil())
+	dEntries["h"] = h
+
+	script := compileScript(t, `
+def probe(h)
+  h.equal?(h.default[:h])
+end
+`)
+
+	got := callScript(t, context.Background(), script, "probe", []Value{h}, CallOptions{})
+	if got.Kind() != KindBool || !got.Bool() {
+		t.Fatalf("h.equal?(h.default[:h]) = %#v, want true; the inbound rebind must register the wrapper before walking its default", got)
+	}
+}
+
 // TestHashDefaultProcRebindsToCurrentCall pins that a hash default proc which
 // escapes one Script.Call and is passed back into another resolves globals
 // against the current call rather than the call where it was created. The inbound
