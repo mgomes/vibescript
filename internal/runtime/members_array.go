@@ -1857,6 +1857,8 @@ var reduceArithmeticOps = map[string]func(left, right Value) (Value, error){
 	"/":  divideValues,
 	"%":  moduloValues,
 	"**": powerValues,
+	"<<": shovelValues,
+	"&":  intersectValues,
 }
 
 // reduceSendOperation applies a single fold step by sending operation to the
