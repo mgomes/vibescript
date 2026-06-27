@@ -174,6 +174,9 @@ func readFullContext(ctx context.Context, read func(context.Context, []byte) (in
 			buf = buf[n:]
 		}
 		if len(buf) == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return nil
 		}
 		if err != nil {

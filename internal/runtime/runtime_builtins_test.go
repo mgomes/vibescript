@@ -1485,6 +1485,56 @@ func TestRandomIdentifierBuiltinsAcceptFullFinalEntropyReadWithEOF(t *testing.T)
 	}
 }
 
+func TestRandomIdentifierBuiltinsHonorCancellationAfterFullEntropyRead(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		call func(*Execution) (Value, error)
+	}{
+		{
+			name: "uuid",
+			call: func(exec *Execution) (Value, error) {
+				return builtinUUID(exec, NewNil(), nil, nil, NewNil())
+			},
+		},
+		{
+			name: "random_id",
+			call: func(exec *Execution) (Value, error) {
+				return builtinRandomID(exec, NewNil(), []Value{NewInt(1)}, nil, NewNil())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var cancel context.CancelFunc
+			reads := 0
+			engine := MustNewEngine(Config{
+				RandomReadFunc: func(_ context.Context, p []byte) (int, error) {
+					reads++
+					for i := range p {
+						p[i] = 1
+					}
+					cancel()
+					return len(p), nil
+				},
+			})
+			ctx, cancelFunc := context.WithCancel(context.Background())
+			cancel = cancelFunc
+			exec := &Execution{ctx: ctx, engine: engine}
+
+			_, err := tc.call(exec)
+			requireErrorIs(t, err, context.Canceled)
+			if reads != 1 {
+				t.Fatalf("%s entropy reads = %d, want 1", tc.name, reads)
+			}
+		})
+	}
+}
+
 func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{RandomReader: bytes.NewReader([]byte{248, 1})}, `
