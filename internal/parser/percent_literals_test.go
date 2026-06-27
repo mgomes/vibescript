@@ -507,6 +507,126 @@ func TestParserPercentInterpolatedArrayLiteralNestedPercentLiteral(t *testing.T)
 	}
 }
 
+// A parenless percent-array call argument inside an interpolation may carry the
+// interpolation's own closing delimiter inside any delimiter pairing, not just
+// the bracket form. The interpolation-end scan must consume the whole argument
+// literal so that "}" is never mistaken for the interpolation close. Verified
+// against Ruby (def collect(a); a; end):
+//
+//	"#{collect %w{}}"   => "[]"
+//	"#{collect %w(})}"  => "[\"}\"]"
+//	"#{collect %i[}]}"  => "[:\"}\"]"
+//	"#{collect %W[}]}"  => "[\"}\"]"
+func TestParserParenlessPercentArrayArgumentInInterpolationDelimiters(t *testing.T) {
+	t.Parallel()
+
+	wordsClose := func() ast.Expression {
+		return &ast.ArrayLiteral{Elements: []ast.Expression{
+			&ast.StringLiteral{Value: "}"},
+		}}
+	}
+	call := func(arg ast.Expression) ast.Expression {
+		return &ast.CallExpr{
+			Callee: &ast.Identifier{Name: "collect"},
+			Args:   []ast.Expression{arg},
+			KwArgs: []ast.KeywordArg{},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		source   string
+		wantExpr ast.Expression
+	}{
+		{
+			name:   "brace_argument_holds_close_delimiter",
+			source: "def run\n  \"#{collect %w{}}\"\nend",
+			wantExpr: &ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringExpr{Expr: call(&ast.ArrayLiteral{Elements: []ast.Expression{}})},
+			}},
+		},
+		{
+			name:   "paren_argument_holds_close_delimiter",
+			source: "def run\n  \"#{collect %w(})}\"\nend",
+			wantExpr: &ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringExpr{Expr: call(wordsClose())},
+			}},
+		},
+		{
+			name:   "symbol_argument_holds_close_delimiter",
+			source: "def run\n  \"#{collect %i[}]}\"\nend",
+			wantExpr: &ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringExpr{Expr: call(&ast.ArrayLiteral{Elements: []ast.Expression{
+					&ast.SymbolLiteral{Name: "}"},
+				}})},
+			}},
+		},
+		{
+			name:   "interpolating_argument_holds_close_delimiter",
+			source: "def run\n  \"#{collect %W[}]}\"\nend",
+			wantExpr: &ast.InterpolatedString{Parts: []ast.StringPart{
+				ast.StringExpr{Expr: call(wordsClose())},
+			}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, errs := parseSource(t, tc.source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			body := parsedFunctionBody(t, got)
+			lastStmt := body[len(body)-1]
+			wantStmt := &ast.ExprStmt{Expr: tc.wantExpr}
+			if diff := cmp.Diff(wantStmt, lastStmt, astCmpOpts); diff != "" {
+				t.Fatalf("final statement mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// A local-variable callee keeps the modulo reading even though the
+// interpolation-end scan optimistically skips the percent-array shape to locate
+// the close brace: the scope-aware sub-parser that reparses the located body
+// restores the correct interpretation. Both readings agree on the close brace
+// here because the modulo expression contains no "}". This guards the
+// correctness premise of the optimistic skip. Verified against Ruby
+// (a = 10; w = [3]):
+//
+//	"#{a %w[0]}"  => "1"   (a % w[0])
+func TestParserLocalModuloSurvivesInterpolationScan(t *testing.T) {
+	t.Parallel()
+
+	source := "def run\n  a = 10\n  w = [3]\n  \"#{a %w[0]}\"\nend"
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantExpr := &ast.InterpolatedString{Parts: []ast.StringPart{
+		ast.StringExpr{Expr: &ast.BinaryExpr{
+			Left:     &ast.Identifier{Name: "a"},
+			Operator: ast.TokenPercent,
+			Right: &ast.IndexExpr{
+				Object: &ast.Identifier{Name: "w"},
+				Index:  &ast.IntegerLiteral{Value: 0},
+			},
+		}},
+	}}
+
+	body := parsedFunctionBody(t, got)
+	lastStmt := body[len(body)-1]
+	wantStmt := &ast.ExprStmt{Expr: wantExpr}
+	if diff := cmp.Diff(wantStmt, lastStmt, astCmpOpts); diff != "" {
+		t.Fatalf("final statement mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // %W/%I parse as parenless call arguments after a non-local callee, mirroring
 // the lowercase forms and exercising the argument scan path.
 func TestParserPercentInterpolatedArrayParenlessCallArguments(t *testing.T) {
