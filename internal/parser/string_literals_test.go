@@ -261,6 +261,40 @@ end`
 	}
 }
 
+func TestDoubleQuotedStringInterpolationManySpans(t *testing.T) {
+	t.Parallel()
+
+	var src strings.Builder
+	src.WriteString("def run\n  \"")
+	for i := range 512 {
+		src.WriteString("#{")
+		if i == 256 {
+			src.WriteString("%W[#{%w[}]}].first")
+		} else {
+			src.WriteString("1")
+		}
+		src.WriteString("}")
+	}
+	src.WriteString("\"\nend")
+	source := src.String()
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(many interpolations) errors = %v, want none", errs)
+	}
+	body := parsedFunctionBody(t, program)
+	if len(body) != 1 {
+		t.Fatalf("function body length = %d, want 1", len(body))
+	}
+	interp, ok := body[0].(*ast.ExprStmt).Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("body[0].Expr = %T, want *ast.InterpolatedString", body[0].(*ast.ExprStmt).Expr)
+	}
+	if len(interp.Parts) != 512 {
+		t.Fatalf("interpolated parts length = %d, want 512", len(interp.Parts))
+	}
+}
+
 func TestEscapedDoubleQuotedInterpolationMarkerStaysLiteral(t *testing.T) {
 	t.Parallel()
 	source := `def run

@@ -827,8 +827,10 @@ func interpolationMarkerEscaped(raw string, hash int) bool {
 // a bare "%" remains the modulo operator wherever the lexer would treat it as
 // one. It returns false when the body is never closed before the end of raw.
 func findStringInterpolationEnd(raw string, start int) (int, bool) {
-	lex := newLexer(raw)
-	lex.seek(start, ast.Token{})
+	if start < 0 || start > len(raw) {
+		return 0, false
+	}
+	lex := newLexer(raw[start:])
 
 	depth := 0
 	for {
@@ -843,7 +845,7 @@ func findStringInterpolationEnd(raw string, start int) (int, bool) {
 				// The lexer has consumed the closing "}"; currentOffset now
 				// points at the rune after it, so the "}" itself sits one byte
 				// back ("}" is always a single byte).
-				return lex.currentOffset() - 1, true
+				return start + lex.currentOffset() - 1, true
 			}
 			depth--
 		}
