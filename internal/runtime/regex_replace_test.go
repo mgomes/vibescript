@@ -320,7 +320,7 @@ func TestStringRegexReplacementOutputLimit(t *testing.T) {
 	text := strings.Repeat("a", maxRegexInputBytes)
 	replacement := strings.Repeat("x", 2)
 
-	if _, err := rubyRegexGSub(re, text, replacement, "string.gsub"); err == nil {
+	if _, _, err := rubyRegexGSub(re, text, replacement, "string.gsub"); err == nil {
 		t.Fatalf("expected gsub output limit error, got nil")
 	} else if !strings.Contains(err.Error(), "output exceeds limit") {
 		t.Fatalf("unexpected gsub error: %v", err)
@@ -328,7 +328,7 @@ func TestStringRegexReplacementOutputLimit(t *testing.T) {
 
 	subText := "a" + strings.Repeat("b", maxRegexInputBytes-1)
 	subReplacement := strings.Repeat("x", maxRegexInputBytes)
-	if _, err := rubyRegexSub(re, subText, subReplacement, "string.sub"); err == nil {
+	if _, _, err := rubyRegexSub(re, subText, subReplacement, "string.sub"); err == nil {
 		t.Fatalf("expected sub output limit error, got nil")
 	} else if !strings.Contains(err.Error(), "output exceeds limit") {
 		t.Fatalf("unexpected sub error: %v", err)
@@ -354,7 +354,7 @@ func TestStringRegexReplacementPrePostMatchOutputLimit(t *testing.T) {
 
 	t.Run("prematch", func(t *testing.T) {
 		t.Parallel()
-		if _, err := rubyRegexSub(re, src, "\\`\\`", "string.sub"); err == nil {
+		if _, _, err := rubyRegexSub(re, src, "\\`\\`", "string.sub"); err == nil {
 			t.Fatalf("expected output limit error, got nil")
 		} else if !strings.Contains(err.Error(), "output exceeds limit") {
 			t.Fatalf("unexpected error: %v", err)
@@ -369,7 +369,7 @@ func TestStringRegexReplacementPrePostMatchOutputLimit(t *testing.T) {
 			t.Fatalf("compile: %v", err)
 		}
 		postSrc := "a" + strings.Repeat("b", maxRegexInputBytes-1)
-		if _, err := rubyRegexSub(postRe, postSrc, "\\'\\'", "string.sub"); err == nil {
+		if _, _, err := rubyRegexSub(postRe, postSrc, "\\'\\'", "string.sub"); err == nil {
 			t.Fatalf("expected output limit error, got nil")
 		} else if !strings.Contains(err.Error(), "output exceeds limit") {
 			t.Fatalf("unexpected error: %v", err)
@@ -378,7 +378,7 @@ func TestStringRegexReplacementPrePostMatchOutputLimit(t *testing.T) {
 
 	t.Run("gsub prematch", func(t *testing.T) {
 		t.Parallel()
-		if _, err := rubyRegexGSub(re, src, "\\`\\`", "string.gsub"); err == nil {
+		if _, _, err := rubyRegexGSub(re, src, "\\`\\`", "string.gsub"); err == nil {
 			t.Fatalf("expected output limit error, got nil")
 		} else if !strings.Contains(err.Error(), "output exceeds limit") {
 			t.Fatalf("unexpected error: %v", err)

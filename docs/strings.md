@@ -505,6 +505,15 @@ The offset accepts an integer or a float (truncated toward zero, as in Ruby);
 any other type is rejected. An invalid regex is reported regardless of the
 offset, and the same regex engine and size guards as `match?` apply.
 
+Given a block, `match` yields the match data (the same `[full, capture1, ...]`
+array) when there is a match and returns the block's result; with no match it
+returns `nil` and never invokes the block, matching Ruby:
+
+```vibe
+"a1".match("([a-z])([0-9])") do |m| m[1] end # "a"
+"xyz".match("([a-z])([0-9])") do |m| m[1] end # nil (block not called)
+```
+
 ### `match?(pattern, offset = 0)`
 
 Allocation-light boolean predicate counterpart to `match`. Returns `true` when
@@ -541,6 +550,16 @@ depends on the number of capture groups in `pattern`:
 "a1 b2".scan("([a-z])([0-9])")   # [["a", "1"], ["b", "2"]]
 "a-b-c".scan("(\\w)(-)?")        # [["a", "-"], ["b", "-"], ["c", nil]]
 "abc".scan("z")                   # []
+```
+
+Given a block, `scan` yields each match (using the same per-match shape as the
+array result above) and returns the receiver string instead of an array,
+matching Ruby:
+
+```vibe
+out = []
+"a1 b2".scan("[a-z][0-9]") do |m| out = out.push(m) end # returns "a1 b2"
+out                                                       # ["a1", "b2"]
 ```
 
 A pattern with many capture groups over a large subject can force the regex engine
@@ -623,6 +642,18 @@ With `regex: true`, the replacement string uses Ruby-style backreferences (see
 "abc123".sub("([a-z]+)([0-9]+)", "\\2-\\1", regex: true) # "123-abc"
 ```
 
+Given a block instead of a replacement argument, the block receives the matched
+substring and its result (coerced to a string) replaces the first match:
+
+```vibe
+"hello".sub("l") do |m| m.upcase end                 # "heLlo"
+"abc".sub("[bc]", regex: true) do |m| m.upcase end   # "aBc"
+```
+
+The block form honors the same `regex` keyword (defaulting to literal matching),
+so use `regex: true` when the pattern should be interpreted as a regular
+expression. Passing both a replacement argument and a block is an error.
+
 ### `gsub(pattern, replacement, regex: false)`
 
 Replaces all occurrences of `pattern`:
@@ -632,6 +663,21 @@ Replaces all occurrences of `pattern`:
 "ID-12 ID-34".gsub("ID-[0-9]+", "X", regex: true) # "X X"
 "a1b2".gsub("([a-z])([0-9])", "\\2\\1", regex: true) # "1a2b"
 ```
+
+Given a block instead of a replacement argument, the block receives each matched
+substring and its result (coerced to a string) replaces that match:
+
+```vibe
+"hello".gsub("l") do |m| m.upcase end                # "heLLo"
+"abc".gsub("[bc]", regex: true) do |m| m.upcase end  # "aBC"
+```
+
+As with `sub`, the block form honors the `regex` keyword (defaulting to literal
+matching), and passing both a replacement argument and a block is an error. The
+`sub!` and `gsub!` variants accept the same block form. Matching Ruby, they
+return the rewritten string whenever the pattern matched -- even when the
+replacement reproduces the original text, as in `"a".sub!("a") do |m| m end`
+-- and return `nil` only when the pattern never matched.
 
 #### Replacement backreferences
 
