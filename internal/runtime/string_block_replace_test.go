@@ -748,6 +748,26 @@ func TestLiteralBlockReplaceOutputLimit(t *testing.T) {
 	}
 }
 
+func TestLiteralBlockReplaceCapsInitialOutputCapacity(t *testing.T) {
+	t.Parallel()
+
+	if got := boundedRegexOutputCapacity(maxRegexInputBytes + 1); got != maxRegexInputBytes {
+		t.Fatalf("boundedRegexOutputCapacity(over cap) = %d, want %d", got, maxRegexInputBytes)
+	}
+	src := strings.Repeat("p", maxRegexInputBytes+1024)
+	yield := func(string) (string, error) { return "R", nil }
+	got, matched, err := literalBlockReplace(src, src, false, yield)
+	if err != nil {
+		t.Fatalf("literalBlockReplace(oversized literal source) error = %v, want nil", err)
+	}
+	if !matched {
+		t.Fatal("literalBlockReplace(oversized literal source) matched = false, want true")
+	}
+	if got != "R" {
+		t.Fatalf("literalBlockReplace(oversized literal source) = %q, want R", got)
+	}
+}
+
 // TestStringSubGsubLiteralBlockIgnoresPatternCap is the direct regression for
 // the reviewer's finding that the literal block form must not inherit the
 // regex-only pattern-size cap (validateRegexTextPattern's 16 KiB pattern and

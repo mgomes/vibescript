@@ -340,7 +340,7 @@ func literalBlockReplace(src, pattern string, global bool, yield func(match stri
 	if pattern == "" {
 		return literalBlockReplaceEmpty(src, global, yield)
 	}
-	out := make([]byte, 0, len(src))
+	out := make([]byte, 0, boundedRegexOutputCapacity(len(src)))
 	start := 0
 	matched := false
 	for {
@@ -390,7 +390,7 @@ func literalBlockReplace(src, pattern string, global bool, yield func(match stri
 // so the returned matched flag is unconditionally true, matching Ruby where
 // "".gsub!("", "") returns the receiver rather than nil.
 func literalBlockReplaceEmpty(src string, global bool, yield func(match string) (string, error)) (string, bool, error) {
-	out := make([]byte, 0, len(src))
+	out := make([]byte, 0, boundedRegexOutputCapacity(len(src)))
 	replacement, err := yield("")
 	if err != nil {
 		return "", false, err
@@ -425,6 +425,13 @@ func literalBlockReplaceEmpty(src string, global bool, yield func(match string) 
 		start = next
 	}
 	return string(out), true, nil
+}
+
+func boundedRegexOutputCapacity(sourceLen int) int {
+	if sourceLen > maxRegexInputBytes {
+		return maxRegexInputBytes
+	}
+	return sourceLen
 }
 
 // appendStringBounded appends s to out under the shared regex output cap and
