@@ -362,58 +362,165 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	if err := exec.checkMemoryWith(obj); err != nil {
 		return NewNil(), err
 	}
-	idx, err := exec.evalExpressionWithAuto(e.Index, env, true)
+	indices, err := exec.evalIndexSelectors(e, env)
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(idx); err != nil {
-		return NewNil(), err
-	}
-	return exec.evalIndexValue(e, obj, idx)
+	return exec.evalIndexValue(e, obj, indices)
 }
 
-func (exec *Execution) evalIndexValue(e *IndexExpr, obj, idx Value) (Value, error) {
+// evalIndexSelectors evaluates every selector between the brackets, charging
+// each against the memory quota as it materializes.
+func (exec *Execution) evalIndexSelectors(e *IndexExpr, env *Env) ([]Value, error) {
+	indices := make([]Value, len(e.Indices))
+	for i, expr := range e.Indices {
+		idx, err := exec.evalExpressionWithAuto(expr, env, true)
+		if err != nil {
+			return nil, err
+		}
+		if err := exec.checkMemoryWith(idx); err != nil {
+			return nil, err
+		}
+		indices[i] = idx
+	}
+	return indices, nil
+}
+
+// evalIndexValue performs a bracket read against an already-evaluated receiver
+// and selectors. Arrays and strings support Ruby's single-index (with negative
+// indexing), start/length, and range forms; an out-of-range single index yields
+// nil rather than raising, matching Array#[] and String#[]. Hashes and objects
+// take exactly one key.
+func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) (Value, error) {
 	switch obj.Kind() {
 	case KindString:
-		i, err := valueToInt(idx)
-		if err != nil {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
-		}
-		runes := []rune(obj.String())
-		if i < 0 || i >= len(runes) {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "string index out of bounds")
-		}
-		return NewString(string(runes[i])), nil
+		return exec.indexString(e, obj.String(), indices)
 	case KindArray:
-		i, err := valueToInt(idx)
-		if err != nil {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
-		}
-		arr := obj.Array()
-		if i < 0 || i >= len(arr) {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "array index out of bounds")
-		}
-		return arr[i], nil
+		return exec.indexArray(e, obj.Array(), indices)
 	case KindHash, KindObject:
-		key, err := valueToHashKey(idx)
-		if err != nil {
-			return NewNil(), exec.errorAt(e.Index.Pos(), "%s", err.Error())
-		}
-		val, ok := obj.Hash()[key]
-		if ok {
-			return val, nil
-		}
-		// A missing key consults the hash's Ruby-style default. Only KindHash
-		// carries default metadata (objects never do), so a missing object key
-		// stays nil. A default proc takes precedence over a default value and is
-		// invoked with (hash, key); the key keeps its original symbol/string
-		// value so the proc can render it the way Ruby does.
-		if obj.Kind() == KindHash {
-			return exec.hashMissingKeyDefault(obj, idx, e.Index.Pos())
-		}
-		return NewNil(), nil
+		return exec.indexHash(e, obj, indices)
 	default:
 		return NewNil(), exec.errorAt(e.Object.Pos(), "cannot index %s", obj.Kind())
+	}
+}
+
+// indexArray implements arr[...] reads. The single-selector form mirrors
+// Array#[]: a single integer (negative counts from the end) returns the element
+// or nil when out of range, while a range returns a fresh subarray or nil when
+// the begin bound falls outside the array. The two-selector form is Array#[]
+// start/length, returning a fresh subarray or nil.
+func (exec *Execution) indexArray(e *IndexExpr, arr, indices []Value) (Value, error) {
+	switch len(indices) {
+	case 1:
+		if indices[0].Kind() == KindRange {
+			sub, ok := arraySliceRange(arr, indices[0].Range())
+			if !ok {
+				return NewNil(), nil
+			}
+			return NewArray(sub), nil
+		}
+		index, err := exec.indexSelectorToInt(e, indices[0], 0)
+		if err != nil {
+			return NewNil(), err
+		}
+		return arrayElementAt(arr, index), nil
+	case 2:
+		start, err := exec.indexSelectorToInt(e, indices[0], 0)
+		if err != nil {
+			return NewNil(), err
+		}
+		length, err := exec.indexSelectorToInt(e, indices[1], 1)
+		if err != nil {
+			return NewNil(), err
+		}
+		sub, ok := arraySliceStartLength(arr, start, length)
+		if !ok {
+			return NewNil(), nil
+		}
+		return NewArray(sub), nil
+	default:
+		return NewNil(), exec.errorAt(e.Position, "array index expects one index, a start and length, or a range")
+	}
+}
+
+// indexString implements str[...] reads as rune (character) operations. The
+// single-selector form mirrors String#[]: a single integer (negative counts
+// from the end) returns the one-character substring or nil when out of range,
+// while a range returns a substring or nil. The two-selector form is String#[]
+// start/length.
+func (exec *Execution) indexString(e *IndexExpr, text string, indices []Value) (Value, error) {
+	switch len(indices) {
+	case 1:
+		if indices[0].Kind() == KindRange {
+			substr, ok := stringRuneRangeSlice(text, indices[0].Range())
+			if !ok {
+				return NewNil(), nil
+			}
+			return NewString(substr), nil
+		}
+		index, err := exec.indexSelectorToInt(e, indices[0], 0)
+		if err != nil {
+			return NewNil(), err
+		}
+		return stringSliceCharAt(text, index), nil
+	case 2:
+		start, err := exec.indexSelectorToInt(e, indices[0], 0)
+		if err != nil {
+			return NewNil(), err
+		}
+		length, err := exec.indexSelectorToInt(e, indices[1], 1)
+		if err != nil {
+			return NewNil(), err
+		}
+		substr, ok := stringRuneSlice(text, start, length)
+		if !ok {
+			return NewNil(), nil
+		}
+		return NewString(substr), nil
+	default:
+		return NewNil(), exec.errorAt(e.Position, "string index expects one index, a start and length, or a range")
+	}
+}
+
+// indexHash implements hash[key] and object[key] reads. Hashes and objects take
+// exactly one key; supplying multiple selectors is rejected because neither type
+// has Ruby slicing semantics.
+func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Value, error) {
+	if len(indices) != 1 {
+		return NewNil(), exec.errorAt(e.Position, "%s index expects a single key", obj.Kind())
+	}
+	idx := indices[0]
+	key, err := valueToHashKey(idx)
+	if err != nil {
+		return NewNil(), exec.errorAt(e.IndexPos(0), "%s", err.Error())
+	}
+	val, ok := obj.Hash()[key]
+	if ok {
+		return val, nil
+	}
+	// A missing key consults the hash's Ruby-style default. Only KindHash
+	// carries default metadata (objects never do), so a missing object key
+	// stays nil. A default proc takes precedence over a default value and is
+	// invoked with (hash, key); the key keeps its original symbol/string
+	// value so the proc can render it the way Ruby does.
+	if obj.Kind() == KindHash {
+		return exec.hashMissingKeyDefault(obj, idx, e.IndexPos(0))
+	}
+	return NewNil(), nil
+}
+
+// indexSelectorToInt converts the selector at position i to an integer index,
+// reporting the selector's own source position on failure.
+func (exec *Execution) indexSelectorToInt(e *IndexExpr, idx Value, i int) (int, error) {
+	switch idx.Kind() {
+	case KindInt, KindFloat:
+		n, err := valueToInt(idx)
+		if err != nil {
+			return 0, exec.errorAt(e.IndexPos(i), "%s", err.Error())
+		}
+		return n, nil
+	default:
+		return 0, exec.errorAt(e.IndexPos(i), "index must be integer")
 	}
 }
 
@@ -810,7 +917,15 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 	case *ScopeExpr:
 		return expressionCapturesCurrentEnv(e.Object)
 	case *IndexExpr:
-		return expressionCapturesCurrentEnv(e.Object) || expressionCapturesCurrentEnv(e.Index)
+		if expressionCapturesCurrentEnv(e.Object) {
+			return true
+		}
+		for _, index := range e.Indices {
+			if expressionCapturesCurrentEnv(index) {
+				return true
+			}
+		}
+		return false
 	case *DestructureTarget:
 		for _, elem := range e.Elements {
 			if expressionCapturesCurrentEnv(elem.Target) {
@@ -1001,14 +1116,11 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return err
 		}
-		idx, err := exec.evalExpression(t.Index, env)
+		indices, err := exec.evalIndexSelectors(t, env)
 		if err != nil {
 			return err
 		}
-		if err := exec.checkMemoryWith(idx); err != nil {
-			return err
-		}
-		return exec.assignToEvaluatedIndex(t, obj, idx, value)
+		return exec.assignToEvaluatedIndex(t, obj, indices, value)
 	default:
 		return exec.errorAt(target.Pos(), "invalid assignment target")
 	}
@@ -1026,23 +1138,38 @@ func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Va
 	}
 }
 
-func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj, idx, value Value) error {
+// assignToEvaluatedIndex writes value at a bracket target. Array assignment
+// accepts a single integer index, counting a negative index back from the end
+// (Ruby's arr[-1] = x); an index outside the array raises rather than
+// auto-extending. Hash and object assignment store under a single key. Slice
+// assignment (start/length or range targets) is not supported.
+func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indices []Value, value Value) error {
 	switch obj.Kind() {
 	case KindArray:
+		if len(indices) != 1 {
+			return exec.errorAt(target.Position, "array index assignment expects a single index")
+		}
 		arr := obj.Array()
-		i, err := valueToInt(idx)
+		i, err := exec.indexSelectorToInt(target, indices[0], 0)
 		if err != nil {
-			return exec.errorAt(target.Index.Pos(), "%s", err.Error())
+			return err
 		}
-		if i < 0 || i >= len(arr) {
-			return exec.errorAt(target.Index.Pos(), "array index out of bounds")
+		pos := i
+		if pos < 0 {
+			pos += len(arr)
 		}
-		arr[i] = value
+		if pos < 0 || pos >= len(arr) {
+			return exec.errorAt(target.IndexPos(0), "array index out of bounds")
+		}
+		arr[pos] = value
 		return nil
 	case KindHash, KindObject:
-		key, err := valueToHashKey(idx)
+		if len(indices) != 1 {
+			return exec.errorAt(target.Position, "%s index assignment expects a single key", obj.Kind())
+		}
+		key, err := valueToHashKey(indices[0])
 		if err != nil {
-			return exec.errorAt(target.Index.Pos(), "%s", err.Error())
+			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
 		}
 		obj.Hash()[key] = value
 		return nil
@@ -1880,19 +2007,16 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return NewNil(), nil, err
 		}
-		idx, err := exec.evalExpressionWithAuto(t.Index, env, true)
+		indices, err := exec.evalIndexSelectors(t, env)
 		if err != nil {
 			return NewNil(), nil, err
 		}
-		if err := exec.checkMemoryWith(idx); err != nil {
-			return NewNil(), nil, err
-		}
-		current, err := exec.evalIndexValue(t, obj, idx)
+		current, err := exec.evalIndexValue(t, obj, indices)
 		if err != nil {
 			return NewNil(), nil, err
 		}
 		return current, func(value Value) error {
-			return exec.assignToEvaluatedIndex(t, obj, idx, value)
+			return exec.assignToEvaluatedIndex(t, obj, indices, value)
 		}, nil
 	case *IvarExpr, *ClassVarExpr:
 		current, err := exec.evalExpression(t, env)

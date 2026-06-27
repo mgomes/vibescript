@@ -1176,7 +1176,12 @@ func validateFuzzExpression(context string, expr Expression) error {
 		if err := validateFuzzExpression(context+".object", e.Object); err != nil {
 			return err
 		}
-		return validateFuzzExpression(context+".index", e.Index)
+		for i, index := range e.Indices {
+			if err := validateFuzzExpression(fmt.Sprintf("%s.indices[%d]", context, i), index); err != nil {
+				return err
+			}
+		}
+		return nil
 	case *DestructureTarget:
 		if len(e.Elements) == 0 {
 			return fmt.Errorf("%s destructuring target has no elements", context)

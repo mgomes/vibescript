@@ -563,8 +563,9 @@ func TestRuntimeErrorCases(t *testing.T) {
 
 	requireCallErrorContains(t, script, "div_by_zero", nil, CallOptions{}, "division by zero")
 	requireCallErrorContains(t, script, "mod_by_zero", nil, CallOptions{}, "modulo by zero")
-	requireCallErrorContains(t, script, "array_index_out_of_bounds", nil, CallOptions{}, "index out of bounds")
-	requireCallErrorContains(t, script, "string_index_out_of_bounds", nil, CallOptions{}, "index out of bounds")
+	requireCallErrorContains(t, script, "array_non_integer_index", nil, CallOptions{}, "index must be integer")
+	requireCallErrorContains(t, script, "string_non_integer_index", nil, CallOptions{}, "index must be integer")
+	requireCallErrorContains(t, script, "index_unsupported_type", nil, CallOptions{}, "cannot index")
 	requireCallErrorContains(t, script, "method_missing", nil, CallOptions{}, "unknown")
 	requireCallErrorContains(t, script, "nil_method", nil, CallOptions{}, "nil")
 }

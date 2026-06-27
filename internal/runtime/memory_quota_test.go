@@ -423,7 +423,7 @@ func TestMemoryQuotaTransientAllocations(t *testing.T) {
 				stmt := &ExprStmt{
 					Expr: &IndexExpr{
 						Object:   largeArray(),
-						Index:    &IntegerLiteral{Value: 0, Position: pos},
+						Indices:  []Expression{&IntegerLiteral{Value: 0, Position: pos}},
 						Position: pos,
 					},
 					Position: pos,
@@ -509,7 +509,7 @@ func TestMemoryQuotaTransientAllocations(t *testing.T) {
 				assignStmt := &AssignStmt{
 					Target: &IndexExpr{
 						Object:   largeArray(),
-						Index:    &IntegerLiteral{Value: 0, Position: pos},
+						Indices:  []Expression{&IntegerLiteral{Value: 0, Position: pos}},
 						Position: pos,
 					},
 					Value:    &IntegerLiteral{Value: 1, Position: pos},
@@ -538,7 +538,7 @@ func TestMemoryQuotaTransientAllocations(t *testing.T) {
 							Callee:   &Identifier{Name: "mk", Position: pos},
 							Position: pos,
 						},
-						Index:    &StringLiteral{Value: "x", Position: pos},
+						Indices:  []Expression{&StringLiteral{Value: "x", Position: pos}},
 						Position: pos,
 					},
 					Value:    largeArray(),

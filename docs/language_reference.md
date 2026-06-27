@@ -74,12 +74,19 @@ A leading `*` discards the values before the named targets:
 *, last = [1, 2, 3]
 ```
 
-Index assignment is supported for mutable collections:
+Index assignment is supported for mutable collections. Array targets accept a
+negative index, which counts back from the end:
 
 ```vibe
 items = [1, 2, 3]
 items[0] = 10
+items[-1] = 30
 ```
+
+Reading with `[]` mirrors Ruby's `Array#[]` and `String#[]`, including negative
+indexes, `value[start, length]`, and `value[range]` slices; see
+[Arrays](arrays.md#indexed-access) and [Strings](strings.md#bracket-access-stringselector)
+for the full semantics.
 
 Compound assignment is supported for single assignment targets, including
 variables, member targets, and index targets:

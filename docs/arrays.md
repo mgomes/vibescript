@@ -168,34 +168,43 @@ end
 
 ## Indexed access
 
-- `at(index)` returns the single element at `index`, counting a negative index
-  back from the end. An out-of-range index returns `nil` rather than raising, so
-  it never goes out of bounds the way bracket access does. It agrees with
-  `[index]` for every in-range non-negative index.
-- `slice(index)` mirrors `at(index)`, returning the single element (or `nil`
-  out of range).
-- `slice(start, length)` returns a new subarray of up to `length` elements
+Bracket access mirrors Ruby's `Array#[]` across three selector shapes, and
+`at` and `slice` are method-call spellings of the same behavior.
+
+- `array[index]` returns the single element at `index`, counting a negative
+  index back from the end. An out-of-range index returns `nil` rather than
+  raising (`[10, 20, 30][-1]` is `30`, `[1][5]` is `nil`).
+- `array[start, length]` returns a new subarray of up to `length` elements
   starting at `start`. A negative `start` counts back from the end. A `start`
   exactly equal to the length with a non-negative `length` yields `[]`, while a
   `start` past the length or a negative `length` returns `nil`. An oversized
   `length` is clamped to the remaining elements.
-- `slice(range)` returns a new subarray selected by the range bounds, aligning
-  with the range slicing already available for strings. Negative bounds count
-  back from the end, an exclusive range drops its end, an end before begin yields
-  `[]`, and a begin past the length returns `nil`.
+- `array[range]` returns a new subarray selected by the range bounds. Negative
+  bounds count back from the end, an exclusive range drops its end, an end before
+  begin yields `[]`, and a begin past the length returns `nil`.
+- `at(index)` is the single-index form spelled as a method call; it agrees with
+  `[index]` for every index.
+- `slice(index)` mirrors `at(index)`; `slice(start, length)` and `slice(range)`
+  mirror the two-argument and range bracket forms.
+
+A negative index also works on the left of an assignment (`array[-1] = value`
+updates the last element); an index outside the array raises rather than
+auto-extending it.
 
 Indexes and lengths accept `Float` values, which are truncated toward zero like
 Ruby's `to_int`; any other type raises. The subarray forms always return a fresh
 copy, so mutating the result never touches the original array.
 
 ```vibe
+[10, 20, 30][-1]            # 30
+[1][5]                      # nil
+[10, 20, 30, 40][1, 2]      # [20, 30]
+[10, 20, 30][3, 1]          # [] (start at the length)
+[10, 20, 30][4, 1]          # nil (start past the length)
+[1, 2, 3, 4][1..2]          # [2, 3]
+[1, 2, 3, 4][-3..-1]        # [2, 3, 4]
 [10, 20, 30].at(-1)         # 30
-[10, 20, 30].at(9)          # nil
 [10, 20, 30, 40].slice(1, 2) # [20, 30]
-[10, 20, 30].slice(3, 1)    # [] (start at the length)
-[10, 20, 30].slice(4, 0)    # nil (start past the length)
-[1, 2, 3, 4].slice(1..2)    # [2, 3]
-[1, 2, 3, 4].slice(-3..-1)  # [2, 3, 4]
 ```
 
 ## Prefix and pattern filtering
