@@ -212,6 +212,52 @@ end`
 	}
 }
 
+func TestDoubleQuotedStringInterpolationWithParenlessPercentArrayArgumentBrace(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  "#{collect %w[}]}"
+end`
+
+	program, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	fn := program.Statements[0].(*ast.FunctionStmt)
+	stmt := fn.Body[0].(*ast.ExprStmt)
+	lit, ok := stmt.Expr.(*ast.InterpolatedString)
+	if !ok {
+		t.Fatalf("expression = %T, want *ast.InterpolatedString", stmt.Expr)
+	}
+	if len(lit.Parts) != 1 {
+		t.Fatalf("parts length = %d, want 1", len(lit.Parts))
+	}
+	expr, ok := lit.Parts[0].(ast.StringExpr)
+	if !ok {
+		t.Fatalf("parts[0] = %T, want ast.StringExpr", lit.Parts[0])
+	}
+	call, ok := expr.Expr.(*ast.CallExpr)
+	if !ok {
+		t.Fatalf("interpolation expression = %T, want *ast.CallExpr", expr.Expr)
+	}
+	if ident, ok := call.Callee.(*ast.Identifier); !ok || ident.Name != "collect" {
+		t.Fatalf("call callee = %#v, want collect identifier", call.Callee)
+	}
+	if len(call.Args) != 1 {
+		t.Fatalf("call args length = %d, want 1", len(call.Args))
+	}
+	arg, ok := call.Args[0].(*ast.ArrayLiteral)
+	if !ok {
+		t.Fatalf("call arg = %T, want *ast.ArrayLiteral", call.Args[0])
+	}
+	if len(arg.Elements) != 1 {
+		t.Fatalf("array elements length = %d, want 1", len(arg.Elements))
+	}
+	if elem, ok := arg.Elements[0].(*ast.StringLiteral); !ok || elem.Value != "}" {
+		t.Fatalf("array element = %#v, want string literal }", arg.Elements[0])
+	}
+}
+
 // TestDoubleQuotedStringInterpolationDeeplyNested guards against the lexer or
 // findStringInterpolationEnd treating a quote inside a nested interpolation as
 // the end of the enclosing inner string. A "}" buried inside the deepest string

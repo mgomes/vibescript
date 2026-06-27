@@ -848,7 +848,37 @@ func findStringInterpolationEnd(raw string, start int) (int, bool) {
 				return start + lex.currentOffset() - 1, true
 			}
 			depth--
+		case ast.TokenPercent:
+			percentOffset := start + lex.currentOffset() - 1
+			kind, endOffset, ok := scanStringInterpolationPercentArrayArgument(raw, percentOffset)
+			if !ok {
+				continue
+			}
+			lex.advanceTo(endOffset-start, ast.Token{Type: percentArrayLiteralTokenType(kind)})
 		}
+	}
+}
+
+func scanStringInterpolationPercentArrayArgument(input string, offset int) (rune, int, bool) {
+	if !offsetHasLeadingWhitespace(input, offset) {
+		return 0, 0, false
+	}
+	kind, _, endOffset, ok := scanPercentArrayLiteralAt(input, offset)
+	return kind, endOffset, ok
+}
+
+func percentArrayLiteralTokenType(kind rune) ast.TokenType {
+	switch kind {
+	case 'w':
+		return ast.TokenWords
+	case 'i':
+		return ast.TokenSymbols
+	case 'W':
+		return ast.TokenInterpWords
+	case 'I':
+		return ast.TokenInterpSymbols
+	default:
+		return ast.TokenIllegal
 	}
 }
 

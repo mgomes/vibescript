@@ -487,6 +487,13 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	l.lastToken = last
 }
 
+func (l *lexer) advanceTo(offset int, last ast.Token) {
+	for l.currentOffset() < offset && l.ch != 0 {
+		l.readRune()
+	}
+	l.lastToken = last
+}
+
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
 	return ast.Token{Type: tt, Literal: literal, Pos: ast.Position{Line: l.line, Column: l.column}}
 }

@@ -459,6 +459,21 @@ func TestParserPercentInterpolatedArrayLiteralNestedPercentLiteral(t *testing.T)
 			},
 		},
 		{
+			name:   "interpolation_with_parenless_percent_array_argument",
+			source: "def run\n  %W[#{collect %w[}]}]\nend",
+			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
+				&ast.InterpolatedString{Parts: []ast.StringPart{
+					ast.StringExpr{Expr: &ast.CallExpr{
+						Callee: &ast.Identifier{Name: "collect"},
+						Args: []ast.Expression{
+							nestedWords,
+						},
+						KwArgs: []ast.KeywordArg{},
+					}},
+				}},
+			}},
+		},
+		{
 			name:   "bare_percent_stays_modulo",
 			source: "def run\n  a = 10\n  w = 3\n  %W[#{a % w}]\nend",
 			wantExpr: &ast.ArrayLiteral{Elements: []ast.Expression{
