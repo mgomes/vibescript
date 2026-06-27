@@ -601,6 +601,9 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.each_with_index does not take arguments")
 			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.each_with_index does not take keyword arguments")
+			}
 			runner, err := newBlockCallRunner(exec, block, "array.each_with_index")
 			if err != nil {
 				return NewNil(), err
@@ -742,6 +745,9 @@ func arrayMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("array.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.map_with_index does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.map_with_index does not take keyword arguments")
 			}
 			runner, err := newBlockCallRunner(exec, block, "array.map_with_index")
 			if err != nil {

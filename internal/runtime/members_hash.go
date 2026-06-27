@@ -435,6 +435,9 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_with_index does not take arguments")
 			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.each_with_index does not take keyword arguments")
+			}
 			runner, err := newBlockCallRunner(exec, block, "hash.each_with_index")
 			if err != nil {
 				return NewNil(), err
@@ -1182,6 +1185,9 @@ func hashMemberTransforms(property string) (Value, error) {
 		return NewAutoBuiltin("hash.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.map_with_index does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.map_with_index does not take keyword arguments")
 			}
 			runner, err := newBlockCallRunner(exec, block, "hash.map_with_index")
 			if err != nil {

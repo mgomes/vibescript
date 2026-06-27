@@ -176,6 +176,16 @@ func TestIndexAwareIterationErrors(t *testing.T) {
 			want:   "array.map_with_index does not take arguments",
 		},
 		{
+			name:   "array each_with_index with keyword arguments",
+			source: `def run(); [1, 2].each_with_index(foo: 1) do |v, i| v end; end`,
+			want:   "array.each_with_index does not take keyword arguments",
+		},
+		{
+			name:   "array map_with_index with keyword arguments",
+			source: `def run(); [1, 2].map_with_index(foo: 1) do |v, i| v end; end`,
+			want:   "array.map_with_index does not take keyword arguments",
+		},
+		{
 			name:   "hash each_with_index without block",
 			source: `def run(); { a: 1 }.each_with_index; end`,
 			want:   "hash.each_with_index requires a block",
@@ -194,6 +204,16 @@ func TestIndexAwareIterationErrors(t *testing.T) {
 			name:   "hash map_with_index with arguments",
 			source: `def run(); { a: 1 }.map_with_index(1) do |pair, i| pair end; end`,
 			want:   "hash.map_with_index does not take arguments",
+		},
+		{
+			name:   "hash each_with_index with keyword arguments",
+			source: `def run(); { a: 1 }.each_with_index(foo: 1) do |pair, i| pair end; end`,
+			want:   "hash.each_with_index does not take keyword arguments",
+		},
+		{
+			name:   "hash map_with_index with keyword arguments",
+			source: `def run(); { a: 1 }.map_with_index(foo: 1) do |pair, i| pair end; end`,
+			want:   "hash.map_with_index does not take keyword arguments",
 		},
 	}
 
