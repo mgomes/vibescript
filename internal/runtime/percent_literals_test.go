@@ -122,6 +122,33 @@ end`)
 	})
 }
 
+// TestCompactPercentModuloInsideInterpolationMatchesInlineForm guards the
+// regression where a modulo expression embedded in a string interpolation, whose
+// right-hand side indexes a local named like a percent-array prefix (w/i/W/I),
+// was mis-scanned as a percent-array literal. Because `total` is a local, the
+// `%w[...]` is `total % w[...]`, and the close delimiter (`]`) appearing inside a
+// quoted string in the index must not end the index or the interpolation early.
+// Both the compact interpolated form and the inline form must evaluate to the
+// same modulo result. Verified against Ruby:
+//
+//	total = 10; w = [3, 7]
+//	total %w[ "]" .length - 1 ]   # => 1   (10 % w["]".length - 1] == 10 % w[0])
+//	"#{total %w[ "]" .length - 1 ]}" # => "1"
+func TestCompactPercentModuloInsideInterpolationMatchesInlineForm(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  total = 10
+  w = [3, 7]
+  inline = total %w[ "]" .length - 1 ]
+  interp = "#{total %w[ "]" .length - 1 ]}"
+  [inline, interp]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewInt(1), NewString("1")})
+}
+
 // TestPercentInterpolatedSymbolArrayWithNestedSymbolLiteral confirms the %I form
 // also descends through a nested percent-symbol literal in its interpolation and
 // produces a genuine symbol. Verified against Ruby: %I[#{%i[}]}] => [:"[:\"}\"]"].
