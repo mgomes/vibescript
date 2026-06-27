@@ -2324,7 +2324,7 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	allMatches := re.FindAllStringSubmatchIndex(text, -1)
 
 	if valueBlock(block) != nil {
-		return stringScanBlock(exec, text, groups, allMatches, receiver, block)
+		return stringScanBlock(exec, text, groups, allMatches, receiver, args, kwargs, block)
 	}
 
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
@@ -2369,14 +2369,25 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 // the quota by the table's size. The non-block path folds the same footprint into
 // its accumulator baseline (reserveScratch); this mirrors that accounting for the
 // block form, where the result is the receiver and no accumulator exists.
-func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]int, receiver, block Value) (Value, error) {
+//
+// The builtin's call roots (receiver, args, block) are live on the Go call stack
+// for the whole loop yet are invisible to estimateMemoryUsageBase, exactly as in
+// the non-block path whose accumulator seeds them into its baseline. The preflight
+// check therefore charges them through checkMemoryWithCallRoots so a quota larger
+// than the match table alone but smaller than match table + receiver/pattern/block
+// is rejected before the loop runs, matching what checkCallMemoryRoots charged
+// before the call. The reserved table folds into the same call-root baseline via
+// reservedScratchBytes, so the two coexisting costs are charged together rather
+// than each fitting the quota separately while their sum exceeds it.
+func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]int, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	delta := exec.reserveLoopScratch(projectedRegexSubmatchIndexBytes(len(allMatches), groups))
 	defer exec.releaseLoopScratch(delta)
-	// reserveLoopScratch only folds the table into the baseline; checkMemory here
-	// rejects a table that already overflows the quota before the first yield runs,
-	// mirroring how the non-block path's reserveScratch fails fast instead of
-	// waiting for a slow-path step check several matches into the loop.
-	if err := exec.checkMemory(); err != nil {
+	// reserveLoopScratch only folds the table into the baseline; the call-root-aware
+	// check here rejects a table that already overflows the quota -- together with
+	// the live receiver/pattern/block roots -- before the first yield runs, mirroring
+	// how the non-block path's reserveScratch fails fast instead of waiting for a
+	// slow-path step check several matches into the loop.
+	if err := exec.checkMemoryWithCallRoots(NewNil(), receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
 
