@@ -29,6 +29,64 @@ in depth; this page favors compact signatures and one-line descriptions.
 "  hello ".strip! # "hello"
 ```
 
+## Universal Members
+
+These members are available on every value, regardless of kind.
+
+- `itself -> self` – returns the receiver unchanged. Useful in pipelines and
+  block-based callbacks where an identity step keeps the call shape uniform. It
+  takes no arguments; passing any positional or keyword argument is an error.
+  A class that defines its own `itself` method overrides this builtin, matching
+  Ruby's method-resolution order.
+
+```vibe
+"x".itself     # "x"
+3.itself       # 3
+[1, 2].itself  # [1, 2]
+nil.itself     # nil
+```
+
+## Universal Predicates
+
+Every value answers two equality predicates in addition to the `==` operator.
+They report `false` rather than raising when the kinds differ, and a class may
+override them with its own methods of the same name.
+
+- `eql?(other) -> bool` – hash-key equality. True only when both operands share
+  a kind and compare equal, so `1.eql?(1.0)` is `false` even though both are
+  numerically one. Composites (arrays, hashes) compare by content.
+- `equal?(other) -> bool` – object identity. Immutable scalars (`nil`, `bool`,
+  `int`, `float`, `string`, `symbol`, money, duration, time, range) are
+  identical when they share a kind and value, so `1.equal?(1)` is `true`.
+  Mutable composites (arrays, hashes), script instances, enums, and enum values
+  are identical only when they refer to the same backing object. Two enum values
+  that compare `==` (and `eql?`) because they share an owner and member name are
+  still not `equal?` when they hold distinct storage — for example, a value
+  cloned out to the host and handed back by a capability.
+
+```vibe
+1 == 1        # true
+1.eql?(1)     # true
+1.eql?(1.0)   # false (Int never eql-matches a Float)
+1.equal?(1)   # true
+
+a = [1, 2, 3]
+b = a
+c = [1, 2, 3]
+a.eql?(c)     # true  (same contents)
+a.equal?(b)   # true  (same object)
+a.equal?(c)   # false (distinct objects)
+```
+
+Empty arrays are the one identity exception: an empty array has no element
+storage to alias, so all empty arrays report `equal?` to one another
+(`[].equal?([])` is `true`). Empty hashes remain distinct objects
+(`{}.equal?({})` is `false`).
+
+A NaN float is `equal?` to itself even though `==` never holds for NaN. Because
+floats carry no distinct identity, any two NaN floats are also `equal?`, keeping
+the predicate reflexive (`x = 0.0 / 0.0; x.equal?(x)` is `true`).
+
 ## Debug Representation
 
 Every core value kind responds to `inspect`, returning a `string` debug
