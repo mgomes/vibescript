@@ -325,6 +325,11 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 			tok = l.makeToken(ast.TokenLTE, string(first)+string(l.ch))
 			l.readRune()
+		} else if l.peekRune() == '<' {
+			first := l.ch
+			l.readRune()
+			tok = l.makeToken(ast.TokenShovel, string(first)+string(l.ch))
+			l.readRune()
 		} else {
 			tok = l.makeToken(ast.TokenLT, "<")
 			l.readRune()

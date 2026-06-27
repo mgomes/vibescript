@@ -319,6 +319,7 @@ Core operator families:
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`
 - Case equality: `===`
 - Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
+- Collection: `array << value` (append), `array & other` (intersection)
 - Unary sign: prefix `-` negates a number; prefix `+` is the identity on
   numbers and strings
 - Conditional: `condition ? when_true : when_false`
@@ -337,6 +338,18 @@ so `1 === 1` is `true` and `2 === (1..3)` is `false` (the integer `2` is not a
 range). Because the scalar path reuses `==`, integers and floats remain distinct
 kinds, so `1 === 1.0` is `false`, unlike Ruby. Regex and class matchers will be
 added alongside the corresponding language features.
+
+The collection operators work on arrays. `array << value` appends a single
+value, and `array & other` returns the elements common to both arrays with
+duplicates removed and the left array's order preserved. Because Vibescript
+arrays are immutable, `<<` does not mutate the receiver like Ruby's shovel does:
+it returns a new array, so accumulate by reassigning (`values = values << x`),
+the same idiom used with `push` and `+`. Following Ruby, `+` binds tighter than
+`<<`, which binds tighter than `&`. The `&` operator is disambiguated from the
+(unsupported) block-pass sigil by spacing: a spaced `&` (`items & others`) is
+the intersection operator, while a flush `&` against its operand (`call &block`)
+is read as a block pass and reported as unsupported. See
+[Arrays](arrays.md#set-like-operations) for details.
 
 Operator precedence follows conventional arithmetic/boolean ordering.
 Exponentiation with `**` is right-associative and binds more tightly than

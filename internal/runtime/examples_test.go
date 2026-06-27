@@ -428,6 +428,35 @@ func TestExamples(t *testing.T) {
 			want: arrayVal(intVal(1), intVal(3)),
 		},
 		{
+			name:     "arrays/shovel_value",
+			file:     "arrays/extras.vibe",
+			function: "shovel_value",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2)),
+				intVal(3),
+			},
+			want: arrayVal(intVal(1), intVal(2), intVal(3)),
+		},
+		{
+			name:     "arrays/accumulate_with_shovel",
+			file:     "arrays/extras.vibe",
+			function: "accumulate_with_shovel",
+			args: []Value{
+				arrayVal(intVal(1), intVal(2), intVal(3)),
+			},
+			want: arrayVal(intVal(1), intVal(2), intVal(3)),
+		},
+		{
+			name:     "arrays/intersect_values",
+			file:     "arrays/extras.vibe",
+			function: "intersect_values",
+			args: []Value{
+				arrayVal(intVal(1), intVal(1), intVal(2), intVal(3)),
+				arrayVal(intVal(1), intVal(3), intVal(4)),
+			},
+			want: arrayVal(intVal(1), intVal(3)),
+		},
+		{
 			name:     "arrays/include_value_true",
 			file:     "arrays/extras.vibe",
 			function: "include_value",
