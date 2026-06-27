@@ -739,8 +739,14 @@ func parseIntegerToken(literal string) (int64, error) {
 func (p *parser) parseFloatLiteral() ast.Expression {
 	value, err := strconv.ParseFloat(p.curToken.Literal, 64)
 	if err != nil {
-		p.addParseError(p.curToken.Pos, "invalid float literal")
-		return nil
+		// An out-of-range exponent overflows to +/-Infinity, which Ruby
+		// accepts as a literal value rather than a syntax error. ParseFloat
+		// still returns the correct signed infinity alongside ErrRange, so
+		// only a genuine syntax error (ErrSyntax) is rejected here.
+		if !errors.Is(err, strconv.ErrRange) {
+			p.addParseError(p.curToken.Pos, "invalid float literal")
+			return nil
+		}
 	}
 	return &ast.FloatLiteral{Value: value, Position: p.curToken.Pos}
 }
