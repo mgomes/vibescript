@@ -504,7 +504,7 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 	case KindString:
 		return exec.indexString(e, obj.String(), indices)
 	case KindArray:
-		return exec.indexArray(e, obj.Array(), indices)
+		return exec.indexArray(e, obj, indices)
 	case KindHash, KindObject:
 		return exec.indexHash(e, obj, indices)
 	default:
@@ -517,15 +517,19 @@ func (exec *Execution) evalIndexValue(e *IndexExpr, obj Value, indices []Value) 
 // or nil when out of range, while a range returns a fresh subarray or nil when
 // the begin bound falls outside the array. The two-selector form is Array#[]
 // start/length, returning a fresh subarray or nil.
-func (exec *Execution) indexArray(e *IndexExpr, arr, indices []Value) (Value, error) {
+func (exec *Execution) indexArray(e *IndexExpr, receiver Value, indices []Value) (Value, error) {
+	arr := receiver.Array()
 	switch len(indices) {
 	case 1:
 		if indices[0].Kind() == KindRange {
-			sub, ok := arraySliceRange(arr, indices[0].Range())
+			window, ok := arraySliceRangeWindow(len(arr), indices[0].Range())
 			if !ok {
 				return NewNil(), nil
 			}
-			return NewArray(sub), nil
+			if err := exec.reserveArraySliceSlots(receiver, indices, window.length); err != nil {
+				return NewNil(), err
+			}
+			return NewArray(copyArraySliceWindow(arr, window)), nil
 		}
 		index, err := exec.indexSelectorToInt(e, indices[0], 0)
 		if err != nil {
@@ -541,14 +545,24 @@ func (exec *Execution) indexArray(e *IndexExpr, arr, indices []Value) (Value, er
 		if err != nil {
 			return NewNil(), err
 		}
-		sub, ok := arraySliceStartLength(arr, start, length)
+		window, ok := arraySliceStartLengthWindow(len(arr), start, length)
 		if !ok {
 			return NewNil(), nil
 		}
-		return NewArray(sub), nil
+		if err := exec.reserveArraySliceSlots(receiver, indices, window.length); err != nil {
+			return NewNil(), err
+		}
+		return NewArray(copyArraySliceWindow(arr, window)), nil
 	default:
 		return NewNil(), exec.errorAt(e.Position, "array index expects one index, a start and length, or a range")
 	}
+}
+
+func (exec *Execution) reserveArraySliceSlots(receiver Value, indices []Value, slotCount int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	return newArrayBuildAccumulator(exec, receiver, indices, nil, NewNil()).reserveSlots(slotCount)
 }
 
 // indexString implements str[...] reads as rune (character) operations. The

@@ -1623,11 +1623,14 @@ func arraySlice(exec *Execution, receiver Value, args []Value, kwargs map[string
 	switch len(args) {
 	case 1:
 		if args[0].Kind() == KindRange {
-			sub, ok := arraySliceRange(arr, args[0].Range())
+			window, ok := arraySliceRangeWindow(len(arr), args[0].Range())
 			if !ok {
 				return NewNil(), nil
 			}
-			return NewArray(sub), nil
+			if err := reserveArraySliceCallSlots(exec, receiver, args, kwargs, block, window.length); err != nil {
+				return NewNil(), err
+			}
+			return NewArray(copyArraySliceWindow(arr, window)), nil
 		}
 		index, err := arraySliceIndex(args[0], "array.slice")
 		if err != nil {
@@ -1646,64 +1649,65 @@ func arraySlice(exec *Execution, receiver Value, args []Value, kwargs map[string
 		if args[1].Kind() != KindInt && args[1].Kind() != KindFloat {
 			return NewNil(), fmt.Errorf("array.slice length must be integer")
 		}
-		sub, ok := arraySliceStartLength(arr, start, length)
+		window, ok := arraySliceStartLengthWindow(len(arr), start, length)
 		if !ok {
 			return NewNil(), nil
 		}
-		return NewArray(sub), nil
+		if err := reserveArraySliceCallSlots(exec, receiver, args, kwargs, block, window.length); err != nil {
+			return NewNil(), err
+		}
+		return NewArray(copyArraySliceWindow(arr, window)), nil
 	default:
 		return NewNil(), fmt.Errorf("array.slice expects an index, a start and length, or a range")
 	}
 }
 
-// arraySliceStartLength extracts at most length elements starting at start,
-// matching Ruby's Array#slice(start, length). A negative start counts back from
-// the end. It returns ok=false when length is negative or when start lands
-// outside the array; a start exactly equal to the length is in range and yields
-// an empty array (Ruby's [1, 2, 3].slice(3, n) is []). The length is clamped to
-// the remaining elements, so an oversized length returns the suffix from start.
-// Clamping length to the remaining count before computing end keeps start+length
-// from overflowing int when length is near math.MaxInt64, which would otherwise
-// wrap to a negative window and panic make. The returned slice is a fresh copy
-// so it never aliases the receiver's backing array.
-func arraySliceStartLength(arr []Value, start, length int) ([]Value, bool) {
+func reserveArraySliceCallSlots(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, slotCount int) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	return newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlots(slotCount)
+}
+
+type arraySliceWindow struct {
+	start  int
+	length int
+}
+
+// arraySliceStartLengthWindow normalizes Array#slice(start, length) bounds. A
+// negative start counts back from the end, a start exactly at the length yields
+// an empty window, and oversized lengths clamp to the remaining suffix.
+func arraySliceStartLengthWindow(arrLen, start, length int) (arraySliceWindow, bool) {
 	if length < 0 {
-		return nil, false
+		return arraySliceWindow{}, false
 	}
 	if start < 0 {
-		start += len(arr)
+		start += arrLen
 		if start < 0 {
-			return nil, false
+			return arraySliceWindow{}, false
 		}
 	}
-	if start > len(arr) {
-		return nil, false
+	if start > arrLen {
+		return arraySliceWindow{}, false
 	}
-	remaining := len(arr) - start
+	remaining := arrLen - start
 	if length > remaining {
 		length = remaining
 	}
-	out := make([]Value, length)
-	copy(out, arr[start:start+length])
-	return out, true
+	return arraySliceWindow{start: start, length: length}, true
 }
 
-// arraySliceRange extracts the elements selected by a range, matching Ruby's
-// Array#slice(range). Negative bounds count back from the end. A begin bound
-// before the start of the array (after normalization) or past its length returns
-// ok=false (nil); a begin exactly at the length yields an empty array. The end
-// bound is clamped to the array length, and an end before begin yields an empty
-// array. Bound arithmetic stays in int64 so a near-MaxInt64 inclusive range
-// cannot silently overflow into a no-op. The returned slice is a fresh copy so
-// it never aliases the receiver's backing array.
-func arraySliceRange(arr []Value, rng Range) ([]Value, bool) {
-	length := int64(len(arr))
+// arraySliceRangeWindow normalizes Array#slice(range) bounds. Negative bounds
+// count back from the end, the end is clamped to the array length, and an end
+// before begin yields an empty window.
+func arraySliceRangeWindow(arrLen int, rng Range) (arraySliceWindow, bool) {
+	length := int64(arrLen)
 	begin := rng.Start
 	if begin < 0 {
 		begin += length
 	}
 	if begin < 0 || begin > length {
-		return nil, false
+		return arraySliceWindow{}, false
 	}
 	end := rng.End
 	if end < 0 {
@@ -1724,9 +1728,13 @@ func arraySliceRange(arr []Value, rng Range) ([]Value, bool) {
 	if end < begin {
 		end = begin
 	}
-	out := make([]Value, end-begin)
-	copy(out, arr[begin:end])
-	return out, true
+	return arraySliceWindow{start: int(begin), length: int(end - begin)}, true
+}
+
+func copyArraySliceWindow(arr []Value, window arraySliceWindow) []Value {
+	out := make([]Value, window.length)
+	copy(out, arr[window.start:window.start+window.length])
+	return out
 }
 
 // arrayReduce folds the receiver into a single value. It supports Ruby's three

@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestArrayBracketSingleIndex covers arr[i], including Ruby's negative indexing
 // and the nil-on-out-of-range behavior of Array#[] (which never raises for an
@@ -111,6 +114,90 @@ func TestArrayBracketRange(t *testing.T) {
 				return
 			}
 			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
+func TestArrayBracketSlicesReserveQuotaBeforeCopy(t *testing.T) {
+	t.Parallel()
+
+	const receiverSize = 4096
+	receiver := largeIntArray(receiverSize)
+
+	tests := []struct {
+		name      string
+		indices   []Value
+		slotCount int
+	}{
+		{
+			name:      "start length",
+			indices:   []Value{NewInt(0), NewInt(receiverSize)},
+			slotCount: receiverSize,
+		},
+		{
+			name:      "range",
+			indices:   []Value{NewRange(Range{Start: 0, End: int64(receiverSize - 1)})},
+			slotCount: receiverSize,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			acc := newArrayBuildAccumulator(&Execution{memoryQuota: 1 << 30}, receiver, tt.indices, nil, NewNil())
+			baselineOnly := acc.projected(0)
+			fullBacking := acc.projected(tt.slotCount)
+			memoryQuota := (baselineOnly + fullBacking) / 2
+			if memoryQuota <= baselineOnly || memoryQuota >= fullBacking {
+				t.Fatalf("test quota %d does not sit strictly between baseline (%d) and full backing (%d)", memoryQuota, baselineOnly, fullBacking)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: memoryQuota}
+			_, err := exec.indexArray(&IndexExpr{}, receiver, tt.indices)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+		})
+	}
+}
+
+func TestArraySliceReservesQuotaBeforeCopy(t *testing.T) {
+	t.Parallel()
+
+	const receiverSize = 4096
+	receiver := largeIntArray(receiverSize)
+
+	tests := []struct {
+		name      string
+		args      []Value
+		slotCount int
+	}{
+		{
+			name:      "start length",
+			args:      []Value{NewInt(0), NewInt(receiverSize)},
+			slotCount: receiverSize,
+		},
+		{
+			name:      "range",
+			args:      []Value{NewRange(Range{Start: 0, End: int64(receiverSize - 1)})},
+			slotCount: receiverSize,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			acc := newArrayBuildAccumulator(&Execution{memoryQuota: 1 << 30}, receiver, tt.args, nil, NewNil())
+			baselineOnly := acc.projected(0)
+			fullBacking := acc.projected(tt.slotCount)
+			memoryQuota := (baselineOnly + fullBacking) / 2
+			if memoryQuota <= baselineOnly || memoryQuota >= fullBacking {
+				t.Fatalf("test quota %d does not sit strictly between baseline (%d) and full backing (%d)", memoryQuota, baselineOnly, fullBacking)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: memoryQuota}
+			_, err := callArrayMember(t, exec, receiver, "slice", tt.args, NewNil())
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
 		})
 	}
 }
