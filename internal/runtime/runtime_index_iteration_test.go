@@ -572,6 +572,110 @@ func TestHashMapWithIndexReservesBackingUpFront(t *testing.T) {
 	}
 }
 
+// TestHashMapWithIndexChargesYieldedPair guards against hash.map_with_index
+// running the block on a freshly allocated [key, value] pair without charging
+// that live pair against the quota. Unlike each_with_index and for-loop hash
+// iteration, map_with_index also accumulates a result, so the pair must be
+// charged on top of the result backing already reserved. A quota that admits the
+// receiver, the sorted-key scratch, and the full result backing but not one
+// extra live pair must trip mid-loop: the block here returns nil, so the result
+// itself never grows and only the uncharged pair could push the peak over the
+// limit. Without the per-pair charge the empty-result build would complete and
+// the live pair would silently exceed the sandbox memory limit.
+func TestHashMapWithIndexChargesYieldedPair(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 256
+	receiver := largeHashReceiver(receiverSize)
+	entries := receiver.Hash()
+
+	// Mirror the builtin's baseline: the accumulator seeded with the receiver,
+	// then the sorted-key scratch reserved. projected(receiverSize) is the peak the
+	// build reaches with the whole result backing but no live pair; the build trips
+	// only if the extra pair is charged on top of it.
+	acc := newArrayBuildAccumulator(&Execution{memoryQuota: 1 << 30}, receiver, nil, nil, emptyBlockValue())
+	if err := acc.reserveScratch(sortedKeyBufferBytes(receiverSize)); err != nil {
+		t.Fatalf("reserveScratch: %v", err)
+	}
+	backingPeak := acc.projected(receiverSize)
+
+	// The loop trips on the entry whose pair costs the most, so measure the
+	// worst-case pair the way checkTransient does: against an estimator re-seeded
+	// with the live receiver per entry so the wrapped receiver value deduplicates
+	// away and only the fresh two-slot pair wrapper (plus the symbol key payload)
+	// remains. largeHashReceiver's keys vary in length, so the maximum is the bound
+	// the build's peak must clear.
+	maxPairBytes := maxYieldedPairBytes(receiver, entries)
+	if maxPairBytes <= 0 {
+		t.Fatalf("measured pair bytes = %d, want a positive fresh-allocation cost", maxPairBytes)
+	}
+
+	// A quota one byte below backingPeak+maxPairBytes admits the full result backing
+	// (so reserveSlots and every nil-result add pass) but rejects the costliest live
+	// pair charged on top of it.
+	memoryQuota := backingPeak + maxPairBytes - 1
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: memoryQuota}
+	_, err := callHashMember(t, exec, receiver, "map_with_index", nil, emptyBlockValue())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps == 0 {
+		t.Fatalf("hash.map_with_index tripped before the loop; want the pair charge to fire after a per-entry step")
+	}
+	if exec.steps >= receiverSize {
+		t.Fatalf("steps = %d, want the pair charge to trip before traversing the whole hash (%d)", exec.steps, receiverSize)
+	}
+}
+
+// maxYieldedPairBytes returns the largest fresh-allocation cost any [key, value]
+// pair hash.map_with_index yields would add on top of the live receiver, measured
+// the way checkTransient charges it: each candidate pair is sized against an
+// estimator re-seeded with the receiver so the wrapped receiver value dedups away
+// and only the new pair wrapper plus the symbol key payload counts. The loop trips
+// on the costliest pair, so the quota bounds in the charge tests pivot on this
+// maximum rather than an arbitrary entry.
+func maxYieldedPairBytes(receiver Value, entries map[string]Value) int {
+	maxBytes := 0
+	for key, val := range entries {
+		est := newMemoryEstimator()
+		est.value(receiver)
+		if bytes := est.value(NewArray([]Value{NewSymbol(key), val})); bytes > maxBytes {
+			maxBytes = bytes
+		}
+	}
+	return maxBytes
+}
+
+// TestHashMapWithIndexAdmitsYieldedPairWithinQuota is the companion lower bound:
+// a quota exactly large enough for the backing plus one live pair must let the
+// whole build complete. It guards against the per-pair charge over-counting --
+// folding the pair permanently into the budget, or re-charging the wrapped
+// receiver value already in the baseline -- which would reject a build the live
+// peak actually fits.
+func TestHashMapWithIndexAdmitsYieldedPairWithinQuota(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 256
+	receiver := largeHashReceiver(receiverSize)
+	entries := receiver.Hash()
+
+	acc := newArrayBuildAccumulator(&Execution{memoryQuota: 1 << 30}, receiver, nil, nil, emptyBlockValue())
+	if err := acc.reserveScratch(sortedKeyBufferBytes(receiverSize)); err != nil {
+		t.Fatalf("reserveScratch: %v", err)
+	}
+	backingPeak := acc.projected(receiverSize)
+	maxPairBytes := maxYieldedPairBytes(receiver, entries)
+
+	// Only one pair is ever live at a time (each is freed before the next), so the
+	// peak is the backing plus the costliest single pair. A quota at exactly that
+	// peak must admit the whole build.
+	memoryQuota := backingPeak + maxPairBytes
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: memoryQuota}
+	got, err := callHashMember(t, exec, receiver, "map_with_index", nil, emptyBlockValue())
+	if err != nil {
+		t.Fatalf("hash.map_with_index within quota = %v, want success (per-pair charge must not over-count)", err)
+	}
+	if got.Kind() != KindArray || len(got.Array()) != receiverSize {
+		t.Fatalf("hash.map_with_index produced %v, want %d results", got, receiverSize)
+	}
+}
+
 // TestIndexAwareIterationHonorsCancellation confirms a canceled context stops
 // the index-aware helpers, including the hash helpers with an empty block body
 // that relies on the explicit per-entry step for cancellation.

@@ -1229,7 +1229,18 @@ func hashMemberTransforms(property string) (Value, error) {
 				// Ruby yields the [key, value] pair as the first block parameter and the
 				// index as the second; the index follows the deterministic sorted key
 				// order Vibescript uses for every block-based hash iterator.
-				blockArgs[0] = NewArray([]Value{NewSymbol(key), entries[key]})
+				pair := NewArray([]Value{NewSymbol(key), entries[key]})
+				// Charge the fresh pair against the quota before yielding: it is live
+				// alongside the accumulating result for the block's duration, so without
+				// this a block whose result fits but whose live pair does not could run
+				// past the sandbox memory limit. Mirrors hash.each_with_index, which
+				// charges its yielded pair the same way. cap(out) is the result backing
+				// before this iteration's append, so the peak charges the pair on top of
+				// the result built so far.
+				if err := acc.checkTransient(pair, cap(out)); err != nil {
+					return NewNil(), err
+				}
+				blockArgs[0] = pair
 				blockArgs[1] = NewInt(int64(i))
 				val, err := runner.call(blockArgs[:])
 				if err != nil {
