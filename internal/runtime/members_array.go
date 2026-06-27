@@ -1794,7 +1794,7 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	var runner *blockCallRunner
 	if hasBlock {
 		var err error
-		runner, err = newBlockCallRunner(exec, block, "array.reduce", receiver, nil, kwargs)
+		runner, err = newBlockCallRunner(exec, block, "array.reduce", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}

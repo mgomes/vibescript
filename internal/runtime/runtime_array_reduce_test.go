@@ -324,6 +324,38 @@ func emptyAccRestReduceBlock() Value {
 	}, nil, newEnv(nil))
 }
 
+func fillAccRestReduceBlock(length int64) Value {
+	pos := Position{Line: 1, Column: 1}
+	accTarget := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	body := []Statement{&ExprStmt{
+		Position: pos,
+		Expr: &CallExpr{
+			Position: pos,
+			Callee: &MemberExpr{
+				Object:   &ArrayLiteral{Position: pos},
+				Property: "fill",
+				Position: pos,
+			},
+			Args: []Expression{
+				&IntegerLiteral{Value: 0, Position: pos},
+				&IntegerLiteral{Value: 0, Position: pos},
+				&IntegerLiteral{Value: length, Position: pos},
+			},
+			Parenthesized: true,
+		},
+	}}
+	return NewBlock([]Param{
+		{Kind: ParamNormal, Target: accTarget},
+		{Kind: ParamNormal, Target: &Identifier{Name: "item", Position: pos}},
+	}, body, newEnv(nil))
+}
+
 // reduceAccRestChargeBytes returns the bytes the per-call bind charge attributes to a
 // single reduce call whose |(head, *tail), item| block destructures the accumulator
 // acc and the element item. It mirrors blockBindCharge exactly: charge the
@@ -382,6 +414,42 @@ func TestArrayReduceEmptyBodyAccRestTripsMemoryQuota(t *testing.T) {
 	// tight quota -- is what would let the fold escape.
 	if full <= tailOnly+headroom {
 		t.Fatalf("test setup expects the accumulator charge (full %d) to exceed tail-only (%d) plus headroom (%d)", full, tailOnly, headroom)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := arrayReduce(exec, receiver, []Value{seed}, nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestArrayReduceSeedRootStaysChargedAfterAccumulatorChanges(t *testing.T) {
+	t.Parallel()
+
+	const (
+		seedLen = 50_000
+		nextLen = 200_000
+	)
+	seed := arrayValue(seedLen)
+	receiver := NewArray([]Value{NewInt(1), NewInt(2)})
+	block := fillAccRestReduceBlock(nextLen)
+	next := arrayValue(nextLen)
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	withoutSeed := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	withSeed := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, []Value{seed}, nil, block)
+	seedCharge := withSeed - withoutSeed
+	nextFull, _ := reduceAccRestChargeBytes(next, NewInt(2))
+	_, firstTailOnly := reduceAccRestChargeBytes(seed, NewInt(1))
+	const headroom = 64 * 1024
+	quota := withoutSeed + nextFull + headroom
+
+	if seedCharge <= headroom {
+		t.Fatalf("test setup expects seed charge (%d) to exceed headroom (%d)", seedCharge, headroom)
+	}
+	if firstPeak := withSeed + firstTailOnly; firstPeak > quota {
+		t.Fatalf("test setup first call peak = %d, quota = %d; want first call to fit", firstPeak, quota)
+	}
+	if secondPeak := withSeed + nextFull; secondPeak <= quota {
+		t.Fatalf("test setup second call peak = %d, quota = %d; want fixed seed root to exceed quota", secondPeak, quota)
 	}
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
