@@ -428,3 +428,199 @@ func TestStringGsubBlockCompositeResultUnderCap(t *testing.T) {
 		t.Fatalf("gsub small composite result = %v %q, want %q", got.Kind(), got.String(), "[1, 2, 3]")
 	}
 }
+
+// TestStringSubGsubLiteralBlockInvalidUTF8 is the direct regression for the
+// reviewer's P2 on preserving literal byte matching for block replacements. A
+// literal-pattern block form (regex: false) must match byte-for-byte exactly like
+// the literal template form, including for patterns and subjects holding invalid
+// UTF-8 -- which Vibescript supports via APIs like byteslice. Routing the literal
+// block form through Go's regexp engine breaks this, because regexp patterns must
+// be valid UTF-8: a raw 0xc3 byte pattern would raise "invalid regex" instead of
+// matching the literal byte. Driving the script-level sub/gsub block path with a
+// 0xc3 pattern produced by "Aé".byteslice(1, 1) pins that the literal byte is
+// matched and yielded to the block, byte for byte with MRI Ruby on a binary
+// (ASCII-8BIT) string.
+func TestStringSubGsubLiteralBlockInvalidUTF8(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		script    string
+		wantBytes []byte
+	}{
+		{
+			name: "gsub replaces every invalid byte match",
+			script: `def run()
+  pat = "Aé".byteslice(1, 1)
+  ("X" + pat + "Y" + pat + "Z").gsub(pat) do |m| "_" end
+end`,
+			wantBytes: []byte("X_Y_Z"),
+		},
+		{
+			name: "sub replaces only the first invalid byte match",
+			script: `def run()
+  pat = "Aé".byteslice(1, 1)
+  ("X" + pat + "Y" + pat + "Z").sub(pat) do |m| "_" end
+end`,
+			wantBytes: []byte{'X', '_', 'Y', 0xc3, 'Z'},
+		},
+		{
+			name: "gsub yields the matched invalid byte to the block",
+			script: `def run()
+  pat = "Aé".byteslice(1, 1)
+  ("X" + pat + "Y" + pat).gsub(pat) do |m| m end
+end`,
+			wantBytes: []byte{'X', 0xc3, 'Y', 0xc3},
+		},
+		{
+			name: "gsub empty pattern over invalid byte subject advances by one byte",
+			script: `def run()
+  pat = "Aé".byteslice(1, 1)
+  ("X" + pat + "Y").gsub("") do |m| "-" end
+end`,
+			wantBytes: []byte{'-', 'X', '-', 0xc3, '-', 'Y', '-'},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, tc.script)
+			got := callFunc(t, script, "run", nil)
+			if got.Kind() != KindString {
+				t.Fatalf("expected string, got %v", got.Kind())
+			}
+			if got.String() != string(tc.wantBytes) {
+				t.Fatalf("result bytes mismatch: got %x, want %x", got.String(), tc.wantBytes)
+			}
+		})
+	}
+}
+
+// TestLiteralBlockReplace pins the byte-for-byte semantics of the literal block
+// replacer that backs String#sub and String#gsub when the pattern is literal
+// (regex: false). It must mirror strings.Replace/ReplaceAll exactly -- including
+// empty-pattern per-position matching and invalid-UTF-8 bytes -- and yield the
+// literal run that was replaced to the block, while bounding every append by the
+// shared regex output cap.
+func TestLiteralBlockReplace(t *testing.T) {
+	t.Parallel()
+
+	const invalid = "\xc3" // raw lead byte, never valid UTF-8 on its own
+
+	tests := []struct {
+		name       string
+		src        string
+		pattern    string
+		global     bool
+		wantResult string
+		wantYields []string
+	}{
+		{
+			name:       "gsub non-empty literal",
+			src:        "ababab",
+			pattern:    "ab",
+			global:     true,
+			wantResult: "<ab><ab><ab>",
+			wantYields: []string{"ab", "ab", "ab"},
+		},
+		{
+			name:       "sub non-empty literal first only",
+			src:        "ababab",
+			pattern:    "ab",
+			global:     false,
+			wantResult: "<ab>abab",
+			wantYields: []string{"ab"},
+		},
+		{
+			name:       "gsub empty pattern every position",
+			src:        "abc",
+			pattern:    "",
+			global:     true,
+			wantResult: "<>a<>b<>c<>",
+			wantYields: []string{"", "", "", ""},
+		},
+		{
+			name:       "sub empty pattern leading only",
+			src:        "abc",
+			pattern:    "",
+			global:     false,
+			wantResult: "<>abc",
+			wantYields: []string{""},
+		},
+		{
+			name:       "gsub empty pattern multibyte advances by rune",
+			src:        "aé",
+			pattern:    "",
+			global:     true,
+			wantResult: "<>a<>é<>",
+			wantYields: []string{"", "", ""},
+		},
+		{
+			name:       "gsub matches invalid utf8 byte literally",
+			src:        "X" + invalid + "Y" + invalid + "Z",
+			pattern:    invalid,
+			global:     true,
+			wantResult: "X<" + invalid + ">Y<" + invalid + ">Z",
+			wantYields: []string{invalid, invalid},
+		},
+		{
+			name:       "gsub empty pattern over invalid byte subject advances by one byte",
+			src:        "X" + invalid + "Y",
+			pattern:    "",
+			global:     true,
+			wantResult: "<>X<>" + invalid + "<>Y<>",
+			wantYields: []string{"", "", "", ""},
+		},
+		{
+			name:       "gsub no match returns receiver",
+			src:        "abc",
+			pattern:    "xyz",
+			global:     true,
+			wantResult: "abc",
+			wantYields: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var yields []string
+			yield := func(match string) (string, error) {
+				yields = append(yields, match)
+				return "<" + match + ">", nil
+			}
+			got, err := literalBlockReplace(tc.src, tc.pattern, tc.global, yield)
+			if err != nil {
+				t.Fatalf("literalBlockReplace error: %v", err)
+			}
+			if got != tc.wantResult {
+				t.Fatalf("result = %x, want %x", got, tc.wantResult)
+			}
+			if len(yields) != len(tc.wantYields) {
+				t.Fatalf("yield count = %d (%x), want %d (%x)", len(yields), yields, len(tc.wantYields), tc.wantYields)
+			}
+			for i := range yields {
+				if yields[i] != tc.wantYields[i] {
+					t.Fatalf("yield[%d] = %x, want %x", i, yields[i], tc.wantYields[i])
+				}
+			}
+		})
+	}
+}
+
+// TestLiteralBlockReplaceOutputLimit confirms the literal block replacer enforces
+// the shared regex output cap: a block returning an over-cap replacement for a
+// flood of literal matches fails with the output-limit error rather than
+// allocating past the guard, matching the regexp block path.
+func TestLiteralBlockReplaceOutputLimit(t *testing.T) {
+	t.Parallel()
+
+	src := strings.Repeat("a", maxRegexInputBytes)
+	yield := func(string) (string, error) { return "xx", nil }
+	if _, err := literalBlockReplace(src, "a", true, yield); err == nil {
+		t.Fatal("expected output limit error, got nil")
+	} else if !strings.Contains(err.Error(), "output exceeds limit") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

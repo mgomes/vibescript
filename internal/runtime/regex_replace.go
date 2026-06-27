@@ -307,6 +307,123 @@ func rubyBlockReplacer(src string, yield func(match string) (string, error)) rub
 	}
 }
 
+// literalBlockReplace replaces literal occurrences of pattern in src with the
+// string the yield block returns for each matched run, returning the rewritten
+// string. It drives String#sub and String#gsub block forms when the pattern is
+// literal (regex: false), so it must match byte-for-byte exactly like
+// strings.Replace/ReplaceAll rather than routing through Go's regexp engine,
+// whose patterns must be valid UTF-8. Vibescript strings can hold arbitrary
+// bytes (for example a pattern produced by "Aé".byteslice(1, 1) is the raw byte
+// 0xc3), so the regex path would reject those literals; this path matches them
+// the same way the literal template forms do.
+//
+// global selects gsub-style replacement of every occurrence over sub-style
+// replacement of only the first. The matched substring yielded to the block is
+// the literal run that was replaced: pattern itself for a non-empty pattern, or
+// the empty string for the per-position matches an empty pattern produces. Empty
+// patterns match before each UTF-8 sequence and at the end of src, advancing one
+// rune at a time exactly as strings.Replace does, so "abc".gsub("") yields four
+// empty matches and an invalid byte such as 0xc3 counts as a single position
+// (utf8.RuneError of width one), matching Ruby's behavior on byte strings.
+//
+// yield charges the sandbox step quota per match and returns the bounded string
+// form of the block result; every append is checked against the shared regex
+// output cap so a block returning a huge replacement cannot allocate past it.
+func literalBlockReplace(src, pattern string, global bool, yield func(match string) (string, error)) (string, error) {
+	if pattern == "" {
+		return literalBlockReplaceEmpty(src, global, yield)
+	}
+	out := make([]byte, 0, len(src))
+	start := 0
+	for {
+		idx := strings.Index(src[start:], pattern)
+		if idx < 0 {
+			break
+		}
+		matchStart := start + idx
+		next, err := appendBounded(out, src[start:matchStart])
+		if err != nil {
+			return "", err
+		}
+		out = next
+		replacement, err := yield(pattern)
+		if err != nil {
+			return "", err
+		}
+		next, err = appendBounded(out, replacement)
+		if err != nil {
+			return "", err
+		}
+		out = next
+		start = matchStart + len(pattern)
+		if !global {
+			break
+		}
+	}
+	next, err := appendBounded(out, src[start:])
+	if err != nil {
+		return "", err
+	}
+	out = next
+	return string(out), nil
+}
+
+// literalBlockReplaceEmpty implements the empty-pattern case of
+// literalBlockReplace. An empty literal pattern matches before the first rune
+// and after each UTF-8 sequence (advancing one rune at a time, treating an
+// invalid byte as utf8.RuneError of width one), so it yields the empty string at
+// every such position. For sub (global == false) only the leading position is
+// replaced; for gsub every position is. This mirrors strings.Replace's
+// empty-old handling so the block form stays byte-for-byte consistent with the
+// literal template forms.
+func literalBlockReplaceEmpty(src string, global bool, yield func(match string) (string, error)) (string, error) {
+	out := make([]byte, 0, len(src))
+	replacement, err := yield("")
+	if err != nil {
+		return "", err
+	}
+	out, err = appendBounded(out, replacement)
+	if err != nil {
+		return "", err
+	}
+	if !global {
+		return appendStringBounded(out, src)
+	}
+	start := 0
+	for start < len(src) {
+		_, width := utf8.DecodeRuneInString(src[start:])
+		if width == 0 {
+			width = 1
+		}
+		next := start + width
+		out, err = appendBounded(out, src[start:next])
+		if err != nil {
+			return "", err
+		}
+		replacement, err := yield("")
+		if err != nil {
+			return "", err
+		}
+		out, err = appendBounded(out, replacement)
+		if err != nil {
+			return "", err
+		}
+		start = next
+	}
+	return string(out), nil
+}
+
+// appendStringBounded appends s to out under the shared regex output cap and
+// returns the finished string, so the empty-pattern sub path can flush its tail
+// with the same guard the rest of the literal block replacer uses.
+func appendStringBounded(out []byte, s string) (string, error) {
+	next, err := appendBounded(out, s)
+	if err != nil {
+		return "", err
+	}
+	return string(next), nil
+}
+
 // rubyRegexSub replaces the first match of re in src using the Ruby-style
 // replacement template, enforcing the shared regex output-size guard. It is the
 // Ruby-semantics counterpart of the first-match path that previously relied on

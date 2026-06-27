@@ -1219,24 +1219,18 @@ func stringGSub(method, text, pattern, replacement string, regex bool) (string, 
 	return rubyRegexGSub(re, text, replacement, method)
 }
 
-// compileStringPatternRegex compiles pattern for the block forms of String#sub
-// and String#gsub, honoring the same regex keyword as the template forms. A
-// literal pattern (regex == false) is quoted so it matches verbatim, mirroring
-// the strings.Replace path the template forms take, while regex == true compiles
-// pattern directly. Routing the literal case through the regex iterator gives the
-// block forms Ruby's per-position empty-pattern behavior
-// ("abc".gsub("") { "-" } => "-a-b-c-") for free, identical to the literal
-// template path. The original pattern and text are size-checked first so an
+// compileStringPatternRegex compiles a regex pattern for the block forms of
+// String#sub and String#gsub. It is only used for the regex form (regex ==
+// true); the literal form (regex == false) bypasses regexp entirely via
+// literalBlockReplace so it stays byte-for-byte consistent with the literal
+// template path, including for patterns that hold invalid UTF-8 (which Go's
+// regexp engine rejects). The pattern and text are size-checked first so an
 // oversized subject or pattern is rejected before compilation.
-func compileStringPatternRegex(method, text, pattern string, regex bool) (*regexp.Regexp, error) {
+func compileStringPatternRegex(method, text, pattern string) (*regexp.Regexp, error) {
 	if err := validateRegexTextPattern(method, text, pattern); err != nil {
 		return nil, err
 	}
-	compiled := pattern
-	if !regex {
-		compiled = regexp.QuoteMeta(pattern)
-	}
-	re, err := compileCachedRegex(compiled)
+	re, err := compileCachedRegex(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("%s invalid regex: %w", method, err)
 	}
@@ -1247,8 +1241,18 @@ func compileStringPatternRegex(method, text, pattern string, regex bool) (*regex
 // match with the string form of the value the block returns for that match,
 // yielding the whole matched substring to the block (Ruby's group 0). yield
 // charges the sandbox step quota and invokes the user block per match.
+//
+// A literal pattern (regex == false) is matched byte-for-byte rather than via
+// regexp so it behaves identically to the literal template form, including for
+// patterns and subjects that hold invalid UTF-8.
 func stringSubBlock(method, text, pattern string, regex bool, yield func(match string) (string, error)) (string, error) {
-	re, err := compileStringPatternRegex(method, text, pattern, regex)
+	if !regex {
+		if err := validateRegexTextPattern(method, text, pattern); err != nil {
+			return "", err
+		}
+		return literalBlockReplace(text, pattern, false, yield)
+	}
+	re, err := compileStringPatternRegex(method, text, pattern)
 	if err != nil {
 		return "", err
 	}
@@ -1259,8 +1263,18 @@ func stringSubBlock(method, text, pattern string, regex bool, yield func(match s
 // match with the string form of the value the block returns for each match,
 // yielding the whole matched substring to the block (Ruby's group 0). yield
 // charges the sandbox step quota and invokes the user block per match.
+//
+// A literal pattern (regex == false) is matched byte-for-byte rather than via
+// regexp so it behaves identically to the literal template form, including for
+// patterns and subjects that hold invalid UTF-8.
 func stringGSubBlock(method, text, pattern string, regex bool, yield func(match string) (string, error)) (string, error) {
-	re, err := compileStringPatternRegex(method, text, pattern, regex)
+	if !regex {
+		if err := validateRegexTextPattern(method, text, pattern); err != nil {
+			return "", err
+		}
+		return literalBlockReplace(text, pattern, true, yield)
+	}
+	re, err := compileStringPatternRegex(method, text, pattern)
 	if err != nil {
 		return "", err
 	}
