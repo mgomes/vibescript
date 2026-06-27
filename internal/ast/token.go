@@ -51,6 +51,7 @@ const (
 	TokenSlash          TokenType = "/"
 	TokenPercent        TokenType = "%"
 	TokenLT             TokenType = "<"
+	TokenShovel         TokenType = "<<"
 	TokenGT             TokenType = ">"
 	TokenLTE            TokenType = "<="
 	TokenGTE            TokenType = ">="
