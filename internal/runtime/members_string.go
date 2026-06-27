@@ -209,14 +209,17 @@ func isRubyASCIISpace(b byte) bool {
 //     string ends in whitespace, so "a b ".split(nil, -1) yields ["a", "b", ""].
 //
 // An empty string always yields no fields, matching Ruby.
-func splitOnASCIIWhitespaceLimit(text string, limit int) []string {
+func splitOnASCIIWhitespaceLimit(text string, limit, count int) []string {
 	if text == "" {
 		return nil
 	}
 	if limit == 1 {
 		return []string{text}
 	}
-	var fields []string
+	if count == 0 {
+		return nil
+	}
+	fields := make([]string, 0, count)
 	i := 0
 	n := len(text)
 	for i < n {
@@ -291,7 +294,7 @@ func splitOnASCIIWhitespaceLimitCount(text string, limit int) int {
 // that invalid bytes in a binary receiver are preserved as single-byte fields
 // (matching Ruby's "a\xffb".split("") => ["a", "\xff", "b"]) instead of being
 // rewritten as the U+FFFD replacement character.
-func splitEmptySeparator(text string, limit int) []string {
+func splitEmptySeparator(text string, limit, count int) []string {
 	if text == "" {
 		return nil
 	}
@@ -314,7 +317,7 @@ func splitEmptySeparator(text string, limit int) []string {
 		fields[limit-1] = text[offsets[limit-1]:]
 		return fields
 	}
-	fields := make([]string, 0, len(offsets)+1)
+	fields := make([]string, 0, count)
 	for i, start := range offsets {
 		end := len(text)
 		if i+1 < len(offsets) {
@@ -366,17 +369,43 @@ func splitEmptySeparatorOffsetScratchBytes(text string, limit int) int {
 //   - a negative limit preserves every field, including trailing empties.
 //
 // An empty string always yields no fields, matching Ruby.
-func splitWithSeparator(text, sep string, limit int) []string {
+func splitWithSeparator(text, sep string, limit, count int) []string {
 	if text == "" {
 		return nil
 	}
+	if count == 0 {
+		return nil
+	}
+	parts := make([]string, 0, count)
 	switch {
 	case limit > 0:
-		return strings.SplitN(text, sep, limit)
+		start := 0
+		for len(parts) < count-1 {
+			idx := strings.Index(text[start:], sep)
+			if idx < 0 {
+				break
+			}
+			end := start + idx
+			parts = append(parts, text[start:end])
+			start = end + len(sep)
+		}
+		parts = append(parts, text[start:])
+		return parts
 	case limit < 0:
-		return strings.Split(text, sep)
+		start := 0
+		for {
+			idx := strings.Index(text[start:], sep)
+			end := len(text)
+			if idx >= 0 {
+				end = start + idx
+			}
+			parts = append(parts, text[start:end])
+			if idx < 0 {
+				return parts
+			}
+			start = end + len(sep)
+		}
 	default:
-		var parts []string
 		pendingEmpty := 0
 		start := 0
 		for {
@@ -2936,7 +2965,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				parts = splitOnASCIIWhitespaceLimit(text, limit)
+				parts = splitOnASCIIWhitespaceLimit(text, limit, count)
 				return stringSplitResult(exec, parts, acc)
 			case args[0].Kind() != KindString:
 				return NewNil(), fmt.Errorf("string.split separator must be string or nil")
@@ -2951,7 +2980,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				parts = splitOnASCIIWhitespaceLimit(text, limit)
+				parts = splitOnASCIIWhitespaceLimit(text, limit, count)
 				return stringSplitResult(exec, parts, acc)
 			case args[0].String() == "":
 				count = splitEmptySeparatorCount(text, limit)
@@ -2959,7 +2988,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				parts = splitEmptySeparator(text, limit)
+				parts = splitEmptySeparator(text, limit, count)
 				return stringSplitResult(exec, parts, acc)
 			default:
 				sep := args[0].String()
@@ -2968,7 +2997,7 @@ func stringMemberTextOps(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
-				parts = splitWithSeparator(text, sep, limit)
+				parts = splitWithSeparator(text, sep, limit, count)
 				return stringSplitResult(exec, parts, acc)
 			}
 		}), nil

@@ -79,7 +79,7 @@ func TestSplitOnASCIIWhitespace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := splitOnASCIIWhitespaceLimit(tt.in, 0)
+			got := splitOnASCIIWhitespaceLimit(tt.in, 0, splitOnASCIIWhitespaceLimitCount(tt.in, 0))
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Fatalf("splitOnASCIIWhitespaceLimit(%q, 0) mismatch (-want +got):\n%s", tt.in, diff)
 			}
@@ -115,7 +115,7 @@ func TestSplitEmptySeparator(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := splitEmptySeparator(tt.in, tt.limit)
+			got := splitEmptySeparator(tt.in, tt.limit, splitEmptySeparatorCount(tt.in, tt.limit))
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Fatalf("splitEmptySeparator(%q, %d) mismatch (-want +got):\n%s", tt.in, tt.limit, diff)
 			}
@@ -473,18 +473,28 @@ func TestSplitHelpers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var got []string
+			var count int
 			switch tt.mode {
 			case "ws":
-				got = splitOnASCIIWhitespaceLimit(tt.text, tt.limit)
+				count = splitOnASCIIWhitespaceLimitCount(tt.text, tt.limit)
+				got = splitOnASCIIWhitespaceLimit(tt.text, tt.limit, count)
 			case "empty":
-				got = splitEmptySeparator(tt.text, tt.limit)
+				count = splitEmptySeparatorCount(tt.text, tt.limit)
+				got = splitEmptySeparator(tt.text, tt.limit, count)
 			case "sep":
-				got = splitWithSeparator(tt.text, tt.sep, tt.limit)
+				count = splitWithSeparatorCount(tt.text, tt.sep, tt.limit)
+				got = splitWithSeparator(tt.text, tt.sep, tt.limit, count)
 			default:
 				t.Fatalf("unknown mode %q", tt.mode)
 			}
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Fatalf("split helper mismatch (-want +got):\n%s", diff)
+			}
+			if len(got) != count {
+				t.Fatalf("split helper len = %d, want count %d", len(got), count)
+			}
+			if cap(got) != count {
+				t.Fatalf("split helper cap = %d, want reserved count %d", cap(got), count)
 			}
 		})
 	}
@@ -494,7 +504,8 @@ func TestSplitWithSeparatorDefaultAvoidsTrimmedTrailingEmptyAllocation(t *testin
 	text := "x" + strings.Repeat(",", 200_000)
 	var got []string
 	alloc := allocBytes(func() {
-		got = splitWithSeparator(text, ",", 0)
+		count := splitWithSeparatorCount(text, ",", 0)
+		got = splitWithSeparator(text, ",", 0, count)
 	})
 	if diff := cmp.Diff([]string{"x"}, got); diff != "" {
 		t.Fatalf("splitWithSeparator trailing trim mismatch (-want +got):\n%s", diff)
