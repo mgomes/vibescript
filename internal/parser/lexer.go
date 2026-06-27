@@ -33,14 +33,27 @@ type lexer struct {
 	ch        rune
 	lastToken ast.Token
 
-	// ternaryDepth counts the ternary `?` operators whose separator `:` has
-	// not yet been scanned. A `:` that sits in expression-end position while
-	// this is positive is the pending ternary separator rather than a quoted
-	// symbol or label introducer. The lexer reads ahead of the parser, but
-	// this counter only relates `?` tokens to the colons the lexer itself
-	// scans, so it stays self-consistent; the parser captures and restores it
-	// with the rest of the lexer value during speculative parsing.
-	ternaryDepth int
+	// bracketDepth counts the open `(`, `[`, and `{` brackets the lexer has
+	// scanned past. Each opener increments it and each matching closer
+	// decrements it, so it names the bracket nesting level of the rune the
+	// lexer is currently at. It tags pending ternaries so a `:` only matches a
+	// `?` opened at the same nesting level, never a label `:` inside a hash,
+	// array, or paren group opened after the `?`.
+	bracketDepth int
+
+	// ternaryStack holds the bracket nesting level recorded at each ternary
+	// `?` whose separator `:` has not yet been scanned. A `:` in
+	// expression-end position closes the innermost pending ternary only when it
+	// sits at that ternary's nesting level; such a `:` is the ternary separator
+	// rather than a quoted symbol or label introducer. Tagging each `?` with
+	// its level keeps a label `:` inside a hash, array, or paren group opened
+	// after the `?` (a deeper level) from being mistaken for the separator. The
+	// lexer reads ahead of the parser, but this stack only relates `?` tokens
+	// to the colons the lexer itself scans, so it stays self-consistent. The
+	// parser captures and restores it with the rest of the lexer value during
+	// speculative parsing; snapshot and restore deep-copy the slice so a
+	// rolled-back speculation cannot leak pushes or pops into the live lexer.
+	ternaryStack []int
 }
 
 func newLexer(input string) *lexer {
@@ -212,21 +225,27 @@ func (l *lexer) scanToken() ast.Token {
 		}
 	case '(':
 		tok = l.makeToken(ast.TokenLParen, "(")
+		l.bracketDepth++
 		l.readRune()
 	case ')':
 		tok = l.makeToken(ast.TokenRParen, ")")
+		l.closeBracket()
 		l.readRune()
 	case '{':
 		tok = l.makeToken(ast.TokenLBrace, "{")
+		l.bracketDepth++
 		l.readRune()
 	case '}':
 		tok = l.makeToken(ast.TokenRBrace, "}")
+		l.closeBracket()
 		l.readRune()
 	case '[':
 		tok = l.makeToken(ast.TokenLBracket, "[")
+		l.bracketDepth++
 		l.readRune()
 	case ']':
 		tok = l.makeToken(ast.TokenRBracket, "]")
+		l.closeBracket()
 		l.readRune()
 	case ',':
 		tok = l.makeToken(ast.TokenComma, ",")
@@ -244,7 +263,7 @@ func (l *lexer) scanToken() ast.Token {
 		}
 		closesTernary := l.colonClosesTernary()
 		if closesTernary {
-			l.ternaryDepth--
+			l.ternaryStack = l.ternaryStack[:len(l.ternaryStack)-1]
 		}
 		if quote := l.peekRune(); (quote == '"' || quote == '\'') && !closesTernary && l.colonStartsQuotedSymbol() {
 			return l.scanQuotedSymbol(tok)
@@ -367,7 +386,7 @@ func (l *lexer) scanToken() ast.Token {
 		}
 	case '?':
 		tok = l.makeToken(ast.TokenQuestion, "?")
-		l.ternaryDepth++
+		l.ternaryStack = append(l.ternaryStack, l.bracketDepth)
 		l.readRune()
 	case '|':
 		if l.peekRune() == '|' {
@@ -1085,11 +1104,9 @@ func (l *lexer) scanQuotedSymbol(tok ast.Token) ast.Token {
 		literal, interpolated, errMsg := l.readDoubleQuotedString()
 		switch {
 		case errMsg != "":
-			tok.Type = ast.TokenIllegal
-			tok.Literal = errMsg
+			setDiagnostic(&tok, errMsg)
 		case interpolated:
-			tok.Type = ast.TokenIllegal
-			tok.Literal = "interpolation is not allowed in a symbol literal"
+			setDiagnostic(&tok, "interpolation is not allowed in a symbol literal")
 		default:
 			tok.Type = ast.TokenSymbol
 			tok.Literal = literal
@@ -1097,8 +1114,7 @@ func (l *lexer) scanQuotedSymbol(tok ast.Token) ast.Token {
 	case '\'':
 		literal, errMsg := l.readSingleQuotedString()
 		if errMsg != "" {
-			tok.Type = ast.TokenIllegal
-			tok.Literal = errMsg
+			setDiagnostic(&tok, errMsg)
 		} else {
 			tok.Type = ast.TokenSymbol
 			tok.Literal = literal
@@ -1164,18 +1180,43 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 	return !canEndExpressionToken(l.lastToken.Type)
 }
 
+// closeBracket records that the bracket currently under l.ch closes a `(`, `[`,
+// or `{`. It discards any pending ternary `?` recorded at a deeper nesting level
+// than the level the closer returns to: a ternary whose `?` sits inside the
+// bracket can never be completed by a `:` outside it, so such an entry is dead
+// and would otherwise linger and mis-match a later colon. The depth is floored
+// at zero so unbalanced input cannot drive it negative.
+func (l *lexer) closeBracket() {
+	if l.bracketDepth > 0 {
+		l.bracketDepth--
+	}
+	for len(l.ternaryStack) > 0 && l.ternaryStack[len(l.ternaryStack)-1] > l.bracketDepth {
+		l.ternaryStack = l.ternaryStack[:len(l.ternaryStack)-1]
+	}
+}
+
 // colonClosesTernary reports whether the colon currently under l.ch is the
 // separator of an open ternary expression rather than the start of a symbol or
 // label. The ternary separator follows the consequent, so it sits in
-// expression-end position while a ternary `?` is still pending. Resolving this
-// purely from the open-ternary count and the previous token keeps both the
-// same-line form (flag ? 1 :"no") and the line-leading multiline form
-// (flag ?\n  1\n  :"no") parsing as separator + value, where Ruby's lexer would
-// otherwise read the colon-quote as a symbol. The consequent's own leading
-// symbol (flag ? :"a" : :"b") is in expression-start position, so it is not
-// mistaken for the separator.
+// expression-end position while a ternary `?` is still pending. It closes the
+// innermost pending ternary only when the colon sits at that ternary's bracket
+// nesting level: a label `:` inside a hash, array, or paren group opened after
+// the `?` sits one level deeper and must not be mistaken for the separator
+// (flag ? {a: 1} :"no" keeps the inner `a:` a label and the outer `:` the
+// separator). Resolving this from the pending-ternary stack and the previous
+// token keeps both the same-line form (flag ? 1 :"no") and the line-leading
+// multiline form (flag ?\n  1\n  :"no") parsing as separator + value, where
+// Ruby's lexer would otherwise read the colon-quote as a symbol. The
+// consequent's own leading symbol (flag ? :"a" : :"b") is in expression-start
+// position, so it is not mistaken for the separator.
 func (l *lexer) colonClosesTernary() bool {
-	return l.ternaryDepth > 0 && canEndExpressionToken(l.lastToken.Type)
+	if len(l.ternaryStack) == 0 {
+		return false
+	}
+	if l.ternaryStack[len(l.ternaryStack)-1] != l.bracketDepth {
+		return false
+	}
+	return canEndExpressionToken(l.lastToken.Type)
 }
 
 // colonStartsQuotedSymbol reports whether a colon followed by a quote should be

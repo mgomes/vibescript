@@ -95,6 +95,28 @@ func TestColonBeforeQuotedStringStaysSeparator(t *testing.T) {
 			source: `def run; false ? "yes" :"no"; end`,
 			want:   NewString("no"),
 		},
+		{
+			// A hash-literal consequent holds a label colon nested below the
+			// ternary; the abutting alternate colon-quote must stay the ternary
+			// separator, so the true branch returns the hash value.
+			name:   "ternary_hash_branch_true",
+			source: `def run; (true ? {a: 1} :"no")[:a]; end`,
+			want:   NewInt(1),
+		},
+		{
+			// The same form on the false branch returns the string alternate
+			// rather than treating the colon-quote as a quoted symbol.
+			name:   "ternary_hash_branch_false",
+			source: `def run; false ? {a: 1} :"no"; end`,
+			want:   NewString("no"),
+		},
+		{
+			// Multiple labels in the consequent hash keep every inner colon a
+			// label separator, leaving the abutting alternate intact.
+			name:   "ternary_multi_label_hash_branch_false",
+			source: `def run; false ? {a: 1, b: 2} :"no"; end`,
+			want:   NewString("no"),
+		},
 	}
 
 	for _, tc := range tests {

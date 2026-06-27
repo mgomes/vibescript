@@ -158,11 +158,12 @@ func (p *parser) reprimeAt(offset int, last ast.Token) {
 }
 
 // parserSnapshot captures the parser state needed to roll back a
-// speculative parse. The lexer is captured by value because lexer holds
-// no mutable references beyond the immutable input string, so a value
-// copy is a complete, independent snapshot. errorCount records how many
-// diagnostics existed before the speculation so any added during it can
-// be discarded on rollback.
+// speculative parse. The lexer is captured by value, but its ternaryStack
+// is the one mutable reference it holds, so the snapshot deep-copies that
+// slice; a value copy would share the backing array and let pushes or pops
+// during the speculation leak into the live lexer on restore. errorCount
+// records how many diagnostics existed before the speculation so any added
+// during it can be discarded on rollback.
 type parserSnapshot struct {
 	lexer      lexer
 	curToken   ast.Token
@@ -176,8 +177,10 @@ type parserSnapshot struct {
 // the basis for bounded speculative parsing: try a parse, and if it does
 // not pan out, restore and parse the alternative.
 func (p *parser) snapshot() parserSnapshot {
+	captured := *p.l
+	captured.ternaryStack = append([]int(nil), p.l.ternaryStack...)
 	return parserSnapshot{
-		lexer:      *p.l,
+		lexer:      captured,
 		curToken:   p.curToken,
 		peekToken:  p.peekToken,
 		peekPeek:   p.peekPeek,
@@ -187,9 +190,13 @@ func (p *parser) snapshot() parserSnapshot {
 }
 
 // restore rewinds the parser to a previously captured snapshot,
-// discarding any tokens consumed and diagnostics recorded since.
+// discarding any tokens consumed and diagnostics recorded since. The
+// lexer's ternaryStack is deep-copied again so the live lexer never shares
+// the snapshot's backing array, keeping a later push from corrupting the
+// retained snapshot if it is restored more than once.
 func (p *parser) restore(s parserSnapshot) {
 	*p.l = s.lexer
+	p.l.ternaryStack = append([]int(nil), s.lexer.ternaryStack...)
 	p.curToken = s.curToken
 	p.peekToken = s.peekToken
 	p.peekPeek = s.peekPeek

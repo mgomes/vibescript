@@ -178,6 +178,75 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 			source: `flag ? :"a" : :"b"`,
 			want:   []ast.TokenType{ast.TokenIdent, ast.TokenQuestion, ast.TokenSymbol, ast.TokenColon, ast.TokenSymbol},
 		},
+		{
+			// A hash-literal consequent introduces a label colon one nesting
+			// level deeper than the ternary `?`. That inner colon must not be
+			// mistaken for the ternary separator, so the outer abutting
+			// colon-quote stays the separator + string rather than a symbol.
+			name:   "ternary_hash_branch_then_quoted_alternate",
+			source: `flag ? {a: 1} :"no"`,
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenLBrace, ast.TokenIdent, ast.TokenColon,
+				ast.TokenInt, ast.TokenRBrace, ast.TokenColon, ast.TokenString,
+			},
+		},
+		{
+			// The same with multiple spaced labels in the consequent: every inner
+			// label colon sits deeper than the ternary, so none of them pops it
+			// and the outer colon-quote stays the separator.
+			name:   "ternary_multi_label_hash_branch_then_quoted_alternate",
+			source: `flag ? {a: 1, b: 2} :"no"`,
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenLBrace, ast.TokenIdent, ast.TokenColon,
+				ast.TokenInt, ast.TokenComma, ast.TokenIdent, ast.TokenColon, ast.TokenInt,
+				ast.TokenRBrace, ast.TokenColon, ast.TokenString,
+			},
+		},
+		{
+			// A no-space label whose value is a quoted string sits deeper than the
+			// ternary: the inner colon stays a label separator (not a quoted
+			// symbol), and the outer abutting colon-quote stays the ternary
+			// separator + string.
+			name:   "ternary_no_space_string_label_hash_branch_then_quoted_alternate",
+			source: `flag ? {a:"x"} :"no"`,
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenLBrace, ast.TokenIdent, ast.TokenColon,
+				ast.TokenString, ast.TokenRBrace, ast.TokenColon, ast.TokenString,
+			},
+		},
+		{
+			// An array-literal consequent nests the same way: the alternate
+			// colon-quote outside the brackets stays the ternary separator.
+			name:   "ternary_array_branch_then_quoted_alternate",
+			source: `flag ? [1, 2] :"no"`,
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenLBracket, ast.TokenInt, ast.TokenComma,
+				ast.TokenInt, ast.TokenRBracket, ast.TokenColon, ast.TokenString,
+			},
+		},
+		{
+			// A nested ternary inside the consequent hash value completes its own
+			// separator at the deeper nesting level, leaving the outer ternary
+			// separator to pair the abutting colon-quote alternate.
+			name:   "ternary_nested_in_hash_branch_then_quoted_alternate",
+			source: `flag ? {a: (g ? 1 : 2)} :"no"`,
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenLBrace, ast.TokenIdent, ast.TokenColon,
+				ast.TokenLParen, ast.TokenIdent, ast.TokenQuestion, ast.TokenInt, ast.TokenColon,
+				ast.TokenInt, ast.TokenRParen, ast.TokenRBrace, ast.TokenColon, ast.TokenString,
+			},
+		},
+		{
+			// Plain nested ternaries: each separator pairs the nearest open `?`
+			// at the same nesting level, and an abutting quoted alternate after
+			// the last separator stays a separator + string.
+			name:   "nested_ternary_abutting_quoted_alternate",
+			source: `flag ? a : b ? c :"d"`,
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenIdent, ast.TokenColon, ast.TokenIdent,
+				ast.TokenQuestion, ast.TokenIdent, ast.TokenColon, ast.TokenString,
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -302,6 +371,45 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 			t.Fatalf("ternary alternate = %#v, want StringLiteral(no)", cond.Alternate)
 		}
 	})
+
+	// A hash-literal consequent puts a label colon one nesting level deeper than
+	// the ternary `?`. The abutting colon-quote after the closing brace must stay
+	// the ternary separator + string alternate, with the consequent the hash,
+	// rather than the inner label colon being mistaken for the separator and the
+	// alternate misread as a quoted symbol.
+	hashBranchCases := []struct {
+		name      string
+		source    string
+		wantPairs int
+	}{
+		{name: "ternary_hash_branch_single_label", source: "def run\n  flag ? {a: 1} :\"no\"\nend", wantPairs: 1},
+		{name: "ternary_hash_branch_multiple_labels", source: "def run\n  flag ? {a: 1, b: 2} :\"no\"\nend", wantPairs: 2},
+	}
+	for _, tc := range hashBranchCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, errs := parseSource(t, tc.source)
+			if len(errs) != 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+			body := parsedFunctionBody(t, got)
+			cond, ok := body[0].(*ast.ExprStmt).Expr.(*ast.ConditionalExpr)
+			if !ok {
+				t.Fatalf("top expression = %T, want *ast.ConditionalExpr", body[0].(*ast.ExprStmt).Expr)
+			}
+			hash, ok := cond.Consequent.(*ast.HashLiteral)
+			if !ok {
+				t.Fatalf("ternary consequent = %#v, want *ast.HashLiteral", cond.Consequent)
+			}
+			if len(hash.Pairs) != tc.wantPairs {
+				t.Fatalf("ternary consequent hash pairs = %d, want %d", len(hash.Pairs), tc.wantPairs)
+			}
+			str, ok := cond.Alternate.(*ast.StringLiteral)
+			if !ok || str.Value != "no" {
+				t.Fatalf("ternary alternate = %#v, want StringLiteral(no)", cond.Alternate)
+			}
+		})
+	}
 }
 
 // TestParserParenlessCallQuotedSymbolArgument verifies that a quoted symbol
