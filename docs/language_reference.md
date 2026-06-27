@@ -374,11 +374,15 @@ Core operator families:
 - Arithmetic: `+`, `-`, `*`, `/`, `%`, `**`
 - Comparison: `==`, `!=`, `<`, `<=`, `>`, `>=`, `<=>`
 - Case equality: `===`
-- Boolean: `&&`/`and`, `||`/`or`, unary `!`/`not`
+- Boolean: `&&`, `||`, unary `!`
 - Collection: `array << value` (append), `array & other` (intersection)
 - Unary sign: prefix `-` negates a number; prefix `+` is the identity on
   numbers and strings
 - Conditional: `condition ? when_true : when_false`
+
+The Ruby word forms `and`, `or`, and `not` are not boolean operators in
+Vibescript. They are ordinary identifiers, so they can be used as method names,
+function names, and hash labels. Use `&&`, `||`, and `!` for boolean logic.
 
 The spaceship operator `<=>` returns `-1`, `0`, or `1` for ordered operands and
 `nil` when the two operands cannot be ordered (different kinds, money values in
@@ -419,10 +423,9 @@ overflow and non-finite float powers raise runtime errors. Division follows
 Ruby: integer division by zero (`1 / 0`) raises, while float division by zero
 (`1.0 / 0`) follows IEEE 754 and yields `Infinity`, `-Infinity`, or `NaN`.
 Inspect those special values with `Float#nan?`, `Float#infinite?`, and
-`Float#finite?`. `not` has the same prefix precedence as `!`, `and` has the same
-precedence as `&&`, and `or` has the same precedence as `||`. Ternary
-conditionals have lower precedence than `or`, associate to the right, and
-evaluate only the selected branch.
+`Float#finite?`. `!` is a prefix operator, `&&` binds tighter than `||`, and
+ternary conditionals have lower precedence than `||`, associate to the right,
+and evaluate only the selected branch.
 
 Prefix `+` mirrors Ruby's unary plus: it returns integers, floats, and strings
 unchanged and raises on any other operand. Because Vibescript strings are
