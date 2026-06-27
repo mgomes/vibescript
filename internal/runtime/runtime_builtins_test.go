@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -1456,6 +1457,31 @@ func TestRandomIDHonorsCancellationBetweenRetryReads(t *testing.T) {
 	requireErrorIs(t, err, context.Canceled)
 	if reads != 1 {
 		t.Fatalf("random_id entropy reads = %d, want cancellation before retry read", reads)
+	}
+}
+
+func TestRandomIdentifierBuiltinsAcceptFullFinalEntropyReadWithEOF(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(_ context.Context, p []byte) (int, error) {
+			for i := range p {
+				p[i] = 1
+			}
+			return len(p), io.EOF
+		},
+	})
+	exec := &Execution{ctx: context.Background(), engine: engine}
+
+	if _, err := builtinUUID(exec, NewNil(), nil, nil, NewNil()); err != nil {
+		t.Fatalf("uuid full final entropy read with EOF failed: %v", err)
+	}
+	got, err := builtinRandomID(exec, NewNil(), []Value{NewInt(1)}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("random_id full final entropy read with EOF failed: %v", err)
+	}
+	if !got.Equal(NewString("b")) {
+		t.Fatalf("random_id = %v, want b", got)
 	}
 }
 

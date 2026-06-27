@@ -173,6 +173,9 @@ func readFullContext(ctx context.Context, read func(context.Context, []byte) (in
 		if n > 0 {
 			buf = buf[n:]
 		}
+		if len(buf) == 0 {
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("random source failed: %w", err)
 		}
