@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -414,7 +415,7 @@ func (l *lexer) scanToken() ast.Token {
 			}
 			return tok
 		default:
-			tok = l.makeToken(ast.TokenIllegal, string(l.ch))
+			tok = l.makeToken(ast.TokenIllegal, fmt.Sprintf("unexpected character %q", l.ch))
 			l.readRune()
 		}
 	}
@@ -689,48 +690,9 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 	var decoded strings.Builder
 	var raw strings.Builder
 	interpolated := false
-	interpolationDepth := 0
-	var interpolationQuote rune
 
 	for {
 		l.readRune()
-		if interpolationDepth > 0 {
-			if interpolationQuote == 0 && l.ch == '"' && !l.interpolationQuoteHasClose('"') {
-				l.readRune()
-				return raw.String(), true, ""
-			}
-			switch l.ch {
-			case 0:
-				return "", false, "unterminated string"
-			case '\\':
-				raw.WriteRune(l.ch)
-				decoded.WriteRune(l.ch)
-				if interpolationQuote != 0 && l.peekRune() != 0 {
-					l.readRune()
-					raw.WriteRune(l.ch)
-					decoded.WriteRune(l.ch)
-				}
-			default:
-				raw.WriteRune(l.ch)
-				decoded.WriteRune(l.ch)
-				if interpolationQuote != 0 {
-					if l.ch == interpolationQuote {
-						interpolationQuote = 0
-					}
-					continue
-				}
-				switch l.ch {
-				case '\'', '"':
-					interpolationQuote = l.ch
-				case '{':
-					interpolationDepth++
-				case '}':
-					interpolationDepth--
-				}
-			}
-			continue
-		}
-
 		switch l.ch {
 		case 0:
 			return "", false, "unterminated string"
@@ -773,9 +735,10 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 			if l.peekRune() == '{' {
 				l.readRune()
 				raw.WriteRune(l.ch)
-				decoded.WriteRune(l.ch)
 				interpolated = true
-				interpolationDepth = 1
+				if errMsg := l.consumeInterpolation(&raw); errMsg != "" {
+					return "", false, errMsg
+				}
 			}
 		default:
 			raw.WriteRune(l.ch)
@@ -784,23 +747,79 @@ func (l *lexer) readDoubleQuotedString() (string, bool, string) {
 	}
 }
 
-func (l *lexer) interpolationQuoteHasClose(quote rune) bool {
-	idx := l.offset
-	for idx < len(l.input) {
-		r, width := utf8.DecodeRuneInString(l.input[idx:])
-		idx += width
-		if r == '\\' {
-			if idx < len(l.input) {
-				_, escapedWidth := utf8.DecodeRuneInString(l.input[idx:])
-				idx += escapedWidth
+// consumeInterpolation reads the body of a "#{...}" interpolation that the
+// caller has just opened (the leading "#{" is already consumed) and appends
+// every rune up to and including the matching "}" to raw. It maintains a stack
+// of interpolation and string contexts so that nested double-quoted strings,
+// single-quoted strings, and further interpolations balance correctly instead
+// of guessing where the enclosing string ends. The decoded builder is not
+// updated because an interpolated string always returns its raw text; the
+// parser re-scans it with the same nesting rules in findStringInterpolationEnd.
+//
+// It returns an error message when the input ends before every context closes.
+func (l *lexer) consumeInterpolation(raw *strings.Builder) string {
+	// stack holds the open contexts. isInterp reports whether a context is an
+	// interpolation expression (true) or a string literal (false). For
+	// interpolation contexts braceDepth tracks unmatched "{" so that an inner
+	// "}" only closes the interpolation once its own braces are balanced. For
+	// string contexts quote holds the delimiting rune so the matching closing
+	// quote can be recognized.
+	type context struct {
+		isInterp   bool
+		quote      rune
+		braceDepth int
+	}
+	stack := []context{{isInterp: true}}
+
+	for {
+		l.readRune()
+		if l.ch == 0 {
+			return "unterminated string"
+		}
+		raw.WriteRune(l.ch)
+
+		top := &stack[len(stack)-1]
+		if top.isInterp {
+			switch l.ch {
+			case '{':
+				top.braceDepth++
+			case '}':
+				if top.braceDepth > 0 {
+					top.braceDepth--
+				} else {
+					stack = stack[:len(stack)-1]
+					if len(stack) == 0 {
+						return ""
+					}
+				}
+			case '"', '\'':
+				stack = append(stack, context{quote: l.ch})
 			}
 			continue
 		}
-		if r == quote {
-			return true
+
+		// Inside a string literal.
+		switch l.ch {
+		case '\\':
+			// A backslash escapes the next rune so an escaped quote does not
+			// close the string. Single-quoted strings only treat \' and \\ as
+			// escapes, but consuming the following rune is harmless for balance
+			// because no other escape can introduce or close a context.
+			if l.peekRune() != 0 {
+				l.readRune()
+				raw.WriteRune(l.ch)
+			}
+		case top.quote:
+			stack = stack[:len(stack)-1]
+		case '#':
+			// Only double-quoted strings interpolate; single quotes are literal.
+			if top.quote == '"' && l.peekRune() == '{' {
+				l.readRune()
+				raw.WriteRune(l.ch)
+				stack = append(stack, context{isInterp: true})
+			}
 		}
 	}
-	return false
 }
 
 func (l *lexer) readSingleQuotedString() (string, string) {

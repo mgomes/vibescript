@@ -320,6 +320,14 @@ func (e *parseError) End() ast.Position { return e.end }
 func (e *parseError) Message() string { return e.msg }
 
 func (p *parser) errorExpected(tok ast.Token, expected string) {
+	// Diagnostic illegal tokens carry a human-readable lexer message in the
+	// literal (such as a malformed numeric literal); surface it verbatim so
+	// the cause is clear. Plain illegal characters carry only the raw source
+	// rune, so they fall back to the generic "expected X, got invalid token".
+	if tok.Type == ast.TokenIllegal && tok.Diagnostic {
+		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
+		return
+	}
 	p.addParseErrorSpan(tok.Pos, tokenEnd(tok), fmt.Sprintf("expected %s, got %s", expected, tokenLabel(tok.Type)))
 }
 
