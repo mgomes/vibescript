@@ -1246,7 +1246,7 @@ func TestMemoryQuotaAggregateArguments(t *testing.T) {
 				}
 			},
 			setupEnv: func(env *Env) {
-				env.Define("__block__", NewBlock(nil, nil, newEnv(nil)))
+				env.setCallBlock(NewBlock(nil, nil, newEnv(nil)))
 			},
 		},
 	}
@@ -1551,6 +1551,45 @@ func TestMemoryQuotaSkipsStaticRootBindingValues(t *testing.T) {
 	overwrittenBytes := staticExec.estimateMemoryUsage()
 	if overwrittenBytes != dynamicBytes {
 		t.Fatalf("overwritten static binding estimate = %d, want dynamic estimate %d", overwrittenBytes, dynamicBytes)
+	}
+}
+
+// TestMemoryQuotaCountsCallBlockPayload pins that the block held in a call
+// frame's hidden slot counts toward the memory estimate. The supplied block
+// lives outside the named bindings, but for an escaped closure or default proc
+// the captured frame's slot can be the only reference to a block that closes
+// over large data. Before the fix the env estimator walked named bindings,
+// statics, and the parent but never the slot, so a retained block was invisible
+// to the quota even though the old __block__ binding would have been charged.
+func TestMemoryQuotaCountsCallBlockPayload(t *testing.T) {
+	t.Parallel()
+
+	payload := strings.Repeat("abcdefghij", 300)
+
+	closureEnv := newEnv(nil)
+	closureEnv.Define("retained", NewString(payload))
+	block := NewBlock(nil, nil, closureEnv)
+
+	plain := newEnv(nil)
+	withBlock := newEnv(nil)
+	withBlock.setCallBlock(block)
+
+	plainBytes := newMemoryEstimator().env(plain)
+	withBlockBytes := newMemoryEstimator().env(withBlock)
+	// The block captures the large string in its environment, so the call frame
+	// carrying it must charge at least that payload beyond an identical frame
+	// with no block.
+	if gap := withBlockBytes - plainBytes; gap < len(payload) {
+		t.Fatalf("call block payload not charged: gap=%d, want >= %d", gap, len(payload))
+	}
+
+	// A frame whose slot is set but whose block is nil (the call received no
+	// block) charges nothing beyond the bare frame: the value header is already
+	// part of the env struct estimate, so an empty slot must not inflate it.
+	withoutBlock := newEnv(nil)
+	withoutBlock.setCallBlock(Value{})
+	if got := newMemoryEstimator().env(withoutBlock); got != plainBytes {
+		t.Fatalf("empty call block slot inflated estimate: got=%d, want %d", got, plainBytes)
 	}
 }
 

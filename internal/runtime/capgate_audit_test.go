@@ -152,6 +152,36 @@ func TestCapabilityScanNowSeesBlockBuiltin(t *testing.T) {
 	}
 }
 
+// TestCapabilityScanNowSeesHiddenCallBlockBuiltin pins the hidden call-frame
+// block slot introduced for block_given?/yield: a closure can reach a supplied
+// block through env.callBlock without any named binding exposing that block. The
+// capability scanners must visit that slot just like dynamic and static env
+// bindings, or a builtin captured only by the yielded block remains callable
+// without its declared contract.
+func TestCapabilityScanNowSeesHiddenCallBlockBuiltin(t *testing.T) {
+	bv, builtin, scope := makeContractBuiltin("secret")
+
+	blockEnv := newEnv(nil)
+	blockEnv.Define("secret", bv)
+	callEnv := newEnv(nil)
+	callEnv.setCallBlock(NewBlock(nil, nil, blockEnv))
+	closure := NewFunction(&ScriptFunction{Name: "closure", Env: callEnv})
+
+	scanner := newCapabilityContractScanner()
+	found := map[*Builtin]struct{}{}
+	scanner.collectBuiltins(closure, found)
+	if _, ok := found[builtin]; !ok {
+		t.Fatalf("expected collectBuiltins to find the hidden call-block builtin")
+	}
+
+	target := map[*Builtin]CapabilityMethodContract{}
+	scopes := map[*Builtin]*capabilityContractScope{}
+	bindCapabilityContracts(closure, scope, target, scopes)
+	if _, ok := target[builtin]; !ok {
+		t.Fatalf("expected bindContracts to bind the hidden call-block builtin contract")
+	}
+}
+
 // TestCapabilityScanSkipsAmbientGlobalsInBlock mirrors the closure ambient-skip
 // guard for blocks: a block whose env chains into the ambient root must not bind
 // a contract to an unrelated same-named global builtin.

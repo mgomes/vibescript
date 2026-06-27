@@ -46,6 +46,19 @@ type Env struct {
 	// onto the live call. The marker is preserved when a closure is cloned
 	// across the host boundary so it survives re-entry.
 	callRoot bool
+
+	// callBlock holds the block supplied to the call that owns this scope, and
+	// hasCallBlock marks the scope as a call frame that carries one (the block
+	// is nil when the call received none). The block lives in this dedicated
+	// slot rather than a named binding so yield and block_given? read the
+	// enclosing call's actual block through the lexical chain without a script
+	// identifier (for example a parameter named __block__) being able to shadow
+	// it. lookupCallBlock walks to the nearest scope with hasCallBlock set,
+	// stopping at the owning call frame just as a named lookup would, while
+	// nested non-call scopes (if/while/rescue bodies) leave the flag clear and
+	// transparently chain to it.
+	callBlock    Value
+	hasCallBlock bool
 }
 
 func newEnv(parent *Env) *Env {
@@ -84,6 +97,8 @@ func (e *Env) resetForBlockCall(parent *Env) {
 	e.assignBoundary = false
 	e.frozen = false
 	e.callRoot = false
+	e.callBlock = Value{}
+	e.hasCallBlock = false
 }
 
 // Get looks up a variable by name, traversing parent scopes if needed.
@@ -117,6 +132,29 @@ func (e *Env) Get(name string) (Value, bool) {
 				return cloned, true
 			}
 			return val, true
+		}
+	}
+	return Value{}, false
+}
+
+// setCallBlock marks this scope as a call frame and records the block supplied
+// to the call (nil when none was given). It must be set on the call
+// environment so lookupCallBlock can find it from any nested scope.
+func (e *Env) setCallBlock(block Value) {
+	e.callBlock = block
+	e.hasCallBlock = true
+}
+
+// lookupCallBlock returns the block supplied to the nearest enclosing call
+// frame and whether such a frame exists. It walks parent scopes until it finds
+// one marked as a call frame, so a yield or block_given? deep inside an
+// if/while/rescue body resolves to its method's block, while a nested call's
+// own frame shadows the caller's. The block is never resolved by name, so a
+// script binding cannot intercept it.
+func (e *Env) lookupCallBlock() (Value, bool) {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.hasCallBlock {
+			return scope.callBlock, true
 		}
 	}
 	return Value{}, false
@@ -300,6 +338,8 @@ func (e *Env) CloneShallow() *Env {
 		maps.Copy(clone.statics, e.statics)
 		clone.staticBytes = e.staticBytes
 	}
+	clone.callBlock = e.callBlock
+	clone.hasCallBlock = e.hasCallBlock
 	return clone
 }
 
