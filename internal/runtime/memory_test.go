@@ -232,6 +232,68 @@ func TestEnvAssignDemotesStaticBindings(t *testing.T) {
 	}
 }
 
+// TestBlockBindsRestSkipsAnonymousRest is the regression for the Codex thread on
+// PR #808: blockBindsRest gates the per-iteration bind charge, which exists only to
+// account for the fresh, source-sized backing slice a NAMED rest materializes.
+// assignDestructure discards an anonymous rest's window without allocating anything
+// (restAnonymous skips the copy), so a bare "*" -- including the nested "|(head, *)|"
+// shape over large rows -- must not enable the charge. Before the fix targetCollectsRest
+// returned true for any element.Rest, seeding the estimator with the whole yielded value
+// every iteration for a backing that never exists.
+func TestBlockBindsRestSkipsAnonymousRest(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	ident := func(name string) Expression { return &Identifier{Name: name, Position: pos} }
+	destructure := func(elements ...DestructureElement) *DestructureTarget {
+		return &DestructureTarget{Position: pos, Elements: elements}
+	}
+	block := func(target Expression) *Block {
+		return valueBlock(NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil)))
+	}
+
+	tests := []struct {
+		name   string
+		target Expression
+		want   bool
+	}{
+		{
+			name:   "no rest binds nothing fresh",
+			target: destructure(DestructureElement{Target: ident("a")}, DestructureElement{Target: ident("b")}),
+			want:   false,
+		},
+		{
+			name:   "top-level anonymous rest discards its window",
+			target: destructure(DestructureElement{Target: ident("a")}, DestructureElement{Rest: true}),
+			want:   false,
+		},
+		{
+			name:   "nested anonymous rest over rows",
+			target: destructure(DestructureElement{Target: destructure(DestructureElement{Target: ident("head")}, DestructureElement{Rest: true})}),
+			want:   false,
+		},
+		{
+			name:   "named rest materializes a backing",
+			target: destructure(DestructureElement{Target: ident("head")}, DestructureElement{Target: ident("tail"), Rest: true}),
+			want:   true,
+		},
+		{
+			name:   "nested named rest materializes a backing",
+			target: destructure(DestructureElement{Target: destructure(DestructureElement{Target: ident("head")}, DestructureElement{Target: ident("tail"), Rest: true})}),
+			want:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := blockBindsRest(block(tc.target)); got != tc.want {
+				t.Fatalf("blockBindsRest = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEnvDefineShadowsStaticBinding(t *testing.T) {
 	t.Parallel()
 	env := newEnv(nil)

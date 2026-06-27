@@ -21,7 +21,11 @@
   collected tail into a fresh backing slice when it binds `tail`. The bind charge now
   preflights that window against the memory quota before the copy, so a quota smaller
   than a single copied tail rejects the walk before the backing is materialized
-  instead of allocating the whole tail first and only then reporting the overflow.
+  instead of allocating the whole tail first and only then reporting the overflow. The
+  charge applies only to a named rest: a bare anonymous rest such as
+  `|(head, *)|` discards its window without allocating a backing, so it keeps the
+  no-allocation fast path instead of seeding the estimator with the whole yielded value
+  on every iteration.
 - **Fixed: block-driven hash transforms count their output map in the rest-bind
   charge.** `Hash#select`, `#reject`, `#transform_keys`, `#transform_values`, and a
   block-conflict `#merge` hold their preallocated output map and sorted-key scratch

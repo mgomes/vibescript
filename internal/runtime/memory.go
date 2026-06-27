@@ -947,9 +947,9 @@ func (c *blockBindCharge) destructureCharge() destructureCharge {
 }
 
 // blockBindsRest reports whether any of the block's parameters destructure a value
-// and collect a rest, the only binding shape AssignDestructure materializes into a
-// fresh, source-sized backing slice. Used to skip the per-call bind charge for the
-// common parameter shapes that allocate nothing fresh.
+// and collect a named rest, the only binding shape AssignDestructure materializes
+// into a fresh, source-sized backing slice. Used to skip the per-call bind charge
+// for the common parameter shapes that allocate nothing fresh.
 func blockBindsRest(blk *Block) bool {
 	for i := range blk.Params {
 		if targetCollectsRest(blk.Params[i].Target) {
@@ -959,13 +959,20 @@ func blockBindsRest(blk *Block) bool {
 	return false
 }
 
+// targetCollectsRest reports whether a destructure target collects a rest into a
+// fresh backing slice. An anonymous rest (a bare "*", whose element Target is nil)
+// is skipped here: assignDestructure discards its window without materializing an
+// array, so charging its bindings would seed the estimator with the whole yielded
+// value for a backing that never exists -- regressing the |(head, *)| fast path
+// over large nested rows. Only a rest element with a non-nil target, or a nested
+// destructure that itself collects one, allocates the slice this charge gates.
 func targetCollectsRest(target Expression) bool {
 	destructure, ok := target.(*DestructureTarget)
 	if !ok {
 		return false
 	}
 	for _, element := range destructure.Elements {
-		if element.Rest {
+		if element.Rest && element.Target != nil {
 			return true
 		}
 		if targetCollectsRest(element.Target) {
