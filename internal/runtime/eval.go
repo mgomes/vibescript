@@ -333,9 +333,12 @@ func (exec *Execution) evalArrayLiteral(e *ArrayLiteral, env *Env) (Value, error
 // entry's key and value payloads incrementally, deduplicating payloads aliased by
 // an environment root.
 func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) {
-	acc := newHashLiteralBuildAccumulator(exec)
-	if err := acc.reserveBacking(len(e.Pairs)); err != nil {
-		return NewNil(), err
+	var acc *hashLiteralBuildAccumulator
+	if exec.memoryQuota > 0 {
+		acc = newHashLiteralBuildAccumulator(exec)
+		if err := acc.reserveBacking(len(e.Pairs)); err != nil {
+			return NewNil(), err
+		}
 	}
 	entries := make(map[string]Value, len(e.Pairs))
 	for _, pair := range e.Pairs {
@@ -351,8 +354,16 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 		if err != nil {
 			return NewNil(), err
 		}
-		if err := acc.addEntry(key, val); err != nil {
-			return NewNil(), err
+		if acc != nil {
+			_, replacing := entries[key]
+			if replacing || acc.replacing {
+				err = acc.replaceEntry(key, val, entries)
+			} else {
+				err = acc.addDistinctEntry(key, val)
+			}
+			if err != nil {
+				return NewNil(), err
+			}
 		}
 		entries[key] = val
 	}

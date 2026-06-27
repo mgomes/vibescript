@@ -653,18 +653,14 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 
 type hashLiteralBuildAccumulator struct {
 	exec          *Execution
+	est           *memoryEstimator
 	base          int
 	retained      int
+	replacing     bool
 	keyPayloads   map[string]int
 	valuePayloads map[string]int
 }
 
-// hashLiteralBuildAccumulator tracks the payload currently retained for each
-// final key. Entry payloads are measured against execution roots, not other
-// literal entries, so replacing a duplicate key can subtract that key's prior
-// charge without undercounting another retained key that shared a backing.
-// Distinct fresh aliases may be over-counted, which is conservative.
-//
 // newHashLiteralBuildAccumulator snapshots the current execution roots for a
 // hash literal. Literal values are plain expression results, not block callbacks
 // that may mutate baseline containers in place, so an alias such as
@@ -676,7 +672,8 @@ func newHashLiteralBuildAccumulator(exec *Execution) *hashLiteralBuildAccumulato
 		return acc
 	}
 
-	acc.base = exec.estimateMemoryUsageBase(newMemoryEstimator())
+	acc.est = newMemoryEstimator()
+	acc.base = exec.estimateMemoryUsageBase(acc.est)
 	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	return acc
 }
@@ -689,9 +686,26 @@ func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
 	return acc.checkQuota()
 }
 
-func (acc *hashLiteralBuildAccumulator) addEntry(key string, val Value) error {
+func (acc *hashLiteralBuildAccumulator) addDistinctEntry(key string, val Value) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
+	}
+
+	acc.retained = saturatingAdd(acc.retained, acc.est.valuePayload(val))
+	acc.retained = saturatingAdd(acc.retained, acc.est.stringPayloadSize(key))
+	return acc.checkQuota()
+}
+
+// replaceEntry switches duplicate-key literals to per-key retained accounting.
+// Distinct-key literals stay on the seeded-estimator fast path; once a duplicate
+// appears, retained charges must become subtractable so overwritten values stop
+// contributing after the replacement.
+func (acc *hashLiteralBuildAccumulator) replaceEntry(key string, val Value, current map[string]Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	if !acc.replacing {
+		acc.rebuildRetainedEntries(current)
 	}
 
 	keyPayload, valuePayload := acc.entryPayloads(key, val)
@@ -713,6 +727,20 @@ func (acc *hashLiteralBuildAccumulator) addEntry(key string, val Value) error {
 	acc.keyPayloads[key] = keyPayload
 	acc.valuePayloads[key] = valuePayload
 	return acc.checkQuota()
+}
+
+func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[string]Value) {
+	acc.retained = 0
+	acc.keyPayloads = make(map[string]int, len(current))
+	acc.valuePayloads = make(map[string]int, len(current))
+	for key, val := range current {
+		keyPayload, valuePayload := acc.entryPayloads(key, val)
+		acc.keyPayloads[key] = keyPayload
+		acc.valuePayloads[key] = valuePayload
+		acc.retained = saturatingAdd(acc.retained, saturatingAdd(keyPayload, valuePayload))
+	}
+	acc.est = nil
+	acc.replacing = true
 }
 
 func (acc *hashLiteralBuildAccumulator) entryPayloads(key string, val Value) (int, int) {
