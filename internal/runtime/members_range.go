@@ -22,7 +22,7 @@ const rangeBuildInitialCap = 64
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var rangeMemberNames = []string{
-	"cover?", "include?", "member?", "first", "last", "size", "exclude_end?", "to_a", "nil?",
+	"cover?", "include?", "member?", "first", "last", "size", "exclude_end?", "to_a",
 	"each", "step", "map", "select", "reject", "find", "reduce", "count", "sum", "min", "max",
 }
 
@@ -40,8 +40,6 @@ func (exec *Execution) rangeMember(obj Value, property string, pos Position) (Va
 		return rangeMemberExcludeEnd(), nil
 	case "to_a":
 		return rangeMemberToArray(), nil
-	case "nil?":
-		return newNilPredicateBuiltin("range"), nil
 	case "each":
 		return rangeMemberEach(), nil
 	case "step":

@@ -136,11 +136,13 @@ quota error instead of allocating an oversized result.
 
 ## Universal Methods
 
-Every core value kind (`nil`, booleans, integers, floats, strings, symbols,
-arrays, hashes, ranges, money, durations, and times) responds to `nil?`:
+Every value responds to `nil?`, including script class instances, classes,
+function values, and enum values:
 
 - `nil? -> bool` – `true` only for `nil`, `false` for every other value
-  (Ruby's `Object#nil?`). Takes no arguments.
+  (Ruby's `Object#nil?`). Takes no arguments. It resolves through the same
+  central fallback as the [object helpers](#object-helpers) below, so a
+  user-defined method named `nil?` keeps precedence.
 
 The scalar kinds whose display form is bounded by their own footprint (`nil`,
 booleans, integers, floats, strings, symbols, money, durations, and times) also
@@ -190,6 +192,7 @@ return:
 These helpers resolve only when the receiver does not already define a member of
 the same name, so a hash key, instance variable, or user-defined method named
 `tap` or `yield_self` keeps precedence.
+
 ## Strings
 
 See [strings.md](strings.md) for worked examples. Indexes and lengths count

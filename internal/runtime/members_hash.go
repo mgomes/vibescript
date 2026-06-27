@@ -15,7 +15,6 @@ import (
 var hashMemberNames = []string{
 	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_with_index", "each_key", "each_value", "default", "default_proc",
 	"merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
-	"nil?",
 	"inspect",
 }
 
@@ -38,8 +37,6 @@ func hashMemberBuiltin(property string) (Value, error) {
 		return hashMemberQuery(property)
 	case "merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "map_with_index", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
-	case "nil?":
-		return newNilPredicateBuiltin("hash"), nil
 	case "inspect":
 		return newInspectBuiltin("hash"), nil
 	default:

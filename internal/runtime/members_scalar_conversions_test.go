@@ -344,6 +344,87 @@ func TestAggregateKindsAnswerNilPredicate(t *testing.T) {
 	}
 }
 
+// TestUniversalFallbackKindsAnswerNilPredicate guards the regression where nil?
+// was only registered on selected per-kind member tables: receivers whose
+// members resolve solely through the universal fallback (script instances,
+// classes, function values, and enum values) raised "unknown member nil?"
+// instead of returning false. nil? now resolves centrally in universalMember, so
+// every non-nil value answers the Ruby-style Object#nil? contract uniformly.
+func TestUniversalFallbackKindsAnswerNilPredicate(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class User
+end
+
+enum Status
+  Draft
+  Published
+end
+
+def helper
+  0
+end
+
+def run_instance
+  User.new.nil?
+end
+
+def run_class
+  User.nil?
+end
+
+def run_function
+  helper.nil?
+end
+
+def run_enum_value
+  Status::Draft.nil?
+end
+
+def run_enum
+  Status.nil?
+end`)
+
+	for _, fn := range []string{"run_instance", "run_class", "run_function", "run_enum_value", "run_enum"} {
+		t.Run(fn, func(t *testing.T) {
+			t.Parallel()
+			got := callFunc(t, script, fn, nil)
+			if got.Kind() != KindBool {
+				t.Fatalf("%s kind = %v, want bool", fn, got.Kind())
+			}
+			if got.Bool() {
+				t.Fatalf("%s = true, want false", fn)
+			}
+		})
+	}
+}
+
+// TestUserDefinedNilPredicateOverridesUniversal confirms a class that defines its
+// own nil? keeps precedence over the universal helper, matching Ruby's
+// overridable Object#nil?. The universal predicate is only a fallback consulted
+// after typed dispatch reports the member unknown.
+func TestUserDefinedNilPredicateOverridesUniversal(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `class Sentinel
+  def nil?
+    true
+  end
+end
+
+def run
+  Sentinel.new.nil?
+end`)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindBool {
+		t.Fatalf("kind = %v, want bool", got.Kind())
+	}
+	if !got.Bool() {
+		t.Fatal("user-defined nil? was shadowed by the universal helper; the override must win")
+	}
+}
+
 func TestTypedBoundaryStringConversion(t *testing.T) {
 	t.Parallel()
 

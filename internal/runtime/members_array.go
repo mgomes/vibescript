@@ -19,7 +19,6 @@ var arrayMemberNames = []string{
 	"take", "drop", "zip", "transpose", "union", "difference",
 	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
 	"min", "max", "minmax", "min_by", "max_by",
-	"nil?",
 	"inspect",
 }
 
@@ -43,8 +42,6 @@ func arrayMemberBuiltin(property string) (Value, error) {
 		return arrayMemberGrouping(property)
 	case "min", "max", "minmax", "min_by", "max_by":
 		return arrayMemberExtrema(property)
-	case "nil?":
-		return newNilPredicateBuiltin("array"), nil
 	case "inspect":
 		return newInspectBuiltin("array"), nil
 	default:

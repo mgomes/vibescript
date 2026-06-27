@@ -17,7 +17,7 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
-		"to_s", "string", "to_i", "to_f", "nil?",
+		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
 	floatMemberNames = []string{
@@ -25,10 +25,10 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?",
 		"nan?", "infinite?", "finite?",
 		"div", "divmod", "fdiv", "remainder", "modulo",
-		"to_s", "string", "to_i", "to_f", "nil?",
+		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
-	moneyMemberNames = []string{"currency", "cents", "amount", "format", "to_s", "string", "nil?"}
+	moneyMemberNames = []string{"currency", "cents", "amount", "format", "to_s", "string"}
 )
 
 var (
@@ -37,12 +37,12 @@ var (
 		"zero?", "positive?", "negative?", "nonzero?", "next", "succ", "pred",
 		"round", "floor", "ceil",
 		"div", "divmod", "fdiv", "remainder", "modulo",
-		"to_s", "string", "to_i", "to_f", "nil?",
+		"to_s", "string", "to_i", "to_f",
 		"inspect",
 	}
 	intBuiltinMembers       = newMemberTable(intBuiltinMemberNames)
 	floatBuiltinMembers     = newMemberTable(floatMemberNames)
-	moneyBuiltinMemberNames = []string{"format", "nil?"}
+	moneyBuiltinMemberNames = []string{"format"}
 	moneyBuiltinMembers     = newMemberTable(moneyBuiltinMemberNames)
 )
 
@@ -271,8 +271,6 @@ func intMemberBuiltin(property string) (Value, error) {
 			}
 			return NewFloat(float64(receiver.Int())), nil
 		}), nil
-	case "nil?":
-		return newNilPredicateBuiltin("int"), nil
 	case "inspect":
 		return newInspectBuiltin("int"), nil
 	default:
@@ -469,8 +467,6 @@ func floatMemberBuiltin(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
-	case "nil?":
-		return newNilPredicateBuiltin("float"), nil
 	case "inspect":
 		return newInspectBuiltin("float"), nil
 	default:
@@ -765,8 +761,6 @@ func moneyMemberBuiltin(property string) (Value, error) {
 		return NewAutoBuiltin("money.format", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return NewString(receiver.Money().String()), nil
 		}), nil
-	case "nil?":
-		return newNilPredicateBuiltin("money"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown money member %s", property)
 	}

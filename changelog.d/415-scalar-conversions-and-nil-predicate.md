@@ -1,7 +1,8 @@
 - **Added: Ruby-style scalar conversion methods and the `nil?` predicate on
-  core values.** Every core value kind (`nil`, booleans, integers, floats,
-  strings, symbols, arrays, hashes, ranges, money, durations, and times) now
-  answers `nil?` (true only for `nil`). The scalar kinds whose display form is
+  core values.** Every value now answers `nil?` (true only for `nil`),
+  including script class instances, classes, function values, and enum values;
+  it resolves through the universal `Object#nil?` fallback, so a user-defined
+  `nil?` keeps precedence. The scalar kinds whose display form is
   bounded by their own footprint (`nil`, booleans, integers, floats, strings,
   symbols, money, durations, and times) also answer `to_s` and the documented
   `.string` conversion idiom from `docs/typing.md`. Arrays, hashes, and ranges

@@ -25,7 +25,7 @@ var stringMemberNames = []string{
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "codepoints", "each_char", "each_line", "each_byte", "each_codepoint", "template",
 	"center", "ljust", "rjust",
 	"inspect",
-	"to_sym", "intern", "to_s", "string", "to_i", "to_f", "nil?",
+	"to_sym", "intern", "to_s", "string", "to_i", "to_f",
 }
 
 var stringBuiltinMembers = newMemberTable(stringMemberNames)
@@ -51,8 +51,6 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return newInspectBuiltin("string"), nil
 	case "to_sym", "intern", "to_s", "string", "to_i", "to_f":
 		return stringMemberConversions(property)
-	case "nil?":
-		return newNilPredicateBuiltin("string"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
 	}

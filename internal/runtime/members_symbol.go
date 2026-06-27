@@ -7,7 +7,7 @@ import "fmt"
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every listed
 // name resolves.
 var (
-	symbolMemberNames    = []string{"inspect", "id2name", "to_s", "string", "to_sym", "nil?"}
+	symbolMemberNames    = []string{"inspect", "id2name", "to_s", "string", "to_sym"}
 	symbolBuiltinMembers = newMemberTable(symbolMemberNames)
 )
 
@@ -30,8 +30,6 @@ func symbolMemberBuiltin(property string) (Value, error) {
 			}
 			return NewString(receiver.String()), nil
 		}), nil
-	case "nil?":
-		return newNilPredicateBuiltin("symbol"), nil
 	case "to_sym":
 		return NewAutoBuiltin("symbol.to_sym", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if err := requireNullaryCall("symbol.to_sym", args, kwargs, block); err != nil {
