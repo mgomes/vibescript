@@ -134,6 +134,29 @@ render as `<cycle>`. The rendered length is charged against the sandbox memory
 quota before the string is built, so inspecting a huge composite fails with a
 quota error instead of allocating an oversized result.
 
+## Object Helpers
+
+Every core value kind responds to the block-yielding helpers `tap` and
+`yield_self`. Both require a block, take no positional or keyword arguments, and
+pass the receiver as the block's single argument. They differ only in what they
+return:
+
+- `tap { |value| } -> receiver` – yields the receiver, ignores the block's
+  result, and returns the receiver. Use it to thread a side effect (such as
+  logging) through a pipeline without changing the value.
+- `yield_self { |value| } -> block result` – yields the receiver and returns the
+  block's result, so it rewrites a value inline.
+
+```vibe
+"ada".tap { |name| name.upcase }        # "ada" (block result discarded)
+"ada".yield_self { |name| name.upcase } # "ADA"
+3.yield_self { |n| n * 100 }            # 300
+```
+
+These helpers resolve only when the receiver does not already define a member of
+the same name, so a hash key, instance variable, or user-defined method named
+`tap` or `yield_self` keeps precedence.
+
 ## Strings
 
 See [strings.md](strings.md) for worked examples. Indexes and lengths count
@@ -320,6 +343,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
 ### Iteration
 
 - `each { |item| } -> array` – yield each element; returns the receiver.
+- `each_with_index { |item, index| } -> array` – yield each element with its
+  0-based index; returns the receiver. Takes no arguments.
 - `each_slice(n) { |slice| } -> nil` – yield non-overlapping slices of length
   `n` (the trailing slice may be shorter); `n` must be a positive integer.
 - `each_cons(n) { |window| } -> nil` – yield each sliding window of length `n`;
@@ -330,6 +355,8 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   non-positive `n` yields nothing. Omitting `n` or passing `nil` cycles forever,
   bounded by the step quota and context cancellation.
 - `map { |item| } -> array` – new array of block results.
+- `map_with_index { |item, index| } -> array` – new array of block results,
+  passing each element's 0-based index to the block. Takes no arguments.
 - `filter_map { |item| } -> array` – block results that are truthy; fuses `map`
   with a truthiness filter, dropping falsy returns.
 - `select { |item| } -> array` – elements for which the block is truthy.
@@ -374,8 +401,12 @@ See [arrays.md](arrays.md) for worked examples. Arrays also support `+`
   `rindex { |item| } -> int | nil` – last index of `value` at or before
   `offset`, or the last index whose block is truthy. Pass a value or a block,
   never both.
-- `fetch(index, default = nil) -> value` – element at `index`, or
-  `default`/`nil` when out of bounds.
+- `fetch(index, default) -> value` / `fetch(index) { |index| } -> value` –
+  element at `index` (negative counts from the end). When `index` is out of
+  bounds, evaluates the block with the requested index if a block is given,
+  otherwise returns the `default` argument if given, otherwise raises `index
+  ... outside of array bounds`. When both a `default` and a block are supplied,
+  the block supersedes the default and is evaluated on a miss, matching Ruby.
 - `dig(*path) -> value | nil` – nested lookup following `path`. Each component
   descends one level: an integer index into an array or a symbol/string key
   into a hash, so a single `dig` can traverse mixed array/hash data. `nil` when
@@ -501,8 +532,12 @@ methods.
 
 ### Access
 
-- `fetch(key, default = nil) -> value` – value for `key`, or `default`/`nil`
-  when missing.
+- `fetch(key, default) -> value` / `fetch(key) { |key| } -> value` – value for
+  `key`. When `key` is missing, evaluates the block with the requested key if a
+  block is given, otherwise returns the `default` argument if given, otherwise
+  raises `key not found`. When both a `default` and a block are supplied, the
+  block supersedes the default and is evaluated on a miss, matching Ruby. Use
+  `[]` or `dig` when a missing key should yield `nil`.
 - `fetch_values(*keys) { |key| } -> array` – values for `keys` in requested
   order. Raises `key not found` for any missing key; when a block is given it is
   called with each missing key and its result is used instead.
@@ -516,8 +551,14 @@ methods.
 ### Iteration
 
 - `each { |key, value| } -> hash` – yield each pair; returns the receiver.
+- `each_with_index { |pair, index| } -> hash` – yield each `[key, value]` pair
+  with its 0-based index in sorted key order, matching Ruby's
+  `Hash#each_with_index`; returns the receiver. Takes no arguments.
 - `each_key { |key| } -> hash` – yield each key.
 - `each_value { |value| } -> hash` – yield each value.
+- `map_with_index { |pair, index| } -> array` – new array of block results,
+  yielding each `[key, value]` pair with its 0-based index in sorted key order.
+  Takes no arguments.
 
 ### Transform and Filter
 

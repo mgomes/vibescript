@@ -394,6 +394,14 @@ type arrayBuildAccumulator struct {
 	est     *memoryEstimator
 	base    int
 	payload int
+
+	// Call roots retained so checkTransient can re-seed a throwaway estimator
+	// with the same baseline the build was snapshotted against, deduplicating a
+	// transient yielded value against memory already charged in base.
+	receiver Value
+	args     []Value
+	kwargs   map[string]Value
+	block    Value
 }
 
 // newArrayBuildAccumulator snapshots the execution's current live memory —
@@ -408,7 +416,13 @@ type arrayBuildAccumulator struct {
 // reflects what checkCallMemoryRoots charged before the call: a nil receiver,
 // nil kwargs, and nil block are skipped, mirroring estimateMemoryUsageForCallRoots.
 func newArrayBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *arrayBuildAccumulator {
-	acc := &arrayBuildAccumulator{exec: exec}
+	acc := &arrayBuildAccumulator{
+		exec:     exec,
+		receiver: receiver,
+		args:     args,
+		kwargs:   kwargs,
+		block:    block,
+	}
 	if exec.memoryQuota <= 0 {
 		return acc
 	}
@@ -471,6 +485,50 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
 
 	if used := acc.projected(backingCap); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
+// checkTransient rejects the build when a freshly allocated value yielded to the
+// block (and live only for that call) would push the peak footprint over the
+// quota. Builders that synthesize a per-iteration argument the result does not
+// retain — hash.map_with_index allocates a fresh [key, value] pair to yield —
+// use it so the live pair is charged alongside the accumulating result, matching
+// how each_with_index charges its yielded pair before invoking the block.
+//
+// The transient is measured against a throwaway estimator re-seeded with the
+// build's call roots, so memory already counted in base (the receiver value the
+// pair wraps) deduplicates away and only the transient's fresh allocation is
+// added. Using a throwaway estimator rather than the persistent results-only one
+// keeps the transient's backing out of the seen-set: it is freed before the next
+// iteration, and recording it could let a later value reusing that address be
+// dedup'd to nothing. backingCap is the result backing's current capacity so the
+// peak charges base, the result slots, the payloads so far, and the live
+// transient together.
+func (acc *arrayBuildAccumulator) checkTransient(transient Value, backingCap int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := acc.exec.memoryEstimatorForCheck()
+	defer est.reset()
+	acc.exec.estimateMemoryUsageBase(est)
+	if acc.receiver.Kind() != KindNil {
+		est.value(acc.receiver)
+	}
+	for _, arg := range acc.args {
+		est.value(arg)
+	}
+	for _, kwarg := range acc.kwargs {
+		est.value(kwarg)
+	}
+	if !acc.block.IsNil() {
+		est.value(acc.block)
+	}
+
+	transientBytes := est.value(transient)
+	if used := saturatingAdd(acc.projected(backingCap), transientBytes); used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil

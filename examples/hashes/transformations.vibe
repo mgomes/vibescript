@@ -2,11 +2,8 @@
 
 def rename_keys(record, mapping)
   record.transform_keys do |key|
-    mapped = mapping.fetch(key)
-    if mapped == nil
+    mapping.fetch(key) do
       key
-    else
-      mapped
     end
   end
 end
