@@ -110,6 +110,42 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 			want:   []ast.TokenType{ast.TokenReturn, ast.TokenSymbol},
 		},
 		{
+			// A parenless call passing a quoted symbol: the colon follows an
+			// identifier that can end an expression, but the whitespace before
+			// it rules out a label separator, so it introduces a symbol.
+			name:   "parenless_call_argument_is_symbol",
+			source: `emit :"foo-bar"`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenSymbol},
+		},
+		{
+			// The same parenless-call form on a method receiver.
+			name:   "parenless_method_call_argument_is_symbol",
+			source: `obj.emit :"foo-bar"`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenDot, ast.TokenIdent, ast.TokenSymbol},
+		},
+		{
+			// A value that ends an expression but cannot name a label still
+			// reads an abutting colon-quote as a symbol, matching Ruby.
+			name:   "value_abutting_colon_quote_is_symbol",
+			source: `foo():"x"`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenLParen, ast.TokenRParen, ast.TokenSymbol},
+		},
+		{
+			// A line-leading ternary alternate whose value abuts the colon keeps
+			// the colon as the ternary separator across the line break, rather
+			// than restarting the line as a quoted symbol.
+			name:   "line_leading_ternary_alternate_stays_separator",
+			source: "flag ?\n  1\n  :\"no\"",
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenQuestion, ast.TokenInt, ast.TokenColon, ast.TokenString},
+		},
+		{
+			// An abutting ternary separator (no space before the colon) is still
+			// a separator while a ternary is open.
+			name:   "abutting_ternary_alternate_stays_separator",
+			source: `flag ? 1:"no"`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenQuestion, ast.TokenInt, ast.TokenColon, ast.TokenString},
+		},
+		{
 			// A label-capable keyword whose colon abuts it (no space) is a label
 			// separator, not a quoted-symbol introducer, so {rescue:"x"} keeps
 			// parsing as a string-valued label.
@@ -266,6 +302,83 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 			t.Fatalf("ternary alternate = %#v, want StringLiteral(no)", cond.Alternate)
 		}
 	})
+}
+
+// TestParserParenlessCallQuotedSymbolArgument verifies that a quoted symbol
+// passed to a parenless call parses as a single positional symbol argument. The
+// colon follows an identifier that can end an expression, so an
+// expression-end-only test would misread it as a label separator; the space
+// before the colon is what distinguishes the argument symbol from a label.
+func TestParserParenlessCallQuotedSymbolArgument(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   ast.Expression
+	}{
+		{
+			name:   "bare_receiver",
+			source: "def run\n  emit :\"foo-bar\"\nend",
+			want: &ast.CallExpr{
+				Callee: &ast.Identifier{Name: "emit"},
+				Args:   []ast.Expression{&ast.SymbolLiteral{Name: "foo-bar"}},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+		{
+			name:   "method_receiver",
+			source: "def run\n  obj.emit :\"foo-bar\"\nend",
+			want: &ast.CallExpr{
+				Callee: &ast.MemberExpr{
+					Object:   &ast.Identifier{Name: "obj"},
+					Property: "emit",
+				},
+				Args:   []ast.Expression{&ast.SymbolLiteral{Name: "foo-bar"}},
+				KwArgs: []ast.KeywordArg{},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, errs := parseSource(t, tc.source)
+			if len(errs) != 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+			want := []ast.Statement{&ast.ExprStmt{Expr: tc.want}}
+			if diff := cmp.Diff(want, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestParserLineLeadingTernaryStringAlternate verifies that a multiline ternary
+// whose alternate begins a line with a quoted string and no space after the
+// colon keeps the colon as the ternary separator, rather than restarting the
+// line as a quoted symbol literal.
+func TestParserLineLeadingTernaryStringAlternate(t *testing.T) {
+	t.Parallel()
+
+	source := "def run\n  flag ?\n    1\n  :\"no\"\nend"
+	got, errs := parseSource(t, source)
+	if len(errs) != 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+	body := parsedFunctionBody(t, got)
+	cond, ok := body[0].(*ast.ExprStmt).Expr.(*ast.ConditionalExpr)
+	if !ok {
+		t.Fatalf("top expression = %T, want *ast.ConditionalExpr", body[0].(*ast.ExprStmt).Expr)
+	}
+	if _, ok := cond.Consequent.(*ast.IntegerLiteral); !ok {
+		t.Fatalf("ternary consequent = %#v, want IntegerLiteral", cond.Consequent)
+	}
+	str, ok := cond.Alternate.(*ast.StringLiteral)
+	if !ok || str.Value != "no" {
+		t.Fatalf("ternary alternate = %#v, want StringLiteral(no)", cond.Alternate)
+	}
 }
 
 // TestParserQuotedSymbolLiterals verifies that quoted symbols parse into the

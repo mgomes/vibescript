@@ -32,6 +32,15 @@ type lexer struct {
 
 	ch        rune
 	lastToken ast.Token
+
+	// ternaryDepth counts the ternary `?` operators whose separator `:` has
+	// not yet been scanned. A `:` that sits in expression-end position while
+	// this is positive is the pending ternary separator rather than a quoted
+	// symbol or label introducer. The lexer reads ahead of the parser, but
+	// this counter only relates `?` tokens to the colons the lexer itself
+	// scans, so it stays self-consistent; the parser captures and restores it
+	// with the rest of the lexer value during speculative parsing.
+	ternaryDepth int
 }
 
 func newLexer(input string) *lexer {
@@ -235,7 +244,11 @@ func (l *lexer) scanToken() ast.Token {
 			l.readRune()
 			return tok
 		}
-		if quote := l.peekRune(); (quote == '"' || quote == '\'') && l.colonStartsQuotedSymbol() {
+		closesTernary := l.colonClosesTernary()
+		if closesTernary {
+			l.ternaryDepth--
+		}
+		if quote := l.peekRune(); (quote == '"' || quote == '\'') && !closesTernary && l.colonStartsQuotedSymbol() {
 			return l.scanQuotedSymbol(tok)
 		}
 		if ast.IsIdentifierRune(l.peekRune()) {
@@ -356,6 +369,7 @@ func (l *lexer) scanToken() ast.Token {
 		}
 	case '?':
 		tok = l.makeToken(ast.TokenQuestion, "?")
+		l.ternaryDepth++
 		l.readRune()
 	case '|':
 		if l.peekRune() == '|' {
@@ -1010,36 +1024,37 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 	return !canEndExpressionToken(l.lastToken.Type)
 }
 
+// colonClosesTernary reports whether the colon currently under l.ch is the
+// separator of an open ternary expression rather than the start of a symbol or
+// label. The ternary separator follows the consequent, so it sits in
+// expression-end position while a ternary `?` is still pending. Resolving this
+// purely from the open-ternary count and the previous token keeps both the
+// same-line form (flag ? 1 :"no") and the line-leading multiline form
+// (flag ?\n  1\n  :"no") parsing as separator + value, where Ruby's lexer would
+// otherwise read the colon-quote as a symbol. The consequent's own leading
+// symbol (flag ? :"a" : :"b") is in expression-start position, so it is not
+// mistaken for the separator.
+func (l *lexer) colonClosesTernary() bool {
+	return l.ternaryDepth > 0 && canEndExpressionToken(l.lastToken.Type)
+}
+
 // colonStartsQuotedSymbol reports whether a colon followed by a quote should be
-// lexed as a quoted symbol literal (:"foo") rather than a label separator that
-// happens to precede a quoted string. A colon introduces a symbol only in
-// expression-start position; when it follows a token that can end an expression
-// it is the hash, keyword-argument, or ternary separator, and the trailing quote
-// belongs to a separate string value. A colon that begins a logical line (only
-// leading whitespace before it) is always expression-start because lastToken
-// still holds the previous line's final token; Ruby likewise reads a
-// line-leading :"..." as a symbol, not a separator. This mirrors how
-// canStartPercentArrayLiteral disambiguates %w[...] from the modulo operator and
-// keeps previously valid no-space label forms like {name:"Ada"},
-// call(name:"Ada"), and flag ? 1 :"no" parsing as separator + string.
+// lexed as a quoted symbol literal (:"foo") rather than a hash or keyword-argument
+// label separator that happens to precede a quoted string. It is consulted only
+// after colonClosesTernary has ruled out the ternary separator.
 //
-// Reserved keywords that can also name a label (begin, rescue, return, and the
-// rest accepted by isLabelNameToken) are a special case: their token types do
-// not end an expression, so the expression-end test alone would treat a colon
-// after them as a symbol introducer and break forms like {rescue:"x"} and
-// call(begin:"x"). Ruby disambiguates these by the space before the colon -- a
-// label colon abuts its name (rescue:"x") while a keyword followed by a symbol
-// has a space (return :"x"). When the colon abuts a label-capable keyword it is
-// therefore a label separator; a space restores the keyword + quoted-symbol
-// reading.
+// A label separator abuts the name it labels with no intervening whitespace
+// ({name:"Ada"}, call(name:"Ada"), {rescue:"x"}). When whitespace (including a
+// line break) precedes the colon, it is never a label separator, so forms like
+// the parenless call argument emit :"foo-bar" and the keyword + symbol return
+// :"x" read as quoted symbols. When the colon abuts the previous token, it is a
+// label separator only when that token can name a label; otherwise (a value such
+// as a closing paren or integer) Ruby still reads the colon-quote as a symbol.
 func (l *lexer) colonStartsQuotedSymbol() bool {
-	if l.atLineLeadingWhitespace() {
+	if !l.colonAbutsPreviousToken() {
 		return true
 	}
-	if isLabelNameToken(l.lastToken) && l.colonAbutsPreviousToken() {
-		return false
-	}
-	return !canEndExpressionToken(l.lastToken.Type)
+	return !isLabelNameToken(l.lastToken)
 }
 
 // colonAbutsPreviousToken reports whether the colon currently under l.ch
