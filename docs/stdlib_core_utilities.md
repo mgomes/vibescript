@@ -1145,6 +1145,8 @@ Global functions and namespaces available in every script. See
   units, e.g. `money_cents(2550, "USD")`.
 - `now -> string` – current UTC instant as an RFC3339 string (use `Time.now`
   for a `time` value).
+- `sleep(seconds) -> int` – pause for non-negative numeric seconds, honoring
+  host context cancellation and deadlines.
 - `uuid -> string` – RFC 9562 version 7 UUID.
 - `random_id(length = 16) -> string` – unbiased alphanumeric token; `length`
   must be between 1 and 1024.

@@ -82,6 +82,58 @@ func builtinNow(exec *Execution, receiver Value, args []Value, kwargs map[string
 	return NewString(time.Now().UTC().Format(time.RFC3339)), nil
 }
 
+func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) != 1 {
+		return NewNil(), fmt.Errorf("sleep expects one duration argument")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("sleep does not accept keyword arguments")
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("sleep does not accept blocks")
+	}
+
+	seconds, err := valueToSleepSeconds(args[0])
+	if err != nil {
+		return NewNil(), err
+	}
+	if seconds <= 0 {
+		if err := exec.checkContext(); err != nil {
+			return NewNil(), err
+		}
+		return NewInt(0), nil
+	}
+
+	duration := time.Duration(seconds * float64(time.Second))
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return NewInt(int64(duration / time.Second)), nil
+	case <-exec.Context().Done():
+		return NewNil(), exec.Context().Err()
+	}
+}
+
+func valueToSleepSeconds(val Value) (float64, error) {
+	switch val.Kind() {
+	case KindInt:
+		seconds := float64(val.Int())
+		if seconds < 0 {
+			return 0, fmt.Errorf("sleep duration must be non-negative")
+		}
+		return seconds, nil
+	case KindFloat:
+		seconds := val.Float()
+		if seconds < 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+			return 0, fmt.Errorf("sleep duration must be finite and non-negative")
+		}
+		return seconds, nil
+	default:
+		return 0, fmt.Errorf("sleep duration must be numeric")
+	}
+}
+
 func builtinUUID(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) > 0 {
 		return NewNil(), fmt.Errorf("uuid does not take arguments")
