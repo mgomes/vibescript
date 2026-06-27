@@ -120,18 +120,25 @@ quota error instead of allocating an oversized result.
 ## Universal Methods
 
 Every core value kind (`nil`, booleans, integers, floats, strings, symbols,
-arrays, hashes, ranges, money, durations, and times) responds to these
-Ruby-style methods in addition to `inspect`:
+arrays, hashes, ranges, money, durations, and times) responds to `nil?`:
 
 - `nil? -> bool` – `true` only for `nil`, `false` for every other value
-  (Ruby's `Object#nil?`).
+  (Ruby's `Object#nil?`). Takes no arguments.
+
+The scalar kinds whose display form is bounded by their own footprint (`nil`,
+booleans, integers, floats, strings, symbols, money, durations, and times) also
+respond to `to_s` and `string`:
+
 - `to_s -> string` – the value's display rendering (the `to_s` form used by
   string interpolation). For strings it returns the receiver; for symbols,
   durations, and times it matches the kind-specific `to_s` documented below.
 - `string -> string` – alias for `to_s`; the documented Vibescript conversion
   idiom used in [typing.md](typing.md) (for example `id.string`).
 
-All three take no arguments. Strings additionally parse numeric text with
+Both take no arguments. Arrays, hashes, and ranges deliberately do **not**
+respond to `to_s`/`string`: their rendering can be arbitrarily large, so they
+expose only `inspect`, which projects the rendered length against the sandbox
+memory quota before allocating. Strings additionally parse numeric text with
 `to_i`/`to_f` (see [Conversion](#conversion)), and integers and floats convert
 between numeric kinds with `to_i`/`to_f` (see [Integers](#integers) and
 [Floats](#floats)).
@@ -139,6 +146,7 @@ between numeric kinds with `to_i`/`to_f` (see [Integers](#integers) and
 ```vibe
 42.nil?     # false
 nil.nil?    # true
+[1, 2].nil? # false
 42.string   # "42"
 :ok.to_s    # "ok"
 ```
