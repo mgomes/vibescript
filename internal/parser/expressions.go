@@ -1555,6 +1555,7 @@ func hashKeyName(key ast.Expression) string {
 func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 	pos := p.curToken.Pos
 	params := []ast.Param{}
+	hasExplicitParams := false
 	stopToken := ast.TokenEnd
 	stopName := "end"
 	if p.curToken.Type == ast.TokenLBrace {
@@ -1563,12 +1564,17 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 	}
 
 	p.nextToken()
-	if p.curToken.Type == ast.TokenPipe {
+	switch p.curToken.Type {
+	case ast.TokenPipe:
+		hasExplicitParams = true
 		var ok bool
 		params, ok = p.parseBlockParameters()
 		if !ok {
 			return nil
 		}
+		p.nextToken()
+	case ast.TokenOr:
+		hasExplicitParams = true
 		p.nextToken()
 	}
 
@@ -1580,7 +1586,7 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 	}
 
 	implicitParams := []string(nil)
-	if len(params) == 0 {
+	if !hasExplicitParams {
 		implicitParams = inferImplicitBlockParams(body)
 	}
 

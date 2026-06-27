@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"math"
 	"testing"
 )
 
@@ -83,6 +84,50 @@ end`)
 	if reads != 1 {
 		t.Fatalf("unseeded rand entropy reads = %d, want 1", reads)
 	}
+}
+
+func TestKernelRandSeededWideRangesAvoidEntropy(t *testing.T) {
+	t.Parallel()
+
+	reads := 0
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(_ context.Context, p []byte) (int, error) {
+			reads++
+			for i := range p {
+				p[i] = 0xff
+			}
+			return len(p), nil
+		},
+	})
+
+	ranges := []Range{
+		{Start: math.MinInt64, End: math.MaxInt64},
+		{Start: 0, End: math.MaxInt64},
+	}
+	for _, rng := range ranges {
+		first := seededRandRange(t, engine, rng)
+		second := seededRandRange(t, engine, rng)
+		if !first.Equal(second) {
+			t.Fatalf("seeded rand(%s) = %#v then %#v, want deterministic value", NewRange(rng).String(), first, second)
+		}
+	}
+	if reads != 0 {
+		t.Fatalf("seeded wide rand entropy reads = %d, want 0", reads)
+	}
+}
+
+func seededRandRange(t *testing.T, engine *Engine, rng Range) Value {
+	t.Helper()
+
+	exec := &Execution{engine: engine}
+	if _, err := builtinSrand(exec, NewNil(), []Value{NewInt(7)}, nil, NewNil()); err != nil {
+		t.Fatalf("srand failed: %v", err)
+	}
+	got, err := builtinRand(exec, NewNil(), []Value{NewRange(rng)}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("rand(%s) failed: %v", NewRange(rng).String(), err)
+	}
+	return got
 }
 
 func TestKernelRandHonorsRandomSourceAndCancellation(t *testing.T) {

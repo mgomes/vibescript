@@ -35,6 +35,16 @@ func TestParserInfersImplicitBlockParams(t *testing.T) {
 			want:   nil,
 		},
 		{
+			name:   "explicit_empty_brace_params_disable_implicit",
+			source: `def run; [1].map { || _1 }; end`,
+			want:   nil,
+		},
+		{
+			name:   "explicit_empty_do_params_disable_implicit",
+			source: `def run; [1].map do || _1 end; end`,
+			want:   nil,
+		},
+		{
 			name:   "it_callee_stays_callable",
 			source: `def run; [1].map { it(_1) }; end`,
 			want:   []string{"_1"},

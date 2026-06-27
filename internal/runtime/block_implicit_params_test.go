@@ -32,6 +32,16 @@ end`)
 	compareArrays(t, got, []Value{NewInt(3), NewInt(6), NewInt(9)})
 }
 
+func TestExplicitEmptyBlockParamsDisableImplicitParams(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  [1].map { || _1 }
+end`)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "undefined variable _1")
+}
+
 func TestImplicitBlockItCalleeStaysCallable(t *testing.T) {
 	t.Parallel()
 

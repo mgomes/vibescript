@@ -182,7 +182,7 @@ func (exec *Execution) randomRangeValue(rng Range) (Value, error) {
 	var offset uint64
 	var err error
 	if size == 0 {
-		offset, err = exec.randomUint64()
+		offset, err = exec.randomUint64ForRand()
 	} else {
 		offset, err = exec.randomInt64n(size)
 	}
@@ -201,7 +201,7 @@ func (exec *Execution) randomInt64n(limit uint64) (uint64, error) {
 	}
 	rejectAt := ^uint64(0) - (^uint64(0) % limit)
 	for {
-		raw, err := exec.randomUint64()
+		raw, err := exec.randomUint64ForRand()
 		if err != nil {
 			return 0, err
 		}
@@ -209,6 +209,13 @@ func (exec *Execution) randomInt64n(limit uint64) (uint64, error) {
 			return raw % limit, nil
 		}
 	}
+}
+
+func (exec *Execution) randomUint64ForRand() (uint64, error) {
+	if exec.randSource != nil {
+		return exec.randSource.Uint64(), nil
+	}
+	return exec.randomUint64()
 }
 
 func (exec *Execution) randomUint64() (uint64, error) {
