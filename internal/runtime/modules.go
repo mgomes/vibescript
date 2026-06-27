@@ -517,7 +517,7 @@ func rawRelativePrefix(raw string) string {
 }
 
 func (e *Engine) readModuleSource(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := openModuleSource(path)
 	if err != nil {
 		return nil, fmt.Errorf("open module source %s: %w", path, err)
 	}

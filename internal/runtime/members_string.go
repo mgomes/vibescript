@@ -1386,9 +1386,6 @@ func validateLiteralReplacement(method, text, pattern, replacement string, all b
 	if len(pattern) > maxRegexInputBytes {
 		return false, fmt.Errorf("%s pattern exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
-	if len(replacement) > maxRegexInputBytes {
-		return false, fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
-	}
 	count := 0
 	if pattern == "" {
 		count = 1
@@ -1402,6 +1399,9 @@ func validateLiteralReplacement(method, text, pattern, replacement string, all b
 	}
 	if count == 0 {
 		return false, nil
+	}
+	if len(replacement) > maxRegexInputBytes {
+		return false, fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	outputLen := len(text)
 	consumed := saturatingMul(count, len(pattern))

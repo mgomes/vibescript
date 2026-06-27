@@ -234,6 +234,14 @@ end
 def sub_run(text, replacement)
   text.sub("", replacement).size
 end
+
+def no_match_gsub(text, replacement)
+  text.gsub("z", replacement)
+end
+
+def no_match_gsub_bang(text, replacement)
+  text.gsub!("z", replacement)
+end
 `)
 
 	requireCallErrorContains(t, script, "gsub_run", []Value{
@@ -244,6 +252,16 @@ end
 		NewString("abc"),
 		NewString(strings.Repeat("x", maxRegexInputBytes+1)),
 	}, CallOptions{}, "string.sub replacement exceeds limit")
+
+	huge := NewString(strings.Repeat("x", maxRegexInputBytes+1))
+	got := callFunc(t, script, "no_match_gsub", []Value{NewString("abc"), huge})
+	if got.Kind() != KindString || got.String() != "abc" {
+		t.Fatalf("no-match gsub with huge replacement = %#v, want original string", got)
+	}
+	got = callFunc(t, script, "no_match_gsub_bang", []Value{NewString("abc"), huge})
+	if got.Kind() != KindNil {
+		t.Fatalf("no-match gsub! with huge replacement = %#v, want nil", got)
+	}
 }
 
 // TestStringSubGsubMixedReplacementAndBlock verifies that supplying both a
