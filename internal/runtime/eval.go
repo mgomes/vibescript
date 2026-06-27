@@ -2421,12 +2421,19 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 		if err != nil {
 			return NewNil(), false, err
 		}
+		if val.Kind() != KindString {
+			message := "exception class/object expected"
+			if val.Kind() == KindNil {
+				message = "exception object expected"
+			}
+			return NewNil(), false, exec.newRuntimeErrorWithType(runtimeErrorTypeType, message, stmt.Pos())
+		}
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "%s", val.String())
 	}
 
 	err := exec.currentRescuedError()
 	if err == nil {
-		return NewNil(), false, exec.errorAt(stmt.Pos(), "raise used outside of rescue")
+		return NewNil(), false, exec.errorAt(stmt.Pos(), "")
 	}
 	return NewNil(), false, err
 }

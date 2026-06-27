@@ -1408,6 +1408,57 @@ func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "random source failed")
 }
 
+func TestRandomIdentifierBuiltinsHonorCanceledContextBeforeEntropyRead(t *testing.T) {
+	t.Parallel()
+
+	reads := 0
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(context.Context, []byte) (int, error) {
+			reads++
+			return 0, nil
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, engine: engine}
+
+	_, err := builtinUUID(exec, NewNil(), nil, nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+	if reads != 0 {
+		t.Fatalf("uuid entropy reads = %d, want 0 after pre-canceled context", reads)
+	}
+
+	_, err = builtinRandomID(exec, NewNil(), []Value{NewInt(1)}, nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+	if reads != 0 {
+		t.Fatalf("random_id entropy reads = %d, want 0 after pre-canceled context", reads)
+	}
+}
+
+func TestRandomIDHonorsCancellationBetweenRetryReads(t *testing.T) {
+	t.Parallel()
+
+	var cancel context.CancelFunc
+	reads := 0
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(ctx context.Context, p []byte) (int, error) {
+			reads++
+			p[0] = 0xff
+			cancel()
+			return 1, nil
+		},
+	})
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	cancel = cancelFunc
+	exec := &Execution{ctx: ctx, engine: engine}
+
+	_, err := builtinRandomID(exec, NewNil(), []Value{NewInt(1)}, nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+	if reads != 1 {
+		t.Fatalf("random_id entropy reads = %d, want cancellation before retry read", reads)
+	}
+}
+
 func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{RandomReader: bytes.NewReader([]byte{248, 1})}, `

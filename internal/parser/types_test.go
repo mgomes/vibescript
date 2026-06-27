@@ -159,6 +159,47 @@ end`
 	}
 }
 
+func TestParserTypeShapeAllowsKeywordFieldNames(t *testing.T) {
+	t.Parallel()
+	source := `def run(payload: { class: string, return: int, begin: bool, rescue: string, ensure: string, raise: string, true: bool, false: bool, nil: string, nested: { export: bool, if: string } })
+  payload
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("expected no parse errors, got %v", errs)
+	}
+
+	fn, ok := got.Statements[0].(*ast.FunctionStmt)
+	if !ok {
+		t.Fatalf("expected function statement, got %T", got.Statements[0])
+	}
+	wantType := &ast.TypeExpr{
+		Kind: ast.TypeShape,
+		Shape: map[string]*ast.TypeExpr{
+			"begin":  {Name: "bool", Kind: ast.TypeBool},
+			"class":  {Name: "string", Kind: ast.TypeString},
+			"ensure": {Name: "string", Kind: ast.TypeString},
+			"false":  {Name: "bool", Kind: ast.TypeBool},
+			"nil":    {Name: "string", Kind: ast.TypeString},
+			"raise":  {Name: "string", Kind: ast.TypeString},
+			"rescue": {Name: "string", Kind: ast.TypeString},
+			"return": {Name: "int", Kind: ast.TypeInt},
+			"true":   {Name: "bool", Kind: ast.TypeBool},
+			"nested": {
+				Kind: ast.TypeShape,
+				Shape: map[string]*ast.TypeExpr{
+					"export": {Name: "bool", Kind: ast.TypeBool},
+					"if":     {Name: "string", Kind: ast.TypeString},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantType, fn.Params[0].Type, astCmpOpts); diff != "" {
+		t.Fatalf("payload type mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserTypeSyntaxTypedBlockParameters(t *testing.T) {
 	t.Parallel()
 	source := `def run(values)

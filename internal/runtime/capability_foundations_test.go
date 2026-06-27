@@ -2,8 +2,20 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
+
+type cancelingCapabilityAdapter struct {
+	cancel context.CancelFunc
+}
+
+func (adapter cancelingCapabilityAdapter) Bind(CapabilityBinding) (map[string]Value, error) {
+	adapter.cancel()
+	return map[string]Value{
+		"cap": NewString("bound after cancel"),
+	}, nil
+}
 
 func TestCapabilityFoundationsMixedAdapters(t *testing.T) {
 	t.Parallel()
@@ -55,6 +67,23 @@ end`)
 	}
 	if jobs.enqueueCalls[0].Payload["id"].String() != "player-1" {
 		t.Fatalf("unexpected enqueue payload: %#v", jobs.enqueueCalls[0].Payload)
+	}
+}
+
+func TestCapabilityBindHonorsCancellationBeforeRebindingGlobals(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  cap
+end
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := script.Call(ctx, "run", nil, CallOptions{Capabilities: []CapabilityAdapter{
+		cancelingCapabilityAdapter{cancel: cancel},
+	}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call with capability canceled during Bind = %v, want context.Canceled", err)
 	}
 }
 

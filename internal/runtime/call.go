@@ -631,7 +631,13 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 		if err != nil {
 			return fmt.Errorf("bind capability: %w", err)
 		}
+		if err := exec.checkContext(); err != nil {
+			return err
+		}
 		for name, val := range globals {
+			if err := exec.checkContext(); err != nil {
+				return err
+			}
 			rebound := rebinder.rebindValue(val)
 			root.Define(name, rebound)
 			if len(scope.contracts) > 0 {

@@ -478,6 +478,29 @@ end`,
 	}
 }
 
+func TestScriptCallChecksCanceledContextBeforeFunctionSuggestion(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  1
+end
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := script.Call(ctx, "missing_run", nil, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call missing function under canceled context = %v, want context.Canceled", err)
+	}
+
+	lazyGlobals := newTaskLazyGlobals(map[string]Value{"payload": NewString("unused")}, false, false)
+	_, err = script.callWithLazyTaskGlobals(ctx, "missing_run", nil, CallOptions{}, lazyGlobals)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("callWithLazyTaskGlobals missing function under canceled context = %v, want context.Canceled", err)
+	}
+}
+
 func TestUnlessConditionals(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -1383,6 +1406,18 @@ func TestBeginRescueReraisePreservesStack(t *testing.T) {
     def raise_new_message()
       raise "custom boom"
     end
+
+    def raise_nil()
+      raise nil
+    end
+
+    def raise_int()
+      raise 1
+    end
+
+    def raise_hash()
+      raise({ message: "boom" })
+    end
     `)
 
 	if got := callFunc(t, script, "catches_reraise", nil); !got.Equal(NewString("caught")) {
@@ -1414,7 +1449,18 @@ func TestBeginRescueReraisePreservesStack(t *testing.T) {
 		t.Fatalf("expected outer frame fourth, got %s", rtErr.Frames[3].Function)
 	}
 
-	requireCallErrorContains(t, script, "raise_outside", nil, CallOptions{}, "raise used outside of rescue")
+	err = callScriptErr(t, context.Background(), script, "raise_outside", nil, CallOptions{})
+	var outsideErr *RuntimeError
+	if !errors.As(err, &outsideErr) {
+		t.Fatalf("expected RuntimeError, got %T", err)
+	}
+	if outsideErr.Type != runtimeErrorTypeBase {
+		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeBase, outsideErr.Type)
+	}
+	if outsideErr.Message != "" {
+		t.Fatalf("bare raise outside rescue message = %q, want empty", outsideErr.Message)
+	}
+
 	err = callScriptErr(t, context.Background(), script, "raise_new_message", nil, CallOptions{})
 	requireErrorContains(t, err, "custom boom")
 	var raisedErr *RuntimeError
@@ -1423,6 +1469,28 @@ func TestBeginRescueReraisePreservesStack(t *testing.T) {
 	}
 	if raisedErr.Type != runtimeErrorTypeBase {
 		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeBase, raisedErr.Type)
+	}
+
+	typeErrorCases := []struct {
+		name    string
+		message string
+	}{
+		{name: "raise_nil", message: "exception object expected"},
+		{name: "raise_int", message: "exception class/object expected"},
+		{name: "raise_hash", message: "exception class/object expected"},
+	}
+	for _, tc := range typeErrorCases {
+		err := callScriptErr(t, context.Background(), script, tc.name, nil, CallOptions{})
+		var typeErr *RuntimeError
+		if !errors.As(err, &typeErr) {
+			t.Fatalf("%s: expected RuntimeError, got %T", tc.name, err)
+		}
+		if typeErr.Type != runtimeErrorTypeType {
+			t.Fatalf("%s: RuntimeError.Type = %s, want %s", tc.name, typeErr.Type, runtimeErrorTypeType)
+		}
+		if typeErr.Message != tc.message {
+			t.Fatalf("%s: message = %q, want %q", tc.name, typeErr.Message, tc.message)
+		}
 	}
 }
 

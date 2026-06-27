@@ -10,6 +10,7 @@ const (
 	RuntimeErrorTypeBase      = "RuntimeError"
 	RuntimeErrorTypeAssertion = "AssertionError"
 	RuntimeErrorTypeLimit     = "LimitError"
+	RuntimeErrorTypeType      = "TypeError"
 )
 
 // CanonicalRuntimeErrorType returns the canonical spelling of a
@@ -22,6 +23,8 @@ func CanonicalRuntimeErrorType(name string) (string, bool) {
 		return RuntimeErrorTypeAssertion, true
 	case strings.EqualFold(name, RuntimeErrorTypeLimit):
 		return RuntimeErrorTypeLimit, true
+	case strings.EqualFold(name, RuntimeErrorTypeType):
+		return RuntimeErrorTypeType, true
 	default:
 		return "", false
 	}

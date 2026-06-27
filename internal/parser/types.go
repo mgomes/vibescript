@@ -246,16 +246,13 @@ func (p *parser) peekStartsShapeField() bool {
 }
 
 // tokenStartsShapeFieldName reports whether tok can name a shape field. Shape
-// field names accept the same tokens as hash keys: bare identifiers, string and
-// symbol literals, enum names, and the word-form boolean keywords (`and`, `or`,
-// `not`) used as ordinary labels.
+// field names accept the same tokens as hash keys plus string and symbol
+// literals.
 func tokenStartsShapeFieldName(tok ast.Token) bool {
 	switch tok.Type {
-	case ast.TokenIdent, ast.TokenString, ast.TokenSymbol, ast.TokenEnum:
+	case ast.TokenString, ast.TokenSymbol:
 		return true
-	case ast.TokenAnd, ast.TokenOr, ast.TokenNot:
-		return isWordBooleanKeywordToken(tok)
 	default:
-		return false
+		return isLabelNameToken(tok)
 	}
 }
