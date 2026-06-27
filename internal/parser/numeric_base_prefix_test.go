@@ -88,6 +88,86 @@ func TestLexerNumericBasePrefixTokens(t *testing.T) {
 	}
 }
 
+func TestLexerNumericBasePrefixOperatorSuffix(t *testing.T) {
+	t.Parallel()
+
+	// The '?' and '!' runes are operators that terminate a based literal rather
+	// than gluing onto it; the literal must lex as an integer followed by the
+	// operator token, exactly as the decimal path lexes "1?" and "1!".
+	tests := []struct {
+		name     string
+		source   string
+		literal  string
+		nextType ast.TokenType
+	}{
+		{name: "hex then ternary", source: "0x1?", literal: "0x1", nextType: ast.TokenQuestion},
+		{name: "binary then ternary", source: "0b1?", literal: "0b1", nextType: ast.TokenQuestion},
+		{name: "octal then ternary", source: "0o7?", literal: "0o7", nextType: ast.TokenQuestion},
+		{name: "decimal prefix then ternary", source: "0d9?", literal: "0d9", nextType: ast.TokenQuestion},
+		{name: "hex then bang", source: "0x1!", literal: "0x1", nextType: ast.TokenBang},
+		{name: "binary then bang", source: "0b1!", literal: "0b1", nextType: ast.TokenBang},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			l := newLexer(tc.source)
+			num := l.NextToken()
+			if num.Type != ast.TokenInt || num.Literal != tc.literal {
+				t.Fatalf("NextToken(%q) = (%s, %q), want (%s, %q)", tc.source, num.Type, num.Literal, ast.TokenInt, tc.literal)
+			}
+			op := l.NextToken()
+			if op.Type != tc.nextType {
+				t.Fatalf("second token of %q = %s, want %s", tc.source, op.Type, tc.nextType)
+			}
+		})
+	}
+}
+
+func TestParserNumericBasePrefixTernary(t *testing.T) {
+	t.Parallel()
+
+	// A based literal as a ternary condition must parse as a ConditionalExpr,
+	// identical to the equivalent decimal literal; the '?' must not be folded
+	// into the number as an invalid trailing rune.
+	tests := []struct {
+		name      string
+		source    string
+		condition ast.Expression
+	}{
+		{name: "hex condition", source: "0x1 ? 2 : 3", condition: &ast.IntegerLiteral{Value: 1}},
+		{name: "binary condition", source: "0b1 ? 2 : 3", condition: &ast.IntegerLiteral{Value: 1}},
+		{name: "octal condition", source: "0o5 ? 2 : 3", condition: &ast.IntegerLiteral{Value: 5}},
+		{name: "decimal prefix condition", source: "0d9 ? 2 : 3", condition: &ast.IntegerLiteral{Value: 9}},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			source := "def run\n  " + tc.source + "\nend"
+			got, errs := parseSource(t, source)
+			if len(errs) > 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tc.source, errs)
+			}
+
+			wantBody := []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.ConditionalExpr{
+					Condition:  tc.condition,
+					Consequent: &ast.IntegerLiteral{Value: 2},
+					Alternate:  &ast.IntegerLiteral{Value: 3},
+				}},
+			}
+			if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+				t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestParserNumericBasePrefixErrors(t *testing.T) {
 	t.Parallel()
 

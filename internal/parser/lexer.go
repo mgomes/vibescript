@@ -664,11 +664,14 @@ done:
 	if digits == 0 {
 		return l.invalidPrefixedNumber()
 	}
-	// A based literal followed directly by an identifier rune (an out-of-range
-	// digit, a stray letter, or a leading-underscore name) is never valid; the
-	// fractional dot is likewise rejected since based literals are integers.
+	// A based literal followed directly by a name rune (an out-of-range digit, a
+	// stray letter, or a leading-underscore name) is never valid; the fractional
+	// dot is likewise rejected since based literals are integers. The '?' and '!'
+	// suffixes are excluded: they are operators (e.g. the ternary '?') that
+	// terminate the literal rather than glue onto it, matching how the decimal
+	// path leaves "1?2:3" as an integer followed by the ternary.
 	next := l.peekRune()
-	if ast.IsIdentifierRune(next) || (next == '.' && isBaseDigit(l.peekRuneN(1), 10)) {
+	if isNumericTrailRune(next) || (next == '.' && isBaseDigit(l.peekRuneN(1), 10)) {
 		return l.invalidPrefixedNumber()
 	}
 	literal := sb.String()
@@ -680,17 +683,27 @@ done:
 // of a malformed based literal so the lexer resumes scanning past it, then
 // reports the invalid-numeric-literal diagnostic.
 func (l *lexer) invalidPrefixedNumber() numberToken {
-	for ast.IsIdentifierRune(l.peekRune()) {
+	for isNumericTrailRune(l.peekRune()) {
 		l.readRune()
 	}
 	if l.peekRune() == '.' && unicode.IsDigit(l.peekRuneN(1)) {
 		l.readRune()
-		for ast.IsIdentifierRune(l.peekRune()) {
+		for isNumericTrailRune(l.peekRune()) {
 			l.readRune()
 		}
 	}
 	l.readRune()
 	return numberToken{errMsg: invalidNumericLiteral}
+}
+
+// isNumericTrailRune reports whether r, appearing immediately after a numeric
+// literal, indicates a malformed literal (a digit, letter, or underscore glued
+// onto the digits) rather than a following operator. Unlike
+// ast.IsIdentifierRune it excludes the '?' and '!' method-name suffixes, since
+// those are operator runes (the ternary '?', logical negation '!') that
+// terminate the literal instead of extending it.
+func isNumericTrailRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }
 
 // basePrefix maps a base-marker rune to its prefix rune and radix.
