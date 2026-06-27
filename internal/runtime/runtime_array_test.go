@@ -325,8 +325,9 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
         rindex_offset_hit: values.rindex(1, 2),
         rindex_miss: values.rindex(9),
         fetch_hit: values.fetch(2),
+        fetch_negative: values.fetch(-1),
         fetch_default: values.fetch(9, 42),
-        fetch_miss: values.fetch(9),
+        fetch_block: values.fetch(9) { |idx| idx + 10 },
         find_hit: find_hit,
         find_miss: find_miss,
         find_index_hit: find_index_hit,
@@ -385,8 +386,11 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 	if !got["fetch_hit"].Equal(NewInt(2)) || !got["fetch_default"].Equal(NewInt(42)) {
 		t.Fatalf("fetch mismatch: hit=%v default=%v", got["fetch_hit"], got["fetch_default"])
 	}
-	if got["fetch_miss"].Kind() != KindNil {
-		t.Fatalf("fetch_miss expected nil, got %v", got["fetch_miss"])
+	if !got["fetch_negative"].Equal(NewInt(1)) {
+		t.Fatalf("fetch_negative expected 1, got %v", got["fetch_negative"])
+	}
+	if !got["fetch_block"].Equal(NewInt(19)) {
+		t.Fatalf("fetch_block expected 19, got %v", got["fetch_block"])
 	}
 	if !got["find_hit"].Equal(NewInt(3)) || got["find_miss"].Kind() != KindNil {
 		t.Fatalf("find mismatch: hit=%v miss=%v", got["find_hit"], got["find_miss"])
@@ -1547,6 +1551,66 @@ func TestArrayIndexFamilyErrors(t *testing.T) {
 		{name: "rindex no args", expr: "[1, 2, 3].rindex", want: "array.rindex expects a value (with optional offset) or a block"},
 		{name: "rindex value and block", expr: "[1, 2, 3].rindex(2) { |x| x > 1 }", want: "array.rindex takes a value or a block, not both"},
 		{name: "rindex negative offset", expr: "[1, 2, 3].rindex(2, -1)", want: "array.rindex offset must be non-negative integer"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() "+tt.expr+" end")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
+		})
+	}
+}
+
+// TestArrayFetch covers the Ruby-aligned fetch contract: present index returns
+// the element (including negative offsets), missing index falls back to an
+// explicit default or a block, the block receives the requested index, and a
+// block supersedes a default value argument when both are supplied.
+func TestArrayFetch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+		want Value
+	}{
+		{name: "in-bounds index", expr: "[1, 2, 3].fetch(1)", want: NewInt(2)},
+		{name: "negative index", expr: "[1, 2, 3].fetch(-1)", want: NewInt(3)},
+		{name: "missing uses default", expr: "[1, 2, 3].fetch(9, 7)", want: NewInt(7)},
+		{name: "missing evaluates block", expr: "[1, 2, 3].fetch(9) { |idx| idx + 10 }", want: NewInt(19)},
+		{name: "negative miss evaluates block", expr: "[1, 2, 3].fetch(-9) { |idx| idx }", want: NewInt(-9)},
+		{name: "present index skips block", expr: "[1, 2, 3].fetch(0) { |idx| -1 }", want: NewInt(1)},
+		{name: "block supersedes default on miss", expr: "[1, 2, 3].fetch(9, 7) { |idx| idx + 10 }", want: NewInt(19)},
+		{name: "present index ignores default and block", expr: "[1, 2, 3].fetch(0, 7) { |idx| -1 }", want: NewInt(1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() "+tt.expr+" end")
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(tt.want) {
+				t.Fatalf("%s = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestArrayFetchErrors covers the rejected shapes for fetch: an out-of-range
+// index with no fallback, a non-integer index, and too many arguments.
+func TestArrayFetchErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "missing without fallback", expr: "[1, 2, 3].fetch(9)", want: "array.fetch index 9 outside of array bounds: -3...3"},
+		{name: "negative miss without fallback", expr: "[1, 2, 3].fetch(-9)", want: "array.fetch index -9 outside of array bounds: -3...3"},
+		{name: "non-integer index", expr: `[1, 2, 3].fetch("x")`, want: "array.fetch index must be integer"},
+		{name: "fractional index", expr: "[1, 2, 3].fetch(1.5)", want: "array.fetch index must be integer"},
+		{name: "too many arguments", expr: "[1, 2, 3].fetch(0, 1, 2)", want: "array.fetch expects index and optional default"},
 	}
 
 	for _, tt := range tests {
