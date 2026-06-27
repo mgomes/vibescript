@@ -2022,6 +2022,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			val, returned, err := exec.evalStatements(stmt.Body, env)
 			if err != nil {
 				if errors.Is(err, errLoopBreak) {
+					if breakVal, ok := loopBreakValue(err); ok {
+						return breakVal, false, nil
+					}
 					return last, false, nil
 				}
 				if errors.Is(err, errLoopNext) {
@@ -2054,6 +2057,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
 					if errors.Is(err, errLoopBreak) {
+						if breakVal, ok := loopBreakValue(err); ok {
+							return breakVal, false, nil
+						}
 						return last, false, nil
 					}
 					if errors.Is(err, errLoopNext) {
@@ -2075,6 +2081,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
 					if errors.Is(err, errLoopBreak) {
+						if breakVal, ok := loopBreakValue(err); ok {
+							return breakVal, false, nil
+						}
 						return last, false, nil
 					}
 					if errors.Is(err, errLoopNext) {
@@ -2150,6 +2159,9 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
+				if breakVal, ok := loopBreakValue(err); ok {
+					return breakVal, false, nil
+				}
 				return last, false, nil
 			}
 			if errors.Is(err, errLoopNext) {
@@ -2203,6 +2215,9 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
+				if breakVal, ok := loopBreakValue(err); ok {
+					return breakVal, false, nil
+				}
 				return last, false, nil
 			}
 			if errors.Is(err, errLoopNext) {
@@ -2241,6 +2256,9 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
+				if breakVal, ok := loopBreakValue(err); ok {
+					return breakVal, false, nil
+				}
 				return last, false, nil
 			}
 			if errors.Is(err, errLoopNext) {
@@ -2452,6 +2470,16 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	case *BreakStmt:
 		if exec.loopDepth == 0 {
 			return NewNil(), false, exec.errorAt(s.Pos(), "break used outside of loop")
+		}
+		if s.Value != nil {
+			val, err := exec.evalExpression(s.Value, env)
+			if err != nil {
+				return NewNil(), false, err
+			}
+			if err := exec.checkMemoryWith(val); err != nil {
+				return NewNil(), false, err
+			}
+			return NewNil(), false, newLoopBreakValue(val)
 		}
 		return NewNil(), false, errLoopBreak
 	case *NextStmt:

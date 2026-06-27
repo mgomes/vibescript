@@ -32,6 +32,7 @@ var lspKeywords = ast.Keywords()
 var lspBuiltins = []string{
 	"assert",
 	"format",
+	"loop",
 	"money",
 	"money_cents",
 	"now",
@@ -1249,6 +1250,7 @@ func appendAssignmentTargetNames(names *[]string, target ast.Expression) {
 var builtinSignatures = map[string]string{
 	"assert":      "assert(condition, message = nil) -> nil",
 	"format":      "format(format_string, *values) -> string",
+	"loop":        "loop { ... } -> value",
 	"money":       `money("12.34 USD") -> money`,
 	"money_cents": "money_cents(cents, currency) -> money",
 	"now":         "now -> string",

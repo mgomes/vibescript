@@ -78,7 +78,9 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		u.visitStatements(s.Rescue)
 		u.visitStatements(s.Else)
 		u.visitStatements(s.Ensure)
-	case *ast.BreakStmt, *ast.NextStmt:
+	case *ast.BreakStmt:
+		u.visitExpression(s.Value, false)
+	case *ast.NextStmt:
 		return
 	}
 }

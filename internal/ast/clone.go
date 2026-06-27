@@ -112,6 +112,7 @@ func cloneStatement(stmt Statement) Statement {
 		return &clone
 	case *BreakStmt:
 		clone := *s
+		clone.Value = cloneExpression(s.Value)
 		return &clone
 	case *NextStmt:
 		clone := *s

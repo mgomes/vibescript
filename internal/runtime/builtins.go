@@ -89,6 +89,46 @@ func builtinFormat(exec *Execution, receiver Value, args []Value, kwargs map[str
 	return formatStringBuiltin("format", args, kwargs, block)
 }
 
+func builtinLoop(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("loop does not take arguments")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("loop does not take keyword arguments")
+	}
+	runner, err := newBlockCallRunner(exec, block, "loop", NewNil(), nil, kwargs)
+	if err != nil {
+		return NewNil(), err
+	}
+
+	exec.loopDepth++
+	defer func() {
+		exec.loopDepth--
+	}()
+
+	for {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		val, err := runner.call(nil)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				if breakVal, ok := loopBreakValue(err); ok {
+					return breakVal, nil
+				}
+				return NewNil(), nil
+			}
+			if errors.Is(err, errLoopNext) {
+				continue
+			}
+			return NewNil(), err
+		}
+		if err := exec.checkMemoryWith(val); err != nil {
+			return NewNil(), err
+		}
+	}
+}
+
 func builtinSprintf(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	return formatStringBuiltin("sprintf", args, kwargs, block)
 }

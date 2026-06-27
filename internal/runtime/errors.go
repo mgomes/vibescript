@@ -97,6 +97,30 @@ var (
 	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
 )
 
+type loopBreakError struct {
+	value Value
+}
+
+func (e *loopBreakError) Error() string {
+	return errLoopBreak.Error()
+}
+
+func (e *loopBreakError) Unwrap() error {
+	return errLoopBreak
+}
+
+func newLoopBreakValue(value Value) error {
+	return &loopBreakError{value: value}
+}
+
+func loopBreakValue(err error) (Value, bool) {
+	var breakErr *loopBreakError
+	if errors.As(err, &breakErr) {
+		return breakErr.value, true
+	}
+	return NewNil(), false
+}
+
 // Error returns the error message with a code frame and formatted stack trace.
 func (re *RuntimeError) Error() string {
 	var b strings.Builder

@@ -250,6 +250,7 @@ func registerCoreBuiltins(engine *Engine) {
 	}{
 		{name: "assert", fn: builtinAssert},
 		{name: "format", fn: builtinFormat},
+		{name: "loop", fn: builtinLoop},
 		{name: "money", fn: builtinMoney},
 		{name: "money_cents", fn: builtinMoneyCents},
 		{name: "require", fn: builtinRequire},
