@@ -722,12 +722,29 @@ func (p *parser) parseIdentifier() ast.Expression {
 }
 
 func (p *parser) parseIntegerLiteral() ast.Expression {
-	value, err := strconv.ParseInt(p.curToken.Literal, 10, 64)
+	value, err := parseIntegerToken(p.curToken.Literal)
 	if err != nil {
 		p.addParseError(p.curToken.Pos, "invalid integer literal")
 		return nil
 	}
 	return &ast.IntegerLiteral{Value: value, Position: p.curToken.Pos}
+}
+
+// parseIntegerToken converts a lexer-produced integer literal into its value.
+// The lexer strips underscore separators and validates digit sets, so the
+// only remaining work is choosing the radix from any Ruby base prefix. Plain
+// decimal literals are parsed in base 10 so a leading zero stays decimal
+// rather than being read as octal.
+func parseIntegerToken(literal string) (int64, error) {
+	if len(literal) >= 2 && literal[0] == '0' {
+		switch literal[1] {
+		case 'd', 'D':
+			return strconv.ParseInt(literal[2:], 10, 64)
+		case 'x', 'X', 'b', 'B', 'o', 'O':
+			return strconv.ParseInt(literal, 0, 64)
+		}
+	}
+	return strconv.ParseInt(literal, 10, 64)
 }
 
 func (p *parser) parseFloatLiteral() ast.Expression {
