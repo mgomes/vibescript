@@ -1557,6 +1557,125 @@ func TestValueEqual(t *testing.T) {
 	}
 }
 
+// TestValueEql checks the hash-key equality predicate: operands must share a
+// kind and value, so an Int never eql-matches a Float even when the numeric
+// values coincide, while composites still compare by content.
+func TestValueEql(t *testing.T) {
+	t.Parallel()
+
+	sharedSlice := []value.Value{value.NewInt(1)}
+
+	tests := []struct {
+		name  string
+		left  value.Value
+		right value.Value
+		want  bool
+	}{
+		{"ints", value.NewInt(1), value.NewInt(1), true},
+		{"int_vs_float", value.NewInt(1), value.NewFloat(1), false},
+		{"floats", value.NewFloat(1), value.NewFloat(1), true},
+		{"strings", value.NewString("a"), value.NewString("a"), true},
+		{"string_vs_symbol", value.NewString("a"), value.NewSymbol("a"), false},
+		{"nil_vs_bool", value.NewNil(), value.NewBool(false), false},
+		{"arrays_by_content", value.NewArray([]value.Value{value.NewInt(1)}), value.NewArray([]value.Value{value.NewInt(1)}), true},
+		{"arrays_shared", value.NewArray(sharedSlice), value.NewArray(sharedSlice), true},
+		{"hashes_by_content", value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.left.Eql(tc.right); got != tc.want {
+				t.Fatalf("Eql(%s, %s) = %t, want %t", tc.left, tc.right, got, tc.want)
+			}
+			if got := tc.right.Eql(tc.left); got != tc.want {
+				t.Fatalf("Eql is not symmetric for %s and %s", tc.left, tc.right)
+			}
+		})
+	}
+}
+
+// TestValueIdentical checks the identity predicate: immutable scalars are
+// identical when they share a kind and value, while mutable composites are
+// identical only when they share the same backing storage.
+func TestValueIdentical(t *testing.T) {
+	t.Parallel()
+
+	sharedSlice := []value.Value{value.NewInt(1)}
+	// A hash's identity is its hashData wrapper, not its entry map. Aliasing a
+	// hash Value (the way `b = a` copies the struct, including its wrapper
+	// pointer) preserves identity, so sharedHash compared against itself is
+	// identical. Two distinct NewHash calls that merely share an entry map are
+	// not, because each call allocates its own wrapper.
+	sharedHash := value.NewHash(map[string]value.Value{"a": value.NewInt(1)})
+	sharedMap := map[string]value.Value{"a": value.NewInt(1)}
+	// A single empty hash must remain identical to itself even though its
+	// backing map is allocated from nil input; the fix must not break self
+	// identity while making independent empties distinct.
+	sameEmptyHash := value.NewHash(nil)
+
+	tests := []struct {
+		name  string
+		left  value.Value
+		right value.Value
+		want  bool
+	}{
+		{"ints", value.NewInt(1), value.NewInt(1), true},
+		{"int_vs_float", value.NewInt(1), value.NewFloat(1), false},
+		{"floats", value.NewFloat(1.5), value.NewFloat(1.5), true},
+		// IEEE NaN != NaN, so value equality alone would make a NaN receiver fail
+		// reflexivity (x.equal?(x) == false). Identity treats NaN floats as
+		// identical to keep equal? reflexive.
+		{"nan_floats_identical", value.NewFloat(math.NaN()), value.NewFloat(math.NaN()), true},
+		{"nan_vs_finite_float_distinct", value.NewFloat(math.NaN()), value.NewFloat(1.5), false},
+		{"strings_same_content", value.NewString("a"), value.NewString("a"), true},
+		{"strings_diff_content", value.NewString("a"), value.NewString("b"), false},
+		{"symbols", value.NewSymbol("a"), value.NewSymbol("a"), true},
+		{"nils", value.NewNil(), value.NewNil(), true},
+		{"ranges", value.NewRange(value.Range{Start: 1, End: 3}), value.NewRange(value.Range{Start: 1, End: 3}), true},
+		{"arrays_shared_backing", value.NewArray(sharedSlice), value.NewArray(sharedSlice), true},
+		{"arrays_distinct_backing", value.NewArray([]value.Value{value.NewInt(1)}), value.NewArray([]value.Value{value.NewInt(1)}), false},
+		// An empty array has no element storage to alias, so two empties report
+		// identical regardless of their backing storage.
+		{"empty_arrays_identical", value.NewArray([]value.Value{}), value.NewArray([]value.Value{}), true},
+		// An empty array produced with spare capacity (the way array.select and
+		// peers preallocate via make([]Value, 0, len(arr))) carries a distinct,
+		// non-zerobase backing pointer and a non-zero capacity, yet it must still
+		// be identical to a literal empty array under the all-empties-alike
+		// contract.
+		{"empty_array_with_spare_cap_identical", value.NewArray(make([]value.Value, 0, 4)), value.NewArray([]value.Value{}), true},
+		{"empty_arrays_distinct_spare_cap_identical", value.NewArray(make([]value.Value, 0, 4)), value.NewArray(make([]value.Value, 0, 8)), true},
+		// A non-empty array is never identical to an empty one even though the
+		// empty case short-circuits before comparing backing storage.
+		{"empty_array_vs_nonempty_distinct", value.NewArray([]value.Value{}), value.NewArray([]value.Value{value.NewInt(1)}), false},
+		// Aliasing a hash Value preserves its wrapper, so it is identical to itself.
+		{"hashes_shared_wrapper", sharedHash, sharedHash, true},
+		// Two NewHash calls allocate distinct wrappers even with a shared entry map.
+		{"hashes_shared_entry_map_distinct", value.NewHash(sharedMap), value.NewHash(sharedMap), false},
+		{"hashes_distinct_backing", value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), value.NewHash(map[string]value.Value{"a": value.NewInt(1)}), false},
+		// Each hash carries its own wrapper, so empties are distinct unlike empty slices.
+		{"empty_hashes_distinct_backing", value.NewHash(map[string]value.Value{}), value.NewHash(map[string]value.Value{}), false},
+		// Nil-backed hashes built the way the JSON parser builds {} stay distinct
+		// objects because each NewHash call allocates a fresh wrapper.
+		{"nil_backed_hashes_distinct", value.NewHash(nil), value.NewHash(nil), false},
+		{"nil_backed_objects_distinct", value.NewObject(nil), value.NewObject(nil), false},
+		{"empty_hash_vs_nil_backed_hash_distinct", value.NewHash(map[string]value.Value{}), value.NewHash(nil), false},
+		{"nil_backed_hash_identical_to_itself", sameEmptyHash, sameEmptyHash, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.left.Identical(tc.right); got != tc.want {
+				t.Fatalf("Identical(%s, %s) = %t, want %t", tc.left, tc.right, got, tc.want)
+			}
+			if got := tc.right.Identical(tc.left); got != tc.want {
+				t.Fatalf("Identical is not symmetric for %s and %s", tc.left, tc.right)
+			}
+		})
+	}
+}
+
 func TestValueEqualCyclicStructuresTerminate(t *testing.T) {
 	t.Parallel()
 
@@ -1591,12 +1710,13 @@ func TestValueEqualCyclicStructuresTerminate(t *testing.T) {
 }
 
 // TestRuntimeHooks intentionally runs without t.Parallel: it mutates the
-// package-level RuntimeStringer/RuntimeEqualer hooks, and Go defers all
-// parallel tests until sequential tests like this one have finished.
+// package-level RuntimeStringer/RuntimeEqualer/RuntimeIdenticaler hooks, and Go
+// defers all parallel tests until sequential tests like this one have finished.
 func TestRuntimeHooks(t *testing.T) {
 	t.Cleanup(func() {
 		value.RuntimeStringer = nil
 		value.RuntimeEqualer = nil
+		value.RuntimeIdenticaler = nil
 	})
 
 	value.RuntimeStringer = func(v value.Value) (string, bool) {
@@ -1611,6 +1731,12 @@ func TestRuntimeHooks(t *testing.T) {
 		}
 		return false, false
 	}
+	value.RuntimeIdenticaler = func(left, right value.Value) (bool, bool) {
+		if left.Kind() == value.KindEnum {
+			return false, true
+		}
+		return false, false
+	}
 
 	enum := value.NewValue(value.KindEnum, fakeEnum{})
 	if got := enum.String(); got != "<Enum Color>" {
@@ -1618,6 +1744,12 @@ func TestRuntimeHooks(t *testing.T) {
 	}
 	if !enum.Equal(value.NewValue(value.KindEnum, fakeEnum{})) {
 		t.Error("hooked enum Equal() = false, want true")
+	}
+	// Identical consults RuntimeIdenticaler, which here reports the enums as
+	// distinct storage even though Equal considers them equivalent. This is the
+	// crux of the enum equal? contract: structural equivalence is not identity.
+	if enum.Identical(value.NewValue(value.KindEnum, fakeEnum{})) {
+		t.Error("hooked enum Identical() = true, want false from RuntimeIdenticaler")
 	}
 
 	// A hook that declines (ok=false) falls back to the generic rendering

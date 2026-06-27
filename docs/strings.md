@@ -14,6 +14,16 @@ name = "Ada"
 Escape the marker with `\#{...}` when literal text is required. Single-quoted
 strings do not interpolate.
 
+The expression inside `#{...}` may itself contain double-quoted strings, even
+nested interpolations. The interpolation runs until its matching `}`, so quoted
+fallbacks and helper calls read naturally:
+
+```vibe
+"#{name || "guest"}"        # "guest" when name is nil
+"#{["a", "b"].join(", ")}"  # "a, b"
+"#{"hi #{inner}"}"          # nested interpolation
+```
+
 Interpolated results are built incrementally and bounded by the sandbox step
 and memory quotas. A script that grows a string through repeated or large
 interpolation (for example `"#{text}#{text}"` in a loop) fails safely with a
