@@ -57,6 +57,26 @@ func boolMemberBuiltin(property string) (Value, error) {
 	}
 }
 
+// requireNullaryCall enforces the call shape shared by the Ruby-style nullary
+// conversion and predicate methods (to_s, string, to_i, to_f, nil?, id2name,
+// intern, to_sym): no positional arguments, no keyword arguments, and no block.
+// name identifies the receiver method in the error so it reads naturally (for
+// example "int.to_i does not take keyword arguments"). Rejecting kwargs and a
+// block keeps a stray argument from being silently dropped — for example
+// `"42".to_i(base: 16)` raises rather than quietly parsing base 10.
+func requireNullaryCall(name string, args []Value, kwargs map[string]Value, block Value) error {
+	if len(args) > 0 {
+		return fmt.Errorf("%s does not take arguments", name)
+	}
+	if len(kwargs) > 0 {
+		return fmt.Errorf("%s does not take keyword arguments", name)
+	}
+	if valueBlock(block) != nil {
+		return fmt.Errorf("%s does not take a block", name)
+	}
+	return nil
+}
+
 // newToStringBuiltin returns a no-argument builtin that renders the receiver as
 // a string using the same display form string interpolation produces (Ruby's
 // Object#to_s). typeName names the receiver in the builtin's identifier and in
@@ -68,14 +88,8 @@ func boolMemberBuiltin(property string) (Value, error) {
 func newToStringBuiltin(typeName, property string) Value {
 	name := typeName + "." + property
 	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		if len(args) > 0 {
-			return NewNil(), fmt.Errorf("%s does not take arguments", name)
-		}
-		if len(kwargs) > 0 {
-			return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
-		}
-		if valueBlock(block) != nil {
-			return NewNil(), fmt.Errorf("%s does not take a block", name)
+		if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+			return NewNil(), err
 		}
 		return NewString(receiver.String()), nil
 	})
@@ -87,14 +101,8 @@ func newToStringBuiltin(typeName, property string) Value {
 func newNilPredicateBuiltin(typeName string) Value {
 	name := typeName + ".nil?"
 	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		if len(args) > 0 {
-			return NewNil(), fmt.Errorf("%s does not take arguments", name)
-		}
-		if len(kwargs) > 0 {
-			return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
-		}
-		if valueBlock(block) != nil {
-			return NewNil(), fmt.Errorf("%s does not take a block", name)
+		if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+			return NewNil(), err
 		}
 		return NewBool(receiver.IsNil()), nil
 	})

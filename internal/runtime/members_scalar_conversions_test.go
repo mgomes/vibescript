@@ -250,6 +250,100 @@ func TestScalarConversionArgumentRejection(t *testing.T) {
 	}
 }
 
+func TestScalarConversionKeywordArgumentRejection(t *testing.T) {
+	t.Parallel()
+
+	// A stray keyword argument must raise rather than be silently dropped: for
+	// example `"42".to_i(base: 16)` must not quietly parse base 10. Covers the
+	// conversion/predicate builtins that dispatch through requireNullaryCall.
+	exprs := []string{
+		`42.to_s(x: 1)`, `42.string(x: 1)`, `42.to_i(x: 1)`, `42.to_f(x: 1)`, `42.nil?(x: 1)`,
+		`3.14.to_s(x: 1)`, `3.14.string(x: 1)`, `3.14.to_i(x: 1)`, `3.14.to_f(x: 1)`, `3.14.nil?(x: 1)`,
+		`"x".to_s(x: 1)`, `"x".string(x: 1)`, `"42".to_i(base: 16)`, `"3.5".to_f(x: 1)`, `"x".nil?(x: 1)`,
+		`"x".to_sym(x: 1)`, `"x".intern(x: 1)`,
+		`true.to_s(x: 1)`, `true.string(x: 1)`, `true.nil?(x: 1)`,
+		`nil.to_s(x: 1)`, `nil.string(x: 1)`, `nil.nil?(x: 1)`,
+		`:ok.to_s(x: 1)`, `:ok.string(x: 1)`, `:ok.id2name(x: 1)`, `:ok.to_sym(x: 1)`, `:ok.nil?(x: 1)`,
+		`[].nil?(x: 1)`, `({}).nil?(x: 1)`, `(1..3).nil?(x: 1)`,
+	}
+	for _, expr := range exprs {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+expr+"\nend")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "does not take keyword arguments")
+		})
+	}
+}
+
+func TestScalarConversionBlockRejection(t *testing.T) {
+	t.Parallel()
+
+	// Passing a block to a nullary conversion/predicate must raise rather than
+	// silently ignore the block.
+	exprs := []string{
+		`42.to_s { 1 }`, `42.string { 1 }`, `42.to_i { 1 }`, `42.to_f { 1 }`, `42.nil? { 1 }`,
+		`3.14.to_s { 1 }`, `3.14.to_i { 1 }`, `3.14.to_f { 1 }`, `3.14.nil? { 1 }`,
+		`"42".to_i { 1 }`, `"3.5".to_f { 1 }`, `"x".to_s { 1 }`, `"x".to_sym { 1 }`, `"x".nil? { 1 }`,
+		`true.to_s { 1 }`, `true.nil? { 1 }`,
+		`nil.to_s { 1 }`, `nil.nil? { 1 }`,
+		`:ok.to_s { 1 }`, `:ok.id2name { 1 }`, `:ok.to_sym { 1 }`, `:ok.nil? { 1 }`,
+		`[].nil? { 1 }`, `({}).nil? { 1 }`, `(1..3).nil? { 1 }`,
+	}
+	for _, expr := range exprs {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+expr+"\nend")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "does not take a block")
+		})
+	}
+}
+
+func TestAggregateKindsRejectToStringConversion(t *testing.T) {
+	t.Parallel()
+
+	// Arrays, hashes, and ranges deliberately do not expose to_s/string because
+	// their rendering can be unbounded; only inspect (which charges the memory
+	// quota) and nil? are available. This guards the docs/changelog claim that the
+	// scalar string conversions are not universal.
+	tests := []struct {
+		expr string
+		want string
+	}{
+		{`[1, 2].to_s`, "unknown array method to_s"},
+		{`[1, 2].string`, "unknown array method string"},
+		{`({a: 1}).to_s`, "unknown hash"},
+		{`({a: 1}).string`, "unknown hash"},
+		{`(1..3).to_s`, "unknown range method to_s"},
+		{`(1..3).string`, "unknown range method string"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+func TestAggregateKindsAnswerNilPredicate(t *testing.T) {
+	t.Parallel()
+
+	// nil? is the one universal method arrays, hashes, and ranges gained; each is
+	// a non-nil value so the predicate is always false.
+	for _, expr := range []string{`[1, 2].nil?`, `({a: 1}).nil?`, `(1..3).nil?`} {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			got := evalScalarExpr(t, expr)
+			if got.Kind() != KindBool {
+				t.Fatalf("%s kind = %v, want bool", expr, got.Kind())
+			}
+			if got.Bool() {
+				t.Fatalf("%s = true, want false", expr)
+			}
+		})
+	}
+}
+
 func TestTypedBoundaryStringConversion(t *testing.T) {
 	t.Parallel()
 

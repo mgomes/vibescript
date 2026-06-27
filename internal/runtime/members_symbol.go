@@ -25,8 +25,8 @@ func symbolMemberBuiltin(property string) (Value, error) {
 	case "id2name", "to_s", "string":
 		name := "symbol." + property
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			return NewString(receiver.String()), nil
 		}), nil
@@ -34,8 +34,8 @@ func symbolMemberBuiltin(property string) (Value, error) {
 		return newNilPredicateBuiltin("symbol"), nil
 	case "to_sym":
 		return NewAutoBuiltin("symbol.to_sym", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("symbol.to_sym does not take arguments")
+			if err := requireNullaryCall("symbol.to_sym", args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			return receiver, nil
 		}), nil

@@ -72,22 +72,22 @@ func stringMemberConversions(property string) (Value, error) {
 	switch property {
 	case "to_sym", "intern":
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			return NewSymbol(receiver.String()), nil
 		}), nil
 	case "to_s", "string":
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			return receiver, nil
 		}), nil
 	case "to_i":
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			s := strings.TrimSpace(receiver.String())
 			if s == "" {
@@ -101,8 +101,8 @@ func stringMemberConversions(property string) (Value, error) {
 		}), nil
 	case "to_f":
 		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("%s does not take arguments", name)
+			if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			s := strings.TrimSpace(receiver.String())
 			if s == "" {

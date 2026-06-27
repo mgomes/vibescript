@@ -256,8 +256,8 @@ func intMemberBuiltin(property string) (Value, error) {
 		return newIntIdentityBuiltin("int.to_i"), nil
 	case "to_f":
 		return NewAutoBuiltin("int.to_f", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("int.to_f does not take arguments")
+			if err := requireNullaryCall("int.to_f", args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			return NewFloat(float64(receiver.Int())), nil
 		}), nil
@@ -275,8 +275,8 @@ func intMemberBuiltin(property string) (Value, error) {
 // builtin and its argument error.
 func newIntIdentityBuiltin(name string) Value {
 	return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-		if len(args) > 0 {
-			return NewNil(), fmt.Errorf("%s does not take arguments", name)
+		if err := requireNullaryCall(name, args, kwargs, block); err != nil {
+			return NewNil(), err
 		}
 		return receiver, nil
 	})
@@ -439,8 +439,8 @@ func floatMemberBuiltin(property string) (Value, error) {
 		return newToStringBuiltin("float", property), nil
 	case "to_i":
 		return NewAutoBuiltin("float.to_i", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("float.to_i does not take arguments")
+			if err := requireNullaryCall("float.to_i", args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			// Ruby's Float#to_i truncates toward zero, unlike the strict global
 			// to_int which rejects a fractional float. floatToInt64Checked
@@ -454,8 +454,8 @@ func floatMemberBuiltin(property string) (Value, error) {
 		}), nil
 	case "to_f":
 		return NewAutoBuiltin("float.to_f", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("float.to_f does not take arguments")
+			if err := requireNullaryCall("float.to_f", args, kwargs, block); err != nil {
+				return NewNil(), err
 			}
 			return receiver, nil
 		}), nil
