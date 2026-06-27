@@ -1188,7 +1188,6 @@ func hashMemberTransforms(property string) (Value, error) {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			out := make([]Value, 0, len(entries))
 			// map_with_index keeps an arbitrary block result per entry, so charge the
 			// growing result incrementally rather than only after the call: a block
 			// returning an individually quota-sized value per entry could otherwise pile
@@ -1200,6 +1199,18 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := acc.reserveScratch(sortedKeyBufferBytes(len(entries))); err != nil {
 				return NewNil(), err
 			}
+			// Reject the build before reserving the backing slice when its len(entries)
+			// slots would already overflow the quota on top of the baseline and the
+			// sorted key scratch just reserved. map keeps one result per entry, so the
+			// backing reaches len(entries) Value slots regardless of the block; make
+			// would otherwise reserve all of them as a Go-local slice (invisible to the
+			// quota) before the first acc.add projected cap(out), letting a large hash
+			// transiently allocate a full result backing that should have been rejected
+			// up front, mirroring array.map_with_index.
+			if err := acc.reserveSlots(len(entries)); err != nil {
+				return NewNil(), err
+			}
+			out := make([]Value, 0, len(entries))
 			var blockArgs [2]Value
 			var keyBuf [smallHashKeyBufferSize]string
 			for i, key := range sortedHashKeysInto(entries, keyBuf[:]) {

@@ -748,7 +748,6 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
-			out := make([]Value, 0, len(arr))
 			// map_with_index keeps an arbitrary block result per element, so charge
 			// the growing result incrementally rather than only after the call: a
 			// block returning an individually quota-sized value per element could
@@ -757,6 +756,18 @@ func arrayMemberQuery(property string) (Value, error) {
 			// (held on the Go stack during the call, so invisible to the per-call
 			// checkMemoryWith), matching hash.map_with_index and filter_map.
 			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			// Reject the build before reserving the backing slice when its len(arr)
+			// slots would already overflow the quota. map keeps one result per
+			// element, so the backing reaches len(arr) Value slots regardless of the
+			// block; make would otherwise reserve all of them as a Go-local slice
+			// (invisible to the quota) before the first acc.add projected cap(out),
+			// letting a large receiver transiently allocate a full result backing
+			// that should have been rejected up front, mirroring rangeMaterialize's
+			// pre-make reservation.
+			if err := acc.reserveSlots(len(arr)); err != nil {
+				return NewNil(), err
+			}
+			out := make([]Value, 0, len(arr))
 			var blockArgs [2]Value
 			for i, item := range arr {
 				// Charge a step per yield so an empty block body cannot starve the

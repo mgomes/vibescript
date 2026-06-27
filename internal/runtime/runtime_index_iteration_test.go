@@ -475,6 +475,83 @@ func TestArrayMapWithIndexCountsDistinctBackings(t *testing.T) {
 	}
 }
 
+// TestArrayMapWithIndexReservesBackingUpFront guards against map_with_index
+// reserving its result backing slice before the quota can observe it. map keeps
+// one result per element, so the backing reaches len(arr) Value slots regardless
+// of the block. make([]Value, 0, len(arr)) allocates that backing as a Go-local
+// slice — invisible to the quota until the first acc.add projects cap(out) — so a
+// large receiver could transiently allocate a full result backing that should
+// have been rejected up front. The up-front reserveSlots must reject the build
+// before make runs.
+//
+// The receiver is largeIntArray, whose ints carry no payload beyond their slot,
+// so only the reserved slot array can trip a quota sized to admit the baseline
+// (which already includes the receiver) but not the full backing on top of it.
+// step() runs once per yielded element, so steps == 0 proves the build was
+// rejected before the loop — a reservation deferred until the first acc.add would
+// have stepped once over the already-allocated backing.
+func TestArrayMapWithIndexReservesBackingUpFront(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 4096
+	receiver := largeIntArray(receiverSize)
+	fn := arrayIndexIterationBuiltin(t, "map_with_index")
+
+	// Build the accumulator exactly as the builtin does to read its baseline (the
+	// execution base plus the live receiver). A quota above that baseline but below
+	// the baseline plus a full len(arr)-slot backing isolates the slot reservation
+	// as the only thing that can trip the limit.
+	acc := newArrayBuildAccumulator(&Execution{memoryQuota: 1 << 30}, receiver, nil, nil, emptyBlockValue())
+	baselineOnly := acc.projected(0)
+	fullBacking := acc.projected(receiverSize)
+	memoryQuota := (baselineOnly + fullBacking) / 2
+	if memoryQuota <= baselineOnly || memoryQuota >= fullBacking {
+		t.Fatalf("test quota %d does not sit strictly between baseline (%d) and full backing (%d)", memoryQuota, baselineOnly, fullBacking)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: memoryQuota}
+	_, err := fn(exec, receiver, nil, nil, emptyBlockValue())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("map_with_index stepped %d times before rejecting the backing reservation; want 0 (reservation must precede make)", exec.steps)
+	}
+}
+
+// TestHashMapWithIndexReservesBackingUpFront is the hash-side counterpart: the
+// result is an array of one element per entry, so make([]Value, 0, len(entries))
+// reserves the whole backing as a Go-local slice before the first acc.add
+// projects cap(out). A large hash could thus transiently allocate a full result
+// backing the quota never approved; the up-front reserveSlots (charged alongside
+// the sorted key scratch already folded into the baseline) must reject the build
+// before make runs. steps == 0 proves the rejection precedes the per-entry loop.
+func TestHashMapWithIndexReservesBackingUpFront(t *testing.T) {
+	t.Parallel()
+	const receiverSize = 4096
+	receiver := largeHashReceiver(receiverSize)
+
+	// Mirror the builtin's baseline: the accumulator seeded with the receiver, then
+	// the sorted key scratch reserved, then the slot reservation. Reading the base
+	// after reserveScratch lets the quota sit strictly between the scratch-inclusive
+	// baseline and that baseline plus a full backing, so only the slot reservation
+	// can trip it.
+	acc := newArrayBuildAccumulator(&Execution{memoryQuota: 1 << 30}, receiver, nil, nil, emptyBlockValue())
+	if err := acc.reserveScratch(sortedKeyBufferBytes(receiverSize)); err != nil {
+		t.Fatalf("reserveScratch: %v", err)
+	}
+	baselineOnly := acc.projected(0)
+	fullBacking := acc.projected(receiverSize)
+	memoryQuota := (baselineOnly + fullBacking) / 2
+	if memoryQuota <= baselineOnly || memoryQuota >= fullBacking {
+		t.Fatalf("test quota %d does not sit strictly between baseline (%d) and full backing (%d)", memoryQuota, baselineOnly, fullBacking)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: memoryQuota}
+	_, err := callHashMember(t, exec, receiver, "map_with_index", nil, emptyBlockValue())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps != 0 {
+		t.Fatalf("hash.map_with_index stepped %d times before rejecting the backing reservation; want 0 (reservation must precede make)", exec.steps)
+	}
+}
+
 // TestIndexAwareIterationHonorsCancellation confirms a canceled context stops
 // the index-aware helpers, including the hash helpers with an empty block body
 // that relies on the explicit per-entry step for cancellation.
