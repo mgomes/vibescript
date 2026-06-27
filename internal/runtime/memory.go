@@ -879,6 +879,15 @@ func (est *memoryEstimator) env(env *Env) int {
 		size += estimatedStringHeaderBytes + len(name)
 		size += est.mapBindingValue(val)
 	}
+	if env.hasCallBlock {
+		// A call frame's supplied block lives in a hidden slot rather than a
+		// named binding, but for an escaped closure or default proc it can be
+		// the only reference to a block that closes over large data. Charge its
+		// payload (the block struct and its captured env) so the quota still
+		// accounts for it; the value header is already part of estimatedEnvBytes,
+		// and a frame that received no block charges nothing.
+		size += est.valuePayload(env.callBlock)
+	}
 	size += est.env(env.parent)
 	return size
 }
