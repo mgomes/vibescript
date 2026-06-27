@@ -500,13 +500,11 @@ func reserveStringSplitResult(exec *Execution, receiver Value, args []Value, kwa
 	return acc, nil
 }
 
-const stringSplitInitialCap = 256
-
 func stringSplitResult(exec *Execution, parts []string, acc *arrayBuildAccumulator) (Value, error) {
 	if err := exec.checkStepBudgetFor(len(parts)); err != nil {
 		return NewNil(), err
 	}
-	values := make([]Value, 0, min(len(parts), stringSplitInitialCap))
+	values := make([]Value, 0, len(parts))
 	for _, part := range parts {
 		if err := exec.step(); err != nil {
 			return NewNil(), err

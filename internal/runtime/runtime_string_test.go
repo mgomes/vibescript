@@ -533,6 +533,31 @@ func TestSplitEmptySeparatorReservesOffsetScratch(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestStringSplitResultUsesReservedCapacity(t *testing.T) {
+	t.Parallel()
+
+	const count = 257
+	parts := make([]string, count)
+	receiver := NewString("")
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 60}
+	acc := newArrayBuildAccumulator(probe, receiver, nil, nil, NewNil())
+	quota := saturatingAdd(acc.projected(count), stringSplitPartsScratchBytes(count))
+	quota = saturatingAdd(quota, count*estimatedStringHeaderBytes)
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	acc, err := reserveStringSplitResult(exec, receiver, nil, nil, NewNil(), count, 0)
+	if err != nil {
+		t.Fatalf("reserveStringSplitResult exact quota error = %v", err)
+	}
+	got, err := stringSplitResult(exec, parts, acc)
+	if err != nil {
+		t.Fatalf("stringSplitResult exact reserved quota error = %v", err)
+	}
+	if len(got.Array()) != count || cap(got.Array()) != count {
+		t.Fatalf("stringSplitResult len/cap = %d/%d, want %d/%d", len(got.Array()), cap(got.Array()), count, count)
+	}
+}
+
 func TestStringSplitRejectsInvalidSeparator(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
