@@ -898,7 +898,7 @@ func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value V
 }
 
 func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
-	block, ok := env.Get(blockBindingName)
+	block, ok := env.lookupCallBlock()
 	if !ok || block.Kind() == KindNil {
 		return NewNil(), exec.errorAt(expr.Pos(), "no block given")
 	}

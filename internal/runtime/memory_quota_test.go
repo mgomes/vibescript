@@ -699,7 +699,7 @@ func TestMemoryQuotaAggregateArguments(t *testing.T) {
 				}
 			},
 			setupEnv: func(env *Env) {
-				env.Define("__block__", NewBlock(nil, nil, newEnv(nil)))
+				env.setCallBlock(NewBlock(nil, nil, newEnv(nil)))
 			},
 		},
 	}

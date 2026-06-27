@@ -201,3 +201,104 @@ func TestBlockGivenNotShadowableByMember(t *testing.T) {
 	script := compileScript(t, "def run\n  \"hi\".block_given?\nend\n")
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "unknown string method block_given?")
 }
+
+// TestBlockGivenIgnoresShadowingBindings confirms a script binding cannot spoof
+// or suppress the call's block. block_given? and yield read the call frame's
+// dedicated slot, so a parameter, local, or block parameter named __block__ is
+// just an ordinary variable and never alters the predicate or yield target.
+func TestBlockGivenIgnoresShadowingBindings(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def param_spoofs(__block__)
+      block_given?
+    end
+
+    def local_spoofs
+      __block__ = 1
+      block_given?
+    end
+
+    def yields_value
+      yield 7
+    end
+
+    def param_does_not_suppress_yield(__block__)
+      yields_value { |n| n + __block__ }
+    end
+
+    def block_param_spoofs
+      [1].map do |__block__|
+        block_given?
+      end
+    end
+
+    def spoof_param_without
+      param_spoofs(1)
+    end
+
+    def spoof_param_with
+      param_spoofs(1) { 1 }
+    end
+
+    def spoof_local_without
+      local_spoofs
+    end
+
+    def spoof_local_with
+      local_spoofs { 1 }
+    end
+
+    def yield_through_param
+      param_does_not_suppress_yield(10)
+    end
+
+    def block_param_without
+      block_param_spoofs
+    end
+
+    def block_param_with
+      block_param_spoofs { 1 }
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{name: "argument named __block__ does not fake a block", fn: "spoof_param_without", want: NewBool(false)},
+		{name: "real block survives an argument named __block__", fn: "spoof_param_with", want: NewBool(true)},
+		{name: "local named __block__ does not fake a block", fn: "spoof_local_without", want: NewBool(false)},
+		{name: "real block survives a local named __block__", fn: "spoof_local_with", want: NewBool(true)},
+		{name: "argument named __block__ does not suppress yield", fn: "yield_through_param", want: NewInt(17)},
+		{name: "block parameter named __block__ does not fake a block", fn: "block_param_without", want: NewArray([]Value{NewBool(false)})},
+		{name: "real block survives a block parameter named __block__", fn: "block_param_with", want: NewArray([]Value{NewBool(true)})},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := callScript(t, context.Background(), script, tt.fn, nil, CallOptions{})
+			assertValueEqual(t, got, tt.want)
+		})
+	}
+}
+
+// TestYieldRejectsParamNamedBlock confirms a method that takes a __block__
+// parameter still reports "no block given" when called without a block, proving
+// yield never reads the parameter as the call's block.
+func TestYieldRejectsParamNamedBlock(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def yields(__block__)
+      yield __block__
+    end
+
+    def run
+      yields(1)
+    end
+    `)
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "no block given")
+}

@@ -8,17 +8,12 @@ import (
 	"strings"
 )
 
-// blockBindingName is the reserved environment key that holds the block
-// supplied to the current call. It is defined in every function's call
-// environment (as nil when no block was given) and read by yield and
-// block_given?.
-const blockBindingName = "__block__"
-
 // blockGivenInCurrentCall reports whether the call that owns env was supplied a
 // block, mirroring Ruby's block_given?. It returns false at the top level and in
-// calls that received no block.
+// calls that received no block. The block is read from the enclosing call
+// frame's dedicated slot, so a script binding cannot shadow the predicate.
 func blockGivenInCurrentCall(env *Env) bool {
-	block, ok := env.Get(blockBindingName)
+	block, ok := env.lookupCallBlock()
 	return ok && block.Kind() != KindNil
 }
 
@@ -189,11 +184,11 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 }
 
 func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
-	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+2)
+	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+1)
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
 	}
-	callEnv.Define(blockBindingName, block)
+	callEnv.setCallBlock(block)
 	if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
 		return NewNil(), err
 	}
@@ -564,6 +559,12 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 	env.rangeStaticBindings(func(name string, val Value) {
 		clone.DefineStatic(name, r.rebindValue(val))
 	})
+	// A call frame captured by an escaped closure carries the block its method
+	// received; preserve and rebind it so a re-entering closure's yield or
+	// block_given? still resolves to that block re-rooted onto the live call.
+	if env.hasCallBlock {
+		clone.setCallBlock(r.rebindValue(env.callBlock))
+	}
 	return clone
 }
 
@@ -698,6 +699,11 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 
 func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctionRebinder, fn *ScriptFunction, args []Value, keywords map[string]Value) (*Env, error) {
 	callEnv := newEnvWithCapacity(root, len(fn.Params))
+	// The host entry call never supplies a block, but the frame is still a call
+	// frame: mark it with a nil block so block_given? reports false, yield
+	// raises, and a &block parameter binds nil, keeping the invariant that every
+	// call frame carries its own block slot.
+	callEnv.setCallBlock(NewNil())
 	callArgs := rebinder.rebindValues(args)
 	callKeywords := rebinder.rebindKeywords(keywords)
 	if err := exec.bindFunctionArgs(fn, callEnv, callArgs, callKeywords, fn.Pos); err != nil {
@@ -1349,8 +1355,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 			}
 			val = NewHash(rest)
 		case ParamBlock:
-			block, ok := env.Get(blockBindingName)
-			if ok {
+			if block, ok := env.lookupCallBlock(); ok {
 				val = block
 			} else {
 				val = NewNil()
