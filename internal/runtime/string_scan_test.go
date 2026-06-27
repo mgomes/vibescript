@@ -901,3 +901,112 @@ end`)
 		t.Fatalf("sparse no-match scan size = %v, want int 0", got)
 	}
 }
+
+// tightestScanQuota binary-searches the smallest MemoryQuotaBytes under which
+// run(text) still succeeds, so a test can pin a scan's real live peak without
+// hand-computing every transient the interpreter holds.
+func tightestScanQuota(t *testing.T, source string, text Value) int {
+	t.Helper()
+	admits := func(quota int) bool {
+		script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: quota}, source)
+		_, err := script.Call(context.Background(), "run", []Value{text}, CallOptions{})
+		return err == nil
+	}
+	lo, hi := 0, 1<<24
+	if !admits(hi) {
+		t.Fatalf("upper bound quota %d did not admit the scan", hi)
+	}
+	for lo+1 < hi {
+		mid := (lo + hi) / 2
+		if admits(mid) {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	return hi
+}
+
+// TestStringScanBlockChargesIndexTable is the regression for the reviewer's P1 on
+// the block form of String#scan: the engine's [][]int index table stays live for
+// the whole block loop, but the block path early-returned before reserving the
+// footprint the non-block path folds into its accumulator baseline. Under a tight
+// memory quota a block-form scan could therefore hold the large match table (and
+// any matches the block retained) while every per-match memory check, which sees
+// only the execution's reachable roots, missed the table -- letting the true peak
+// exceed the quota by the table's size.
+//
+// The block body here is empty, so it charges no per-iteration memory: the index
+// table is the only large live allocation while the loop runs. A many-empty-groups
+// pattern over a sizable subject makes that table dominate. The test pins the
+// tightest quota that still admits the empty-body block scan and asserts it sits at
+// or above the table's projected footprint, proving the reservation now charges the
+// table for the loop's lifetime. Without the fix the table rode along uncharged and
+// the tightest quota would be far below that footprint.
+func TestStringScanBlockChargesIndexTable(t *testing.T) {
+	t.Parallel()
+
+	const groups = 40
+	pattern := strings.Repeat("()", groups) // ~80 bytes, well under the pattern cap.
+	const count = 4_000
+	subject := NewString(strings.Repeat("a", count))
+
+	// The empty-groups pattern matches once per position plus once at the end, so the
+	// engine returns count+1 matches; project that table's footprint.
+	matches := len(regexp.MustCompile(pattern).FindAllStringSubmatchIndex(subject.String(), -1))
+	if matches != count+1 {
+		t.Fatalf("match count = %d, want %d (fixture out of sync)", matches, count+1)
+	}
+	tableBytes := projectedRegexSubmatchIndexBytes(matches, groups)
+	if tableBytes <= 0 {
+		t.Fatalf("projected index footprint = %d, want a positive table", tableBytes)
+	}
+
+	// An empty block body charges no per-iteration memory, so the held index table is
+	// the loop's only large allocation. The result is the receiver, never an array.
+	emptyBlockScan := `def run(text)
+  text.scan("` + pattern + `") do |m| end
+end`
+	tightest := tightestScanQuota(t, emptyBlockScan, subject)
+
+	// The reservation folds the whole table into the baseline, so the tightest quota
+	// that still admits the scan must cover at least that table. Before the fix the
+	// table was uncharged and the tightest quota sat far below tableBytes.
+	if tightest < tableBytes {
+		t.Fatalf("tightest block-scan quota = %d, want >= index table footprint %d (table must be charged)", tightest, tableBytes)
+	}
+
+	// Sanity: a quota one byte below the tightest peak rejects, and a generous quota
+	// admits, proving the bound comes from the held table and not an unrelated limit.
+	reject := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: tightest - 1}, emptyBlockScan)
+	requireCallRuntimeErrorType(t, reject, "run", []Value{subject}, CallOptions{}, runtimeErrorTypeLimit)
+
+	roomy := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: tightest + 64*1024}, emptyBlockScan)
+	if _, err := roomy.Call(context.Background(), "run", []Value{subject}, CallOptions{}); err != nil {
+		t.Fatalf("block scan under a roomy quota = %v, want success", err)
+	}
+}
+
+// TestStringScanBlockReleasesIndexTableReservation confirms the block-form scan's
+// index-table reservation is balanced: it is released once the loop finishes, so a
+// scan that fits its own peak does not leave reserved scratch behind to wrongly
+// reject later allocations. A sparse no-match scan reserves an empty table and must
+// succeed under a tight quota, and code after the scan must still see the full quota.
+func TestStringScanBlockReleasesIndexTableReservation(t *testing.T) {
+	t.Parallel()
+
+	// The pattern never matches, so the index table is empty and the block never runs;
+	// the post-scan array must allocate against the full quota with no leftover charge.
+	source := `def run(text)
+  text.scan("z") do |m| end
+  [1, 2, 3]
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 * 1024}, source)
+
+	subject := NewString(strings.Repeat("a", 2000))
+	got, err := script.Call(context.Background(), "run", []Value{subject}, CallOptions{})
+	if err != nil {
+		t.Fatalf("sparse block scan then allocate = %v, want success (reservation must be released)", err)
+	}
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2), NewInt(3)})
+}

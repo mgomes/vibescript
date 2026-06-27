@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -326,5 +327,104 @@ func TestStringGsubBlockOutputLimit(t *testing.T) {
 		t.Fatalf("expected output limit error, got nil")
 	} else if !strings.Contains(err.Error(), "output exceeds limit") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBoundedReplacementStringCapsCompositeRendering is the direct regression for
+// the reviewer's P1 on bound block-result rendering. A sub/gsub block's result is
+// turned into its replacement string by boundedReplacementString, which renders
+// with StringBounded(maxRegexInputBytes) rather than Value.String(). String()'s
+// composite rendering is intentionally unbounded, so a block returning a large
+// array/hash would materialize the whole multi-MiB rendering before the regex
+// output guard -- which only inspects an already-built string -- could see it.
+//
+// Driving boundedReplacementString directly makes the cap the only variable: a
+// composite whose rendering would exceed the cap must return the output-limit error
+// (proving the rendering stopped at the cap rather than fully materializing), while
+// a composite that fits returns exactly the unbounded String() rendering (proving
+// no over-rejection). A purely error/no-error script-level assertion cannot pin
+// this, because the downstream appendBounded guard rejects an oversized result
+// either way -- only the rendering having STOPPED at the cap distinguishes the fix.
+func TestBoundedReplacementStringCapsCompositeRendering(t *testing.T) {
+	t.Parallel()
+
+	// An array whose rendering far exceeds the 1 MiB cap. Each element renders as a
+	// distinct multi-digit integer plus ", ", so the rendered form is well over
+	// maxRegexInputBytes while the value itself is cheap to build.
+	const overCapElements = 300_000
+	big := make([]Value, overCapElements)
+	for i := range big {
+		big[i] = NewInt(int64(i))
+	}
+	overCap := NewArray(big)
+	if overCap.StringByteLen() <= maxRegexInputBytes {
+		t.Fatalf("fixture renders %d bytes, want > cap %d", overCap.StringByteLen(), maxRegexInputBytes)
+	}
+
+	if _, err := boundedReplacementString(overCap); err == nil {
+		t.Fatal("boundedReplacementString over cap = nil error, want output-limit error")
+	} else if !strings.Contains(err.Error(), "output exceeds limit") {
+		t.Fatalf("boundedReplacementString over cap error = %v, want output-limit error", err)
+	}
+
+	// A small composite renders the same bytes the unbounded String() would, so the
+	// cap never rejects a result that fits. This pins that StringBounded matches the
+	// unbounded form byte for byte under the cap.
+	small := NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})
+	got, err := boundedReplacementString(small)
+	if err != nil {
+		t.Fatalf("boundedReplacementString under cap = %v, want success", err)
+	}
+	if want := small.String(); got != want {
+		t.Fatalf("boundedReplacementString under cap = %q, want %q (must match unbounded String)", got, want)
+	}
+}
+
+// TestStringSubGsubBlockCompositeResultRejected exercises the full sub/gsub block
+// path with a block returning a composite whose rendering exceeds the regex output
+// cap. The call must fail with the output-limit error rather than splice a
+// multi-MiB replacement, confirming boundedReplacementString is wired into both the
+// sub and gsub block forms. The memory quota is generous so building the array
+// itself is allowed, isolating the output-cap behavior from the array build.
+func TestStringSubGsubBlockCompositeResultRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		script string
+	}{
+		{
+			name:   "gsub block returning a large array",
+			script: `def run() "a".gsub("a") do |m| (1..300000).to_a end end`,
+		},
+		{
+			name:   "sub block returning a large array",
+			script: `def run() "a".sub("a") do |m| (1..300000).to_a end end`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 << 20}, tc.script)
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, "output exceeds limit")
+		})
+	}
+}
+
+// TestStringGsubBlockCompositeResultUnderCap confirms the bounded block-result
+// rendering does not over-reject: a block returning a small composite whose
+// rendering fits well under the regex output cap is spliced normally, exactly as
+// Value.String() would have rendered it.
+func TestStringGsubBlockCompositeResultUnderCap(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 << 20}, `def run() "x".gsub("x") do |m| [1, 2, 3] end end`)
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{})
+	if err != nil {
+		t.Fatalf("small composite block result = %v, want success", err)
+	}
+	if got.Kind() != KindString || got.String() != "[1, 2, 3]" {
+		t.Fatalf("gsub small composite result = %v %q, want %q", got.Kind(), got.String(), "[1, 2, 3]")
 	}
 }

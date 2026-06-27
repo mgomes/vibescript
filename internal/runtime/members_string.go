@@ -1267,11 +1267,32 @@ func stringGSubBlock(method, text, pattern string, regex bool, yield func(match 
 	return rubyRegexGSubWith(re, text, method, rubyBlockReplacer(text, yield))
 }
 
+// boundedReplacementString renders a sub/gsub block result into its replacement
+// string under the shared 1 MiB regex output cap. Value.String()'s composite
+// rendering is intentionally unbounded, so a block returning a large or
+// deeply-aggregate array/hash would materialize the whole multi-MiB rendering in
+// memory before rubyBlockReplacer's appendBounded guard (which only inspects the
+// already-built string) could see it. StringBounded stops once the rendering would
+// exceed maxRegexInputBytes and reports the truncation, which this surfaces as the
+// same "output exceeds limit" error the rest of the regex output guards raise, so
+// the block form refuses an over-cap replacement without first allocating it.
+func boundedReplacementString(result Value) (string, error) {
+	replacement, err := result.StringBounded(maxRegexInputBytes)
+	if err != nil {
+		if errors.Is(err, errStringRenderTruncated) {
+			return "", fmt.Errorf("output exceeds limit %d bytes", maxRegexInputBytes)
+		}
+		return "", err
+	}
+	return replacement, nil
+}
+
 // stringReplaceBlockYield builds the per-match callback rubyBlockReplacer needs
 // from a user block: it charges one step per match (so a flood of matches cannot
 // starve the step quota or cancellation checks), invokes the block with the
-// matched substring, and returns the block result's string form. It is shared by
-// the block forms of String#sub and String#gsub.
+// matched substring, and returns the block result's bounded string form via
+// boundedReplacementString. It is shared by the block forms of String#sub and
+// String#gsub.
 func stringReplaceBlockYield(exec *Execution, runner *blockCallRunner) func(match string) (string, error) {
 	var blockArg [1]Value
 	return func(match string) (string, error) {
@@ -1283,7 +1304,7 @@ func stringReplaceBlockYield(exec *Execution, runner *blockCallRunner) func(matc
 		if err != nil {
 			return "", err
 		}
-		return result.String(), nil
+		return boundedReplacementString(result)
 	}
 }
 
@@ -2242,12 +2263,28 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 // groups, otherwise an array of that match's captured substrings, exactly the
 // shape the non-block scan returns -- and returns the receiver string, matching
 // Ruby. The block's own result is discarded. A step is charged per match so a
-// flood of matches cannot starve the step quota or cancellation checks. Because
-// the result is the receiver rather than an accumulated array, no result array is
-// built or charged here; each match element is materialized only for the duration
-// of its block call, and any structures the block retains are accounted for by
-// the block's own evaluation.
+// flood of matches cannot starve the step quota or cancellation checks.
+//
+// The engine's [][]int index table stays live for the whole loop, so its actual
+// footprint is reserved against the memory quota for the loop's lifetime via
+// reserveLoopScratch before the first yield. Without it, a block that retains
+// yielded matches (out = out.push(m)) could hold the large match table plus the
+// retained values while each per-match memory check -- which sees only the
+// execution's reachable roots -- missed the table, letting the true peak exceed
+// the quota by the table's size. The non-block path folds the same footprint into
+// its accumulator baseline (reserveScratch); this mirrors that accounting for the
+// block form, where the result is the receiver and no accumulator exists.
 func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]int, receiver, block Value) (Value, error) {
+	delta := exec.reserveLoopScratch(projectedRegexSubmatchIndexBytes(len(allMatches), groups))
+	defer exec.releaseLoopScratch(delta)
+	// reserveLoopScratch only folds the table into the baseline; checkMemory here
+	// rejects a table that already overflows the quota before the first yield runs,
+	// mirroring how the non-block path's reserveScratch fails fast instead of
+	// waiting for a slow-path step check several matches into the loop.
+	if err := exec.checkMemory(); err != nil {
+		return NewNil(), err
+	}
+
 	runner, err := newBlockCallRunner(exec, block, "string.scan")
 	if err != nil {
 		return NewNil(), err
