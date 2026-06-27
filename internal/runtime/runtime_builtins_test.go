@@ -238,6 +238,10 @@ def sleep_negative
   sleep(-1)
 end
 
+def sleep_too_large
+  sleep(10000000000.0)
+end
+
 def sleep_keyword
   sleep(0, duration: 1)
 end
@@ -273,6 +277,7 @@ end
 	requireCallErrorContains(t, script, "sleep_missing", nil, CallOptions{}, "sleep expects one duration argument")
 	requireCallErrorContains(t, script, "sleep_non_numeric", nil, CallOptions{}, "sleep duration must be numeric")
 	requireCallErrorContains(t, script, "sleep_negative", nil, CallOptions{}, "sleep duration must be non-negative")
+	requireCallErrorContains(t, script, "sleep_too_large", nil, CallOptions{}, "sleep duration exceeds maximum")
 	requireCallErrorContains(t, script, "sleep_keyword", nil, CallOptions{}, "sleep does not accept keyword arguments")
 	requireCallErrorContains(t, script, "sleep_block", nil, CallOptions{}, "sleep does not accept blocks")
 }

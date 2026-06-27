@@ -306,13 +306,18 @@ func (l *lexer) scanToken() ast.Token {
 		if closesTernary {
 			l.ternaryStack = l.ternaryStack[:len(l.ternaryStack)-1]
 		}
-		if quote := l.peekRune(); (quote == '"' || quote == '\'') && !closesTernary && l.colonStartsQuotedSymbol() {
+		if quote := l.peekRune(); (quote == '"' || quote == '\'') && !closesTernary && l.colonStartsSymbolLiteral() {
 			return l.scanQuotedSymbol(tok)
 		}
-		if !closesTernary {
+		if !closesTernary && l.colonStartsSymbolLiteral() {
 			if tok, ok := l.scanOperatorSymbol(tok); ok {
 				return tok
 			}
+		}
+		if !closesTernary && l.colonSeparatesSymbolValue() {
+			tok = l.makeToken(ast.TokenColon, ":")
+			l.readRune()
+			return tok
 		}
 		if ast.IsIdentifierRune(l.peekRune()) {
 			l.readRune()
@@ -1421,15 +1426,15 @@ func (l *lexer) labelColonPrecedesTernarySeparator() bool {
 	}
 }
 
-// colonStartsQuotedSymbol reports whether a colon followed by a quote should be
-// lexed as a quoted symbol literal (:"foo") rather than a hash or
-// keyword-argument separator that happens to precede a quoted string. It is
-// consulted only after colonClosesTernary has ruled out the ternary separator.
-func (l *lexer) colonStartsQuotedSymbol() bool {
-	return !l.colonSeparatesQuotedValue()
+// colonStartsSymbolLiteral reports whether a colon followed by a quote or
+// operator should be lexed as a symbol literal rather than a hash or
+// keyword-argument separator that happens to precede that value. It is consulted
+// only after colonClosesTernary has ruled out the ternary separator.
+func (l *lexer) colonStartsSymbolLiteral() bool {
+	return !l.colonSeparatesSymbolValue()
 }
 
-func (l *lexer) colonSeparatesQuotedValue() bool {
+func (l *lexer) colonSeparatesSymbolValue() bool {
 	if isLabelNameToken(l.lastToken) {
 		return l.colonAbutsPreviousToken() ||
 			l.labelFollowsHashOrParenthesizedArgumentStart() ||

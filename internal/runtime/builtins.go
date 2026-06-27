@@ -16,6 +16,8 @@ const (
 	randomIDAlphabet       = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	randomIDUnbiasedCutoff = byte((256 / len(randomIDAlphabet)) * len(randomIDAlphabet))
 	maxRandomIDStallReads  = 8
+	maxSleepDuration       = time.Duration(1<<63 - 1)
+	maxSleepSeconds        = float64(maxSleepDuration) / float64(time.Second)
 )
 
 func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -93,18 +95,17 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 		return NewNil(), fmt.Errorf("sleep does not accept blocks")
 	}
 
-	seconds, err := valueToSleepSeconds(args[0])
+	duration, err := valueToSleepDuration(args[0])
 	if err != nil {
 		return NewNil(), err
 	}
-	if seconds <= 0 {
+	if duration <= 0 {
 		if err := exec.checkContext(); err != nil {
 			return NewNil(), err
 		}
 		return NewInt(0), nil
 	}
 
-	duration := time.Duration(seconds * float64(time.Second))
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	select {
@@ -115,20 +116,26 @@ func builtinSleep(exec *Execution, receiver Value, args []Value, kwargs map[stri
 	}
 }
 
-func valueToSleepSeconds(val Value) (float64, error) {
+func valueToSleepDuration(val Value) (time.Duration, error) {
 	switch val.Kind() {
 	case KindInt:
-		seconds := float64(val.Int())
+		seconds := val.Int()
 		if seconds < 0 {
 			return 0, fmt.Errorf("sleep duration must be non-negative")
 		}
-		return seconds, nil
+		if seconds > int64(maxSleepDuration/time.Second) {
+			return 0, fmt.Errorf("sleep duration exceeds maximum")
+		}
+		return time.Duration(seconds) * time.Second, nil
 	case KindFloat:
 		seconds := val.Float()
 		if seconds < 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
 			return 0, fmt.Errorf("sleep duration must be finite and non-negative")
 		}
-		return seconds, nil
+		if seconds > maxSleepSeconds {
+			return 0, fmt.Errorf("sleep duration exceeds maximum")
+		}
+		return time.Duration(seconds * float64(time.Second)), nil
 	default:
 		return 0, fmt.Errorf("sleep duration must be numeric")
 	}
