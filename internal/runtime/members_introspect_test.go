@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // evalBoolExpr compiles and runs a one-line expression and asserts it returns a
 // boolean, returning that boolean for comparison.
@@ -559,6 +562,167 @@ func TestPredicateDataSlotsDoNotShadow(t *testing.T) {
 			t.Fatalf("class with colliding respond_to? class var = %v, want true", got)
 		}
 	})
+}
+
+// TestRespondToPrivateUniversalOverride guards that a private override of a
+// universal member (eql?/respond_to?/...) is reported per privacy, matching the
+// dispatch that would otherwise raise. Without this, respond_to? would report a
+// privately overridden universal member as callable to an external caller even
+// though invoking it publicly raises a private-method error.
+func TestRespondToPrivateUniversalOverride(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class User
+      private def eql?(other)
+        true
+      end
+    end
+
+    def probe_public()
+      User.new.respond_to?(:eql?)
+    end
+
+    def probe_include_all()
+      User.new.respond_to?(:eql?, true)
+    end
+
+    def probe_other_universal()
+      User.new.respond_to?(:itself)
+    end
+    `)
+
+	cases := map[string]bool{
+		// A private override of a universal member is hidden from an external probe
+		// (a public dispatch of eql? would raise), but visible with include_all.
+		"probe_public":      false,
+		"probe_include_all": true,
+		// An un-overridden universal member still responds via the fallback.
+		"probe_other_universal": true,
+	}
+	for fn, want := range cases {
+		got := callFunc(t, script, fn, nil)
+		if got.Kind() != KindBool {
+			t.Fatalf("%s kind = %v, want bool", fn, got.Kind())
+		}
+		if got.Bool() != want {
+			t.Fatalf("%s = %v, want %v", fn, got.Bool(), want)
+		}
+	}
+}
+
+// TestRespondToClassPrivateUniversalOverride mirrors the instance case for a
+// class value: a private class-method override of a universal member is hidden
+// from an external probe but visible with include_all.
+func TestRespondToClassPrivateUniversalOverride(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    class Widget
+      private def self.eql?(other)
+        true
+      end
+    end
+
+    def probe_public()
+      Widget.respond_to?(:eql?)
+    end
+
+    def probe_include_all()
+      Widget.respond_to?(:eql?, true)
+    end
+    `)
+
+	cases := map[string]bool{
+		"probe_public":      false,
+		"probe_include_all": true,
+	}
+	for fn, want := range cases {
+		got := callFunc(t, script, fn, nil)
+		if got.Kind() != KindBool {
+			t.Fatalf("%s kind = %v, want bool", fn, got.Kind())
+		}
+		if got.Bool() != want {
+			t.Fatalf("%s = %v, want %v", fn, got.Bool(), want)
+		}
+	}
+}
+
+// TestRespondToObjectFieldShadowsHashBuiltin guards that for object values a
+// stored data field shadows the hash builtin of the same name in both dispatch
+// and respond_to?: a non-callable field keyed "keys"/"size" means record.keys
+// returns the field, so respond_to?(:keys) must report false rather than
+// pointing at a hash builtin dispatch would never reach. A field holding a
+// callable export still responds, and a name with no field falls back to the
+// hash builtin.
+func TestRespondToObjectFieldShadowsHashBuiltin(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def keys_field()
+      record.keys
+    end
+
+    def responds_keys()
+      record.respond_to?(:keys)
+    end
+
+    def responds_size_builtin()
+      record.respond_to?(:size)
+    end
+
+    def responds_callable_field()
+      record.respond_to?(:work)
+    end
+
+    def responds_universal()
+      record.respond_to?(:itself)
+    end
+    `)
+
+	record := NewObject(map[string]Value{
+		// A non-callable field shadowing the hash builtin: record.keys returns 7,
+		// so the receiver does not respond to :keys as a callable.
+		"keys": NewInt(7),
+		// A callable export keyed "work": dispatch returns it, so it responds.
+		"work": NewBuiltin("work", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			return NewNil(), nil
+		}),
+		"name": NewString("x"),
+	})
+	globals := map[string]Value{"record": record}
+
+	intCases := map[string]int64{
+		"keys_field": 7, // the field shadows the hash builtin
+	}
+	for fn, want := range intCases {
+		got, err := script.Call(context.Background(), fn, nil, CallOptions{Globals: globals})
+		if err != nil {
+			t.Fatalf("%s: %v", fn, err)
+		}
+		if got.Kind() != KindInt || got.Int() != want {
+			t.Fatalf("%s = %v, want %d", fn, got, want)
+		}
+	}
+
+	boolCases := map[string]bool{
+		"responds_keys":           false, // shadowed by the non-callable field
+		"responds_size_builtin":   true,  // no field, hash builtin is reachable
+		"responds_callable_field": true,  // callable export responds
+		"responds_universal":      true,  // universal member always responds
+	}
+	for fn, want := range boolCases {
+		got, err := script.Call(context.Background(), fn, nil, CallOptions{Globals: globals})
+		if err != nil {
+			t.Fatalf("%s: %v", fn, err)
+		}
+		if got.Kind() != KindBool {
+			t.Fatalf("%s kind = %v, want bool", fn, got.Kind())
+		}
+		if got.Bool() != want {
+			t.Fatalf("%s = %v, want %v", fn, got.Bool(), want)
+		}
+	}
 }
 
 // TestPredicateMethodStillOverrides confirms the data-slot guard does not also

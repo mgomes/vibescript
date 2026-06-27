@@ -113,38 +113,83 @@ func methodNameArg(v Value) (string, bool) {
 	}
 }
 
-// respondsTo reports whether receiver has a callable method named method. It
+// respondsTo reports whether receiver has a callable method named method, i.e.
+// whether dispatching method on receiver (under the given privacy) would reach a
+// callable rather than raise or return data. It mirrors resolveMember's
+// per-kind decision so respond_to? never disagrees with actual dispatch. It
 // consults each kind's method namespace only, never its data (hash keys, object
 // entries, instance variables, or class variables), so storing a callable in a
-// data slot does not make the receiver respond to that slot's name. The
-// universal members (itself, eql?, equal?, and the introspection predicates)
-// always respond, since resolveMember answers them for every value.
+// data slot does not make the receiver respond to that slot's name — except when
+// the data slot itself holds a callable that real dispatch would invoke (an
+// object's callable export, see the KindObject branch).
+//
+// The universal members (itself, eql?, equal?, and the introspection predicates)
+// respond on every value because resolveMember answers them as a fallback, but a
+// user-defined override of one of these names is a real method: it responds only
+// under the same privacy as any other method, so a private override is not
+// reported to an external caller (matching the dispatch that would raise).
 func (exec *Execution) respondsTo(receiver Value, method string, allowPrivate bool) bool {
-	if isUniversalMember(method) {
-		return true
-	}
 	switch receiver.Kind() {
-	case KindHash, KindObject:
-		// A name responds when it is a hash builtin method or a data entry
-		// holding a callable. Plain data entries (constants, scalars, nested
-		// records) are attributes, not methods, so they do not respond — this
-		// keeps namespace functions such as Math.sqrt reporting true while
-		// constants such as Math::PI report false.
+	case KindHash:
+		// Hashes have no methods that could shadow a universal member, and a hash
+		// builtin name always wins over a stored entry of the same name (hashMember
+		// resolves the builtin before any data key). A universal name therefore
+		// always responds; any other name responds when it is a hash builtin or a
+		// data entry holding a callable.
+		if isUniversalMember(method) {
+			return true
+		}
 		if _, ok := hashBuiltinMembers.lookup(method, hashMemberBuiltin); ok {
 			return true
 		}
 		entry, ok := receiver.Hash()[method]
 		return ok && isInvocable(entry)
+	case KindObject:
+		return objectRespondsTo(receiver, method)
 	case KindInstance:
 		return instanceRespondsTo(valueInstance(receiver), method, allowPrivate)
 	case KindClass:
 		return classRespondsTo(valueClass(receiver), method, allowPrivate)
 	default:
-		// Every non-container kind exposes only methods, so a successful
-		// resolution means the name is a callable member.
+		// Every non-container kind exposes only methods and has no user-defined
+		// overrides, so a universal member always responds and any other name
+		// responds when it resolves to a callable member.
+		if isUniversalMember(method) {
+			return true
+		}
 		_, err := exec.resolveTypedMember(receiver, method, Position{}, allowPrivate)
 		return err == nil
 	}
+}
+
+// objectRespondsTo reports whether an object value responds to method, matching
+// the KindObject branch of resolveTypedMember. An object's map backs both
+// module/capability namespaces (callable exports) and ordinary data objects
+// (data fields), and a stored entry shadows the hash builtin of the same name:
+// dispatch returns the entry, so the receiver responds only when that entry is a
+// callable export. A non-callable data field keyed with a method name therefore
+// does NOT respond even when a hash builtin of that name exists, because real
+// dispatch would return (and try to call) the stored data, not the builtin.
+//
+// A universal member responds regardless: a callable export of that name shadows
+// the universal member (and is itself callable), while any other case lets the
+// universal fallback answer.
+func objectRespondsTo(receiver Value, method string) bool {
+	if entry, ok := receiver.Hash()[method]; ok {
+		if isInvocable(entry) {
+			return true
+		}
+		// A non-callable field shadows the hash builtin (dispatch returns the
+		// data), so the receiver does not respond — unless the name is a universal
+		// member, where a non-callable field does not shadow and the universal
+		// fallback still answers.
+		return isUniversalMember(method)
+	}
+	if isUniversalMember(method) {
+		return true
+	}
+	_, ok := hashBuiltinMembers.lookup(method, hashMemberBuiltin)
+	return ok
 }
 
 // isInvocable reports whether v can be called. invokeCallable accepts only
@@ -162,30 +207,34 @@ func isInvocable(v Value) bool {
 // instanceRespondsTo reports whether an instance has a method named method.
 // `class` is the one always-available pseudo-method. Instance variables are
 // attributes, not methods, so they never respond even when readable as members
-// (mirroring Ruby, where respond_to? reports methods only). Private methods
-// respond only when allowPrivate is set.
+// (mirroring Ruby, where respond_to? reports methods only). A user-defined method
+// (including an override of a universal member such as respond_to?) responds only
+// per privacy: a private method responds when allowPrivate is set, matching the
+// dispatch that would otherwise raise. A universal member with no override
+// responds because resolveMember answers it via the universal fallback.
 func instanceRespondsTo(inst *Instance, method string, allowPrivate bool) bool {
 	if method == "class" {
 		return true
 	}
-	fn, ok := inst.Class.Methods[method]
-	if !ok {
-		return false
+	if fn, ok := inst.Class.Methods[method]; ok {
+		return allowPrivate || !fn.Private
 	}
-	return allowPrivate || !fn.Private
+	return isUniversalMember(method)
 }
 
 // classRespondsTo reports whether a class value has a member named method.
 // `new` is the one always-available pseudo-method. Class variables are
-// attributes, not methods, so they never respond. Private class methods respond
-// only when allowPrivate is set.
+// attributes, not methods, so they never respond. A user-defined class method
+// (including an override of a universal member) responds only per privacy: a
+// private class method responds when allowPrivate is set. A universal member with
+// no override responds because resolveMember answers it via the universal
+// fallback.
 func classRespondsTo(cl *ClassDef, method string, allowPrivate bool) bool {
 	if method == "new" {
 		return true
 	}
-	fn, ok := cl.ClassMethods[method]
-	if !ok {
-		return false
+	if fn, ok := cl.ClassMethods[method]; ok {
+		return allowPrivate || !fn.Private
 	}
-	return allowPrivate || !fn.Private
+	return isUniversalMember(method)
 }
