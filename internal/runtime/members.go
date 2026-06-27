@@ -23,10 +23,11 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // receiver may resolve private methods, so external/public dispatch passes
 // false to keep privacy enforced regardless of which value is self.
 //
-// The universal Object-level helpers — itself, the equality predicates
-// eql?/equal?, and the block helpers tap/yield_self — are resolved as a fallback
-// after the type-specific dispatch reports the member as unknown, so a value's
-// own members and any user-defined methods of the same name always take
+// The universal Object-level helpers — itself, nil?, the equality predicates
+// eql?/equal?, the block helpers tap/yield_self, and the introspection
+// predicates respond_to?/is_a?/kind_of?/instance_of? — are resolved as a
+// fallback after the type-specific dispatch reports the member as unknown, so a
+// value's own members and any user-defined methods of the same name always take
 // precedence, matching Ruby's overridable Object-level helpers. A private
 // override is not "unknown": resolveTypedMember reports it with a private-member
 // error, which suppresses the fallback so the privacy block still raises rather
@@ -35,16 +36,18 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // (probe = obj.itself) and the parenthesized form (obj.itself()) in agreement:
 // a user-defined itself wins in both, since both routes share this resolution.
 //
-// Hash receivers are the exception for the data-safe helpers itself/eql?/equal?:
-// a stored hash entry keyed one of them is data rather than a method, so the
-// typed dispatch can never own that member and the universal helper always wins.
-// Resolving it before typed dispatch keeps identity O(1): it skips hashMember's
-// miss path, which would otherwise materialize did-you-mean candidates from every
-// stored key only for resolveMember to discard that error in favor of the
-// universal builtin. The block helpers tap/yield_self are not in this exception:
-// a hash entry keyed tap/yield_self is ordinary data the typed dispatch returns,
-// so they fall back only on a miss — but that miss is still reported cheaply, not
-// routed through hashMember's candidate-building path (see resolveTypedMember).
+// Hash receivers are the exception for the data-safe helpers itself/nil?/eql?/
+// equal? and the introspection predicates respond_to?/is_a?/kind_of?/
+// instance_of?: a stored hash entry keyed one of them is data rather than a
+// method, so the typed dispatch can never own that member and the universal
+// helper always wins. Resolving it before typed dispatch keeps identity O(1): it
+// skips hashMember's miss path, which would otherwise materialize did-you-mean
+// candidates from every stored key only for resolveMember to discard that error
+// in favor of the universal builtin. The block helpers tap/yield_self are not in
+// this exception: a hash entry keyed tap/yield_self is ordinary data the typed
+// dispatch returns, so they fall back only on a miss — but that miss is still
+// reported cheaply, not routed through hashMember's candidate-building path (see
+// resolveTypedMember).
 //
 // Object receivers are NOT in the data-safe exception, but they are not uniform
 // either. KindObject backs two distinct shapes: module/capability namespaces,
@@ -59,13 +62,13 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // it.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	if isUniversalDataSafe(property) && universalMemberAlwaysWins(obj.Kind()) {
-		if helper, ok := universalMember(obj, property); ok {
+		if helper, ok := exec.universalMember(obj, property, callerIsReceiver); ok {
 			return helper, nil
 		}
 	}
 	member, err := exec.resolveTypedMember(obj, property, pos, callerIsReceiver)
 	if err != nil && !isPrivateMemberError(err) && isUniversalMember(property) {
-		if helper, ok := universalMember(obj, property); ok {
+		if helper, ok := exec.universalMember(obj, property, callerIsReceiver); ok {
 			return helper, nil
 		}
 	}
@@ -74,9 +77,10 @@ func (exec *Execution) resolveMember(obj Value, property string, pos Position, c
 
 // universalMemberAlwaysWins reports whether a receiver kind has no typed member
 // or user-defined method that could shadow the data-safe universal helpers
-// (itself/eql?/equal?), so they may be resolved before typed dispatch. Only hash
-// receivers qualify: hashMember exposes no such builtin and a stored entry of
-// that name is data rather than a method, so the universal helper is the sole
+// (itself/nil?/eql?/equal? and the introspection predicates respond_to?/is_a?/
+// kind_of?/instance_of?), so they may be resolved before typed dispatch. Only
+// hash receivers qualify: hashMember exposes no such builtin and a stored entry
+// of that name is data rather than a method, so the universal helper is the sole
 // resolution and resolving it first avoids hashMember's expensive miss path. The
 // caller gates this on isUniversalDataSafe; the data-eligible block helpers
 // tap/yield_self never take this shortcut because a stored hash entry of that
@@ -141,9 +145,11 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 			if !isUniversalDataSafe(property) {
 				return val, nil
 			}
-			// A non-callable data field keyed itself/eql?/equal? is data: leave it
-			// to resolveMember's universal fallback so obj.equal?(obj) stays true.
-			// The field stays readable as data through index access (obj["eql?"]).
+			// A non-callable data field keyed by a data-safe helper (itself/nil?/eql?/
+			// equal? or an introspection predicate) is data: leave it to
+			// resolveMember's universal fallback so obj.equal?(obj) stays true and a
+			// `{"respond_to?": 1}` field does not suppress respond_to?. The field
+			// stays readable as data through index access (obj["eql?"]).
 			return NewNil(), exec.errorAt(pos, "unknown member %s", property)
 		}
 		// A universal member that is not a stored member is answered by
@@ -246,23 +252,25 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
-	// A stored class var keyed by a data-safe helper ("itself"/"eql?"/"equal?") is
-	// data, not a member, but those helpers are never reachable as data via
-	// dispatch, so the class var must not preempt the universal helper
-	// (resolveMember supplies it via the unknown-member fallback). A stored class
-	// var keyed by a data-eligible block helper ("tap"/"yield_self") is ordinary
-	// data the dispatch returns, so it shadows the helper. A user-defined class
-	// method of any of these names is resolved above and still overrides the
-	// universal helper.
+	// A stored class var keyed by a data-safe helper (itself/nil?/eql?/equal? or an
+	// introspection predicate respond_to?/is_a?/kind_of?/instance_of?) is data,
+	// not a member, but those helpers are never reachable as data via dispatch, so
+	// the class var must not preempt the universal helper (resolveMember supplies
+	// it via the unknown-member fallback). A stored class var keyed by a
+	// data-eligible block helper ("tap"/"yield_self") is ordinary data the
+	// dispatch returns, so it shadows the helper. A user-defined class method of
+	// any of these names is resolved above and still overrides the universal
+	// helper.
 	if !isUniversalDataSafe(property) {
 		if val, ok := cl.ClassVars[property]; ok {
 			return val, nil
 		}
 	}
-	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1)
+	candidates := make([]string, 0, len(cl.ClassMethods)+len(cl.ClassVars)+1+len(universalMemberNames))
 	candidates = append(candidates, "new")
 	candidates = appendAccessibleMethodNames(candidates, cl.ClassMethods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(cl.ClassVars))
+	candidates = append(candidates, universalMemberNames...)
 	return NewNil(), exec.errorAt(pos, "unknown class member %s%s", property, didYouMean(property, candidates))
 }
 
@@ -281,7 +289,8 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 		valueBuiltin(method).OptionsHashTarget = fn
 		return method, nil
 	}
-	// A stored ivar keyed by a data-safe helper ("itself"/"eql?"/"equal?") is data,
+	// A stored ivar keyed by a data-safe helper (itself/nil?/eql?/equal? or an
+	// introspection predicate respond_to?/is_a?/kind_of?/instance_of?) is data,
 	// not a member, but those helpers are never reachable as data via dispatch, so
 	// the ivar must not preempt the universal helper (resolveMember supplies it via
 	// the unknown-member fallback). A stored ivar keyed by a data-eligible block
@@ -294,10 +303,11 @@ func (exec *Execution) instanceMember(obj Value, property string, pos Position, 
 			return val, nil
 		}
 	}
-	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1)
+	candidates := make([]string, 0, len(inst.Class.Methods)+len(inst.Ivars)+1+len(universalMemberNames))
 	candidates = append(candidates, "class")
 	candidates = appendAccessibleMethodNames(candidates, inst.Class.Methods, callerIsReceiver)
 	candidates = slices.AppendSeq(candidates, maps.Keys(inst.Ivars))
+	candidates = append(candidates, universalMemberNames...)
 	return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, candidates))
 }
 
@@ -361,9 +371,10 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 // MemberCompletionNames returns the builtin member-method names per
 // receiver type, for editor tooling such as LSP completion. The slices
 // are copies; callers may sort or mutate them freely. Each type's list
-// includes the universal Object-level helpers (itself, eql?, equal?, tap,
-// yield_self), which resolve on every value through resolveMember's fallback even
-// though they live outside the per-kind dispatch switches.
+// includes the universal Object-level helpers (itself, nil?, eql?, equal?, tap,
+// yield_self) and the introspection predicates (respond_to?, is_a?, kind_of?,
+// instance_of?), which resolve on every value through resolveMember's fallback
+// even though they live outside the per-kind dispatch switches.
 func MemberCompletionNames() map[string][]string {
 	return map[string][]string{
 		"string":   withUniversalMembers(stringMemberNames),

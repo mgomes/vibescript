@@ -768,11 +768,41 @@ func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, e
 		return callee, receiver, nil
 	}
 
+	if ident, ok := call.Callee.(*Identifier); ok {
+		return exec.evalIdentifierCallTarget(ident, env)
+	}
+
 	callee, err := exec.evalExpressionWithAuto(call.Callee, env, false)
 	if err != nil {
 		return NewNil(), NewNil(), err
 	}
 	return callee, NewNil(), nil
+}
+
+// evalIdentifierCallTarget resolves a bare identifier used as a call target. A
+// local variable binds with a nil receiver (it is a free-standing callable),
+// while an identifier that falls through to an implicit-self member binds self
+// as the receiver so builtins resolved off self (such as the universal
+// introspection predicates) receive the correct receiver.
+func (exec *Execution) evalIdentifierCallTarget(ident *Identifier, env *Env) (Value, Value, error) {
+	// Mirror the per-expression step charged by evalExpressionWithAuto, which
+	// this branch replaces for identifier callees, so step accounting (and the
+	// statement position a step-quota limit reports) is unchanged.
+	if err := exec.step(); err != nil {
+		return NewNil(), NewNil(), err
+	}
+	if val, ok := env.Get(ident.Name); ok {
+		env.clearArrayAppendBuffer(ident.Name)
+		return val, NewNil(), nil
+	}
+	if self, hasSelf := env.Get("self"); hasSelf && (self.Kind() == KindInstance || self.Kind() == KindClass) {
+		member, err := exec.getMember(self, ident.Name, ident.Pos())
+		if err != nil {
+			return NewNil(), NewNil(), err
+		}
+		return member, self, nil
+	}
+	return NewNil(), NewNil(), exec.errorAt(ident.Pos(), "undefined variable %s%s", ident.Name, didYouMean(ident.Name, env.visibleNames()))
 }
 
 func (exec *Execution) evalDirectMemberMethodCall(receiver Value, property string, pos Position) (Value, bool, error) {
