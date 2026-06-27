@@ -1436,3 +1436,42 @@ func TestKeywordHashLabelsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestHashValueOmissionReadsLocals verifies that the {name:} shorthand reads
+// the local variable of the same name, producing the same hash as {name: name}.
+func TestHashValueOmissionReadsLocals(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def build()
+      name = "Ada"
+      age = 36
+      { name:, age:, role: "engineer" }
+    end
+  `)
+
+	got := callFunc(t, script, "build", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("expected hash result, got %v", got.Kind())
+	}
+	compareHash(t, got.Hash(), map[string]Value{
+		"name": NewString("Ada"),
+		"age":  NewInt(36),
+		"role": NewString("engineer"),
+	})
+}
+
+// TestHashValueOmissionUndefinedLocal verifies that omitting the value for a
+// label with no matching local falls through to the normal undefined-variable
+// diagnostic rather than silently producing nil.
+func TestHashValueOmissionUndefinedLocal(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def build()
+      { name: }
+    end
+  `)
+
+	requireCallErrorContains(t, script, "build", nil, CallOptions{}, "undefined variable name")
+}
