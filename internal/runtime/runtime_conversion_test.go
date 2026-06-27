@@ -215,6 +215,35 @@ func TestHashToArray(t *testing.T) {
 	}
 }
 
+func TestEmptyConversionsDoNotRequireElementStep(t *testing.T) {
+	t.Parallel()
+
+	arrayExec := &Execution{ctx: context.Background(), quota: 1, steps: 1, memoryQuota: 0}
+	hash, err := callArrayMember(t, arrayExec, NewArray(nil), "to_h", nil, NewNil())
+	if err != nil {
+		t.Fatalf("[].to_h with no remaining element steps returned error: %v", err)
+	}
+	if hash.Kind() != KindHash {
+		t.Fatalf("[].to_h returned %v, want hash", hash.Kind())
+	}
+	if len(hash.Hash()) != 0 {
+		t.Fatalf("[].to_h returned %d entries, want 0", len(hash.Hash()))
+	}
+	if arrayExec.steps != 1 {
+		t.Fatalf("[].to_h consumed %d steps, want it to stay at 1", arrayExec.steps)
+	}
+
+	hashExec := &Execution{ctx: context.Background(), quota: 1, steps: 1, memoryQuota: 0}
+	array, err := callHashMember(t, hashExec, NewHash(map[string]Value{}), "to_a", nil, NewNil())
+	if err != nil {
+		t.Fatalf("{}.to_a with no remaining element steps returned error: %v", err)
+	}
+	compareArrays(t, array, []Value{})
+	if hashExec.steps != 1 {
+		t.Fatalf("{}.to_a consumed %d steps, want it to stay at 1", hashExec.steps)
+	}
+}
+
 func TestHashToArrayRejectsMisuse(t *testing.T) {
 	t.Parallel()
 

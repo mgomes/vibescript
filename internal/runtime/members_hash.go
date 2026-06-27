@@ -582,13 +582,13 @@ func hashMemberQuery(property string) (Value, error) {
 			// Abort before materializing and sorting the keys when the context is
 			// already canceled or the remaining step quota cannot cover one step per
 			// entry. The per-pair loop charges a step per entry and observes
-			// cancellation, but the sortedHashKeysInto sort (O(n log n) CPU plus a
-			// scratch list) and the make below run first, so without this cheap up-front
-			// check a large hash could spend that work even when the loop is guaranteed
-			// to exhaust the step quota partway. Bounding on len(entries) (not just one
-			// remaining step) keeps a sandboxed caller from spending O(n log n) CPU on a
-			// projection that cannot fit the remaining steps; the per-pair step still
-			// enforces the quota, so this never rejects a build the loop would accept.
+			// cancellation, but the sortedHashKeysInto sort is O(n log n), so without
+			// this cheap up-front check a large hash could spend that work even when the
+			// loop is guaranteed to exhaust the step quota partway. Bounding on
+			// len(entries) (not just one remaining step) keeps a sandboxed caller from
+			// spending O(n log n) CPU on a projection that cannot fit the remaining
+			// steps; the per-pair step still enforces the quota, so this never rejects a
+			// build the loop would accept.
 			if err := exec.checkStepBudgetFor(len(entries)); err != nil {
 				return NewNil(), err
 			}
@@ -597,17 +597,14 @@ func hashMemberQuery(property string) (Value, error) {
 			if err := acc.reserveScratch(scratch); err != nil {
 				return NewNil(), err
 			}
-			var keyBuf [smallHashKeyBufferSize]string
-			keys := sortedHashKeysInto(entries, keyBuf[:])
-			// make below reserves the whole len(keys) slot backing in one allocation
-			// before the first acc.add can charge it, so a receiver that fits the quota
-			// but whose output slice does not could transiently exceed MemoryQuotaBytes.
-			// Reject the full backing up front so that allocation never happens; the
-			// final length is known exactly, so this never rejects a build the per-pair
-			// checks would accept.
-			if err := acc.reserveSlots(len(keys)); err != nil {
+			// The output length is known before the keys are sorted. Reserve the full
+			// slot backing before sortedHashKeysInto so a build that cannot fit the
+			// result slice does not spend the sort or allocate the key scratch first.
+			if err := acc.reserveSlots(len(entries)); err != nil {
 				return NewNil(), err
 			}
+			var keyBuf [smallHashKeyBufferSize]string
+			keys := sortedHashKeysInto(entries, keyBuf[:])
 			pairs := make([]Value, 0, len(keys))
 			for _, key := range keys {
 				// Charge a step per pair so materializing a large hash participates in

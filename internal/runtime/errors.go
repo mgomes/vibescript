@@ -188,15 +188,16 @@ func (exec *Execution) checkBudget() error {
 // quota cannot cover all n steps the per-element loop is guaranteed to fail, so
 // rejecting up front lets such a builtin skip bulk work (for example sorting a
 // hash's keys) that the loop would otherwise perform before the first step()
-// fails. n is clamped to a minimum of one so callers can pass a receiver length
-// directly even when it is zero. Like step, the per-element charge still observes
-// the quota and cancellation, so this is purely an early-out and never accepts a
-// build the loop would reject.
+// fails. A non-positive n performs only the cancellation check, so callers can
+// pass a receiver length directly even when it is zero without requiring an
+// element step that the loop would never charge. Like step, the per-element
+// charge still observes the quota and cancellation, so this is purely an
+// early-out and never accepts a build the loop would reject.
 func (exec *Execution) checkStepBudgetFor(n int) error {
-	if n < 1 {
-		n = 1
+	if n < 0 {
+		n = 0
 	}
-	if exec.quota > 0 && exec.quota-exec.steps < n {
+	if n > 0 && exec.quota > 0 && exec.quota-exec.steps < n {
 		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
 	}
 	if exec.ctx != nil {
