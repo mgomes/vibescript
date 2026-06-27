@@ -40,8 +40,8 @@ func (e *assertionFailureError) Error() string {
 // member exists but is private to the receiver. It wraps the formatted runtime
 // error so callers still surface the full "private method" message, while member
 // dispatch can distinguish it from a genuine unknown-member miss via errors.As.
-// The universal equality predicates rely on that distinction so a private
-// override of eql?/equal? still raises instead of falling through to the builtin.
+// The universal members rely on that distinction so a private override of
+// itself/eql?/equal? still raises instead of falling through to the builtin.
 type privateMemberError struct {
 	err error
 }
