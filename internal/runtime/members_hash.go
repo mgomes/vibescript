@@ -292,7 +292,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 			// deep_transform_keys carries leaf values through unchanged; use the
 			// baseline-deduped accumulator path rather than the conservative
 			// block-result path.
-			if err := acc.add(nextValue, 0); err != nil {
+			if err := acc.addToReservedBacking(nextValue); err != nil {
 				return NewNil(), err
 			}
 		}

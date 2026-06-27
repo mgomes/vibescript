@@ -723,6 +723,22 @@ func (acc *arrayBuildAccumulator) add(val Value, backingCap int) error {
 	return nil
 }
 
+// addToReservedBacking charges an appended element when the caller has already
+// reserved the result array's value and backing slice through reserveLoopScratch.
+// The reservation is part of acc.base, so this method adds only retained element
+// payloads and avoids charging an empty array backing a second time.
+func (acc *arrayBuildAccumulator) addToReservedBacking(val Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	acc.payload = saturatingAdd(acc.payload, acc.est.valuePayload(val))
+	if used := saturatingAdd(acc.base, acc.payload); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // addConservative charges a block-produced result without deduplicating it
 // against the build baseline. That keeps in-place mutations of receiver-owned
 // containers visible to the quota while still deduplicating shared backings

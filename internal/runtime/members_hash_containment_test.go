@@ -184,6 +184,28 @@ func TestHashDeepTransformKeysDoesNotRechargeSharedArrayLeafPayloads(t *testing.
 	}
 }
 
+func TestHashDeepTransformKeysDoesNotRechargePreReservedArrayBacking(t *testing.T) {
+	t.Parallel()
+
+	items := NewArray([]Value{NewInt(1)})
+	receiver := NewHash(map[string]Value{"items": items})
+	block := keyIdentityBlock()
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	liveWithRoots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	outputBytes := hashTransformBufferBytes(len(receiver.Hash()), sortedKeyBufferBytes(len(receiver.Hash())))
+	quota := liveWithRoots + outputBytes + len("items") + deepTransformArrayBufferBytes(len(items.Array()))
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "deep_transform_keys", nil, block)
+	if err != nil {
+		t.Fatalf("hash.deep_transform_keys at pre-reserved array backing quota = %v, want success", err)
+	}
+	gotItems := got.Hash()["items"]
+	if gotItems.Kind() != KindArray || len(gotItems.Array()) != 1 || gotItems.Array()[0].Int() != 1 {
+		t.Fatalf("hash.deep_transform_keys array result = %#v, want [1]", gotItems)
+	}
+}
+
 func TestHashBlocklessTransformTripsMemoryQuota(t *testing.T) {
 	t.Parallel()
 
