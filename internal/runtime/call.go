@@ -8,6 +8,20 @@ import (
 	"strings"
 )
 
+// blockBindingName is the reserved environment key that holds the block
+// supplied to the current call. It is defined in every function's call
+// environment (as nil when no block was given) and read by yield and
+// block_given?.
+const blockBindingName = "__block__"
+
+// blockGivenInCurrentCall reports whether the call that owns env was supplied a
+// block, mirroring Ruby's block_given?. It returns false at the top level and in
+// calls that received no block.
+func blockGivenInCurrentCall(env *Env) bool {
+	block, ok := env.Get(blockBindingName)
+	return ok && block.Kind() != KindNil
+}
+
 func valueCanContainBuiltins(val Value) bool {
 	switch val.Kind() {
 	case KindBuiltin, KindArray, KindHash, KindObject, KindClass, KindInstance, KindFunction, KindBlock:
@@ -179,7 +193,7 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
 	}
-	callEnv.Define("__block__", block)
+	callEnv.Define(blockBindingName, block)
 	if err := exec.bindFunctionArgs(fn, callEnv, args, kwargs, pos); err != nil {
 		return NewNil(), err
 	}
@@ -880,6 +894,10 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		return exec.evalMemberCallExpr(call, member, env)
 	}
 
+	if ident, ok := call.Callee.(*Identifier); ok && ident.Name == blockGivenName {
+		return exec.evalBlockGivenCall(call, env)
+	}
+
 	callee, receiver, err := exec.evalCallTarget(call, env)
 	if err != nil {
 		return NewNil(), err
@@ -909,6 +927,19 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+// evalBlockGivenCall handles the parenthesized block_given?() form. Like Ruby's
+// Kernel#block_given?, it accepts no arguments and reports whether the enclosing
+// call was supplied a block.
+func (exec *Execution) evalBlockGivenCall(call *CallExpr, env *Env) (Value, error) {
+	if len(call.Args) != 0 || len(call.KwArgs) != 0 {
+		return NewNil(), exec.errorAt(call.Pos(), "%s takes no arguments", blockGivenName)
+	}
+	if call.Block != nil {
+		return NewNil(), exec.errorAt(call.Pos(), "%s does not accept a block", blockGivenName)
+	}
+	return NewBool(blockGivenInCurrentCall(env)), nil
 }
 
 func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, env *Env) (Value, error) {
@@ -1206,7 +1237,7 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 			}
 			val = NewHash(rest)
 		case ParamBlock:
-			block, ok := env.Get("__block__")
+			block, ok := env.Get(blockBindingName)
 			if ok {
 				val = block
 			} else {
