@@ -10,6 +10,8 @@ import (
 // Object defines for all values:
 //
 //   - itself — returns the receiver unchanged.
+//   - nil? — true only for the nil receiver and false for every other value
+//     (Ruby's Object#nil?).
 //   - eql?/equal? — the equality predicates: `eql?` reports hash-key equality and
 //     `equal?` reports object identity.
 //   - tap/yield_self — the block helpers: `tap` yields the receiver to its block
@@ -20,15 +22,18 @@ import (
 // Unlike the per-type member tables these are resolved centrally, after
 // type-specific members and user-defined methods, so a value's own members (and
 // any class override) always take precedence, matching Ruby's overridable
-// Object-level helpers. Editor completion surfaces them on every receiver via
-// withUniversalMembers.
-var universalMemberNames = []string{"itself", "eql?", "equal?", "tap", "yield_self"}
+// Object-level helpers. Resolving nil? here rather than on selected per-kind
+// tables means every receiver answers it uniformly — including the kinds whose
+// members resolve only through the universal fallback (instances, classes,
+// functions, enum values) — instead of raising "unknown member nil?". Editor
+// completion surfaces them on every receiver via withUniversalMembers.
+var universalMemberNames = []string{"itself", "nil?", "eql?", "equal?", "tap", "yield_self"}
 
 // isUniversalMember reports whether property names one of the Object-level
 // helpers that every value answers through the universal fallback.
 func isUniversalMember(property string) bool {
 	switch property {
-	case "itself", "eql?", "equal?", "tap", "yield_self":
+	case "itself", "nil?", "eql?", "equal?", "tap", "yield_self":
 		return true
 	default:
 		return false
@@ -40,14 +45,14 @@ func isUniversalMember(property string) bool {
 // before typed dispatch on those receivers (see universalMemberAlwaysWins) and
 // reported as a cheap miss rather than routed through hashMember's miss path.
 //
-// itself, eql?, and equal? qualify: they are methods, not keys, so a hash entry
-// or data field of that name is unreachable as data and never shadows the
+// itself, nil?, eql?, and equal? qualify: they are methods, not keys, so a hash
+// entry or data field of that name is unreachable as data and never shadows the
 // helper. The block helpers tap/yield_self do NOT qualify: a hash entry keyed
 // tap/yield_self is ordinary data the typed dispatch returns, so they fall back
 // only on a genuine miss.
 func isUniversalDataSafe(property string) bool {
 	switch property {
-	case "itself", "eql?", "equal?":
+	case "itself", "nil?", "eql?", "equal?":
 		return true
 	default:
 		return false
@@ -82,6 +87,10 @@ func universalMember(obj Value, property string) (Value, bool) {
 	switch property {
 	case "itself":
 		return bindItself(obj), true
+	case "nil?":
+		// The predicate's name carries the receiver's kind so argument errors read
+		// naturally (for example "int.nil? does not take arguments").
+		return newNilPredicateBuiltin(obj.Kind().String()), true
 	case "eql?":
 		return bindEqualityPredicate("eql?", obj, Value.Eql), true
 	case "equal?":
