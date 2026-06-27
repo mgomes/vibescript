@@ -324,10 +324,11 @@ func (p *parser) errorExpected(tok ast.Token, expected string) {
 }
 
 func (p *parser) errorUnexpected(tok ast.Token) {
-	// Lexer-emitted illegal tokens carry their diagnostic in the literal;
-	// surface it verbatim so malformed literals report a clear cause rather
-	// than the generic "unexpected token invalid token".
-	if tok.Type == ast.TokenIllegal && tok.Literal != "" {
+	// Diagnostic illegal tokens carry a human-readable lexer message in the
+	// literal (such as a malformed numeric literal); surface it verbatim so
+	// the cause is clear. Plain illegal characters carry only the raw source
+	// rune, so they fall back to the generic "unexpected token invalid token".
+	if tok.Type == ast.TokenIllegal && tok.Diagnostic {
 		p.addParseErrorSpan(tok.Pos, tokenEnd(tok), tok.Literal)
 		return
 	}

@@ -169,8 +169,7 @@ func (l *lexer) scanToken() ast.Token {
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral()
 				if err != "" {
-					tok.Type = ast.TokenIllegal
-					tok.Literal = err
+					setDiagnostic(&tok, err)
 				} else {
 					tok.Type = ast.TokenWords
 					tok.Literal = encodePercentLiteralEntries(entries)
@@ -183,8 +182,7 @@ func (l *lexer) scanToken() ast.Token {
 			if l.canStartPercentArrayLiteral() && isPercentLiteralDelimiter(l.peekRuneN(1)) {
 				entries, err := l.readPercentArrayLiteral()
 				if err != "" {
-					tok.Type = ast.TokenIllegal
-					tok.Literal = err
+					setDiagnostic(&tok, err)
 				} else {
 					tok.Type = ast.TokenSymbols
 					tok.Literal = encodePercentLiteralEntries(entries)
@@ -355,8 +353,7 @@ func (l *lexer) scanToken() ast.Token {
 	case '"':
 		literal, interpolated, err := l.readDoubleQuotedString()
 		if err != "" {
-			tok.Type = ast.TokenIllegal
-			tok.Literal = err
+			setDiagnostic(&tok, err)
 		} else if interpolated {
 			tok.Type = ast.TokenInterpolatedString
 			tok.Literal = literal
@@ -367,8 +364,7 @@ func (l *lexer) scanToken() ast.Token {
 	case '\'':
 		literal, err := l.readSingleQuotedString()
 		if err != "" {
-			tok.Type = ast.TokenIllegal
-			tok.Literal = err
+			setDiagnostic(&tok, err)
 		} else {
 			tok.Type = ast.TokenString
 			tok.Literal = literal
@@ -408,8 +404,7 @@ func (l *lexer) scanToken() ast.Token {
 			literal, isFloat, errMsg := l.readNumber()
 			switch {
 			case errMsg != "":
-				tok.Type = ast.TokenIllegal
-				tok.Literal = errMsg
+				setDiagnostic(&tok, errMsg)
 			case isFloat:
 				tok.Type = ast.TokenFloat
 				tok.Literal = literal
@@ -456,6 +451,16 @@ func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
 	return ast.Token{Type: tt, Literal: literal, Pos: ast.Position{Line: l.line, Column: l.column}}
 }
 
+// setDiagnostic turns tok into an illegal token carrying msg as a lexer
+// diagnostic, preserving the token's already-stamped position. The parser
+// surfaces such literals verbatim, so the message must be human-readable
+// rather than the raw offending source text.
+func setDiagnostic(tok *ast.Token, msg string) {
+	tok.Type = ast.TokenIllegal
+	tok.Literal = msg
+	tok.Diagnostic = true
+}
+
 func (l *lexer) skipWhitespaceAndComments() (ast.Token, bool) {
 	for {
 		switch l.ch {
@@ -471,7 +476,7 @@ func (l *lexer) skipWhitespaceAndComments() (ast.Token, bool) {
 			}
 			pos := ast.Position{Line: l.line, Column: l.column}
 			if err := l.skipBlockComment(); err != "" {
-				return ast.Token{Type: ast.TokenIllegal, Literal: err, Pos: pos}, true
+				return ast.Token{Type: ast.TokenIllegal, Literal: err, Pos: pos, Diagnostic: true}, true
 			}
 			continue
 		default:
@@ -632,6 +637,12 @@ func (l *lexer) readExponent(sb *strings.Builder) string {
 	}
 
 	if !unicode.IsDigit(l.peekRune()) {
+		// The suffix opens with a non-digit (1e_3, 1e+_3). Consume the rest of
+		// the malformed tail so the whole offending sequence becomes one illegal
+		// token instead of leaving a stray identifier for the parser to choke
+		// on, which would cascade into unrelated diagnostics in delimited
+		// contexts such as [1e_3].
+		l.consumeExponentTail()
 		return "malformed exponent in numeric literal: expected digits after '" + string(marker) + "'"
 	}
 
@@ -640,19 +651,36 @@ func (l *lexer) readExponent(sb *strings.Builder) string {
 		case r == '_':
 			// Underscores are visual separators only between two digits. A
 			// trailing or doubled underscore (1e3_, 1e3__4) is malformed, so
-			// consume it and report rather than letting the parser lex the
-			// dangling underscore as a separate identifier.
+			// consume the rest of the offending tail and report rather than
+			// letting the parser lex the dangling underscore as a separate
+			// identifier.
 			if unicode.IsDigit(l.ch) && unicode.IsDigit(l.peekRuneN(1)) {
 				l.readRune()
 				continue
 			}
 			l.readRune()
+			l.consumeExponentTail()
 			return "malformed exponent in numeric literal: underscore must sit between exponent digits"
 		case unicode.IsDigit(r):
 			l.readRune()
 			sb.WriteRune(r)
 		default:
 			return ""
+		}
+	}
+}
+
+// consumeExponentTail advances past the run of digits and underscores that
+// follows a malformed exponent marker. It keeps the diagnostic token's span
+// over the entire offending sequence so a malformed exponent never fragments
+// into a separate identifier token.
+func (l *lexer) consumeExponentTail() {
+	for {
+		switch r := l.peekRune(); {
+		case unicode.IsDigit(r), r == '_':
+			l.readRune()
+		default:
+			return
 		}
 	}
 }

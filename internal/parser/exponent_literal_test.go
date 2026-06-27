@@ -75,6 +75,90 @@ func TestLexerMalformedExponentLiterals(t *testing.T) {
 	}
 }
 
+// TestLexerMalformedExponentConsumesTail pins that a malformed exponent
+// swallows its entire offending tail, so the lexer never leaves a stray
+// identifier behind. Without this, [1e_3] would emit ILLEGAL then a separate
+// "_3" identifier token, fragmenting one malformed literal into two tokens.
+func TestLexerMalformedExponentConsumesTail(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		source      string
+		wantLiteral string
+	}{
+		{name: "underscore before digits", source: "1e_3", wantLiteral: "malformed exponent in numeric literal: expected digits after 'e'"},
+		{name: "sign then underscore before digits", source: "1e+_3", wantLiteral: "malformed exponent in numeric literal: expected digits after 'e'"},
+		{name: "trailing underscore", source: "1e3_", wantLiteral: "malformed exponent in numeric literal: underscore must sit between exponent digits"},
+		{name: "doubled underscore", source: "1e3__4", wantLiteral: "malformed exponent in numeric literal: underscore must sit between exponent digits"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			l := newLexer(tc.source)
+			tok := l.NextToken()
+			if tok.Type != ast.TokenIllegal {
+				t.Fatalf("first token type = %v, want %v (literal %q)", tok.Type, ast.TokenIllegal, tok.Literal)
+			}
+			if tok.Literal != tc.wantLiteral {
+				t.Fatalf("first token literal = %q, want %q", tok.Literal, tc.wantLiteral)
+			}
+			// The entire malformed source must be consumed by the single
+			// diagnostic token, leaving nothing for a follow-on identifier.
+			if next := l.NextToken(); next.Type != ast.TokenEOF {
+				t.Fatalf("token after malformed exponent = %v %q, want EOF", next.Type, next.Literal)
+			}
+		})
+	}
+}
+
+// TestParserMalformedExponentInDelimitedContext pins that a malformed exponent
+// inside brackets reports exactly the one malformed-exponent diagnostic rather
+// than cascading into spurious "expected ]" and "unexpected ]" errors caused by
+// a leftover identifier token.
+func TestParserMalformedExponentInDelimitedContext(t *testing.T) {
+	t.Parallel()
+	_, errs := parseSource(t, "[1e_3]")
+	if len(errs) != 1 {
+		var sb strings.Builder
+		for _, err := range errs {
+			sb.WriteString(err.Error())
+			sb.WriteByte('\n')
+		}
+		t.Fatalf("parseSource([1e_3]) produced %d errors, want 1:\n%s", len(errs), sb.String())
+	}
+	if !strings.Contains(errs[0].Error(), "malformed exponent") {
+		t.Fatalf("error = %q, want substring %q", errs[0].Error(), "malformed exponent")
+	}
+}
+
+// TestParserIllegalCharacterDiagnostic pins that a raw unsupported character
+// reports the generic "unexpected token invalid token" message. The illegal
+// token's literal is the offending rune, not a lexer diagnostic, so it must not
+// be surfaced verbatim the way malformed-literal diagnostics are.
+func TestParserIllegalCharacterDiagnostic(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"$", "`"} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			_, errs := parseSource(t, source)
+			if len(errs) == 0 {
+				t.Fatalf("parseSource(%q) errors = nil, want a diagnostic", source)
+			}
+			var sb strings.Builder
+			for _, err := range errs {
+				sb.WriteString(err.Error())
+				sb.WriteByte('\n')
+			}
+			if !strings.Contains(sb.String(), "unexpected token invalid token") {
+				t.Fatalf("parseSource(%q) errors = %s, want substring %q", source, sb.String(), "unexpected token invalid token")
+			}
+			if strings.Contains(sb.String(), "parse error at 1:1: "+source) {
+				t.Fatalf("parseSource(%q) leaked the raw character into the diagnostic: %s", source, sb.String())
+			}
+		})
+	}
+}
+
 // TestParserExponentLiteralValues confirms exponent literals parse to floats
 // with the value Ruby produces, including overflow that saturates to infinity.
 func TestParserExponentLiteralValues(t *testing.T) {
