@@ -752,6 +752,58 @@ func TestMemoryQuotaHashLiteralDeduplicatesEnvironmentValue(t *testing.T) {
 	}
 }
 
+// TestMemoryQuotaHashLiteralDuplicateKeyReleasesDiscardedValue covers duplicate
+// keys in hash literals. Each replacement briefly holds the old map value plus
+// the newly evaluated value, but discarded values must not keep contributing to
+// the retained output charge after the overwrite.
+func TestMemoryQuotaHashLiteralDuplicateKeyReleasesDiscardedValue(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	f := newBracketSliceFixture(t, 1200, "abcdefghij")
+
+	literal := func() *HashLiteral {
+		return &HashLiteral{
+			Pairs: []HashPair{
+				{Key: &SymbolLiteral{Name: "a", Position: pos}, Value: f.sliceExpr(pos)},
+				{Key: &SymbolLiteral{Name: "a", Position: pos}, Value: f.sliceExpr(pos)},
+				{Key: &SymbolLiteral{Name: "a", Position: pos}, Value: f.sliceExpr(pos)},
+			},
+			Position: pos,
+		}
+	}
+
+	peakTwo := f.hashPeakFor(2)
+	peakThree := f.hashPeakFor(3)
+	if peakThree <= peakTwo {
+		t.Fatalf("three-value peak %d must exceed two-value peak %d", peakThree, peakTwo)
+	}
+
+	run := func(quota int) (Value, error) {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		f.setupEnv(env)
+		exec.pushEnv(env)
+		defer exec.popEnv()
+		return exec.evalExpression(literal(), env)
+	}
+
+	quota := peakTwo + (peakThree-peakTwo)/2
+	if quota <= peakTwo || quota >= peakThree {
+		t.Fatalf("quota %d must sit between two-value peak %d and three-value peak %d", quota, peakTwo, peakThree)
+	}
+	got, err := run(quota)
+	if err != nil {
+		t.Fatalf("duplicate-key hash literal with room for replacement peak returned error: %v", err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("literal returned %v, want hash", got.Kind())
+	}
+	if len(got.Hash()) != 1 {
+		t.Fatalf("literal retained %d entries, want 1", len(got.Hash()))
+	}
+}
+
 // TestMemoryQuotaBracketSliceHashLiteralChargesStackedCopies mirrors the array
 // literal case for hashes: {a: big[0, n], b: big[0, n]} holds both fresh slice
 // values in the partially built Go-local map the base estimator cannot see.

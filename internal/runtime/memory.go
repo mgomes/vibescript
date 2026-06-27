@@ -568,8 +568,7 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 
 // hashBuildAccumulator charges the memory of an output map assembled entry by
 // entry against the quota without re-walking the whole map on each insertion.
-// Hash literals use it for expression results held in a Go-local map. Hash
-// transforms whose block returns fresh heap values (transform_values and
+// Hash transforms whose block returns fresh heap values (transform_values and
 // transform_keys, where each block call can yield an arbitrarily large string or
 // nested collection, and the merge conflict block) use it so accumulated
 // payloads count toward the quota during construction, not only after the
@@ -612,14 +611,13 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 // never the accumulated prefix.
 type hashBuildAccumulator struct {
 	exec *Execution
-	// est tracks the backings seen by incremental entry charges. Transform builds use
-	// a results-only estimator; literal builds seed it from the current execution
-	// roots so aliases already reachable from the environment deduplicate the same
-	// way the final memory check would. base is the live footprint snapshotted when
-	// the build started (exec's reachable roots, the call roots, the output map's
-	// empty overhead, and -- once reserveBacking is called -- the preallocated n-slot
-	// backing); built is the running byte total charged for the per-entry key/value
-	// payloads as the output is assembled.
+	// est is a results-only estimator: it is never seeded with the base or call
+	// roots, so it deduplicates backings shared across block results but charges a
+	// result's full footprint even when it aliases a baseline container. base is the
+	// live footprint snapshotted when the build started (exec's reachable roots, the
+	// call roots, the output map's empty overhead, and -- once reserveBacking is
+	// called -- the preallocated n-slot backing); built is the running byte total
+	// charged for the per-entry key/value payloads as the output is assembled.
 	est   *memoryEstimator
 	base  int
 	built int
@@ -653,21 +651,84 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	return acc
 }
 
-// newHashLiteralBuildAccumulator snapshots the current execution roots and seeds
-// the entry estimator with them. Hash literal values are plain expression results,
-// not block callbacks that may mutate baseline containers in place, so an alias
-// such as `big = ...; {a: big}` should be charged like the final hash: the new map
+type hashLiteralBuildAccumulator struct {
+	exec          *Execution
+	base          int
+	retained      int
+	keyPayloads   map[string]int
+	valuePayloads map[string]int
+}
+
+// hashLiteralBuildAccumulator tracks the payload currently retained for each
+// final key. Entry payloads are measured against execution roots, not other
+// literal entries, so replacing a duplicate key can subtract that key's prior
+// charge without undercounting another retained key that shared a backing.
+// Distinct fresh aliases may be over-counted, which is conservative.
+//
+// newHashLiteralBuildAccumulator snapshots the current execution roots for a
+// hash literal. Literal values are plain expression results, not block callbacks
+// that may mutate baseline containers in place, so an alias such as
+// `big = ...; {a: big}` should be charged like the final hash: the new map
 // structure and key bytes are fresh, while big's backing remains counted once.
-func newHashLiteralBuildAccumulator(exec *Execution) *hashBuildAccumulator {
-	acc := &hashBuildAccumulator{exec: exec}
+func newHashLiteralBuildAccumulator(exec *Execution) *hashLiteralBuildAccumulator {
+	acc := &hashLiteralBuildAccumulator{exec: exec}
 	if exec.memoryQuota <= 0 {
 		return acc
 	}
 
-	acc.est = newMemoryEstimator()
-	acc.base = exec.estimateMemoryUsageBase(acc.est)
+	acc.base = exec.estimateMemoryUsageBase(newMemoryEstimator())
 	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	return acc
+}
+
+func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
+	return acc.checkQuota()
+}
+
+func (acc *hashLiteralBuildAccumulator) addEntry(key string, val Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	keyPayload, valuePayload := acc.entryPayloads(key, val)
+	incoming := saturatingAdd(keyPayload, valuePayload)
+	if used := saturatingAdd(saturatingAdd(acc.base, acc.retained), incoming); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+
+	prior := saturatingAdd(acc.keyPayloads[key], acc.valuePayloads[key])
+	acc.retained -= prior
+	if acc.retained < 0 {
+		acc.retained = 0
+	}
+	acc.retained = saturatingAdd(acc.retained, incoming)
+	if acc.keyPayloads == nil {
+		acc.keyPayloads = make(map[string]int)
+		acc.valuePayloads = make(map[string]int)
+	}
+	acc.keyPayloads[key] = keyPayload
+	acc.valuePayloads[key] = valuePayload
+	return acc.checkQuota()
+}
+
+func (acc *hashLiteralBuildAccumulator) entryPayloads(key string, val Value) (int, int) {
+	est := newMemoryEstimator()
+	acc.exec.estimateMemoryUsageBase(est)
+	valuePayload := est.valuePayload(val)
+	keyPayload := est.stringPayloadSize(key)
+	return keyPayload, valuePayload
+}
+
+func (acc *hashLiteralBuildAccumulator) checkQuota() error {
+	used := saturatingAdd(acc.base, acc.retained)
+	if used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
 }
 
 // reserveScratch folds a fixed scratch allocation into the baseline so it is held

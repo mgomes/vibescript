@@ -351,13 +351,10 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 		if err != nil {
 			return NewNil(), err
 		}
+		if err := acc.addEntry(key, val); err != nil {
+			return NewNil(), err
+		}
 		entries[key] = val
-		if err := acc.add(val); err != nil {
-			return NewNil(), err
-		}
-		if err := acc.addSynthesizedKey(key); err != nil {
-			return NewNil(), err
-		}
 	}
 	return NewHash(entries), nil
 }
