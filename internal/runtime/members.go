@@ -22,7 +22,24 @@ func (exec *Execution) getPublicMember(obj Value, property string, pos Position)
 // callerIsReceiver controls private-method visibility: only the current
 // receiver may resolve private methods, so external/public dispatch passes
 // false to keep privacy enforced regardless of which value is self.
+//
+// The universal Object-level helpers `tap` and `yield_self` resolve as a
+// fallback: each kind's own dispatch runs first, so a user-defined method, hash
+// key, or instance variable named `tap`/`yield_self` keeps precedence, and the
+// universal builtin only fills in when nothing else does. The fallback is gated
+// on the exact helper names, so it never masks a genuine error for any other
+// property.
 func (exec *Execution) resolveMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
+	member, err := exec.resolveKindMember(obj, property, pos, callerIsReceiver)
+	if err != nil && isUniversalMemberName(property) {
+		return universalMember(property), nil
+	}
+	return member, err
+}
+
+// resolveKindMember dispatches member resolution to the handler for obj's kind,
+// before the universal Object-level fallback in resolveMember is considered.
+func (exec *Execution) resolveKindMember(obj Value, property string, pos Position, callerIsReceiver bool) (Value, error) {
 	switch obj.Kind() {
 	case KindHash:
 		member, err := hashMember(obj, property)
@@ -223,21 +240,24 @@ func appendAccessibleMethodNames(candidates []string, methods map[string]*Script
 
 // MemberCompletionNames returns the builtin member-method names per
 // receiver type, for editor tooling such as LSP completion. The slices
-// are copies; callers may sort or mutate them freely.
+// are copies; callers may sort or mutate them freely. Each type's list
+// includes the universal Object-level helpers (`tap`, `yield_self`), which
+// resolve on every value through resolveMember's fallback even though they
+// live outside the per-kind dispatch switches.
 func MemberCompletionNames() map[string][]string {
 	return map[string][]string{
-		"string":   slices.Clone(stringMemberNames),
-		"array":    slices.Clone(arrayMemberNames),
-		"hash":     slices.Clone(hashMemberNames),
-		"int":      slices.Clone(intMemberNames),
-		"float":    slices.Clone(floatMemberNames),
-		"money":    slices.Clone(moneyMemberNames),
-		"duration": slices.Clone(durationMemberNames),
-		"time":     slices.Clone(timeMemberNames),
-		"range":    slices.Clone(rangeMemberNames),
-		"function": slices.Clone(functionMemberNames),
-		"symbol":   slices.Clone(symbolMemberNames),
-		"nil":      slices.Clone(nilMemberNames),
-		"bool":     slices.Clone(boolMemberNames),
+		"string":   appendUniversalMemberNames(stringMemberNames),
+		"array":    appendUniversalMemberNames(arrayMemberNames),
+		"hash":     appendUniversalMemberNames(hashMemberNames),
+		"int":      appendUniversalMemberNames(intMemberNames),
+		"float":    appendUniversalMemberNames(floatMemberNames),
+		"money":    appendUniversalMemberNames(moneyMemberNames),
+		"duration": appendUniversalMemberNames(durationMemberNames),
+		"time":     appendUniversalMemberNames(timeMemberNames),
+		"range":    appendUniversalMemberNames(rangeMemberNames),
+		"function": appendUniversalMemberNames(functionMemberNames),
+		"symbol":   appendUniversalMemberNames(symbolMemberNames),
+		"nil":      appendUniversalMemberNames(nilMemberNames),
+		"bool":     appendUniversalMemberNames(boolMemberNames),
 	}
 }

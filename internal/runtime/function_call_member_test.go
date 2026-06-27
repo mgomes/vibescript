@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestFunctionValueCall covers Ruby-style fn.call(...) on script function
 // values, which must mirror direct fn(...) invocation including args,
@@ -190,14 +193,16 @@ func exportedFunctionValue(t *testing.T, script *Script, names ...string) Value 
 }
 
 // TestFunctionValueCallMemberSuggestion confirms the function member list is
-// wired into editor completion metadata.
+// wired into editor completion metadata, including the universal Object-level
+// helpers that resolve on every value.
 func TestFunctionValueCallMemberSuggestion(t *testing.T) {
 	t.Parallel()
 	names, ok := MemberCompletionNames()["function"]
 	if !ok {
 		t.Fatalf("MemberCompletionNames missing function entry")
 	}
-	if len(names) != 1 || names[0] != "call" {
-		t.Fatalf("function member completion = %v, want [call]", names)
+	want := append([]string{"call"}, universalMemberNames...)
+	if !slices.Equal(names, want) {
+		t.Fatalf("function member completion = %v, want %v", names, want)
 	}
 }
