@@ -22,8 +22,8 @@ func TestArrayReduceSymbolShorthand(t *testing.T) {
 			want:   NewString("abc"),
 		},
 		{
-			name:   "string operator plus",
-			source: `def run(); [1, 2, 3].reduce("+"); end`,
+			name:   "operator symbol plus",
+			source: `def run(); [1, 2, 3].reduce(:+); end`,
 			want:   NewInt(6),
 		},
 		{

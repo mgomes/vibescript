@@ -1981,21 +1981,6 @@ func isLabelNameToken(tok ast.Token) bool {
 		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenUnless, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
 		return true
-	case ast.TokenAnd, ast.TokenOr, ast.TokenNot:
-		return isWordBooleanKeywordToken(tok)
-	default:
-		return false
-	}
-}
-
-func isWordBooleanKeywordToken(tok ast.Token) bool {
-	switch tok.Type {
-	case ast.TokenAnd:
-		return tok.Literal == "and"
-	case ast.TokenOr:
-		return tok.Literal == "or"
-	case ast.TokenNot:
-		return tok.Literal == "not"
 	default:
 		return false
 	}
@@ -2086,20 +2071,20 @@ func (p *parser) parseCaseExpression() ast.Expression {
 	clauses := []ast.CaseWhenClause{}
 	for p.curToken.Type == ast.TokenWhen {
 		p.nextToken()
-		values := []ast.Expression{}
-		first := p.parseLineExpression(lowestPrec)
+		values := []ast.CaseWhenValue{}
+		first := p.parseCaseWhenValue()
 		if first == nil {
 			return nil
 		}
-		values = append(values, first)
+		values = append(values, *first)
 		for p.peekToken.Type == ast.TokenComma {
 			p.nextToken()
 			p.nextToken()
-			value := p.parseLineExpression(lowestPrec)
+			value := p.parseCaseWhenValue()
 			if value == nil {
 				return nil
 			}
-			values = append(values, value)
+			values = append(values, *value)
 		}
 
 		p.nextToken()
@@ -2136,6 +2121,19 @@ func (p *parser) parseCaseExpression() ast.Expression {
 	}
 
 	return &ast.CaseExpr{Target: target, Clauses: clauses, ElseExpr: elseExpr, Position: pos}
+}
+
+func (p *parser) parseCaseWhenValue() *ast.CaseWhenValue {
+	splat := false
+	if p.curToken.Type == ast.TokenAsterisk {
+		splat = true
+		p.nextToken()
+	}
+	expr := p.parseLineExpression(lowestPrec)
+	if expr == nil {
+		return nil
+	}
+	return &ast.CaseWhenValue{Expr: expr, Splat: splat}
 }
 
 func (p *parser) consumeCaseResultSeparator() {

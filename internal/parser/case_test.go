@@ -32,22 +32,22 @@ end`
 			Expr: &ast.CaseExpr{
 				Clauses: []ast.CaseWhenClause{
 					{
-						Values: []ast.Expression{
-							&ast.BinaryExpr{
+						Values: []ast.CaseWhenValue{
+							{Expr: &ast.BinaryExpr{
 								Left:     &ast.Identifier{Name: "value"},
 								Operator: ast.TokenEQ,
 								Right:    &ast.IntegerLiteral{Value: 1},
-							},
+							}},
 						},
 						Result: &ast.StringLiteral{Value: "one"},
 					},
 					{
-						Values: []ast.Expression{
-							&ast.BinaryExpr{
+						Values: []ast.CaseWhenValue{
+							{Expr: &ast.BinaryExpr{
 								Left:     &ast.Identifier{Name: "value"},
 								Operator: ast.TokenEQ,
 								Right:    &ast.IntegerLiteral{Value: 2},
-							},
+							}},
 						},
 						Result: &ast.StringLiteral{Value: "two"},
 					},
@@ -83,17 +83,54 @@ end`
 				Target: &ast.IntegerLiteral{Value: 2},
 				Clauses: []ast.CaseWhenClause{
 					{
-						Values: []ast.Expression{
-							&ast.IntegerLiteral{Value: 1},
-							&ast.IntegerLiteral{Value: 3},
+						Values: []ast.CaseWhenValue{
+							{Expr: &ast.IntegerLiteral{Value: 1}},
+							{Expr: &ast.IntegerLiteral{Value: 3}},
 						},
 						Result: &ast.StringLiteral{Value: "odd"},
 					},
 					{
-						Values: []ast.Expression{
-							&ast.IntegerLiteral{Value: 2},
+						Values: []ast.CaseWhenValue{
+							{Expr: &ast.IntegerLiteral{Value: 2}},
 						},
 						Result: &ast.StringLiteral{Value: "two"},
+					},
+				},
+				ElseExpr: &ast.StringLiteral{Value: "other"},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserCaseWhenSplatValues(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  case value
+  when 1, *choices then "matched"
+  else "other"
+  end
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.CaseExpr{
+				Target: &ast.Identifier{Name: "value"},
+				Clauses: []ast.CaseWhenClause{
+					{
+						Values: []ast.CaseWhenValue{
+							{Expr: &ast.IntegerLiteral{Value: 1}},
+							{Expr: &ast.Identifier{Name: "choices"}, Splat: true},
+						},
+						Result: &ast.StringLiteral{Value: "matched"},
 					},
 				},
 				ElseExpr: &ast.StringLiteral{Value: "other"},

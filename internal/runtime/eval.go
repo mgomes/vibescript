@@ -1170,7 +1170,7 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		}
 		for _, clause := range e.Clauses {
 			for _, value := range clause.Values {
-				if expressionCapturesCurrentEnv(value) {
+				if expressionCapturesCurrentEnv(value.Expr) {
 					return true
 				}
 			}
@@ -1833,14 +1833,18 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 	for _, clause := range expr.Clauses {
 		matched := false
 		for _, candidateExpr := range clause.Values {
-			candidate, err := exec.evalExpression(candidateExpr, env)
+			candidate, err := exec.evalExpression(candidateExpr.Expr, env)
 			if err != nil {
 				return NewNil(), err
 			}
 			if err := exec.checkMemoryWith(candidate); err != nil {
 				return NewNil(), err
 			}
-			if caseWhenMatches(hasTarget, target, candidate) {
+			candidateMatched, err := exec.caseWhenValueMatches(hasTarget, target, candidate, candidateExpr.Splat, expr.Pos())
+			if err != nil {
+				return NewNil(), err
+			}
+			if candidateMatched {
 				matched = true
 				break
 			}
@@ -1870,6 +1874,27 @@ func (exec *Execution) evalCaseExpr(expr *CaseExpr, env *Env) (Value, error) {
 	}
 
 	return NewNil(), nil
+}
+
+func (exec *Execution) caseWhenValueMatches(hasTarget bool, target, candidate Value, splat bool, pos Position) (bool, error) {
+	if !splat {
+		return caseWhenMatches(hasTarget, target, candidate), nil
+	}
+	if candidate.Kind() != KindArray {
+		return false, exec.errorAt(pos, "case when splat value must be an array")
+	}
+	for _, item := range candidate.Array() {
+		if err := exec.step(); err != nil {
+			return false, err
+		}
+		if err := exec.checkMemoryWith(item); err != nil {
+			return false, err
+		}
+		if caseWhenMatches(hasTarget, target, item) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func caseWhenMatches(hasTarget bool, target, candidate Value) bool {

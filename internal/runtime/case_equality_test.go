@@ -94,3 +94,59 @@ func TestCaseEqualityMatchesWhenClause(t *testing.T) {
 		})
 	}
 }
+
+func TestCaseWhenSplatValues(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+def match_value(value)
+  case value
+  when *[1, 2], 3
+    "number"
+  when *["x", "y"]
+    "letter"
+  else
+    "miss"
+  end
+end
+
+def match_truthy
+  case
+  when *[false, nil]
+    "miss"
+  when *[nil, true]
+    "hit"
+  end
+end
+
+def bad_splat
+  case 1
+  when *1
+    "bad"
+  end
+end
+`)
+
+	tests := []struct {
+		name string
+		arg  Value
+		want Value
+	}{
+		{name: "splatted int", arg: NewInt(2), want: NewString("number")},
+		{name: "direct trailing value", arg: NewInt(3), want: NewString("number")},
+		{name: "splatted string", arg: NewString("y"), want: NewString("letter")},
+		{name: "miss", arg: NewString("z"), want: NewString("miss")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := callFunc(t, script, "match_value", []Value{tc.arg}); !got.Equal(tc.want) {
+				t.Fatalf("match_value(%v) = %v, want %v", tc.arg, got, tc.want)
+			}
+		})
+	}
+
+	if got := callFunc(t, script, "match_truthy", nil); !got.Equal(NewString("hit")) {
+		t.Fatalf("match_truthy = %v, want hit", got)
+	}
+	requireCallErrorContains(t, script, "bad_splat", nil, CallOptions{}, "case when splat value must be an array")
+}

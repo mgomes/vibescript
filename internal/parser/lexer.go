@@ -309,6 +309,11 @@ func (l *lexer) scanToken() ast.Token {
 		if quote := l.peekRune(); (quote == '"' || quote == '\'') && !closesTernary && l.colonStartsQuotedSymbol() {
 			return l.scanQuotedSymbol(tok)
 		}
+		if !closesTernary {
+			if tok, ok := l.scanOperatorSymbol(tok); ok {
+				return tok
+			}
+		}
 		if ast.IsIdentifierRune(l.peekRune()) {
 			l.readRune()
 			start := l.currentOffset()
@@ -509,6 +514,29 @@ func (l *lexer) scanToken() ast.Token {
 	}
 
 	return tok
+}
+
+var operatorSymbolLiterals = []string{
+	"[]=", "[]", "===", "<=>", "**", "<<", "<=", ">=", "==", "!=", "&&", "||",
+	"+", "-", "*", "/", "%", "<", ">", "&", "|", "!",
+}
+
+func (l *lexer) scanOperatorSymbol(tok ast.Token) (ast.Token, bool) {
+	start := l.currentOffset() + l.width
+	remaining := l.input[start:]
+	for _, literal := range operatorSymbolLiterals {
+		if !strings.HasPrefix(remaining, literal) {
+			continue
+		}
+		end := start + len(literal)
+		for l.currentOffset() < end && l.ch != 0 {
+			l.readRune()
+		}
+		tok.Type = ast.TokenSymbol
+		tok.Literal = literal
+		return tok, true
+	}
+	return tok, false
 }
 
 func (l *lexer) currentOffset() int {

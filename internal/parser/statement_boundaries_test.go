@@ -976,7 +976,7 @@ end`
 				Target: &ast.Identifier{Name: "flag"},
 				Clauses: []ast.CaseWhenClause{
 					{
-						Values: []ast.Expression{&ast.BoolLiteral{Value: true}},
+						Values: []ast.CaseWhenValue{{Expr: &ast.BoolLiteral{Value: true}}},
 						Result: &ast.IntegerLiteral{Value: 3},
 					},
 				},

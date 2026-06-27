@@ -607,6 +607,10 @@ func (p *parser) parseFunctionStatement() ast.Statement {
 
 func (p *parser) parseClassStatement() ast.Statement {
 	pos := p.curToken.Pos
+	if p.peekToken.Type == ast.TokenShovel {
+		p.addParseError(p.peekToken.Pos, "class << self definitions are not supported; use def self.name")
+		return nil
+	}
 	if !p.expectPeek(ast.TokenIdent) {
 		return nil
 	}
