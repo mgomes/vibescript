@@ -536,13 +536,22 @@ def builtin_ok
   takes_callable(assert)(true)
 end
 
-def block_ok(&block: function)
+def block_rejected(&block)
   takes_callable(block)
-  yield 4
 end
 
-def call_block_ok
-  block_ok do |n|
+def call_block_rejected
+  block_rejected do |n|
+    n * 2
+  end
+end
+
+def block_annotation_rejected(&block: function)
+  block
+end
+
+def call_block_annotation_rejected
+  block_annotation_rejected do |n|
     n * 2
   end
 end
@@ -558,9 +567,8 @@ end
 	if got := callFunc(t, script, "builtin_ok", nil); got.Kind() != KindNil {
 		t.Fatalf("builtin function annotation = %v, want nil", got)
 	}
-	if got := callFunc(t, script, "call_block_ok", nil); !got.Equal(NewInt(8)) {
-		t.Fatalf("block function annotation = %v, want 8", got)
-	}
+	requireCallErrorContains(t, script, "call_block_rejected", nil, CallOptions{}, "argument fn expected function, got block")
+	requireCallErrorContains(t, script, "call_block_annotation_rejected", nil, CallOptions{}, "argument block expected function, got block")
 	requireCallErrorContains(t, script, "reject_non_callable", nil, CallOptions{}, "argument fn expected function, got int")
 }
 
