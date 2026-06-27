@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var hashMemberNames = []string{
-	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "default", "default_proc",
+	"size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "to_a", "default", "default_proc",
 	"merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact",
 	"inspect",
 }
@@ -33,7 +33,7 @@ func hashMember(obj Value, property string) (Value, error) {
 
 func hashMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "default", "default_proc":
+	case "size", "length", "empty?", "key?", "has_key?", "member?", "include?", "value?", "has_value?", "keys", "values", "values_at", "fetch", "fetch_values", "dig", "each", "each_key", "each_value", "to_a", "default", "default_proc":
 		return hashMemberQuery(property)
 	case "merge", "update", "merge!", "replace", "store", "slice", "except", "flatten", "select", "reject", "transform_keys", "deep_transform_keys", "remap_keys", "transform_values", "compact":
 		return hashMemberTransforms(property)
@@ -499,6 +499,28 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 			}
 			return receiver, nil
+		}), nil
+	case "to_a":
+		return NewAutoBuiltin("hash.to_a", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("hash.to_a does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("hash.to_a does not take keyword arguments")
+			}
+			entries := receiver.Hash()
+			// Materialize the [key, value] pairs in Vibescript's deterministic
+			// (sorted-key) iteration order, matching keys/values/each. Keys
+			// reconstruct as symbols, as everywhere a hash key surfaces as a value.
+			// The pairs alias the receiver's values, so the post-call result check
+			// (sized to the receiver, already a live call root) bounds the build.
+			var keyBuf [smallHashKeyBufferSize]string
+			keys := sortedHashKeysInto(entries, keyBuf[:])
+			pairs := make([]Value, len(keys))
+			for i, key := range keys {
+				pairs[i] = NewArray([]Value{NewSymbol(key), entries[key]})
+			}
+			return NewArray(pairs), nil
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown hash method %s", property)

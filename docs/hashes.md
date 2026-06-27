@@ -332,9 +332,15 @@ end
 
 - `keys` and `values`
 - `each`, `each_key`, `each_value`
+- `to_a` returns the `[key, value]` pairs as a nested array, with keys exposed as
+  symbols. It is the inverse of `Array#to_h` and equivalent to `flatten(0)`.
 
-`keys`, `values`, `flatten`, and block-based hash iteration process entries in
-sorted key order for deterministic behavior.
+```vibe
+{ a: 1, b: 2 }.to_a # [[:a, 1], [:b, 2]]
+```
+
+`keys`, `values`, `flatten`, `to_a`, and block-based hash iteration process
+entries in sorted key order for deterministic behavior.
 
 A `for` loop may also iterate a hash directly, mirroring Ruby's loop over
 `each`. Each iteration binds a two-element `[key, value]` pair (keys exposed as

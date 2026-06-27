@@ -37,6 +37,7 @@ Common enumerable helpers include:
 - `sum` to total numeric arrays.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays. No argument, `nil`, or a negative depth flattens fully; `0` returns a shallow copy; a positive depth flattens that many levels and a `Float` depth is truncated to an integer. A nonnumeric depth raises.
+- `to_h` to build a hash from an array of two-element `[key, value]` pairs (the inverse of `Hash#to_a`). Keys convert through the same symbol/string hash-key rules used everywhere else, and duplicate keys keep the last pair. A block form `to_h { |element| [key, value] }` maps each element to its pair, so the receiver's elements need not already be pairs. A non-array element, a pair that is not exactly two elements, or a key that is not a symbol or string raises.
 - `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
 - `chunk(size)` to split into fixed-size slices.
 - `window(size)` to build overlapping windows.
@@ -73,6 +74,7 @@ survive.
 [3].prepend(1, 2)           # [1, 2, 3]
 [1, 2].zip([3, 4], [5])     # [[1, 3, 5], [2, 4, nil]]
 [[1, 2], [3, 4]].transpose  # [[1, 3], [2, 4]]
+[[:a, 1], [:b, 2]].to_h     # { a: 1, b: 2 }
 [1, 2, 3].fill(0)           # [0, 0, 0]
 [1, 2, 3].fill(0, 1, 2)     # [1, 0, 0]
 [1, 2, 3].fill("x", 1..2)   # [1, "x", "x"]
