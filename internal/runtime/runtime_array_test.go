@@ -325,8 +325,9 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
         rindex_offset_hit: values.rindex(1, 2),
         rindex_miss: values.rindex(9),
         fetch_hit: values.fetch(2),
+        fetch_negative: values.fetch(-1),
         fetch_default: values.fetch(9, 42),
-        fetch_miss: values.fetch(9),
+        fetch_block: values.fetch(9) { |idx| idx + 10 },
         find_hit: find_hit,
         find_miss: find_miss,
         find_index_hit: find_index_hit,
@@ -385,8 +386,11 @@ func TestArrayPhaseTwoHelpers(t *testing.T) {
 	if !got["fetch_hit"].Equal(NewInt(2)) || !got["fetch_default"].Equal(NewInt(42)) {
 		t.Fatalf("fetch mismatch: hit=%v default=%v", got["fetch_hit"], got["fetch_default"])
 	}
-	if got["fetch_miss"].Kind() != KindNil {
-		t.Fatalf("fetch_miss expected nil, got %v", got["fetch_miss"])
+	if !got["fetch_negative"].Equal(NewInt(1)) {
+		t.Fatalf("fetch_negative expected 1, got %v", got["fetch_negative"])
+	}
+	if !got["fetch_block"].Equal(NewInt(19)) {
+		t.Fatalf("fetch_block expected 19, got %v", got["fetch_block"])
 	}
 	if !got["find_hit"].Equal(NewInt(3)) || got["find_miss"].Kind() != KindNil {
 		t.Fatalf("find mismatch: hit=%v miss=%v", got["find_hit"], got["find_miss"])
@@ -1123,6 +1127,202 @@ func TestArrayValuesAtRangeChargesEphemeralReceiver(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestArraySumChargesEphemeralReceiverWhileAccumulating(t *testing.T) {
+	t.Parallel()
+
+	// The receiver is reachable only through the call roots (an array literal or a
+	// capability result summed immediately), so its payload is invisible to
+	// estimateMemoryUsageBase. sum builds a growing string accumulator on top of
+	// that still-live receiver; the per-iteration check must charge the receiver as
+	// a call root, not just the accumulator. A quota that admits the final
+	// concatenated string alone, and the receiver alone, but not their sum has to be
+	// rejected before the accumulator finishes. Without seeding the receiver into the
+	// check the accumulator could grow another full receiver beyond the quota, with
+	// the excess only caught after the builtin returned.
+	const parts = 8
+	chunk := string(make([]byte, 1000))
+	elements := make([]Value, parts)
+	for i := range elements {
+		elements[i] = NewString(chunk)
+	}
+	receiver := NewArray(elements)
+
+	member, err := arrayMember(receiver, "sum")
+	if err != nil {
+		t.Fatalf("arrayMember(sum): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member sum is not a builtin")
+	}
+
+	// The receiver payload and the final concatenated accumulator each fit under the
+	// quota on their own, but both are live at the last iteration, so their combined
+	// footprint must not. Measuring both lets the quota land strictly between the
+	// larger single footprint and the sum, where only the receiver-aware check rejects.
+	finalString := NewString(string(make([]byte, parts*len(chunk))))
+	receiverBytes := newMemoryEstimator().value(receiver)
+	finalBytes := newMemoryEstimator().value(finalString)
+	larger := max(receiverBytes, finalBytes)
+	quota := larger + (receiverBytes+finalBytes-larger)/2
+	if quota <= larger {
+		t.Fatalf("quota %d does not exceed the larger single footprint %d; widen the chunks", quota, larger)
+	}
+	if quota >= receiverBytes+finalBytes {
+		t.Fatalf("quota %d does not stay below the combined footprint %d; widen the chunks", quota, receiverBytes+finalBytes)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err = builtin.Fn(exec, receiver, []Value{NewString("")}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestArraySumChargesLiveBlockResultWhileAccumulating(t *testing.T) {
+	t.Parallel()
+
+	// sum's block form holds the block result (the contribution) live on the Go
+	// stack while arraySumAdd builds the next accumulator from a fresh copy, so a
+	// block that returns a large value coexists with the new accumulator at the
+	// step's allocation peak. The per-iteration check must charge that contribution,
+	// not just the new accumulator: a quota that admits the new accumulator alone but
+	// not accumulator + contribution has to be rejected before the builtin returns.
+	// Without seeding the contribution the step could allocate a full extra block
+	// result beyond the quota, with the excess only caught after the builtin returned.
+	//
+	// A single-element receiver isolates the contribution: the loop runs one
+	// iteration, so the only thing distinguishing the buggy check (accumulator only)
+	// from the correct one (accumulator + contribution) is the live block result.
+	const initialBytes = 1000
+	const contributionBytes = 1000
+	receiver := NewArray([]Value{NewInt(0)})
+	initial := NewString(string(make([]byte, initialBytes)))
+	block := freshStringBlockValue(contributionBytes)
+
+	member, err := arrayMember(receiver, "sum")
+	if err != nil {
+		t.Fatalf("arrayMember(sum): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member sum is not a builtin")
+	}
+
+	// At the single iteration's peak three distinct buffers are live: the initial
+	// string (the call argument), the contribution (the block result), and the new
+	// accumulator (initial + contribution). Measure the footprint the correct check
+	// sees (call roots + accumulator + contribution) and the footprint the buggy
+	// check saw (call roots + accumulator only), then land the quota strictly
+	// between them so only the contribution-aware check rejects.
+	contribution := NewString(string(make([]byte, contributionBytes)))
+	accumulator := NewString(string(make([]byte, initialBytes+contributionBytes)))
+	accumulatorOnly := func() int {
+		est := newMemoryEstimator()
+		used := est.value(receiver)
+		used += est.value(initial)
+		used += est.value(block)
+		used += est.value(accumulator)
+		return used
+	}()
+	withContribution := func() int {
+		est := newMemoryEstimator()
+		used := est.value(receiver)
+		used += est.value(initial)
+		used += est.value(block)
+		used += est.value(accumulator)
+		used += est.value(contribution)
+		return used
+	}()
+	if accumulatorOnly >= withContribution {
+		t.Fatalf("contribution adds no footprint: accumulator-only %d, with-contribution %d", accumulatorOnly, withContribution)
+	}
+	quota := accumulatorOnly + (withContribution-accumulatorOnly)/2
+	if quota <= accumulatorOnly {
+		t.Fatalf("quota %d does not exceed the accumulator-only footprint %d; widen the chunks", quota, accumulatorOnly)
+	}
+	if quota >= withContribution {
+		t.Fatalf("quota %d does not stay below the contribution-aware footprint %d; widen the chunks", quota, withContribution)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err = builtin.Fn(exec, receiver, []Value{initial}, nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+func TestArraySumChargesPriorAccumulatorWhileGrowing(t *testing.T) {
+	t.Parallel()
+
+	// sum grows a string accumulator across iterations: arraySumAdd builds the next
+	// accumulator from a fresh copy of the prior total and the contribution, so at
+	// every step the prior total, the contribution, and the new accumulator all
+	// coexist on the Go stack. Once the prior total has grown into a large
+	// concatenated buffer it is reachable only from that Go-local — it is neither a
+	// receiver element nor a call root — so estimateMemoryUsageBase never sees it.
+	// The per-iteration check must charge that prior total, not just the new
+	// accumulator and the contribution: a quota that admits call roots + new
+	// accumulator (the contribution aliases a receiver element here, so it adds
+	// nothing) but not call roots + prior total + new accumulator has to be rejected
+	// before the builtin returns. Without charging the prior total the step could
+	// allocate a full extra accumulator's worth beyond the quota, with the excess only
+	// caught after the builtin returned.
+	const parts = 8
+	const chunkBytes = 1000
+	chunk := string(make([]byte, chunkBytes))
+	elements := make([]Value, parts)
+	for i := range elements {
+		elements[i] = NewString(chunk)
+	}
+	receiver := NewArray(elements)
+	seed := NewString("")
+
+	member, err := arrayMember(receiver, "sum")
+	if err != nil {
+		t.Fatalf("arrayMember(sum): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member sum is not a builtin")
+	}
+
+	// The peak is the final iteration: the prior total spans the first parts-1
+	// elements, the new accumulator spans all parts, and the contribution is the last
+	// element (which aliases a receiver element, so it dedups against the receiver and
+	// adds nothing). Measure the footprint the buggy check saw (call roots + new
+	// accumulator, no prior total) and the footprint the correct check sees (plus the
+	// prior total), then land the quota strictly between them so only the
+	// prior-total-aware check rejects.
+	priorTotal := NewString(string(make([]byte, (parts-1)*chunkBytes)))
+	newAccumulator := NewString(string(make([]byte, parts*chunkBytes)))
+	without := func() int {
+		est := newMemoryEstimator()
+		used := est.value(receiver)
+		used += est.value(seed)
+		used += est.value(newAccumulator)
+		return used
+	}()
+	with := func() int {
+		est := newMemoryEstimator()
+		used := est.value(receiver)
+		used += est.value(seed)
+		used += est.value(newAccumulator)
+		used += est.value(priorTotal)
+		return used
+	}()
+	if without >= with {
+		t.Fatalf("prior total adds no footprint: without %d, with %d", without, with)
+	}
+	quota := without + (with-without)/2
+	if quota <= without {
+		t.Fatalf("quota %d does not exceed the prior-total-free footprint %d; widen the chunks", quota, without)
+	}
+	if quota >= with {
+		t.Fatalf("quota %d does not stay below the prior-total-aware footprint %d; widen the chunks", quota, with)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err = builtin.Fn(exec, receiver, []Value{seed}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestArrayValuesAtRangeTripsStepQuota(t *testing.T) {
 	t.Parallel()
 
@@ -1230,17 +1430,124 @@ func TestArraySubtractUsesScalarKeysAndCompositeFallback(t *testing.T) {
 	})
 }
 
-func TestArraySumRejectsNonNumeric(t *testing.T) {
+func TestArraySum(t *testing.T) {
 	t.Parallel()
-	script := compileScriptDefault(t, `
-    def bad()
-      ["a"].sum()
-    end
-    `)
 
-	_, err := script.Call(context.Background(), "bad", nil, CallOptions{})
-	if err == nil {
-		t.Fatalf("expected runtime error for non-numeric sum")
+	tests := []struct {
+		name string
+		body string
+		want Value
+	}{
+		{
+			name: "plain integer sum",
+			body: `[1, 2, 3].sum()`,
+			want: NewInt(6),
+		},
+		{
+			name: "empty array sums to zero",
+			body: `[].sum()`,
+			want: NewInt(0),
+		},
+		{
+			name: "mixed numeric promotes to float",
+			body: `[1, 2.5].sum()`,
+			want: NewFloat(3.5),
+		},
+		{
+			name: "initial value seeds the accumulator",
+			body: `[1, 2, 3].sum(10)`,
+			want: NewInt(16),
+		},
+		{
+			name: "initial value used when array is empty",
+			body: `[].sum(5)`,
+			want: NewInt(5),
+		},
+		{
+			name: "float initial promotes the result",
+			body: `[1, 2, 3].sum(0.5)`,
+			want: NewFloat(6.5),
+		},
+		{
+			name: "block adds each transformed element",
+			body: `[1, 2, 3].sum { |n| n * 2 }`,
+			want: NewInt(12),
+		},
+		{
+			name: "block maps non-numeric elements to numbers",
+			body: `["a", "bb", "ccc"].sum { |s| s.length() }`,
+			want: NewInt(6),
+		},
+		{
+			name: "initial and block combine",
+			body: `[1, 2, 3].sum(10) { |n| n * 2 }`,
+			want: NewInt(22),
+		},
+		{
+			name: "string initial concatenates elements",
+			body: `["a", "b", "c"].sum("")`,
+			want: NewString("abc"),
+		},
+		{
+			name: "string initial with block concatenates block results",
+			body: `["a", "b", "c"].sum("") { |s| s.upcase() }`,
+			want: NewString("ABC"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tt.body+"\nend\n")
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(tt.want) {
+				t.Fatalf("%s = %#v, want %#v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestArraySumErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "default initial cannot add strings",
+			body: `["a", "b"].sum()`,
+			want: "array.sum cannot add incompatible values",
+		},
+		{
+			name: "numeric initial cannot add a string element",
+			body: `[1].sum("a")`,
+			want: "array.sum cannot add incompatible values",
+		},
+		{
+			name: "block result type must be compatible",
+			body: `[1].sum("x") { |n| n }`,
+			want: "array.sum cannot add incompatible values",
+		},
+		{
+			name: "rejects more than one positional argument",
+			body: `[1].sum(1, 2)`,
+			want: "array.sum accepts at most an initial value",
+		},
+		{
+			name: "rejects keyword arguments",
+			body: `[1].sum(foo: 1)`,
+			want: "array.sum does not take keyword arguments",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, "def run()\n  "+tt.body+"\nend\n")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
+		})
 	}
 }
 
@@ -1547,6 +1854,66 @@ func TestArrayIndexFamilyErrors(t *testing.T) {
 		{name: "rindex no args", expr: "[1, 2, 3].rindex", want: "array.rindex expects a value (with optional offset) or a block"},
 		{name: "rindex value and block", expr: "[1, 2, 3].rindex(2) { |x| x > 1 }", want: "array.rindex takes a value or a block, not both"},
 		{name: "rindex negative offset", expr: "[1, 2, 3].rindex(2, -1)", want: "array.rindex offset must be non-negative integer"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() "+tt.expr+" end")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
+		})
+	}
+}
+
+// TestArrayFetch covers the Ruby-aligned fetch contract: present index returns
+// the element (including negative offsets), missing index falls back to an
+// explicit default or a block, the block receives the requested index, and a
+// block supersedes a default value argument when both are supplied.
+func TestArrayFetch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+		want Value
+	}{
+		{name: "in-bounds index", expr: "[1, 2, 3].fetch(1)", want: NewInt(2)},
+		{name: "negative index", expr: "[1, 2, 3].fetch(-1)", want: NewInt(3)},
+		{name: "missing uses default", expr: "[1, 2, 3].fetch(9, 7)", want: NewInt(7)},
+		{name: "missing evaluates block", expr: "[1, 2, 3].fetch(9) { |idx| idx + 10 }", want: NewInt(19)},
+		{name: "negative miss evaluates block", expr: "[1, 2, 3].fetch(-9) { |idx| idx }", want: NewInt(-9)},
+		{name: "present index skips block", expr: "[1, 2, 3].fetch(0) { |idx| -1 }", want: NewInt(1)},
+		{name: "block supersedes default on miss", expr: "[1, 2, 3].fetch(9, 7) { |idx| idx + 10 }", want: NewInt(19)},
+		{name: "present index ignores default and block", expr: "[1, 2, 3].fetch(0, 7) { |idx| -1 }", want: NewInt(1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run() "+tt.expr+" end")
+			got := callFunc(t, script, "run", nil)
+			if !got.Equal(tt.want) {
+				t.Fatalf("%s = %v, want %v", tt.expr, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestArrayFetchErrors covers the rejected shapes for fetch: an out-of-range
+// index with no fallback, a non-integer index, and too many arguments.
+func TestArrayFetchErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		expr string
+		want string
+	}{
+		{name: "missing without fallback", expr: "[1, 2, 3].fetch(9)", want: "array.fetch index 9 outside of array bounds: -3...3"},
+		{name: "negative miss without fallback", expr: "[1, 2, 3].fetch(-9)", want: "array.fetch index -9 outside of array bounds: -3...3"},
+		{name: "non-integer index", expr: `[1, 2, 3].fetch("x")`, want: "array.fetch index must be integer"},
+		{name: "fractional index", expr: "[1, 2, 3].fetch(1.5)", want: "array.fetch index must be integer"},
+		{name: "too many arguments", expr: "[1, 2, 3].fetch(0, 1, 2)", want: "array.fetch expects index and optional default"},
 	}
 
 	for _, tt := range tests {

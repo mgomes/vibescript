@@ -18,6 +18,9 @@ statuses = %i[draft published archived]
 Common enumerable helpers include:
 
 - `map` to transform elements.
+- `map_with_index` to transform elements while also passing each element's
+  0-based index to the block (`["a", "b"].map_with_index { |value, index| [value, index] }`
+  is `[["a", 0], ["b", 1]]`). It takes no arguments and requires a block.
 - `filter_map` to transform elements and keep only the truthy results in one
   pass, dropping falsy block returns (the fused equivalent of `map` then a
   truthiness filter).
@@ -35,7 +38,7 @@ Common enumerable helpers include:
 - `append(*values)` is a Ruby-style alias for `push`, returning a new array with the values added to the end in order.
 - `array << value` is the Ruby-style shovel operator. Because Vibescript arrays are immutable it does not mutate the receiver: it returns a new array with the single value appended (`[1, 2] << 3` is `[1, 2, 3]`). Accumulate by reassigning, `values = values << value`, the same idiom used with `push` and `+`; a bare `values << value` statement computes the appended array and discards it. The left operand must be an array.
 - `prepend(*values)` returns a new array with the values inserted at the front in order (`[3].prepend(1, 2)` is `[1, 2, 3]`).
-- `sum` to total numeric arrays.
+- `sum` to total an array. `sum` starts from `0`; `sum(initial)` starts from `initial` (so `[1, 2, 3].sum(10)` is `16` and `["a", "b"].sum("")` is `"ab"`). A block transforms each element before it is added, so `[1, 2, 3].sum { |n| n * 2 }` is `12` and `sum(initial) { ... }` combines both. Each addition must operate on compatible operands, mirroring Ruby's `+`: summing a string with a non-string (such as the default `0` accumulator against string elements) raises rather than silently coercing the operands.
 - `compact` to drop `nil` entries.
 - `flatten(depth = nil)` to collapse nested arrays. No argument, `nil`, or a negative depth flattens fully; `0` returns a shallow copy; a positive depth flattens that many levels and a `Float` depth is truncated to an integer. A nonnumeric depth raises.
 - `fill(value)` / `fill(value, start, length)` / `fill(value, range)` to replace all or part of an array with a value, returning a new array. A block form `fill { |index| ... }`, optionally narrowed by a `start`/`length` or range (`fill(start) { ... }`, `fill(start, length) { ... }`, `fill(range) { ... }`), computes each replacement from its index. When a block is given there is no fill-value argument: every positional argument selects the window, so `fill(0) { |i| ... }` fills from index `0` to the end rather than filling with `0`.
@@ -239,6 +242,8 @@ receiver.
 - `each_cons(n)` yields every sliding window of length `n`; an array shorter than
   `n` yields nothing. `n` must be a positive integer. Returns `nil`.
 - `reverse_each` yields values from last to first and returns the receiver.
+- `each_with_index` yields each element along with its 0-based index and returns
+  the receiver. It takes no arguments and requires a block.
 - `cycle(n)` yields the whole array `n` times. A non-positive `n` yields nothing.
   Omitting `n` or passing `nil` cycles forever; the step quota and context
   cancellation bound the otherwise unbounded loop. Returns `nil`.
@@ -265,6 +270,9 @@ end                                 # yields 3, 2, 1
 [1, 2].cycle(2) do |value|
   value + 1
 end                                 # yields 1, 2, 1, 2
+["a", "b"].each_with_index do |value, index|
+  [value, index]
+end                                 # yields ("a", 0) then ("b", 1)
 ```
 
 ## Ordering and grouping

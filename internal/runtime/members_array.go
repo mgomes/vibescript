@@ -13,7 +13,7 @@ import (
 // switch below; TestMemberSuggestionCandidatesResolve enforces that every
 // listed name resolves.
 var arrayMemberNames = []string{
-	"size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
+	"size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 	"take_while", "drop_while", "grep", "grep_v",
 	"push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse",
 	"take", "drop", "zip", "transpose", "union", "difference",
@@ -33,7 +33,7 @@ func arrayMember(array Value, property string) (Value, error) {
 
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
-	case "size", "length", "empty?", "each", "each_slice", "each_cons", "reverse_each", "cycle", "map", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
+	case "size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
 		"take_while", "drop_while", "grep", "grep_v":
 		return arrayMemberQuery(property)
 	case "push", "append", "prepend", "pop", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "take", "drop", "zip", "transpose", "union", "difference":
@@ -596,6 +596,35 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			return receiver, nil
 		}), nil
+	case "each_with_index":
+		return NewAutoBuiltin("array.each_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.each_with_index does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.each_with_index does not take keyword arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.each_with_index")
+			if err != nil {
+				return NewNil(), err
+			}
+			var blockArgs [2]Value
+			for i, item := range receiver.Array() {
+				// Charge a step per yield so an empty block body cannot starve
+				// the step quota or cancellation checks while traversing a large
+				// receiver; runner.call only charges steps for the statements it
+				// evaluates, and an empty block evaluates none.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				blockArgs[0] = item
+				blockArgs[1] = NewInt(int64(i))
+				if _, err := runner.call(blockArgs[:]); err != nil {
+					return NewNil(), err
+				}
+			}
+			return receiver, nil
+		}), nil
 	case "each_slice":
 		return NewAutoBuiltin("array.each_slice", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			size, err := arrayPositiveSliceSize(args, "array.each_slice")
@@ -711,6 +740,61 @@ func arrayMemberQuery(property string) (Value, error) {
 				result[i] = val
 			}
 			return NewArray(result), nil
+		}), nil
+	case "map_with_index":
+		return NewAutoBuiltin("array.map_with_index", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.map_with_index does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.map_with_index does not take keyword arguments")
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.map_with_index")
+			if err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			// map_with_index keeps an arbitrary block result per element, so charge
+			// the growing result incrementally rather than only after the call: a
+			// block returning an individually quota-sized value per element could
+			// otherwise pile up past MemoryQuotaBytes before the post-call check
+			// ran. The accumulator's baseline includes the live receiver and block
+			// (held on the Go stack during the call, so invisible to the per-call
+			// checkMemoryWith), matching hash.map_with_index and filter_map.
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			// Reject the build before reserving the backing slice when its len(arr)
+			// slots would already overflow the quota. map keeps one result per
+			// element, so the backing reaches len(arr) Value slots regardless of the
+			// block; make would otherwise reserve all of them as a Go-local slice
+			// (invisible to the quota) before the first acc.add projected cap(out),
+			// letting a large receiver transiently allocate a full result backing
+			// that should have been rejected up front, mirroring rangeMaterialize's
+			// pre-make reservation.
+			if err := acc.reserveSlots(len(arr)); err != nil {
+				return NewNil(), err
+			}
+			out := make([]Value, 0, len(arr))
+			var blockArgs [2]Value
+			for i, item := range arr {
+				// Charge a step per yield so an empty block body cannot starve the
+				// step quota or cancellation checks while traversing a large
+				// receiver; runner.call only charges steps for the statements it
+				// evaluates, and an empty block evaluates none.
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				blockArgs[0] = item
+				blockArgs[1] = NewInt(int64(i))
+				val, err := runner.call(blockArgs[:])
+				if err != nil {
+					return NewNil(), err
+				}
+				out = append(out, val)
+				if err := acc.add(val, cap(out)); err != nil {
+					return NewNil(), err
+				}
+			}
+			return NewArray(out), nil
 		}), nil
 	case "filter_map":
 		return NewAutoBuiltin("array.filter_map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -961,6 +1045,7 @@ func arrayMemberQuery(property string) (Value, error) {
 		return NewAutoBuiltin("array.slice", arraySlice), nil
 	case "fetch":
 		return NewAutoBuiltin("array.fetch", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			hasBlock := valueBlock(block) != nil
 			if len(args) < 1 || len(args) > 2 {
 				return NewNil(), fmt.Errorf("array.fetch expects index and optional default")
 			}
@@ -972,13 +1057,24 @@ func arrayMemberQuery(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.fetch index must be integer")
 			}
 			arr := receiver.Array()
-			if index >= 0 && index < len(arr) {
-				return arr[index], nil
+			normalized := index
+			if normalized < 0 {
+				normalized += len(arr)
+			}
+			if normalized >= 0 && normalized < len(arr) {
+				return arr[normalized], nil
+			}
+			// A block supersedes a default value argument, matching Ruby's
+			// Array#fetch: when both are supplied the block is invoked on a
+			// miss and the default argument is ignored.
+			if hasBlock {
+				blockArg := [1]Value{NewInt(int64(index))}
+				return exec.CallBlock(block, blockArg[:])
 			}
 			if len(args) == 2 {
 				return args[1], nil
 			}
-			return NewNil(), nil
+			return NewNil(), fmt.Errorf("array.fetch index %d outside of array bounds: %d...%d", index, -len(arr), len(arr))
 		}), nil
 	case "values_at":
 		return NewAutoBuiltin("array.values_at", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -1746,6 +1842,97 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	return acc, nil
 }
 
+// arraySum totals an array, mirroring Ruby's Array#sum forms:
+//
+//	values.sum                       # start from 0, add each element
+//	values.sum(initial)              # start from initial, add each element
+//	values.sum { |item| ... }        # start from 0, add each block result
+//	values.sum(initial) { |item| ... } # combine both
+//
+// The optional positional argument seeds the accumulator and an optional block
+// transforms each element before it is added. Like Ruby's `+`, each addition
+// must operate on compatible operands, so mixing a string with a non-string (or
+// any other unsupported pair) raises instead of silently coercing the operands.
+func arraySum(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.sum does not take keyword arguments")
+	}
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("array.sum accepts at most an initial value")
+	}
+
+	total := NewInt(0)
+	if len(args) == 1 {
+		total = args[0]
+	}
+
+	var runner *blockCallRunner
+	if valueBlock(block) != nil {
+		var err error
+		runner, err = newBlockCallRunner(exec, block, "array.sum")
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+
+	arr := receiver.Array()
+	var blockArg [1]Value
+	for _, item := range arr {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		contribution := item
+		if runner != nil {
+			blockArg[0] = item
+			result, err := runner.call(blockArg[:])
+			if err != nil {
+				return NewNil(), err
+			}
+			contribution = result
+		}
+		next, err := arraySumAdd(total, contribution)
+		if err != nil {
+			return NewNil(), err
+		}
+		// Both the prior total and the contribution stay live on the Go stack
+		// alongside next: arraySumAdd builds next from a fresh copy (a new string
+		// buffer or a new slice backing) of the old total and the contribution, so
+		// all three coexist at this step's peak. The prior total matters most when it
+		// has grown across iterations into a large string or array that is reachable
+		// only from this Go-local — the base walk never sees it, so a quota above the
+		// new accumulator alone but below old_total + new accumulator would otherwise
+		// admit a step whose true peak exceeds the limit. Charge both as live extras
+		// so the step is rejected here rather than only after the builtin returns. The
+		// estimator dedups each, so the blockless case (contribution is a receiver
+		// element) and an int seed (a scalar prior total) add nothing meaningful.
+		if err := exec.checkAccumulatorWithCallRoots(next, receiver, args, kwargs, block, total, contribution); err != nil {
+			return NewNil(), err
+		}
+		total = next
+	}
+	return total, nil
+}
+
+// arraySumAdd adds one contribution into the running total for array.sum. It
+// reuses addValues for the actual arithmetic but rejects the asymmetric
+// string-coercion addValues allows (e.g. 0 + "a"), matching Ruby's strict `+`
+// where a string and a non-string cannot be summed together.
+func arraySumAdd(total, contribution Value) (Value, error) {
+	isString := func(v Value) bool { return v.Kind() == KindString }
+	if isString(total) != isString(contribution) {
+		return NewNil(), errArraySumIncompatible
+	}
+	sum, err := addValues(total, contribution)
+	if err != nil {
+		return NewNil(), errArraySumIncompatible
+	}
+	return sum, nil
+}
+
+// errArraySumIncompatible is returned when array.sum encounters operands that
+// cannot be added together, such as summing a string with a number.
+var errArraySumIncompatible = errors.New("array.sum cannot add incompatible values")
+
 // reduceOperationName extracts an operation name from a reduce argument. Ruby
 // accepts both symbols and strings here (`reduce(:+)` and `reduce("+")`) and
 // raises a TypeError ("not a symbol nor a string") for anything else.
@@ -2288,23 +2475,7 @@ func arrayMemberTransforms(property string) (Value, error) {
 			return NewArray(out), nil
 		}), nil
 	case "sum":
-		return NewAutoBuiltin("array.sum", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			arr := receiver.Array()
-			total := NewInt(0)
-			for _, item := range arr {
-				switch item.Kind() {
-				case KindInt, KindFloat:
-				default:
-					return NewNil(), fmt.Errorf("array.sum supports numeric values")
-				}
-				sum, err := addValues(total, item)
-				if err != nil {
-					return NewNil(), fmt.Errorf("array.sum supports numeric values")
-				}
-				total = sum
-			}
-			return total, nil
-		}), nil
+		return NewAutoBuiltin("array.sum", arraySum), nil
 	case "compact":
 		return NewAutoBuiltin("array.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 0 {
