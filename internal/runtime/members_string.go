@@ -23,7 +23,7 @@ var stringMemberNames = []string{
 	"size", "length", "bytesize", "ord", "chr", "getbyte", "byteslice", "hex", "oct", "empty?", "clear", "concat", "prepend", "insert", "replace", "start_with?", "end_with?", "include?", "casecmp", "casecmp?", "match", "match?", "scan", "index", "rindex", "slice",
 	"strip", "strip!", "squish", "squish!", "lstrip", "lstrip!", "rstrip", "rstrip!", "chomp", "chomp!", "chop", "chop!", "delete_prefix", "delete_prefix!", "delete_suffix", "delete_suffix!", "upcase", "upcase!", "downcase", "downcase!", "capitalize", "capitalize!", "swapcase", "swapcase!", "reverse", "reverse!",
 	"sub", "sub!", "gsub", "gsub!", "split", "partition", "rpartition", "chars", "lines", "bytes", "codepoints", "each_char", "each_line", "each_byte", "each_codepoint", "template",
-	"center", "ljust", "rjust",
+	"center", "ljust", "rjust", "clamp",
 	"inspect",
 	"to_sym", "intern", "to_s", "string", "to_i", "to_f",
 }
@@ -47,6 +47,8 @@ func stringMemberBuiltin(property string) (Value, error) {
 		return stringMemberTextOps(property)
 	case "center", "ljust", "rjust":
 		return stringMemberPadding(property)
+	case "clamp":
+		return stringMemberClamp(), nil
 	case "inspect":
 		return newInspectBuiltin("string"), nil
 	case "to_sym", "intern", "to_s", "string", "to_i", "to_f":
@@ -117,6 +119,49 @@ func stringMemberConversions(property string) (Value, error) {
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown string method %s", property)
+	}
+}
+
+func stringMemberClamp() Value {
+	return NewAutoBuiltin("string.clamp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(kwargs) > 0 {
+			return NewNil(), fmt.Errorf("string.clamp does not take keyword arguments")
+		}
+		if !block.IsNil() {
+			return NewNil(), fmt.Errorf("string.clamp does not accept blocks")
+		}
+		if len(args) != 2 {
+			return NewNil(), fmt.Errorf("string.clamp expects min and max")
+		}
+		minVal, err := stringClampBound(args[0])
+		if err != nil {
+			return NewNil(), err
+		}
+		maxVal, err := stringClampBound(args[1])
+		if err != nil {
+			return NewNil(), err
+		}
+		if minVal != nil && maxVal != nil && strings.Compare(minVal.String(), maxVal.String()) > 0 {
+			return NewNil(), fmt.Errorf("string.clamp min must be <= max")
+		}
+		if minVal != nil && strings.Compare(receiver.String(), minVal.String()) < 0 {
+			return *minVal, nil
+		}
+		if maxVal != nil && strings.Compare(receiver.String(), maxVal.String()) > 0 {
+			return *maxVal, nil
+		}
+		return receiver, nil
+	})
+}
+
+func stringClampBound(val Value) (*Value, error) {
+	switch val.Kind() {
+	case KindNil:
+		return nil, nil
+	case KindString:
+		return &val, nil
+	default:
+		return nil, fmt.Errorf("string.clamp bounds must be strings or nil")
 	}
 }
 

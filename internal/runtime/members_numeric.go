@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"math"
+	"math/big"
 )
 
 // The *MemberNames lists below mirror the names dispatched by the member
@@ -78,25 +79,7 @@ func intMemberBuiltin(property string) (Value, error) {
 		}), nil
 	case "clamp":
 		return NewAutoBuiltin("int.clamp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 2 {
-				return NewNil(), fmt.Errorf("int.clamp expects min and max")
-			}
-			if args[0].Kind() != KindInt || args[1].Kind() != KindInt {
-				return NewNil(), fmt.Errorf("int.clamp expects integer min and max")
-			}
-			minVal := args[0].Int()
-			maxVal := args[1].Int()
-			if minVal > maxVal {
-				return NewNil(), fmt.Errorf("int.clamp min must be <= max")
-			}
-			n := receiver.Int()
-			if n < minVal {
-				return NewInt(minVal), nil
-			}
-			if n > maxVal {
-				return NewInt(maxVal), nil
-			}
-			return receiver, nil
+			return numericClamp("int.clamp", receiver, args, kwargs, block)
 		}), nil
 	case "even?":
 		return NewAutoBuiltin("int.even?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -308,25 +291,7 @@ func floatMemberBuiltin(property string) (Value, error) {
 		}), nil
 	case "clamp":
 		return NewAutoBuiltin("float.clamp", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) != 2 {
-				return NewNil(), fmt.Errorf("float.clamp expects min and max")
-			}
-			if (args[0].Kind() != KindInt && args[0].Kind() != KindFloat) || (args[1].Kind() != KindInt && args[1].Kind() != KindFloat) {
-				return NewNil(), fmt.Errorf("float.clamp expects numeric min and max")
-			}
-			minVal := args[0].Float()
-			maxVal := args[1].Float()
-			if minVal > maxVal {
-				return NewNil(), fmt.Errorf("float.clamp min must be <= max")
-			}
-			n := receiver.Float()
-			if n < minVal {
-				return NewFloat(minVal), nil
-			}
-			if n > maxVal {
-				return NewFloat(maxVal), nil
-			}
-			return receiver, nil
+			return numericClamp("float.clamp", receiver, args, kwargs, block)
 		}), nil
 	case "round", "floor", "ceil":
 		mode := roundModeFor(property)
@@ -471,6 +436,117 @@ func floatMemberBuiltin(property string) (Value, error) {
 		return newInspectBuiltin("float"), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown float method %s", property)
+	}
+}
+
+func numericClamp(method string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	if !block.IsNil() {
+		return NewNil(), fmt.Errorf("%s does not accept blocks", method)
+	}
+	minVal, maxVal, err := numericClampBounds(method, args)
+	if err != nil {
+		return NewNil(), err
+	}
+	if minVal != nil && maxVal != nil {
+		cmp, err := compareNumericValues(*minVal, *maxVal, method)
+		if err != nil {
+			return NewNil(), err
+		}
+		if cmp > 0 {
+			return NewNil(), fmt.Errorf("%s min must be <= max", method)
+		}
+	}
+	if minVal != nil {
+		cmp, err := compareNumericValues(receiver, *minVal, method)
+		if err != nil {
+			return NewNil(), err
+		}
+		if cmp < 0 {
+			return *minVal, nil
+		}
+	}
+	if maxVal != nil {
+		cmp, err := compareNumericValues(receiver, *maxVal, method)
+		if err != nil {
+			return NewNil(), err
+		}
+		if cmp > 0 {
+			return *maxVal, nil
+		}
+	}
+	return receiver, nil
+}
+
+func numericClampBounds(method string, args []Value) (*Value, *Value, error) {
+	switch len(args) {
+	case 1:
+		if args[0].Kind() != KindRange {
+			return nil, nil, fmt.Errorf("%s expects min and max or range", method)
+		}
+		rng := args[0].Range()
+		if rng.Exclusive {
+			return nil, nil, fmt.Errorf("%s cannot clamp with exclusive range", method)
+		}
+		minVal := NewInt(rng.Start)
+		maxVal := NewInt(rng.End)
+		return &minVal, &maxVal, nil
+	case 2:
+		minVal, err := numericClampBound(method, args[0])
+		if err != nil {
+			return nil, nil, err
+		}
+		maxVal, err := numericClampBound(method, args[1])
+		if err != nil {
+			return nil, nil, err
+		}
+		return minVal, maxVal, nil
+	default:
+		return nil, nil, fmt.Errorf("%s expects min and max or range", method)
+	}
+}
+
+func numericClampBound(method string, val Value) (*Value, error) {
+	switch val.Kind() {
+	case KindNil:
+		return nil, nil
+	case KindInt, KindFloat:
+		return &val, nil
+	default:
+		return nil, fmt.Errorf("%s bounds must be numeric or nil", method)
+	}
+}
+
+func compareNumericValues(left, right Value, method string) (int, error) {
+	leftRat, err := numericValueRat(left, method)
+	if err != nil {
+		return 0, err
+	}
+	rightRat, err := numericValueRat(right, method)
+	if err != nil {
+		return 0, err
+	}
+	return leftRat.Cmp(rightRat), nil
+}
+
+func numericValueRat(val Value, method string) (*big.Rat, error) {
+	switch val.Kind() {
+	case KindInt:
+		return new(big.Rat).SetInt64(val.Int()), nil
+	case KindFloat:
+		f := val.Float()
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, fmt.Errorf("%s values must be finite", method)
+		}
+		rat := new(big.Rat).SetFloat64(f)
+		if rat == nil {
+			return nil, fmt.Errorf("%s values must be finite", method)
+		}
+		return rat, nil
+	default:
+		return nil, fmt.Errorf("%s values must be numeric", method)
 	}
 }
 
