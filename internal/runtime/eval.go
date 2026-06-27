@@ -60,33 +60,9 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *SymbolLiteral:
 		return NewSymbol(e.Name), nil
 	case *ArrayLiteral:
-		elems := make([]Value, len(e.Elements))
-		for i, el := range e.Elements {
-			val, err := exec.evalExpressionWithAuto(el, env, true)
-			if err != nil {
-				return NewNil(), err
-			}
-			elems[i] = val
-		}
-		return NewArray(elems), nil
+		return exec.evalArrayLiteral(e, env)
 	case *HashLiteral:
-		entries := make(map[string]Value, len(e.Pairs))
-		for _, pair := range e.Pairs {
-			keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
-			if err != nil {
-				return NewNil(), err
-			}
-			key, err := valueToHashKey(keyVal)
-			if err != nil {
-				return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
-			}
-			val, err := exec.evalExpressionWithAuto(pair.Value, env, true)
-			if err != nil {
-				return NewNil(), err
-			}
-			entries[key] = val
-		}
-		return NewHash(entries), nil
+		return exec.evalHashLiteral(e, env)
 	case *UnaryExpr:
 		return exec.evalUnaryExpr(e, env)
 	case *BinaryExpr:
@@ -322,6 +298,70 @@ func (exec *Execution) appendInterpolatedValue(sb *strings.Builder, val Value) e
 	return nil
 }
 
+// evalArrayLiteral evaluates an array literal element by element, charging each
+// new element against the memory quota as it lands in the Go-local backing slice.
+// Each evaluated element stays live in that slice until NewArray binds it, so the
+// running footprint must include every element gathered so far; a literal whose
+// elements are fresh temporaries (for example [big[0, n], big[0, n]], where each
+// bracket slice is a fresh copy invisible to the base estimator) would otherwise
+// stack several copies past the quota before any later statement check observed
+// them. The accumulator snapshots the baseline once and charges each element
+// incrementally, deduplicating elements aliased by an environment root.
+func (exec *Execution) evalArrayLiteral(e *ArrayLiteral, env *Env) (Value, error) {
+	acc := newArrayBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	elems := make([]Value, 0, len(e.Elements))
+	for _, el := range e.Elements {
+		val, err := exec.evalExpressionWithAuto(el, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		elems = append(elems, val)
+		if err := acc.add(val, cap(elems)); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewArray(elems), nil
+}
+
+// evalHashLiteral evaluates a hash literal pair by pair, charging each new entry
+// against the memory quota as it lands in the Go-local map. The partially built
+// map is reachable from no environment until NewHash binds it, so the running
+// footprint must include every entry inserted so far; a literal whose values are
+// fresh temporaries (for example {a: big[0, n], b: big[0, n]}) would otherwise
+// stack several copies past the quota before any later statement check observed
+// them. The accumulator reserves the entry backing up front and charges each
+// entry's key and value payloads incrementally, deduplicating payloads aliased by
+// an environment root.
+func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) {
+	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
+	if err := acc.reserveBacking(len(e.Pairs)); err != nil {
+		return NewNil(), err
+	}
+	entries := make(map[string]Value, len(e.Pairs))
+	for _, pair := range e.Pairs {
+		keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		key, err := valueToHashKey(keyVal)
+		if err != nil {
+			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
+		}
+		val, err := exec.evalExpressionWithAuto(pair.Value, env, true)
+		if err != nil {
+			return NewNil(), err
+		}
+		entries[key] = val
+		if err := acc.add(val); err != nil {
+			return NewNil(), err
+		}
+		if err := acc.addSynthesizedKey(key); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewHash(entries), nil
+}
+
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
 	right, err := exec.evalExpressionWithAuto(e.Right, env, true)
 	if err != nil {
@@ -369,7 +409,31 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	return exec.evalIndexValue(e, obj, indices)
+	result, err := exec.evalIndexValue(e, obj, indices)
+	if err != nil {
+		return NewNil(), err
+	}
+	// The start/length and range forms return a fresh subarray or substring that
+	// lives only on the Go stack here; an enclosing literal keeps prior elements
+	// in Go-local slots its own per-element check cannot see, so a form such as
+	// [big[0, n], big[0, n]] could stack several slice copies past the quota
+	// before a later statement check observed them. Charge the receiver, the live
+	// selectors, and the fresh result together so the peak is rejected at the
+	// source. The estimator deduplicates the receiver and any env-reachable
+	// selectors, so a plain element read (which returns an aliased value, not a
+	// fresh allocation) charges nothing beyond what the earlier checks already did.
+	// Skip building the charge slice entirely when no quota is enforced, keeping
+	// the common indexed read allocation-free.
+	if exec.memoryQuota > 0 {
+		chargeable := make([]Value, 0, len(indices)+2)
+		chargeable = append(chargeable, obj)
+		chargeable = append(chargeable, indices...)
+		chargeable = append(chargeable, result)
+		if err := exec.checkMemoryWith(chargeable...); err != nil {
+			return NewNil(), err
+		}
+	}
+	return result, nil
 }
 
 // evalIndexSelectors evaluates every selector between the brackets, charging

@@ -440,6 +440,251 @@ func TestMemoryQuotaIndexSelectorsChargeAllLiveSelectors(t *testing.T) {
 	}
 }
 
+// bracketSliceFixture binds a large array `big` in an environment and returns a
+// builder for the start/length bracket slice big[0, len(big)], which copies big's
+// slots into a fresh backing array while its string payloads stay shared. peakFor
+// reports the live footprint, through the same estimator the runtime uses, of base
+// (including big) plus `copies` such fresh slices resident together — exactly what
+// the bracket and array-literal checks charge when that many copies are live.
+type bracketSliceFixture struct {
+	big        []Value
+	sliceCount int
+	setupEnv   func(*Env)
+	probeExec  *Execution
+}
+
+func newBracketSliceFixture(t *testing.T, sliceCount int, element string) *bracketSliceFixture {
+	t.Helper()
+	big := make([]Value, sliceCount)
+	for i := range big {
+		big[i] = NewString(element)
+	}
+	f := &bracketSliceFixture{
+		big:        big,
+		sliceCount: sliceCount,
+		setupEnv: func(env *Env) {
+			env.Define("big", NewArray(big))
+		},
+		probeExec: &Execution{quota: 10000, memoryQuota: 0, moduleLoading: make(map[string]bool)},
+	}
+	return f
+}
+
+func (f *bracketSliceFixture) sliceExpr(pos Position) *IndexExpr {
+	return &IndexExpr{
+		Object: &Identifier{Name: "big", Position: pos},
+		Indices: []Expression{
+			&IntegerLiteral{Value: 0, Position: pos},
+			&IntegerLiteral{Value: int64(f.sliceCount), Position: pos},
+		},
+		Position: pos,
+	}
+}
+
+func (f *bracketSliceFixture) peakFor(copies int) int {
+	probeEnv := newEnv(nil)
+	f.setupEnv(probeEnv)
+	f.probeExec.pushEnv(probeEnv)
+	defer f.probeExec.popEnv()
+
+	est := f.probeExec.memoryEstimatorForCheck()
+	total := f.probeExec.estimateMemoryUsageBase(est)
+	for range copies {
+		freshCopy := make([]Value, f.sliceCount)
+		copy(freshCopy, f.big)
+		total += est.value(NewArray(freshCopy))
+	}
+	est.reset()
+	return total
+}
+
+// TestMemoryQuotaBracketSliceChargesFreshResult covers the finding that a fresh
+// bracket-slice result must be charged before evalIndexExpr returns it. The slice
+// big[0, n] lives only on the Go stack here, invisible to the base estimator, so
+// without the charge a single oversized slice slipped past the bracket entirely
+// and was caught only by whatever enclosing check happened to run later (or never,
+// for a discarded temporary). A quota that fits base + big but not base + big +
+// the fresh slice must reject at the bracket.
+func TestMemoryQuotaBracketSliceChargesFreshResult(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	f := newBracketSliceFixture(t, 1200, "abcdefghij")
+
+	peakZero := f.peakFor(0)
+	peakOne := f.peakFor(1)
+	if peakOne <= peakZero {
+		t.Fatalf("one-slice peak %d must exceed base %d", peakOne, peakZero)
+	}
+
+	run := func(quota int) error {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		f.setupEnv(env)
+		// Push the env so estimateMemoryUsageBase walks big, matching how a script's
+		// function/script env is live on the stack during real execution and how
+		// peakFor measures the baseline.
+		exec.pushEnv(env)
+		_, err := exec.evalIndexExpr(f.sliceExpr(pos), env)
+		return err
+	}
+
+	// A quota above base + big but below base + big + slice rejects: the fresh slice
+	// is charged at the bracket. Before the fix evalIndexExpr returned the slice
+	// without charging it, so this quota admitted the allocation.
+	rejectQuota := peakZero + (peakOne-peakZero)/2
+	if rejectQuota <= peakZero {
+		t.Fatalf("reject quota %d does not exceed base %d; widen the slice", rejectQuota, peakZero)
+	}
+	if err := run(rejectQuota); err == nil {
+		t.Fatalf("expected memory quota error when the fresh bracket slice exceeds the quota")
+	} else {
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	}
+
+	// A quota with headroom for base + big + the slice succeeds, proving the charge
+	// does not over-reject a legitimately sized slice.
+	if err := run(peakOne + estimatedValueBytes + estimatedSliceBaseBytes + f.sliceCount*estimatedValueBytes); err != nil {
+		t.Fatalf("bracket slice with room for the fresh result returned error: %v", err)
+	}
+}
+
+// hashPeakFor reports the live footprint of base (including big) plus a hash
+// holding `copies` distinct full-length slices of big, mirroring what the hash
+// literal's per-insert check charges when that many fresh values are resident in
+// the partially built map.
+func (f *bracketSliceFixture) hashPeakFor(copies int) int {
+	probeEnv := newEnv(nil)
+	f.setupEnv(probeEnv)
+	f.probeExec.pushEnv(probeEnv)
+	defer f.probeExec.popEnv()
+
+	entries := make(map[string]Value, copies)
+	keys := []string{"a", "b", "c", "d"}
+	for i := range copies {
+		freshCopy := make([]Value, f.sliceCount)
+		copy(freshCopy, f.big)
+		entries[keys[i]] = NewArray(freshCopy)
+	}
+	est := f.probeExec.memoryEstimatorForCheck()
+	total := f.probeExec.estimateMemoryUsageBase(est)
+	total += est.value(NewHash(entries))
+	est.reset()
+	return total
+}
+
+// TestMemoryQuotaBracketSliceHashLiteralChargesStackedCopies mirrors the array
+// literal case for hashes: {a: big[0, n], b: big[0, n]} holds both fresh slice
+// values in the partially built Go-local map the base estimator cannot see.
+// evalExpression on a hash literal performs no post-build check, so without the
+// per-insert charge the second value materializes uncharged; the charge rejects
+// it while both copies are resident.
+func TestMemoryQuotaBracketSliceHashLiteralChargesStackedCopies(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	f := newBracketSliceFixture(t, 1200, "abcdefghij")
+
+	literal := func() *HashLiteral {
+		return &HashLiteral{
+			Pairs: []HashPair{
+				{Key: &SymbolLiteral{Name: "a", Position: pos}, Value: f.sliceExpr(pos)},
+				{Key: &SymbolLiteral{Name: "b", Position: pos}, Value: f.sliceExpr(pos)},
+			},
+			Position: pos,
+		}
+	}
+
+	peakOne := f.hashPeakFor(1)
+	peakTwo := f.hashPeakFor(2)
+	if peakTwo <= peakOne {
+		t.Fatalf("two-value peak %d must exceed one-value peak %d", peakTwo, peakOne)
+	}
+
+	run := func(quota int) error {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		f.setupEnv(env)
+		exec.pushEnv(env)
+		_, err := exec.evalExpression(literal(), env)
+		return err
+	}
+
+	rejectQuota := peakOne + (peakTwo-peakOne)/2
+	if rejectQuota <= peakOne {
+		t.Fatalf("reject quota %d does not exceed one-value peak %d; widen the slice", rejectQuota, peakOne)
+	}
+	if err := run(rejectQuota); err == nil {
+		t.Fatalf("expected memory quota error when the second hash value stacks on the live first value")
+	} else {
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	}
+
+	if err := run(peakTwo + estimatedValueBytes + estimatedSliceBaseBytes + 2*f.sliceCount*estimatedValueBytes); err != nil {
+		t.Fatalf("hash literal with room for both bracket slices returned error: %v", err)
+	}
+}
+
+// TestMemoryQuotaBracketSliceLiteralChargesStackedCopies covers the finding's
+// concrete example: [big[0, n], big[0, n]] evaluates each slice into a Go-local
+// literal slot the base estimator cannot see, so without charging the accumulated
+// elements two full-size copies could coexist past the quota before a later check
+// observed them. evalExpression on an array literal performs no post-build check,
+// so without the per-element charge the second slice materializes uncharged and
+// the build returns no error; with the charge the literal rejects the second
+// slice while both copies are resident.
+func TestMemoryQuotaBracketSliceLiteralChargesStackedCopies(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	f := newBracketSliceFixture(t, 1200, "abcdefghij")
+
+	literal := func() *ArrayLiteral {
+		return &ArrayLiteral{
+			Elements: []Expression{f.sliceExpr(pos), f.sliceExpr(pos)},
+			Position: pos,
+		}
+	}
+
+	peakOne := f.peakFor(1)
+	peakTwo := f.peakFor(2)
+	if peakTwo <= peakOne {
+		t.Fatalf("two-slice peak %d must exceed one-slice peak %d", peakTwo, peakOne)
+	}
+
+	run := func(quota int) error {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		f.setupEnv(env)
+		// Push the env so estimateMemoryUsageBase walks big, matching how a script's
+		// function/script env is live on the stack during real execution and how
+		// peakFor measures the baseline.
+		exec.pushEnv(env)
+		_, err := exec.evalExpression(literal(), env)
+		return err
+	}
+
+	// A quota above the one-slice peak (so the first element's check passes) but
+	// below the two-slice peak must reject while the literal builds. Before the fix
+	// the inline literal never charged the accumulated elements and evalExpression
+	// added no post-build check, so this quota admitted both copies silently.
+	rejectQuota := peakOne + (peakTwo-peakOne)/2
+	if rejectQuota <= peakOne {
+		t.Fatalf("reject quota %d does not exceed one-slice peak %d; widen the slice", rejectQuota, peakOne)
+	}
+	if err := run(rejectQuota); err == nil {
+		t.Fatalf("expected memory quota error when the second bracket slice stacks on the live first slice")
+	} else {
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	}
+
+	// A quota with headroom for the full two-slice peak succeeds, proving the
+	// charge does not over-reject a legitimately sized literal of bracket slices.
+	if err := run(peakTwo + estimatedValueBytes + estimatedSliceBaseBytes + 2*f.sliceCount*estimatedValueBytes); err != nil {
+		t.Fatalf("literal with room for both bracket slices returned error: %v", err)
+	}
+}
+
 func TestMemoryQuotaTransientAllocations(t *testing.T) {
 	t.Parallel()
 
