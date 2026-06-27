@@ -111,6 +111,46 @@ func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []V
 	return nil
 }
 
+// checkAccumulatorWithCallRoots rejects a fold step whose running accumulator,
+// together with the builtin's live call roots, would exceed the memory quota.
+// Builtins that grow a single Go-local accumulator value from a non-rooted
+// receiver — Array#sum building a string or array total — use it instead of the
+// plain checkMemoryWith(accumulator). The receiver, args, and block stay live on
+// the Go call stack for the builtin's whole run yet are invisible to
+// estimateMemoryUsageBase, so a check that charged only the accumulator could
+// admit a peak (call roots + accumulator) that exceeds the quota until the
+// builtin returns. Charging the accumulator and the call roots through one
+// deduplicating estimator keeps the running check consistent with the pre-call
+// checkCallMemoryRoots: an accumulator that aliases the receiver or an argument
+// is counted once, matching the real shared backing.
+func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	used = saturatingAdd(used, est.value(accumulator))
+	if receiver.Kind() != KindNil {
+		used = saturatingAdd(used, est.value(receiver))
+	}
+	for _, arg := range args {
+		used = saturatingAdd(used, est.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		used = saturatingAdd(used, est.value(kwarg))
+	}
+	if !block.IsNil() {
+		used = saturatingAdd(used, est.value(block))
+	}
+	est.reset()
+
+	if used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
 // checkProjectedStringBytes rejects allocations that would exceed the memory
 // quota before the string is built. Builtins that grow a string by a
 // user-controlled amount (such as the padding helpers) use it to fail fast

@@ -1798,7 +1798,7 @@ func arraySum(exec *Execution, receiver Value, args []Value, kwargs map[string]V
 		if err != nil {
 			return NewNil(), err
 		}
-		if err := exec.checkMemoryWith(next); err != nil {
+		if err := exec.checkAccumulatorWithCallRoots(next, receiver, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}
 		total = next

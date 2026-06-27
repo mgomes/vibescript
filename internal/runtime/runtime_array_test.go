@@ -1123,6 +1123,56 @@ func TestArrayValuesAtRangeChargesEphemeralReceiver(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestArraySumChargesEphemeralReceiverWhileAccumulating(t *testing.T) {
+	t.Parallel()
+
+	// The receiver is reachable only through the call roots (an array literal or a
+	// capability result summed immediately), so its payload is invisible to
+	// estimateMemoryUsageBase. sum builds a growing string accumulator on top of
+	// that still-live receiver; the per-iteration check must charge the receiver as
+	// a call root, not just the accumulator. A quota that admits the final
+	// concatenated string alone, and the receiver alone, but not their sum has to be
+	// rejected before the accumulator finishes. Without seeding the receiver into the
+	// check the accumulator could grow another full receiver beyond the quota, with
+	// the excess only caught after the builtin returned.
+	const parts = 8
+	chunk := string(make([]byte, 1000))
+	elements := make([]Value, parts)
+	for i := range elements {
+		elements[i] = NewString(chunk)
+	}
+	receiver := NewArray(elements)
+
+	member, err := arrayMember(receiver, "sum")
+	if err != nil {
+		t.Fatalf("arrayMember(sum): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member sum is not a builtin")
+	}
+
+	// The receiver payload and the final concatenated accumulator each fit under the
+	// quota on their own, but both are live at the last iteration, so their combined
+	// footprint must not. Measuring both lets the quota land strictly between the
+	// larger single footprint and the sum, where only the receiver-aware check rejects.
+	finalString := NewString(string(make([]byte, parts*len(chunk))))
+	receiverBytes := newMemoryEstimator().value(receiver)
+	finalBytes := newMemoryEstimator().value(finalString)
+	larger := max(receiverBytes, finalBytes)
+	quota := larger + (receiverBytes+finalBytes-larger)/2
+	if quota <= larger {
+		t.Fatalf("quota %d does not exceed the larger single footprint %d; widen the chunks", quota, larger)
+	}
+	if quota >= receiverBytes+finalBytes {
+		t.Fatalf("quota %d does not stay below the combined footprint %d; widen the chunks", quota, receiverBytes+finalBytes)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err = builtin.Fn(exec, receiver, []Value{NewString("")}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestArrayValuesAtRangeTripsStepQuota(t *testing.T) {
 	t.Parallel()
 
