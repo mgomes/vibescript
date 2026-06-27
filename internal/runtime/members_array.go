@@ -589,8 +589,14 @@ func arrayMemberQuery(property string) (Value, error) {
 			}
 			var blockArg [1]Value
 			for _, item := range receiver.Array() {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = item
 				if _, err := runner.call(blockArg[:]); err != nil {
+					return NewNil(), err
+				}
+				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -3013,7 +3019,7 @@ func arrayDelete(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	} else if valueBlock(block) != nil {
 		// On a miss Ruby invokes the block with the searched-for value and returns
 		// its result, matching `arr.delete(obj) { |o| default }`.
-		runner, err := newBlockCallRunner(exec, block, "array.delete")
+		runner, err := newBlockCallRunner(exec, block, "array.delete", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}

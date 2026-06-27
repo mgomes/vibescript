@@ -3,8 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"maps"
-	"slices"
 	"sort"
 )
 
@@ -12,10 +10,13 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return NewNil(), err
+	}
 
 	_, ok := s.functions[name]
 	if !ok {
-		candidates := slices.Collect(maps.Keys(s.functions))
+		candidates := functionSuggestionCandidates(s.functions)
 		return NewNil(), fmt.Errorf("function %s not found%s", name, didYouMean(name, candidates))
 	}
 
@@ -86,10 +87,13 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 	if lazyTaskGlobals != nil {
 		ctx = contextWithTaskLazyGlobals(ctx, lazyTaskGlobals)
 	}
+	if err := ctx.Err(); err != nil {
+		return NewNil(), err
+	}
 
 	_, ok := s.functions[name]
 	if !ok {
-		candidates := slices.Collect(maps.Keys(s.functions))
+		candidates := functionSuggestionCandidates(s.functions)
 		return NewNil(), fmt.Errorf("function %s not found%s", name, didYouMean(name, candidates))
 	}
 
@@ -347,4 +351,15 @@ func cloneEnumDef(enumDef *EnumDef, owner *Script) *EnumDef {
 		clone.MembersByKey[member.Symbol] = memberClone
 	}
 	return clone
+}
+
+func functionSuggestionCandidates(functions map[string]*ScriptFunction) []string {
+	candidates := make([]string, 0, min(len(functions), suggestMaxCandidates))
+	for name := range functions {
+		if len(candidates) == suggestMaxCandidates {
+			break
+		}
+		candidates = append(candidates, name)
+	}
+	return candidates
 }

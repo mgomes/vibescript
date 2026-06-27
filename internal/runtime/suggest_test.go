@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -131,6 +132,41 @@ func TestSuggestNames(t *testing.T) {
 				t.Fatalf("suggestNames(%q, %v) = %v, want %v", tt.missing, tt.candidates, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSuggestNamesCapsCandidateScan(t *testing.T) {
+	t.Parallel()
+
+	candidates := make([]string, suggestMaxCandidates+1)
+	for i := range suggestMaxCandidates {
+		candidates[i] = fmt.Sprintf("zzzzzz_%d", i)
+	}
+	candidates[suggestMaxCandidates] = "length"
+
+	if got := suggestNames("lengtt", candidates); len(got) != 0 {
+		t.Fatalf("suggestNames scanned past candidate cap: got %v", got)
+	}
+}
+
+func TestSuggestionCandidateSourcesAreBounded(t *testing.T) {
+	t.Parallel()
+
+	functions := make(map[string]*ScriptFunction, suggestMaxCandidates+25)
+	for i := range suggestMaxCandidates + 25 {
+		name := fmt.Sprintf("fn_%d", i)
+		functions[name] = &ScriptFunction{Name: name}
+	}
+	if got := functionSuggestionCandidates(functions); len(got) != suggestMaxCandidates {
+		t.Fatalf("functionSuggestionCandidates length = %d, want %d", len(got), suggestMaxCandidates)
+	}
+
+	entries := make(map[string]Value, suggestMaxCandidates+25)
+	for i := range suggestMaxCandidates + 25 {
+		entries[fmt.Sprintf("k_%d", i)] = NewInt(int64(i))
+	}
+	if got := hashMemberSuggestionCandidates(entries); len(got) != suggestMaxCandidates {
+		t.Fatalf("hashMemberSuggestionCandidates length = %d, want %d", len(got), suggestMaxCandidates)
 	}
 }
 

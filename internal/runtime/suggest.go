@@ -15,6 +15,7 @@ import (
 const (
 	suggestMaxDistance    = 2
 	suggestShortNameRunes = 4
+	suggestMaxCandidates  = 256
 	suggestMaxResults     = 3
 )
 
@@ -47,6 +48,9 @@ func suggestNames(name string, candidates []string) []string {
 	if name == "" {
 		return nil
 	}
+	if len(candidates) > suggestMaxCandidates {
+		candidates = candidates[:suggestMaxCandidates]
+	}
 	limit := suggestMaxDistance
 	if len([]rune(name)) <= suggestShortNameRunes {
 		limit = 1
@@ -57,7 +61,7 @@ func suggestNames(name string, candidates []string) []string {
 		rank int
 	}
 	matches := make([]ranked, 0, suggestMaxResults)
-	seen := make(map[string]struct{}, len(candidates))
+	seen := make(map[string]struct{}, min(len(candidates), suggestMaxCandidates))
 	for _, candidate := range candidates {
 		if candidate == "" || candidate == name {
 			continue

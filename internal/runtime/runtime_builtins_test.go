@@ -3,7 +3,10 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -1406,6 +1409,178 @@ func TestRandomIdentifierBuiltinsRandomSourceFailure(t *testing.T) {
     `)
 
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "random source failed")
+}
+
+func TestRandomIdentifierBuiltinsHonorCanceledContextBeforeEntropyRead(t *testing.T) {
+	t.Parallel()
+
+	reads := 0
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(context.Context, []byte) (int, error) {
+			reads++
+			return 0, nil
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, engine: engine}
+
+	_, err := builtinUUID(exec, NewNil(), nil, nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+	if reads != 0 {
+		t.Fatalf("uuid entropy reads = %d, want 0 after pre-canceled context", reads)
+	}
+
+	_, err = builtinRandomID(exec, NewNil(), []Value{NewInt(1)}, nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+	if reads != 0 {
+		t.Fatalf("random_id entropy reads = %d, want 0 after pre-canceled context", reads)
+	}
+}
+
+func TestRandomIDHonorsCancellationBetweenRetryReads(t *testing.T) {
+	t.Parallel()
+
+	var cancel context.CancelFunc
+	reads := 0
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(ctx context.Context, p []byte) (int, error) {
+			reads++
+			p[0] = 0xff
+			cancel()
+			return 1, nil
+		},
+	})
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	cancel = cancelFunc
+	exec := &Execution{ctx: ctx, engine: engine}
+
+	_, err := builtinRandomID(exec, NewNil(), []Value{NewInt(1)}, nil, NewNil())
+	requireErrorIs(t, err, context.Canceled)
+	if reads != 1 {
+		t.Fatalf("random_id entropy reads = %d, want cancellation before retry read", reads)
+	}
+}
+
+func TestRandomIdentifierBuiltinsAcceptFullFinalEntropyReadWithEOF(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(_ context.Context, p []byte) (int, error) {
+			for i := range p {
+				p[i] = 1
+			}
+			return len(p), io.EOF
+		},
+	})
+	exec := &Execution{ctx: context.Background(), engine: engine}
+
+	if _, err := builtinUUID(exec, NewNil(), nil, nil, NewNil()); err != nil {
+		t.Fatalf("uuid full final entropy read with EOF failed: %v", err)
+	}
+	got, err := builtinRandomID(exec, NewNil(), []Value{NewInt(1)}, nil, NewNil())
+	if err != nil {
+		t.Fatalf("random_id full final entropy read with EOF failed: %v", err)
+	}
+	if !got.Equal(NewString("b")) {
+		t.Fatalf("random_id = %v, want b", got)
+	}
+}
+
+func TestRandomIdentifierBuiltinsHonorCancellationAfterFullEntropyRead(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		call func(*Execution) (Value, error)
+	}{
+		{
+			name: "uuid",
+			call: func(exec *Execution) (Value, error) {
+				return builtinUUID(exec, NewNil(), nil, nil, NewNil())
+			},
+		},
+		{
+			name: "random_id",
+			call: func(exec *Execution) (Value, error) {
+				return builtinRandomID(exec, NewNil(), []Value{NewInt(1)}, nil, NewNil())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var cancel context.CancelFunc
+			reads := 0
+			engine := MustNewEngine(Config{
+				RandomReadFunc: func(_ context.Context, p []byte) (int, error) {
+					reads++
+					for i := range p {
+						p[i] = 1
+					}
+					cancel()
+					return len(p), nil
+				},
+			})
+			ctx, cancelFunc := context.WithCancel(context.Background())
+			cancel = cancelFunc
+			exec := &Execution{ctx: ctx, engine: engine}
+
+			_, err := tc.call(exec)
+			requireErrorIs(t, err, context.Canceled)
+			if reads != 1 {
+				t.Fatalf("%s entropy reads = %d, want 1", tc.name, reads)
+			}
+		})
+	}
+}
+
+func TestRandomReadFuncIsSerialized(t *testing.T) {
+	t.Parallel()
+
+	var inRead atomic.Bool
+	var overlapped atomic.Bool
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(_ context.Context, p []byte) (int, error) {
+			entered := inRead.CompareAndSwap(false, true)
+			if !entered {
+				overlapped.Store(true)
+			} else {
+				defer inRead.Store(false)
+			}
+			time.Sleep(2 * time.Millisecond)
+			for i := range p {
+				p[i] = byte(i)
+			}
+			return len(p), nil
+		},
+	})
+
+	const workers = 32
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			<-start
+			_, err := engine.randomBytes(context.Background(), 16)
+			errs <- err
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("randomBytes failed: %v", err)
+		}
+	}
+	if overlapped.Load() {
+		t.Fatal("RandomReadFunc calls overlapped")
+	}
 }
 
 func TestRandomIdentifierBuiltinsUsesUnbiasedSampling(t *testing.T) {

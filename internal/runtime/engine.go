@@ -28,6 +28,7 @@ type Config struct {
 	ModuleAllowList        []string
 	ModuleDenyList         []string
 	RandomReader           io.Reader
+	RandomReadFunc         func(context.Context, []byte) (int, error)
 	MaxCachedModules       int
 	MaxSourceBytes         int
 	DefaultTaskConcurrency int
@@ -129,17 +130,63 @@ func defaultTaskConcurrencyForMax(max int) int {
 	return defaultTaskConcurrency
 }
 
-func (e *Engine) randomBytes(n int) ([]byte, error) {
+func (e *Engine) randomBytes(ctx context.Context, n int) ([]byte, error) {
 	if n < 0 {
 		return nil, fmt.Errorf("random source failed: invalid byte request")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	buf := make([]byte, n)
 	e.randomMu.Lock()
 	defer e.randomMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if e.config.RandomReadFunc != nil {
+		if err := readFullContext(ctx, e.config.RandomReadFunc, buf); err != nil {
+			return nil, err
+		}
+		return buf, nil
+	}
 	if _, err := io.ReadFull(e.config.RandomReader, buf); err != nil {
 		return nil, fmt.Errorf("random source failed: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return buf, nil
+}
+
+func readFullContext(ctx context.Context, read func(context.Context, []byte) (int, error), buf []byte) error {
+	for len(buf) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, err := read(ctx, buf)
+		if n < 0 || n > len(buf) {
+			return fmt.Errorf("random source failed: invalid byte count")
+		}
+		if n > 0 {
+			buf = buf[n:]
+		}
+		if len(buf) == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("random source failed: %w", err)
+		}
+		if n == 0 {
+			return fmt.Errorf("random source failed: no bytes read")
+		}
+	}
+	return nil
 }
 
 func normalizeModulePaths(paths []string) ([]string, error) {

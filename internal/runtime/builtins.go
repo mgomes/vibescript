@@ -92,7 +92,7 @@ func builtinUUID(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	if !block.IsNil() {
 		return NewNil(), fmt.Errorf("uuid does not accept blocks")
 	}
-	raw, err := exec.engine.randomBytes(16)
+	raw, err := exec.engine.randomBytes(exec.Context(), 16)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -139,7 +139,7 @@ func builtinRandomID(exec *Execution, receiver Value, args []Value, kwargs map[s
 	stalledReads := 0
 	for int64(len(chars)) < length {
 		needed := int(length) - len(chars)
-		raw, err := exec.engine.randomBytes(needed)
+		raw, err := exec.engine.randomBytes(exec.Context(), needed)
 		if err != nil {
 			return NewNil(), err
 		}

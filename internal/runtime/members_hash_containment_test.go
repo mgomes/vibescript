@@ -1883,6 +1883,134 @@ func TestHashEmptyBlockTransformHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestHashIteratorsStopWhenBlockCancelsContext(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "each pair",
+			source: `def run(values)
+  values.each do |pair|
+    cancel_now(pair)
+  end
+end`,
+		},
+		{
+			name: "each key value",
+			source: `def run(values)
+  values.each do |key, value|
+    cancel_now(value)
+  end
+end`,
+		},
+		{
+			name: "each_with_index",
+			source: `def run(values)
+  values.each_with_index do |pair, index|
+    cancel_now(pair)
+  end
+end`,
+		},
+		{
+			name: "each_key",
+			source: `def run(values)
+  values.each_key do |key|
+    cancel_now(key)
+  end
+end`,
+		},
+		{
+			name: "each_value",
+			source: `def run(values)
+  values.each_value do |value|
+    cancel_now(value)
+  end
+end`,
+		},
+		{
+			name: "merge conflict block",
+			source: `def run(values)
+  values.merge({ k0: 99 }) do |key, old_value, new_value|
+    cancel_now(new_value)
+  end
+end`,
+		},
+		{
+			name: "select",
+			source: `def run(values)
+  values.select do |key, value|
+    cancel_now()
+  end
+end`,
+		},
+		{
+			name: "reject",
+			source: `def run(values)
+  values.reject do |key, value|
+    cancel_now()
+  end
+end`,
+		},
+		{
+			name: "map_with_index",
+			source: `def run(values)
+  values.map_with_index do |pair, index|
+    cancel_now(pair)
+  end
+end`,
+		},
+		{
+			name: "transform_keys",
+			source: `def run(values)
+  values.transform_keys do |key|
+    cancel_now(key)
+  end
+end`,
+		},
+		{
+			name: "transform_values",
+			source: `def run(values)
+  values.transform_values do |value|
+    cancel_now(value)
+  end
+end`,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var cancel context.CancelFunc
+			calls := 0
+			engine := MustNewEngine(Config{StepQuota: 10_000_000, MemoryQuotaBytes: 64 << 20})
+			engine.builtins["cancel_now"] = NewBuiltin("cancel_now", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+				calls++
+				cancel()
+				if len(args) > 0 {
+					return args[0], nil
+				}
+				return NewBool(true), nil
+			})
+			script := compileScriptWithEngine(t, engine, tc.source)
+			ctx, cancelFunc := context.WithCancel(context.Background())
+			cancel = cancelFunc
+
+			_, err := script.Call(ctx, "run", []Value{largeHashReceiver(2)}, CallOptions{})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s after block-canceled context = %v, want context.Canceled", tc.name, err)
+			}
+			if calls != 1 {
+				t.Fatalf("%s cancel_now calls = %d, want 1", tc.name, calls)
+			}
+		})
+	}
+}
+
 // TestHashSortedKeyBufferTripsMemoryQuota pins the P2 finding on PR #776: a sorted
 // hash transform materializes a []string scratch buffer of every key (one header
 // per entry) outside the output-map projection. each builds no output map, so the

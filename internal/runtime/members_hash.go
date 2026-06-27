@@ -2,9 +2,7 @@ package runtime
 
 import (
 	"fmt"
-	"maps"
 	"reflect"
-	"slices"
 	"sort"
 )
 
@@ -27,8 +25,25 @@ func hashMember(obj Value, property string) (Value, error) {
 	if member, ok := hashBuiltinMembers.lookup(property, hashMemberBuiltin); ok {
 		return member, nil
 	}
-	candidates := slices.AppendSeq(slices.Clone(hashMemberNames), maps.Keys(obj.Hash()))
+	candidates := hashMemberSuggestionCandidates(obj.Hash())
 	return NewNil(), fmt.Errorf("unknown hash method %s%s", property, didYouMean(property, candidates))
+}
+
+func hashMemberSuggestionCandidates(entries map[string]Value) []string {
+	candidates := make([]string, 0, min(len(hashMemberNames)+len(entries), suggestMaxCandidates))
+	for _, name := range hashMemberNames {
+		if len(candidates) == suggestMaxCandidates {
+			return candidates
+		}
+		candidates = append(candidates, name)
+	}
+	for key := range entries {
+		if len(candidates) == suggestMaxCandidates {
+			break
+		}
+		candidates = append(candidates, key)
+	}
+	return candidates
 }
 
 func hashMemberBuiltin(property string) (Value, error) {
@@ -459,11 +474,17 @@ func hashMemberQuery(property string) (Value, error) {
 					if _, err := runner.call([]Value{pair}); err != nil {
 						return NewNil(), err
 					}
+					if err := exec.checkContext(); err != nil {
+						return NewNil(), err
+					}
 					continue
 				}
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
 				if _, err := runner.call(blockArgs[:]); err != nil {
+					return NewNil(), err
+				}
+				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -513,6 +534,9 @@ func hashMemberQuery(property string) (Value, error) {
 				if _, err := runner.call(blockArgs[:]); err != nil {
 					return NewNil(), err
 				}
+				if err := exec.checkContext(); err != nil {
+					return NewNil(), err
+				}
 			}
 			return receiver, nil
 		}), nil
@@ -556,6 +580,9 @@ func hashMemberQuery(property string) (Value, error) {
 				if _, err := runner.call(blockArg[:]); err != nil {
 					return NewNil(), err
 				}
+				if err := exec.checkContext(); err != nil {
+					return NewNil(), err
+				}
 			}
 			return receiver, nil
 		}), nil
@@ -597,6 +624,9 @@ func hashMemberQuery(property string) (Value, error) {
 				}
 				blockArg[0] = entries[key]
 				if _, err := runner.call(blockArg[:]); err != nil {
+					return NewNil(), err
+				}
+				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -1002,6 +1032,9 @@ func hashMemberTransforms(property string) (Value, error) {
 					if err != nil {
 						return NewNil(), err
 					}
+					if err := exec.checkContext(); err != nil {
+						return NewNil(), err
+					}
 					out[key] = resolved
 					if err := acc.add(resolved); err != nil {
 						return NewNil(), err
@@ -1346,6 +1379,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				if err := exec.checkContext(); err != nil {
+					return NewNil(), err
+				}
 				if include.Truthy() {
 					out[key] = entries[key]
 				}
@@ -1392,6 +1428,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				blockArgs[1] = entries[key]
 				exclude, err := runner.call(blockArgs[:])
 				if err != nil {
+					return NewNil(), err
+				}
+				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
 				if !exclude.Truthy() {
@@ -1465,6 +1504,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), err
 				}
+				if err := exec.checkContext(); err != nil {
+					return NewNil(), err
+				}
 				out = append(out, val)
 				if err := acc.add(val, cap(out)); err != nil {
 					return NewNil(), err
@@ -1530,6 +1572,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				blockArg[0] = NewSymbol(key)
 				nextKey, err := runner.call(blockArg[:])
 				if err != nil {
+					return NewNil(), err
+				}
+				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
 				resolved, err := valueToHashKey(nextKey)
@@ -1643,6 +1688,9 @@ func hashMemberTransforms(property string) (Value, error) {
 				blockArg[0] = entries[key]
 				nextValue, err := runner.call(blockArg[:])
 				if err != nil {
+					return NewNil(), err
+				}
+				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
 				out[key] = nextValue

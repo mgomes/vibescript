@@ -347,6 +347,72 @@ func TestArrayIterationHelpersParticipateInStepQuota(t *testing.T) {
 	}
 }
 
+func TestArrayEachEmptyBlockParticipatesInStepQuota(t *testing.T) {
+	t.Parallel()
+
+	member, err := arrayMember(NewArray(nil), "each")
+	if err != nil {
+		t.Fatalf("arrayMember(each): %v", err)
+	}
+	fn := valueBuiltin(member).Fn
+	exec := &Execution{ctx: context.Background(), quota: 40, memoryQuota: 64 << 20}
+	_, err = fn(exec, largeIntArray(1000), nil, nil, emptyBlockValue())
+	requireErrorIs(t, err, errStepQuotaExceeded)
+	if exec.steps > exec.quota+1 {
+		t.Fatalf("array.each with an empty block took %d steps, want it to stop near the quota %d", exec.steps, exec.quota)
+	}
+}
+
+func TestArrayEachEmptyBlockHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	member, err := arrayMember(NewArray(nil), "each")
+	if err != nil {
+		t.Fatalf("arrayMember(each): %v", err)
+	}
+	fn := valueBuiltin(member).Fn
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, quota: 1 << 30, memoryQuota: 64 << 20}
+	_, err = fn(exec, largeIntArray(1000), nil, nil, emptyBlockValue())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("array.each with an empty block under canceled context = %v, want context.Canceled", err)
+	}
+	if exec.steps >= 1000 {
+		t.Fatalf("array.each steps = %d, want the loop to abort early on cancellation", exec.steps)
+	}
+}
+
+func TestArrayEachStopsWhenBlockCancelsContext(t *testing.T) {
+	t.Parallel()
+
+	var cancel context.CancelFunc
+	calls := 0
+	engine := MustNewEngine(Config{StepQuota: 10_000_000, MemoryQuotaBytes: 64 << 20})
+	engine.builtins["cancel_now"] = NewBuiltin("cancel_now", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		calls++
+		cancel()
+		return args[0], nil
+	})
+	script := compileScriptWithEngine(t, engine, `
+def run(values)
+  values.each do |value|
+    cancel_now(value)
+  end
+end
+`)
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	cancel = cancelFunc
+
+	_, err := script.Call(ctx, "run", []Value{largeIntArray(3)}, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("array.each after block-canceled context = %v, want context.Canceled", err)
+	}
+	if calls != 1 {
+		t.Fatalf("cancel_now calls = %d, want 1", calls)
+	}
+}
+
 // TestArrayIterationHelpersHonorCancellation confirms a canceled context stops
 // the helpers, including a cycle with an empty block body that relies on the
 // explicit per-yield step for cancellation.

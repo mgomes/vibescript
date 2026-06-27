@@ -67,6 +67,7 @@ const (
 	runtimeErrorTypeBase      = ast.RuntimeErrorTypeBase
 	runtimeErrorTypeAssertion = ast.RuntimeErrorTypeAssertion
 	runtimeErrorTypeLimit     = ast.RuntimeErrorTypeLimit
+	runtimeErrorTypeType      = ast.RuntimeErrorTypeType
 	runtimeErrorFrameHead     = 8
 	runtimeErrorFrameTail     = 8
 	stepSlowPathMask          = 15
@@ -160,13 +161,23 @@ func (exec *Execution) step() error {
 		}
 	}
 	if exec.ctx != nil && (exec.steps == 1 || onSlowPath) {
-		select {
-		case <-exec.ctx.Done():
-			return exec.ctx.Err()
-		default:
+		if err := exec.checkContext(); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (exec *Execution) checkContext() error {
+	if exec.ctx == nil {
+		return nil
+	}
+	select {
+	case <-exec.ctx.Done():
+		return exec.ctx.Err()
+	default:
+		return nil
+	}
 }
 
 // checkStepBudgetFor reports whether at least n more steps may be charged
@@ -187,14 +198,7 @@ func (exec *Execution) checkStepBudgetFor(n int) error {
 	if n > 0 && exec.quota > 0 && exec.quota-exec.steps < n {
 		return fmt.Errorf("%w (%d)", errStepQuotaExceeded, exec.quota)
 	}
-	if exec.ctx != nil {
-		select {
-		case <-exec.ctx.Done():
-			return exec.ctx.Err()
-		default:
-		}
-	}
-	return nil
+	return exec.checkContext()
 }
 
 func (exec *Execution) errorAt(pos Position, format string, args ...any) error {
