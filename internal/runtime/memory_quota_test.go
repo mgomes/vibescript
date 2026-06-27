@@ -406,6 +406,10 @@ func TestMemoryQuotaIndexSelectorsChargeAllLiveSelectors(t *testing.T) {
 	base := probeExec.estimateMemoryUsage()
 
 	selectorBytes := estimateLargeStringArray(selectorCount, element)
+	// The selector checks also charge the live receiver; this fixture's receiver is a
+	// tiny empty hash, but its wrapper still costs a handful of bytes that the "fits"
+	// quota below must clear so the rejection isolates the selector accounting.
+	receiverBytes := newMemoryEstimator().value(NewHash(map[string]Value{}))
 
 	run := func(quota int) error {
 		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
@@ -413,16 +417,17 @@ func TestMemoryQuotaIndexSelectorsChargeAllLiveSelectors(t *testing.T) {
 		return err
 	}
 
-	// A quota comfortably above base + one selector (so the first selector's check
-	// passes) but below base + both selectors must reject. Before the fix the second
-	// selector's check charged only base + that one selector — under this quota — so
-	// both passed and the arity error fired with both large keys resident. The fix
-	// charges base + both selectors, overflowing before dispatch. The reject quota
-	// stays strictly above base + one selector so the rejection can only come from
-	// the accumulated-selector accounting, not the first check.
-	rejectQuota := base + selectorBytes + selectorBytes/2
-	if rejectQuota <= base+selectorBytes {
-		t.Fatalf("reject quota %d does not exceed base+selector %d; widen the selector", rejectQuota, base+selectorBytes)
+	// A quota comfortably above base + receiver + one selector (so the first
+	// selector's check passes) but below base + receiver + both selectors must reject.
+	// Before the fix the second selector's check charged only base + that one selector
+	// — under this quota — so both passed and the arity error fired with both large
+	// keys resident. The fix charges base + receiver + both selectors, overflowing
+	// before dispatch. The reject quota stays strictly above base + receiver + one
+	// selector so the rejection can only come from the accumulated-selector
+	// accounting, not the first check.
+	rejectQuota := base + receiverBytes + selectorBytes + selectorBytes/2
+	if rejectQuota <= base+receiverBytes+selectorBytes {
+		t.Fatalf("reject quota %d does not exceed base+receiver+selector %d; widen the selector", rejectQuota, base+receiverBytes+selectorBytes)
 	}
 	if err := run(rejectQuota); err == nil {
 		t.Fatalf("expected memory quota error when the second selector lands on top of the live first selector")
@@ -430,13 +435,126 @@ func TestMemoryQuotaIndexSelectorsChargeAllLiveSelectors(t *testing.T) {
 		requireErrorIs(t, err, errMemoryQuotaExceeded)
 	}
 
-	// A quota with headroom for base + both selectors must surface the arity error
-	// rather than the quota error, proving the charge does not over-reject a
-	// legitimately-sized (if mis-arity) bracket expression.
-	if err := run(base + 2*selectorBytes + 4*estimatedSliceBaseBytes); err == nil {
+	// A quota with headroom for base + receiver + both selectors must surface the
+	// arity error rather than the quota error, proving the charge does not over-reject
+	// a legitimately-sized (if mis-arity) bracket expression.
+	if err := run(base + receiverBytes + 2*selectorBytes + 4*estimatedSliceBaseBytes); err == nil {
 		t.Fatalf("expected arity error when both selectors fit the quota")
 	} else if errors.Is(err, errMemoryQuotaExceeded) {
 		t.Fatalf("did not expect memory quota error when both selectors fit the quota: %v", err)
+	}
+}
+
+// buildLargeHashLiteral builds a HashLiteral AST node of `count` string-keyed
+// string entries, each value the given element. It evaluates to a hash reachable
+// from no environment, so estimateMemoryUsageBase never sees it — the fresh
+// receiver shape the indexed-read memory accounting must charge as a live root.
+func buildLargeHashLiteral(count int, element string, pos Position) *HashLiteral {
+	pairs := make([]HashPair, count)
+	for i := range pairs {
+		pairs[i] = HashPair{
+			Key:   &StringLiteral{Value: fmt.Sprintf("k%05d", i), Position: pos},
+			Value: &StringLiteral{Value: element, Position: pos},
+		}
+	}
+	return &HashLiteral{Pairs: pairs, Position: pos}
+}
+
+// estimateLargeHash returns the byte cost, through the runtime's estimator, of the
+// hash an AST built by buildLargeHashLiteral with the same params evaluates to.
+func estimateLargeHash(count int, element string) int {
+	entries := make(map[string]Value, count)
+	for i := range count {
+		entries[fmt.Sprintf("k%05d", i)] = NewString(element)
+	}
+	return newMemoryEstimator().value(NewHash(entries))
+}
+
+// TestMemoryQuotaIndexSelectorsChargeLiveReceiver covers the finding that the
+// indexed receiver, not just the selectors, must be charged while the selectors
+// are evaluated. A fresh literal receiver (here a large hash) lives only on the Go
+// stack in evalIndexExpr's obj, invisible to estimateMemoryUsageBase, yet it is
+// real memory held alongside every selector. The over-arity form h[big1, big2]
+// raises a "single key" error at dispatch, which skips the later combined
+// obj+selectors+result check.
+//
+// The masking window the fix closes is where the receiver fits alone (the
+// pre-selector checkMemoryWith(obj) passes) AND both selectors fit without the
+// receiver (each per-selector check passed before the fix) BUT the receiver and
+// selectors together exceed the quota. In that window the old code admitted both
+// selectors, dispatch raised the arity error, and the combined check that would
+// have charged the receiver never ran — so the breach surfaced as an arity error.
+// Charging the receiver alongside the accumulated selectors rejects the true peak
+// before dispatch. The receiver is sized so receiver ≈ 2 selectors, putting the
+// reject quota strictly inside that window.
+func TestMemoryQuotaIndexSelectorsChargeLiveReceiver(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	const receiverCount = 600
+	const selectorCount = 300
+	const element = "abcdefghij"
+
+	// h[<array literal>, <array literal>]: a hash literal receiver indexed with two
+	// array-literal selectors, each a fresh value reachable from no environment. Two
+	// selectors on a hash raise the single-key arity error at dispatch.
+	buildExpr := func() *IndexExpr {
+		return &IndexExpr{
+			Object: buildLargeHashLiteral(receiverCount, element, pos),
+			Indices: []Expression{
+				buildLargeStringArrayLiteral(selectorCount, element, pos),
+				buildLargeStringArrayLiteral(selectorCount, element, pos),
+			},
+			Position: pos,
+		}
+	}
+
+	probeExec := &Execution{quota: 10000, memoryQuota: 0, moduleLoading: make(map[string]bool)}
+	base := probeExec.estimateMemoryUsage()
+
+	receiverBytes := estimateLargeHash(receiverCount, element)
+	selectorBytes := estimateLargeStringArray(selectorCount, element)
+
+	// The masking window requires the receiver to fit alone and both selectors to fit
+	// without the receiver, while receiver + one selector overflows. Pin those
+	// invariants so a future sizing change cannot silently collapse the window and
+	// turn this into a test that the pre-selector receiver check (not the fix under
+	// test) happens to catch.
+	if receiverBytes <= 2*selectorBytes {
+		t.Fatalf("receiver bytes %d must exceed 2 selectors %d so receiver+selector overflows the window", receiverBytes, 2*selectorBytes)
+	}
+
+	run := func(quota int) error {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		_, err := exec.evalIndexExpr(buildExpr(), newEnv(nil))
+		return err
+	}
+
+	// A quota inside the masking window: above base + receiver (so the pre-selector
+	// checkMemoryWith(obj) passes) and above base + both selectors (so neither
+	// per-selector check rejects without the receiver), but below base + receiver +
+	// one selector (so the fix's receiver charge overflows on the first selector). It
+	// sits midway between base + receiver and base + receiver + selector.
+	rejectQuota := base + receiverBytes + selectorBytes/2
+	if rejectQuota <= base+receiverBytes {
+		t.Fatalf("reject quota %d does not exceed base+receiver %d; widen the selector", rejectQuota, base+receiverBytes)
+	}
+	if rejectQuota <= base+2*selectorBytes {
+		t.Fatalf("reject quota %d does not exceed base+both selectors %d; the rejection would not isolate the receiver charge", rejectQuota, base+2*selectorBytes)
+	}
+	if err := run(rejectQuota); err == nil {
+		t.Fatalf("expected memory quota error when the live receiver overflows alongside the first selector")
+	} else {
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	}
+
+	// A quota with headroom for base + receiver + both selectors must surface the
+	// arity error rather than the quota error, proving the receiver charge does not
+	// over-reject a legitimately-sized (if mis-arity) bracket expression.
+	if err := run(base + receiverBytes + 2*selectorBytes + 8*estimatedSliceBaseBytes); err == nil {
+		t.Fatalf("expected arity error when the receiver and selectors fit the quota")
+	} else if errors.Is(err, errMemoryQuotaExceeded) {
+		t.Fatalf("did not expect memory quota error when the receiver and selectors fit the quota: %v", err)
 	}
 }
 

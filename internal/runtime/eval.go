@@ -405,7 +405,7 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 	if err := exec.checkMemoryWith(obj); err != nil {
 		return NewNil(), err
 	}
-	indices, err := exec.evalIndexSelectors(e, env)
+	indices, err := exec.evalIndexSelectors(e, obj, env)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -437,23 +437,42 @@ func (exec *Execution) evalIndexExpr(e *IndexExpr, env *Env) (Value, error) {
 }
 
 // evalIndexSelectors evaluates every selector between the brackets, charging
-// the accumulated selectors against the memory quota as each materializes.
-// Every evaluated selector stays live in indices until dispatch, so each check
-// must account for all selectors gathered so far; charging only the current one
-// would undercount a multi-selector form whose earlier selectors are still
-// resident (the parser permits arbitrary comma-separated selectors). The
-// estimator deduplicates against the reachable roots, so a selector already
-// bound to an environment contributes its footprint only once.
-func (exec *Execution) evalIndexSelectors(e *IndexExpr, env *Env) ([]Value, error) {
+// the receiver together with the accumulated selectors against the memory quota
+// as each materializes. The receiver stays live in the caller's obj while
+// selectors are evaluated, yet a fresh receiver (a large literal hash/array
+// indexed inline) is not reachable from any environment, so the base walk never
+// sees it; charging it alongside the selectors here rejects a peak of receiver +
+// selectors at the source rather than after evalIndexValue, whose arity/type
+// error would otherwise skip the later combined check and mask the quota breach.
+// Every evaluated selector also stays live in indices until dispatch, so each
+// check must account for all selectors gathered so far; charging only the
+// current one would undercount a multi-selector form whose earlier selectors are
+// still resident (the parser permits arbitrary comma-separated selectors). The
+// estimator deduplicates against the reachable roots, so the receiver and any
+// selector already bound to an environment each contribute their footprint only
+// once.
+func (exec *Execution) evalIndexSelectors(e *IndexExpr, obj Value, env *Env) ([]Value, error) {
 	indices := make([]Value, 0, len(e.Indices))
+	// Reuse a single charge buffer (receiver followed by the live selectors) across
+	// iterations so a multi-selector read allocates it at most once, and skip it
+	// entirely when no quota is enforced to keep the common indexed read
+	// allocation-free.
+	var charge []Value
+	if exec.memoryQuota > 0 {
+		charge = make([]Value, 1, len(e.Indices)+1)
+		charge[0] = obj
+	}
 	for _, expr := range e.Indices {
 		idx, err := exec.evalExpressionWithAuto(expr, env, true)
 		if err != nil {
 			return nil, err
 		}
 		indices = append(indices, idx)
-		if err := exec.checkMemoryWith(indices...); err != nil {
-			return nil, err
+		if exec.memoryQuota > 0 {
+			charge = append(charge[:1], indices...)
+			if err := exec.checkMemoryWith(charge...); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return indices, nil
@@ -1193,7 +1212,7 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return err
 		}
-		indices, err := exec.evalIndexSelectors(t, env)
+		indices, err := exec.evalIndexSelectors(t, obj, env)
 		if err != nil {
 			return err
 		}
@@ -2118,7 +2137,7 @@ func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *E
 		if err := exec.checkMemoryWith(obj); err != nil {
 			return NewNil(), nil, err
 		}
-		indices, err := exec.evalIndexSelectors(t, env)
+		indices, err := exec.evalIndexSelectors(t, obj, env)
 		if err != nil {
 			return NewNil(), nil, err
 		}
