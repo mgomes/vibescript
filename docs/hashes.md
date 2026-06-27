@@ -15,6 +15,21 @@ Shorthand labels (`name:`) are normalized into the same key space as strings,
 so you can access values using either symbol or string notation:
 `player[:name]` or `player["name"]`.
 
+When a label key is followed immediately by `,`, `}`, or end-of-input, the value
+is omitted and read from the local variable of the same name. `{ name: }` is
+shorthand for `{ name: name }`, which mirrors the call-site keyword shorthand
+(`greet name:`):
+
+```vibe
+name = "Ada"
+role = "engineer"
+{ name:, role: } # { name: "Ada", role: "engineer" }
+```
+
+Value omission applies only to label keys; quoted keys such as `{ "name": }`
+have no matching local and are rejected. If the named local is not defined, the
+hash literal reports the usual undefined-variable error.
+
 Use quoted keys for JSON-shaped payloads or names that are not valid
 identifiers:
 
