@@ -1022,11 +1022,37 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 // canStartPercentArrayLiteral disambiguates %w[...] from the modulo operator and
 // keeps previously valid no-space label forms like {name:"Ada"},
 // call(name:"Ada"), and flag ? 1 :"no" parsing as separator + string.
+//
+// Reserved keywords that can also name a label (begin, rescue, return, and the
+// rest accepted by isLabelNameToken) are a special case: their token types do
+// not end an expression, so the expression-end test alone would treat a colon
+// after them as a symbol introducer and break forms like {rescue:"x"} and
+// call(begin:"x"). Ruby disambiguates these by the space before the colon -- a
+// label colon abuts its name (rescue:"x") while a keyword followed by a symbol
+// has a space (return :"x"). When the colon abuts a label-capable keyword it is
+// therefore a label separator; a space restores the keyword + quoted-symbol
+// reading.
 func (l *lexer) colonStartsQuotedSymbol() bool {
 	if l.atLineLeadingWhitespace() {
 		return true
 	}
+	if isLabelNameToken(l.lastToken) && l.colonAbutsPreviousToken() {
+		return false
+	}
 	return !canEndExpressionToken(l.lastToken.Type)
+}
+
+// colonAbutsPreviousToken reports whether the colon currently under l.ch
+// immediately follows the previous token with no intervening whitespace, as in
+// the no-space label form rescue:"x". A space before the colon (return :"x")
+// makes it non-abutting.
+func (l *lexer) colonAbutsPreviousToken() bool {
+	start := l.currentOffset()
+	if start == 0 {
+		return false
+	}
+	prev, _ := utf8.DecodeLastRuneInString(l.input[:start])
+	return !unicode.IsSpace(prev)
 }
 
 func canEndExpressionToken(tt ast.TokenType) bool {

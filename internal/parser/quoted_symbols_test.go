@@ -110,6 +110,31 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 			want:   []ast.TokenType{ast.TokenReturn, ast.TokenSymbol},
 		},
 		{
+			// A label-capable keyword whose colon abuts it (no space) is a label
+			// separator, not a quoted-symbol introducer, so {rescue:"x"} keeps
+			// parsing as a string-valued label.
+			name:   "keyword_label_no_space_stays_separator",
+			source: `{rescue:"x"}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenRescue, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
+		},
+		{
+			name:   "keyword_argument_keyword_name_no_space_stays_separator",
+			source: `call(begin:"x")`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenLParen, ast.TokenBegin, ast.TokenColon, ast.TokenString, ast.TokenRParen},
+		},
+		{
+			// A space before the colon restores the keyword + quoted-symbol
+			// reading, matching how Ruby distinguishes return :"x" from return:"x".
+			name:   "keyword_then_spaced_symbol_is_symbol",
+			source: `return :"x"`,
+			want:   []ast.TokenType{ast.TokenReturn, ast.TokenSymbol},
+		},
+		{
+			name:   "word_boolean_keyword_label_no_space_stays_separator",
+			source: `{and:"x"}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenAnd, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
+		},
+		{
 			// Both ternary branches are quoted symbols; the separator colon sits
 			// between two symbols, so it must stay a separator while the branches
 			// are symbols.
@@ -159,6 +184,46 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 		}
 		if diff := cmp.Diff(want, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
 			t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("keyword_label_string_value", func(t *testing.T) {
+		t.Parallel()
+		want := []ast.Statement{
+			&ast.ExprStmt{Expr: &ast.HashLiteral{Pairs: []ast.HashPair{{
+				Key:   &ast.SymbolLiteral{Name: "rescue"},
+				Value: &ast.StringLiteral{Value: "x"},
+			}}}},
+		}
+		got, errs := parseSource(t, "def run\n  {rescue:\"x\"}\nend")
+		if len(errs) != 0 {
+			t.Fatalf("parseSource errors = %v, want none", errs)
+		}
+		if diff := cmp.Diff(want, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+			t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("keyword_argument_keyword_name_string_value", func(t *testing.T) {
+		t.Parallel()
+		got, errs := parseSource(t, "def run\n  greet(begin:\"x\")\nend")
+		if len(errs) != 0 {
+			t.Fatalf("parseSource errors = %v, want none", errs)
+		}
+		body := parsedFunctionBody(t, got)
+		call := body[0].(*ast.ExprStmt).Expr.(*ast.CallExpr)
+		if len(call.Args) != 0 {
+			t.Fatalf("call positional args = %d, want 0", len(call.Args))
+		}
+		if len(call.KwArgs) != 1 {
+			t.Fatalf("call keyword args = %d, want 1", len(call.KwArgs))
+		}
+		if call.KwArgs[0].Name != "begin" {
+			t.Fatalf("keyword name = %q, want %q", call.KwArgs[0].Name, "begin")
+		}
+		str, ok := call.KwArgs[0].Value.(*ast.StringLiteral)
+		if !ok || str.Value != "x" {
+			t.Fatalf("keyword value = %#v, want StringLiteral(x)", call.KwArgs[0].Value)
 		}
 	})
 
