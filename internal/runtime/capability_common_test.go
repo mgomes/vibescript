@@ -61,6 +61,10 @@ func TestValidateCapabilityTypedValueAcceptsEnumValues(t *testing.T) {
 		t.Fatalf("expected enum value validation to pass, got %v", err)
 	}
 
+	if err := validateCapabilityTypedValue("payload", NewNil(), &TypeExpr{Name: "Status", Kind: TypeEnum, Nullable: true}); err != nil {
+		t.Fatalf("expected nullable enum contract to accept nil, got %v", err)
+	}
+
 	err := validateCapabilityTypedValue("payload", NewSymbol("draft"), &TypeExpr{Name: "Status", Kind: TypeEnum})
 	if err == nil {
 		t.Fatalf("expected symbol enum contract validation to fail")
@@ -72,6 +76,12 @@ func TestValidateCapabilityTypedValueAcceptsEnumValues(t *testing.T) {
 		t.Fatalf("expected mismatched enum contract validation to fail")
 	}
 	requireErrorContains(t, err, "payload expected Status, got ReviewState")
+
+	err = validateCapabilityTypedValue("payload", NewNil(), &TypeExpr{Name: "Status", Kind: TypeEnum})
+	if err == nil {
+		t.Fatalf("expected non-nullable enum contract validation to fail")
+	}
+	requireErrorContains(t, err, "payload expected Status, got nil")
 }
 
 func testEnumDef(name string, members ...string) *EnumDef {

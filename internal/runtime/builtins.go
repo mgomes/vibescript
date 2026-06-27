@@ -17,7 +17,8 @@ const (
 	randomIDUnbiasedCutoff = byte((256 / len(randomIDAlphabet)) * len(randomIDAlphabet))
 	maxRandomIDStallReads  = 8
 	maxSleepDuration       = time.Duration(1<<63 - 1)
-	maxSleepSeconds        = float64(maxSleepDuration) / float64(time.Second)
+	maxSleepWholeSeconds   = int64(maxSleepDuration / time.Second)
+	maxSleepRemainder      = maxSleepDuration % time.Second
 )
 
 func builtinAssert(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -132,13 +133,22 @@ func valueToSleepDuration(val Value) (time.Duration, error) {
 		if seconds < 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
 			return 0, fmt.Errorf("sleep duration must be finite and non-negative")
 		}
-		if seconds > maxSleepSeconds {
-			return 0, fmt.Errorf("sleep duration exceeds maximum")
-		}
-		return time.Duration(seconds * float64(time.Second)), nil
+		return sleepDurationFromFloat(seconds)
 	default:
 		return 0, fmt.Errorf("sleep duration must be numeric")
 	}
+}
+
+func sleepDurationFromFloat(seconds float64) (time.Duration, error) {
+	whole, fractional := math.Modf(seconds)
+	if whole > float64(maxSleepWholeSeconds) {
+		return 0, fmt.Errorf("sleep duration exceeds maximum")
+	}
+	fractionalNanos := fractional * float64(time.Second)
+	if whole == float64(maxSleepWholeSeconds) && fractionalNanos > float64(maxSleepRemainder) {
+		return 0, fmt.Errorf("sleep duration exceeds maximum")
+	}
+	return time.Duration(int64(whole))*time.Second + time.Duration(fractionalNanos), nil
 }
 
 func builtinUUID(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {

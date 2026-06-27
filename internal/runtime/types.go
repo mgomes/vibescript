@@ -37,7 +37,7 @@ func quickTypeCheck(val Value, ty *TypeExpr) (bool, bool) {
 	if ty == nil {
 		return false, false
 	}
-	if ty.Nullable && val.Kind() == KindNil && ty.Kind != TypeUnknown && ty.Kind != TypeEnum {
+	if ty.Nullable && val.Kind() == KindNil && ty.Kind != TypeUnknown {
 		return true, true
 	}
 
@@ -160,7 +160,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 		defer delete(s.active, visit)
 	}
 
-	if ty.Nullable && val.Kind() == KindNil && ty.Kind != TypeUnknown && ty.Kind != TypeEnum {
+	if ty.Nullable && val.Kind() == KindNil && ty.Kind != TypeUnknown {
 		return true, nil
 	}
 	switch ty.Kind {
