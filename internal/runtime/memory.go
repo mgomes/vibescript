@@ -127,14 +127,17 @@ func (exec *Execution) checkMemoryWithCallRoots(callee, receiver Value, args []V
 //
 // liveExtras are additional values that are live on the Go call stack alongside
 // the new accumulator at the step's allocation peak but are not reachable from
-// any call root. Array#sum's block form passes the block result it just produced:
-// that contribution is still referenced while arraySumAdd builds the next
-// accumulator from it, so a fresh large block result coexists with both the old
-// total and the new one. Without charging it, a quota above call roots + new
-// accumulator but below call roots + contribution + new accumulator would admit a
-// step whose true peak exceeds the limit. Each extra is charged through the same
-// deduplicating estimator, so a contribution that aliases a receiver element or
-// the accumulator itself is counted once, matching the real shared backing.
+// any call root. Array#sum passes both the prior total and the contribution it
+// just produced: arraySumAdd builds the next accumulator from a fresh copy of the
+// old total and the contribution, so the old total, the contribution, and the new
+// accumulator all coexist at the peak. The prior total is the critical case once
+// it has grown across iterations into a large string or array reachable only from
+// that Go-local — the base walk never sees it. Without charging both extras, a
+// quota above call roots + new accumulator but below call roots + old total +
+// contribution + new accumulator would admit a step whose true peak exceeds the
+// limit. Each extra is charged through the same deduplicating estimator, so an
+// extra that aliases a receiver element or the accumulator itself is counted once,
+// matching the real shared backing.
 func (exec *Execution) checkAccumulatorWithCallRoots(accumulator, receiver Value, args []Value, kwargs map[string]Value, block Value, liveExtras ...Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil

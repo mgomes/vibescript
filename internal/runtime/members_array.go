@@ -1894,14 +1894,18 @@ func arraySum(exec *Execution, receiver Value, args []Value, kwargs map[string]V
 		if err != nil {
 			return NewNil(), err
 		}
-		// The contribution stays live on the Go stack alongside next: arraySumAdd
-		// builds next from a fresh copy (a new string buffer or a new slice backing),
-		// so a block that returns a large value coexists with the new accumulator at
-		// this step's peak. Charge it as a live extra so a quota above the new
-		// accumulator alone but below accumulator + contribution is rejected here
-		// rather than only after the builtin returns. The estimator dedups it, so the
-		// blockless case (contribution is a receiver element) adds nothing.
-		if err := exec.checkAccumulatorWithCallRoots(next, receiver, args, kwargs, block, contribution); err != nil {
+		// Both the prior total and the contribution stay live on the Go stack
+		// alongside next: arraySumAdd builds next from a fresh copy (a new string
+		// buffer or a new slice backing) of the old total and the contribution, so
+		// all three coexist at this step's peak. The prior total matters most when it
+		// has grown across iterations into a large string or array that is reachable
+		// only from this Go-local — the base walk never sees it, so a quota above the
+		// new accumulator alone but below old_total + new accumulator would otherwise
+		// admit a step whose true peak exceeds the limit. Charge both as live extras
+		// so the step is rejected here rather than only after the builtin returns. The
+		// estimator dedups each, so the blockless case (contribution is a receiver
+		// element) and an int seed (a scalar prior total) add nothing meaningful.
+		if err := exec.checkAccumulatorWithCallRoots(next, receiver, args, kwargs, block, total, contribution); err != nil {
 			return NewNil(), err
 		}
 		total = next

@@ -1248,6 +1248,81 @@ func TestArraySumChargesLiveBlockResultWhileAccumulating(t *testing.T) {
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
+func TestArraySumChargesPriorAccumulatorWhileGrowing(t *testing.T) {
+	t.Parallel()
+
+	// sum grows a string accumulator across iterations: arraySumAdd builds the next
+	// accumulator from a fresh copy of the prior total and the contribution, so at
+	// every step the prior total, the contribution, and the new accumulator all
+	// coexist on the Go stack. Once the prior total has grown into a large
+	// concatenated buffer it is reachable only from that Go-local — it is neither a
+	// receiver element nor a call root — so estimateMemoryUsageBase never sees it.
+	// The per-iteration check must charge that prior total, not just the new
+	// accumulator and the contribution: a quota that admits call roots + new
+	// accumulator (the contribution aliases a receiver element here, so it adds
+	// nothing) but not call roots + prior total + new accumulator has to be rejected
+	// before the builtin returns. Without charging the prior total the step could
+	// allocate a full extra accumulator's worth beyond the quota, with the excess only
+	// caught after the builtin returned.
+	const parts = 8
+	const chunkBytes = 1000
+	chunk := string(make([]byte, chunkBytes))
+	elements := make([]Value, parts)
+	for i := range elements {
+		elements[i] = NewString(chunk)
+	}
+	receiver := NewArray(elements)
+	seed := NewString("")
+
+	member, err := arrayMember(receiver, "sum")
+	if err != nil {
+		t.Fatalf("arrayMember(sum): %v", err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member sum is not a builtin")
+	}
+
+	// The peak is the final iteration: the prior total spans the first parts-1
+	// elements, the new accumulator spans all parts, and the contribution is the last
+	// element (which aliases a receiver element, so it dedups against the receiver and
+	// adds nothing). Measure the footprint the buggy check saw (call roots + new
+	// accumulator, no prior total) and the footprint the correct check sees (plus the
+	// prior total), then land the quota strictly between them so only the
+	// prior-total-aware check rejects.
+	priorTotal := NewString(string(make([]byte, (parts-1)*chunkBytes)))
+	newAccumulator := NewString(string(make([]byte, parts*chunkBytes)))
+	without := func() int {
+		est := newMemoryEstimator()
+		used := est.value(receiver)
+		used += est.value(seed)
+		used += est.value(newAccumulator)
+		return used
+	}()
+	with := func() int {
+		est := newMemoryEstimator()
+		used := est.value(receiver)
+		used += est.value(seed)
+		used += est.value(newAccumulator)
+		used += est.value(priorTotal)
+		return used
+	}()
+	if without >= with {
+		t.Fatalf("prior total adds no footprint: without %d, with %d", without, with)
+	}
+	quota := without + (with-without)/2
+	if quota <= without {
+		t.Fatalf("quota %d does not exceed the prior-total-free footprint %d; widen the chunks", quota, without)
+	}
+	if quota >= with {
+		t.Fatalf("quota %d does not stay below the prior-total-aware footprint %d; widen the chunks", quota, with)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err = builtin.Fn(exec, receiver, []Value{seed}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
 func TestArrayValuesAtRangeTripsStepQuota(t *testing.T) {
 	t.Parallel()
 
