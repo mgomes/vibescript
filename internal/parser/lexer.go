@@ -30,9 +30,10 @@ type lexer struct {
 	prevLine   int
 	prevColumn int
 
-	ch        rune
-	prevToken ast.Token
-	lastToken ast.Token
+	ch            rune
+	prevPrevToken ast.Token
+	prevToken     ast.Token
+	lastToken     ast.Token
 
 	// bracketDepth counts the open `(`, `[`, and `{` brackets the lexer has
 	// scanned past. Each opener increments it and each matching closer
@@ -41,6 +42,7 @@ type lexer struct {
 	// `?` opened at the same nesting level, never a label `:` inside a hash,
 	// array, or paren group opened after the `?`.
 	bracketDepth int
+	bracketStack []bracketFrame
 
 	// ternaryStack holds each ternary `?` whose separator `:` has not yet been
 	// scanned. A `:` in expression-end position closes the innermost pending
@@ -60,6 +62,10 @@ type lexer struct {
 type ternaryFrame struct {
 	bracketDepth         int
 	parenlessKeywordCall bool
+}
+
+type bracketFrame struct {
+	token ast.TokenType
 }
 
 func newLexer(input string) *lexer {
@@ -119,6 +125,7 @@ func (l *lexer) NextToken() ast.Token {
 	tok := l.scanToken()
 	if tok.Type != ast.TokenEOF {
 		tok.End = ast.Position{Line: l.prevLine, Column: l.prevColumn + 1}
+		l.prevPrevToken = l.prevToken
 		l.prevToken = l.lastToken
 		l.lastToken = tok
 	}
@@ -258,7 +265,7 @@ func (l *lexer) scanToken() ast.Token {
 		}
 	case '(':
 		tok = l.makeToken(ast.TokenLParen, "(")
-		l.bracketDepth++
+		l.openBracket(ast.TokenLParen)
 		l.readRune()
 	case ')':
 		tok = l.makeToken(ast.TokenRParen, ")")
@@ -266,7 +273,7 @@ func (l *lexer) scanToken() ast.Token {
 		l.readRune()
 	case '{':
 		tok = l.makeToken(ast.TokenLBrace, "{")
-		l.bracketDepth++
+		l.openBracket(ast.TokenLBrace)
 		l.readRune()
 	case '}':
 		tok = l.makeToken(ast.TokenRBrace, "}")
@@ -274,7 +281,7 @@ func (l *lexer) scanToken() ast.Token {
 		l.readRune()
 	case '[':
 		tok = l.makeToken(ast.TokenLBracket, "[")
-		l.bracketDepth++
+		l.openBracket(ast.TokenLBracket)
 		l.readRune()
 	case ']':
 		tok = l.makeToken(ast.TokenRBracket, "]")
@@ -518,7 +525,7 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	if start, ok := sourceOffsetForPosition(l.input, last.Pos); ok && start < offset {
 		structuralOffset = start
 	}
-	bracketDepth, ternaryStack := lexerStructuralStateBefore(l.input, structuralOffset)
+	bracketDepth, bracketStack, ternaryStack := lexerStructuralStateBefore(l.input, structuralOffset)
 
 	l.offset = 0
 	l.width = 0
@@ -528,16 +535,18 @@ func (l *lexer) seek(offset int, last ast.Token) {
 	l.prevColumn = 0
 	l.ch = 0
 	l.bracketDepth = bracketDepth
+	l.bracketStack = bracketStack
 	l.ternaryStack = ternaryStack
 	l.readRune()
 	for l.currentOffset() < offset && l.ch != 0 {
 		l.readRune()
 	}
+	l.prevPrevToken = ast.Token{}
 	l.prevToken = ast.Token{}
 	l.lastToken = last
 }
 
-func lexerStructuralStateBefore(input string, offset int) (int, []ternaryFrame) {
+func lexerStructuralStateBefore(input string, offset int) (int, []bracketFrame, []ternaryFrame) {
 	scan := newLexer(input)
 	for scan.ch != 0 {
 		if _, ok := scan.skipWhitespaceAndComments(); ok {
@@ -551,7 +560,9 @@ func lexerStructuralStateBefore(input string, offset int) (int, []ternaryFrame) 
 			break
 		}
 	}
-	return scan.bracketDepth, append([]ternaryFrame(nil), scan.ternaryStack...)
+	return scan.bracketDepth,
+		append([]bracketFrame(nil), scan.bracketStack...),
+		append([]ternaryFrame(nil), scan.ternaryStack...)
 }
 
 func (l *lexer) makeToken(tt ast.TokenType, literal string) ast.Token {
@@ -1266,13 +1277,28 @@ func (l *lexer) canStartPercentArrayLiteral() bool {
 // bracket can never be completed by a `:` outside it, so such an entry is dead
 // and would otherwise linger and mis-match a later colon. The depth is floored
 // at zero so unbalanced input cannot drive it negative.
+func (l *lexer) openBracket(tt ast.TokenType) {
+	l.bracketDepth++
+	l.bracketStack = append(l.bracketStack, bracketFrame{token: tt})
+}
+
 func (l *lexer) closeBracket() {
 	if l.bracketDepth > 0 {
 		l.bracketDepth--
 	}
+	if len(l.bracketStack) > 0 {
+		l.bracketStack = l.bracketStack[:len(l.bracketStack)-1]
+	}
 	for len(l.ternaryStack) > 0 && l.ternaryStack[len(l.ternaryStack)-1].bracketDepth > l.bracketDepth {
 		l.ternaryStack = l.ternaryStack[:len(l.ternaryStack)-1]
 	}
+}
+
+func (l *lexer) currentBracketType() ast.TokenType {
+	if len(l.bracketStack) == 0 {
+		return ast.TokenIllegal
+	}
+	return l.bracketStack[len(l.bracketStack)-1].token
 }
 
 // colonClosesTernary reports whether the colon currently under l.ch is the
@@ -1305,13 +1331,13 @@ func (l *lexer) colonClosesTernary() bool {
 }
 
 func (l *lexer) labelColonBelongsToParenlessKeywordCall(frame ternaryFrame) bool {
-	if !l.colonAbutsPreviousToken() || !isLabelNameToken(l.lastToken) {
+	if !isLabelNameToken(l.lastToken) {
 		return false
 	}
 	if frame.parenlessKeywordCall {
 		return true
 	}
-	return l.labelFollowsParenlessCallee()
+	return l.labelFollowsParenlessCallee() || l.labelFollowsParenlessArgumentComma()
 }
 
 func (l *lexer) labelFollowsParenlessCallee() bool {
@@ -1324,8 +1350,19 @@ func (l *lexer) labelFollowsParenlessCallee() bool {
 	return l.prevToken.End.Column < l.lastToken.Pos.Column
 }
 
+func (l *lexer) labelFollowsParenlessArgumentComma() bool {
+	if l.prevToken.Type != ast.TokenComma || !canEndExpressionToken(l.prevPrevToken.Type) {
+		return false
+	}
+	if l.prevPrevToken.End.Line != l.prevToken.Pos.Line || l.prevToken.End.Line != l.lastToken.Pos.Line {
+		return false
+	}
+	return l.prevToken.End.Column < l.lastToken.Pos.Column
+}
+
 func (l *lexer) labelColonPrecedesTernarySeparator() bool {
 	scan := *l
+	scan.bracketStack = append([]bracketFrame(nil), l.bracketStack...)
 	scan.ternaryStack = append([]ternaryFrame(nil), l.ternaryStack...)
 	outerDepth := len(scan.ternaryStack)
 
@@ -1344,22 +1381,46 @@ func (l *lexer) labelColonPrecedesTernarySeparator() bool {
 }
 
 // colonStartsQuotedSymbol reports whether a colon followed by a quote should be
-// lexed as a quoted symbol literal (:"foo") rather than a hash or keyword-argument
-// label separator that happens to precede a quoted string. It is consulted only
-// after colonClosesTernary has ruled out the ternary separator.
-//
-// A label separator abuts the name it labels with no intervening whitespace
-// ({name:"Ada"}, call(name:"Ada"), {rescue:"x"}). When whitespace (including a
-// line break) precedes the colon, it is never a label separator, so forms like
-// the parenless call argument emit :"foo-bar" and the keyword + symbol return
-// :"x" read as quoted symbols. When the colon abuts the previous token, it is a
-// label separator only when that token can name a label; otherwise (a value such
-// as a closing paren or integer) Ruby still reads the colon-quote as a symbol.
+// lexed as a quoted symbol literal (:"foo") rather than a hash or
+// keyword-argument separator that happens to precede a quoted string. It is
+// consulted only after colonClosesTernary has ruled out the ternary separator.
 func (l *lexer) colonStartsQuotedSymbol() bool {
-	if !l.colonAbutsPreviousToken() {
-		return true
+	return !l.colonSeparatesQuotedValue()
+}
+
+func (l *lexer) colonSeparatesQuotedValue() bool {
+	if isLabelNameToken(l.lastToken) {
+		return l.colonAbutsPreviousToken() ||
+			l.labelFollowsHashOrParenthesizedArgumentStart() ||
+			l.labelFollowsParenlessCallee() ||
+			l.labelFollowsParenlessArgumentComma()
 	}
-	return !isLabelNameToken(l.lastToken)
+	if l.lastToken.Type == ast.TokenString {
+		return l.stringKeyFollowsHashPairStart()
+	}
+	return false
+}
+
+func (l *lexer) labelFollowsHashOrParenthesizedArgumentStart() bool {
+	switch l.prevToken.Type {
+	case ast.TokenLBrace:
+		return l.currentBracketType() == ast.TokenLBrace
+	case ast.TokenLParen:
+		return l.currentBracketType() == ast.TokenLParen
+	case ast.TokenComma:
+		return l.currentBracketType() == ast.TokenLBrace || l.currentBracketType() == ast.TokenLParen
+	default:
+		return false
+	}
+}
+
+func (l *lexer) stringKeyFollowsHashPairStart() bool {
+	switch l.prevToken.Type {
+	case ast.TokenLBrace, ast.TokenComma:
+		return l.currentBracketType() == ast.TokenLBrace
+	default:
+		return false
+	}
 }
 
 // colonAbutsPreviousToken reports whether the colon currently under l.ch

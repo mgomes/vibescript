@@ -70,8 +70,28 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenIdent, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
 		},
 		{
+			name:   "hash_label_spaced_stays_separator",
+			source: `{name :"Ada"}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenIdent, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
+		},
+		{
+			name:   "hash_string_key_no_space_stays_separator",
+			source: `{"name":"Ada"}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenString, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
+		},
+		{
+			name:   "hash_string_key_spaced_stays_separator",
+			source: `{"name" :"Ada"}`,
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenString, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
+		},
+		{
 			name:   "keyword_argument_no_space_stays_separator",
 			source: `call(name:"Ada")`,
+			want:   []ast.TokenType{ast.TokenIdent, ast.TokenLParen, ast.TokenIdent, ast.TokenColon, ast.TokenString, ast.TokenRParen},
+		},
+		{
+			name:   "keyword_argument_spaced_stays_separator",
+			source: `call(name :"Ada")`,
 			want:   []ast.TokenType{ast.TokenIdent, ast.TokenLParen, ast.TokenIdent, ast.TokenColon, ast.TokenString, ast.TokenRParen},
 		},
 		{
@@ -85,6 +105,23 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 			want: []ast.TokenType{
 				ast.TokenIdent, ast.TokenQuestion, ast.TokenIdent, ast.TokenIdent,
 				ast.TokenColon, ast.TokenString, ast.TokenColon, ast.TokenString,
+			},
+		},
+		{
+			name:   "ternary_parenless_spaced_keyword_label_does_not_close",
+			source: `flag ? emit name :"Ada" :"no"`,
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenIdent, ast.TokenIdent,
+				ast.TokenColon, ast.TokenString, ast.TokenColon, ast.TokenString,
+			},
+		},
+		{
+			name:   "ternary_parenless_positional_then_keyword_label_does_not_close",
+			source: `flag ? mixed "pre", suffix:"fix" :"no"`,
+			want: []ast.TokenType{
+				ast.TokenIdent, ast.TokenQuestion, ast.TokenIdent, ast.TokenString,
+				ast.TokenComma, ast.TokenIdent, ast.TokenColon, ast.TokenString,
+				ast.TokenColon, ast.TokenString,
 			},
 		},
 		{
@@ -293,18 +330,57 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 
 	t.Run("hash_label_string_value", func(t *testing.T) {
 		t.Parallel()
-		want := []ast.Statement{
-			&ast.ExprStmt{Expr: &ast.HashLiteral{Pairs: []ast.HashPair{{
-				Key:   &ast.SymbolLiteral{Name: "name"},
-				Value: &ast.StringLiteral{Value: "Ada"},
-			}}}},
+		tests := []struct {
+			name   string
+			source string
+			want   ast.Expression
+		}{
+			{
+				name:   "identifier_no_space",
+				source: "def run\n  {name:\"Ada\"}\nend",
+				want: &ast.HashLiteral{Pairs: []ast.HashPair{{
+					Key:   &ast.SymbolLiteral{Name: "name"},
+					Value: &ast.StringLiteral{Value: "Ada"},
+				}}},
+			},
+			{
+				name:   "identifier_spaced",
+				source: "def run\n  {name :\"Ada\"}\nend",
+				want: &ast.HashLiteral{Pairs: []ast.HashPair{{
+					Key:   &ast.SymbolLiteral{Name: "name"},
+					Value: &ast.StringLiteral{Value: "Ada"},
+				}}},
+			},
+			{
+				name:   "string_no_space",
+				source: "def run\n  {\"name\":\"Ada\"}\nend",
+				want: &ast.HashLiteral{Pairs: []ast.HashPair{{
+					Key:   &ast.StringLiteral{Value: "name"},
+					Value: &ast.StringLiteral{Value: "Ada"},
+				}}},
+			},
+			{
+				name:   "string_spaced",
+				source: "def run\n  {\"name\" :\"Ada\"}\nend",
+				want: &ast.HashLiteral{Pairs: []ast.HashPair{{
+					Key:   &ast.StringLiteral{Value: "name"},
+					Value: &ast.StringLiteral{Value: "Ada"},
+				}}},
+			},
 		}
-		got, errs := parseSource(t, "def run\n  {name:\"Ada\"}\nend")
-		if len(errs) != 0 {
-			t.Fatalf("parseSource errors = %v, want none", errs)
-		}
-		if diff := cmp.Diff(want, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
-			t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				want := []ast.Statement{&ast.ExprStmt{Expr: tt.want}}
+				got, errs := parseSource(t, tt.source)
+				if len(errs) != 0 {
+					t.Fatalf("parseSource errors = %v, want none", errs)
+				}
+				if diff := cmp.Diff(want, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+					t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+				}
+			})
 		}
 	})
 
@@ -350,24 +426,33 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 
 	t.Run("keyword_argument_string_value", func(t *testing.T) {
 		t.Parallel()
-		got, errs := parseSource(t, "def run\n  greet(name:\"Ada\")\nend")
-		if len(errs) != 0 {
-			t.Fatalf("parseSource errors = %v, want none", errs)
-		}
-		body := parsedFunctionBody(t, got)
-		call := body[0].(*ast.ExprStmt).Expr.(*ast.CallExpr)
-		if len(call.Args) != 0 {
-			t.Fatalf("call positional args = %d, want 0", len(call.Args))
-		}
-		if len(call.KwArgs) != 1 {
-			t.Fatalf("call keyword args = %d, want 1", len(call.KwArgs))
-		}
-		if call.KwArgs[0].Name != "name" {
-			t.Fatalf("keyword name = %q, want %q", call.KwArgs[0].Name, "name")
-		}
-		str, ok := call.KwArgs[0].Value.(*ast.StringLiteral)
-		if !ok || str.Value != "Ada" {
-			t.Fatalf("keyword value = %#v, want StringLiteral(Ada)", call.KwArgs[0].Value)
+		for _, source := range []string{
+			"def run\n  greet(name:\"Ada\")\nend",
+			"def run\n  greet(name :\"Ada\")\nend",
+		} {
+			source := source
+			t.Run(source, func(t *testing.T) {
+				t.Parallel()
+				got, errs := parseSource(t, source)
+				if len(errs) != 0 {
+					t.Fatalf("parseSource errors = %v, want none", errs)
+				}
+				body := parsedFunctionBody(t, got)
+				call := body[0].(*ast.ExprStmt).Expr.(*ast.CallExpr)
+				if len(call.Args) != 0 {
+					t.Fatalf("call positional args = %d, want 0", len(call.Args))
+				}
+				if len(call.KwArgs) != 1 {
+					t.Fatalf("call keyword args = %d, want 1", len(call.KwArgs))
+				}
+				if call.KwArgs[0].Name != "name" {
+					t.Fatalf("keyword name = %q, want %q", call.KwArgs[0].Name, "name")
+				}
+				str, ok := call.KwArgs[0].Value.(*ast.StringLiteral)
+				if !ok || str.Value != "Ada" {
+					t.Fatalf("keyword value = %#v, want StringLiteral(Ada)", call.KwArgs[0].Value)
+				}
+			})
 		}
 	})
 
@@ -390,7 +475,54 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 
 	t.Run("ternary_parenless_keyword_call_consequent", func(t *testing.T) {
 		t.Parallel()
-		got, errs := parseSource(t, "def run\n  flag ? emit first: 1, name:\"Ada\" :\"no\"\nend")
+		for _, source := range []string{
+			"def run\n  flag ? emit first: 1, name:\"Ada\" :\"no\"\nend",
+			"def run\n  flag ? emit first: 1, name :\"Ada\" :\"no\"\nend",
+		} {
+			source := source
+			t.Run(source, func(t *testing.T) {
+				t.Parallel()
+				got, errs := parseSource(t, source)
+				if len(errs) != 0 {
+					t.Fatalf("parseSource errors = %v, want none", errs)
+				}
+				body := parsedFunctionBody(t, got)
+				cond, ok := body[0].(*ast.ExprStmt).Expr.(*ast.ConditionalExpr)
+				if !ok {
+					t.Fatalf("top expression = %T, want *ast.ConditionalExpr", body[0].(*ast.ExprStmt).Expr)
+				}
+				call, ok := cond.Consequent.(*ast.CallExpr)
+				if !ok {
+					t.Fatalf("ternary consequent = %#v, want *ast.CallExpr", cond.Consequent)
+				}
+				if len(call.Args) != 0 {
+					t.Fatalf("call positional args = %d, want 0", len(call.Args))
+				}
+				if len(call.KwArgs) != 2 {
+					t.Fatalf("call keyword args = %d, want 2", len(call.KwArgs))
+				}
+				if call.KwArgs[0].Name != "first" || call.KwArgs[1].Name != "name" {
+					t.Fatalf("call keyword names = %q, %q; want first, name", call.KwArgs[0].Name, call.KwArgs[1].Name)
+				}
+				first, ok := call.KwArgs[0].Value.(*ast.IntegerLiteral)
+				if !ok || first.Value != 1 {
+					t.Fatalf("first keyword value = %#v, want IntegerLiteral(1)", call.KwArgs[0].Value)
+				}
+				name, ok := call.KwArgs[1].Value.(*ast.StringLiteral)
+				if !ok || name.Value != "Ada" {
+					t.Fatalf("name keyword value = %#v, want StringLiteral(Ada)", call.KwArgs[1].Value)
+				}
+				str, ok := cond.Alternate.(*ast.StringLiteral)
+				if !ok || str.Value != "no" {
+					t.Fatalf("ternary alternate = %#v, want StringLiteral(no)", cond.Alternate)
+				}
+			})
+		}
+	})
+
+	t.Run("ternary_parenless_positional_then_keyword_call_consequent", func(t *testing.T) {
+		t.Parallel()
+		got, errs := parseSource(t, "def run\n  flag ? mixed \"pre\", suffix:\"fix\" :\"no\"\nend")
 		if len(errs) != 0 {
 			t.Fatalf("parseSource errors = %v, want none", errs)
 		}
@@ -403,22 +535,22 @@ func TestParserColonQuoteSeparatorValues(t *testing.T) {
 		if !ok {
 			t.Fatalf("ternary consequent = %#v, want *ast.CallExpr", cond.Consequent)
 		}
-		if len(call.Args) != 0 {
-			t.Fatalf("call positional args = %d, want 0", len(call.Args))
+		if len(call.Args) != 1 {
+			t.Fatalf("call positional args = %d, want 1", len(call.Args))
 		}
-		if len(call.KwArgs) != 2 {
-			t.Fatalf("call keyword args = %d, want 2", len(call.KwArgs))
+		arg, ok := call.Args[0].(*ast.StringLiteral)
+		if !ok || arg.Value != "pre" {
+			t.Fatalf("call positional arg = %#v, want StringLiteral(pre)", call.Args[0])
 		}
-		if call.KwArgs[0].Name != "first" || call.KwArgs[1].Name != "name" {
-			t.Fatalf("call keyword names = %q, %q; want first, name", call.KwArgs[0].Name, call.KwArgs[1].Name)
+		if len(call.KwArgs) != 1 {
+			t.Fatalf("call keyword args = %d, want 1", len(call.KwArgs))
 		}
-		first, ok := call.KwArgs[0].Value.(*ast.IntegerLiteral)
-		if !ok || first.Value != 1 {
-			t.Fatalf("first keyword value = %#v, want IntegerLiteral(1)", call.KwArgs[0].Value)
+		if call.KwArgs[0].Name != "suffix" {
+			t.Fatalf("keyword name = %q, want suffix", call.KwArgs[0].Name)
 		}
-		name, ok := call.KwArgs[1].Value.(*ast.StringLiteral)
-		if !ok || name.Value != "Ada" {
-			t.Fatalf("name keyword value = %#v, want StringLiteral(Ada)", call.KwArgs[1].Value)
+		value, ok := call.KwArgs[0].Value.(*ast.StringLiteral)
+		if !ok || value.Value != "fix" {
+			t.Fatalf("keyword value = %#v, want StringLiteral(fix)", call.KwArgs[0].Value)
 		}
 		str, ok := cond.Alternate.(*ast.StringLiteral)
 		if !ok || str.Value != "no" {
