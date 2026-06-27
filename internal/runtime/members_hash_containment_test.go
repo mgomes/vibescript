@@ -913,12 +913,13 @@ func TestHashBuildAccumulatorChargesIncrementally(t *testing.T) {
 	exec.memoryQuota = base + estimatedEmptyOutputHashBytes +
 		capacity*estimatedMapEntryStructuralBytes + 3*payloadBytes
 
+	// Mirror a transform that preallocates make(map, capacity): the full output map
+	// is reserved through reserveLoopScratch before the accumulator is built, so the
+	// accumulator's baseline already accounts for it and add charges only each block
+	// result's payload.
+	delta := exec.reserveLoopScratch(hashTransformBufferBytes(capacity, 0))
+	defer exec.releaseLoopScratch(delta)
 	acc := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	// Mirror a transform that preallocates make(map, capacity): the full backing is
-	// reserved up front, so add charges only each block result's payload.
-	if err := acc.reserveBacking(capacity); err != nil {
-		t.Fatalf("reserving the backing tripped the quota before any entry: %v", err)
-	}
 
 	var tripped int
 	for i := range capacity {
@@ -981,14 +982,14 @@ func TestHashBuildAccumulatorReservesScratch(t *testing.T) {
 		t.Fatalf("test setup expects a positive scratch derived from the entry cost (%d)", secondEntryCost)
 	}
 
-	// A quota that admits the empty output map plus exactly one full entry and the
-	// reserved scratch, but would admit a second entry if the scratch were not
-	// reserved. The second entry costs more than the scratch, so without the
-	// reservation the leftover headroom (a full entry's worth) covers it; with the
-	// reservation only the scratch's worth of headroom remains, which is too small.
-	emptyMap := estimatedEmptyOutputHashBytes
-	base := probe.base - emptyMap // probe.base folds in the empty output-hash overhead
-	exec.memoryQuota = base + emptyMap + builtOneEntry + secondEntryCost
+	// A quota that admits exactly one full entry and a second entry's cost on top of
+	// the accumulator baseline, but no more. The second entry costs more than the
+	// scratch, so without the scratch reservation the leftover headroom (a full
+	// entry's worth) covers it; once the scratch is reserved only the scratch's worth
+	// of headroom remains, which is too small. probe.base is the call-root baseline
+	// (the empty output map and scratch are folded in by the caller's
+	// reserveLoopScratch, not by the accumulator).
+	exec.memoryQuota = probe.base + builtOneEntry + secondEntryCost
 
 	// Without reserving the scratch, both entries fit the budget, proving the
 	// reservation -- not the entry payloads alone -- is what rejects the second.
@@ -1000,12 +1001,12 @@ func TestHashBuildAccumulatorReservesScratch(t *testing.T) {
 		t.Fatalf("test setup expects two entries to fit without the scratch reservation: %v", err)
 	}
 
-	// Reserving the scratch consumes the headroom the second entry relied on, so the
-	// first entry fits but the second is rejected.
+	// Reserving the scratch through reserveLoopScratch before building the
+	// accumulator consumes the headroom the second entry relied on, so the first
+	// entry fits but the second is rejected.
+	delta := exec.reserveLoopScratch(scratchBytes)
+	defer exec.releaseLoopScratch(delta)
 	reserved := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	if err := reserved.reserveScratch(scratchBytes); err != nil {
-		t.Fatalf("reserving the scratch tripped the quota before any entry: %v", err)
-	}
 	if err := reserved.add(NewString(strings.Repeat("x", payloadBytes))); err != nil {
 		t.Fatalf("first entry tripped the quota with the scratch reserved, want it to fit: %v", err)
 	}
@@ -1037,46 +1038,47 @@ func TestHashBuildAccumulatorReservesBacking(t *testing.T) {
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	exec.root = newEnv(nil)
 
-	// Measure the empty-map baseline and one result's payload under an ample quota so
+	// Measure the call-root baseline and one result's payload under an ample quota so
 	// the budget is sized from the real accounting rather than a hand-derived estimate.
 	probe := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	emptyMapBase := probe.base
+	rootBase := probe.base
 	if err := probe.add(NewString(strings.Repeat("x", payloadBytes))); err != nil {
 		t.Fatalf("probe result tripped under an unbounded quota: %v", err)
 	}
 	resultPayload := probe.built
 
-	// A quota that admits the empty-map baseline, the one result's payload, and a
-	// single backing slot -- but not the full capacity backing. The early result fits
-	// when only one slot is reserved (the buggy view) yet overflows once the whole
-	// capacity backing is charged (the fixed view).
-	exec.memoryQuota = emptyMapBase + resultPayload + estimatedMapEntryStructuralBytes
+	// A quota that admits the call-root baseline, the one result's payload, and an
+	// output map of a single backing slot -- but not the full capacity backing. The
+	// early result fits when only one slot is reserved (the buggy view) yet overflows
+	// once the whole capacity backing is charged (the fixed view).
+	exec.memoryQuota = rootBase + hashTransformBufferBytes(1, 0) + resultPayload
 
-	// Without reserving the backing, the single early result is wrongly admitted: the
-	// running budget sees only the slots filled so far, not the live capacity backing.
+	// Reserving only a single backing slot (the buggy view) wrongly admits the early
+	// result: the running budget sees only one slot, not the live capacity backing.
+	buggyDelta := exec.reserveLoopScratch(hashTransformBufferBytes(1, 0))
 	unreserved := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
 	if err := unreserved.add(NewString(strings.Repeat("x", payloadBytes))); err != nil {
-		t.Fatalf("without the backing reservation the early result should be wrongly admitted, got %v", err)
+		exec.releaseLoopScratch(buggyDelta)
+		t.Fatalf("with only one slot reserved the early result should be wrongly admitted, got %v", err)
 	}
+	exec.releaseLoopScratch(buggyDelta)
 
-	// Reserving the full capacity backing first -- exactly what the transform's
+	// Reserving the full capacity output map first -- exactly what the transform's
 	// make(map, capacity) allocates -- rejects the same early result, since the backing
 	// plus the result already exceeds the quota.
+	fixedDelta := exec.reserveLoopScratch(hashTransformBufferBytes(capacity, 0))
+	defer exec.releaseLoopScratch(fixedDelta)
 	reserved := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	if err := reserved.reserveBacking(capacity); err != nil {
-		requireErrorIs(t, err, errMemoryQuotaExceeded)
-		return
-	}
 	err := reserved.add(NewString(strings.Repeat("x", payloadBytes)))
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
-// TestHashBuildAccumulatorBackingReservationMatchesProjection pins that the
-// accumulator's reserved backing equals exactly what the up-front projection
-// charges for the same capacity, so the running budget and the preflight reserve
-// the same bytes. A drift between the two views would either reject builds the
-// projection admitted or admit builds it rejected. The build's final base after
-// reserveBacking(capacity) must equal the call-root usage plus the empty map plus
+// TestHashBuildAccumulatorBackingReservationMatchesProjection pins that the output
+// map reserved through reserveLoopScratch equals exactly what the up-front
+// projection charges for the same capacity, so the running budget and the preflight
+// reserve the same bytes. A drift between the two views would either reject builds
+// the projection admitted or admit builds it rejected. The build's final base after
+// reserving the output map must equal the call-root usage plus the empty map plus
 // capacity structural slots -- the same outputEntries*perEntry the projection adds.
 func TestHashBuildAccumulatorBackingReservationMatchesProjection(t *testing.T) {
 	t.Parallel()
@@ -1087,18 +1089,20 @@ func TestHashBuildAccumulatorBackingReservationMatchesProjection(t *testing.T) {
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
 	exec.root = newEnv(nil)
 
-	acc := newHashBuildAccumulator(exec, receiver, nil, nil, NewNil())
-	if err := acc.reserveBacking(capacity); err != nil {
-		t.Fatalf("reserving the backing tripped under an unbounded quota: %v", err)
-	}
-
 	// The projection's baseline (call roots + empty map) plus capacity structural slots
-	// is exactly what the accumulator's base must hold after reserveBacking, proving the
-	// two budgets reserve the same backing.
+	// is exactly what the accumulator's base must hold once the caller has reserved the
+	// output map through reserveLoopScratch, proving the two budgets reserve the same
+	// backing. Measure the projection BEFORE reserving the output map, so the
+	// reservation does not also fold into projectedHashBaseBytes.
 	wantBase := exec.projectedHashBaseBytes(receiver, nil, nil, NewNil()) +
 		capacity*estimatedMapEntryStructuralBytes
+
+	delta := exec.reserveLoopScratch(hashTransformBufferBytes(capacity, 0))
+	defer exec.releaseLoopScratch(delta)
+	acc := newHashBuildAccumulator(exec, receiver, nil, nil, NewNil())
+
 	if acc.base != wantBase {
-		t.Fatalf("accumulator base after reserveBacking = %d, want %d (the projection's backing)", acc.base, wantBase)
+		t.Fatalf("accumulator base after reserving the output map = %d, want %d (the projection's backing)", acc.base, wantBase)
 	}
 }
 
@@ -1130,13 +1134,13 @@ func TestHashTransformValuesScratchPeakTripsMemoryQuota(t *testing.T) {
 	// every add -- while staying large enough never to trip, letting us read the
 	// final built footprint.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
-	acc := newHashBuildAccumulator(probe, receiver, nil, nil, block)
 	// Mirror the real transform: it preallocates make(map, count) and reserves that
-	// backing before charging block results, so the probe must reserve it too or the
-	// scratch-blind peak would under-count the live backing.
-	if err := acc.reserveBacking(count); err != nil {
-		t.Fatalf("reserving the backing tripped under an unbounded quota: %v", err)
-	}
+	// output map through reserveLoopScratch before charging block results, so the
+	// probe must reserve it too or the scratch-blind peak would under-count the live
+	// backing.
+	backingDelta := probe.reserveLoopScratch(hashTransformBufferBytes(count, 0))
+	defer probe.releaseLoopScratch(backingDelta)
+	acc := newHashBuildAccumulator(probe, receiver, nil, nil, block)
 	for range sortedHashKeysInto(receiver.Hash(), nil) {
 		if err := acc.add(NewNil()); err != nil {
 			t.Fatalf("probe build tripped under an unbounded quota: %v", err)
@@ -1171,6 +1175,78 @@ func TestHashTransformValuesScratchPeakTripsMemoryQuota(t *testing.T) {
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != count {
 		t.Fatalf("transform_values produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	}
+}
+
+func TestHashTransformReservationsRejectBeforeMapAllocation(t *testing.T) {
+	t.Parallel()
+
+	const count = 20_000
+	receiver := largeHashReceiver(count)
+
+	tests := []struct {
+		name  string
+		block Value
+	}{
+		{name: "transform_keys", block: keyIdentityBlock()},
+		{name: "transform_values", block: emptyHashBlock()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+			roots := probe.hashCallRootBytes(receiver, nil, nil, tt.block)
+			buffers := hashTransformBufferBytes(count, sortedKeyBufferBytes(count))
+			quota := saturatingAdd(roots, buffers) - 1
+			if roots > quota {
+				t.Fatalf("test setup expects roots (%d) to fit quota (%d)", roots, quota)
+			}
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callHashMember(t, exec, receiver, tt.name, nil, tt.block)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("%s ran %d step(s), want the output backing rejected before allocation", tt.name, exec.steps)
+			}
+			if exec.reservedScratchBytes != 0 {
+				t.Fatalf("%s leaked %d reserved scratch bytes after rejection", tt.name, exec.reservedScratchBytes)
+			}
+		})
+	}
+}
+
+func TestHashTransformReservationsDoNotMaskRequiredBlock(t *testing.T) {
+	t.Parallel()
+
+	const count = 20_000
+	receiver := largeHashReceiver(count)
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, NewNil())
+	buffers := hashTransformBufferBytes(count, sortedKeyBufferBytes(count))
+	quota := saturatingAdd(roots, buffers) - 1
+	if roots > quota {
+		t.Fatalf("test setup expects roots (%d) to fit quota (%d)", roots, quota)
+	}
+
+	for _, name := range []string{"transform_keys", "transform_values"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callHashMember(t, exec, receiver, name, nil, NewNil())
+			if errors.Is(err, errMemoryQuotaExceeded) {
+				t.Fatalf("%s returned memory quota before validating its block: %v", name, err)
+			}
+			requireErrorContains(t, err, "hash."+name+" requires a block")
+			if exec.steps != 0 {
+				t.Fatalf("%s ran %d step(s), want required-block validation before iteration", name, exec.steps)
+			}
+			if exec.reservedScratchBytes != 0 {
+				t.Fatalf("%s leaked %d reserved scratch bytes after required-block validation", name, exec.reservedScratchBytes)
+			}
+		})
 	}
 }
 
@@ -1736,6 +1812,15 @@ func emptyHashBlock() Value {
 	return NewBlock(nil, nil, newEnv(nil))
 }
 
+func keyIdentityBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	return NewBlock(
+		[]Param{{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}}},
+		[]Statement{&ExprStmt{Position: pos, Expr: &Identifier{Name: "k", Position: pos}}},
+		newEnv(nil),
+	)
+}
+
 // TestHashEmptyBlockTransformHonorsStepQuota pins the P2 finding on PR #776: a
 // block-driven hash transform invoked with an empty block must still charge a
 // step per entry, so a large receiver trips the step quota even though the block
@@ -1994,6 +2079,63 @@ end`
 	}
 }
 
+func TestForHashReachablePairBodyFitsWithoutPairReservation(t *testing.T) {
+	t.Parallel()
+
+	const bodyLen = 20_000
+	key := strings.Repeat("k", 20_000)
+	receiver := NewHash(map[string]Value{key: NewInt(1)})
+	body := arrayValue(bodyLen)
+	pair := NewArray([]Value{NewSymbol(key), NewInt(1)})
+	scratch := sortedKeyBufferBytes(1)
+	pairChargeProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	pairCharge := pairChargeProbe.maxCollapsedPairBytes(receiver)
+
+	peakEnv := newEnv(nil)
+	peakEnv.Assign("values", receiver)
+	peakEnv.Assign("body", body)
+	peakEnv.Assign("pair", pair)
+	peakProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	peakProbe.reservedScratchBytes = scratch
+	peakProbe.pushEnv(peakEnv)
+	bodyPeak := peakProbe.estimateMemoryUsage(body)
+	peakProbe.popEnv()
+
+	preflightEnv := newEnv(nil)
+	preflightEnv.Assign("values", receiver)
+	preflightEnv.Assign("body", body)
+	preflightProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	preflightProbe.reservedScratchBytes = scratch
+	preflightProbe.pushEnv(preflightEnv)
+	preflightEst := preflightProbe.memoryEstimatorForCheck()
+	preflightPeak := preflightProbe.estimateMemoryUsageBase(preflightEst)
+	preflightPeak = saturatingAdd(preflightPeak, maxCollapsedPairBytesWithEstimator(receiver, preflightEst))
+	preflightProbe.popEnv()
+
+	realPeak := max(bodyPeak, preflightPeak)
+	quota := realPeak + pairCharge/2
+	if pairCharge <= 0 {
+		t.Fatalf("test setup expects a positive pair charge, got %d", pairCharge)
+	}
+
+	pos := Position{Line: 1, Column: 1}
+	stmt := &ForStmt{
+		Iterator: "pair",
+		Body:     []Statement{&ExprStmt{Position: pos, Expr: &Identifier{Name: "body", Position: pos}}},
+		Position: pos,
+	}
+	loopEnv := newEnv(nil)
+	loopEnv.Assign("values", receiver)
+	loopEnv.Assign("body", body)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	exec.pushEnv(loopEnv)
+	_, _, err := exec.evalForHash(stmt, loopEnv, receiver, NewNil())
+	exec.popEnv()
+	if err != nil {
+		t.Fatalf("for pair in hash with reachable iterable and bound pair at quota %d = %v, want success", quota, err)
+	}
+}
+
 // tightestForHashQuota binary-searches the smallest MemoryQuotaBytes under which
 // run(receiver) still succeeds, so a test can pin a `for` loop's real live peak
 // without hand-computing every transient the interpreter holds.
@@ -2174,13 +2316,13 @@ end`
 // backing far smaller than the one actually live -- so backing + an early result
 // can exceed the quota until a later post-call check observes the peak.
 //
-// The test drives the accumulator exactly as merge does (reserveBacking +
-// reserveScratch, then add per conflict result) under two reservations against one
-// accumulator each. Reserving the union (the fix) rejects the first conflict
-// result, because the grown backing plus the result overflows the quota. Reserving
-// only len(base) (the pre-fix bug) wrongly admits it, since the under-reserved
-// backing leaves headroom the live map has already consumed. The gap between the
-// two is exactly the (union - len(base)) slots the non-conflict additions grow.
+// The test drives the accumulator exactly as merge does (reserve the output map
+// through reserveLoopScratch, then add per conflict result) under two reservations.
+// Reserving the union (the fix) rejects the first conflict result, because the grown
+// backing plus the result overflows the quota. Reserving only len(base) (the pre-fix
+// bug) wrongly admits it, since the under-reserved backing leaves headroom the live
+// map has already consumed. The gap between the two is exactly the
+// (union - len(base)) slots the non-conflict additions grow.
 func TestHashMergeReservesUnionBackingNotBaseLen(t *testing.T) {
 	t.Parallel()
 
@@ -2194,45 +2336,44 @@ func TestHashMergeReservesUnionBackingNotBaseLen(t *testing.T) {
 	const resultPayload = 32 * 1024
 	result := NewString(strings.Repeat("z", resultPayload))
 
-	// Learn the accumulator baseline (call roots + empty map) under no real pressure,
-	// matching what merge snapshots before reserving any backing.
+	// Learn the accumulator baseline (call roots) under no real pressure, matching
+	// what merge snapshots before reserving any backing.
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1}
 	probe.root = newEnv(nil)
 	probeAcc := newHashBuildAccumulator(probe, NewNil(), nil, nil, NewNil())
 	base := probeAcc.base
 	resultBytes := newMemoryEstimator().valuePayload(result)
 
-	// Size the quota to fit the union backing plus the first result short by one byte,
-	// so reserving the union and then adding the result trips, while reserving only
-	// len(base) leaves room the union-grown map has actually consumed.
-	quota := base + unionLen*estimatedMapEntryStructuralBytes + resultBytes - 1
+	// Size the quota to fit the union output map plus the first result short by one
+	// byte, so reserving the union and then adding the result trips, while reserving
+	// only len(base) leaves room the union-grown map has actually consumed.
+	quota := base + hashTransformBufferBytes(unionLen, 0) + resultBytes - 1
 
 	// Sanity: a len(base)-sized backing plus the same result must fit the quota, so
 	// the pre-fix reservation would wrongly admit the result.
-	if base+baseLen*estimatedMapEntryStructuralBytes+resultBytes > quota {
+	if base+hashTransformBufferBytes(baseLen, 0)+resultBytes > quota {
 		t.Fatalf("test setup expects base-len backing + result (%d) to fit the quota (%d)",
-			base+baseLen*estimatedMapEntryStructuralBytes+resultBytes, quota)
+			base+hashTransformBufferBytes(baseLen, 0)+resultBytes, quota)
 	}
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	exec.root = newEnv(nil)
 
-	// The fix: reserving the union backing, then the first conflict result trips,
+	// The fix: reserving the union output map, then the first conflict result trips,
 	// because the grown backing already consumed the quota's headroom.
+	fixedDelta := exec.reserveLoopScratch(hashTransformBufferBytes(unionLen, 0))
 	fixed := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	if err := fixed.reserveBacking(unionLen); err != nil {
-		t.Fatalf("reserving the union backing under a quota sized to hold it tripped early: %v", err)
-	}
 	if err := fixed.add(result); !errors.Is(err, errMemoryQuotaExceeded) {
+		exec.releaseLoopScratch(fixedDelta)
 		t.Fatalf("union-backed accumulator admitted the first conflict result, want rejection: %v", err)
 	}
+	exec.releaseLoopScratch(fixedDelta)
 
 	// The pre-fix bug: reserving only len(base) leaves headroom the union-grown map
 	// has already consumed, so the same result is wrongly admitted.
+	buggyDelta := exec.reserveLoopScratch(hashTransformBufferBytes(baseLen, 0))
+	defer exec.releaseLoopScratch(buggyDelta)
 	buggy := newHashBuildAccumulator(exec, NewNil(), nil, nil, NewNil())
-	if err := buggy.reserveBacking(baseLen); err != nil {
-		t.Fatalf("reserving the base-len backing tripped early: %v", err)
-	}
 	if err := buggy.add(result); err != nil {
 		t.Fatalf("base-len-backed accumulator rejected the first result, want it to wrongly admit (proving the under-reservation): %v", err)
 	}
@@ -2388,5 +2529,870 @@ func TestHashMergeOverlappingBlockExactUnionFitsLooseBoundWouldReject(t *testing
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != count {
 		t.Fatalf("overlapping merge produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	}
+}
+
+// overFixedNestedRestPairTarget builds the destructure target |(a, b, c, *(x))|:
+// three fixed elements followed by a rest target that is itself a destructure. Over
+// a collapsed two-element [key, value] pair the rest index (3) exceeds the value
+// count (2), the shape that made AssignDestructure slice values[restIndex:] out of
+// range and panic the host before it clamped the low bound to len(values).
+func overFixedNestedRestPairTarget() *DestructureTarget {
+	pos := Position{Line: 1, Column: 1}
+	return &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "a", Position: pos}},
+			{Target: &Identifier{Name: "b", Position: pos}},
+			{Target: &Identifier{Name: "c", Position: pos}},
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "x", Position: pos}},
+				},
+			}, Rest: true},
+		},
+	}
+}
+
+// overFixedNestedRestPairBlock builds an |(a, b, c, *(x))| block with an EMPTY body.
+// blockWantsCollapsedPair stays true (one positional parameter), so Hash#each collapses
+// each entry into a [key, value] pair and binds it through this over-fixed nested
+// rest shape -- the shape whose rest reconstruction panicked the host before
+// AssignDestructure clamped the rest window's low bound.
+func overFixedNestedRestPairBlock() Value {
+	params := []Param{{Kind: ParamNormal, Target: overFixedNestedRestPairTarget()}}
+	return NewBlock(params, nil, newEnv(nil))
+}
+
+// TestHashEachOverFixedNestedRestDoesNotPanic is the end-to-end twin of the P1
+// regression: iterating a hash with an |(a, b, c, *(x))| block under a memory quota
+// must complete without panicking the host. Each entry's collapsed pair holds only
+// two values, fewer than the three fixed targets plus the nested rest, so
+// AssignDestructure's rest window slices out of range unless its low bound is clamped
+// to len(values). The walk binds the missing fixed targets to nil and an empty rest,
+// and returns the receiver.
+func TestHashEachOverFixedNestedRestDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{
+		"a": NewInt(1),
+		"b": NewInt(2),
+		"c": NewInt(3),
+	})
+	block := overFixedNestedRestPairBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(len(receiver.Hash()))
+
+	// A real but generous quota so the memory path -- including the per-entry pair
+	// charge and the in-block destructure -- runs under enforcement rather than the
+	// no-quota short circuit. The receiver and its small pairs fit comfortably.
+	quota := roots + scratch + 64*1024
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each over |(a, b, c, *(x))| at quota %d = %v, want success without panicking", quota, err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != len(receiver.Hash()) {
+		t.Fatalf("each returned %v with %d entries, want the %d-entry receiver", got.Kind(), len(got.Hash()), len(receiver.Hash()))
+	}
+}
+
+// arrayValue builds an array of length ints for the reusable-env rest tests.
+func arrayValue(length int) Value {
+	elems := make([]Value, length)
+	for i := range elems {
+		elems[i] = NewInt(int64(i))
+	}
+	return NewArray(elems)
+}
+
+// recordingRestEachBlock builds the nested-rest |(k, (head, *tail))| block whose
+// body records the bound tail's length into the given slice on every call. The body
+// references only the parameter binding and a captured recorder (no definitions or
+// closures over the current env), so the block keeps its reusable environment, the
+// path on which the previous iteration's rest binding can linger.
+func recordingRestEachBlock(recorder *[]int) Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "k", Position: pos}},
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "head", Position: pos}},
+					{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+				},
+			}},
+		},
+	}
+	record := NewBuiltin("test.record_tail", func(_ *Execution, _ Value, args []Value, _ map[string]Value, _ Value) (Value, error) {
+		*recorder = append(*recorder, len(args[0].Array()))
+		return NewNil(), nil
+	})
+	env := newEnv(nil)
+	env.Define("__record__", record)
+	body := []Statement{
+		&ExprStmt{Position: pos, Expr: &CallExpr{
+			Position: pos,
+			Callee:   &Identifier{Name: "__record__", Position: pos},
+			Args:     []Expression{&Identifier{Name: "tail", Position: pos}},
+		}},
+	}
+	return NewBlock([]Param{{Kind: ParamNormal, Target: target}}, body, env)
+}
+
+// TestHashEachBindsEachEntryOwnRest proves a reused block environment does not leak a
+// stale rest binding across iterations: each entry's block call binds and sees that
+// entry's own live rest, never the previous iteration's. The reusable-env path (the
+// block defines nothing and captures nothing, so blockCanReuseEnv holds) is exactly
+// where a prior call's tail binding could linger; runner.call resets the environment
+// before binding each call's parameters, so every call binds its own value. The walk
+// records each bound tail's length and the recorded lengths must equal each entry's
+// value length minus one (the head), in sorted-key order.
+func TestHashEachBindsEachEntryOwnRest(t *testing.T) {
+	t.Parallel()
+
+	const hugeTailLen = 50_000
+
+	receiver := NewHash(map[string]Value{
+		"a": arrayValue(hugeTailLen),
+		"b": NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)}),
+		"c": NewArray([]Value{NewInt(1), NewInt(2)}),
+	})
+
+	var recorded []int
+	block := recordingRestEachBlock(&recorded)
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects a reusable-env block so the cross-iteration rebind path is exercised")
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each over the recording nested-rest block = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 3 {
+		t.Fatalf("each returned %v with %d entries, want the 3-entry receiver", got.Kind(), len(got.Hash()))
+	}
+
+	// Sorted-key order a < b < c; each tail is its value length minus the head. If a
+	// call bound a value the body still needed wrong, or left a stale tail in place,
+	// these lengths would not match each entry's own live value.
+	want := []int{hugeTailLen - 1, 2, 1}
+	if len(recorded) != len(want) {
+		t.Fatalf("recorded %d tail lengths %v, want %d (%v)", len(recorded), recorded, len(want), want)
+	}
+	for i := range want {
+		if recorded[i] != want[i] {
+			t.Fatalf("recorded tail lengths = %v, want %v (entry %d bound the wrong tail)", recorded, want, i)
+		}
+	}
+}
+
+// emptyNestedRestEachBlock builds an EMPTY-body |(k, (head, *tail))| block. The
+// block defines and captures nothing, so it keeps its reusable environment and runs
+// no body statements -- the case where the body's own per-statement memory checks
+// never observe the freshly bound tail.
+func emptyNestedRestEachBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "k", Position: pos}},
+			{Target: &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "head", Position: pos}},
+					{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+				},
+			}},
+		},
+	}
+	return NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil))
+}
+
+// nestedRestTailChargeBytes returns the bytes the per-call bind charge attributes to
+// the fresh tail a |(k, (head, *tail))| block binds over a [key, value] pair whose
+// value is valueArray. It mirrors blockBindCharge exactly: seed a fresh estimator
+// with the yielded pair (so payloads shared with the value deduplicate), then charge
+// the genuinely fresh rest backing of valueArray[1:]. Tests size quotas from this so
+// they track the estimator's real accounting rather than a hand-derived structure
+// that could drift from how arrays are charged.
+func nestedRestTailChargeBytes(valueArray Value) int {
+	pair := NewArray([]Value{NewSymbol("a"), valueArray})
+	tail := NewArray(slicesClone(valueArray.Array()[1:]))
+	est := newMemoryEstimator()
+	est.value(pair)
+	return est.value(tail)
+}
+
+// slicesClone copies src into a fresh backing of capacity exactly len(src), matching
+// the make+copy AssignDestructure uses for a rest backing so the charged footprint is
+// identical to the runtime path.
+func slicesClone(src []Value) []Value {
+	out := make([]Value, len(src))
+	copy(out, src)
+	return out
+}
+
+// TestHashEachEmptyBodyNestedRestTripsMemoryQuota is the core regression for the
+// nested-rest sandbox escape on PR #808. Hash#each yields each entry as a bounded
+// two-element [key, value] pair, but |(k, (head, *tail))| binds tail to a FRESH
+// copy of the whole hash value -- a backing sized to the value, not to the pair.
+// With an EMPTY block body the body's own memory checks never run, and the receiver
+// lives only on the Go call stack (invisible to estimateMemoryUsageBase), so the
+// fresh tail copy could escape the quota entirely. The per-call bind charge counts
+// that copy against the live call roots (including the receiver), so a quota that
+// admits the receiver and the bounded pair but NOT the fresh tail copy must reject
+// the walk. Without the charge this test fails: the empty body binds the huge tail
+// and returns without ever tripping.
+func TestHashEachEmptyBodyNestedRestTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// One entry whose value is a large array, so the rest copy AssignDestructure
+	// allocates dwarfs the bounded pair the iterator reserves.
+	const valueLen = 200_000
+	value := arrayValue(valueLen)
+	receiver := NewHash(map[string]Value{"a": value})
+	block := emptyNestedRestEachBlock()
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects a reusable-env block so the empty-body rebind path is exercised")
+	}
+
+	// Size the quota to admit the live call roots (which include the receiver and so
+	// the value array) plus the reserved [key, value] pair and a little headroom, but
+	// NOT the fresh tail copy the nested rest allocates.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	tailCharge := nestedRestTailChargeBytes(value)
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
+	const headroom = 16 * 1024
+	quota := roots + pairCharge + headroom
+
+	// Sanity: the fresh tail copy genuinely exceeds the headroom the quota leaves
+	// above the receiver, so its omission -- not an incidentally tight quota -- is
+	// what would let the walk escape.
+	if tailCharge <= headroom+pairCharge {
+		t.Fatalf("test setup expects the tail charge (%d) to exceed the headroom above the roots (%d)", tailCharge, headroom+pairCharge)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "each", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashEachNestedRestFitsWhenTailFitsQuota pins the other side of the bind
+// charge: it must not over-reject a nested-rest walk whose fresh tail copy genuinely
+// fits. A quota generously above the receiver, the pair, and the tail copy admits
+// the empty-body walk and returns the receiver, proving the charge bounds only the
+// fresh backing rather than rejecting every rest-collecting block.
+func TestHashEachNestedRestFitsWhenTailFitsQuota(t *testing.T) {
+	t.Parallel()
+
+	const valueLen = 50_000
+	value := arrayValue(valueLen)
+	receiver := NewHash(map[string]Value{"a": value})
+	block := emptyNestedRestEachBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	tailCharge := nestedRestTailChargeBytes(value)
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
+	quota := roots + pairCharge + tailCharge + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each over a nested-rest block whose tail fits the quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 1 {
+		t.Fatalf("each returned %v with %d entries, want the 1-entry receiver", got.Kind(), len(got.Hash()))
+	}
+}
+
+// emptyPairEachBlock builds an EMPTY-body single-parameter |pair| block. Its lone
+// positional parameter binds the whole [key, value] pair by reference (no
+// destructuring, no rest), so it triggers the collapsed-pair yield and allocates
+// nothing beyond the pair the iterator builds. The empty body means no per-statement
+// body check ever runs, so the pair reservation is the only thing that can bound the
+// transient pair against the Go-stack-only receiver.
+func emptyPairEachBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	return NewBlock([]Param{{Kind: ParamNormal, Name: "pair", Target: &Identifier{Name: "pair", Position: pos}}}, nil, newEnv(nil))
+}
+
+func bodyPairEachBlock(env *Env) Value {
+	pos := Position{Line: 1, Column: 1}
+	return NewBlock(
+		[]Param{{Kind: ParamNormal, Name: "pair", Target: &Identifier{Name: "pair", Position: pos}}},
+		[]Statement{&ExprStmt{Position: pos, Expr: &Identifier{Name: "body", Position: pos}}},
+		env,
+	)
+}
+
+// collapsedPairStructuralBytes is the structural-only footprint a fixed pair
+// constant would reserve: the array Value, its slice base, and two element slots,
+// with no payload for the symbol key or the value. The pre-fix code reserved this
+// constant, which omitted the symbol key's string payload the estimator bills, so a
+// quota between receiver+structure and receiver+full-pair escaped the sandbox.
+const collapsedPairStructuralBytes = estimatedValueBytes + estimatedSliceBaseBytes + 2*estimatedValueBytes
+
+// TestHashEachSingleParamLargeSymbolKeyTripsMemoryQuota is the P2 regression for the
+// pair reservation omitting the symbol key's payload. A single-parameter |pair| block
+// yields each entry as a transient [NewSymbol(key), value] pair; the estimator bills
+// the symbol key's string header and payload on top of the array structure. With the
+// receiver held only on the iterator's Go frame, the body check (here, an empty body
+// that never runs one) cannot see it, so the pair reservation in the iterator
+// preflight is the sole guard combining the receiver with the live pair. A structural
+// constant omitting the symbol payload let a quota between receiver+structure and
+// receiver+full-pair pass that preflight and escape. Reserving the exact pair size
+// (maxCollapsedPairBytes), which probes the real symbol-keyed pair, rejects it.
+func TestHashEachSingleParamLargeSymbolKeyTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// One entry whose KEY is a large symbol so the symbol payload the structural
+	// constant omitted dominates the gap, with a tiny value so the pair's cost is the
+	// key, not the value.
+	bigKey := strings.Repeat("k", 200_000)
+	receiver := NewHash(map[string]Value{bigKey: NewInt(1)})
+	block := emptyPairEachBlock()
+	if !blockWantsCollapsedPair(valueBlock(block)) {
+		t.Fatal("test setup expects a single-parameter block that yields the collapsed pair")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
+
+	// Sanity: the real pair charge genuinely exceeds the structural constant by the
+	// symbol payload, so the omission -- not an incidentally tight quota -- is what
+	// let the walk escape.
+	if pairCharge <= collapsedPairStructuralBytes {
+		t.Fatalf("test setup expects the real pair charge (%d) to exceed the structural constant (%d) by the symbol payload", pairCharge, collapsedPairStructuralBytes)
+	}
+
+	// A quota that admits the receiver and the structural constant but NOT the real
+	// pair. The pre-fix reservation (structural constant) fit this and let the empty
+	// body walk the hash and escape; the exact reservation rejects it.
+	quota := roots + collapsedPairStructuralBytes + (pairCharge-collapsedPairStructuralBytes)/2
+
+	// Sanity: the pre-fix structural reservation genuinely fit the quota, proving the
+	// symbol payload -- not an over-tight quota -- is the deciding term.
+	if roots+collapsedPairStructuralBytes > quota {
+		t.Fatalf("test setup expects roots+structure (%d) to fit the quota (%d) so the omitted symbol payload is the deciding term", roots+collapsedPairStructuralBytes, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "each", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashEachSingleParamLargeSymbolKeyFitsQuota pins the other side: a quota
+// generously above the receiver and the full symbol-keyed pair must NOT over-reject
+// the collapsed-pair walk. It admits the empty-body walk and returns the receiver,
+// proving the exact pair reservation bounds only the transient pair rather than
+// rejecting every single-parameter block over a large-keyed hash.
+func TestHashEachSingleParamLargeSymbolKeyFitsQuota(t *testing.T) {
+	t.Parallel()
+
+	bigKey := strings.Repeat("k", 50_000)
+	receiver := NewHash(map[string]Value{bigKey: NewInt(1)})
+	block := emptyPairEachBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
+	quota := roots + pairCharge + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "each", nil, block)
+	if err != nil {
+		t.Fatalf("each over a single-parameter block whose pair fits the quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash || len(got.Hash()) != 1 {
+		t.Fatalf("each returned %v with %d entries, want the 1-entry receiver", got.Kind(), len(got.Hash()))
+	}
+}
+
+func TestHashEachReachablePairBodyFitsWithoutPairReservation(t *testing.T) {
+	t.Parallel()
+
+	const bodyLen = 20_000
+	key := strings.Repeat("k", 20_000)
+	receiver := NewHash(map[string]Value{key: NewInt(1)})
+	body := arrayValue(bodyLen)
+	parent := newEnv(nil)
+	parent.Assign("values", receiver)
+	parent.Assign("body", body)
+	block := bodyPairEachBlock(parent)
+
+	pair := NewArray([]Value{NewSymbol(key), NewInt(1)})
+	scratch := sortedKeyBufferBytes(1)
+	pairChargeProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	pairCharge := pairChargeProbe.maxCollapsedPairBytes(receiver)
+
+	bodyEnv := newEnv(parent)
+	bodyEnv.Assign("pair", pair)
+	peakProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	peakProbe.reservedScratchBytes = scratch
+	peakProbe.pushEnv(bodyEnv)
+	bodyPeak := peakProbe.estimateMemoryUsage(body)
+	peakProbe.popEnv()
+
+	preflightProbe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	preflightProbe.reservedScratchBytes = scratch
+	preflightEst := preflightProbe.memoryEstimatorForCheck()
+	preflightPeak := preflightProbe.estimateMemoryUsageBase(preflightEst)
+	preflightPeak = saturatingAdd(preflightPeak, preflightEst.value(block))
+	preflightPeak = saturatingAdd(preflightPeak, maxCollapsedPairBytesWithEstimator(receiver, preflightEst))
+
+	realPeak := max(bodyPeak, preflightPeak)
+	quota := realPeak + pairCharge/2
+	if pairCharge <= 0 {
+		t.Fatalf("test setup expects a positive pair charge, got %d", pairCharge)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); err != nil {
+		t.Fatalf("hash.each with reachable receiver and bound pair at quota %d = %v, want success", quota, err)
+	}
+}
+
+// TestMaxCollapsedPairBytesIncludesKeySymbolPayload directly pins that the
+// collapsed [key, value] pair reservation accounts for the key symbol's payload,
+// not just the array structure. The end-to-end quota tests above size their
+// quotas from maxCollapsedPairBytes itself, so they cannot detect an omission
+// where the reservation and the actual charge drop the symbol together; this
+// unit assertion can. A key that is keyLen bytes longer must raise the pair
+// reservation by approximately keyLen; if the symbol payload is dropped the
+// delta collapses to ~0, which is the exact escape the finding described.
+func TestMaxCollapsedPairBytesIncludesKeySymbolPayload(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	const keyLen = 80_000
+	small := exec.maxCollapsedPairBytes(NewHash(map[string]Value{"k": NewInt(1)}))
+	big := exec.maxCollapsedPairBytes(NewHash(map[string]Value{strings.Repeat("k", keyLen): NewInt(1)}))
+
+	if delta := big - small; delta < keyLen-1 {
+		t.Fatalf("maxCollapsedPairBytes omits the key symbol payload: big=%d small=%d delta=%d, want >= ~%d", big, small, delta, keyLen-1)
+	}
+}
+
+// TestHashEachEmptyBodyNestedRestCountsScratchInBindCharge is the regression for
+// the ordering gap the Codex thread on PR #808 raised: the bind-charge baseline
+// must be snapshotted AFTER the walk scratch is reserved, not before. Hash#each
+// reserves a sorted-key scratch slice plus one collapsed pair for the walk's
+// lifetime, then yields each entry to a |(k, (head, *tail))| block whose empty body
+// never runs its own memory checks. With the buggy ordering newBlockCallRunner
+// snapshotted the bind charge before reserveLoopScratch, so the charge measured the
+// fresh tail copy against a baseline that omitted the scratch (and pair). For a
+// many-key receiver carrying one large value, the scratch and pair are non-trivial,
+// so a quota that admits receiver+scratch (the walk preflight) and receiver+tail
+// (the buggy bind charge) SEPARATELY but not the real peak receiver+scratch+pair+tail
+// would let the empty body bind the huge tail and escape the quota. Reserving the
+// scratch before the runner folds it into the baseline so the charge rejects the
+// combined peak. The companion TestHashEachEmptyBodyNestedRestTripsMemoryQuota
+// covers the tail itself; this one isolates the scratch's inclusion in the baseline.
+func TestHashEachEmptyBodyNestedRestCountsScratchInBindCharge(t *testing.T) {
+	t.Parallel()
+
+	// Many keys so the sorted-key scratch buffer is non-trivial, with exactly one
+	// entry whose value is large enough that its rest copy dwarfs the scratch+pair;
+	// the rest carry tiny values that bind tails the quota easily admits.
+	const entryCount = 256
+	const bigValueLen = 200_000
+	bigValue := arrayValue(bigValueLen)
+	entries := make(map[string]Value, entryCount)
+	entries["big"] = bigValue
+	for i := range entryCount - 1 {
+		entries["k"+strconv.Itoa(i)] = arrayValue(2)
+	}
+	receiver := NewHash(entries)
+	block := emptyNestedRestEachBlock()
+	if !blockCanReuseEnv(valueBlock(block)) {
+		t.Fatal("test setup expects a reusable-env block so the empty-body rebind path is exercised")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	scratch := sortedKeyBufferBytes(len(entries))
+	pairCharge := probe.maxCollapsedPairBytes(receiver)
+	tailCharge := nestedRestTailChargeBytes(bigValue)
+
+	// Sanity: the scratch buffer is genuinely non-trivial, so the buggy ordering's
+	// omission of it -- not an incidentally tight quota -- is what would let the walk
+	// escape.
+	if scratch <= 0 {
+		t.Fatalf("test setup expects a heaped sorted-key scratch buffer, got %d bytes", scratch)
+	}
+
+	// Pick the quota one byte below the real peak (roots+scratch+pair+tail). The
+	// correct charge, which now folds the scratch and pair into the baseline, rejects
+	// this peak. The buggy charge (baseline roots+tail, scratch omitted) and the walk
+	// preflight (roots+scratch, tail not yet bound) each fit it, so only the
+	// scratch's inclusion in the baseline catches the overflow.
+	quota := roots + scratch + pairCharge + tailCharge - 1
+
+	// The buggy bind charge would have measured only roots+tail, which must fit the
+	// quota, proving the scratch (not the tail or an over-tight quota) is the sole
+	// reason the corrected charge rejects the walk.
+	if roots+tailCharge > quota {
+		t.Fatalf("test setup expects roots+tail (%d) to fit the quota (%d) so the scratch is the deciding term", roots+tailCharge, quota)
+	}
+	// The walk preflight sees roots+scratch (the tail is not bound until the block is
+	// called), which must also fit so the preflight does not pre-empt the bind charge.
+	if roots+scratch > quota {
+		t.Fatalf("test setup expects roots+scratch (%d) to fit the quota (%d) so the preflight does not pre-empt the bind charge", roots+scratch, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "each", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashEachNestedRestAccumulatorTripsMemoryQuota covers the live-footprint shape
+// the Codex thread on PR #808 raised: a block body that grows an outer accumulator
+// from each bound tail keeps earlier tails live, so binding a later entry's tail
+// allocates on top of every prior tail still referenced. With the receiver bound to a
+// script parameter (so it is reachable from the call env, not just the Go stack), the
+// body's own per-statement memory checks see both the growing accumulator and the
+// freshly bound tail in the reused/captured env chain, so the retained tails must
+// trip the quota partway through the walk rather than after the whole hash is
+// processed. This guards that retaining bound rests is bounded over the iteration,
+// not just per entry.
+func TestHashEachNestedRestAccumulatorTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// acc = acc + [tail] retains every bound tail through the outer accumulator, so
+	// the live footprint climbs by each entry's tail as the walk proceeds. The block
+	// captures acc, so it does not reuse its env, mirroring real closure-bearing
+	// blocks where the bound rest persists.
+	source := `def run(values)
+  acc = []
+  values.each do |(k, (head, *tail))|
+    acc = acc + [tail]
+  end
+  acc
+end`
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 16 << 20}, source)
+
+	// Several entries each carrying a sizable value, so the accumulator's retained
+	// tails climb past the 16 MiB quota partway through the walk.
+	const entries = 64
+	const valueLen = 20_000
+	receiverEntries := make(map[string]Value, entries)
+	for i := range entries {
+		receiverEntries["k"+strconv.Itoa(i)] = arrayValue(valueLen)
+	}
+	receiver := NewHash(receiverEntries)
+
+	requireCallRuntimeErrorType(t, script, "run", []Value{receiver}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// emptyMergeConflictNestedRestBlock builds the three-parameter conflict block a
+// block-driven Hash#merge yields (key, old_value, new_value) to, with the third
+// parameter destructuring new_value into a nested rest |k, old, (head, *tail)| and an
+// EMPTY body. Binding tail copies the conflicting argument value into a fresh,
+// source-sized backing; the empty body means only the per-call bind charge can
+// observe that copy.
+func emptyMergeConflictNestedRestBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	newValueTarget := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	params := []Param{
+		{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}},
+		{Kind: ParamNormal, Name: "old", Target: &Identifier{Name: "old", Position: pos}},
+		{Kind: ParamNormal, Target: newValueTarget},
+	}
+	return NewBlock(params, nil, newEnv(nil))
+}
+
+// TestHashMergeConflictArgNestedRestTripsMemoryQuota is the regression for the
+// positional-call-root gap the Codex thread on PR #808 raised. A block-driven
+// Hash#merge holds its argument hashes only on the Go call stack while the conflict
+// loop runs; binding a conflicting new_value into a rest-collecting destructure
+// (|k, old, (head, *tail)|) copies that argument value into a fresh, source-sized
+// backing. With an EMPTY block body only the per-call bind charge observes the copy,
+// and that charge must measure it against a baseline that counts the argument hash it
+// was copied from. The quota here is sized to admit the argument hash and the fresh
+// tail copy SEPARATELY (the buggy baseline, which omitted the positional roots, so
+// charged only receiver + tail) but NOT the real peak (receiver + argument + tail).
+// Before the fix the buggy baseline let the merge complete and escape the quota; the
+// fix counts the argument root so the combined peak is rejected.
+func TestHashMergeConflictArgNestedRestTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	// The receiver and the argument share key "a" so the conflict block fires. The
+	// argument's value is the large array whose tail the nested rest copies; the
+	// receiver's value is tiny so the receiver alone leaves ample headroom.
+	const valueLen = 200_000
+	argValue := arrayValue(valueLen)
+	receiver := NewHash(map[string]Value{"a": NewArray([]Value{NewInt(0)})})
+	other := NewHash(map[string]Value{"a": argValue})
+	args := []Value{other}
+	block := emptyMergeConflictNestedRestBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	// The buggy baseline omitted the positional argument roots, so it charged the
+	// fresh tail against receiver + block alone. Size the quota to clear that buggy
+	// peak with headroom so the bug would have let the merge complete.
+	buggyRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	tailCharge := mergeConflictTailChargeBytes(argValue)
+	const headroom = 16 * 1024
+	quota := buggyRoots + tailCharge + headroom
+
+	// The real peak counts the argument hash too. It must exceed the quota, so the
+	// only thing standing between a passing and a rejected merge is whether the bind
+	// charge includes the positional argument root.
+	correctRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, block)
+	if correctRoots+tailCharge <= quota {
+		t.Fatalf("test setup expects the argument-inclusive peak (%d) to exceed the quota (%d); the argument footprint must dwarf the headroom", correctRoots+tailCharge, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "merge", args, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// mergeConflictTailChargeBytes returns the bytes the per-call bind charge attributes
+// to the fresh tail a |k, old, (head, *tail)| conflict block binds when new_value is
+// valueArray. It mirrors blockBindCharge.begin/charge: seed a fresh estimator with
+// the yielded (key, old_value, new_value) arguments (so payloads shared with new_value
+// deduplicate), then charge the genuinely fresh rest backing of valueArray[1:].
+func mergeConflictTailChargeBytes(valueArray Value) int {
+	est := newMemoryEstimator()
+	est.value(NewSymbol("a"))
+	est.value(NewArray([]Value{NewInt(0)}))
+	est.value(valueArray)
+	tail := NewArray(slicesClone(valueArray.Array()[1:]))
+	return est.value(tail)
+}
+
+// emptyValueRestTransformBlock builds the two-parameter |k, (head, *tail)| block a
+// block-driven hash transform (select, reject, transform_values) yields (key, value)
+// to, with the second parameter destructuring the value into a nested rest and an
+// EMPTY body. Two positional parameters opt out of the collapsed-pair yield, so the
+// iterator yields key and value separately and the second parameter copies the value
+// into a fresh, source-sized rest backing. The empty body means only the per-call
+// bind charge can observe that copy.
+func emptyValueRestTransformBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	valueTarget := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	params := []Param{
+		{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}},
+		{Kind: ParamNormal, Target: valueTarget},
+	}
+	return NewBlock(params, nil, newEnv(nil))
+}
+
+// valueRestTailChargeBytes returns the bytes the per-call bind charge attributes to
+// the fresh tail a |k, (head, *tail)| transform block binds over the (key, value)
+// pair whose value is valueArray. It mirrors blockBindCharge.begin/charge: seed a
+// fresh estimator with the yielded key and value (so payloads shared with the value
+// deduplicate), then charge the genuinely fresh rest backing of valueArray[1:].
+func valueRestTailChargeBytes(key string, valueArray Value) int {
+	est := newMemoryEstimator()
+	est.value(NewSymbol(key))
+	est.value(valueArray)
+	tail := NewArray(slicesClone(valueArray.Array()[1:]))
+	return est.value(tail)
+}
+
+// TestHashSelectEmptyBodyValueRestCountsOutputBufferInBindCharge is the regression
+// for the Codex thread on PR #808: a block-driven hash transform holds its
+// preallocated output map and sorted-key scratch as Go locals while the block binds a
+// rest-collecting destructure parameter, so those buffers must be folded into the
+// bind-charge baseline (through reserveLoopScratch before the runner is built). With
+// the buggy ordering the runner snapshotted the bind charge before the output map and
+// scratch were reserved, so it charged the fresh tail copy against a baseline that
+// omitted them. For a many-key receiver carrying one large value, the output map and
+// scratch are non-trivial, so a quota that admits receiver+buffers (the walk
+// preflight) and receiver+tail (the buggy bind charge) SEPARATELY but not the real
+// peak receiver+buffers+tail would let the empty body bind the huge tail and escape.
+// Reserving the buffers before the runner folds them into the baseline so the charge
+// rejects the combined peak. select is the named subject; reject and transform_values
+// share the same runner pattern.
+func TestHashSelectEmptyBodyValueRestCountsOutputBufferInBindCharge(t *testing.T) {
+	t.Parallel()
+
+	// Many keys so the output map and sorted-key scratch are non-trivial, with exactly
+	// one entry whose value is large enough that its rest copy dwarfs the buffers; the
+	// rest carry tiny values that bind tails the quota easily admits.
+	const entryCount = 256
+	const bigValueLen = 200_000
+	bigKey := "big"
+	bigValue := arrayValue(bigValueLen)
+	entries := make(map[string]Value, entryCount)
+	entries[bigKey] = bigValue
+	for i := range entryCount - 1 {
+		entries["k"+strconv.Itoa(i)] = arrayValue(2)
+	}
+	receiver := NewHash(entries)
+	block := emptyValueRestTransformBlock()
+	if blockWantsCollapsedPair(valueBlock(block)) {
+		t.Fatal("test setup expects a two-parameter block that yields key and value separately")
+	}
+	if !blockBindsRest(valueBlock(block)) {
+		t.Fatal("test setup expects a block whose value parameter collects a rest")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	// The transform reserves its whole output map plus the sorted-key scratch through
+	// reserveLoopScratch before the runner snapshots the bind charge.
+	bufferCharge := hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries)))
+	tailCharge := valueRestTailChargeBytes(bigKey, bigValue)
+
+	// Sanity: the output map and scratch are genuinely non-trivial, so the buggy
+	// ordering's omission of them -- not an incidentally tight quota -- is what would
+	// let the walk escape.
+	if bufferCharge <= 0 {
+		t.Fatalf("test setup expects a non-trivial output buffer charge, got %d bytes", bufferCharge)
+	}
+
+	// A quota one byte below the real peak (roots+buffers+tail). The correct charge,
+	// which now folds the buffers into the baseline, rejects this peak.
+	quota := roots + bufferCharge + tailCharge - 1
+
+	// The buggy bind charge would have measured only roots+tail, which must fit the
+	// quota, proving the output buffers (not the tail or an over-tight quota) are the
+	// deciding term.
+	if roots+tailCharge > quota {
+		t.Fatalf("test setup expects roots+tail (%d) to fit the quota (%d) so the output buffers are the deciding term", roots+tailCharge, quota)
+	}
+	// The walk preflight sees roots+buffers (the tail is not bound until the block is
+	// called), which must also fit so the preflight does not pre-empt the bind charge.
+	if roots+bufferCharge > quota {
+		t.Fatalf("test setup expects roots+buffers (%d) to fit the quota (%d) so the preflight does not pre-empt the bind charge", roots+bufferCharge, quota)
+	}
+
+	for _, name := range []string{"select", "reject"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callHashMember(t, exec, receiver, name, nil, block)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+		})
+	}
+}
+
+// emptyValueArrayRestBlock builds the single-parameter |(head, *tail)| block a
+// value-yielding transform (transform_values) yields each value to, destructuring
+// that value array into a nested rest with an EMPTY body. The lone destructure
+// parameter binds the whole yielded value and copies its tail into a fresh,
+// source-sized backing; the empty body means only the per-call bind charge can
+// observe that copy.
+func emptyValueArrayRestBlock() Value {
+	pos := Position{Line: 1, Column: 1}
+	valueTarget := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	return NewBlock([]Param{{Kind: ParamNormal, Target: valueTarget}}, nil, newEnv(nil))
+}
+
+// TestHashTransformValuesEmptyBodyValueRestCountsOutputBufferInBindCharge mirrors the
+// select/reject regression for transform_values, which yields each VALUE (a single
+// argument) rather than the (key, value) pair. A lone destructure-rest parameter
+// |(head, *tail)| copies the value's tail into a fresh backing while the transform
+// holds its preallocated output map and sorted-key scratch as Go locals. Those
+// buffers must be in the bind-charge baseline (reserved through reserveLoopScratch
+// before the runner) or the empty body binds the huge tail against a baseline that
+// omits them and escapes a quota that fits receiver+buffers and receiver+tail apart.
+func TestHashTransformValuesEmptyBodyValueRestCountsOutputBufferInBindCharge(t *testing.T) {
+	t.Parallel()
+
+	const entryCount = 256
+	const bigValueLen = 200_000
+	bigKey := "big"
+	bigValue := arrayValue(bigValueLen)
+	entries := make(map[string]Value, entryCount)
+	entries[bigKey] = bigValue
+	for i := range entryCount - 1 {
+		entries["k"+strconv.Itoa(i)] = arrayValue(2)
+	}
+	receiver := NewHash(entries)
+	block := emptyValueArrayRestBlock()
+	if !blockBindsRest(valueBlock(block)) {
+		t.Fatal("test setup expects a block whose lone parameter collects a rest")
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	bufferCharge := hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries)))
+	// transform_values yields the value array directly, so the lone destructure binds
+	// it and the per-call estimator is seeded with that single value argument before
+	// the fresh tail is charged.
+	est := newMemoryEstimator()
+	est.value(bigValue)
+	tailCharge := est.value(NewArray(slicesClone(bigValue.Array()[1:])))
+
+	quota := roots + bufferCharge + tailCharge - 1
+	if roots+tailCharge > quota {
+		t.Fatalf("test setup expects roots+tail (%d) to fit the quota (%d) so the output buffers are the deciding term", roots+tailCharge, quota)
+	}
+	if roots+bufferCharge > quota {
+		t.Fatalf("test setup expects roots+buffers (%d) to fit the quota (%d) so the preflight does not pre-empt the bind charge", roots+bufferCharge, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "transform_values", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestHashSelectEmptyBodyValueRestFitsQuota pins the other side: a quota generously
+// above the receiver, the output buffers, and the full tail must NOT over-reject a
+// rest-collecting transform block. It admits the empty-body walk, proving the buffer
+// reservation bounds only the live buffers plus tail rather than rejecting every
+// rest-collecting block over a large-valued hash.
+func TestHashSelectEmptyBodyValueRestFitsQuota(t *testing.T) {
+	t.Parallel()
+
+	const entryCount = 64
+	const bigValueLen = 50_000
+	bigKey := "big"
+	bigValue := arrayValue(bigValueLen)
+	entries := make(map[string]Value, entryCount)
+	entries[bigKey] = bigValue
+	for i := range entryCount - 1 {
+		entries["k"+strconv.Itoa(i)] = arrayValue(2)
+	}
+	receiver := NewHash(entries)
+	block := emptyValueRestTransformBlock()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	bufferCharge := hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries)))
+	tailCharge := valueRestTailChargeBytes(bigKey, bigValue)
+	quota := roots + bufferCharge + tailCharge + 64*1024
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "select", nil, block)
+	if err != nil {
+		t.Fatalf("select over a rest-collecting block whose buffers and tail fit the quota = %v, want success", err)
+	}
+	// The empty body returns nil (falsy), so select keeps no entries; the point is the
+	// walk completes within the quota rather than over-rejecting.
+	if got.Kind() != KindHash {
+		t.Fatalf("select returned %v, want a hash", got.Kind())
 	}
 }

@@ -127,7 +127,7 @@ func intMemberBuiltin(property string) (Value, error) {
 			if count > int64(math.MaxInt) {
 				return NewNil(), fmt.Errorf("int.times value too large")
 			}
-			runner, err := newBlockCallRunner(exec, block, "int.times")
+			runner, err := newBlockCallRunner(exec, block, "int.times", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -644,7 +644,7 @@ func intUptoDownto(exec *Execution, receiver Value, args []Value, kwargs map[str
 		return NewNil(), fmt.Errorf("%s requires a block", name)
 	}
 	limit := args[0].Int()
-	runner, err := newBlockCallRunner(exec, block, name)
+	runner, err := newBlockCallRunner(exec, block, name, receiver, args, kwargs)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -705,7 +705,7 @@ func intStep(exec *Execution, receiver Value, args []Value, kwargs map[string]Va
 	if valueBlock(block) == nil {
 		return NewNil(), fmt.Errorf("int.step requires a block")
 	}
-	runner, err := newBlockCallRunner(exec, block, "int.step")
+	runner, err := newBlockCallRunner(exec, block, "int.step", receiver, args, kwargs)
 	if err != nil {
 		return NewNil(), err
 	}

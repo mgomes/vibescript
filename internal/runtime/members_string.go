@@ -1428,7 +1428,7 @@ func stringReplaceResult(
 		if len(args) != 1 {
 			return "", false, fmt.Errorf("%s cannot take both a replacement argument and a block", method)
 		}
-		runner, err := newBlockCallRunner(exec, block, method)
+		runner, err := newBlockCallRunner(exec, block, method, receiver, args, kwargs)
 		if err != nil {
 			return "", false, err
 		}
@@ -2128,7 +2128,7 @@ func stringMemberQuery(property string) (Value, error) {
 				// returns the block's result. Vibescript represents match data as the
 				// [full, capture1, ...] array, so the same value indexes as the
 				// non-block result (m[0] is the whole match, m[1] the first capture).
-				runner, err := newBlockCallRunner(exec, block, "string.match")
+				runner, err := newBlockCallRunner(exec, block, "string.match", receiver, args, kwargs)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -2391,7 +2391,7 @@ func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]in
 		return NewNil(), err
 	}
 
-	runner, err := newBlockCallRunner(exec, block, "string.scan")
+	runner, err := newBlockCallRunner(exec, block, "string.scan", receiver, args, kwargs)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -2739,7 +2739,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_char does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "string.each_char")
+			runner, err := newBlockCallRunner(exec, block, "string.each_char", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2757,7 +2757,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_byte does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "string.each_byte")
+			runner, err := newBlockCallRunner(exec, block, "string.each_byte", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2776,7 +2776,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_codepoint does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "string.each_codepoint")
+			runner, err := newBlockCallRunner(exec, block, "string.each_codepoint", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2794,7 +2794,7 @@ func stringMemberTextOps(property string) (Value, error) {
 			if len(args) > 0 || len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("string.each_line does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "string.each_line")
+			runner, err := newBlockCallRunner(exec, block, "string.each_line", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}

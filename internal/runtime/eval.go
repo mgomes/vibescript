@@ -885,17 +885,31 @@ func ensureBlock(block Value, name string) error {
 }
 
 type blockCallRunner struct {
-	exec *Execution
-	blk  *Block
-	env  *Env
+	exec   *Execution
+	blk    *Block
+	env    *Env
+	charge *blockBindCharge
 }
 
-func newBlockCallRunner(exec *Execution, block Value, name string) (*blockCallRunner, error) {
+// newBlockCallRunner builds a runner for repeatedly invoking a block from an
+// iterator. receiver, callArgs, and kwargs are the iterator's call roots: they seed
+// the per-call bind charge that bounds the fresh backing a rest-collecting
+// destructure parameter (|(k, *tail)|) allocates, so those roots -- live only on the
+// Go stack during the loop, invisible to estimateMemoryUsageBase -- are counted
+// alongside that backing. The charge snapshots them ONCE (no per-entry re-walk), so
+// the loop stays O(total data). callArgs are the iterator's POSITIONAL roots (the
+// other hashes a block-driven hash.merge holds, a grep pattern); pass nil for the
+// pure iterators that reject positional arguments and so hold only the receiver.
+func newBlockCallRunner(exec *Execution, block Value, name string, receiver Value, callArgs []Value, kwargs map[string]Value) (*blockCallRunner, error) {
 	if err := ensureBlock(block, name); err != nil {
 		return nil, err
 	}
 	blk := valueBlock(block)
-	runner := &blockCallRunner{exec: exec, blk: blk}
+	runner := &blockCallRunner{
+		exec:   exec,
+		blk:    blk,
+		charge: newBlockBindCharge(exec, blk, receiver, callArgs, kwargs, block),
+	}
 	if blockCanReuseEnv(blk) {
 		runner.env = newEnv(blk.Env)
 	}
@@ -903,11 +917,49 @@ func newBlockCallRunner(exec *Execution, block Value, name string) (*blockCallRu
 }
 
 func (runner *blockCallRunner) call(args []Value) (Value, error) {
-	if runner.env == nil {
-		return runner.exec.callBlock(runner.blk, args, newEnv(runner.blk.Env))
+	return runner.callWithChargedRoots(args)
+}
+
+// callWithChargedRoots invokes the block, additionally charging per-call roots that
+// live only in the iterator's Go frame and evolve every call -- the reduce
+// accumulator, whose current payload (the seed on the first call, the previous
+// call's result thereafter) is not in the runner's one-time baseline. The accumulator
+// is probed against the snapshotted call roots, so a no-seed accumulator that is the
+// receiver's first element deduplicates against the receiver and is charged only its
+// structural slots, never a second copy of the receiver's data.
+func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots ...Value) (Value, error) {
+	env := runner.env
+	if env == nil {
+		env = newEnv(runner.blk.Env)
+	} else {
+		env.resetForBlockCall(runner.blk.Env)
 	}
-	runner.env.resetForBlockCall(runner.blk.Env)
-	return runner.exec.callBlock(runner.blk, args, runner.env)
+	return runner.exec.callBlock(runner.blk, args, env, runner.charge, chargedRoots...)
+}
+
+// blockWantsCollapsedPair reports whether a hash iterator should yield each entry
+// as a single two-element [key, value] pair instead of two separate arguments. It
+// mirrors Ruby, where a block declaring exactly one positional parameter receives
+// the pair while a block with two or more positional parameters auto-splats into
+// key and value. A lone destructuring parameter such as |(k, v)| still counts as
+// one parameter, so it receives the pair and unpacks it. Any rest or keyword
+// parameter opts out so the iterator keeps yielding key and value separately.
+//
+// It takes the block directly (rather than a runner) so a hash iterator can pick
+// the yield shape -- and thus size its walk scratch -- before building the runner,
+// letting the scratch be reserved before the runner snapshots its bind-charge
+// baseline.
+func blockWantsCollapsedPair(blk *Block) bool {
+	positional := 0
+	for i := range blk.Params {
+		switch blk.Params[i].Kind {
+		case ParamNormal:
+			positional++
+		default:
+			return false
+		}
+	}
+	return positional == 1
 }
 
 // CallBlock invokes a block value with the provided arguments.
@@ -918,10 +970,18 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 		return NewNil(), err
 	}
 	blk := valueBlock(block)
-	return exec.callBlock(blk, args, newEnv(blk.Env))
+	// Capability adapters drive blocks with host-supplied arguments and no
+	// receiver. Those arguments live only on the Go call stack for the duration of
+	// the call, so include them in the bind-charge baseline: a rest-collecting
+	// destructure parameter copying part of a large argument into a fresh backing
+	// would otherwise be charged that copy against a baseline that omits the
+	// argument it was copied from, letting (args) and (rest) each fit the quota
+	// while the real peak (args + rest) exceeds it.
+	charge := newBlockBindCharge(exec, blk, NewNil(), args, nil, block)
+	return exec.callBlock(blk, args, newEnv(blk.Env), charge)
 }
 
-func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env) (Value, error) {
+func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, chargedRoots ...Value) (Value, error) {
 	exec.pushModuleContext(moduleContext{
 		key:    blk.moduleKey,
 		path:   blk.modulePath,
@@ -930,6 +990,9 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env) (Value
 	})
 	defer exec.popModuleContext()
 
+	if err := charge.begin(args, chargedRoots...); err != nil {
+		return NewNil(), err
+	}
 	for i, param := range blk.Params {
 		var val Value
 		if i < len(args) {
@@ -949,7 +1012,7 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env) (Value
 			val = normalized
 		}
 		if param.Target != nil {
-			if err := exec.bindBlockParamTarget(blockEnv, param.Target, val); err != nil {
+			if err := exec.bindBlockParamTarget(blockEnv, param.Target, val, charge); err != nil {
 				return NewNil(), err
 			}
 			continue
@@ -1142,15 +1205,29 @@ func stringPartsCaptureCurrentEnv(parts []StringPart) bool {
 	return false
 }
 
-func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value) error {
+func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value, charge *blockBindCharge) error {
 	switch t := target.(type) {
 	case *Identifier:
 		env.Define(t.Name, value)
-		return nil
+		// Charge the bound leaf so a fresh rest backing a destructure collected
+		// (the only binding that allocates beyond the call roots) counts toward the
+		// quota even when the block body is empty. Pass-through bindings dedup
+		// against the seeded arguments and charge essentially nothing.
+		return charge.charge(value)
 	case *DestructureTarget:
-		return exec.assignDestructure(t, value, func(target Expression, value Value) error {
-			return exec.bindBlockParamTarget(env, target, value)
-		})
+		// Walk the destructure with the block charge's own destructureCharge and charge
+		// every bound leaf through the per-call bind charge. The destructureCharge
+		// preflights a named rest's backing against the quota BEFORE assignDestructure
+		// makes+copies it, so a single huge tail cannot materialize under a quota below
+		// one copied window before the post-bind charge observes it. The post-bind
+		// charge then probes each fresh leaf against the persistent root estimator --
+		// which already holds the iterator's Go-stack receiver -- so a rest backing is
+		// charged its real, dedup-aware footprint against the receiver the standalone
+		// exec.assignDestructure charge cannot see (its liveRoot is only the single
+		// yielded value, not the whole receiver).
+		return assignDestructure(t, value, func(target Expression, value Value) error {
+			return exec.bindBlockParamTarget(env, target, value, charge)
+		}, charge.destructureCharge())
 	default:
 		return exec.errorAt(target.Pos(), "invalid block parameter target")
 	}
@@ -1452,7 +1529,17 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 			if err := charge.check(restEnd-restStart, charge.liveSlots, charge.liveRoot); err != nil {
 				return err
 			}
-			val = NewArray(append([]Value(nil), values[restStart:restEnd]...))
+			// Allocate the rest backing with capacity exactly equal to the collected
+			// element count. append([]Value(nil), src...) (and slices.Clone, which
+			// wraps it) would let Go's growslice round the capacity up past len, so
+			// the memory estimator -- which charges slice backings by cap -- would see
+			// a larger array than the value's own length implies. A make+copy keeps
+			// cap == len so the rest array's charged footprint matches what its
+			// element count predicts.
+			restSrc := values[restStart:restEnd]
+			restValues := make([]Value, len(restSrc))
+			copy(restValues, restSrc)
+			val = NewArray(restValues)
 		default:
 			// Trailing targets bind to the values immediately after the rest
 			// window, left-to-right. When the input is too short to fill them
@@ -1958,15 +2045,32 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 // could pass its own checks while the true peak (roots + scratch + body
 // allocation) exceeded the quota by the scratch size. The reservation is released
 // on every exit path through defer.
+//
+// The per-iteration [key, value] pair is handled according to receiver visibility.
+// If the iterable is already reachable from the loop body environment, the bound
+// pair is also visible to body checks, so the loop preflights the largest pair once
+// without reserving it for the whole body. If the iterable is Go-stack-only, the
+// largest pair stays reserved so body checks keep accounting for the transient they
+// cannot combine with the invisible receiver.
 func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value) (Value, bool, error) {
 	entries := iterable.Hash()
-	delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+	reservePair := !exec.valueReachableFromLiveBase(iterable, NewNil())
+	scratch := sortedKeyBufferBytes(len(entries))
+	if reservePair {
+		scratch = saturatingAdd(scratch, exec.maxCollapsedPairBytes(iterable))
+	}
+	delta := exec.reserveLoopScratch(scratch)
 	defer exec.releaseLoopScratch(delta)
+	if !reservePair {
+		if err := exec.checkCollapsedPairBytesWithLiveBase(iterable, NewNil()); err != nil {
+			return NewNil(), false, err
+		}
+	}
 
-	// The scratch is now in the live baseline, so the preflight charges it through
-	// the call roots. The iterable plays the receiver role here, so an ephemeral
-	// hash literal is counted while a hash already bound to a variable is
-	// deduplicated against the live base.
+	// The scratch, and the reserved pair when needed, are now in the live baseline.
+	// The iterable plays the receiver role here, so an ephemeral hash literal is
+	// counted while a hash already bound to a variable is deduplicated against the
+	// live base.
 	if err := exec.checkProjectedHashWalkBytes(iterable, nil, nil, NewNil()); err != nil {
 		return NewNil(), false, err
 	}
@@ -1978,9 +2082,6 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 		// Hash keys round-trip as symbols, the same shape hash.each and hash.keys
 		// expose.
 		pair := NewArray([]Value{NewSymbol(key), entries[key]})
-		if err := exec.checkMemoryWith(pair); err != nil {
-			return NewNil(), false, err
-		}
 		env.Assign(stmt.Iterator, pair)
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {

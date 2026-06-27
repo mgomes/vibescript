@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 )
 
@@ -1007,6 +1008,68 @@ end`)
 
 	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
 	compareArrays(t, got, []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4), NewInt(5), NewNil(), NewNil()})
+}
+
+// TestAssignDestructureRestArrayCapacityMatchesLength pins that AssignDestructure
+// allocates a rest target's backing with capacity exactly equal to the collected
+// element count. The memory estimator charges slice backings by capacity
+// (sliceStructuralBytes uses cap), so a backing whose Go-rounded capacity exceeds
+// its length would charge more than the value's own length implies.
+// append([]Value(nil), src...) lets growslice round the capacity up past len for
+// several sizes (5, 7, 63, ...), so the rest backing must be built with make+copy.
+// This test fails for any size where the capacity drifts above the length.
+func TestAssignDestructureRestArrayCapacityMatchesLength(t *testing.T) {
+	t.Parallel()
+
+	// Sizes where append([]Value(nil), src...) would over-allocate under Go's
+	// growslice rounding, plus exact-power and zero boundaries that must stay tight.
+	for _, restLen := range []int{0, 1, 2, 5, 7, 9, 17, 33, 63} {
+		t.Run("rest_len_"+strconv.Itoa(restLen), func(t *testing.T) {
+			t.Parallel()
+
+			// |first, *rest|: bind a single leading element, collect the remainder.
+			pos := Position{Line: 1, Column: 1}
+			target := &DestructureTarget{
+				Position: pos,
+				Elements: []DestructureElement{
+					{Target: &Identifier{Name: "first", Position: pos}},
+					{Target: &Identifier{Name: "rest", Position: pos}, Rest: true},
+				},
+			}
+
+			source := make([]Value, restLen+1)
+			for i := range source {
+				source[i] = NewInt(int64(i))
+			}
+
+			var rest Value
+			gotRest := false
+			err := AssignDestructure(target, NewArray(source), func(leaf Expression, value Value) error {
+				if id, ok := leaf.(*Identifier); ok && id.Name == "rest" {
+					rest = value
+					gotRest = true
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("AssignDestructure error = %v", err)
+			}
+			if !gotRest {
+				t.Fatal("rest target was never assigned")
+			}
+			if rest.Kind() != KindArray {
+				t.Fatalf("rest bound %v, want an array", rest.Kind())
+			}
+
+			restSlice := rest.Array()
+			if len(restSlice) != restLen {
+				t.Fatalf("rest length = %d, want %d", len(restSlice), restLen)
+			}
+			if cap(restSlice) != restLen {
+				t.Fatalf("rest capacity = %d, want %d (exactly the length); a larger backing makes the memory estimator charge more than the value's own length implies", cap(restSlice), restLen)
+			}
+		})
+	}
 }
 
 func TestBlockParamDestructureMoreFixedTargetsThanValues(t *testing.T) {

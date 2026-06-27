@@ -119,7 +119,7 @@ func rangeMemberEach() Value {
 		if len(kwargs) > 0 {
 			return NewNil(), fmt.Errorf("range.each does not take keyword arguments")
 		}
-		runner, err := newBlockCallRunner(exec, block, "range.each")
+		runner, err := newBlockCallRunner(exec, block, "range.each", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -165,7 +165,7 @@ func rangeMemberStep() Value {
 		if stride <= 0 {
 			return NewNil(), fmt.Errorf("range.step step must be positive")
 		}
-		runner, err := newBlockCallRunner(exec, block, "range.step")
+		runner, err := newBlockCallRunner(exec, block, "range.step", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -218,7 +218,7 @@ func rangeMemberMap() Value {
 		if len(kwargs) > 0 {
 			return NewNil(), fmt.Errorf("range.map does not take keyword arguments")
 		}
-		runner, err := newBlockCallRunner(exec, block, "range.map")
+		runner, err := newBlockCallRunner(exec, block, "range.map", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -258,7 +258,7 @@ func rangeMemberFilter(property string) Value {
 		if len(kwargs) > 0 {
 			return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
 		}
-		runner, err := newBlockCallRunner(exec, block, name)
+		runner, err := newBlockCallRunner(exec, block, name, receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -298,7 +298,7 @@ func rangeMemberFind() Value {
 		if len(kwargs) > 0 {
 			return NewNil(), fmt.Errorf("range.find does not take keyword arguments")
 		}
-		runner, err := newBlockCallRunner(exec, block, "range.find")
+		runner, err := newBlockCallRunner(exec, block, "range.find", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -336,7 +336,7 @@ func rangeMemberReduce() Value {
 		if len(kwargs) > 0 {
 			return NewNil(), fmt.Errorf("range.reduce does not take keyword arguments")
 		}
-		runner, err := newBlockCallRunner(exec, block, "range.reduce")
+		runner, err := newBlockCallRunner(exec, block, "range.reduce", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -392,7 +392,7 @@ func rangeMemberCount() Value {
 			}
 			return NewInt(length), nil
 		}
-		runner, err := newBlockCallRunner(exec, block, "range.count")
+		runner, err := newBlockCallRunner(exec, block, "range.count", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}

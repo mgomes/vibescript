@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -818,6 +819,282 @@ func TestHashExpandedHelpers(t *testing.T) {
 		t.Fatalf("collision expected hash, got %v", collision.Kind())
 	}
 	compareHash(t, collision.Hash(), map[string]Value{"same": NewInt(2)})
+}
+
+func TestHashEachBlockArgumentShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		params string
+		body   string
+		want   []Value
+	}{
+		{
+			name:   "single parameter receives the key/value pair",
+			params: "|pair|",
+			body:   `out = out.push(pair)`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			},
+		},
+		{
+			name:   "destructuring single parameter unpacks the pair",
+			params: "|(k, v)|",
+			body:   `out = out.push([k, v])`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			},
+		},
+		{
+			name:   "destructuring rest collects the value into an array",
+			params: "|(k, *rest)|",
+			body:   `out = out.push([k, rest])`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewArray([]Value{NewInt(1)})}),
+				NewArray([]Value{NewSymbol("b"), NewArray([]Value{NewInt(2)})}),
+			},
+		},
+		{
+			name:   "two parameters receive key and value",
+			params: "|key, value|",
+			body:   `out = out.push([key, value])`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1)}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2)}),
+			},
+		},
+		{
+			name:   "extra parameters receive nil",
+			params: "|key, value, extra|",
+			body:   `out = out.push([key, value, extra])`,
+			want: []Value{
+				NewArray([]Value{NewSymbol("a"), NewInt(1), NewNil()}),
+				NewArray([]Value{NewSymbol("b"), NewInt(2), NewNil()}),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, `
+				def run()
+					out = []
+					{ a: 1, b: 2 }.each do `+tt.params+`
+						`+tt.body+`
+					end
+					out
+				end
+			`)
+			got := callFunc(t, script, "run", nil)
+			compareArrays(t, got, tt.want)
+		})
+	}
+}
+
+func TestHashEachReturnsReceiver(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+		def run()
+			source = { a: 1, b: 2 }
+			source.each do |pair|
+			end
+		end
+	`)
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("each return = %v, want hash receiver", got.Kind())
+	}
+	compareHash(t, got.Hash(), map[string]Value{"a": NewInt(1), "b": NewInt(2)})
+}
+
+func TestHashEachRejectsArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+		def run()
+			{ a: 1 }.each(:extra) do |pair|
+			end
+		end
+	`)
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "hash.each does not take arguments")
+}
+
+// TestHashEachEmptySingleParamFitsCallRoots pins that an empty receiver iterated by
+// a single-parameter block allocates no [key, value] pair, so a quota sized to the
+// bare call roots (an empty receiver heaps no sorted-key buffer) must admit the
+// walk. The collapsed-pair reservation must not charge a phantom pair for a hash the
+// loop never iterates.
+func TestHashEachEmptySingleParamFitsCallRoots(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewHash(map[string]Value{})
+	block := func() Value {
+		pos := Position{Line: 1, Column: 1}
+		params := []Param{{Name: "pair", Kind: ParamNormal}}
+		body := []Statement{&ExprStmt{Expr: &Identifier{Name: "pair", Position: pos}, Position: pos}}
+		return NewBlock(params, body, newEnv(nil))
+	}()
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+
+	// At exactly the call roots the empty walk must fit (no pair is allocated). The
+	// probe and exec share the same (nil) root env, so the measured roots match the
+	// base the walk charges.
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots}
+	if _, err := callHashMember(t, exec, receiver, "each", nil, block); err != nil {
+		t.Fatalf("{}.each at the exact call-roots quota %d = %v, want success", roots, err)
+	}
+
+	// ...while one byte below the call roots still rejects, proving the success above
+	// is the roots fitting exactly and not an unbounded short circuit.
+	if roots > 0 {
+		tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roots - 1}
+		if _, err := callHashMember(t, tight, receiver, "each", nil, block); !errors.Is(err, errMemoryQuotaExceeded) {
+			t.Fatalf("{}.each one byte below the call roots = %v, want errMemoryQuotaExceeded", err)
+		}
+	}
+}
+
+// TestHashEachSingleParamPairChargedAgainstQuota verifies that the [key, value]
+// pair Hash#each materializes for a single-parameter block is charged against the
+// memory quota. The single-parameter form allocates a fresh pair array per entry
+// while the two-parameter form binds the key and value directly and allocates
+// nothing extra, so at a quota that exactly admits the two-parameter walk the
+// single-parameter walk must trip the limit by the pair's footprint. Without that
+// charge a large receiver could yield many uncharged pair arrays and escape the
+// sandbox memory bound.
+func TestHashEachSingleParamPairChargedAgainstQuota(t *testing.T) {
+	t.Parallel()
+
+	entries := make(map[string]Value, 200)
+	for i := range 200 {
+		entries["k"+string(rune('a'+i%26))+string(rune('a'+i/26))] = NewInt(int64(i))
+	}
+	receiver := NewHash(entries)
+
+	runEach := func(params string, quota int) error {
+		source := `def run(h)
+			acc = 0
+			h.each do ` + params + `
+				acc = acc + 1
+			end
+			acc
+		end`
+		script := compileScriptWithConfig(t, Config{StepQuota: 5_000_000, MemoryQuotaBytes: quota}, source)
+		_, err := script.Call(context.Background(), "run", []Value{receiver}, CallOptions{})
+		return err
+	}
+
+	// Find the smallest quota that admits the two-parameter walk (no pair
+	// allocation). Searching keeps the test robust to changes in the estimator
+	// constants rather than pinning a fragile byte value.
+	minTwoParamQuota := 0
+	for quota := 5_000; quota <= 200_000; quota++ {
+		if runEach("|key, value|", quota) == nil {
+			minTwoParamQuota = quota
+			break
+		}
+	}
+	if minTwoParamQuota == 0 {
+		t.Fatal("two-parameter hash.each never fit within the searched quota range")
+	}
+
+	// The two-parameter form passes at its minimum quota...
+	if err := runEach("|key, value|", minTwoParamQuota); err != nil {
+		t.Fatalf("two-parameter hash.each = %v, want success at quota %d", err, minTwoParamQuota)
+	}
+
+	// ...while the single-parameter form, which allocates a pair per entry, must
+	// trip the memory limit at that same quota.
+	err := runEach("|pair|", minTwoParamQuota)
+	if err == nil {
+		t.Fatalf("single-parameter hash.each unexpectedly fit within quota %d; pair array not charged", minTwoParamQuota)
+	}
+	requireErrorContains(t, err, "memory quota exceeded")
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+}
+
+// TestHashEachDestructureRestGrownEntryBoundedByQuota exercises an end-to-end
+// destructure-rest walk under a memory quota. A destructuring block with a rest
+// target (|(k, (head, *tail))|) grows a not-yet-visited entry the walk reaches a
+// later iteration (h[:c] = big_array while binding :a, over sorted keys a < b < c).
+// Binding :c then makes AssignDestructure collect a tail rest array sized to the
+// grown value inside callBlock; while that binding is live the block body's memory
+// check charges it against the quota. The walk must therefore stay bounded: a quota
+// below the walk's true peak trips, and a quota at or above it completes and leaves
+// :c destructured from its live (mutated) value.
+func TestHashEachDestructureRestGrownEntryBoundedByQuota(t *testing.T) {
+	t.Parallel()
+
+	// {a: [], b: [], c: []}: sorted keys let the :a iteration grow the later :c entry
+	// before the walk reaches and destructures it.
+	makeReceiver := func() Value {
+		return NewHash(map[string]Value{
+			"a": NewArray(nil),
+			"b": NewArray(nil),
+			"c": NewArray(nil),
+		})
+	}
+
+	source := `def run(h)
+		h.each do |(k, (head, *tail))|
+			if k == :a
+				h[:c] = (1..20000).to_a
+			end
+		end
+		h
+	end`
+
+	run := func(quota int) (Value, error) {
+		script := compileScriptWithConfig(t, Config{StepQuota: 5_000_000, MemoryQuotaBytes: quota}, source)
+		return script.Call(context.Background(), "run", []Value{makeReceiver()}, CallOptions{})
+	}
+
+	// Binary-search the exact smallest quota that admits the whole walk (the grow plus
+	// the grown tail rest array :c's destructure later collects). Searching keeps the
+	// test robust to estimator constants rather than pinning a fragile byte value.
+	const lowReject, highAdmit = 50_000, 8_000_000
+	if _, err := run(lowReject); err == nil {
+		t.Fatalf("walk fit at the low search bound %d; lower the bound to bracket the threshold", lowReject)
+	}
+	if _, err := run(highAdmit); err != nil {
+		t.Fatalf("walk never fit by the high search bound %d: %v", highAdmit, err)
+	}
+	lo, hi := lowReject, highAdmit
+	for hi-lo > 1 {
+		mid := lo + (hi-lo)/2
+		if _, err := run(mid); err == nil {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	minQuota := hi
+
+	// One byte below the exact threshold must reject: the walk's peak (the grown :c
+	// value plus the equally large tail rest array its destructure collects) no longer
+	// fits, so the in-body memory check trips while binding :c.
+	_, err := run(minQuota - 1)
+	requireErrorContains(t, err, "memory quota exceeded")
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+
+	// Safety twin: at the floor the walk completes and leaves :c grown, proving the
+	// rejection above is quota tightness, not a categorical failure, and that binding
+	// :c destructured the live (mutated) value.
+	got, err := run(minQuota)
+	if err != nil {
+		t.Fatalf("destructure-rest walk at its floor quota %d = %v, want success", minQuota, err)
+	}
+	if got.Kind() != KindHash {
+		t.Fatalf("walk returned %v, want the receiver hash", got.Kind())
+	}
+	grownC := got.Hash()["c"]
+	if grownC.Kind() != KindArray || len(grownC.Array()) != 20000 {
+		t.Fatalf("entry :c after the walk = %v with %d elements, want a 20000-element array", grownC.Kind(), len(grownC.Array()))
+	}
 }
 
 func TestHashFetchValues(t *testing.T) {

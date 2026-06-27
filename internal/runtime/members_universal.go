@@ -158,7 +158,7 @@ func newUniversalBlockBuiltin(name string, returnReceiver bool) Value {
 		if valueBlock(block) == nil {
 			return NewNil(), fmt.Errorf("%s requires a block", name)
 		}
-		runner, err := newBlockCallRunner(exec, block, name)
+		runner, err := newBlockCallRunner(exec, block, name, receiver, nil, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}

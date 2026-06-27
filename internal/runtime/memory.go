@@ -53,6 +53,35 @@ type memoryEstimator struct {
 	seenInstances map[*Instance]struct{}
 	seenBlocks    map[*Block]struct{}
 	seenBuiltins  map[*Builtin]struct{}
+
+	// journal, when non-nil, records every seen-set entry a walk newly inserts so
+	// the walk can be rolled back to the estimator's prior state. It backs the
+	// per-call charged-root probe (see blockBindCharge.begin), which measures a
+	// transient root's marginal footprint against the persistent call-root estimator
+	// without permanently committing that root: committing it would let a later
+	// root that reuses the transient's freed backing be falsely deduplicated, an
+	// under-count that could escape the memory quota. A walk records nothing when
+	// journal is nil, which is the common path.
+	journal *estimatorJournal
+}
+
+// estimatorJournal records the seen-set keys a single probe walk inserts so the
+// probe can be undone, restoring the estimator to its pre-probe state. Each slice
+// holds only the keys this probe added (entries the estimator already contained
+// before the probe are not recorded and stay committed), so rollback removes
+// exactly the probe's own additions and is O(values walked by the probe). The
+// single-slot frozen cache is not journaled per-write; probe captures its
+// pre-probe value and rollback restores it directly.
+type estimatorJournal struct {
+	envs      []*Env
+	maps      []uintptr
+	hashData  []uintptr
+	slices    []uintptr
+	strings   []stringIdentity
+	classes   []*ClassDef
+	instances []*Instance
+	blocks    []*Block
+	builtins  []*Builtin
 }
 
 type stringIdentity struct {
@@ -66,6 +95,7 @@ func newMemoryEstimator() *memoryEstimator {
 
 func (est *memoryEstimator) reset() {
 	est.seenFrozen = nil
+	est.journal = nil
 	clear(est.seenEnvs)
 	clear(est.seenMaps)
 	clear(est.seenHashData)
@@ -75,6 +105,57 @@ func (est *memoryEstimator) reset() {
 	clear(est.seenInstances)
 	clear(est.seenBlocks)
 	clear(est.seenBuiltins)
+}
+
+// probe walks val against the estimator's current seen-set to measure val's
+// marginal footprint (the bytes not already deduplicated against everything the
+// estimator has committed), then rolls the estimator back to its pre-probe state
+// so nothing val touched is retained. It backs the per-call charged-root probe in
+// blockBindCharge.begin, where a transient root (a reduce accumulator that changes
+// every call) must deduplicate against the committed call roots (the receiver)
+// without being committed itself -- so the NEXT call's accumulator cannot falsely
+// deduplicate against this one's possibly-freed backing.
+func (est *memoryEstimator) probe(val Value) int {
+	prevFrozen := est.seenFrozen
+	est.journal = &estimatorJournal{}
+	journal := est.journal
+	size := est.value(val)
+	est.journal = nil
+	journal.rollback(est, prevFrozen)
+	return size
+}
+
+// rollback removes from est exactly the seen-set entries the journal recorded,
+// restoring the single-slot frozen cache to the value it held before the probe.
+func (j *estimatorJournal) rollback(est *memoryEstimator, prevFrozen *Env) {
+	est.seenFrozen = prevFrozen
+	for _, env := range j.envs {
+		delete(est.seenEnvs, env)
+	}
+	for _, id := range j.maps {
+		delete(est.seenMaps, id)
+	}
+	for _, id := range j.hashData {
+		delete(est.seenHashData, id)
+	}
+	for _, id := range j.slices {
+		delete(est.seenSlices, id)
+	}
+	for _, key := range j.strings {
+		delete(est.seenStrings, key)
+	}
+	for _, cl := range j.classes {
+		delete(est.seenClasses, cl)
+	}
+	for _, inst := range j.instances {
+		delete(est.seenInstances, inst)
+	}
+	for _, blk := range j.blocks {
+		delete(est.seenBlocks, blk)
+	}
+	for _, builtin := range j.builtins {
+		delete(est.seenBuiltins, builtin)
+	}
 }
 
 func (exec *Execution) memoryEstimatorForCheck() *memoryEstimator {
@@ -345,24 +426,142 @@ func (exec *Execution) checkProjectedHashTransformBytes(outputEntries, scratchBy
 	return nil
 }
 
+// hashTransformBufferBytes returns the Go-local heap footprint a block-driven hash
+// transform (select, reject, transform_keys, transform_values, and the
+// block-conflict merge) holds for its whole walk: the output map it fills plus any
+// sorted-key scratch slices. outputEntries is the largest entry count the result
+// map could reach; scratchBytes is the scratch slices' footprint (see
+// sortedKeyBufferBytes). The empty-map base overhead is always included because the
+// transform allocates a real map even for an empty result.
+//
+// These buffers live only on the Go call stack while the block runs, so they are
+// invisible to estimateMemoryUsageBase. Callers reserve this through
+// reserveLoopScratch BEFORE building the block-call runner so the runner's
+// bind-charge baseline already includes them: otherwise a rest-collecting
+// destructure block (|k, (head, *tail)|) would charge its fresh tail backing
+// against a baseline that omits the output map and scratch, letting
+// receiver+out+scratch and receiver+tail each fit the quota while the real peak
+// receiver+out+scratch+tail exceeds it. It mirrors what checkProjectedHashTransformBytes
+// charges so the up-front reservation and the projection agree byte-for-byte.
+func hashTransformBufferBytes(outputEntries, scratchBytes int) int {
+	bytes := estimatedValueBytes + estimatedMapBaseBytes + estimatedHashDataBytes
+	bytes = saturatingAdd(bytes, saturatingMul(outputEntries, estimatedMapEntryStructuralBytes))
+	return saturatingAdd(bytes, scratchBytes)
+}
+
 // checkProjectedHashWalkBytes rejects a pure hash iterator (each, each_key,
 // each_value, and the `for k, v in hash` statement) before it walks the receiver.
 // These iterators return the receiver and build no derived map, so they must not
 // be charged an output map they never create; charging a phantom empty map here
 // would falsely reject a quota that exactly fits the receiver and block.
 //
-// The sorted-key scratch buffer these iterators materialize stays live while
-// their body runs, so callers reserve it through reserveLoopScratch before this
-// check rather than passing it here: the reservation folds the scratch into the
-// live baseline (hashCallRootBytes measures it), which both charges it at this
-// preflight and keeps every memory check inside the body aware of it.
+// The scratch these iterators materialize stays live while their body runs, so
+// callers reserve it through reserveLoopScratch before this check rather than
+// passing it here: the reservation folds the scratch into the live baseline
+// (hashCallRootBytes measures it), which both charges it at this preflight and
+// keeps every memory check inside the body aware of it. A collapsed-pair walk
+// reserves its largest transient [key, value] pair (maxCollapsedPairBytes) the
+// same way, so the symbol-key payload the estimator bills is captured exactly
+// without re-walking the receiver per entry (the walk stays O(n) in the receiver
+// size).
 func (exec *Execution) checkProjectedHashWalkBytes(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
 	if exec.memoryQuota <= 0 {
 		return nil
 	}
 
-	used := exec.hashCallRootBytes(receiver, args, kwargs, block)
-	if used > exec.memoryQuota {
+	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+// checkReservedLoopScratch rejects a hash walk or transform after it has folded
+// Go-local buffers into reservedScratchBytes, but before the caller allocates or
+// walks those buffers. It charges the current reserved scratch together with the
+// call roots, matching the baseline every later memory check will observe.
+func (exec *Execution) checkReservedLoopScratch(receiver Value, args []Value, kwargs map[string]Value, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	if used := exec.hashCallRootBytes(receiver, args, kwargs, block); used > exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return nil
+}
+
+// maxCollapsedPairBytes returns the heap footprint of the largest transient
+// two-element [key, value] array a collapsed-pair hash walk allocates over
+// entries (Hash#each or `for pair in hash` with a single-parameter block). Only
+// one pair is live at a time -- the previous entry's pair is unreferenced once the
+// next overwrites the slot it is bound to -- so reserving the largest one for the
+// walk's lifetime conservatively bounds the transient when body checks cannot see
+// the Go-stack receiver.
+//
+// Each pair is PROBED against a single estimator seeded once with the receiver, so
+// the value the pair references deduplicates against the receiver (it aliases the
+// receiver's own entry) and is charged only its reference slot, while the array
+// structure and the symbol key's string payload -- which the estimator bills on top
+// of the structure -- are charged in full. probe rolls the estimator back after each
+// pair, so the receiver is walked exactly once and every pair is measured against the
+// same baseline: the scan is O(n) in the number of entries, not O(n^2).
+//
+// Reserving this exact maximum (rather than a fixed structural constant) closes the
+// escape where a constant omitting the symbol payload let a quota between
+// receiver+structure and receiver+full-pair pass the preflight while the body check,
+// blind to the Go-stack receiver, also passed -- letting the true peak exceed the
+// quota. Because the reservation is folded into the live baseline, it also keeps the
+// pair charged alongside any fresh rest backing a destructuring block binds, so the
+// combined peak (receiver + pair + rest) is bounded, not just each term alone.
+//
+// It returns 0 when no memory quota is enforced, skipping the per-entry probe scan
+// the reservation would otherwise pay for a budget nothing checks.
+func (exec *Execution) maxCollapsedPairBytes(receiver Value) int {
+	if exec.memoryQuota <= 0 {
+		return 0
+	}
+	est := newMemoryEstimator()
+	est.value(receiver)
+	return maxCollapsedPairBytesWithEstimator(receiver, est)
+}
+
+func maxCollapsedPairBytesWithEstimator(receiver Value, est *memoryEstimator) int {
+	entries := receiver.Hash()
+	if len(entries) == 0 {
+		return 0
+	}
+	maxBytes := 0
+	for key, value := range entries {
+		pair := NewArray([]Value{NewSymbol(key), value})
+		if bytes := est.probe(pair); bytes > maxBytes {
+			maxBytes = bytes
+		}
+	}
+	return maxBytes
+}
+
+func (exec *Execution) valueReachableFromLiveBase(value, block Value) bool {
+	if exec.memoryQuota <= 0 || value.Kind() == KindNil {
+		return false
+	}
+	est := exec.memoryEstimatorForCheck()
+	exec.estimateMemoryUsageBase(est)
+	if !block.IsNil() {
+		est.value(block)
+	}
+	return est.probe(value) <= estimatedValueBytes
+}
+
+func (exec *Execution) checkCollapsedPairBytesWithLiveBase(receiver, block Value) error {
+	if exec.memoryQuota <= 0 {
+		return nil
+	}
+	est := exec.memoryEstimatorForCheck()
+	used := exec.estimateMemoryUsageBase(est)
+	if !block.IsNil() {
+		used = saturatingAdd(used, est.value(block))
+	}
+	if used = saturatingAdd(used, maxCollapsedPairBytesWithEstimator(receiver, est)); used > exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
 	}
 	return nil
@@ -609,13 +808,17 @@ func (acc *arrayBuildAccumulator) projected(slotCount int) int {
 // is tracked in #787.
 //
 // The output map is preallocated with make(map[string]Value, n), so its full
-// n-slot backing is live from the first block call -- before any result has been
-// charged. The accumulator therefore reserves that backing in the baseline up
-// front via reserveBacking, then charges each add only the entry's key/value
-// PAYLOAD beyond the structural slot already reserved. Without the reservation a
-// large early block result would be checked against only the slots inserted so
-// far rather than the whole live backing, letting backing + early result exceed
-// the quota until later entries (or the post-call check) caught it.
+// n-slot backing -- and its empty-map overhead -- is live from the first block
+// call, before any result has been charged. The caller therefore reserves that
+// whole output map plus any sorted-key scratch through reserveLoopScratch
+// (hashTransformBufferBytes) BEFORE building the accumulator, so the reservation is
+// folded into the live baseline every check reads (estimateMemoryUsageBase),
+// including the accumulator's own base measured here. add then charges each entry
+// only the key/value PAYLOAD beyond the structural slot already reserved. Routing
+// the reservation through reserveLoopScratch (rather than a private accumulator
+// field) is what also lets the block-call runner's bind-charge baseline see the
+// output map and scratch, so a rest-collecting destructure block cannot charge its
+// fresh backing against a baseline that omits them.
 //
 // Each add is O(size of the inserted value) and the total is O(sum of inserted
 // result sizes), not O(n^2): the estimator walks only the newly inserted value,
@@ -625,10 +828,10 @@ type hashBuildAccumulator struct {
 	// est is a results-only estimator: it is never seeded with the base or call
 	// roots, so it deduplicates backings shared across block results but charges a
 	// result's full footprint even when it aliases a baseline container. base is the
-	// live footprint snapshotted when the build started (exec's reachable roots, the
-	// call roots, the output map's empty overhead, and -- once reserveBacking is
-	// called -- the preallocated n-slot backing); built is the running byte total
-	// charged for the per-entry key/value payloads as the output is assembled.
+	// live footprint snapshotted when the build started: exec's reachable roots, the
+	// call roots, and the output map plus scratch the caller reserved through
+	// reserveLoopScratch before the accumulator was built. built is the running byte
+	// total charged for the per-entry key/value payloads as the output is assembled.
 	est   *memoryEstimator
 	base  int
 	built int
@@ -643,16 +846,16 @@ type hashBuildAccumulator struct {
 }
 
 // newHashBuildAccumulator snapshots the execution's current live memory plus the
-// transform's call roots as the baseline for an incremental hash build, then folds
-// the output map's empty overhead into that baseline. Callers that preallocate the
-// output with make(map[string]Value, capacity) must then call reserveBacking so the
-// whole capacity backing is held against the quota before any block runs; add then
-// charges only the per-entry payloads beyond the reserved structural slots. The
-// accumulator's results-only estimator is a fresh estimator that is deliberately
-// NOT seeded with the base or call roots: it deduplicates backings shared across
-// block results but never against the baseline, so an in-place-mutated receiver
-// container returned by a block is charged at its full current size rather than
-// treated as already accounted.
+// transform's call roots as the baseline for an incremental hash build. Callers
+// reserve the preallocated output map (its empty overhead plus every capacity slot)
+// and any sorted-key scratch through reserveLoopScratch BEFORE building the
+// accumulator, so those bytes are already folded into the live baseline this
+// snapshot reads; add then charges only the per-entry payloads beyond the reserved
+// structural slots. The accumulator's results-only estimator is a fresh estimator
+// that is deliberately NOT seeded with the base or call roots: it deduplicates
+// backings shared across block results but never against the baseline, so an
+// in-place-mutated receiver container returned by a block is charged at its full
+// current size rather than treated as already accounted.
 func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) *hashBuildAccumulator {
 	acc := &hashBuildAccumulator{
 		exec:     exec,
@@ -666,12 +869,11 @@ func newHashBuildAccumulator(exec *Execution, receiver Value, args []Value, kwar
 	}
 	// Measure the baseline through a throwaway estimator so the results-only
 	// estimator stays empty: the base must be counted, but the results estimator
-	// must not dedup later block results against the call roots it walked.
+	// must not dedup later block results against the call roots it walked. The
+	// baseline already includes the output map and scratch the caller reserved via
+	// reserveLoopScratch (estimateMemoryUsageBase reads the reservation), so the
+	// empty-map overhead is not folded in again here.
 	acc.base = exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, kwargs, block)
-	// The output is a single hash, so fold its empty-map overhead plus the
-	// hashData wrapper every KindHash allocates into the baseline; add then
-	// charges only the per-entry growth.
-	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	acc.est = newMemoryEstimator()
 	return acc
 }
@@ -784,45 +986,25 @@ func (acc *hashLiteralBuildAccumulator) checkQuota() error {
 	return nil
 }
 
-// reserveScratch folds a fixed scratch allocation into the baseline so it is held
-// against the quota for the build's entire lifetime, and rejects the build if the
-// reservation alone already overflows. Block-driven hash transforms materialize a
-// sorted-key scratch slice (see sortedKeyBufferBytes) that stays live the whole
-// time the output map fills, so its bytes coexist with every accumulated entry at
-// peak. The up-front projection charges this scratch once before any fresh block
-// result exists, but the accumulator's running budget (base + built) does not,
-// so without reserving it here the combined output+scratch peak could exceed the
-// quota by the scratch size before the post-call check observed it. scratchBytes
-// is the heap footprint the caller passed to its projection, so the two views of
-// the budget reserve the same bytes.
-func (acc *hashBuildAccumulator) reserveScratch(scratchBytes int) error {
-	if acc.exec.memoryQuota <= 0 {
-		return nil
-	}
-	acc.base = saturatingAdd(acc.base, scratchBytes)
-	return acc.checkQuota()
-}
-
-// reserveBacking folds the structural footprint of a preallocated output map into
-// the baseline so the whole backing is held against the quota from the first block
-// call, and rejects the build if the reservation alone already overflows. Hash
-// transforms allocate their output with make(map[string]Value, capacity), so all
-// capacity slots are live before any block result is charged; without reserving
-// them, an early add would be checked against only the slots filled so far rather
-// than the full backing, letting a large early result plus the whole backing slip
-// past the quota until later entries (or the post-call check) caught it.
+// reserveBacking folds the structural footprint of a preallocated output map
+// into the baseline so the whole backing is held against the quota from the
+// first block call, and rejects the build if the reservation alone already
+// overflows. Use it for hash builds that have not already reserved their output
+// map through reserveLoopScratch. Hash transforms reserve output and scratch
+// before constructing the accumulator so the block bind-charge baseline can see
+// those Go-local buffers; array.to_h's block form has no transform scratch and
+// reserves its output map here instead.
 //
-// capacity is the slot count passed to make; the empty map's base overhead is
-// already folded into the baseline by newHashBuildAccumulator, so only the
-// per-slot structure is reserved here. The key and value PAYLOADS are charged
-// incrementally by add/addSynthesizedKey, which after this reservation add only
-// the payload beyond the structural slot already counted, so nothing is double
-// counted: base ends at call roots + empty map + capacity*slot, and built ends at
-// the sum of per-entry payloads.
+// capacity is the slot count passed to make. The key and value PAYLOADS are
+// charged incrementally by add/addSynthesizedKey, which after this reservation
+// add only the payload beyond the structural slot already counted, so nothing is
+// double counted: base ends at call roots + empty map + capacity*slot, and built
+// ends at the sum of per-entry payloads.
 func (acc *hashBuildAccumulator) reserveBacking(capacity int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
+	acc.base = saturatingAdd(acc.base, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
 	acc.base = saturatingAdd(acc.base, saturatingMul(capacity, estimatedMapEntryStructuralBytes))
 	return acc.checkQuota()
 }
@@ -834,7 +1016,8 @@ func (acc *hashBuildAccumulator) reserveBacking(capacity int) error {
 // the KEY while the value stays a receiver value, uses addSynthesizedKey instead.
 //
 // The entry's structural slot (map bucket, key header, value slot) is already
-// held in the baseline by reserveBacking, so add charges only PAYLOADS beyond it.
+// held in the baseline by the caller's reserveLoopScratch reservation, so add
+// charges only PAYLOADS beyond it.
 // The key is a receiver/argument key whose payload is already counted in the
 // baseline via the call roots, so it contributes nothing further. Only the
 // block-returned value's payload goes through the results-only estimator, so a
@@ -862,9 +1045,10 @@ func (acc *hashBuildAccumulator) add(val Value) error {
 // string but whose VALUE is a receiver value already counted in the baseline
 // (transform_keys yields a new key per entry while keeping the original value).
 // The entry's structural slot (map bucket, key header, value slot) is already held
-// in the baseline by reserveBacking, and the value's reachable payload is already
-// folded into acc.base via the call roots, so the only fresh allocation to charge
-// is the synthesized key's PAYLOAD beyond its header. It goes through the
+// in the baseline by the caller's reserveLoopScratch reservation, and the value's
+// reachable payload is already folded into acc.base via the call roots, so the only
+// fresh allocation to charge is the synthesized key's PAYLOAD beyond its header. It
+// goes through the
 // results-only estimator so a key string shared across block results is counted
 // once; the value never goes through the estimator, since routing it would record
 // its backing in the seen-set and let a later block result aliasing it be dedup'd
@@ -923,6 +1107,230 @@ func (acc *hashBuildAccumulator) checkQuota() error {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 	return nil
+}
+
+// blockBindCharge charges the fresh memory a block's destructuring parameters
+// allocate when they are bound. A destructuring parameter that collects a rest
+// (|(k, *tail)|, or the nested |(k, (head, *tail))|) makes AssignDestructure copy
+// the collected window into a fresh backing slice (make+copy) before binding it.
+// That copy is sized to the SOURCE, not to anything the iterator preflighted: over
+// a hash whose values are arrays, |(k, (head, *tail))| binds tail to a fresh copy
+// of the whole value array, a backing the per-entry [key, value] pair reservation
+// does not bound. With an empty (or trivial) block body the body's own memory
+// checks never observe that backing, and the iterator's receiver lives only on the
+// Go call stack (invisible to estimateMemoryUsageBase), so the fresh copy could
+// escape the sandbox quota entirely. This charge closes that gap in the one place
+// every block iterator shares (the param-binding path), so it covers Hash#each,
+// array.each/map/select, reduce, and any other block call alike.
+//
+// rootEst is a PERSISTENT estimator seeded ONCE (at construction) with the live call
+// roots: exec's reachable roots (the env stack and exec.root) plus the receiver,
+// kwargs, callArgs, and block. It is the same single walk estimateMemoryUsageForCallRoots
+// performs, so the receiver deduplicates against the env (a named local passed to
+// arr.each is counted once, not twice) and baseline records that one walk's total.
+// Crucially it is NOT re-walked per entry: re-walking the receiver or the env on
+// every iteration is the O(n^2) trap that previously dominated CI. The env held in
+// rootEst stays live for the whole loop (the iterator runs mid-expression), so the
+// committed backings are never freed and a later probe cannot falsely deduplicate
+// against a reused address.
+//
+// Per-entry growth in outer scope is still caught by the body's own per-statement
+// checks, which walk the live env (the bound rest included) on each statement. The
+// snapshot baseline (the receiver the body checks cannot see, plus the fresh rest)
+// and the body checks (state the body grows, which the pre-loop snapshot misses)
+// together bound the live footprint.
+//
+// Each call resets a SEPARATE per-call estimator (est) and seeds it with that call's
+// arguments (the [key, value] pair for Hash#each, the destructured element for array
+// iterators, the (acc, item) pair for reduce), so a fresh rest backing whose ELEMENTS
+// alias the yielded data deduplicates those payloads to zero and only the backing's
+// genuinely new slots are charged. est is reset every call so its seen-set never
+// grows across a long loop, keeping the charge O(the data bound this entry).
+type blockBindCharge struct {
+	exec     *Execution
+	est      *memoryEstimator
+	rootEst  *memoryEstimator
+	baseline int
+	built    int
+}
+
+// newBlockBindCharge snapshots the live call roots as the baseline for charging a
+// block's destructured bindings, or returns nil when no charge is needed: either no
+// memory quota is enforced or the block has no rest-collecting destructure parameter
+// (the only binding shape AssignDestructure materializes into a fresh, source-sized
+// backing slice). A plain or non-rest destructure parameter binds references already
+// counted in the call roots, so it allocates nothing fresh and needs no charge.
+//
+// callArgs are the iterator's POSITIONAL call roots (the other hashes a block-driven
+// hash.merge folds in, a grep pattern, the host arguments a capability CallBlock
+// drives a block with). Like the receiver they live only on the Go call stack during
+// the loop, invisible to estimateMemoryUsageBase, so they are walked into the
+// persistent rootEst here: charging only the fresh rest copy against a baseline that
+// omits them lets a quota fit (roots + rest) and (receiver + rest) separately while
+// the real peak (receiver + args + rest) exceeds it. They are the FIXED backings held
+// for the whole loop; the per-entry yielded values and the per-call charged roots are
+// handled by begin instead.
+func newBlockBindCharge(exec *Execution, blk *Block, receiver Value, callArgs []Value, kwargs map[string]Value, block Value) *blockBindCharge {
+	if exec.memoryQuota <= 0 || !blockBindsRest(blk) {
+		return nil
+	}
+	rootEst := newMemoryEstimator()
+	baseline := exec.estimateMemoryUsageBase(rootEst)
+	if receiver.Kind() != KindNil {
+		baseline = saturatingAdd(baseline, rootEst.value(receiver))
+	}
+	for _, arg := range callArgs {
+		baseline = saturatingAdd(baseline, rootEst.value(arg))
+	}
+	for _, kwarg := range kwargs {
+		baseline = saturatingAdd(baseline, rootEst.value(kwarg))
+	}
+	if !block.IsNil() {
+		baseline = saturatingAdd(baseline, rootEst.value(block))
+	}
+	return &blockBindCharge{
+		exec:     exec,
+		est:      newMemoryEstimator(),
+		rootEst:  rootEst,
+		baseline: baseline,
+	}
+}
+
+// begin prepares the charge for one block call: it resets the per-call estimator and
+// seeds it with the call's arguments so any payload a freshly bound rest backing
+// shares with them (the receiver's own data, reached through the yielded pair or
+// element) deduplicates to zero. Only the backing's new slots remain to be charged.
+// Seeding walks just this call's arguments, never the whole receiver, so it stays
+// O(the data this entry yields).
+//
+// chargedRoots are per-call values that live only in the iterator's Go frame and
+// evolve every call, so they cannot be folded into the one-time baseline -- the
+// reduce accumulator (acc_0 is the seed, acc_n is the previous call's block result).
+// Each is PROBED against the persistent rootEst, which already holds the receiver, so
+// a no-seed accumulator that is the receiver's first element deduplicates to its
+// structural slots only and is NOT charged a second copy of the receiver's data --
+// the double-charge this guards against. The probe walks only the charged root
+// (bounded by its size) and rolls back, so the rootEst is not permanently grown and
+// the next call's accumulator cannot falsely deduplicate against this one's freed
+// backing. begin returns the quota error if the charged roots alone exceed the
+// budget, so a reduce whose live peak is receiver + accumulator is rejected before
+// the block body runs. The charged roots are also seeded into the per-call estimator
+// so a rest backing that copies part of the accumulator deduplicates against it.
+func (c *blockBindCharge) begin(args []Value, chargedRoots ...Value) error {
+	if c == nil {
+		return nil
+	}
+	c.est.reset()
+	c.built = 0
+	for _, root := range chargedRoots {
+		c.built = saturatingAdd(c.built, c.rootEst.probe(root))
+		if saturatingAdd(c.baseline, c.built) > c.exec.memoryQuota {
+			return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+		}
+		c.est.value(root)
+	}
+	for _, arg := range args {
+		c.est.value(arg)
+	}
+	return nil
+}
+
+// charge adds a freshly bound leaf value to the running estimate and rejects the
+// call when the live baseline plus every value bound so far this call exceeds the
+// quota. The estimator returns each leaf's marginal footprint -- a value that
+// aliases the seeded arguments contributes only its structural slots, since its
+// payload deduplicates against the seed -- so a rest backing is charged its real
+// fresh footprint while a pass-through binding charges essentially nothing.
+func (c *blockBindCharge) charge(value Value) error {
+	if c == nil {
+		return nil
+	}
+	c.built = saturatingAdd(c.built, c.est.value(value))
+	if saturatingAdd(c.baseline, c.built) > c.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+	}
+	return nil
+}
+
+// projectRestWindow rejects a destructure rest backing of count Value slots
+// BEFORE assignDestructure allocates it. assignDestructure copies the collected
+// window into a fresh make([]Value, count) backing before binding it; without this
+// preflight a quota smaller than one such backing would let the copy materialize
+// (a single huge tail, |(head, *tail)| over a [[huge...]], with an empty block
+// body whose own checks never run) and the post-bind charge would only observe the
+// over-budget array after it already escaped. Projecting the window's structural
+// footprint -- a slice header plus count Value slots, the same shape the estimator
+// charges a fresh slice backing -- on top of this call's baseline and everything
+// already bound this call mirrors the check-before-materialize discipline the
+// standalone assignDestructure path uses (checkProjectedIntArrayBytesWithLive).
+//
+// The window's elements alias the yielded value (already seeded into the per-call
+// estimator and counted in the baseline through the receiver and call roots), so
+// only the backing's genuinely new slots are projected, not a second copy of the
+// element payloads. The post-bind charge still runs on the bound array afterward to
+// account for its real, dedup-aware footprint; this is the pre-allocation gate.
+func (c *blockBindCharge) projectRestWindow(count int) error {
+	if c == nil {
+		return nil
+	}
+	window := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
+	if saturatingAdd(saturatingAdd(c.baseline, c.built), window) > c.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, c.exec.memoryQuota)
+	}
+	return nil
+}
+
+// destructureCharge returns the rest-window preflight assignDestructure consults
+// before allocating a named rest's backing slice. A nil charge (no memory quota or
+// a block with no rest-collecting parameter) admits every window, matching the host
+// AssignDestructure path that runs outside a quota. The liveSlots and liveRoot
+// arguments the destructurer threads are unused here: block parameters bind only
+// identifiers and nested destructures (never an index or member write), so the
+// snapshot path that produces a live Go-stack slot array never runs during block
+// binding -- the only off-baseline memory is the rest backing this preflight gates.
+func (c *blockBindCharge) destructureCharge() destructureCharge {
+	if c == nil {
+		return destructureCharge{check: noopDestructureCheck}
+	}
+	return destructureCharge{check: func(count, _ int, _ Value) error {
+		return c.projectRestWindow(count)
+	}}
+}
+
+// blockBindsRest reports whether any of the block's parameters destructure a value
+// and collect a named rest, the only binding shape AssignDestructure materializes
+// into a fresh, source-sized backing slice. Used to skip the per-call bind charge
+// for the common parameter shapes that allocate nothing fresh.
+func blockBindsRest(blk *Block) bool {
+	for i := range blk.Params {
+		if targetCollectsRest(blk.Params[i].Target) {
+			return true
+		}
+	}
+	return false
+}
+
+// targetCollectsRest reports whether a destructure target collects a rest into a
+// fresh backing slice. An anonymous rest (a bare "*", whose element Target is nil)
+// is skipped here: assignDestructure discards its window without materializing an
+// array, so charging its bindings would seed the estimator with the whole yielded
+// value for a backing that never exists -- regressing the |(head, *)| fast path
+// over large nested rows. Only a rest element with a non-nil target, or a nested
+// destructure that itself collects one, allocates the slice this charge gates.
+func targetCollectsRest(target Expression) bool {
+	destructure, ok := target.(*DestructureTarget)
+	if !ok {
+		return false
+	}
+	for _, element := range destructure.Elements {
+		if element.Rest && element.Target != nil {
+			return true
+		}
+		if targetCollectsRest(element.Target) {
+			return true
+		}
+	}
+	return false
 }
 
 // hashCallRootBytes estimates the live footprint a hash transform holds before it
@@ -1141,6 +1549,9 @@ func (est *memoryEstimator) env(env *Env) int {
 		est.seenEnvs = make(map[*Env]struct{})
 	}
 	est.seenEnvs[env] = struct{}{}
+	if est.journal != nil {
+		est.journal.envs = append(est.journal.envs, env)
+	}
 
 	size := estimatedEnvBytes + staticBindingsBytes(env)
 	if env.values != nil {
@@ -1242,6 +1653,9 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenClasses = make(map[*ClassDef]struct{})
 		}
 		est.seenClasses[cl] = struct{}{}
+		if est.journal != nil {
+			est.journal.classes = append(est.journal.classes, cl)
+		}
 		size += est.hash(cl.ClassVars)
 	case KindInstance:
 		inst := valueInstance(val)
@@ -1255,6 +1669,9 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenInstances = make(map[*Instance]struct{})
 		}
 		est.seenInstances[inst] = struct{}{}
+		if est.journal != nil {
+			est.journal.instances = append(est.journal.instances, inst)
+		}
 		size += estimatedInstanceBytes
 		size += est.hash(inst.Ivars)
 	case KindBlock:
@@ -1269,6 +1686,9 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenBlocks = make(map[*Block]struct{})
 		}
 		est.seenBlocks[blk] = struct{}{}
+		if est.journal != nil {
+			est.journal.blocks = append(est.journal.blocks, blk)
+		}
 		size += estimatedBlockBytes + estimatedSliceBaseBytes + len(blk.Params)*estimatedStringHeaderBytes
 		for _, param := range blk.Params {
 			size += estimatedParamBytes(param)
@@ -1302,6 +1722,9 @@ func (est *memoryEstimator) value(val Value) int {
 			est.seenBuiltins = make(map[*Builtin]struct{})
 		}
 		est.seenBuiltins[builtin] = struct{}{}
+		if est.journal != nil {
+			est.journal.builtins = append(est.journal.builtins, builtin)
+		}
 		size = saturatingAdd(size, estimatedBuiltinBytes)
 		size = saturatingAdd(size, sliceStructuralBytes(builtin.CapturedValues))
 		for _, captured := range builtin.CapturedValues {
@@ -1351,6 +1774,9 @@ func (est *memoryEstimator) stringPayloadSize(str string) int {
 		est.seenStrings = make(map[stringIdentity]struct{})
 	}
 	est.seenStrings[key] = struct{}{}
+	if est.journal != nil {
+		est.journal.strings = append(est.journal.strings, key)
+	}
 	return len(str)
 }
 
@@ -1405,6 +1831,9 @@ func (est *memoryEstimator) slice(values []Value) int {
 			est.seenSlices = make(map[uintptr]struct{})
 		}
 		est.seenSlices[id] = struct{}{}
+		if est.journal != nil {
+			est.journal.slices = append(est.journal.slices, id)
+		}
 	}
 
 	if len(values) == 0 {
@@ -1444,6 +1873,9 @@ func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 		est.seenHashData = make(map[uintptr]struct{})
 	}
 	est.seenHashData[id] = struct{}{}
+	if est.journal != nil {
+		est.journal.hashData = append(est.journal.hashData, id)
+	}
 	return estimatedHashDataBytes
 }
 
@@ -1457,6 +1889,9 @@ func (est *memoryEstimator) hash(values map[string]Value) int {
 			est.seenMaps = make(map[uintptr]struct{})
 		}
 		est.seenMaps[id] = struct{}{}
+		if est.journal != nil {
+			est.journal.maps = append(est.journal.maps, id)
+		}
 	}
 
 	size := mapStructuralBytes(values)

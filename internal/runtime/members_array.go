@@ -62,7 +62,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			var runner *blockCallRunner
 			if valueBlock(block) != nil {
 				var err error
-				runner, err = newBlockCallRunner(exec, block, "array.sort")
+				runner, err = newBlockCallRunner(exec, block, "array.sort", receiver, nil, kwargs)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -105,7 +105,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.sort_by does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.sort_by")
+			runner, err := newBlockCallRunner(exec, block, "array.sort_by", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -154,7 +154,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.partition does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.partition")
+			runner, err := newBlockCallRunner(exec, block, "array.partition", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -182,7 +182,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.group_by does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.group_by")
+			runner, err := newBlockCallRunner(exec, block, "array.group_by", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -212,7 +212,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.group_by_stable does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.group_by_stable")
+			runner, err := newBlockCallRunner(exec, block, "array.group_by_stable", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -261,7 +261,7 @@ func arrayMemberGrouping(property string) (Value, error) {
 			counts := make(map[string]int64, initialCapacity)
 			var runner *blockCallRunner
 			if hasBlock {
-				runner, err = newBlockCallRunner(exec, block, "array.tally")
+				runner, err = newBlockCallRunner(exec, block, "array.tally", receiver, nil, kwargs)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -380,7 +380,7 @@ func arrayMemberMinMaxBy(name string, wantMax bool) Value {
 		if len(args) > 0 {
 			return NewNil(), fmt.Errorf("%s does not take arguments", name)
 		}
-		runner, err := newBlockCallRunner(exec, block, name)
+		runner, err := newBlockCallRunner(exec, block, name, receiver, nil, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -583,7 +583,7 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "each":
 		return NewAutoBuiltin("array.each", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			runner, err := newBlockCallRunner(exec, block, "array.each")
+			runner, err := newBlockCallRunner(exec, block, "array.each", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -604,7 +604,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("array.each_with_index does not take keyword arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.each_with_index")
+			runner, err := newBlockCallRunner(exec, block, "array.each_with_index", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -631,7 +631,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.each_slice")
+			runner, err := newBlockCallRunner(exec, block, "array.each_slice", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -654,7 +654,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.each_cons")
+			runner, err := newBlockCallRunner(exec, block, "array.each_cons", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -675,7 +675,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.reverse_each does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.reverse_each")
+			runner, err := newBlockCallRunner(exec, block, "array.reverse_each", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -697,7 +697,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.cycle")
+			runner, err := newBlockCallRunner(exec, block, "array.cycle", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -724,7 +724,7 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "map":
 		return NewAutoBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			runner, err := newBlockCallRunner(exec, block, "array.map")
+			runner, err := newBlockCallRunner(exec, block, "array.map", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -749,7 +749,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("array.map_with_index does not take keyword arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.map_with_index")
+			runner, err := newBlockCallRunner(exec, block, "array.map_with_index", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -804,7 +804,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("array.filter_map does not take keyword arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.filter_map")
+			runner, err := newBlockCallRunner(exec, block, "array.filter_map", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -868,7 +868,7 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "select":
 		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			runner, err := newBlockCallRunner(exec, block, "array.select")
+			runner, err := newBlockCallRunner(exec, block, "array.select", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -892,7 +892,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.reject does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.reject")
+			runner, err := newBlockCallRunner(exec, block, "array.reject", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -923,7 +923,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.take_while does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.take_while")
+			runner, err := newBlockCallRunner(exec, block, "array.take_while", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -955,7 +955,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.drop_while does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.drop_while")
+			runner, err := newBlockCallRunner(exec, block, "array.drop_while", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -984,7 +984,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.find does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.find")
+			runner, err := newBlockCallRunner(exec, block, "array.find", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -1188,7 +1188,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			if valueBlock(block) == nil {
 				return NewInt(int64(len(arr))), nil
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.count")
+			runner, err := newBlockCallRunner(exec, block, "array.count", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -1226,7 +1226,7 @@ func arrayMemberQuery(property string) (Value, error) {
 			var runner *blockCallRunner
 			if valueBlock(block) != nil {
 				var err error
-				runner, err = newBlockCallRunner(exec, block, "array.one?")
+				runner, err = newBlockCallRunner(exec, block, "array.one?", receiver, nil, kwargs)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -1397,7 +1397,7 @@ func arrayPredicate(exec *Execution, receiver Value, args []Value, kwargs map[st
 		})
 	}
 	if valueBlock(block) != nil {
-		runner, err := newBlockCallRunner(exec, block, name)
+		runner, err := newBlockCallRunner(exec, block, name, receiver, nil, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1472,7 +1472,7 @@ func arrayForwardIndex(exec *Execution, receiver Value, args []Value, block Valu
 		if len(args) > 0 {
 			return NewNil(), fmt.Errorf("%s takes a value or a block, not both", name)
 		}
-		runner, err := newBlockCallRunner(exec, block, name)
+		runner, err := newBlockCallRunner(exec, block, name, receiver, nil, nil)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1527,7 +1527,7 @@ func arrayReverseIndex(exec *Execution, receiver Value, args []Value, block Valu
 		if len(args) > 0 {
 			return NewNil(), fmt.Errorf("%s takes a value or a block, not both", name)
 		}
-		runner, err := newBlockCallRunner(exec, block, name)
+		runner, err := newBlockCallRunner(exec, block, name, receiver, nil, nil)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1794,7 +1794,7 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	var runner *blockCallRunner
 	if hasBlock {
 		var err error
-		runner, err = newBlockCallRunner(exec, block, "array.reduce")
+		runner, err = newBlockCallRunner(exec, block, "array.reduce", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1841,7 +1841,17 @@ func arrayReduce(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	for i := start; i < len(arr); i++ {
 		blockArgs[0] = acc
 		blockArgs[1] = arr[i]
-		next, err := runner.call(blockArgs[:])
+		// The accumulator lives only in this Go frame and evolves every call (the
+		// seed first, each prior call's result after), so it is not in the runner's
+		// one-time baseline and cannot be folded into it like a fixed positional
+		// root. Charge it per call so a block that copies its tail into a
+		// rest-collecting parameter (reduce(big) do |(head, *tail), item| ... end) is
+		// rejected when the real peak (receiver + accumulator + tail) exceeds the
+		// quota, not just when receiver + tail does. The charge probes the accumulator
+		// against the snapshotted call roots, so a no-seed accumulator that is the
+		// receiver's first element deduplicates against the receiver and is charged
+		// only its structural slots -- never a second copy of the receiver's data.
+		next, err := runner.callWithChargedRoots(blockArgs[:], acc)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1877,7 +1887,7 @@ func arraySum(exec *Execution, receiver Value, args []Value, kwargs map[string]V
 	var runner *blockCallRunner
 	if valueBlock(block) != nil {
 		var err error
-		runner, err = newBlockCallRunner(exec, block, "array.sum")
+		runner, err = newBlockCallRunner(exec, block, "array.sum", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -2003,7 +2013,11 @@ func arrayMemberGrep(property string) (Value, error) {
 		var runner *blockCallRunner
 		if valueBlock(block) != nil {
 			var err error
-			runner, err = newBlockCallRunner(exec, block, name)
+			// The pattern argument lives on the Go call stack for the whole grep
+			// loop, so pass it as the runner's positional call root: a transform
+			// block that copies part of an element into a rest-collecting parameter
+			// must be charged against a baseline that counts every live call root.
+			runner, err = newBlockCallRunner(exec, block, name, receiver, args, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -2061,7 +2075,7 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	var runner *blockCallRunner
 	if valueBlock(block) != nil {
 		var err error
-		runner, err = newBlockCallRunner(exec, block, "array.to_h")
+		runner, err = newBlockCallRunner(exec, block, "array.to_h", receiver, args, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}
@@ -2229,7 +2243,7 @@ func arrayFill(exec *Execution, receiver Value, args []Value, kwargs map[string]
 
 	var runner *blockCallRunner
 	if hasBlock {
-		runner, err = newBlockCallRunner(exec, block, "array.fill")
+		runner, err = newBlockCallRunner(exec, block, "array.fill", receiver, nil, kwargs)
 		if err != nil {
 			return NewNil(), err
 		}

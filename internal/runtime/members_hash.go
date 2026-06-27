@@ -403,20 +403,40 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each")
-			if err != nil {
+			if err := ensureBlock(block, "hash.each"); err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// each builds no output map, but it materializes a sorted key list to
-			// walk entries deterministically. Reserve that scratch buffer against the
-			// quota for the walk's whole lifetime so a large receiver cannot escape the
-			// memory quota and so every memory check inside the block body counts the
-			// live scratch; the walk projection charges no output map this iterator
-			// never creates. Reserving first means the projection adds no separate
-			// scratch bytes.
-			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
+			// Match Ruby: a block declaring a single positional parameter receives
+			// each entry as a two-element [key, value] pair, while a block with two
+			// or more parameters auto-splats into key and value (extra parameters get
+			// nil). blockWantsCollapsedPair inspects the block's arity to pick the
+			// shape.
+			collapsePair := blockWantsCollapsedPair(valueBlock(block))
+			// each builds no output map, but it materializes a sorted key list to walk
+			// entries deterministically. Reserve that scratch for the walk's lifetime so
+			// every block-body check sees it. Collapsed-pair walks also allocate one
+			// transient [key, value] pair per entry. Keep the largest pair reserved only
+			// when the body cannot account for the actual bound pair: either the block
+			// collects a rest while binding, or the receiver is not already reachable
+			// from the live baseline. Otherwise preflight the largest pair once and let
+			// body checks count the real bound pair, avoiding a false extra pair.
+			scratch := sortedKeyBufferBytes(len(entries))
+			reservePair := collapsePair && (blockBindsRest(valueBlock(block)) || !exec.valueReachableFromLiveBase(receiver, block))
+			if reservePair {
+				scratch = saturatingAdd(scratch, exec.maxCollapsedPairBytes(receiver))
+			}
+			delta := exec.reserveLoopScratch(scratch)
 			defer exec.releaseLoopScratch(delta)
+			if collapsePair && !reservePair {
+				if err := exec.checkCollapsedPairBytesWithLiveBase(receiver, block); err != nil {
+					return NewNil(), err
+				}
+			}
+			runner, err := newBlockCallRunner(exec, block, "hash.each", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
@@ -429,6 +449,17 @@ func hashMemberQuery(property string) (Value, error) {
 				// the whole hash uncharged.
 				if err := exec.step(); err != nil {
 					return NewNil(), err
+				}
+				if collapsePair {
+					// The yielded value is always a two-element array. Rest-collecting
+					// destructuring blocks keep the max pair reserved in the runner's bind
+					// baseline; plain pair bindings rely on the bound pair the body checks
+					// already see when the receiver is reachable.
+					pair := NewArray([]Value{NewSymbol(key), entries[key]})
+					if _, err := runner.call([]Value{pair}); err != nil {
+						return NewNil(), err
+					}
+					continue
 				}
 				blockArgs[0] = NewSymbol(key)
 				blockArgs[1] = entries[key]
@@ -446,7 +477,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_with_index does not take keyword arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each_with_index")
+			runner, err := newBlockCallRunner(exec, block, "hash.each_with_index", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -490,8 +521,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_key does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each_key")
-			if err != nil {
+			if err := ensureBlock(block, "hash.each_key"); err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -499,9 +529,18 @@ func hashMemberQuery(property string) (Value, error) {
 			// builds no output map but walks a materialized key list that stays live
 			// while the block body runs, so reserving it keeps every memory check
 			// inside the body aware of the scratch. Reserving first means the walk
-			// projection adds no separate scratch bytes.
+			// projection adds no separate scratch bytes. each_key binds the key
+			// directly, so it allocates no per-entry pair. Reserve it BEFORE building
+			// the runner so the runner's bind-charge baseline snapshot already includes
+			// the scratch; otherwise a rest-collecting block (|(head, *tail)|) over an
+			// ephemeral receiver could charge its fresh tail backing against a baseline
+			// that omits the scratch while the body checks miss the Go-stack receiver.
 			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
 			defer exec.releaseLoopScratch(delta)
+			runner, err := newBlockCallRunner(exec, block, "hash.each_key", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
@@ -525,8 +564,7 @@ func hashMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.each_value does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.each_value")
-			if err != nil {
+			if err := ensureBlock(block, "hash.each_value"); err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
@@ -534,9 +572,18 @@ func hashMemberQuery(property string) (Value, error) {
 			// builds no output map but walks a materialized key list that stays live
 			// while the block body runs, so reserving it keeps every memory check
 			// inside the body aware of the scratch. Reserving first means the walk
-			// projection adds no separate scratch bytes.
+			// projection adds no separate scratch bytes. each_value binds the value
+			// directly, so it allocates no per-entry pair. Reserve it BEFORE building
+			// the runner so the runner's bind-charge baseline snapshot already includes
+			// the scratch; otherwise a rest-collecting block (|(head, *tail)|) over an
+			// ephemeral receiver could charge its fresh tail backing against a baseline
+			// that omits the scratch while the body checks miss the Go-stack receiver.
 			delta := exec.reserveLoopScratch(sortedKeyBufferBytes(len(entries)))
 			defer exec.releaseLoopScratch(delta)
+			runner, err := newBlockCallRunner(exec, block, "hash.each_value", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
 			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
@@ -846,7 +893,32 @@ func hashMemberTransforms(property string) (Value, error) {
 				// present on only one side are copied without invoking the block.
 				// Conflicting keys are visited in sorted order so block side
 				// effects are deterministic, mirroring the other hash helpers.
-				r, err := newBlockCallRunner(exec, block, "hash."+name)
+				//
+				// Reserve the output map and the sorted-key scratch for the build's
+				// whole lifetime BEFORE building the runner, so the runner's bind-charge
+				// baseline already includes them. The output map is preallocated with
+				// make(map, len(base)) but grows as non-conflicting argument keys are
+				// inserted, reaching the exact distinct union at peak, so reserve that
+				// union (projectedEntries -- the same bound the up-front projection
+				// charged). The exact union (not the loose len(base)+sum(arg lens) bound)
+				// is reserved here so an overlapping merge whose true union fits is never
+				// rejected by phantom slots the result map never allocates. Folding the
+				// backing and scratch into the live baseline through reserveLoopScratch
+				// (rather than only into the accumulator's running budget) means a
+				// conflict block that destructures new_value into a rest-collecting
+				// parameter (|k, o, (head, *tail)|) charges its fresh tail backing against
+				// a baseline that already accounts for the output map and scratch, closing
+				// the gap where receiver+out+scratch and receiver+tail each fit the quota
+				// while the real peak receiver+out+scratch+tail exceeds it.
+				delta := exec.reserveLoopScratch(hashTransformBufferBytes(projectedEntries, scratchBytes))
+				defer exec.releaseLoopScratch(delta)
+				// The argument hashes being merged in (args) live on the Go call stack
+				// for the whole conflict loop, so pass them as the runner's positional
+				// call roots: a conflict block that destructures a new_value into a
+				// rest-collecting parameter copies part of an argument into a fresh
+				// backing, and that copy must be charged against a baseline that already
+				// counts the arguments it was copied from.
+				r, err := newBlockCallRunner(exec, block, "hash."+name, receiver, args, kwargs)
 				if err != nil {
 					return NewNil(), err
 				}
@@ -868,28 +940,11 @@ func hashMemberTransforms(property string) (Value, error) {
 				// entry, so the bound stays sound even when a block mutates a
 				// receiver-owned container in place and returns it (see the
 				// accumulator's doc comment); the running total only grows, so it can
-				// never drop below the live footprint.
+				// never drop below the live footprint. The output map and scratch are
+				// already held against the quota by the reserveLoopScratch above (which
+				// the accumulator's baseline reads through estimateMemoryUsageBase), so
+				// the accumulator charges only the per-entry payloads beyond those slots.
 				acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
-				// The output map is preallocated with make(map, len(base)) but grows as
-				// non-conflicting argument keys are inserted, reaching the exact distinct
-				// union at peak. Reserve that union (projectedEntries -- the same bound the
-				// up-front projection charged) so a large early conflict result is checked
-				// against the whole grown backing, not just the len(base) slots filled so
-				// far; reserving only len(base) would under-count the backing live once the
-				// non-conflict additions have grown the map and let backing + an early
-				// conflict result slip past the quota until a later check. The exact union
-				// (not the loose len(base)+sum(arg lens) bound) is reserved here so an
-				// overlapping merge whose true union fits is never rejected by phantom
-				// slots the result map never allocates.
-				if err := acc.reserveBacking(projectedEntries); err != nil {
-					return NewNil(), err
-				}
-				// The sorted key scratch buffer stays live the whole build, coexisting
-				// with the output map at peak, so reserve it in the accumulator's
-				// running budget -- the same bytes the projection above charged.
-				if err := acc.reserveScratch(scratchBytes); err != nil {
-					return NewNil(), err
-				}
 			}
 			// Copy the receiver entry by entry rather than with maps.Copy so a
 			// merge over a large base charges a step per copied entry and honors
@@ -1254,16 +1309,24 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.select does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.select")
+			entries := receiver.Hash()
+			// Reserve the output map and sorted-key scratch for the walk's whole
+			// lifetime BEFORE building the runner, so the runner's bind-charge baseline
+			// already includes them. The block may keep every entry, so project the
+			// full input. Reserving first (rather than only preflighting the buffers
+			// separately) folds them into the live baseline every in-body check, the
+			// preflight, and the per-call bind charge all see -- so a rest-collecting
+			// destructure block (|k, (head, *tail)|) charges its fresh tail backing
+			// against a baseline that already accounts for the output map and scratch,
+			// closing the gap where receiver+out+scratch and receiver+tail each fit the
+			// quota while the real peak receiver+out+scratch+tail exceeds it.
+			delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries))))
+			defer exec.releaseLoopScratch(delta)
+			runner, err := newBlockCallRunner(exec, block, "hash.select", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
-			entries := receiver.Hash()
-			// Preflight the largest map select could keep plus the sorted key scratch
-			// buffer before reserving either; the block may keep every entry, so
-			// project the full input. The scratch list of all keys is live alongside
-			// the output map, so both are charged together here.
-			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
@@ -1294,16 +1357,24 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.reject does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.reject")
+			entries := receiver.Hash()
+			// Reserve the output map and sorted-key scratch for the walk's whole
+			// lifetime BEFORE building the runner, so the runner's bind-charge baseline
+			// already includes them. The block may keep every entry, so project the
+			// full input. Reserving first (rather than only preflighting the buffers
+			// separately) folds them into the live baseline every in-body check, the
+			// preflight, and the per-call bind charge all see -- so a rest-collecting
+			// destructure block (|k, (head, *tail)|) charges its fresh tail backing
+			// against a baseline that already accounts for the output map and scratch,
+			// closing the gap where receiver+out+scratch and receiver+tail each fit the
+			// quota while the real peak receiver+out+scratch+tail exceeds it.
+			delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), sortedKeyBufferBytes(len(entries))))
+			defer exec.releaseLoopScratch(delta)
+			runner, err := newBlockCallRunner(exec, block, "hash.reject", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
-			entries := receiver.Hash()
-			// Preflight the largest map reject could keep plus the sorted key scratch
-			// buffer before reserving either; the block may keep every entry, so
-			// project the full input. The scratch list of all keys is live alongside
-			// the output map, so both are charged together here.
-			if err := exec.checkProjectedHashTransformBytes(len(entries), sortedKeyBufferBytes(len(entries)), receiver, args, kwargs, block); err != nil {
+			if err := exec.checkProjectedHashWalkBytes(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
 			out := make(map[string]Value, len(entries))
@@ -1337,7 +1408,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(kwargs) > 0 {
 				return NewNil(), fmt.Errorf("hash.map_with_index does not take keyword arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.map_with_index")
+			runner, err := newBlockCallRunner(exec, block, "hash.map_with_index", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
@@ -1406,16 +1477,33 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_keys does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.transform_keys")
-			if err != nil {
+			if err := ensureBlock(block, "hash.transform_keys"); err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// Preflight the output map's structural slots before reserving it;
-			// transform_keys produces at most one entry per input key. The block can
-			// return a fresh key string per entry, and those synthesized keys live
-			// only in the Go-local out map until the builtin returns, so the
-			// structural projection cannot bound them. Charge each synthesized key
+			// Reserve the output map and sorted-key scratch for the build's whole
+			// lifetime BEFORE building the runner, so the runner's bind-charge baseline
+			// already includes them. transform_keys produces at most one entry per input
+			// key, and its make(map, len(entries)) backing is live before the first block
+			// runs, so reserve the full input. Folding the backing and scratch into the
+			// live baseline through reserveLoopScratch (rather than only into the
+			// accumulator's running budget) means a rest-collecting destructure block
+			// charges its fresh backing against a baseline that already accounts for the
+			// output map and scratch, closing the gap where receiver+out+scratch and
+			// receiver+rest each fit the quota while the real peak exceeds it.
+			scratch := sortedKeyBufferBytes(len(entries))
+			delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), scratch))
+			defer exec.releaseLoopScratch(delta)
+			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			runner, err := newBlockCallRunner(exec, block, "hash.transform_keys", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			// The block can return a fresh key string per entry, and those synthesized
+			// keys live only in the Go-local out map until the builtin returns, so the
+			// structural reservation above cannot bound them. Charge each synthesized key
 			// incrementally through a build accumulator via addSynthesizedKey: only
 			// the block-returned key is fresh, so only it goes through the results-only
 			// estimator; the value stays a receiver value already counted in the call
@@ -1424,24 +1512,11 @@ func hashMemberTransforms(property string) (Value, error) {
 			// conservative: a block that collapses several input keys onto one output
 			// key is charged once per write rather than dedup'd to a single entry, an
 			// over-count that keeps the bound sound (the running total only grows). The
-			// sorted key scratch buffer is charged alongside the structural projection
-			// here and reserved in the accumulator so it stays charged for the whole
-			// build.
-			scratch := sortedKeyBufferBytes(len(entries))
-			if err := exec.checkProjectedHashTransformBytes(len(entries), scratch, receiver, args, kwargs, block); err != nil {
-				return NewNil(), err
-			}
+			// output map and scratch are already held against the quota by the
+			// reserveLoopScratch above (which the accumulator's baseline reads through
+			// estimateMemoryUsageBase), so the accumulator charges only the per-entry
+			// payloads beyond those slots.
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
-			// The output map is preallocated with make(map, len(entries)), so its full
-			// backing is live before the first block runs; reserve it so a large early
-			// synthesized key is checked against the whole backing, not just the slots
-			// filled so far.
-			if err := acc.reserveBacking(len(entries)); err != nil {
-				return NewNil(), err
-			}
-			if err := acc.reserveScratch(scratch); err != nil {
-				return NewNil(), err
-			}
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string
@@ -1517,40 +1592,44 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("hash.transform_values does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "hash.transform_values")
-			if err != nil {
+			if err := ensureBlock(block, "hash.transform_values"); err != nil {
 				return NewNil(), err
 			}
 			entries := receiver.Hash()
-			// Preflight the output map's structural slots before reserving it;
-			// transform_values keeps every key. The block can return a fresh heap
-			// value per entry, and those results live only in the Go-local out map
-			// until the builtin returns, so the structural projection cannot bound
-			// them. Charge each result incrementally through a build accumulator whose
-			// results-only estimator counts each block result's full footprint as it is
-			// produced, so accumulated payloads count toward the quota during the loop,
-			// not only at the post-call check. Counting is conservative: a block that
-			// returns a value unchanged and shared with the receiver is counted again
-			// rather than dedup'd against the baseline, an over-count that keeps the
-			// bound sound even when a block mutates a receiver-owned container in place
-			// and returns it. The sorted key scratch buffer is charged alongside the
-			// structural projection here and reserved in the accumulator so it stays
-			// charged for the whole build.
+			// Reserve the output map and sorted-key scratch for the build's whole
+			// lifetime BEFORE building the runner, so the runner's bind-charge baseline
+			// already includes them. transform_values keeps every key, and its
+			// make(map, len(entries)) backing is live before the first block runs, so
+			// reserve the full input. Folding the backing and scratch into the live
+			// baseline through reserveLoopScratch (rather than only into the accumulator's
+			// running budget) means a rest-collecting destructure block charges its fresh
+			// backing against a baseline that already accounts for the output map and
+			// scratch, closing the gap where receiver+out+scratch and receiver+rest each
+			// fit the quota while the real peak exceeds it.
 			scratch := sortedKeyBufferBytes(len(entries))
-			if err := exec.checkProjectedHashTransformBytes(len(entries), scratch, receiver, args, kwargs, block); err != nil {
+			delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), scratch))
+			defer exec.releaseLoopScratch(delta)
+			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
+			runner, err := newBlockCallRunner(exec, block, "hash.transform_values", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
+			// The block can return a fresh heap value per entry, and those results live
+			// only in the Go-local out map until the builtin returns, so the structural
+			// reservation above cannot bound them. Charge each result incrementally
+			// through a build accumulator whose results-only estimator counts each block
+			// result's full footprint as it is produced, so accumulated payloads count
+			// toward the quota during the loop, not only at the post-call check. Counting
+			// is conservative: a block that returns a value unchanged and shared with the
+			// receiver is counted again rather than dedup'd against the baseline, an
+			// over-count that keeps the bound sound even when a block mutates a
+			// receiver-owned container in place and returns it. The output map and scratch
+			// are already held against the quota by the reserveLoopScratch above (which
+			// the accumulator's baseline reads through estimateMemoryUsageBase), so the
+			// accumulator charges only the per-entry payloads beyond those slots.
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
-			// The output map is preallocated with make(map, len(entries)), so its full
-			// backing is live before the first block runs; reserve it so a large early
-			// block result is checked against the whole backing, not just the slots
-			// filled so far.
-			if err := acc.reserveBacking(len(entries)); err != nil {
-				return NewNil(), err
-			}
-			if err := acc.reserveScratch(scratch); err != nil {
-				return NewNil(), err
-			}
 			out := make(map[string]Value, len(entries))
 			var blockArg [1]Value
 			var keyBuf [smallHashKeyBufferSize]string

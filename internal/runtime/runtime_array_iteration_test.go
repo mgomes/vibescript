@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	goruntime "runtime"
 	"testing"
 )
 
@@ -412,4 +413,177 @@ func TestArrayIterationHelpersIsolateYieldedSlices(t *testing.T) {
 
 	compareArrays(t, callFunc(t, script, "slice_isolation", nil), []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
 	compareArrays(t, callFunc(t, script, "cons_isolation", nil), []Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)})
+}
+
+// TestArrayEachNestedRestEmptyBodyTripsMemoryQuota mirrors the Hash#each nested-rest
+// escape on the array side: a |(head, *tail)| block over an array whose elements are
+// themselves arrays binds tail to a fresh, source-sized copy of each element. With an
+// EMPTY block body the body's own memory checks never run, and the receiver -- driven
+// directly into the builtin here -- lives only on the Go call stack, invisible to
+// estimateMemoryUsageBase. Without the per-call bind charge the array and hash
+// iterators now share, the fresh copy would escape the quota; the charge counts it
+// against the live call roots so a quota that fits the receiver but not the tail copy
+// must reject the walk. This is the array-side twin of
+// TestHashEachEmptyBodyNestedRestTripsMemoryQuota and likewise fails without the fix.
+func TestArrayEachNestedRestEmptyBodyTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	// |(head, *tail)| with an empty body: only the bind charge can observe the fresh
+	// tail copy each element yields.
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	block := NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil))
+
+	// One element whose payload dwarfs the headroom: binding its tail copies the whole
+	// element into a fresh backing the quota cannot hold.
+	const elementLen = 200_000
+	element := make([]Value, elementLen)
+	for i := range element {
+		element[i] = NewInt(int64(i))
+	}
+	receiver := NewArray([]Value{NewArray(element)})
+
+	// Size the quota to admit the live roots (receiver plus block) and a little
+	// headroom, but not the fresh tail copy the rest collects.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	quota := roots + 16*1024
+
+	member, err := arrayMember(receiver, "each")
+	if err != nil {
+		t.Fatalf("arrayMember(each): %v", err)
+	}
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err = valueBuiltin(member).Fn(exec, receiver, nil, nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestArrayEachNestedRestRejectsBeforeAllocatingTail pins the #808 P1 fix: a
+// rest-collecting block parameter must reject an over-quota tail BEFORE the
+// destructurer materializes it, not after. assignDestructure copies a named rest's
+// window into a fresh make([]Value, len(window)) backing; the bind charge now
+// preflights that window against the quota before the copy. Without the preflight a
+// quota below a single copied tail still produced errMemoryQuotaExceeded -- but only
+// AFTER the make+copy already allocated the full tail (the OOM/escape the finding
+// flagged). This test sizes the quota below one tail copy and measures the bytes the
+// rejected walk allocates: a pre-allocation gate keeps that far below the tail's
+// backing, while a post-allocation check would allocate the whole tail before
+// rejecting, failing the byte ceiling. It is the array-side companion to
+// TestArrayEachNestedRestEmptyBodyTripsMemoryQuota, which only asserts the rejection.
+func TestArrayEachNestedRestRejectsBeforeAllocatingTail(t *testing.T) {
+	// Not parallel: this test reads process-wide allocation counters and must not
+	// race other goroutines' allocations.
+
+	pos := Position{Line: 1, Column: 1}
+	// |(head, *tail)| with an EMPTY body: only the bind charge observes the fresh
+	// tail copy, so the preflight is the sole gate before the make+copy.
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	block := NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil))
+
+	// One element whose tail dwarfs the quota: binding |(head, *tail)| would copy
+	// tailLen Value slots into a fresh backing. tailLen = elementLen - 1 (head takes
+	// the first slot).
+	const elementLen = 2_000_000
+	const tailLen = elementLen - 1
+	element := make([]Value, elementLen)
+	for i := range element {
+		element[i] = NewInt(int64(i))
+	}
+	receiver := NewArray([]Value{NewArray(element)})
+
+	// Size the quota to admit the live call roots (receiver plus block) plus a little
+	// headroom, but far below the fresh tail backing the rest would collect. Both a
+	// pre- and a post-allocation check reject here; the distinguishing signal is the
+	// bytes allocated before the rejection, measured below.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	quota := roots + 16*1024
+
+	member, err := arrayMember(receiver, "each")
+	if err != nil {
+		t.Fatalf("arrayMember(each): %v", err)
+	}
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+
+	var before, after goruntime.MemStats
+	goruntime.GC()
+	goruntime.ReadMemStats(&before)
+	_, err = valueBuiltin(member).Fn(exec, receiver, nil, nil, block)
+	goruntime.ReadMemStats(&after)
+
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	// A post-allocation check would make+copy the whole tail (tailLen Value slots)
+	// before rejecting. The pre-allocation gate never reaches that make, so the
+	// rejected walk allocates only bookkeeping. Use a generous ceiling (a tenth of
+	// the tail backing) to stay robust against unrelated allocation noise while still
+	// failing loudly if the full tail is ever materialized before the check.
+	const fullTailBytes = uint64(tailLen) * uint64(estimatedValueBytes)
+	const ceiling = fullTailBytes / 10
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > ceiling {
+		t.Fatalf("rejected walk allocated %d bytes, want <= %d (a copied tail would be %d): the rest window was materialized before the quota check",
+			allocated, ceiling, fullTailBytes)
+	}
+}
+
+// TestCallBlockNestedRestArgTripsMemoryQuota covers the capability-adapter side of
+// the positional-call-root gap the Codex thread on PR #808 raised. A host capability
+// drives a user block through exec.CallBlock with arguments that live only on the Go
+// call stack; a |(head, *tail)| block binds tail to a fresh, source-sized copy of the
+// argument array. With an EMPTY block body only the per-call bind charge observes the
+// copy, and that charge must count the argument it was copied from. The quota admits
+// the fresh tail copy charged against an empty baseline (the buggy path, which omitted
+// the host arguments) plus headroom, but NOT the real peak (argument + tail). Before
+// the fix the buggy baseline let CallBlock complete and escape the quota.
+func TestCallBlockNestedRestArgTripsMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	target := &DestructureTarget{
+		Position: pos,
+		Elements: []DestructureElement{
+			{Target: &Identifier{Name: "head", Position: pos}},
+			{Target: &Identifier{Name: "tail", Position: pos}, Rest: true},
+		},
+	}
+	block := NewBlock([]Param{{Kind: ParamNormal, Target: target}}, nil, newEnv(nil))
+
+	const argLen = 200_000
+	argValue := arrayValue(argLen)
+	args := []Value{argValue}
+
+	// begin seeds the estimator with the host arguments, so the fresh tail copy's
+	// shared int payloads deduplicate and only its genuinely new backing slots are
+	// charged. Mirror that to size the quota from the estimator's real accounting.
+	est := newMemoryEstimator()
+	est.value(argValue)
+	tail := NewArray(slicesClone(argValue.Array()[1:]))
+	tailCharge := est.value(tail)
+	const headroom = 16 * 1024
+	// The buggy baseline omitted the host arguments entirely (CallBlock passes no
+	// receiver), so it charged only the fresh tail. A quota that clears that buggy
+	// peak with headroom would have let the call complete.
+	quota := tailCharge + headroom
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	correctRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), NewNil(), args, nil, block)
+	if correctRoots+tailCharge <= quota {
+		t.Fatalf("test setup expects the argument-inclusive peak (%d) to exceed the quota (%d)", correctRoots+tailCharge, quota)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := exec.CallBlock(block, args)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
