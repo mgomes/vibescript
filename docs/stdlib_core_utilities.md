@@ -134,6 +134,29 @@ render as `<cycle>`. The rendered length is charged against the sandbox memory
 quota before the string is built, so inspecting a huge composite fails with a
 quota error instead of allocating an oversized result.
 
+## Object Helpers
+
+Every core value kind responds to the block-yielding helpers `tap` and
+`yield_self`. Both require a block, take no positional or keyword arguments, and
+pass the receiver as the block's single argument. They differ only in what they
+return:
+
+- `tap { |value| } -> receiver` – yields the receiver, ignores the block's
+  result, and returns the receiver. Use it to thread a side effect (such as
+  logging) through a pipeline without changing the value.
+- `yield_self { |value| } -> block result` – yields the receiver and returns the
+  block's result, so it rewrites a value inline.
+
+```vibe
+"ada".tap { |name| name.upcase }        # "ada" (block result discarded)
+"ada".yield_self { |name| name.upcase } # "ADA"
+3.yield_self { |n| n * 100 }            # 300
+```
+
+These helpers resolve only when the receiver does not already define a member of
+the same name, so a hash key, instance variable, or user-defined method named
+`tap` or `yield_self` keeps precedence.
+
 ## Strings
 
 See [strings.md](strings.md) for worked examples. Indexes and lengths count
