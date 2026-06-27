@@ -169,30 +169,17 @@ func (exec *Execution) step() error {
 	return nil
 }
 
-// checkBudget reports whether execution may continue without charging a step. It
-// performs the same step-quota and cancellation checks as step, but
-// unconditionally (step only samples cancellation on a periodic slow path) and
-// without incrementing the step counter. Builtins that materialize or
-// preallocate a structure sized to the whole receiver call this before that bulk
-// work so an already-canceled context or already-exhausted step quota aborts the
-// allocation, rather than reserving the full backing and only observing the stop
-// condition once the per-element loop runs.
-func (exec *Execution) checkBudget() error {
-	return exec.checkStepBudgetFor(1)
-}
-
 // checkStepBudgetFor reports whether at least n more steps may be charged
 // without exhausting the step quota, and whether the context is still live. It
-// generalizes checkBudget (which only requires a single step) for builtins that
-// will charge one step per element of a known-size receiver: when the remaining
-// quota cannot cover all n steps the per-element loop is guaranteed to fail, so
-// rejecting up front lets such a builtin skip bulk work (for example sorting a
-// hash's keys) that the loop would otherwise perform before the first step()
-// fails. A non-positive n performs only the cancellation check, so callers can
-// pass a receiver length directly even when it is zero without requiring an
-// element step that the loop would never charge. Like step, the per-element
-// charge still observes the quota and cancellation, so this is purely an
-// early-out and never accepts a build the loop would reject.
+// is used by builtins that will charge one step per element of a known-size
+// receiver: when the remaining quota cannot cover all n steps the per-element
+// loop is guaranteed to fail, so rejecting up front lets such a builtin skip bulk
+// work (for example sorting a hash's keys) that the loop would otherwise perform
+// before the first step() fails. A non-positive n performs only the cancellation
+// check, so callers can pass a receiver length directly even when it is zero
+// without requiring an element step that the loop would never charge. Like step,
+// the per-element charge still observes the quota and cancellation, so this is
+// purely an early-out and never accepts a build the loop would reject.
 func (exec *Execution) checkStepBudgetFor(n int) error {
 	if n < 0 {
 		n = 0
