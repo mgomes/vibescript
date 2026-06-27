@@ -1288,9 +1288,13 @@ func (p *parser) parseHashPair() ast.HashPair {
 	}
 
 	var key ast.Expression
+	// labelKey records a label-style key (name:) so its value may be omitted as
+	// shorthand for the matching local variable.
+	var labelKey *ast.SymbolLiteral
 	switch {
 	case isLabelNameToken(p.curToken):
-		key = &ast.SymbolLiteral{Name: p.curToken.Literal, Position: p.curToken.Pos}
+		labelKey = &ast.SymbolLiteral{Name: p.curToken.Literal, Position: p.curToken.Pos}
+		key = labelKey
 	case p.curToken.Type == ast.TokenString:
 		key = &ast.StringLiteral{Value: p.curToken.Literal, Position: p.curToken.Pos}
 	default:
@@ -1300,6 +1304,14 @@ func (p *parser) parseHashPair() ast.HashPair {
 	}
 	p.nextToken()
 	if p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenRBrace || p.peekToken.Type == ast.TokenEOF {
+		// Label keys support value omission: {name:} reads the local variable
+		// `name`, matching call-site keyword shorthand (greet name:). Missing
+		// locals fall through to the normal undefined-variable diagnostic at
+		// evaluation time.
+		if labelKey != nil {
+			value := &ast.Identifier{Name: labelKey.Name, Position: labelKey.Position}
+			return ast.HashPair{Key: key, Value: value}
+		}
 		p.addParseError(p.peekToken.Pos, fmt.Sprintf("missing value for hash key %s", hashKeyName(key)))
 		return ast.HashPair{}
 	}
