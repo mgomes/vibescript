@@ -2178,8 +2178,13 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			arr := receiver.Array()
 			if count == 0 {
+				// Return a copy of the receiver rather than wrapping its backing
+				// slice, so mutating the returned array through index assignment
+				// cannot reach the source.
+				remaining := make([]Value, len(arr))
+				copy(remaining, arr)
 				return NewHash(map[string]Value{
-					"array":  NewArray(arr),
+					"array":  NewArray(remaining),
 					"popped": NewNil(),
 				}), nil
 			}
@@ -2574,9 +2579,13 @@ func arrayShift(exec *Execution, receiver Value, args []Value, kwargs map[string
 		// count == 0 is only reachable through the explicit-count form shift(0);
 		// bare shift() defaults count to 1. Ruby's [1, 2].shift(0) returns [], so
 		// report an empty array, keeping shifted typed as an array for every
-		// explicit-count call rather than nil only in the zero case.
+		// explicit-count call rather than nil only in the zero case. Return a copy
+		// of the receiver rather than wrapping its backing slice, so mutating the
+		// returned array through index assignment cannot reach the source.
+		remaining := make([]Value, len(arr))
+		copy(remaining, arr)
 		return NewHash(map[string]Value{
-			"array":   NewArray(arr),
+			"array":   NewArray(remaining),
 			"shifted": NewArray([]Value{}),
 		}), nil
 	}

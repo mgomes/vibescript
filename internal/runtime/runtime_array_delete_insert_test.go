@@ -457,3 +457,106 @@ end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 64, MemoryQuotaBytes: 1 << 30}, source)
 	requireCallRuntimeErrorType(t, script, "run", nil, CallOptions{}, runtimeErrorTypeLimit)
 }
+
+// TestArrayHelpersDoNotAliasReceiverBacking guards every collection helper this
+// PR adds or touches against the non-mutating contract: a returned result array
+// must never share the receiver's backing slice. Vibescript arrays are mutable
+// through index assignment (arr[i] = v writes straight into the backing slice),
+// so each case index-assigns into the returned array and then asserts the source
+// receiver is unchanged. compareArrays only inspects values and cannot catch
+// aliasing, so the in-script mutation is what makes this regression meaningful.
+func TestArrayHelpersDoNotAliasReceiverBacking(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def shift_zero(values)
+      result = values.shift(0)
+      out = result[:array]
+      out[0] = 999
+      values
+    end
+
+    def pop_zero(values)
+      result = values.pop(0)
+      out = result[:array]
+      out[0] = 999
+      values
+    end
+
+    def shift_count(values)
+      result = values.shift(1)
+      out = result[:array]
+      out[0] = 999
+      values
+    end
+
+    def pop_count(values)
+      result = values.pop(1)
+      out = result[:array]
+      out[0] = 999
+      values
+    end
+
+    def delete_miss(values)
+      result = values.delete(999)
+      out = result[:array]
+      out[0] = 999
+      values
+    end
+
+    def delete_hit(values)
+      result = values.delete(2)
+      out = result[:array]
+      out[0] = 999
+      values
+    end
+
+    def insert_noop(values)
+      out = values.insert(1)
+      out[0] = 999
+      values
+    end
+
+    def insert_values(values)
+      out = values.insert(1, "x")
+      out[0] = 999
+      values
+    end
+
+    def prepend_noop(values)
+      out = values.prepend
+      out[0] = 999
+      values
+    end
+
+    def unshift_noop(values)
+      out = values.unshift
+      out[0] = 999
+      values
+    end
+    `)
+
+	tests := []struct {
+		name     string
+		function string
+	}{
+		{"shift(0) copies the receiver", "shift_zero"},
+		{"pop(0) copies the receiver", "pop_zero"},
+		{"shift(n) copies the receiver", "shift_count"},
+		{"pop(n) copies the receiver", "pop_count"},
+		{"delete on a miss copies the receiver", "delete_miss"},
+		{"delete on a hit copies the receiver", "delete_hit"},
+		{"insert with no values copies the receiver", "insert_noop"},
+		{"insert with values copies the receiver", "insert_values"},
+		{"prepend with no values copies the receiver", "prepend_noop"},
+		{"unshift with no values copies the receiver", "unshift_noop"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			source := callFunc(t, script, tt.function,
+				[]Value{NewArray([]Value{NewInt(1), NewInt(2), NewInt(3)})})
+			compareArrays(t, source, []Value{NewInt(1), NewInt(2), NewInt(3)})
+		})
+	}
+}
