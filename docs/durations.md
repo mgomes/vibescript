@@ -104,6 +104,10 @@ wrong number of arguments.
 1.hour.eql?(Time.utc(2024, 1, 1))  # false (wrong type)
 ```
 
+Like every value, durations also answer the universal `equal?` identity
+predicate; for an immutable duration it matches `eql?`. See
+[Universal Predicates](stdlib_core_utilities.md#universal-predicates).
+
 ## Example: Scheduling
 
 ```vibe

@@ -36,6 +36,33 @@ func (e *assertionFailureError) Error() string {
 	return e.message
 }
 
+// privateMemberError marks a member-resolution failure that occurred because the
+// member exists but is private to the receiver. It wraps the formatted runtime
+// error so callers still surface the full "private method" message, while member
+// dispatch can distinguish it from a genuine unknown-member miss via errors.As.
+// The universal equality predicates rely on that distinction so a private
+// override of eql?/equal? still raises instead of falling through to the builtin.
+type privateMemberError struct {
+	err error
+}
+
+func (e *privateMemberError) Error() string { return e.err.Error() }
+
+func (e *privateMemberError) Unwrap() error { return e.err }
+
+// privateMemberAccess wraps a formatted "private method" runtime error so member
+// resolution can recognize it as a privacy block rather than a missing member.
+func privateMemberAccess(err error) error {
+	return &privateMemberError{err: err}
+}
+
+// isPrivateMemberError reports whether err signals a member blocked by privacy,
+// as opposed to a member that does not exist on the receiver at all.
+func isPrivateMemberError(err error) bool {
+	var private *privateMemberError
+	return errors.As(err, &private)
+}
+
 const (
 	runtimeErrorTypeBase      = ast.RuntimeErrorTypeBase
 	runtimeErrorTypeAssertion = ast.RuntimeErrorTypeAssertion
