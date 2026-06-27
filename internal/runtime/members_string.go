@@ -1493,6 +1493,9 @@ func validateLiteralReplacement(method, text, pattern, replacement string, all b
 	if count == 0 {
 		return false, nil
 	}
+	if pattern == replacement {
+		return true, nil
+	}
 	if len(replacement) > maxRegexInputBytes {
 		return false, fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
@@ -1516,6 +1519,9 @@ func stringSub(method, text, pattern, replacement string, regex bool) (string, b
 		if err != nil {
 			return "", false, err
 		}
+		if matched && pattern == replacement {
+			return text, true, nil
+		}
 		return strings.Replace(text, pattern, replacement, 1), matched, nil
 	}
 	if err := validateRegexTextPattern(method, text, pattern); err != nil {
@@ -1536,6 +1542,9 @@ func stringGSub(method, text, pattern, replacement string, regex bool) (string, 
 		matched, err := validateLiteralReplacement(method, text, pattern, replacement, true)
 		if err != nil {
 			return "", false, err
+		}
+		if matched && pattern == replacement {
+			return text, true, nil
 		}
 		return strings.ReplaceAll(text, pattern, replacement), matched, nil
 	}

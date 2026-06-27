@@ -250,6 +250,14 @@ end
 def literal_sub(text, pattern)
   text.sub(pattern, "R")
 end
+
+def literal_gsub_noop(text, pattern)
+  text.gsub(pattern, pattern)
+end
+
+def literal_sub_noop(text, pattern)
+  text.sub(pattern, pattern)
+end
 	`)
 
 	requireCallErrorContains(t, script, "gsub_run", []Value{
@@ -283,6 +291,20 @@ end
 	got = callFunc(t, script, "literal_sub", []Value{NewString(bigLiteral), NewString(bigLiteral)})
 	if got.Kind() != KindString || got.String() != "R" {
 		t.Fatalf("sub collapsing oversized source = %#v, want replacement", got)
+	}
+	got = callFunc(t, script, "literal_gsub_noop", []Value{NewString(bigLiteral), NewString(bigLiteral)})
+	if got.Kind() != KindString || got.String() != bigLiteral {
+		t.Fatalf("gsub no-op oversized literal = %#v, want original string", got)
+	}
+	got = callFunc(t, script, "literal_sub_noop", []Value{NewString(bigLiteral), NewString(bigLiteral)})
+	if got.Kind() != KindString || got.String() != bigLiteral {
+		t.Fatalf("sub no-op oversized literal = %#v, want original string", got)
+	}
+
+	hugeRun := strings.Repeat("a", maxRegexInputBytes+1)
+	got = callFunc(t, script, "literal_gsub_noop", []Value{NewString(hugeRun), NewString("a")})
+	if got.Kind() != KindString || got.String() != hugeRun {
+		t.Fatalf("gsub no-op over-cap output = %#v, want original string", got)
 	}
 }
 
