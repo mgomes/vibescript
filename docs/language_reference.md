@@ -319,8 +319,9 @@ the trailing `.name` still dispatches on whatever `user&.profile` returned; if
 that is `nil`, the `.name` access raises. Use safe navigation at each link
 (`user&.profile&.name`) to guard a whole chain.
 
-Safe navigation cannot be used as an assignment target, so `user&.name = "Ada"`
-is a parse error.
+Safe navigation cannot be used as an assignment target. It is rejected anywhere
+in the target, so `user&.name = "Ada"`, `user&.profile.name = "Ada"`, and
+`user&.items[0] = 1` are all parse errors rather than assignments through `nil`.
 
 ## Operators
 

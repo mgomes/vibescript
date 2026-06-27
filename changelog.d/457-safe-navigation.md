@@ -4,5 +4,6 @@
   short-circuited call evaluates neither its arguments nor its block, matching
   Ruby. The operator guards only its immediate access, so `user&.profile.name`
   still dispatches the trailing `.name` on whatever `user&.profile` returns. Safe
-  navigation cannot be used as an assignment target, so `user&.name = "Ada"`
-  remains a parse error.
+  navigation cannot appear anywhere in an assignment target, so `user&.name`,
+  `user&.profile.name`, and `user&.items[0]` are all parse errors on the left of
+  an assignment rather than silently assigning through `nil`.

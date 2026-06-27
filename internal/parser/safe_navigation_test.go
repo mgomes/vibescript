@@ -159,14 +159,86 @@ end`).(*ast.CallExpr)
 func TestParserRejectsSafeNavigationAssignmentTarget(t *testing.T) {
 	t.Parallel()
 
-	_, errs := parseSource(t, `def run
-  user&.name = "Ada"
-end`)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 parse error, got %d: %v", len(errs), errs)
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "direct_member", target: `user&.name`},
+		{name: "nested_member", target: `user&.profile.name`},
+		{name: "indexed", target: `user&.items[0]`},
+		{name: "call_in_chain", target: `user&.fetch().name`},
+		{name: "compound_assign", target: `user&.count`},
+		{name: "safe_in_middle", target: `user.profile&.name`},
 	}
-	if got, want := errs[0].Error(), "safe navigation cannot be used as an assignment target"; !strings.Contains(got, want) {
-		t.Fatalf("error = %q, want substring %q", got, want)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			operator := "="
+			if tt.name == "compound_assign" {
+				operator = "+="
+			}
+			_, errs := parseSource(t, "def run\n  "+tt.target+" "+operator+" 1\nend")
+			if len(errs) != 1 {
+				t.Fatalf("expected 1 parse error, got %d: %v", len(errs), errs)
+			}
+			if got, want := errs[0].Error(), "safe navigation cannot be used as an assignment target"; !strings.Contains(got, want) {
+				t.Fatalf("error = %q, want substring %q", got, want)
+			}
+		})
+	}
+}
+
+func TestParserRejectsSafeNavigationDestructureTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		targets string
+	}{
+		{name: "first_member", targets: `user&.name, x`},
+		{name: "later_indexed", targets: `x, user&.items[0]`},
+		{name: "nested_member", targets: `user&.profile.name, x`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, errs := parseSource(t, "def run\n  "+tt.targets+" = 1, 2\nend")
+			if len(errs) == 0 {
+				t.Fatalf("expected a parse error, got none")
+			}
+			if got, want := errs[0].Error(), "safe navigation cannot be used as an assignment target"; !strings.Contains(got, want) {
+				t.Fatalf("error = %q, want substring %q", got, want)
+			}
+		})
+	}
+}
+
+func TestParserAcceptsOrdinaryAssignmentTargets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "member", target: `user.name`},
+		{name: "nested_member", target: `user.profile.name`},
+		{name: "indexed", target: `user.items[0]`},
+		{name: "identifier", target: `value`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, errs := parseSource(t, "def run\n  "+tt.target+" = 1\nend")
+			if len(errs) != 0 {
+				t.Fatalf("parseSource(%q) errors = %v, want none", tt.target, errs)
+			}
+		})
 	}
 }
 
