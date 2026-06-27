@@ -2,7 +2,11 @@ package runtime
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/mgomes/vibescript/internal/ast"
 )
 
 func TestArrayToHash(t *testing.T) {
@@ -286,6 +290,125 @@ func TestArrayToHashHonorsMemoryQuota(t *testing.T) {
 
 	converts := compileScriptWithConfig(t, cfg, `def run(a); a.to_h; end`)
 	requireCallRuntimeErrorType(t, converts, "run", []Value{pairsArr}, CallOptions{}, runtimeErrorTypeLimit)
+}
+
+// callArrayMember resolves an array member builtin and invokes it directly so the
+// conversion tests can supply a controlled Execution, mirroring callHashMember.
+// The builtins are pure functions of (exec, receiver, args, kwargs, block).
+func callArrayMember(t *testing.T, exec *Execution, receiver Value, name string, args []Value, block Value) (Value, error) {
+	t.Helper()
+	member, err := arrayMember(receiver, name)
+	if err != nil {
+		t.Fatalf("arrayMember(%s): %v", name, err)
+	}
+	builtin := valueBuiltin(member)
+	if builtin == nil {
+		t.Fatalf("array member %s is not a builtin", name)
+	}
+	return builtin.Fn(exec, receiver, args, nil, block)
+}
+
+// toHPairBlock builds the block { |k| [<key>, <value>] }, where key and value are
+// each either the block parameter (the per-element receiver value) or a captured
+// constant. It lets a test choose, per side, whether the entry's key or value is a
+// distinct receiver-derived payload or a shared constant, isolating which half of
+// the build accumulator's charge a quota trips on.
+func toHPairBlock(keyFromParam bool, capturedKey Value, valueFromParam bool, capturedValue Value) Value {
+	pos := ast.Position{Line: 1, Column: 1}
+	env := newEnv(nil)
+	keyExpr := pairElementExpr(keyFromParam, "capturedKey", capturedKey, env, pos)
+	valueExpr := pairElementExpr(valueFromParam, "capturedValue", capturedValue, env, pos)
+	body := []ast.Statement{&ast.ExprStmt{Position: pos, Expr: &ast.ArrayLiteral{
+		Position: pos,
+		Elements: []ast.Expression{keyExpr, valueExpr},
+	}}}
+	return NewBlock([]ast.Param{{Name: "k"}}, body, env)
+}
+
+func pairElementExpr(fromParam bool, captureName string, captured Value, env *Env, pos ast.Position) ast.Expression {
+	if fromParam {
+		return &ast.Identifier{Name: "k", Position: pos}
+	}
+	env.Define(captureName, captured)
+	return &ast.Identifier{Name: captureName, Position: pos}
+}
+
+// TestArrayToHashBlockChargesSynthesizedKeys pins the P1 finding on this PR: the
+// block form's synthesized keys must be charged as entries are inserted, not left
+// to a post-call check. A block that maps each large distinct element to a fresh
+// key, value pair (k.to_h-style { |k| [k, 7] }) builds keys that live only in the
+// Go-local output map until the builtin returns. The structural projection only
+// reserves one slot per element and the receiver dedups against the call roots, so
+// without the accumulator the build runs to completion and returns an over-quota
+// map. Driving the builtin directly removes the statement-level post-call net, so
+// the only thing that can reject the over-quota build is the incremental charge.
+func TestArrayToHashBlockChargesSynthesizedKeys(t *testing.T) {
+	t.Parallel()
+
+	const count = 300
+	const keyLen = 2048
+	items := make([]Value, count)
+	for i := range count {
+		items[i] = NewString(strings.Repeat("k", keyLen) + strconv.Itoa(i))
+	}
+	receiver := NewArray(items)
+	// { |k| [k, 7] }: each entry's key is the distinct large element, its value a
+	// shared small constant. The keys accumulate; the value contributes nothing.
+	block := toHPairBlock(true, NewNil(), false, NewInt(7))
+
+	// The structural projection dedups the receiver against the call roots, so size
+	// the quota above it (the receiver and one slot per element fit) but below the
+	// summed key payloads, leaving the accumulator's per-key charge the only thing
+	// that can reject the build.
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	structural := roots + estimatedEmptyOutputHashBytes + count*estimatedMapEntryStructuralBytes
+	quota := structural + 64*1024
+	if quota >= structural+count*keyLen {
+		t.Fatalf("test setup expects the summed key payloads (%d) to exceed the headroom above the structural projection (%d)", count*keyLen, quota-structural)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, exec, receiver, "to_h", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+}
+
+// TestArrayToHashBlockChargesSynthesizedValues is the value-side twin: a block
+// that collapses every element onto one key while returning a distinct large value
+// per element ({ |k| ["dup", k] }). The final map holds a single entry, so even a
+// post-call check on the result would see almost nothing, yet the transient values
+// the block produces accumulate well past the quota during the build. The
+// accumulator charges each value per write (the conservative over-count that keeps
+// the bound sound), so the build is rejected as the values accrue.
+func TestArrayToHashBlockChargesSynthesizedValues(t *testing.T) {
+	t.Parallel()
+
+	const count = 300
+	const valLen = 2048
+	items := make([]Value, count)
+	for i := range count {
+		items[i] = NewString(strings.Repeat("v", valLen) + strconv.Itoa(i))
+	}
+	receiver := NewArray(items)
+	// { |k| ["dup", k] }: all entries collapse onto the constant key "dup" while
+	// each value is the distinct large element, so the values accumulate even though
+	// the final map holds one entry.
+	block := toHPairBlock(false, NewSymbol("dup"), true, NewNil())
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	roots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	structural := roots + estimatedEmptyOutputHashBytes + count*estimatedMapEntryStructuralBytes
+	quota := structural + 64*1024
+	if quota >= structural+count*valLen {
+		t.Fatalf("test setup expects the summed value payloads (%d) to exceed the headroom above the structural projection (%d)", count*valLen, quota-structural)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callArrayMember(t, exec, receiver, "to_h", nil, block)
+	if err == nil {
+		t.Fatalf("expected the accumulated block values to trip the quota, but the build produced a hash with %d entries", len(got.Hash()))
+	}
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 // TestHashToArrayHonorsMemoryQuota pins the P2 finding on this PR: a hash whose

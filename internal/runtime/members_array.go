@@ -1876,6 +1876,30 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 	if err := exec.checkProjectedHashBytes(len(arr), receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
+
+	// In the bare form every pair, key, and value aliases a receiver element, so
+	// the structural projection above (sized to the receiver, already a live call
+	// root) bounds the build. The block form is different: it can synthesize a
+	// fresh key string and a fresh value per element (ids.to_h { |id| [id.to_s,
+	// big] }), and those results live only in the Go-local out map until the
+	// builtin returns. The structural projection cannot see them, so many
+	// individually-under-quota block results could grow the map past the quota
+	// before the post-call check observed them. Charge each block-produced key and
+	// value incrementally through a build accumulator so accumulated payloads count
+	// toward the quota as entries are inserted. The accumulator is only needed for
+	// the block form; nil for the bare form skips the per-entry charge.
+	var acc *hashBuildAccumulator
+	if runner != nil {
+		acc = newHashBuildAccumulator(exec, receiver, args, kwargs, block)
+		// The output map is preallocated with make(map, len(arr)), so its full
+		// backing is live before the first block runs; reserve it so a large early
+		// block result is checked against the whole backing, not just the entries
+		// inserted so far.
+		if err := acc.reserveBacking(len(arr)); err != nil {
+			return NewNil(), err
+		}
+	}
+
 	out := make(map[string]Value, len(arr))
 	var blockArg [1]Value
 	for _, item := range arr {
@@ -1907,6 +1931,19 @@ func arrayToHash(exec *Execution, receiver Value, args []Value, kwargs map[strin
 			return NewNil(), fmt.Errorf("array.to_h pair key must be symbol or string")
 		}
 		out[key] = elements[1]
+		if acc != nil {
+			// The block synthesized both the key and the value, so charge each: the
+			// key string via addSynthesizedKey and the value via add. Both route
+			// through the accumulator's results-only estimator, so a backing shared
+			// across block results is counted once while a result aliasing a receiver
+			// element is conservatively counted again rather than dedup'd to nothing.
+			if err := acc.addSynthesizedKey(key); err != nil {
+				return NewNil(), err
+			}
+			if err := acc.add(elements[1]); err != nil {
+				return NewNil(), err
+			}
+		}
 	}
 	return NewHash(out), nil
 }
