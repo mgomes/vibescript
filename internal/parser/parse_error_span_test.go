@@ -70,6 +70,40 @@ func TestParseErrorEndIsZeroAtEndOfInput(t *testing.T) {
 	}
 }
 
+func TestParseInvalidInputDiagnosticsAreBounded(t *testing.T) {
+	src := strings.Repeat("\x80", 16*1024)
+	var errs []error
+	var rendered strings.Builder
+
+	_, errs = Parse(src)
+	allocs := testing.AllocsPerRun(1, func() {
+		rendered.Reset()
+		for i, err := range errs {
+			if i > 0 {
+				rendered.WriteString("\n\n")
+			}
+			rendered.WriteString(err.Error())
+		}
+	})
+
+	if len(errs) != maxParseErrors+1 {
+		t.Fatalf("Parse() returned %d errors, want %d", len(errs), maxParseErrors+1)
+	}
+	var last positionedError
+	if !errors.As(errs[len(errs)-1], &last) {
+		t.Fatalf("last error = %T, want positioned parse error", errs[len(errs)-1])
+	}
+	if want := "additional parse errors omitted"; !strings.Contains(last.Message(), want) {
+		t.Fatalf("last Message() = %q, want %q", last.Message(), want)
+	}
+	if rendered.Len() > 128*1024 {
+		t.Fatalf("rendered diagnostics length = %d, want bounded output", rendered.Len())
+	}
+	if allocs > 5000 {
+		t.Fatalf("diagnostic rendering allocations = %.0f, want bounded allocation count", allocs)
+	}
+}
+
 // TestLexerStampsSourceAccurateTokenEnds pins that token spans come from
 // the source text, not the normalized literal: strings lose their quotes
 // and escapes, symbols and ivars drop their sigils, and numeric literals

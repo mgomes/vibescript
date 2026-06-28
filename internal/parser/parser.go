@@ -8,6 +8,8 @@ import (
 	"github.com/mgomes/vibescript/vibes/source"
 )
 
+const maxParseErrors = 100
+
 type parser struct {
 	l *lexer
 
@@ -15,7 +17,9 @@ type parser struct {
 	peekToken ast.Token
 	peekPeek  ast.Token
 
-	errors []error
+	errors        []error
+	omittedErrors int
+	codeFrames    *source.CodeFrameFormatter
 
 	insideClass      bool
 	privateNext      bool
@@ -170,6 +174,7 @@ type parserSnapshot struct {
 	peekPeek   ast.Token
 	typeDepth  int
 	errorCount int
+	omitCount  int
 }
 
 // snapshot records the current parser state for a later restore. It is
@@ -186,6 +191,7 @@ func (p *parser) snapshot() parserSnapshot {
 		peekPeek:   p.peekPeek,
 		typeDepth:  p.typeDepth,
 		errorCount: len(p.errors),
+		omitCount:  p.omittedErrors,
 	}
 }
 
@@ -203,6 +209,7 @@ func (p *parser) restore(s parserSnapshot) {
 	p.peekPeek = s.peekPeek
 	p.typeDepth = s.typeDepth
 	p.errors = p.errors[:s.errorCount]
+	p.omittedErrors = s.omitCount
 }
 
 // Parse lexes and parses the given source text and returns the
@@ -227,6 +234,7 @@ func (p *parser) parseProgram() (*ast.Program, []error) {
 		p.nextToken()
 	}
 
+	p.addOmittedParseError()
 	return program, p.errors
 }
 
@@ -308,17 +316,18 @@ type parseError struct {
 	pos    ast.Position
 	end    ast.Position
 	msg    string
-	source string
+	frames *source.CodeFrameFormatter
 }
 
 func (e *parseError) Error() string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "parse error at %d:%d: %s", e.pos.Line, e.pos.Column, e.msg)
-	if frame := source.FormatCodeFrame(e.source, e.pos); frame != "" {
-		b.WriteString("\n")
-		b.WriteString(frame)
+	msg := fmt.Sprintf("parse error at %d:%d: %s", e.pos.Line, e.pos.Column, e.msg)
+	if e.frames == nil {
+		return msg
 	}
-	return b.String()
+	if frame := e.frames.Format(e.pos); frame != "" {
+		return msg + "\n" + frame
+	}
+	return msg
 }
 
 // Pos returns the 1-indexed source position where the error starts.
@@ -361,7 +370,30 @@ func (p *parser) addParseError(pos ast.Position, msg string) {
 }
 
 func (p *parser) addParseErrorSpan(pos, end ast.Position, msg string) {
-	p.errors = append(p.errors, &parseError{pos: pos, end: end, msg: msg, source: p.l.input})
+	if len(p.errors) >= maxParseErrors {
+		p.omittedErrors++
+		return
+	}
+	p.errors = append(p.errors, &parseError{pos: pos, end: end, msg: msg, frames: p.codeFrameFormatter()})
+}
+
+func (p *parser) addOmittedParseError() {
+	if p.omittedErrors == 0 {
+		return
+	}
+	msg := fmt.Sprintf("%d additional parse errors omitted", p.omittedErrors)
+	if p.omittedErrors == 1 {
+		msg = "1 additional parse error omitted"
+	}
+	p.errors = append(p.errors, &parseError{pos: p.curToken.Pos, msg: msg})
+	p.omittedErrors = 0
+}
+
+func (p *parser) codeFrameFormatter() *source.CodeFrameFormatter {
+	if p.codeFrames == nil {
+		p.codeFrames = source.NewCodeFrameFormatter(p.l.input)
+	}
+	return p.codeFrames
 }
 
 // tokenEnd returns the lexer-stamped exclusive end of the token. EOF
