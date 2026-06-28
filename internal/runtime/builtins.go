@@ -412,6 +412,9 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 		}
 		total = nextTotal
 	}
+	if nextArg < len(values) {
+		return 0, fmt.Errorf("format has %d unused operand(s)", len(values)-nextArg)
+	}
 	return total, nil
 }
 

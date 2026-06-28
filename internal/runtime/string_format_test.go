@@ -14,6 +14,7 @@ func TestRubyStyleStringFormatting(t *testing.T) {
     "%s:%03d" % ["id", 7],
     format("%.2f", 1.234),
     sprintf("%x", 255),
+    format("%[2]s", "skip", "kept"),
     "%s" % :ok,
     5 % 2
   ]
@@ -28,6 +29,7 @@ end`)
 		NewString("id:007"),
 		NewString("1.23"),
 		NewString("ff"),
+		NewString("kept"),
 		NewString("ok"),
 		NewInt(1),
 	})
@@ -79,4 +81,20 @@ end`)
 	requireCallErrorContains(t, script, "run", []Value{
 		NewString(invalidBytes),
 	}, CallOptions{}, "format output exceeds limit")
+}
+
+func TestRubyStyleStringFormattingRejectsUnusedOperandsBeforeFormatting(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 * maxFormatOutputBytes}, `def builtin_format(extra)
+  format("", extra)
+end
+
+def operator_format(extra)
+  "" % [extra]
+end`)
+	extra := NewString(strings.Repeat("x", maxFormatOutputBytes))
+
+	requireCallErrorContains(t, script, "builtin_format", []Value{extra}, CallOptions{}, "unused operand")
+	requireCallErrorContains(t, script, "operator_format", []Value{extra}, CallOptions{}, "unused operand")
 }
