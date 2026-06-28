@@ -2455,21 +2455,26 @@ func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value
 }
 
 func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value, error) {
-	current, assign, err := exec.prepareCompoundAssignmentTarget(stmt.Target, env)
+	target, err := exec.prepareLogicalAssignmentTarget(stmt.Target, env)
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(current); err != nil {
+	if err := exec.checkMemoryWith(target.current); err != nil {
 		return NewNil(), err
 	}
 	switch stmt.Operator {
 	case tokenOrAssign:
-		if current.Truthy() {
-			return current, nil
+		if target.current.Truthy() {
+			return target.current, nil
 		}
 	case tokenAndAssign:
-		if !current.Truthy() {
-			return current, nil
+		if !target.current.Truthy() {
+			if target.defineOnShortCircuit {
+				if err := target.assign(target.current); err != nil {
+					return NewNil(), err
+				}
+			}
+			return target.current, nil
 		}
 	default:
 		return NewNil(), exec.errorAt(stmt.Pos(), "unsupported logical assignment operator")
@@ -2479,13 +2484,40 @@ func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value,
 	if err != nil {
 		return NewNil(), err
 	}
-	if err := exec.checkMemoryWith(current, right); err != nil {
+	if err := exec.checkMemoryWith(target.current, right); err != nil {
 		return NewNil(), err
 	}
-	if err := assign(right); err != nil {
+	if err := target.assign(right); err != nil {
 		return NewNil(), err
 	}
 	return right, nil
+}
+
+type compoundAssignmentTarget struct {
+	current              Value
+	assign               func(Value) error
+	defineOnShortCircuit bool
+}
+
+func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *Env) (compoundAssignmentTarget, error) {
+	if ident, ok := target.(*Identifier); ok {
+		if _, exists := env.Get(ident.Name); !exists {
+			return compoundAssignmentTarget{
+				current: NewNil(),
+				assign: func(value Value) error {
+					env.Assign(ident.Name, value)
+					return nil
+				},
+				defineOnShortCircuit: true,
+			}, nil
+		}
+	}
+
+	current, assign, err := exec.prepareCompoundAssignmentTarget(target, env)
+	if err != nil {
+		return compoundAssignmentTarget{}, err
+	}
+	return compoundAssignmentTarget{current: current, assign: assign}, nil
 }
 
 func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *Env) (Value, func(Value) error, error) {

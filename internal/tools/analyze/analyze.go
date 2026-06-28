@@ -98,8 +98,11 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		return false
 	case *ast.LogicalStmt:
 		leftTerminated := statementTerminates(function, typed.Left, warnings)
-		rightTerminated := statementTerminates(function, typed.Right, warnings)
-		return leftTerminated && rightTerminated
+		if leftTerminated {
+			return true
+		}
+		statementTerminates(function, typed.Right, warnings)
+		return false
 	case *ast.ExprStmt:
 		lintExpression(function, typed.Expr, warnings)
 		return false

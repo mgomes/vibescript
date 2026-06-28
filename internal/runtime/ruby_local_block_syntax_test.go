@@ -131,6 +131,8 @@ def explode
 end
 
 def run
+  first ||= 1
+  skipped &&= explode()
   a = nil
   a ||= 3
   b = true
@@ -143,17 +145,19 @@ def run
   values[0] ||= 7
   values[1] ||= explode()
   values[2] &&= explode()
-  {a: a, b: b, c: c, d: d, values: values}
+  {first: first, skipped: skipped, a: a, b: b, c: c, d: d, values: values}
 end
 `)
 
 	got := callFunc(t, script, "run", nil)
 	compareHash(t, got.Hash(), map[string]Value{
-		"a":      NewInt(3),
-		"b":      NewInt(4),
-		"c":      NewInt(5),
-		"d":      NewBool(false),
-		"values": NewArray([]Value{NewInt(7), NewInt(1), NewBool(false)}),
+		"first":   NewInt(1),
+		"skipped": NewNil(),
+		"a":       NewInt(3),
+		"b":       NewInt(4),
+		"c":       NewInt(5),
+		"d":       NewBool(false),
+		"values":  NewArray([]Value{NewInt(7), NewInt(1), NewBool(false)}),
 	})
 }
 
