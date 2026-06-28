@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const maxCodeFrameLineRunes = 160
@@ -40,16 +41,11 @@ func (f *CodeFrameFormatter) Format(pos Position) string {
 	}
 
 	lineText := f.lines[pos.Line-1]
-	lineRunes := []rune(lineText)
-
 	column := pos.Column
 	if column <= 0 {
 		column = 1
 	}
-	if column > len(lineRunes)+1 {
-		column = len(lineRunes) + 1
-	}
-	displayText, displayColumn := codeFrameLineWindow(lineRunes, column)
+	displayText, displayColumn, column := codeFrameLineWindow(lineText, column)
 
 	lineLabel := strconv.Itoa(pos.Line)
 	gutterPad := strings.Repeat(" ", len(lineLabel))
@@ -66,27 +62,45 @@ func (f *CodeFrameFormatter) Format(pos Position) string {
 	)
 }
 
-func codeFrameLineWindow(lineRunes []rune, column int) (string, int) {
-	if len(lineRunes) <= maxCodeFrameLineRunes {
-		return string(lineRunes), column
+func codeFrameLineWindow(lineText string, column int) (string, int, int) {
+	lineRunes := utf8.RuneCountInString(lineText)
+	if column > lineRunes+1 {
+		column = lineRunes + 1
+	}
+	if lineRunes <= maxCodeFrameLineRunes {
+		return lineText, column, column
 	}
 	caretIndex := column - 1
 	start := caretIndex - maxCodeFrameLineRunes/2
 	if start < 0 {
 		start = 0
 	}
-	if start+maxCodeFrameLineRunes > len(lineRunes) {
-		start = len(lineRunes) - maxCodeFrameLineRunes
+	if start+maxCodeFrameLineRunes > lineRunes {
+		start = lineRunes - maxCodeFrameLineRunes
 	}
 	end := start + maxCodeFrameLineRunes
 	displayColumn := caretIndex - start + 1
-	display := string(lineRunes[start:end])
+	display := lineText[byteOffsetForRuneIndex(lineText, start):byteOffsetForRuneIndex(lineText, end)]
 	if start > 0 {
 		display = "..." + display
 		displayColumn += 3
 	}
-	if end < len(lineRunes) {
+	if end < lineRunes {
 		display += "..."
 	}
-	return display, displayColumn
+	return display, displayColumn, column
+}
+
+func byteOffsetForRuneIndex(s string, target int) int {
+	if target <= 0 {
+		return 0
+	}
+	runes := 0
+	for offset := range s {
+		if runes == target {
+			return offset
+		}
+		runes++
+	}
+	return len(s)
 }
