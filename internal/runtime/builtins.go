@@ -305,23 +305,30 @@ func (exec *Execution) formatStringValues(pattern string, values []Value, receiv
 }
 
 func formatStringValuesChecked(exec *Execution, pattern string, values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	projected, err := projectedFormatStringBytes(pattern, values)
+	prepared, err := prepareFormatString(pattern, values)
 	if err != nil {
 		return NewNil(), err
 	}
 	if exec != nil {
-		if err := exec.checkProjectedStringBytesWithCallRoots(projected, receiver, args, kwargs, block); err != nil {
+		if err := exec.checkProjectedStringBytesWithCallRoots(prepared.projectedBytes, receiver, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}
 	}
-	fmtArgs := make([]any, len(values))
-	for i, val := range values {
-		fmtArgs[i] = formatStringArgument(val)
-	}
-	return NewString(fmt.Sprintf(pattern, fmtArgs...)), nil
+	return NewString(fmt.Sprintf(prepared.pattern, prepared.args...)), nil
 }
 
-func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
+type preparedFormatString struct {
+	pattern        string
+	args           []any
+	projectedBytes int
+}
+
+func prepareFormatString(pattern string, values []Value) (preparedFormatString, error) {
+	prepared := preparedFormatString{
+		args: make([]any, 0, len(values)),
+	}
+	var normalized strings.Builder
+	normalized.Grow(len(pattern))
 	total := 0
 	nextArg := 0
 	usedCursor := 0
@@ -330,35 +337,41 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 			var err error
 			total, err = addProjectedFormatBytes(total, 1)
 			if err != nil {
-				return 0, err
+				return preparedFormatString{}, err
 			}
+			normalized.WriteByte(pattern[i])
 			i++
 			continue
 		}
+		directiveStart := i
 		i++
 		if i >= len(pattern) {
 			var err error
 			total, err = addProjectedFormatBytes(total, 2)
 			if err != nil {
-				return 0, err
+				return preparedFormatString{}, err
 			}
+			normalized.WriteString(pattern[directiveStart:])
 			break
 		}
 		if pattern[i] == '%' {
 			var err error
 			total, err = addProjectedFormatBytes(total, 1)
 			if err != nil {
-				return 0, err
+				return preparedFormatString{}, err
 			}
+			normalized.WriteString("%%")
 			i++
 			continue
 		}
 
 		var explicitArg int
 		var hasExplicitArg bool
+		bodyAfterLeadingIndex := i
 		if idx, ok, next := parseFormatArgIndex(pattern, i); ok {
 			explicitArg = idx
 			hasExplicitArg = true
+			bodyAfterLeadingIndex = next
 			i = next
 		}
 		for i < len(pattern) && strings.ContainsRune("#+-0 ", rune(pattern[i])) {
@@ -366,7 +379,7 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 		}
 		width, hasWidth, next, err := parseFormatCount(pattern, i, "width")
 		if err != nil {
-			return 0, err
+			return preparedFormatString{}, err
 		}
 		i = next
 
@@ -376,24 +389,29 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 			i++
 			precision, hasPrecision, next, err = parseFormatCount(pattern, i, "precision")
 			if err != nil {
-				return 0, err
+				return preparedFormatString{}, err
 			}
 			i = next
 		}
+		bodyBeforeTrailingIndex := i
+		bodyAfterTrailingIndex := i
 		if idx, ok, next := parseFormatArgIndex(pattern, i); ok {
 			explicitArg = idx
 			hasExplicitArg = true
+			bodyAfterTrailingIndex = next
 			i = next
 		}
 		if i >= len(pattern) {
 			var err error
 			total, err = addProjectedFormatBytes(total, len(pattern))
 			if err != nil {
-				return 0, err
+				return preparedFormatString{}, err
 			}
+			normalized.WriteString(pattern[directiveStart:])
 			break
 		}
 		verb := pattern[i]
+		verbIndex := i
 		i++
 
 		argIndex := nextArg
@@ -407,7 +425,11 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 			usedCursor = nextArg
 		}
 		if argIndex < 0 || argIndex >= len(values) {
-			return 0, fmt.Errorf("format references missing operand %d", argIndex+1)
+			return preparedFormatString{}, fmt.Errorf("format references missing operand %d", argIndex+1)
+		}
+		arg, err := formatStringArgumentForVerb(values[argIndex], verb)
+		if err != nil {
+			return preparedFormatString{}, err
 		}
 		field := projectedFormatFieldBytes(values[argIndex], verb, hasPrecision, precision)
 		if hasWidth && width > field {
@@ -415,14 +437,23 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 		}
 		nextTotal, addErr := addProjectedFormatBytes(total, field)
 		if addErr != nil {
-			return 0, addErr
+			return preparedFormatString{}, addErr
 		}
 		total = nextTotal
+		normalized.WriteByte('%')
+		normalized.WriteString(pattern[bodyAfterLeadingIndex:bodyBeforeTrailingIndex])
+		if bodyAfterTrailingIndex > bodyBeforeTrailingIndex {
+			normalized.WriteString(pattern[bodyAfterTrailingIndex:verbIndex])
+		}
+		normalized.WriteByte(verb)
+		prepared.args = append(prepared.args, arg)
 	}
 	if usedCursor < len(values) {
-		return 0, fmt.Errorf("format has %d unused operand(s)", len(values)-usedCursor)
+		return preparedFormatString{}, fmt.Errorf("format has %d unused operand(s)", len(values)-usedCursor)
 	}
-	return total, nil
+	prepared.pattern = normalized.String()
+	prepared.projectedBytes = total
+	return prepared, nil
 }
 
 func addProjectedFormatBytes(total, bytes int) (int, error) {
@@ -526,6 +557,46 @@ func formatArgumentStringBytes(val Value) int {
 		return len(val.String())
 	default:
 		return val.StringByteLen()
+	}
+}
+
+func formatStringArgumentForVerb(val Value, verb byte) (any, error) {
+	switch verb {
+	case 's', 'q':
+		return val.String(), nil
+	case 'x', 'X':
+		switch val.Kind() {
+		case KindString, KindSymbol:
+			return val.String(), nil
+		case KindInt:
+			return val.Int(), nil
+		case KindFloat:
+			return val.Float(), nil
+		default:
+			return nil, fmt.Errorf("format %%%c expects string or numeric operand", verb)
+		}
+	case 'd', 'b', 'o', 'O', 'U', 'c':
+		n, err := valueToInt64(val)
+		if err != nil {
+			return nil, fmt.Errorf("format %%%c expects integer operand", verb)
+		}
+		return n, nil
+	case 'f', 'F', 'e', 'E', 'g', 'G':
+		switch val.Kind() {
+		case KindInt:
+			return float64(val.Int()), nil
+		case KindFloat:
+			return val.Float(), nil
+		default:
+			return nil, fmt.Errorf("format %%%c expects numeric operand", verb)
+		}
+	case 't':
+		if val.Kind() != KindBool {
+			return nil, fmt.Errorf("format %%t expects bool operand")
+		}
+		return val.Bool(), nil
+	default:
+		return formatStringArgument(val), nil
 	}
 }
 

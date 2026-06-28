@@ -19,6 +19,8 @@ func TestRubyStyleStringFormatting(t *testing.T) {
     format("%[2]s", "skip", "kept"),
     format("%[2]s%[1]s", "a", "b"),
     "%s" % :ok,
+    format("%s:%s:%s", 5, true, nil),
+    format("%[1]s%[1]d", 5),
     5 % 2
   ]
 end
@@ -35,6 +37,8 @@ end`)
 		NewString("kept"),
 		NewString("ba"),
 		NewString("ok"),
+		NewString("5:true:"),
+		NewString("55"),
 		NewInt(1),
 	})
 	requireCallErrorContains(t, script, "bad_format", nil, CallOptions{}, "format expects a format string")
@@ -116,6 +120,18 @@ end`)
 
 	requireCallErrorContains(t, script, "builtin_format", nil, CallOptions{}, "missing operand")
 	requireCallErrorContains(t, script, "operator_format", nil, CallOptions{}, "missing operand")
+}
+
+func TestRubyStyleStringFormattingRejectsMismatchedNumericOperandsBeforeFormatting(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 * maxFormatOutputBytes}, `def run(text)
+  format("%d", text)
+end`)
+
+	requireCallErrorContains(t, script, "run", []Value{
+		NewString(strings.Repeat("x", maxFormatOutputBytes)),
+	}, CallOptions{}, "expects integer operand")
 }
 
 func TestRubyStyleStringFormattingPreflightsMultibyteStringPrecision(t *testing.T) {
