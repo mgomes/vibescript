@@ -770,8 +770,9 @@ func projectedIntegerFormatBytes(val Value, verb byte, hasPrecision bool, precis
 		}
 	case 'O':
 		base = 8
+		prefix = 2
 		if flags.alternate {
-			prefix = 2
+			prefix = 3
 		}
 	case 'x', 'X':
 		base = 16

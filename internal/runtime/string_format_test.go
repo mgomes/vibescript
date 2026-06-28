@@ -21,6 +21,7 @@ func TestRubyStyleStringFormatting(t *testing.T) {
     format("%[2]s%[1]s", "a", "b"),
     format("%2$s %1$s", "a", "b"),
     sprintf("%2$s:%1$d", 7, "id"),
+    format("%O:%#O", 8, 8),
     "%s" % :ok,
     format("%s:%s:%s", 5, true, nil),
     format("%[1]s%[1]d", 5),
@@ -41,6 +42,7 @@ end`)
 		NewString("ba"),
 		NewString("b a"),
 		NewString("id:7"),
+		NewString("0o10:0o010"),
 		NewString("ok"),
 		NewString("5:true:"),
 		NewString("55"),
@@ -117,6 +119,24 @@ func TestRubyStyleStringFormattingPreflightsIntegerPrecision(t *testing.T) {
 end`)
 
 	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "format output exceeds limit")
+}
+
+func TestRubyStyleStringFormattingPreflightsCapitalOctalPrefix(t *testing.T) {
+	t.Parallel()
+
+	count := maxFormatOutputBytes/3 + 1
+	values := make([]Value, count)
+	for i := range values {
+		values[i] = NewInt(1)
+	}
+
+	_, err := formatStringValues(strings.Repeat("%O", count), values)
+	if err == nil {
+		t.Fatal("formatStringValues() succeeded, want output limit error")
+	}
+	if !strings.Contains(err.Error(), "format output exceeds limit") {
+		t.Fatalf("formatStringValues() error = %v, want output limit", err)
+	}
 }
 
 func TestRubyStyleStringFormattingPreflightsHexFloatPrecision(t *testing.T) {
