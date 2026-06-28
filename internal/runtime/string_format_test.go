@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -51,4 +52,31 @@ end`)
   format("%1048577s", "")
 end`)
 	requireCallErrorContains(t, capped, "run", nil, CallOptions{}, "format width exceeds limit")
+}
+
+func TestRubyStyleStringFormattingPreflightsExplicitIndexCursor(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 * maxFormatOutputBytes}, `def run(tiny, selected, huge)
+  format("%[2]s%s", tiny, selected, huge)
+end`)
+
+	requireCallErrorContains(t, script, "run", []Value{
+		NewString("tiny"),
+		NewString("selected"),
+		NewString(strings.Repeat("x", maxFormatOutputBytes)),
+	}, CallOptions{}, "format output exceeds limit")
+}
+
+func TestRubyStyleStringFormattingPreflightsQuotedEscapes(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 * maxFormatOutputBytes}, `def run(text)
+  format("%q", text)
+end`)
+	invalidBytes := strings.Repeat("\xc3", maxFormatOutputBytes/4)
+
+	requireCallErrorContains(t, script, "run", []Value{
+		NewString(invalidBytes),
+	}, CallOptions{}, "format output exceeds limit")
 }

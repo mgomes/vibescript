@@ -326,17 +326,29 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 	nextArg := 0
 	for i := 0; i < len(pattern); {
 		if pattern[i] != '%' {
-			total = saturatingAdd(total, 1)
+			var err error
+			total, err = addProjectedFormatBytes(total, 1)
+			if err != nil {
+				return 0, err
+			}
 			i++
 			continue
 		}
 		i++
 		if i >= len(pattern) {
-			total = saturatingAdd(total, 2)
+			var err error
+			total, err = addProjectedFormatBytes(total, 2)
+			if err != nil {
+				return 0, err
+			}
 			break
 		}
 		if pattern[i] == '%' {
-			total = saturatingAdd(total, 1)
+			var err error
+			total, err = addProjectedFormatBytes(total, 1)
+			if err != nil {
+				return 0, err
+			}
 			i++
 			continue
 		}
@@ -373,7 +385,11 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 			i = next
 		}
 		if i >= len(pattern) {
-			total = saturatingAdd(total, len(pattern))
+			var err error
+			total, err = addProjectedFormatBytes(total, len(pattern))
+			if err != nil {
+				return 0, err
+			}
 			break
 		}
 		verb := pattern[i]
@@ -382,6 +398,7 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 		argIndex := nextArg
 		if hasExplicitArg {
 			argIndex = explicitArg
+			nextArg = explicitArg + 1
 		} else {
 			nextArg++
 		}
@@ -389,10 +406,19 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 		if hasWidth && width > field {
 			field = width
 		}
-		total = saturatingAdd(total, field)
-		if total > maxFormatOutputBytes {
-			return 0, fmt.Errorf("format output exceeds limit %d bytes", maxFormatOutputBytes)
+		nextTotal, addErr := addProjectedFormatBytes(total, field)
+		if addErr != nil {
+			return 0, addErr
 		}
+		total = nextTotal
+	}
+	return total, nil
+}
+
+func addProjectedFormatBytes(total, bytes int) (int, error) {
+	total = saturatingAdd(total, bytes)
+	if total > maxFormatOutputBytes {
+		return 0, fmt.Errorf("format output exceeds limit %d bytes", maxFormatOutputBytes)
 	}
 	return total, nil
 }
@@ -454,7 +480,8 @@ func projectedFormatFieldBytes(val Value, verb byte, hasPrecision bool, precisio
 		case 's':
 			base = min(base, precision)
 		case 'q':
-			base = min(base, saturatingAdd(saturatingMul(2, precision), 2))
+			selectedBytes := min(formatArgumentStringBytes(val), saturatingMul(utf8.UTFMax, precision))
+			base = min(base, projectedQuotedStringBytes(selectedBytes))
 		}
 	}
 	return base
@@ -465,7 +492,7 @@ func projectedFormatArgumentBytes(val Value, verb byte, hasPrecision bool, preci
 	case 's':
 		return formatArgumentStringBytes(val)
 	case 'q':
-		return saturatingAdd(saturatingMul(2, formatArgumentStringBytes(val)), 2)
+		return projectedQuotedStringBytes(formatArgumentStringBytes(val))
 	case 'x', 'X':
 		if val.Kind() == KindString || val.Kind() == KindSymbol {
 			return saturatingMul(2, len(val.String()))
@@ -483,6 +510,10 @@ func projectedFormatArgumentBytes(val Value, verb byte, hasPrecision bool, preci
 	default:
 		return saturatingAdd(val.StringByteLen(), 32)
 	}
+}
+
+func projectedQuotedStringBytes(inputBytes int) int {
+	return saturatingAdd(saturatingMul(4, inputBytes), 2)
 }
 
 func formatArgumentStringBytes(val Value) int {
