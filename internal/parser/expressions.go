@@ -1579,6 +1579,9 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 	}
 
 	p.pushLocalScope(params, false)
+	if !hasExplicitParams {
+		p.declareImplicitBlockParamCandidates()
+	}
 	body := p.parseBlock(stopToken)
 	p.popLocalScope()
 	if p.curToken.Type != stopToken {

@@ -5,6 +5,7 @@ import "github.com/mgomes/vibescript/internal/ast"
 type implicitBlockParamUsage struct {
 	assigned map[string]struct{}
 	numbered map[string]struct{}
+	scoped   map[string]int
 	it       bool
 }
 
@@ -12,6 +13,7 @@ func inferImplicitBlockParams(body []ast.Statement) []string {
 	usage := implicitBlockParamUsage{
 		assigned: map[string]struct{}{},
 		numbered: map[string]struct{}{},
+		scoped:   map[string]int{},
 	}
 	usage.visitStatements(body)
 
@@ -71,11 +73,14 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		u.visitExpression(s.Condition, false)
 		u.visitStatements(s.Body)
 	case *ast.TryStmt:
-		if s.RescueBinding != "" {
-			u.assigned[s.RescueBinding] = struct{}{}
-		}
 		u.visitStatements(s.Body)
-		u.visitStatements(s.Rescue)
+		if s.RescueBinding != "" {
+			u.withScopedBinding(s.RescueBinding, func() {
+				u.visitStatements(s.Rescue)
+			})
+		} else {
+			u.visitStatements(s.Rescue)
+		}
 		u.visitStatements(s.Else)
 		u.visitStatements(s.Ensure)
 	case *ast.BreakStmt:
@@ -175,6 +180,9 @@ func (u *implicitBlockParamUsage) visitStringParts(parts []ast.StringPart) {
 }
 
 func (u *implicitBlockParamUsage) recordIdentifier(name string, callCallee bool) {
+	if u.isScopedBinding(name) {
+		return
+	}
 	if isNumberedBlockParamName(name) {
 		u.numbered[name] = struct{}{}
 		return
@@ -189,6 +197,9 @@ func (u *implicitBlockParamUsage) recordAssignedTarget(target ast.Expression) {
 	case nil:
 		return
 	case *ast.Identifier:
+		if u.isScopedBinding(t.Name) {
+			return
+		}
 		u.assigned[t.Name] = struct{}{}
 	case *ast.DestructureTarget:
 		for _, element := range t.Elements {
@@ -206,6 +217,28 @@ func (u *implicitBlockParamUsage) recordAssignedTarget(target ast.Expression) {
 	}
 }
 
+func (u *implicitBlockParamUsage) withScopedBinding(name string, visit func()) {
+	u.scoped[name]++
+	defer func() {
+		u.scoped[name]--
+		if u.scoped[name] == 0 {
+			delete(u.scoped, name)
+		}
+	}()
+	visit()
+}
+
+func (u *implicitBlockParamUsage) isScopedBinding(name string) bool {
+	return u.scoped[name] > 0
+}
+
 func isNumberedBlockParamName(name string) bool {
 	return len(name) == 2 && name[0] == '_' && name[1] >= '1' && name[1] <= '9'
+}
+
+func (p *parser) declareImplicitBlockParamCandidates() {
+	for i := range 9 {
+		p.declareLocal("_" + string(rune('1'+i)))
+	}
+	p.declareLocal("it")
 }

@@ -69,6 +69,11 @@ func TestParserInfersImplicitBlockParams(t *testing.T) {
 			source: `def run; items.each { _1[:seen] = true }; end`,
 			want:   []string{"_1"},
 		},
+		{
+			name:   "rescue_binding_scoped_inside_handler",
+			source: `def run; [1].map { begin; raise "x"; rescue => it; nil; end; it }; end`,
+			want:   []string{"it"},
+		},
 	}
 
 	for _, tc := range tests {

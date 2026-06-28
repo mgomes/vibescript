@@ -108,3 +108,26 @@ end`)
 		t.Fatalf("run = %#v, want true", got)
 	}
 }
+
+func TestImplicitBlockParamsAreLocalsForPercentModuloParsing(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  w = [2]
+  [5].map { _1 %w[0] }
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewInt(1)})
+}
+
+func TestImplicitBlockParamsIgnoreRescueBindingOutsideHandler(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  [7].map { begin; raise "x"; rescue => it; nil; end; it }
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewInt(7)})
+}
