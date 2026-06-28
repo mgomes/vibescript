@@ -9,7 +9,7 @@ Type names are case-insensitive:
 - `int`, `float`, `number`
 - `string`, `bool`, `nil`
 - `duration`, `time`, `money`
-- `array`, `hash`/`object`, `function`
+- `array`, `hash`/`object`, `range`, `function`
 - top-level enum names such as `Status`
 - `any` (no checks)
 

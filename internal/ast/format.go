@@ -40,6 +40,8 @@ func ResolveType(name string) (TypeKind, bool) {
 		return TypeArray, nullable
 	case "hash", "object":
 		return TypeHash, nullable
+	case "range":
+		return TypeRange, nullable
 	case "function":
 		return TypeFunction, nullable
 	}
@@ -89,7 +91,9 @@ func FormatTypeExpr(ty *TypeExpr) string {
 	case TypeArray:
 		name = "array"
 	case TypeHash:
-		name = "hash"
+		name = formatHashTypeName(ty)
+	case TypeRange:
+		name = "range"
 	case TypeFunction:
 		name = "function"
 	case TypeShape:
@@ -111,6 +115,14 @@ func FormatTypeExpr(ty *TypeExpr) string {
 		return name + "?"
 	}
 	return name
+}
+
+func formatHashTypeName(ty *TypeExpr) string {
+	base := strings.TrimSuffix(strings.ToLower(ty.Name), "?")
+	if base == "object" {
+		return "object"
+	}
+	return "hash"
 }
 
 func formatShapeType(ty *TypeExpr) string {

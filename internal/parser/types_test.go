@@ -13,6 +13,7 @@ func TestParserTypeSyntaxCompositeForms(t *testing.T) {
 	t.Parallel()
 	source := `def run(
   rows: array<int | string>,
+  span: range,
   payload: { id: string, stats: { wins: int } }
 ) -> hash<string, { score: int | nil }>
   payload
@@ -44,6 +45,10 @@ end`
 								},
 							},
 						},
+					},
+					{
+						Name: "span",
+						Type: &ast.TypeExpr{Name: "range", Kind: ast.TypeRange},
 					},
 					{
 						Name: "payload",

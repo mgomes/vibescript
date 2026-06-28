@@ -76,6 +76,7 @@ const (
 	TypeMoney
 	TypeArray
 	TypeHash
+	TypeRange
 	TypeFunction
 	TypeShape
 	TypeUnion

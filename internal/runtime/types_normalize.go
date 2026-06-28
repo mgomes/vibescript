@@ -75,6 +75,10 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		return normalizeArrayForType(val, ty, ctx)
 	case TypeHash:
 		return normalizeHashForType(val, ty, ctx)
+	case TypeRange:
+		if val.Kind() == KindRange {
+			return val, nil
+		}
 	case TypeShape:
 		return normalizeShapeForType(val, ty, ctx)
 	case TypeUnion:
