@@ -402,7 +402,7 @@ func prepareFormatString(exec *Execution, pattern string, values []Value) (prepa
 		var explicitArg int
 		var hasExplicitArg bool
 		bodyAfterLeadingIndex := i
-		if idx, ok, next := parseFormatArgIndex(pattern, i); ok {
+		if idx, ok, next := parseFormatLeadingArgIndex(pattern, i); ok {
 			explicitArg = idx
 			hasExplicitArg = true
 			bodyAfterLeadingIndex = next
@@ -521,6 +521,24 @@ func parseFormatArgIndex(pattern string, i int) (int, bool, int) {
 		return 0, false, i
 	}
 	return n - 1, true, j + 1
+}
+
+func parseFormatLeadingArgIndex(pattern string, i int) (int, bool, int) {
+	if idx, ok, next := parseFormatArgIndex(pattern, i); ok {
+		return idx, true, next
+	}
+	start := i
+	for i < len(pattern) && pattern[i] >= '0' && pattern[i] <= '9' {
+		i++
+	}
+	if start == i || i >= len(pattern) || pattern[i] != '$' {
+		return 0, false, start
+	}
+	n, err := strconv.Atoi(pattern[start:i])
+	if err != nil || n <= 0 {
+		return 0, false, start
+	}
+	return n - 1, true, i + 1
 }
 
 func parseFormatCount(pattern string, i int, label string) (int, bool, int, error) {
