@@ -227,17 +227,30 @@ func TestCapabilityAdaptersStopAfterHostCancellationBeforeReturnValidation(t *te
 func TestRuntimeCapabilityReturnDeepTraversalClassifiesAsLimit(t *testing.T) {
 	t.Parallel()
 
-	script := compileScriptDefault(t, `def run()
-  jobs.enqueue("demo", { id: "p-1" })
-end`)
-	queue := &sharedReturnQueue{
-		enqueueResult: deepRuntimeCapabilityArray(maxCapabilityDataOnlyDepth + 1),
+	tests := []struct {
+		name   string
+		result Value
+	}{
+		{name: "linear", result: deepRuntimeCapabilityArray(maxCapabilityDataOnlyDepth + 1)},
+		{name: "shared_dag", result: sharedDeepRuntimeCapabilityArrayDAG()},
 	}
 
-	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
-		MustNewJobQueueCapability("jobs", queue),
-	))
-	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, `def run()
+  jobs.enqueue("demo", { id: "p-1" })
+end`)
+			queue := &sharedReturnQueue{
+				enqueueResult: tc.result,
+			}
+
+			err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+				MustNewJobQueueCapability("jobs", queue),
+			))
+			requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+		})
+	}
 }
 
 func TestCapabilityFoundationsEachRespectsStepQuota(t *testing.T) {
@@ -315,4 +328,15 @@ func deepRuntimeCapabilityArray(depth int) Value {
 		val = NewArray([]Value{val})
 	}
 	return val
+}
+
+func sharedDeepRuntimeCapabilityArrayDAG() Value {
+	tailDepth := maxCapabilityDataOnlyDepth / 2
+	chainDepth := maxCapabilityDataOnlyDepth - tailDepth
+	tail := deepRuntimeCapabilityArray(tailDepth)
+	deep := tail
+	for range chainDepth {
+		deep = NewArray([]Value{deep})
+	}
+	return NewArray([]Value{tail, deep})
 }

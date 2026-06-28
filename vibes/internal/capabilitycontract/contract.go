@@ -249,6 +249,11 @@ type seenSet struct {
 	maps   map[uintptr]struct{}
 }
 
+type seenDepthSet struct {
+	arrays map[value.SliceIdentity]int
+	maps   map[uintptr]int
+}
+
 func newSeenSet() *seenSet {
 	return &seenSet{
 		arrays: map[value.SliceIdentity]struct{}{},
@@ -256,53 +261,63 @@ func newSeenSet() *seenSet {
 	}
 }
 
+func newSeenDepthSet() *seenDepthSet {
+	return &seenDepthSet{
+		arrays: map[value.SliceIdentity]int{},
+		maps:   map[uintptr]int{},
+	}
+}
+
 func validateTraversalDepth(label string, val value.Value) error {
 	return (&traversalDepthScanner{
-		visitingArrays: newSeenSet(),
-		seenArrays:     newSeenSet(),
+		visiting: newSeenSet(),
+		seen:     newSeenDepthSet(),
 	}).check(label, val, 0)
 }
 
 type traversalDepthScanner struct {
-	visitingArrays *seenSet
-	seenArrays     *seenSet
+	visiting *seenSet
+	seen     *seenDepthSet
 }
 
 func (s *traversalDepthScanner) check(label string, val value.Value, depth int) error {
 	if depth > MaxDataOnlyTraversalDepth {
 		return limitErrorf("%s exceeds maximum depth %d", label, MaxDataOnlyTraversalDepth)
 	}
+	remainingDepth := MaxDataOnlyTraversalDepth - depth
 	switch val.Kind() {
 	case value.KindArray:
 		values := val.Array()
 		id := sliceIdentity(values)
-		if _, ok := s.seenArrays.arrays[id]; ok {
+		if seenRemaining, ok := s.seen.arrays[id]; ok && seenRemaining <= remainingDepth {
 			return nil
 		}
-		if _, ok := s.visitingArrays.arrays[id]; ok {
+		if _, ok := s.visiting.arrays[id]; ok {
 			return nil
 		}
-		s.visitingArrays.arrays[id] = struct{}{}
+		s.visiting.arrays[id] = struct{}{}
 		for _, item := range values {
 			if err := s.check(label, item, depth+1); err != nil {
 				return err
 			}
 		}
-		delete(s.visitingArrays.arrays, id)
-		s.seenArrays.arrays[id] = struct{}{}
+		delete(s.visiting.arrays, id)
+		if seenRemaining, ok := s.seen.arrays[id]; !ok || remainingDepth < seenRemaining {
+			s.seen.arrays[id] = remainingDepth
+		}
 	case value.KindHash, value.KindObject:
 		entries := val.Hash()
 		ptr := value.HashIdentity(val)
 		if ptr == 0 {
 			ptr = reflect.ValueOf(entries).Pointer()
 		}
-		if _, ok := s.seenArrays.maps[ptr]; ok {
+		if seenRemaining, ok := s.seen.maps[ptr]; ok && seenRemaining <= remainingDepth {
 			return nil
 		}
-		if _, ok := s.visitingArrays.maps[ptr]; ok {
+		if _, ok := s.visiting.maps[ptr]; ok {
 			return nil
 		}
-		s.visitingArrays.maps[ptr] = struct{}{}
+		s.visiting.maps[ptr] = struct{}{}
 		for _, item := range entries {
 			if err := s.check(label, item, depth+1); err != nil {
 				return err
@@ -314,8 +329,10 @@ func (s *traversalDepthScanner) check(label string, val value.Value, depth int) 
 		if err := s.check(label, value.HashDefaultProc(val), depth+1); err != nil {
 			return err
 		}
-		delete(s.visitingArrays.maps, ptr)
-		s.seenArrays.maps[ptr] = struct{}{}
+		delete(s.visiting.maps, ptr)
+		if seenRemaining, ok := s.seen.maps[ptr]; !ok || remainingDepth < seenRemaining {
+			s.seen.maps[ptr] = remainingDepth
+		}
 	}
 	return nil
 }

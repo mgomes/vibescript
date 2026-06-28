@@ -66,6 +66,17 @@ func deepCapabilityArray(depth int) value.Value {
 	return val
 }
 
+func sharedDeepCapabilityArrayDAG() value.Value {
+	tailDepth := MaxDataOnlyTraversalDepth / 2
+	chainDepth := MaxDataOnlyTraversalDepth - tailDepth
+	tail := deepCapabilityArray(tailDepth)
+	deep := tail
+	for range chainDepth {
+		deep = value.NewArray([]value.Value{deep})
+	}
+	return value.NewArray([]value.Value{tail, deep})
+}
+
 // cyclicHashThroughDefault builds a genuine cycle that runs through a hash's
 // Ruby-style default value rather than its entries: the default value is an array
 // that holds the hash itself, so the walk re-enters the wrapper it is already
@@ -395,6 +406,14 @@ func TestCloneDataOnlyValue(t *testing.T) {
 			t.Fatalf("CloneDataOnlyValue deep traversal err = %v, want maximum depth error", err)
 		}
 	})
+
+	t.Run("shared_dag_deep_traversal_limit", func(t *testing.T) {
+		_, err := CloneDataOnlyValue("payload", sharedDeepCapabilityArrayDAG())
+		requireLimitError(t, err)
+		if !strings.Contains(err.Error(), "payload exceeds maximum depth") {
+			t.Fatalf("CloneDataOnlyValue shared DAG traversal err = %v, want maximum depth error", err)
+		}
+	})
 }
 
 func TestCloneMethodResultRejectsDeepTraversal(t *testing.T) {
@@ -411,6 +430,13 @@ func TestValidateDataOnlyValueRejectsDeepTraversal(t *testing.T) {
 	t.Parallel()
 
 	err := ValidateDataOnlyValue("payload", deepCapabilityArray(MaxDataOnlyTraversalDepth+1))
+	requireLimitError(t, err)
+}
+
+func TestValidateDataOnlyValueRejectsSharedDAGDeepTraversal(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateDataOnlyValue("payload", sharedDeepCapabilityArrayDAG())
 	requireLimitError(t, err)
 }
 

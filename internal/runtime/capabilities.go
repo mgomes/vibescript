@@ -363,17 +363,17 @@ func validateCapabilityDataOnlyValue(label string, val Value) error {
 
 type capabilityTraversalDepthScanner struct {
 	visitingArrays map[sliceIdentity]struct{}
-	seenArrays     map[sliceIdentity]struct{}
+	seenArrays     map[sliceIdentity]int
 	visitingMaps   map[uintptr]struct{}
-	seenMaps       map[uintptr]struct{}
+	seenMaps       map[uintptr]int
 }
 
 func newCapabilityTraversalDepthScanner() *capabilityTraversalDepthScanner {
 	return &capabilityTraversalDepthScanner{
 		visitingArrays: make(map[sliceIdentity]struct{}),
-		seenArrays:     make(map[sliceIdentity]struct{}),
+		seenArrays:     make(map[sliceIdentity]int),
 		visitingMaps:   make(map[uintptr]struct{}),
-		seenMaps:       make(map[uintptr]struct{}),
+		seenMaps:       make(map[uintptr]int),
 	}
 }
 
@@ -385,6 +385,7 @@ func (s *capabilityTraversalDepthScanner) check(label string, val Value, depth i
 	if depth > maxCapabilityDataOnlyDepth {
 		return guardLimitErrorf("%s exceeds maximum depth %d", label, maxCapabilityDataOnlyDepth)
 	}
+	remainingDepth := maxCapabilityDataOnlyDepth - depth
 	switch val.Kind() {
 	case KindArray:
 		values := val.Array()
@@ -393,7 +394,7 @@ func (s *capabilityTraversalDepthScanner) check(label string, val Value, depth i
 			Len: len(values),
 			Cap: cap(values),
 		}
-		if _, seen := s.seenArrays[id]; seen {
+		if seenRemaining, seen := s.seenArrays[id]; seen && seenRemaining <= remainingDepth {
 			return nil
 		}
 		if _, visiting := s.visitingArrays[id]; visiting {
@@ -406,14 +407,16 @@ func (s *capabilityTraversalDepthScanner) check(label string, val Value, depth i
 			}
 		}
 		delete(s.visitingArrays, id)
-		s.seenArrays[id] = struct{}{}
+		if seenRemaining, seen := s.seenArrays[id]; !seen || remainingDepth < seenRemaining {
+			s.seenArrays[id] = remainingDepth
+		}
 	case KindHash, KindObject:
 		entries := val.Hash()
 		ptr := hashIdentity(val)
 		if ptr == 0 {
 			ptr = reflect.ValueOf(entries).Pointer()
 		}
-		if _, seen := s.seenMaps[ptr]; seen {
+		if seenRemaining, seen := s.seenMaps[ptr]; seen && seenRemaining <= remainingDepth {
 			return nil
 		}
 		if _, visiting := s.visitingMaps[ptr]; visiting {
@@ -432,7 +435,9 @@ func (s *capabilityTraversalDepthScanner) check(label string, val Value, depth i
 			return err
 		}
 		delete(s.visitingMaps, ptr)
-		s.seenMaps[ptr] = struct{}{}
+		if seenRemaining, seen := s.seenMaps[ptr]; !seen || remainingDepth < seenRemaining {
+			s.seenMaps[ptr] = remainingDepth
+		}
 	}
 	return nil
 }
