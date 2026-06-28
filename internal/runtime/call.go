@@ -141,7 +141,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			}
 			return NewNil(), exec.wrapError(err, pos)
 		}
-		if hasContract && contract.ValidateReturn != nil {
+		if hasContract && contract.ValidateReturn != nil && !contract.ReturnValidatedByBuiltin {
 			if err := contract.ValidateReturn(result); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
 			}

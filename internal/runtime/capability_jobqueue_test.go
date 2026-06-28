@@ -78,6 +78,13 @@ func (s *sharedReturnQueue) Retry(ctx context.Context, req JobQueueRetryRequest)
 	return s.retryResult, nil
 }
 
+func cyclicCapabilityReturn() Value {
+	entries := map[string]Value{}
+	val := NewHash(entries)
+	entries["self"] = val
+	return val
+}
+
 func TestJobQueueCapabilityEnqueue(t *testing.T) {
 	t.Parallel()
 	stub := &jobQueueStub{}
@@ -323,6 +330,27 @@ end`,
 end`,
 			queue:   invalidReturnQueue{},
 			wantErr: "jobs.enqueue return value must be data-only",
+		},
+		{
+			name: "cyclic_enqueue_return_value",
+			source: `def run()
+  jobs.enqueue("demo", { foo: "bar" })
+end`,
+			queue: &sharedReturnQueue{
+				enqueueResult: cyclicCapabilityReturn(),
+			},
+			wantErr: "jobs.enqueue return value must not contain cyclic references",
+		},
+		{
+			name: "cyclic_retry_return_value",
+			source: `def run()
+  jobs.retry("job-7")
+end`,
+			queue: &sharedReturnQueue{
+				enqueueResult: NewNil(),
+				retryResult:   cyclicCapabilityReturn(),
+			},
+			wantErr: "jobs.retry return value must not contain cyclic references",
 		},
 	}
 

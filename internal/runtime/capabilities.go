@@ -17,8 +17,11 @@ type CapabilityAdapter interface {
 // CapabilityMethodContract validates capability method calls at the boundary.
 // These contracts run before and after a capability builtin executes.
 type CapabilityMethodContract struct {
-	ValidateArgs   func(args []Value, kwargs map[string]Value, block Value) error
-	ValidateReturn func(result Value) error
+	ValidateArgs func(args []Value, kwargs map[string]Value, block Value) error
+	// ReturnValidatedByBuiltin means the builtin returns a script-safe value
+	// that has already been validated and isolated from host-owned state.
+	ReturnValidatedByBuiltin bool
+	ValidateReturn           func(result Value) error
 }
 
 // CapabilityContractProvider exposes per-method contracts for capability adapters.
@@ -143,10 +146,154 @@ func capabilityValidateAnyReturn(method string) func(result Value) error {
 }
 
 func cloneCapabilityMethodResult(method string, result Value) (Value, error) {
-	if err := validateCapabilityTypedValue(method+" return value", result, capabilityTypeAny); err != nil {
+	return cloneCapabilityDataOnlyValue(method+" return value", result)
+}
+
+type capabilityDataCloneScanner struct {
+	label          string
+	clonedArrays   map[sliceIdentity]Value
+	clonedMaps     map[uintptr]Value
+	visitingArrays map[sliceIdentity]struct{}
+	visitingMaps   map[uintptr]struct{}
+}
+
+func cloneCapabilityDataOnlyValue(label string, val Value) (Value, error) {
+	scanner := &capabilityDataCloneScanner{
+		label:          label,
+		clonedArrays:   make(map[sliceIdentity]Value),
+		clonedMaps:     make(map[uintptr]Value),
+		visitingArrays: make(map[sliceIdentity]struct{}),
+		visitingMaps:   make(map[uintptr]struct{}),
+	}
+	return scanner.clone(val)
+}
+
+func (s *capabilityDataCloneScanner) clone(val Value) (Value, error) {
+	switch val.Kind() {
+	case KindFunction, KindBuiltin, KindBlock, KindClass, KindInstance:
+		return NewNil(), fmt.Errorf("%s must be data-only", s.label)
+	case KindArray:
+		return s.cloneArray(val)
+	case KindHash:
+		return s.cloneHash(val)
+	case KindObject:
+		return s.cloneObject(val)
+	default:
+		return val, nil
+	}
+}
+
+func (s *capabilityDataCloneScanner) cloneArray(val Value) (Value, error) {
+	values := val.Array()
+	id := sliceIdentity{
+		Ptr: reflect.ValueOf(values).Pointer(),
+		Len: len(values),
+		Cap: cap(values),
+	}
+	if id.Ptr != 0 {
+		if _, visiting := s.visitingArrays[id]; visiting {
+			return NewNil(), fmt.Errorf("%s must not contain cyclic references", s.label)
+		}
+		if cloned, ok := s.clonedArrays[id]; ok {
+			return cloned, nil
+		}
+		s.visitingArrays[id] = struct{}{}
+	}
+	clonedValues := make([]Value, len(values))
+	cloned := NewArray(clonedValues)
+	if id.Ptr != 0 {
+		s.clonedArrays[id] = cloned
+	}
+	for i, item := range values {
+		clonedItem, err := s.clone(item)
+		if err != nil {
+			return NewNil(), err
+		}
+		clonedValues[i] = clonedItem
+	}
+	if id.Ptr != 0 {
+		delete(s.visitingArrays, id)
+	}
+	return cloned, nil
+}
+
+func (s *capabilityDataCloneScanner) cloneHash(val Value) (Value, error) {
+	entries := val.Hash()
+	ptr := hashIdentity(val)
+	if ptr == 0 {
+		ptr = reflect.ValueOf(entries).Pointer()
+	}
+	if ptr != 0 {
+		if _, visiting := s.visitingMaps[ptr]; visiting {
+			return NewNil(), fmt.Errorf("%s must not contain cyclic references", s.label)
+		}
+		if cloned, ok := s.clonedMaps[ptr]; ok {
+			return cloned, nil
+		}
+		s.visitingMaps[ptr] = struct{}{}
+	}
+	clonedEntries := make(map[string]Value, len(entries))
+	cloned := NewHash(clonedEntries)
+	if ptr != 0 {
+		s.clonedMaps[ptr] = cloned
+	}
+	for key, item := range entries {
+		clonedItem, err := s.clone(item)
+		if err != nil {
+			return NewNil(), err
+		}
+		clonedEntries[key] = clonedItem
+	}
+	defaultValue, err := s.clone(hashDefaultValue(val))
+	if err != nil {
 		return NewNil(), err
 	}
-	return deepCloneValue(result), nil
+	defaultProc, err := s.clone(hashDefaultProc(val))
+	if err != nil {
+		return NewNil(), err
+	}
+	if defaultValue.IsNil() && defaultProc.IsNil() {
+		if ptr != 0 {
+			delete(s.visitingMaps, ptr)
+		}
+		return cloned, nil
+	}
+	cloned = NewHashWithDefault(clonedEntries, defaultValue, defaultProc)
+	if ptr != 0 {
+		s.clonedMaps[ptr] = cloned
+		delete(s.visitingMaps, ptr)
+	}
+	return cloned, nil
+}
+
+func (s *capabilityDataCloneScanner) cloneObject(val Value) (Value, error) {
+	entries := val.Hash()
+	ptr := reflect.ValueOf(entries).Pointer()
+	if ptr != 0 {
+		if _, visiting := s.visitingMaps[ptr]; visiting {
+			return NewNil(), fmt.Errorf("%s must not contain cyclic references", s.label)
+		}
+		if cloned, ok := s.clonedMaps[ptr]; ok {
+			return cloned, nil
+		}
+		s.visitingMaps[ptr] = struct{}{}
+	}
+	clonedEntries := make(map[string]Value, len(entries))
+	cloned := NewObject(clonedEntries)
+	if ptr != 0 {
+		s.clonedMaps[ptr] = cloned
+	}
+	for key, item := range entries {
+		clonedItem, err := s.clone(item)
+		if err != nil {
+			return NewNil(), err
+		}
+		clonedEntries[key] = clonedItem
+	}
+	if ptr != 0 {
+		delete(s.visitingMaps, ptr)
+	}
+	return cloned, nil
 }
 
 type capabilityContractScanner struct {

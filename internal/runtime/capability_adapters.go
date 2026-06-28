@@ -125,14 +125,16 @@ func (c *jobQueueCapability) CapabilityContracts() map[string]CapabilityMethodCo
 	name := c.inner.Name
 	contracts := map[string]CapabilityMethodContract{
 		name + ".enqueue": {
-			ValidateArgs:   c.validateEnqueueContractArgs,
-			ValidateReturn: capabilityValidateAnyReturn(name + ".enqueue"),
+			ValidateArgs:             c.validateEnqueueContractArgs,
+			ReturnValidatedByBuiltin: true,
+			ValidateReturn:           capabilityValidateAnyReturn(name + ".enqueue"),
 		},
 	}
 	if c.inner.HasRetry() {
 		contracts[name+".retry"] = CapabilityMethodContract{
-			ValidateArgs:   c.validateRetryContractArgs,
-			ValidateReturn: capabilityValidateAnyReturn(name + ".retry"),
+			ValidateArgs:             c.validateRetryContractArgs,
+			ReturnValidatedByBuiltin: true,
+			ValidateReturn:           capabilityValidateAnyReturn(name + ".retry"),
 		}
 	}
 	return contracts

@@ -14,6 +14,10 @@ type payloadDBCapability struct {
 	result Value
 }
 
+type largeReturnJobQueue struct {
+	result Value
+}
+
 func (c payloadDBCapability) Find(ctx context.Context, req DBFindRequest) (Value, error) {
 	return c.result, nil
 }
@@ -32,6 +36,10 @@ func (c payloadDBCapability) Sum(ctx context.Context, req DBSumRequest) (Value, 
 
 func (c payloadDBCapability) Each(ctx context.Context, req DBEachRequest) ([]Value, error) {
 	return nil, nil
+}
+
+func (q largeReturnJobQueue) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
+	return q.result, nil
 }
 
 // capabilityBenchRows builds an array of n hashes with realistic mixed
@@ -88,6 +96,27 @@ end`)
 		b.Run(fmt.Sprintf("rows_%d", n), func(b *testing.B) {
 			opts := callOptionsWithCapabilities(
 				MustNewDBCapability("db", payloadDBCapability{result: capabilityBenchRows(n)}),
+			)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := script.Call(context.Background(), "run", nil, opts); err != nil {
+					b.Fatalf("call failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkJobQueueCapabilityLargeReturn(b *testing.B) {
+	script := compileScriptWithEngine(b, capabilityPayloadEngine(), `def run()
+  jobs.enqueue("demo", {}).size
+end`)
+
+	for _, n := range []int{100, 1000, 10000} {
+		b.Run(fmt.Sprintf("rows_%d", n), func(b *testing.B) {
+			opts := callOptionsWithCapabilities(
+				MustNewJobQueueCapability("jobs", largeReturnJobQueue{result: capabilityBenchRows(n)}),
 			)
 			b.ReportAllocs()
 			b.ResetTimer()
