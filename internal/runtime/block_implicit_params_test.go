@@ -32,6 +32,18 @@ end`)
 	compareArrays(t, got, []Value{NewInt(3), NewInt(6), NewInt(9)})
 }
 
+func TestImplicitBlockItDoesNotShadowVisibleLocal(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  it = 10
+  [1].map { it + 1 }
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewInt(11)})
+}
+
 func TestExplicitEmptyBlockParamsDisableImplicitParams(t *testing.T) {
 	t.Parallel()
 

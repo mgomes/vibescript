@@ -1578,6 +1578,7 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 		p.nextToken()
 	}
 
+	inferImplicitIt := !p.isLocalName("it")
 	p.pushLocalScope(params, false)
 	if !hasExplicitParams {
 		p.declareNumberedImplicitBlockParamCandidates()
@@ -1590,7 +1591,7 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 
 	implicitParams := []string(nil)
 	if !hasExplicitParams {
-		implicitParams = inferImplicitBlockParams(body)
+		implicitParams = inferImplicitBlockParams(body, inferImplicitIt)
 	}
 
 	return &ast.BlockLiteral{Params: params, ImplicitParams: implicitParams, Body: body, Position: pos}

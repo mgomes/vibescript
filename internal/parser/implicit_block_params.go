@@ -9,7 +9,7 @@ type implicitBlockParamUsage struct {
 	it       bool
 }
 
-func inferImplicitBlockParams(body []ast.Statement) []string {
+func inferImplicitBlockParams(body []ast.Statement, inferIt bool) []string {
 	usage := implicitBlockParamUsage{
 		assigned: map[string]struct{}{},
 		numbered: map[string]struct{}{},
@@ -28,7 +28,7 @@ func inferImplicitBlockParams(body []ast.Statement) []string {
 		}
 		params = append(params, name)
 	}
-	if usage.it {
+	if inferIt && usage.it {
 		if _, assigned := usage.assigned["it"]; !assigned {
 			params = append(params, "it")
 		}
