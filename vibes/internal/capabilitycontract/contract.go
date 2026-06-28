@@ -14,6 +14,30 @@ import (
 	"github.com/mgomes/vibescript/vibes/value"
 )
 
+// MaxDataOnlyTraversalDepth bounds recursive capability payload validation and
+// cloning so deeply nested acyclic values cannot exhaust the host stack.
+const MaxDataOnlyTraversalDepth = 256
+
+type limitError struct {
+	err error
+}
+
+func (e *limitError) Error() string {
+	return e.err.Error()
+}
+
+func (e *limitError) Unwrap() error {
+	return e.err
+}
+
+func (e *limitError) LimitError() bool {
+	return true
+}
+
+func limitErrorf(format string, args ...any) error {
+	return &limitError{err: fmt.Errorf(format, args...)}
+}
+
 // NameArg validates that val is a non-empty string or symbol and returns
 // its textual form. Used by capability adapters to interpret leading
 // "name" arguments such as the collection passed to db.find.
@@ -125,6 +149,9 @@ func CloneHashValue(label string, val value.Value) (map[string]value.Value, erro
 
 // CloneDataOnlyValue validates and deep-copies val in one graph walk.
 func CloneDataOnlyValue(label string, val value.Value) (value.Value, error) {
+	if err := validateTraversalDepth(label, val); err != nil {
+		return value.NewNil(), err
+	}
 	cloned, issue := cloneDataOnlyValue(val, newSeenSet())
 	if err := dataOnlyIssueError(label, issue); err != nil {
 		return value.NewNil(), err
@@ -166,6 +193,9 @@ func EnsureBlock(block value.Value, name string) error {
 // val. Capability boundaries call it so host code never receives a
 // script-side callable it cannot safely invoke.
 func ValidateDataOnlyValue(label string, val value.Value) error {
+	if err := validateTraversalDepth(label, val); err != nil {
+		return err
+	}
 	switch validateDataOnly(val, newSeenSet(), newSeenSet()) {
 	case dataOnlyCallable:
 		return fmt.Errorf("%s must be data-only", label)
@@ -224,6 +254,70 @@ func newSeenSet() *seenSet {
 		arrays: map[value.SliceIdentity]struct{}{},
 		maps:   map[uintptr]struct{}{},
 	}
+}
+
+func validateTraversalDepth(label string, val value.Value) error {
+	return (&traversalDepthScanner{
+		visitingArrays: newSeenSet(),
+		seenArrays:     newSeenSet(),
+	}).check(label, val, 0)
+}
+
+type traversalDepthScanner struct {
+	visitingArrays *seenSet
+	seenArrays     *seenSet
+}
+
+func (s *traversalDepthScanner) check(label string, val value.Value, depth int) error {
+	if depth > MaxDataOnlyTraversalDepth {
+		return limitErrorf("%s exceeds maximum depth %d", label, MaxDataOnlyTraversalDepth)
+	}
+	switch val.Kind() {
+	case value.KindArray:
+		values := val.Array()
+		id := sliceIdentity(values)
+		if _, ok := s.seenArrays.arrays[id]; ok {
+			return nil
+		}
+		if _, ok := s.visitingArrays.arrays[id]; ok {
+			return nil
+		}
+		s.visitingArrays.arrays[id] = struct{}{}
+		for _, item := range values {
+			if err := s.check(label, item, depth+1); err != nil {
+				return err
+			}
+		}
+		delete(s.visitingArrays.arrays, id)
+		s.seenArrays.arrays[id] = struct{}{}
+	case value.KindHash, value.KindObject:
+		entries := val.Hash()
+		ptr := value.HashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
+		if _, ok := s.seenArrays.maps[ptr]; ok {
+			return nil
+		}
+		if _, ok := s.visitingArrays.maps[ptr]; ok {
+			return nil
+		}
+		s.visitingArrays.maps[ptr] = struct{}{}
+		for _, item := range entries {
+			if err := s.check(label, item, depth+1); err != nil {
+				return err
+			}
+		}
+		if err := s.check(label, value.HashDefaultValue(val), depth+1); err != nil {
+			return err
+		}
+		if err := s.check(label, value.HashDefaultProc(val), depth+1); err != nil {
+			return err
+		}
+		delete(s.visitingArrays.maps, ptr)
+		s.seenArrays.maps[ptr] = struct{}{}
+	}
+	return nil
 }
 
 type dataOnlyResult uint8

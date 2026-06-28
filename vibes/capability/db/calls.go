@@ -36,6 +36,9 @@ func (c *Capability) callFindValidated(exec ExecutionContext, args []value.Value
 	if err != nil {
 		return value.NewNil(), err
 	}
+	if err := contextErr(exec.Context()); err != nil {
+		return value.NewNil(), err
+	}
 	return capabilitycontract.CloneMethodResult(method, result)
 }
 
@@ -59,6 +62,9 @@ func (c *Capability) callQueryValidated(exec ExecutionContext, args []value.Valu
 	}
 	result, err := c.db.Query(exec.Context(), req)
 	if err != nil {
+		return value.NewNil(), err
+	}
+	if err := contextErr(exec.Context()); err != nil {
 		return value.NewNil(), err
 	}
 	return capabilitycontract.CloneMethodResult(method, result)
@@ -96,6 +102,9 @@ func (c *Capability) callUpdateValidated(exec ExecutionContext, args []value.Val
 	if err != nil {
 		return value.NewNil(), err
 	}
+	if err := contextErr(exec.Context()); err != nil {
+		return value.NewNil(), err
+	}
 	return capabilitycontract.CloneMethodResult(method, result)
 }
 
@@ -120,6 +129,9 @@ func (c *Capability) callSumValidated(exec ExecutionContext, args []value.Value,
 	}
 	result, err := c.db.Sum(exec.Context(), req)
 	if err != nil {
+		return value.NewNil(), err
+	}
+	if err := contextErr(exec.Context()); err != nil {
 		return value.NewNil(), err
 	}
 	return capabilitycontract.CloneMethodResult(method, result)
@@ -173,4 +185,11 @@ func (c *Capability) callEachValidated(exec ExecutionContext, args []value.Value
 		}
 	}
 	return value.NewNil(), nil
+}
+
+func contextErr(ctx interface{ Err() error }) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
 }

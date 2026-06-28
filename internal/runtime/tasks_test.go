@@ -912,6 +912,43 @@ func TestTaskRunSnapshotGlobalsCountTowardMemoryQuota(t *testing.T) {
 	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
 }
 
+func TestPendingTaskJobPayloadsCountTowardMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	argsValues := make([]Value, 256)
+	kwargValues := make([]Value, 256)
+	for i := range argsValues {
+		argsValues[i] = NewString("arg-payload")
+		kwargValues[i] = NewString("kwarg-payload")
+	}
+	exec := &Execution{
+		ctx:  context.Background(),
+		root: newEnv(nil),
+	}
+	group := &taskGroup{}
+	exec.pushTaskGroup(group)
+	defer exec.popTaskGroup()
+
+	withoutJob := exec.estimateMemoryUsage()
+	job := &taskJob{
+		functionName: "work",
+		args:         []Value{NewArray(argsValues)},
+		kwargs: map[string]Value{
+			"payload": NewArray(kwargValues),
+		},
+	}
+	group.retainJobPayload(job)
+	defer group.releaseJobPayload(job)
+
+	withJob := exec.estimateMemoryUsage()
+	if withJob <= withoutJob {
+		t.Fatalf("memory with pending job = %d, want greater than %d", withJob, withoutJob)
+	}
+
+	exec.memoryQuota = withJob - 1
+	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
+}
+
 func TestStrictEffectsRejectLazyTaskCallableGlobals(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()

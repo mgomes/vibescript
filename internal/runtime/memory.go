@@ -1579,6 +1579,7 @@ func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
 	}
 	for _, group := range exec.activeTaskGroups {
 		total += group.retainedSnapshotMemory(est)
+		total += group.jobPayloadMemory(est)
 		total += group.retainedResultMemory(est)
 	}
 	if globals := taskLazyGlobalsFromContext(exec.Context()); globals != nil {

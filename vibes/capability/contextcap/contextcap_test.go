@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mgomes/vibescript/vibes/internal/capabilitycontract"
 	"github.com/mgomes/vibescript/vibes/value"
 )
 
@@ -127,6 +128,42 @@ func TestCapabilityBindRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestCapabilityBindStopsAfterResolverCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cap := MustNewCapability("ctx", func(context.Context) (value.Value, error) {
+		cancel()
+		return value.NewObject(map[string]value.Value{
+			"fn": value.NewValue(value.KindBlock, struct{}{}),
+		}), nil
+	})
+
+	_, err := cap.Bind(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Bind canceled after resolver error = %v, want context.Canceled", err)
+	}
+}
+
+func TestCapabilityBindRejectsDeepTraversal(t *testing.T) {
+	t.Parallel()
+
+	cap := MustNewCapability("ctx", func(context.Context) (value.Value, error) {
+		return value.NewObject(map[string]value.Value{
+			"payload": deepContextArray(capabilitycontract.MaxDataOnlyTraversalDepth + 1),
+		}), nil
+	})
+
+	_, err := cap.Bind(context.Background())
+	if err == nil {
+		t.Fatal("Bind deep traversal err = nil, want limit error")
+	}
+	limit, ok := err.(interface{ LimitError() bool })
+	if !ok || !limit.LimitError() {
+		t.Fatalf("Bind deep traversal err = %T %v, want LimitError marker", err, err)
+	}
+}
+
 func TestCapabilityBindPreservesHashDefault(t *testing.T) {
 	t.Parallel()
 
@@ -175,4 +212,12 @@ func TestCapabilityName(t *testing.T) {
 	if cap.Name() != "ctx" {
 		t.Fatalf("expected name ctx, got %q", cap.Name())
 	}
+}
+
+func deepContextArray(depth int) value.Value {
+	val := value.NewString("leaf")
+	for range depth {
+		val = value.NewArray([]value.Value{val})
+	}
+	return val
 }

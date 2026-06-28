@@ -131,6 +131,7 @@ type taskGroup struct {
 	firstErr error
 
 	retainedResults map[*taskHandle]Value
+	jobPayloads     map[*taskJob]struct{}
 }
 
 type taskJob struct {
@@ -281,10 +282,12 @@ func (group *taskGroup) spawn(ctx context.Context, functionName string, args []V
 	}
 
 	group.tasks.Add(1)
+	group.retainJobPayload(job)
 	select {
 	case group.jobs <- job:
 		return handle, nil
 	case <-group.ctx.Done():
+		group.releaseJobPayload(job)
 		err := group.ctx.Err()
 		if groupErr := group.err(); groupErr != nil {
 			err = groupErr
@@ -293,6 +296,7 @@ func (group *taskGroup) spawn(ctx context.Context, functionName string, args []V
 		group.tasks.Done()
 		return nil, err
 	case <-ctx.Done():
+		group.releaseJobPayload(job)
 		handle.complete(NewNil(), ctx.Err())
 		group.tasks.Done()
 		return nil, ctx.Err()
@@ -307,6 +311,7 @@ func (group *taskGroup) worker() {
 
 func (group *taskGroup) runJob(job *taskJob) {
 	defer group.tasks.Done()
+	defer group.releaseJobPayload(job)
 
 	if err := group.ctx.Err(); err != nil {
 		group.recordErr(err)
@@ -402,6 +407,33 @@ func (group *taskGroup) retainResult(handle *taskHandle, result Value) {
 	}
 	group.retainedResults[handle] = result
 	group.mu.Unlock()
+}
+
+func (group *taskGroup) retainJobPayload(job *taskJob) {
+	group.mu.Lock()
+	if group.jobPayloads == nil {
+		group.jobPayloads = make(map[*taskJob]struct{})
+	}
+	group.jobPayloads[job] = struct{}{}
+	group.mu.Unlock()
+}
+
+func (group *taskGroup) releaseJobPayload(job *taskJob) {
+	group.mu.Lock()
+	delete(group.jobPayloads, job)
+	group.mu.Unlock()
+}
+
+func (group *taskGroup) jobPayloadMemory(est *memoryEstimator) int {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+
+	total := 0
+	for job := range group.jobPayloads {
+		total += est.slice(job.args)
+		total += est.hash(job.kwargs)
+	}
+	return total
 }
 
 func (group *taskGroup) retainedResultMemory(est *memoryEstimator) int {

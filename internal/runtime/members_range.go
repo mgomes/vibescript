@@ -613,7 +613,7 @@ func rangeMemberToArray() Value {
 		rng := receiver.Range()
 		length, overflow := rangeLength(rng)
 		if overflow {
-			return NewNil(), fmt.Errorf("range.to_a result too large")
+			return NewNil(), guardLimitErrorf("range.to_a result too large")
 		}
 		return exec.rangeMaterialize(rng, length, false)
 	})
@@ -695,7 +695,7 @@ func (exec *Execution) rangeMaterialize(rng Range, limit int64, fromEnd bool) (V
 		return NewArray([]Value{}), nil
 	}
 	if limit > int64(math.MaxInt) {
-		return NewNil(), fmt.Errorf("range materialization result too large")
+		return NewNil(), guardLimitErrorf("range materialization result too large")
 	}
 
 	ascending := rng.Start <= rng.End

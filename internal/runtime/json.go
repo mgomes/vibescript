@@ -30,7 +30,7 @@ func (e jsonInvalidNumberError) Error() string {
 	return fmt.Sprintf("JSON.parse invalid number %q", string(e))
 }
 
-var errJSONMaxDepth = errors.New("exceeded max depth")
+var errJSONMaxDepth = &guardLimitError{err: errors.New("exceeded max depth")}
 
 func (p *jsonValueParser) parse() (Value, error) {
 	p.skipWhitespace()

@@ -10,9 +10,8 @@ package contextcap
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"slices"
 
+	"github.com/mgomes/vibescript/vibes/internal/capabilitycontract"
 	"github.com/mgomes/vibescript/vibes/value"
 )
 
@@ -57,207 +56,18 @@ func (c *Capability) Bind(ctx context.Context) (map[string]value.Value, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s capability: %w", c.name, err)
 	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	if val.Kind() != value.KindHash && val.Kind() != value.KindObject {
 		return nil, fmt.Errorf("%s capability resolver must return hash/object", c.name)
 	}
 	label := c.name + " capability value"
-	if err := validateDataOnly(label, val); err != nil {
+	cloned, err := capabilitycontract.CloneDataOnlyValue(label, val)
+	if err != nil {
 		return nil, err
 	}
-	return map[string]value.Value{c.name: deepClone(val)}, nil
-}
-
-// validateDataOnly rejects values that embed callables or cyclic references.
-// The contextcap package intentionally inlines this check rather than
-// depending on the parent vibes package: only data-shaped kinds (Array,
-// Hash, Object) require traversal, so a self-contained scanner suffices.
-func validateDataOnly(label string, val value.Value) error {
-	if newCallableScanner().containsCallable(val) {
-		return fmt.Errorf("%s must be data-only", label)
-	}
-	if newCycleScanner().containsCycle(val) {
-		return fmt.Errorf("%s must not contain cyclic references", label)
-	}
-	return nil
-}
-
-type callableScanner struct {
-	seenArrays map[sliceID]struct{}
-	seenMaps   map[uintptr]struct{}
-}
-
-func newCallableScanner() *callableScanner {
-	return &callableScanner{
-		seenArrays: make(map[sliceID]struct{}),
-		seenMaps:   make(map[uintptr]struct{}),
-	}
-}
-
-func (s *callableScanner) containsCallable(val value.Value) bool {
-	switch val.Kind() {
-	case value.KindFunction, value.KindBuiltin, value.KindBlock, value.KindClass, value.KindInstance:
-		return true
-	case value.KindArray:
-		values := val.Array()
-		id := identityOf(values)
-		if _, seen := s.seenArrays[id]; seen {
-			return false
-		}
-		s.seenArrays[id] = struct{}{}
-		return slices.ContainsFunc(values, s.containsCallable)
-	case value.KindHash, value.KindObject:
-		entries := val.Hash()
-		// A KindHash's default metadata lives outside its entry map, so two
-		// wrappers can share one map yet carry different defaults. Key the
-		// seen-set on the whole hash wrapper (falling back to the entry-map
-		// pointer for objects, which never carry defaults) so a second wrapper's
-		// callable default is not hidden by an earlier plain wrapper marking the
-		// shared map seen.
-		ptr := value.HashIdentity(val)
-		if ptr == 0 {
-			ptr = reflect.ValueOf(entries).Pointer()
-		}
-		if _, seen := s.seenMaps[ptr]; seen {
-			return false
-		}
-		s.seenMaps[ptr] = struct{}{}
-		for _, item := range entries {
-			if s.containsCallable(item) {
-				return true
-			}
-		}
-		// A KindHash may carry Ruby-style default metadata outside its entry
-		// map: a default value (itself possibly a callable or a collection of
-		// callables) and a default proc (a KindBlock, always a callable). Scan
-		// both so Hash.new { ... } or Hash.new(some_proc) cannot smuggle a
-		// script callable past this data-only boundary.
-		if s.containsCallable(value.HashDefaultValue(val)) {
-			return true
-		}
-		return s.containsCallable(value.HashDefaultProc(val))
-	default:
-		return false
-	}
-}
-
-type cycleScanner struct {
-	visitingArrays map[sliceID]struct{}
-	visitingMaps   map[uintptr]struct{}
-	seenArrays     map[sliceID]struct{}
-	seenMaps       map[uintptr]struct{}
-}
-
-func newCycleScanner() *cycleScanner {
-	return &cycleScanner{
-		visitingArrays: make(map[sliceID]struct{}),
-		visitingMaps:   make(map[uintptr]struct{}),
-		seenArrays:     make(map[sliceID]struct{}),
-		seenMaps:       make(map[uintptr]struct{}),
-	}
-}
-
-func (s *cycleScanner) containsCycle(val value.Value) bool {
-	switch val.Kind() {
-	case value.KindArray:
-		values := val.Array()
-		id := identityOf(values)
-		if _, seen := s.seenArrays[id]; seen {
-			return false
-		}
-		if _, visiting := s.visitingArrays[id]; visiting {
-			return true
-		}
-		s.visitingArrays[id] = struct{}{}
-		if slices.ContainsFunc(values, s.containsCycle) {
-			return true
-		}
-		delete(s.visitingArrays, id)
-		s.seenArrays[id] = struct{}{}
-		return false
-	case value.KindHash, value.KindObject:
-		entries := val.Hash()
-		// Key on the whole hash wrapper (falling back to the entry-map pointer for
-		// objects) so default metadata is visited per wrapper, matching the
-		// callable scan above.
-		ptr := value.HashIdentity(val)
-		if ptr == 0 {
-			ptr = reflect.ValueOf(entries).Pointer()
-		}
-		if _, seen := s.seenMaps[ptr]; seen {
-			return false
-		}
-		if _, visiting := s.visitingMaps[ptr]; visiting {
-			return true
-		}
-		s.visitingMaps[ptr] = struct{}{}
-		for _, item := range entries {
-			if s.containsCycle(item) {
-				return true
-			}
-		}
-		// A KindHash's default value/proc are reachable hash state and may
-		// themselves nest collections, so walk them for cycles too. They share
-		// the same visiting set, so a default that references its own hash is
-		// detected as a cycle like any other back-edge.
-		if s.containsCycle(value.HashDefaultValue(val)) || s.containsCycle(value.HashDefaultProc(val)) {
-			return true
-		}
-		delete(s.visitingMaps, ptr)
-		s.seenMaps[ptr] = struct{}{}
-		return false
-	default:
-		return false
-	}
-}
-
-type sliceID struct {
-	Ptr uintptr
-	Len int
-	Cap int
-}
-
-func identityOf(values []value.Value) sliceID {
-	return sliceID{
-		Ptr: reflect.ValueOf(values).Pointer(),
-		Len: len(values),
-		Cap: cap(values),
-	}
-}
-
-func deepClone(val value.Value) value.Value {
-	switch val.Kind() {
-	case value.KindArray:
-		arr := val.Array()
-		cloned := make([]value.Value, len(arr))
-		for i, elem := range arr {
-			cloned[i] = deepClone(elem)
-		}
-		return value.NewArray(cloned)
-	case value.KindHash:
-		hash := val.Hash()
-		cloned := make(map[string]value.Value, len(hash))
-		for k, v := range hash {
-			cloned[k] = deepClone(v)
-		}
-		// Preserve the hash's Ruby-style default metadata so the isolated copy
-		// keeps the same missing-key behavior. The default value is deep-cloned
-		// like an entry; the default proc is a runtime-only block, rejected by
-		// validateDataOnly before reaching this clone, so it is copied by
-		// reference rather than dropped.
-		defaultProc := value.HashDefaultProc(val)
-		defaultValue := value.HashDefaultValue(val)
-		if defaultProc.Kind() == value.KindNil && defaultValue.Kind() == value.KindNil {
-			return value.NewHash(cloned)
-		}
-		return value.NewHashWithDefault(cloned, deepClone(defaultValue), defaultProc)
-	case value.KindObject:
-		obj := val.Hash()
-		cloned := make(map[string]value.Value, len(obj))
-		for k, v := range obj {
-			cloned[k] = deepClone(v)
-		}
-		return value.NewObject(cloned)
-	default:
-		return val
-	}
+	return map[string]value.Value{c.name: cloned}, nil
 }

@@ -354,7 +354,7 @@ func flattenValues(values []Value, depth int, method string) ([]Value, error) {
 
 func flattenValuesWithState(values []Value, depth int, state *flattenState) ([]Value, error) {
 	if state.depth >= maxFlattenDepth {
-		return nil, fmt.Errorf("%s exceeded maximum depth", state.method)
+		return nil, guardLimitErrorf("%s exceeded maximum depth", state.method)
 	}
 
 	id := sliceIdentity{
@@ -417,7 +417,7 @@ func arrayJoin(b *strings.Builder, values []Value, sep string) error {
 
 func arrayJoinWithState(b *strings.Builder, values []Value, sep string, state *joinState) error {
 	if state.depth >= maxFlattenDepth {
-		return fmt.Errorf("array.join exceeded maximum depth")
+		return guardLimitErrorf("array.join exceeded maximum depth")
 	}
 
 	id := sliceIdentity{

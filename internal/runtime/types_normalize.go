@@ -8,21 +8,28 @@ import (
 	"strings"
 )
 
-const maxNormalizeDepth = 64
+const (
+	maxNormalizeDepth          = 64
+	normalizationCheckInterval = 64
+)
 
 type typeContext struct {
 	owner    *Script
 	env      *Env
 	fallback *Env
+	exec     *Execution
 	depth    int
 }
 
 func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
+	if err := ctx.checkSandbox(); err != nil {
+		return NewNil(), err
+	}
 	if ty == nil {
 		return val, nil
 	}
 	if ctx.depth >= maxNormalizeDepth {
-		return NewNil(), fmt.Errorf("type normalization exceeded maximum depth")
+		return NewNil(), guardLimitErrorf("type normalization exceeded maximum depth")
 	}
 	ctx.depth++
 	if nullableNilCanBypassResolution(ty, val) {
@@ -110,8 +117,57 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 	}
 }
 
+func (ctx typeContext) checkSandbox(extra ...Value) error {
+	if ctx.exec == nil {
+		return nil
+	}
+	if err := ctx.exec.checkContext(); err != nil {
+		return err
+	}
+	if len(extra) > 0 {
+		return ctx.exec.checkMemoryWith(extra...)
+	}
+	return nil
+}
+
+func (ctx typeContext) checkSandboxEvery(index int, extra ...Value) error {
+	if index%normalizationCheckInterval != 0 {
+		return nil
+	}
+	return ctx.checkSandbox(extra...)
+}
+
+func (ctx typeContext) reserveArraySlots(source Value, count int) error {
+	if ctx.exec == nil {
+		return nil
+	}
+	return newArrayBuildAccumulator(ctx.exec, source, nil, nil, NewNil()).reserveSlots(count)
+}
+
+func (ctx typeContext) reserveHashEntries(source Value, count int) error {
+	if ctx.exec == nil {
+		return nil
+	}
+	return ctx.exec.checkProjectedHashBytes(count, source, nil, nil, NewNil())
+}
+
+func (ctx typeContext) normalizedMap(source Value, entries map[string]Value) (map[string]Value, error) {
+	if err := ctx.reserveHashEntries(source, len(entries)); err != nil {
+		return nil, err
+	}
+	out := make(map[string]Value, len(entries))
+	for key, item := range entries {
+		out[key] = item
+	}
+	return out, nil
+}
+
 func nullableNilCanBypassResolution(ty *TypeExpr, val Value) bool {
 	return ty.Nullable && val.Kind() == KindNil && ty.Kind != TypeUnknown && ty.Kind != TypeEnum
+}
+
+func isNormalizationLimitError(err error) bool {
+	return classifyRuntimeErrorType(err) == runtimeErrorTypeLimit
 }
 
 func normalizeArrayForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
@@ -126,9 +182,11 @@ func normalizeArrayForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 	}
 
 	items := val.Array()
-	out := make([]Value, len(items))
-	changed := false
+	var out []Value
 	for i, item := range items {
+		if err := ctx.checkSandboxEvery(i); err != nil {
+			return NewNil(), err
+		}
 		normalized, err := normalizeValueForType(item, ty.TypeArgs[0], ctx)
 		if err != nil {
 			var mismatch *typeMismatchError
@@ -137,15 +195,27 @@ func normalizeArrayForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 			}
 			return NewNil(), err
 		}
-		out[i] = normalized
 		if !sameNormalizedValue(normalized, item) {
-			changed = true
+			if out == nil {
+				if err := ctx.reserveArraySlots(val, len(items)); err != nil {
+					return NewNil(), err
+				}
+				out = make([]Value, len(items))
+				copy(out, items[:i])
+			}
+		}
+		if out != nil {
+			out[i] = normalized
 		}
 	}
-	if !changed {
+	if out == nil {
 		return val, nil
 	}
-	return NewArray(out), nil
+	result := NewArray(out)
+	if err := ctx.checkSandbox(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
 }
 
 func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
@@ -162,15 +232,19 @@ func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 	keyType := ty.TypeArgs[0]
 	valueType := ty.TypeArgs[1]
 	entries := val.Hash()
-	out := make(map[string]Value, len(entries))
-	changed := false
+	var out map[string]Value
 
 	if decided, keyMatches := typeAllowsStringHashKey(keyType); decided {
 		if !keyMatches {
 			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 		}
 	} else {
+		i := 0
 		for key := range entries {
+			if err := ctx.checkSandboxEvery(i); err != nil {
+				return NewNil(), err
+			}
+			i++
 			if _, err := normalizeValueForType(NewString(key), keyType, ctx); err != nil {
 				var mismatch *typeMismatchError
 				if errorAsTypeMismatch(err, &mismatch) {
@@ -181,7 +255,12 @@ func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 		}
 	}
 
+	i := 0
 	for key, item := range entries {
+		if err := ctx.checkSandboxEvery(i); err != nil {
+			return NewNil(), err
+		}
+		i++
 		normalized, err := normalizeValueForType(item, valueType, ctx)
 		if err != nil {
 			var mismatch *typeMismatchError
@@ -190,9 +269,17 @@ func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 			}
 			return NewNil(), err
 		}
-		out[key] = normalized
 		if !sameNormalizedValue(normalized, item) {
-			changed = true
+			if out == nil {
+				var err error
+				out, err = ctx.normalizedMap(val, entries)
+				if err != nil {
+					return NewNil(), err
+				}
+			}
+		}
+		if out != nil {
+			out[key] = normalized
 		}
 	}
 
@@ -218,20 +305,38 @@ func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 		}
 		normalizedDefault = converted
 		if !sameNormalizedValue(normalizedDefault, defaultValue) {
-			changed = true
+			if out == nil {
+				var err error
+				out, err = ctx.normalizedMap(val, entries)
+				if err != nil {
+					return NewNil(), err
+				}
+			}
 		}
 	}
 
-	if !changed {
+	if out == nil {
 		return val, nil
 	}
 	if val.Kind() == KindObject {
-		return NewObject(out), nil
+		result := NewObject(out)
+		if err := ctx.checkSandbox(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
 	}
 	if defaultValue.IsNil() {
-		return NewHash(out), nil
+		result := NewHash(out)
+		if err := ctx.checkSandbox(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
 	}
-	return NewHashWithDefault(out, normalizedDefault, NewNil()), nil
+	result := NewHashWithDefault(out, normalizedDefault, NewNil())
+	if err := ctx.checkSandbox(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
 }
 
 func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {
@@ -243,9 +348,13 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 	}
 
-	out := make(map[string]Value, len(entries))
-	changed := false
+	var out map[string]Value
+	i := 0
 	for field, fieldType := range ty.Shape {
+		if err := ctx.checkSandboxEvery(i); err != nil {
+			return NewNil(), err
+		}
+		i++
 		fieldVal, ok := entries[field]
 		if !ok {
 			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
@@ -258,9 +367,17 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 			}
 			return NewNil(), err
 		}
-		out[field] = normalized
 		if !sameNormalizedValue(normalized, fieldVal) {
-			changed = true
+			if out == nil {
+				var err error
+				out, err = ctx.normalizedMap(val, entries)
+				if err != nil {
+					return NewNil(), err
+				}
+			}
+		}
+		if out != nil {
+			out[field] = normalized
 		}
 	}
 	for field := range entries {
@@ -269,13 +386,21 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 		}
 	}
 
-	if !changed {
+	if out == nil {
 		return val, nil
 	}
 	if val.Kind() == KindObject {
-		return NewObject(out), nil
+		result := NewObject(out)
+		if err := ctx.checkSandbox(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
 	}
-	return NewHash(out), nil
+	result := NewHash(out)
+	if err := ctx.checkSandbox(result); err != nil {
+		return NewNil(), err
+	}
+	return result, nil
 }
 
 func normalizeEnumForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {

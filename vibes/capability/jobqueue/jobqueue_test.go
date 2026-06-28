@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/mgomes/vibescript/vibes/internal/capabilitycontract"
 	"github.com/mgomes/vibescript/vibes/value"
 )
 
@@ -307,6 +308,24 @@ func TestParseEnqueueOptionsRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestParseEnqueueOptionsRejectsDeepTraversal(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseEnqueueOptions("jobs", map[string]value.Value{
+		"meta": deepJobQueueArray(capabilitycontract.MaxDataOnlyTraversalDepth + 1),
+	})
+	if err == nil {
+		t.Fatal("ParseEnqueueOptions deep traversal err = nil, want limit error")
+	}
+	limit, ok := err.(interface{ LimitError() bool })
+	if !ok || !limit.LimitError() {
+		t.Fatalf("ParseEnqueueOptions deep traversal err = %T %v, want LimitError marker", err, err)
+	}
+	if !strings.Contains(err.Error(), "jobs.enqueue keyword meta exceeds maximum depth") {
+		t.Fatalf("ParseEnqueueOptions deep traversal err = %v, want depth error", err)
+	}
+}
+
 func TestParseEnqueueOptionsValidatedSkipsDataOnlyWalk(t *testing.T) {
 	t.Parallel()
 
@@ -393,4 +412,12 @@ func valuesEqual(a, b value.Value) bool {
 	default:
 		return a.Equal(b)
 	}
+}
+
+func deepJobQueueArray(depth int) value.Value {
+	val := value.NewString("leaf")
+	for range depth {
+		val = value.NewArray([]value.Value{val})
+	}
+	return val
 }

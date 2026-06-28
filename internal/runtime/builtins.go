@@ -504,7 +504,7 @@ func prepareFormatString(exec *Execution, pattern string, values []Value) (prepa
 func addProjectedFormatBytes(total, bytes int) (int, error) {
 	total = saturatingAdd(total, bytes)
 	if total > maxFormatOutputBytes {
-		return 0, fmt.Errorf("format output exceeds limit %d bytes", maxFormatOutputBytes)
+		return 0, guardLimitErrorf("format output exceeds limit %d bytes", maxFormatOutputBytes)
 	}
 	return total, nil
 }
@@ -563,7 +563,7 @@ func parseFormatCount(pattern string, i int, label string) (int, bool, int, erro
 	}
 	n, err := strconv.Atoi(pattern[start:i])
 	if err != nil || n > maxFormatOutputBytes {
-		return 0, false, i, fmt.Errorf("format %s exceeds limit %d bytes", label, maxFormatOutputBytes)
+		return 0, false, i, guardLimitErrorf("format %s exceeds limit %d bytes", label, maxFormatOutputBytes)
 	}
 	return n, true, i, nil
 }
@@ -1170,7 +1170,7 @@ func valueToSleepDuration(val Value) (time.Duration, error) {
 			return 0, fmt.Errorf("sleep duration must be non-negative")
 		}
 		if seconds > int64(maxSleepDuration/time.Second) {
-			return 0, fmt.Errorf("sleep duration exceeds maximum")
+			return 0, guardLimitErrorf("sleep duration exceeds maximum")
 		}
 		return time.Duration(seconds) * time.Second, nil
 	case KindFloat:
@@ -1187,11 +1187,11 @@ func valueToSleepDuration(val Value) (time.Duration, error) {
 func sleepDurationFromFloat(seconds float64) (time.Duration, error) {
 	whole, fractional := math.Modf(seconds)
 	if whole > float64(maxSleepWholeSeconds) {
-		return 0, fmt.Errorf("sleep duration exceeds maximum")
+		return 0, guardLimitErrorf("sleep duration exceeds maximum")
 	}
 	fractionalNanos := fractional * float64(time.Second)
 	if whole == float64(maxSleepWholeSeconds) && fractionalNanos > float64(maxSleepRemainder) {
-		return 0, fmt.Errorf("sleep duration exceeds maximum")
+		return 0, guardLimitErrorf("sleep duration exceeds maximum")
 	}
 	return time.Duration(int64(whole))*time.Second + time.Duration(fractionalNanos), nil
 }
@@ -1246,7 +1246,7 @@ func builtinRandomID(exec *Execution, receiver Value, args []Value, kwargs map[s
 		return NewNil(), fmt.Errorf("random_id length must be positive")
 	}
 	if length > 1024 {
-		return NewNil(), fmt.Errorf("random_id length exceeds maximum 1024")
+		return NewNil(), guardLimitErrorf("random_id length exceeds maximum 1024")
 	}
 
 	chars := make([]byte, 0, length)
@@ -1298,7 +1298,7 @@ func builtinJSONParse(exec *Execution, receiver Value, args []Value, kwargs map[
 
 	raw := args[0].String()
 	if len(raw) > maxJSONPayloadBytes {
-		return NewNil(), fmt.Errorf("JSON.parse input exceeds limit %d bytes", maxJSONPayloadBytes)
+		return NewNil(), guardLimitErrorf("JSON.parse input exceeds limit %d bytes", maxJSONPayloadBytes)
 	}
 
 	parser := jsonValueParser{raw: raw}
@@ -1333,7 +1333,7 @@ func builtinJSONStringify(exec *Execution, receiver Value, args []Value, kwargs 
 		return NewNil(), err
 	}
 	if len(payload) > maxJSONPayloadBytes {
-		return NewNil(), fmt.Errorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)
+		return NewNil(), guardLimitErrorf("JSON.stringify output exceeds limit %d bytes", maxJSONPayloadBytes)
 	}
 	return NewString(string(payload)), nil
 }
@@ -1354,10 +1354,10 @@ func builtinRegexMatch(exec *Execution, receiver Value, args []Value, kwargs map
 	pattern := args[0].String()
 	text := args[1].String()
 	if len(pattern) > maxRegexPatternSize {
-		return NewNil(), fmt.Errorf("Regex.match pattern exceeds limit %d bytes", maxRegexPatternSize)
+		return NewNil(), guardLimitErrorf("Regex.match pattern exceeds limit %d bytes", maxRegexPatternSize)
 	}
 	if len(text) > maxRegexInputBytes {
-		return NewNil(), fmt.Errorf("Regex.match text exceeds limit %d bytes", maxRegexInputBytes)
+		return NewNil(), guardLimitErrorf("Regex.match text exceeds limit %d bytes", maxRegexInputBytes)
 	}
 
 	re, err := compileCachedRegex(pattern)
@@ -1475,13 +1475,13 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 	pattern := args[1].String()
 	replacement := args[2].String()
 	if len(pattern) > maxRegexPatternSize {
-		return NewNil(), fmt.Errorf("%s pattern exceeds limit %d bytes", method, maxRegexPatternSize)
+		return NewNil(), guardLimitErrorf("%s pattern exceeds limit %d bytes", method, maxRegexPatternSize)
 	}
 	if len(text) > maxRegexInputBytes {
-		return NewNil(), fmt.Errorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
+		return NewNil(), guardLimitErrorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	if len(replacement) > maxRegexInputBytes {
-		return NewNil(), fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
+		return NewNil(), guardLimitErrorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 
 	re, err := compileCachedRegex(pattern)
@@ -1504,7 +1504,7 @@ func builtinRegexReplaceInternal(args []Value, kwargs map[string]Value, block Va
 	replaced := string(re.ExpandString(nil, replacement, text, loc))
 	outputLen := len(text) - (loc[1] - loc[0]) + len(replaced)
 	if outputLen > maxRegexInputBytes {
-		return NewNil(), fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		return NewNil(), guardLimitErrorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	return NewString(text[:loc[0]] + replaced + text[loc[1]:]), nil
 }
@@ -1533,12 +1533,12 @@ func regexReplaceAllWithLimit(re *regexp.Regexp, text, replacement, method strin
 
 		segmentLen := loc[0] - lastAppended
 		if len(out) > maxRegexInputBytes-segmentLen {
-			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+			return "", guardLimitErrorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
 		out = append(out, text[lastAppended:loc[0]]...)
 		out = re.ExpandString(out, replacement, text, loc)
 		if len(out) > maxRegexInputBytes {
-			return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+			return "", guardLimitErrorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
 		lastAppended = loc[1]
 		lastMatchEnd = loc[1]
@@ -1559,7 +1559,7 @@ func regexReplaceAllWithLimit(re *regexp.Regexp, text, replacement, method strin
 
 	tailLen := len(text) - lastAppended
 	if len(out) > maxRegexInputBytes-tailLen {
-		return "", fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		return "", guardLimitErrorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	out = append(out, text[lastAppended:]...)
 	return string(out), nil

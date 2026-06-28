@@ -17,6 +17,66 @@ func (adapter cancelingCapabilityAdapter) Bind(CapabilityBinding) (map[string]Va
 	}, nil
 }
 
+type cancelingInvalidReturnDB struct {
+	cancel context.CancelFunc
+}
+
+func (db cancelingInvalidReturnDB) Find(context.Context, DBFindRequest) (Value, error) {
+	db.cancel()
+	return invalidCapabilityReturn(), nil
+}
+
+func (db cancelingInvalidReturnDB) Query(context.Context, DBQueryRequest) (Value, error) {
+	db.cancel()
+	return invalidCapabilityReturn(), nil
+}
+
+func (db cancelingInvalidReturnDB) Update(context.Context, DBUpdateRequest) (Value, error) {
+	db.cancel()
+	return invalidCapabilityReturn(), nil
+}
+
+func (db cancelingInvalidReturnDB) Sum(context.Context, DBSumRequest) (Value, error) {
+	db.cancel()
+	return invalidCapabilityReturn(), nil
+}
+
+func (db cancelingInvalidReturnDB) Each(context.Context, DBEachRequest) ([]Value, error) {
+	db.cancel()
+	return []Value{invalidCapabilityReturn()}, nil
+}
+
+type cancelingInvalidReturnEvents struct {
+	cancel context.CancelFunc
+}
+
+func (events cancelingInvalidReturnEvents) Publish(context.Context, EventPublishRequest) (Value, error) {
+	events.cancel()
+	return invalidCapabilityReturn(), nil
+}
+
+type cancelingInvalidReturnQueue struct {
+	cancel context.CancelFunc
+}
+
+func (queue cancelingInvalidReturnQueue) Enqueue(context.Context, JobQueueJob) (Value, error) {
+	queue.cancel()
+	return invalidCapabilityReturn(), nil
+}
+
+func (queue cancelingInvalidReturnQueue) Retry(context.Context, JobQueueRetryRequest) (Value, error) {
+	queue.cancel()
+	return invalidCapabilityReturn(), nil
+}
+
+func invalidCapabilityReturn() Value {
+	return NewObject(map[string]Value{
+		"fn": NewBuiltin("host.invalid", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+			return NewNil(), nil
+		}),
+	})
+}
+
 func TestCapabilityFoundationsMixedAdapters(t *testing.T) {
 	t.Parallel()
 	db := &dbCapabilityStub{
@@ -87,6 +147,99 @@ end
 	}
 }
 
+func TestCapabilityAdaptersStopAfterHostCancellationBeforeReturnValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		source     string
+		capability func(context.CancelFunc) CapabilityAdapter
+	}{
+		{
+			name:   "db_find",
+			source: `def run() db.find("Player", "p-1") end`,
+			capability: func(cancel context.CancelFunc) CapabilityAdapter {
+				return MustNewDBCapability("db", cancelingInvalidReturnDB{cancel: cancel})
+			},
+		},
+		{
+			name:   "db_query",
+			source: `def run() db.query("Player") end`,
+			capability: func(cancel context.CancelFunc) CapabilityAdapter {
+				return MustNewDBCapability("db", cancelingInvalidReturnDB{cancel: cancel})
+			},
+		},
+		{
+			name:   "db_update",
+			source: `def run() db.update("Player", "p-1", { score: 1 }) end`,
+			capability: func(cancel context.CancelFunc) CapabilityAdapter {
+				return MustNewDBCapability("db", cancelingInvalidReturnDB{cancel: cancel})
+			},
+		},
+		{
+			name:   "db_sum",
+			source: `def run() db.sum("ScoreEntry", :score) end`,
+			capability: func(cancel context.CancelFunc) CapabilityAdapter {
+				return MustNewDBCapability("db", cancelingInvalidReturnDB{cancel: cancel})
+			},
+		},
+		{
+			name:   "events_publish",
+			source: `def run() events.publish("topic", { id: "p-1" }) end`,
+			capability: func(cancel context.CancelFunc) CapabilityAdapter {
+				return MustNewEventsCapability("events", cancelingInvalidReturnEvents{cancel: cancel})
+			},
+		},
+		{
+			name:   "jobs_enqueue",
+			source: `def run() jobs.enqueue("demo", { id: "p-1" }) end`,
+			capability: func(cancel context.CancelFunc) CapabilityAdapter {
+				return MustNewJobQueueCapability("jobs", cancelingInvalidReturnQueue{cancel: cancel})
+			},
+		},
+		{
+			name:   "jobs_retry",
+			source: `def run() jobs.retry("job-1") end`,
+			capability: func(cancel context.CancelFunc) CapabilityAdapter {
+				return MustNewJobQueueCapability("jobs", cancelingInvalidReturnQueue{cancel: cancel})
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			script := compileScriptDefault(t, tc.source)
+			ctx, cancel := context.WithCancel(context.Background())
+
+			err := callScriptErr(t, ctx, script, "run", nil, callOptionsWithCapabilities(tc.capability(cancel)))
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s error = %v, want context.Canceled", tc.name, err)
+			}
+			var runtimeErr *RuntimeError
+			if errors.As(err, &runtimeErr) {
+				t.Fatalf("%s error = %v, want raw context cancellation before runtime wrapping", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestRuntimeCapabilityReturnDeepTraversalClassifiesAsLimit(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  jobs.enqueue("demo", { id: "p-1" })
+end`)
+	queue := &sharedReturnQueue{
+		enqueueResult: deepRuntimeCapabilityArray(maxCapabilityDataOnlyDepth + 1),
+	}
+
+	err := callScriptErr(t, context.Background(), script, "run", nil, callOptionsWithCapabilities(
+		MustNewJobQueueCapability("jobs", queue),
+	))
+	requireRuntimeErrorType(t, err, runtimeErrorTypeLimit)
+}
+
 func TestCapabilityFoundationsEachRespectsStepQuota(t *testing.T) {
 	t.Parallel()
 	rows := make([]Value, 120)
@@ -154,4 +307,12 @@ end`)
 		MustNewDBCapability("db", db),
 	))
 	requireErrorContains(t, err, "recursion depth exceeded")
+}
+
+func deepRuntimeCapabilityArray(depth int) Value {
+	val := NewString("leaf")
+	for range depth {
+		val = NewArray([]Value{val})
+	}
+	return val
 }

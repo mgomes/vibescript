@@ -1382,10 +1382,10 @@ func stringRegexOption(method string, kwargs map[string]Value) (bool, error) {
 
 func validateRegexTextPattern(method, text, pattern string) error {
 	if len(pattern) > maxRegexPatternSize {
-		return fmt.Errorf("%s pattern exceeds limit %d bytes", method, maxRegexPatternSize)
+		return guardLimitErrorf("%s pattern exceeds limit %d bytes", method, maxRegexPatternSize)
 	}
 	if len(text) > maxRegexInputBytes {
-		return fmt.Errorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
+		return guardLimitErrorf("%s text exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	return nil
 }
@@ -1518,7 +1518,7 @@ func regexSubmatchFromRuneOffsetWithCache(cache *regexCache, method, text, patte
 
 func validateRegexReplacement(method, replacement string) error {
 	if len(replacement) > maxRegexInputBytes {
-		return fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
+		return guardLimitErrorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	return nil
 }
@@ -1542,7 +1542,7 @@ func validateLiteralReplacement(method, text, pattern, replacement string, all b
 		return true, nil
 	}
 	if len(replacement) > maxRegexInputBytes {
-		return false, fmt.Errorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
+		return false, guardLimitErrorf("%s replacement exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	outputLen := len(text)
 	consumed := saturatingMul(count, len(pattern))
@@ -1553,7 +1553,7 @@ func validateLiteralReplacement(method, text, pattern, replacement string, all b
 	}
 	outputLen = saturatingAdd(outputLen, saturatingMul(count, len(replacement)))
 	if outputLen > maxRegexInputBytes {
-		return true, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		return true, guardLimitErrorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	return true, nil
 }
@@ -1682,7 +1682,7 @@ func boundedReplacementString(result Value) (string, error) {
 	replacement, err := result.StringBounded(maxRegexInputBytes)
 	if err != nil {
 		if errors.Is(err, errStringRenderTruncated) {
-			return "", fmt.Errorf("output exceeds limit %d bytes", maxRegexInputBytes)
+			return "", guardLimitErrorf("output exceeds limit %d bytes", maxRegexInputBytes)
 		}
 		return "", err
 	}
@@ -2821,7 +2821,7 @@ func stringScanBlock(exec *Execution, text string, groups int, allMatches [][]in
 func guardRegexScanIndexFootprint(pattern, text string, groups int) error {
 	maxMatches := regexScanMaxMatches(pattern, text)
 	if projectedRegexSubmatchIndexBytes(maxMatches, groups) > maxRegexScanIndexBytes {
-		return fmt.Errorf("string.scan match table exceeds limit %d bytes", maxRegexScanIndexBytes)
+		return guardLimitErrorf("string.scan match table exceeds limit %d bytes", maxRegexScanIndexBytes)
 	}
 	return nil
 }

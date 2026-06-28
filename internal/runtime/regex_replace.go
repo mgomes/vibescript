@@ -10,7 +10,7 @@ import (
 // errRegexOutputLimit reports that an expansion would push the result past the
 // shared regex output-size guard. Callers wrap it with their method name so the
 // surfaced message matches the rest of the regex output guards.
-var errRegexOutputLimit = fmt.Errorf("output exceeds limit %d bytes", maxRegexInputBytes)
+var errRegexOutputLimit = guardLimitErrorf("output exceeds limit %d bytes", maxRegexInputBytes)
 
 // rubyAppendReplacement expands a Ruby-style replacement template against a
 // single match and appends the result to dst, mirroring the substitution rules
@@ -472,7 +472,7 @@ func rubyRegexSubWith(re *regexp.Regexp, src, method string, replace rubyMatchRe
 	}
 	outputLen := len(src) - (loc[1] - loc[0]) + len(replaced)
 	if outputLen > maxRegexInputBytes {
-		return "", false, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		return "", false, guardLimitErrorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	return src[:loc[0]] + string(replaced) + src[loc[1]:], true, nil
 }
@@ -518,7 +518,7 @@ func rubyRegexGSubWith(re *regexp.Regexp, src, method string, replace rubyMatchR
 		matched = true
 		segmentLen := loc[0] - lastAppended
 		if len(out) > maxRegexInputBytes-segmentLen {
-			return "", false, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+			return "", false, guardLimitErrorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
 		out = append(out, src[lastAppended:loc[0]]...)
 		expanded, err := replace(out, loc)
@@ -527,7 +527,7 @@ func rubyRegexGSubWith(re *regexp.Regexp, src, method string, replace rubyMatchR
 		}
 		out = expanded
 		if len(out) > maxRegexInputBytes {
-			return "", false, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+			return "", false, guardLimitErrorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 		}
 		lastAppended = loc[1]
 		lastMatchEnd = loc[1]
@@ -548,7 +548,7 @@ func rubyRegexGSubWith(re *regexp.Regexp, src, method string, replace rubyMatchR
 
 	tailLen := len(src) - lastAppended
 	if len(out) > maxRegexInputBytes-tailLen {
-		return "", false, fmt.Errorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
+		return "", false, guardLimitErrorf("%s output exceeds limit %d bytes", method, maxRegexInputBytes)
 	}
 	out = append(out, src[lastAppended:]...)
 	return string(out), matched, nil

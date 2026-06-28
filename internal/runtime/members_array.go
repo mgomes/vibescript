@@ -1342,7 +1342,7 @@ func arrayValuesAtRange(acc *arrayBuildAccumulator, emittedSoFar int, arr []Valu
 		if span == math.MaxInt64 {
 			// begin == 0 && end == math.MaxInt64: the inclusive span is one past the
 			// representable int64 maximum and cannot be materialized.
-			return fmt.Errorf("array.values_at window is too large")
+			return guardLimitErrorf("array.values_at window is too large")
 		}
 		span++
 	}
@@ -1350,7 +1350,7 @@ func arrayValuesAtRange(acc *arrayBuildAccumulator, emittedSoFar int, arr []Valu
 		return nil
 	}
 	if span > math.MaxInt {
-		return fmt.Errorf("array.values_at window is too large")
+		return guardLimitErrorf("array.values_at window is too large")
 	}
 	count := int(span)
 	// Fail fast when the window clearly exceeds the memory quota before emitting
@@ -2440,7 +2440,7 @@ func arrayFillSpanFromStart(begin, length, count int) (arrayFillSpan, error) {
 	end := begin + count
 	if end < begin {
 		// begin + count overflowed int; such a window cannot be materialized.
-		return arrayFillSpan{}, fmt.Errorf("array.fill window is too large")
+		return arrayFillSpan{}, guardLimitErrorf("array.fill window is too large")
 	}
 	finalLength := length
 	if end > finalLength {
@@ -2474,7 +2474,7 @@ func arrayFillRangeSpan(rng Range, length int) (arrayFillSpan, error) {
 		// An inclusive range's exclusive end is one past End; guard the increment
 		// so End == math.MaxInt64 reports the oversized window rather than wrapping.
 		if end == math.MaxInt64 {
-			return arrayFillSpan{}, fmt.Errorf("array.fill window is too large")
+			return arrayFillSpan{}, guardLimitErrorf("array.fill window is too large")
 		}
 		end++
 	}
@@ -2482,7 +2482,7 @@ func arrayFillRangeSpan(rng Range, length int) (arrayFillSpan, error) {
 		end = begin
 	}
 	if begin > math.MaxInt || end > math.MaxInt {
-		return arrayFillSpan{}, fmt.Errorf("array.fill window is too large")
+		return arrayFillSpan{}, guardLimitErrorf("array.fill window is too large")
 	}
 	finalLength := length
 	if int(end) > finalLength {
@@ -2599,7 +2599,11 @@ func arrayMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.uniq does not take arguments")
 			}
 			arr := receiver.Array()
-			return NewArray(uniqueValues(arr)), nil
+			unique, err := uniqueValuesChecked(arr, exec.checkContext)
+			if err != nil {
+				return NewNil(), err
+			}
+			return NewArray(unique), nil
 		}), nil
 	case "union":
 		return NewAutoBuiltin("array.union", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
