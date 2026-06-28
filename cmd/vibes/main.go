@@ -52,7 +52,7 @@ func runCommand(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(new(flagErrorSink))
 	function := fs.String("function", "run", "function to invoke after compilation")
-	checkOnly := fs.Bool("check", false, "only compile the script without executing")
+	checkOnly := fs.Bool("check", false, "compile and validate static contracts without executing")
 	snippet := fs.String("e", "", "evaluate an inline snippet instead of a script file")
 	watch := fs.Bool("watch", false, "re-run whenever the script or its modules change")
 	var modulePaths pathList
@@ -290,7 +290,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  -function string")
 	fmt.Fprintln(os.Stderr, "    function to invoke after compilation (default \"run\")")
 	fmt.Fprintln(os.Stderr, "  -check")
-	fmt.Fprintln(os.Stderr, "    only compile the script without executing")
+	fmt.Fprintln(os.Stderr, "    compile and validate static contracts without executing")
 	fmt.Fprintln(os.Stderr, "  -e <snippet>")
 	fmt.Fprintln(os.Stderr, "    evaluate an inline snippet instead of a script file")
 	fmt.Fprintln(os.Stderr, "  -watch")

@@ -10,9 +10,9 @@
 //
 // The run subcommand compiles a script and invokes a top-level function
 // (default "run"), passing any remaining positional args as string values.
-// -check compiles without executing. -module-path adds a directory to the
-// module search path and may be repeated; the script's directory is always
-// included.
+// -check compiles and validates static contracts without executing. -module-path
+// adds a directory to the module search path and may be repeated; the script's
+// directory is always included.
 //
 // The fmt subcommand applies canonical formatting (CRLF and trailing
 // whitespace stripping, single trailing newline) to .vibe files. It accepts
