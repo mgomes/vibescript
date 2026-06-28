@@ -145,6 +145,9 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			}
 			return NewNil(), exec.wrapError(err, pos)
 		}
+		if err := exec.checkContext(); err != nil {
+			return NewNil(), err
+		}
 		if hasContract && contract.ValidateReturn != nil && !contract.ReturnValidatedByBuiltin {
 			if err := contract.ValidateReturn(result); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
@@ -1219,6 +1222,9 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 			return NewNil(), exec.localJumpErrorAt(call.Pos(), "next cannot cross call boundary")
 		}
 		return NewNil(), exec.wrapError(err, call.Pos())
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
 	}
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), err

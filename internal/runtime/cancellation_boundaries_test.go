@@ -140,6 +140,29 @@ end`)
 	}
 }
 
+func TestBuiltinReturnChecksContextBeforeMemoryAccounting(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	engine := MustNewEngine(Config{MemoryQuotaBytes: 64 * 1024})
+	engine.builtins["cancel_and_return_payload"] = NewBuiltin("cancel_and_return_payload", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		cancel()
+		items := make([]Value, 4096)
+		for i := range items {
+			items[i] = NewString("payload")
+		}
+		return NewArray(items), nil
+	})
+	script := compileScriptWithEngine(t, engine, `def run()
+  cancel_and_return_payload()
+end`)
+
+	_, err := script.Call(ctx, "run", nil, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call(canceled builtin before memory accounting) error = %v, want context.Canceled", err)
+	}
+}
+
 func TestCallStopsBeforeCalleeWhenArgumentCancelsContext(t *testing.T) {
 	t.Parallel()
 

@@ -190,6 +190,44 @@ end`)
 	}
 }
 
+func TestDBCapabilityEachStopsAfterRowCallbackCancels(t *testing.T) {
+	t.Parallel()
+
+	var cancel context.CancelFunc
+	stub := &dbCapabilityStub{
+		eachRows: []value.Value{
+			value.NewHash(map[string]value.Value{"id": value.NewString("p-1")}),
+			value.NewObject(map[string]value.Value{
+				"run": vibes.NewBuiltin("row.run", func(*vibes.Execution, value.Value, []value.Value, map[string]value.Value, value.Value) (value.Value, error) {
+					return value.NewNil(), nil
+				}),
+			}),
+		},
+	}
+	engine := vibes.MustNewEngine(vibes.Config{})
+	engine.RegisterBuiltin("cancel_after_first", func(*vibes.Execution, value.Value, []value.Value, map[string]value.Value, value.Value) (value.Value, error) {
+		cancel()
+		return value.NewNil(), nil
+	})
+	script, err := engine.Compile(`def run()
+  db.each("Player") do |row|
+    cancel_after_first(row)
+  end
+end`)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	cancel = cancelFunc
+	_, err = script.Call(ctx, "run", nil, callOptionsWithCapabilities(
+		vibes.MustNewDBCapability("db", stub),
+	))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call(db.each canceled after row callback) error = %v, want context.Canceled", err)
+	}
+}
+
 func TestDBCapabilityEachLoopControlCannotCrossCallbackBoundary(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
