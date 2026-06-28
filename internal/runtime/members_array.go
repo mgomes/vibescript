@@ -1009,7 +1009,17 @@ func arrayMemberQuery(property string) (Value, error) {
 				}
 			}
 			if len(args) == 1 && args[0].Kind() != KindNil {
-				return exec.invokeCallable(args[0], NewNil(), nil, nil, NewNil(), Position{})
+				if err := exec.checkCallMemoryRootsWithCallee(args[0], receiver, nil, nil, NewNil()); err != nil {
+					return NewNil(), err
+				}
+				result, err := exec.invokeCallable(args[0], NewNil(), nil, nil, NewNil(), Position{})
+				if err != nil {
+					return NewNil(), err
+				}
+				if err := exec.checkMemoryWith(receiver, result); err != nil {
+					return NewNil(), err
+				}
+				return result, nil
 			}
 			return NewNil(), nil
 		}), nil

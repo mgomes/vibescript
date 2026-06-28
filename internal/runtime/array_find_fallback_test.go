@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -50,4 +51,41 @@ end`)
 		t.Fatalf("hit_ignores_fallback = %#v, want 2", got)
 	}
 	requireCallErrorContains(t, script, "raw_fallback", nil, CallOptions{}, "attempted to call non-callable value")
+}
+
+func TestArrayFindFallbackChargesLiveReceiver(t *testing.T) {
+	t.Parallel()
+
+	receiver := largeIntArray(30_000)
+	fallbackResult := NewString(strings.Repeat("x", 256*1024))
+	block := NewBlock([]Param{{Kind: ParamNormal, Name: "item"}}, nil, newEnv(nil))
+	calls := 0
+	fallback := NewBuiltin("test.find_fallback", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		calls++
+		return fallbackResult, nil
+	})
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	receiverBytes := probe.estimateMemoryUsage(receiver)
+	combinedBytes := probe.estimateMemoryUsage(receiver, fallbackResult)
+	quota := receiverBytes + (combinedBytes-receiverBytes)/2
+	if quota <= receiverBytes || quota >= combinedBytes {
+		t.Fatalf("quota %d must fit receiver %d and reject receiver+result %d", quota, receiverBytes, combinedBytes)
+	}
+
+	tight := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callArrayMember(t, tight, receiver, "find", []Value{fallback}, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if calls != 1 {
+		t.Fatalf("fallback calls = %d, want 1", calls)
+	}
+
+	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: combinedBytes + 64*1024}
+	got, err := callArrayMember(t, roomy, receiver, "find", []Value{fallback}, block)
+	if err != nil {
+		t.Fatalf("array.find with room for receiver and fallback result returned error: %v", err)
+	}
+	if !got.Equal(fallbackResult) {
+		t.Fatalf("array.find fallback result = %#v, want %#v", got, fallbackResult)
+	}
 }
