@@ -1008,7 +1008,7 @@ func arrayMemberQuery(property string) (Value, error) {
 					return item, nil
 				}
 			}
-			if len(args) == 1 {
+			if len(args) == 1 && args[0].Kind() != KindNil {
 				return exec.invokeCallable(args[0], NewNil(), nil, nil, NewNil(), Position{})
 			}
 			return NewNil(), nil

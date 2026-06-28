@@ -24,6 +24,11 @@ def miss_without_fallback
   [1, 2].find { |x| x > 3 }
 end
 
+def miss_with_nil_fallback
+  maybe = nil
+  [1, 2].find(maybe) { |x| x > 3 }
+end
+
 def hit_ignores_fallback
   [1, 2].find(exploding_fallback) { |x| x == 2 }
 end
@@ -37,6 +42,9 @@ end`)
 	}
 	if got := callScript(t, context.Background(), script, "miss_without_fallback", nil, CallOptions{}); !got.Equal(NewNil()) {
 		t.Fatalf("miss_without_fallback = %#v, want nil", got)
+	}
+	if got := callScript(t, context.Background(), script, "miss_with_nil_fallback", nil, CallOptions{}); !got.Equal(NewNil()) {
+		t.Fatalf("miss_with_nil_fallback = %#v, want nil", got)
 	}
 	if got := callScript(t, context.Background(), script, "hit_ignores_fallback", nil, CallOptions{}); !got.Equal(NewInt(2)) {
 		t.Fatalf("hit_ignores_fallback = %#v, want 2", got)
