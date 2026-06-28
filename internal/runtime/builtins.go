@@ -481,7 +481,8 @@ func projectedFormatFieldBytes(val Value, verb byte, hasPrecision bool, precisio
 		case 'f', 'F', 'e', 'E', 'g', 'G':
 			base = max(base, saturatingAdd(precision, 16))
 		case 's':
-			base = min(base, precision)
+			selectedBytes := min(formatArgumentStringBytes(val), saturatingMul(utf8.UTFMax, precision))
+			base = min(base, selectedBytes)
 		case 'q':
 			selectedBytes := min(formatArgumentStringBytes(val), saturatingMul(utf8.UTFMax, precision))
 			base = min(base, projectedQuotedStringBytes(selectedBytes))

@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRubyStyleStringFormatting(t *testing.T) {
@@ -97,4 +99,20 @@ end`)
 
 	requireCallErrorContains(t, script, "builtin_format", []Value{extra}, CallOptions{}, "unused operand")
 	requireCallErrorContains(t, script, "operator_format", []Value{extra}, CallOptions{}, "unused operand")
+}
+
+func TestRubyStyleStringFormattingPreflightsMultibyteStringPrecision(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 16 * maxFormatOutputBytes}, `def run(pattern, text)
+  format(pattern, text)
+end`)
+	precision := maxFormatOutputBytes/utf8.UTFMax + 1
+	pattern := NewString(fmt.Sprintf("%%.%ds", precision))
+	text := NewString(strings.Repeat("🙂", precision))
+
+	requireCallErrorContains(t, script, "run", []Value{
+		pattern,
+		text,
+	}, CallOptions{}, "format output exceeds limit")
 }
