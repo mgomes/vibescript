@@ -56,11 +56,17 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 		return NewNil(), err
 	}
 
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkMemory(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
 	if err := initializeClassBodiesForCall(exec, root, callClasses, s.classOrder, deferredClassBodiesForFunction(fn, s.deferredClassBodies)); err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
 
@@ -71,6 +77,9 @@ func (s *Script) Call(ctx context.Context, name string, args []Value, opts CallO
 
 	val, err := executeFunctionForCall(exec, fn, callEnv)
 	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
 	if valueNeedsHostClone(val) {
@@ -138,11 +147,17 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 		}
 	}
 
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkMemory(); err != nil {
 		return NewNil(), exec.wrapError(err, fn.Pos)
 	}
 
 	if err := initializeClassBodiesForCall(exec, root, callClasses, s.classOrder, deferredClassBodiesForFunction(fn, s.deferredClassBodies)); err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
 
@@ -153,6 +168,9 @@ func (s *Script) callWithLazyTaskGlobals(ctx context.Context, name string, args 
 
 	val, err := executeFunctionForCall(exec, fn, callEnv)
 	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
 	if valueNeedsHostClone(val) {

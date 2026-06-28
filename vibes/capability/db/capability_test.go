@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -31,6 +32,7 @@ type dbCapabilityStub struct {
 	eachCtx      []context.Context
 	eachRows     []value.Value
 	eachErr      error
+	eachHook     func(context.Context, db.DBEachRequest)
 }
 
 var _ db.Database = (*dbCapabilityStub)(nil)
@@ -80,6 +82,9 @@ func (s *dbCapabilityStub) Sum(ctx context.Context, req db.DBSumRequest) (value.
 func (s *dbCapabilityStub) Each(ctx context.Context, req db.DBEachRequest) ([]value.Value, error) {
 	s.eachCalls = append(s.eachCalls, req)
 	s.eachCtx = append(s.eachCtx, ctx)
+	if s.eachHook != nil {
+		s.eachHook(ctx, req)
+	}
 	if s.eachErr != nil {
 		return nil, s.eachErr
 	}
@@ -156,6 +161,32 @@ end`)
 	}
 	if where := call.Options["where"]; where.Kind() != value.KindHash {
 		t.Fatalf("expected where hash option, got %#v", where)
+	}
+}
+
+func TestDBCapabilityEachChecksCancellationAfterEmptyHostResult(t *testing.T) {
+	t.Parallel()
+
+	var cancel context.CancelFunc
+	stub := &dbCapabilityStub{
+		eachHook: func(context.Context, db.DBEachRequest) {
+			cancel()
+		},
+	}
+	script := compileScriptDefault(t, `def run()
+  db.each("Player") do |row|
+    row
+  end
+  "done"
+end`)
+
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	cancel = cancelFunc
+	_, err := script.Call(ctx, "run", nil, callOptionsWithCapabilities(
+		vibes.MustNewDBCapability("db", stub),
+	))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call(db.each canceled after empty host result) error = %v, want context.Canceled", err)
 	}
 }
 

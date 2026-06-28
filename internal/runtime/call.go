@@ -64,6 +64,10 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) 
 }
 
 func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
+
 	switch callee.Kind() {
 	case KindFunction:
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
@@ -690,6 +694,9 @@ func initializeClassBodiesForCall(exec *Execution, env *Env, callClasses map[str
 		if err := exec.initializeClassBody(classVal, classDef, env); err != nil {
 			return exec.wrapError(err, classDef.Body[0].Pos())
 		}
+		if err := exec.checkContext(); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -712,6 +719,10 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 }
 
 func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctionRebinder, fn *ScriptFunction, args []Value, keywords map[string]Value) (*Env, error) {
+	if err := exec.checkContext(); err != nil {
+		return nil, err
+	}
+
 	callEnv := newEnvWithCapacity(root, len(fn.Params))
 	// The host entry call never supplies a block, but the frame is still a call
 	// frame: mark it with a nil block so block_given? reports false, yield
@@ -1084,6 +1095,9 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
@@ -1156,6 +1170,9 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
@@ -1181,6 +1198,9 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 	}
 	block, err := exec.evalCallBlock(call, env)
 	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
 	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
@@ -1226,6 +1246,10 @@ func callBuiltinMemberDirect(exec *Execution, receiver Value, property string, a
 }
 
 func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebinder, globals map[string]Value) error {
+	if err := exec.checkContext(); err != nil {
+		return err
+	}
+
 	if exec.strictEffects {
 		if err := validateStrictGlobals(globals); err != nil {
 			return err
@@ -1240,6 +1264,10 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 }
 
 func bindLazyTaskGlobalsForCall(exec *Execution, root *Env, globals *taskLazyGlobals, rebinder *callFunctionRebinder) error {
+	if err := exec.checkContext(); err != nil {
+		return err
+	}
+
 	if globals == nil || len(globals.values) == 0 {
 		return nil
 	}

@@ -188,7 +188,13 @@ func initializeModuleForCall(exec *Execution, entry moduleEntry, moduleEnv *Env,
 	if err := initializeClassBodiesForCall(exec, moduleEnv, moduleClasses, entry.script.classOrder, entry.script.deferredClassBodies); err != nil {
 		return err
 	}
-	return executeModuleEntrypoint(exec, entry, moduleEnv)
+	if err := exec.checkContext(); err != nil {
+		return err
+	}
+	if err := executeModuleEntrypoint(exec, entry, moduleEnv); err != nil {
+		return err
+	}
+	return exec.checkContext()
 }
 
 func executeModuleEntrypoint(exec *Execution, entry moduleEntry, moduleEnv *Env) error {
