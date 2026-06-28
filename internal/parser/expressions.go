@@ -1580,7 +1580,7 @@ func (p *parser) parseBlockLiteral() *ast.BlockLiteral {
 
 	p.pushLocalScope(params, false)
 	if !hasExplicitParams {
-		p.declareImplicitBlockParamCandidates()
+		p.declareNumberedImplicitBlockParamCandidates()
 	}
 	body := p.parseBlock(stopToken)
 	p.popLocalScope()

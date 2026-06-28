@@ -57,6 +57,21 @@ end`)
 	compareArrays(t, got, []Value{NewInt(2), NewInt(3), NewInt(4)})
 }
 
+func TestImplicitBlockItCalleeWithPercentArrayStaysCallable(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def it(values)
+  values.join("-")
+end
+
+def run
+  [1].map { it %w[a b] }
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewString("a-b")})
+}
+
 func TestImplicitBlockParamsDoNotLeakAcrossNestedBlocks(t *testing.T) {
 	t.Parallel()
 

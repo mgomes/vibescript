@@ -236,9 +236,8 @@ func isNumberedBlockParamName(name string) bool {
 	return len(name) == 2 && name[0] == '_' && name[1] >= '1' && name[1] <= '9'
 }
 
-func (p *parser) declareImplicitBlockParamCandidates() {
+func (p *parser) declareNumberedImplicitBlockParamCandidates() {
 	for i := range 9 {
 		p.declareLocal("_" + string(rune('1'+i)))
 	}
-	p.declareLocal("it")
 }
