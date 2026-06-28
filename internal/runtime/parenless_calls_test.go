@@ -190,15 +190,17 @@ func TestParenlessBareOptionsForConstructors(t *testing.T) {
       person.name
     end
 
-    def strict_parenthesized_constructor
-      Person.new(name: "Ada")
+    def parenthesized_constructor
+      Person.new(name: "Ada").name
     end
     `)
 
 	if got := callFunc(t, script, "call_constructor", nil); !got.Equal(NewString("Ada")) {
 		t.Fatalf("call_constructor() = %v, want Ada", got)
 	}
-	requireCallErrorContains(t, script, "strict_parenthesized_constructor", nil, CallOptions{}, "missing argument opts")
+	if got := callFunc(t, script, "parenthesized_constructor", nil); !got.Equal(NewString("Ada")) {
+		t.Fatalf("parenthesized_constructor() = %v, want Ada", got)
+	}
 }
 
 func TestParenlessBareOptionsForClonedConstructors(t *testing.T) {

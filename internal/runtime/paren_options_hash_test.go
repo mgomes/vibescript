@@ -155,11 +155,10 @@ func TestParenthesizedFunctionOptionsHashTypeMismatch(t *testing.T) {
 	requireCallErrorContains(t, script, "bad_shape", nil, CallOptions{}, "expected { retries: int }")
 }
 
-// TestParenthesizedConstructorOptionsHashStaysStrict guards the boundary with
-// issue #576: parenthesized constructor calls keep strict keyword binding, so
-// they continue to report a missing positional argument rather than collapsing
-// into an options hash.
-func TestParenthesizedConstructorOptionsHashStaysStrict(t *testing.T) {
+// TestParenthesizedConstructorOptionsHash verifies that parenthesized constructor
+// calls collapse keyword arguments into initialize's positional options
+// parameter on the same terms as parenless constructors.
+func TestParenthesizedConstructorOptionsHash(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `
@@ -173,12 +172,36 @@ func TestParenthesizedConstructorOptionsHashStaysStrict(t *testing.T) {
       end
     end
 
+    class TypedPerson
+      def initialize(opts: { name: string })
+        @name = opts[:name]
+      end
+
+      def name
+        @name
+      end
+    end
+
     def parenthesized_constructor
       Person.new(name: "Ada")
     end
+
+    def parenthesized_typed_constructor
+      TypedPerson.new(name: "Ada").name
+    end
+
+    def parenthesized_typed_constructor_bad_shape
+      TypedPerson.new(name: 3)
+    end
     `)
 
-	requireCallErrorContains(t, script, "parenthesized_constructor", nil, CallOptions{}, "missing argument opts")
+	if got := callFunc(t, script, "parenthesized_constructor", nil); got.Kind() != KindInstance {
+		t.Fatalf("parenthesized_constructor() = %v, want instance", got)
+	}
+	if got := callFunc(t, script, "parenthesized_typed_constructor", nil); !got.Equal(NewString("Ada")) {
+		t.Fatalf("parenthesized_typed_constructor() = %v, want Ada", got)
+	}
+	requireCallErrorContains(t, script, "parenthesized_typed_constructor_bad_shape", nil, CallOptions{}, "expected { name: string }")
 }
 
 // TestParenthesizedMethodOptionsHashStaysStrict verifies that parenthesized
