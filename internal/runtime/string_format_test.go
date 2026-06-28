@@ -17,6 +17,7 @@ func TestRubyStyleStringFormatting(t *testing.T) {
     format("%.2f", 1.234),
     sprintf("%x", 255),
     format("%[2]s", "skip", "kept"),
+    format("%[2]s%[1]s", "a", "b"),
     "%s" % :ok,
     5 % 2
   ]
@@ -32,6 +33,7 @@ end`)
 		NewString("1.23"),
 		NewString("ff"),
 		NewString("kept"),
+		NewString("ba"),
 		NewString("ok"),
 		NewInt(1),
 	})
@@ -99,6 +101,21 @@ end`)
 
 	requireCallErrorContains(t, script, "builtin_format", []Value{extra}, CallOptions{}, "unused operand")
 	requireCallErrorContains(t, script, "operator_format", []Value{extra}, CallOptions{}, "unused operand")
+}
+
+func TestRubyStyleStringFormattingRejectsMissingOperandsBeforeFormatting(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def builtin_format
+  format("%s")
+end
+
+def operator_format
+  "%s %s" % "x"
+end`)
+
+	requireCallErrorContains(t, script, "builtin_format", nil, CallOptions{}, "missing operand")
+	requireCallErrorContains(t, script, "operator_format", nil, CallOptions{}, "missing operand")
 }
 
 func TestRubyStyleStringFormattingPreflightsMultibyteStringPrecision(t *testing.T) {

@@ -324,6 +324,7 @@ func formatStringValuesChecked(exec *Execution, pattern string, values []Value, 
 func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 	total := 0
 	nextArg := 0
+	usedCursor := 0
 	for i := 0; i < len(pattern); {
 		if pattern[i] != '%' {
 			var err error
@@ -402,7 +403,13 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 		} else {
 			nextArg++
 		}
-		field := projectedFormatFieldBytes(formatValueAt(values, argIndex), verb, hasPrecision, precision)
+		if nextArg > usedCursor {
+			usedCursor = nextArg
+		}
+		if argIndex < 0 || argIndex >= len(values) {
+			return 0, fmt.Errorf("format references missing operand %d", argIndex+1)
+		}
+		field := projectedFormatFieldBytes(values[argIndex], verb, hasPrecision, precision)
 		if hasWidth && width > field {
 			field = width
 		}
@@ -412,8 +419,8 @@ func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
 		}
 		total = nextTotal
 	}
-	if nextArg < len(values) {
-		return 0, fmt.Errorf("format has %d unused operand(s)", len(values)-nextArg)
+	if usedCursor < len(values) {
+		return 0, fmt.Errorf("format has %d unused operand(s)", len(values)-usedCursor)
 	}
 	return total, nil
 }
@@ -465,13 +472,6 @@ func parseFormatCount(pattern string, i int, label string) (int, bool, int, erro
 		return 0, false, i, fmt.Errorf("format %s exceeds limit %d bytes", label, maxFormatOutputBytes)
 	}
 	return n, true, i, nil
-}
-
-func formatValueAt(values []Value, index int) Value {
-	if index < 0 || index >= len(values) {
-		return NewString("%!MISSING")
-	}
-	return values[index]
 }
 
 func projectedFormatFieldBytes(val Value, verb byte, hasPrecision bool, precision int) int {
