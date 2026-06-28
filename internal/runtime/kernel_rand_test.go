@@ -101,6 +101,19 @@ end`)
 	compareArrays(t, got, []Value{NewBool(true), NewBool(true)})
 }
 
+func TestKernelRandAcceptsDescendingRanges(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{
+		RandomReader: bytes.NewReader(bytes.Repeat([]byte{0}, 32)),
+	}, `def run
+  [rand(5..1), rand(5...1), rand(-2..-4), rand(-2...-4)]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2), NewInt(-4), NewInt(-3)})
+}
+
 func TestKernelRandPowerOfTwoBoundsAcceptFullSampleSpace(t *testing.T) {
 	t.Parallel()
 
@@ -141,6 +154,7 @@ func TestKernelRandSeededWideRangesAvoidEntropy(t *testing.T) {
 
 	ranges := []Range{
 		{Start: math.MinInt64, End: math.MaxInt64},
+		{Start: math.MaxInt64, End: math.MinInt64},
 		{Start: 0, End: math.MaxInt64},
 	}
 	for _, rng := range ranges {

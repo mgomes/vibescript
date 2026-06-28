@@ -174,17 +174,11 @@ func (exec *Execution) randomFloat64() (float64, error) {
 }
 
 func (exec *Execution) randomRangeValue(rng Range) (Value, error) {
-	end := rng.End
-	if rng.Exclusive {
-		if end == math.MinInt64 {
-			return NewNil(), fmt.Errorf("rand range is empty")
-		}
-		end--
-	}
-	if end < rng.Start {
+	low, high, ok := randomRangeInclusiveBounds(rng)
+	if !ok {
 		return NewNil(), fmt.Errorf("rand range is empty")
 	}
-	size := uint64(end) - uint64(rng.Start) + 1
+	size := uint64(high) - uint64(low) + 1
 	var offset uint64
 	var err error
 	if size == 0 {
@@ -195,7 +189,29 @@ func (exec *Execution) randomRangeValue(rng Range) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	return NewInt(int64(uint64(rng.Start) + offset)), nil
+	return NewInt(int64(uint64(low) + offset)), nil
+}
+
+func randomRangeInclusiveBounds(rng Range) (int64, int64, bool) {
+	low, high := rng.Start, rng.End
+	if low > high {
+		low, high = high, low
+		if rng.Exclusive {
+			if low == math.MaxInt64 {
+				return 0, 0, false
+			}
+			low++
+		}
+	} else if rng.Exclusive {
+		if high == math.MinInt64 {
+			return 0, 0, false
+		}
+		high--
+	}
+	if low > high {
+		return 0, 0, false
+	}
+	return low, high, true
 }
 
 func (exec *Execution) randomInt64n(limit uint64) (uint64, error) {
