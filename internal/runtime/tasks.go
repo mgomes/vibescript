@@ -309,6 +309,7 @@ func (group *taskGroup) runJob(job *taskJob) {
 	defer group.tasks.Done()
 
 	if err := group.ctx.Err(); err != nil {
+		group.recordErr(err)
 		job.handle.complete(NewNil(), err)
 		return
 	}
@@ -319,6 +320,11 @@ func (group *taskGroup) runJob(job *taskJob) {
 		taskErr := fmt.Errorf("task %s failed: %w", job.functionName, err)
 		group.recordErr(taskErr)
 		job.handle.complete(NewNil(), taskErr)
+		return
+	}
+	if err := group.ctx.Err(); err != nil {
+		group.recordErr(err)
+		job.handle.complete(NewNil(), err)
 		return
 	}
 

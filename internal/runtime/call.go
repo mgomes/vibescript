@@ -64,6 +64,10 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) 
 }
 
 func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
+
 	switch callee.Kind() {
 	case KindFunction:
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
@@ -139,7 +143,13 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			if errors.Is(err, errLoopNext) {
 				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
 			}
+			if ctxErr := exec.checkContext(); ctxErr != nil {
+				return NewNil(), ctxErr
+			}
 			return NewNil(), exec.wrapError(err, pos)
+		}
+		if err := exec.checkContext(); err != nil {
+			return NewNil(), err
 		}
 		if hasContract && contract.ValidateReturn != nil && !contract.ReturnValidatedByBuiltin {
 			if err := contract.ValidateReturn(result); err != nil {
@@ -229,6 +239,9 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	exec.popModuleContext()
 	exec.popFrame()
 	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
 	if validateReturn && fn.ReturnTy != nil {
@@ -637,6 +650,9 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 		}
 		globals, err := adapter.Bind(binding)
 		if err != nil {
+			if ctxErr := exec.checkContext(); ctxErr != nil {
+				return ctxErr
+			}
 			return fmt.Errorf("bind capability: %w", err)
 		}
 		if err := exec.checkContext(); err != nil {
@@ -690,6 +706,9 @@ func initializeClassBodiesForCall(exec *Execution, env *Env, callClasses map[str
 		if err := exec.initializeClassBody(classVal, classDef, env); err != nil {
 			return exec.wrapError(err, classDef.Body[0].Pos())
 		}
+		if err := exec.checkContext(); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -712,6 +731,10 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 }
 
 func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctionRebinder, fn *ScriptFunction, args []Value, keywords map[string]Value) (*Env, error) {
+	if err := exec.checkContext(); err != nil {
+		return nil, err
+	}
+
 	callEnv := newEnvWithCapacity(root, len(fn.Params))
 	// The host entry call never supplies a block, but the frame is still a call
 	// frame: mark it with a nil block so block_given? reports false, yield
@@ -1084,6 +1107,9 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
@@ -1156,6 +1182,9 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkCallMemoryRootsWithCallee(callee, receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
@@ -1183,6 +1212,9 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if err := exec.checkCallMemoryRoots(receiver, args, kwargs, block); err != nil {
 		return NewNil(), err
 	}
@@ -1195,7 +1227,13 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 		if errors.Is(err, errLoopNext) {
 			return NewNil(), exec.localJumpErrorAt(call.Pos(), "next cannot cross call boundary")
 		}
+		if ctxErr := exec.checkContext(); ctxErr != nil {
+			return NewNil(), ctxErr
+		}
 		return NewNil(), exec.wrapError(err, call.Pos())
+	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
 	}
 	if err := exec.checkMemoryWith(result); err != nil {
 		return NewNil(), err
@@ -1226,6 +1264,10 @@ func callBuiltinMemberDirect(exec *Execution, receiver Value, property string, a
 }
 
 func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebinder, globals map[string]Value) error {
+	if err := exec.checkContext(); err != nil {
+		return err
+	}
+
 	if exec.strictEffects {
 		if err := validateStrictGlobals(globals); err != nil {
 			return err
@@ -1240,6 +1282,10 @@ func bindGlobalsForCall(exec *Execution, root *Env, rebinder *callFunctionRebind
 }
 
 func bindLazyTaskGlobalsForCall(exec *Execution, root *Env, globals *taskLazyGlobals, rebinder *callFunctionRebinder) error {
+	if err := exec.checkContext(); err != nil {
+		return err
+	}
+
 	if globals == nil || len(globals.values) == 0 {
 		return nil
 	}
@@ -1273,6 +1319,9 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 		return NewNil(), err
 	}
 	val = callEnv.detachArrayAppendResult(val)
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if fn.ReturnTy != nil {
 		normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
 			owner:    fn.owner,

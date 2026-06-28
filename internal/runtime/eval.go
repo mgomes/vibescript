@@ -936,13 +936,24 @@ func (runner *blockCallRunner) call(args []Value) (Value, error) {
 // receiver's first element deduplicates against the receiver and is charged only its
 // structural slots, never a second copy of the receiver's data.
 func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots ...Value) (Value, error) {
+	if err := runner.exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
+
 	env := runner.env
 	if env == nil {
 		env = newEnv(runner.blk.Env)
 	} else {
 		env.resetForBlockCall(runner.blk.Env)
 	}
-	return runner.exec.callBlock(runner.blk, args, env, runner.charge, chargedRoots...)
+	val, err := runner.exec.callBlock(runner.blk, args, env, runner.charge, chargedRoots...)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := runner.exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
+	return val, nil
 }
 
 // blockWantsCollapsedPair reports whether a hash iterator should yield each entry

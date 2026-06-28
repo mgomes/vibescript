@@ -150,6 +150,11 @@ func (c *Capability) callEachValidated(exec ExecutionContext, args []value.Value
 	if err != nil {
 		return value.NewNil(), err
 	}
+	if ctx := exec.Context(); ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return value.NewNil(), err
+		}
+	}
 	for idx, row := range rows {
 		if err := exec.Step(); err != nil {
 			return value.NewNil(), err
@@ -160,6 +165,11 @@ func (c *Capability) callEachValidated(exec ExecutionContext, args []value.Value
 		}
 		if _, err := exec.CallBlock(block, []value.Value{cloned}); err != nil {
 			return value.NewNil(), err
+		}
+		if ctx := exec.Context(); ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return value.NewNil(), err
+			}
 		}
 	}
 	return value.NewNil(), nil
