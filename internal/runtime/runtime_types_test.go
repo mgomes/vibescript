@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -492,6 +493,53 @@ func TestObjectTypeAliasPreservesDiagnosticSpelling(t *testing.T) {
 
 	requireCallErrorContains(t, script, "object_passthrough", []Value{NewInt(1)}, CallOptions{}, "argument payload expected object, got int")
 	requireCallErrorContains(t, script, "object_scores", []Value{NewHash(map[string]Value{"score": NewString("high")})}, CallOptions{}, "argument payload expected object<string, int>, got { score: string }")
+}
+
+func TestFormatValueTypeExprBoundsCompositeSamples(t *testing.T) {
+	t.Parallel()
+
+	ints := make([]Value, maxValueTypeFormatArraySamples+4)
+	for i := range ints {
+		ints[i] = NewInt(int64(i))
+	}
+	if got, want := formatValueTypeExpr(NewArray(ints)), "array<int | ...>"; got != want {
+		t.Fatalf("large array type = %q, want %q", got, want)
+	}
+
+	rows := make([]Value, maxValueTypeFormatArraySamples+4)
+	for i := range rows {
+		rows[i] = NewHash(map[string]Value{"id": NewInt(int64(i))})
+	}
+	if got, want := formatValueTypeExpr(NewArray(rows)), "array<{ id: int } | ...>"; got != want {
+		t.Fatalf("large row array type = %q, want %q", got, want)
+	}
+
+	fields := make(map[string]Value, maxValueTypeFormatHashSamples+4)
+	for i := range maxValueTypeFormatHashSamples + 4 {
+		fields[fmt.Sprintf("key_%02d", i)] = NewInt(int64(i))
+	}
+	if got, want := formatValueTypeExpr(NewHash(fields)), "hash<string, int | ...>"; got != want {
+		t.Fatalf("large hash type = %q, want %q", got, want)
+	}
+}
+
+func TestTypeMismatchFormattingBoundsLargeCompositeValues(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def ints(values: array<int>)
+      values
+    end
+    `)
+
+	rows := make([]Value, 10_000)
+	for i := range rows {
+		rows[i] = NewHash(map[string]Value{
+			"id":    NewString("row"),
+			"score": NewInt(int64(i)),
+		})
+	}
+	requireCallErrorContains(t, script, "ints", []Value{NewArray(rows)}, CallOptions{}, "argument values expected array<int>, got array<{ id: string, score: int } | ...>")
 }
 
 func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {
