@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+type cancelingBindCapability struct {
+	cancel context.CancelFunc
+}
+
+func (c cancelingBindCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	c.cancel()
+	return nil, errors.New("bind failed")
+}
+
 func TestTaskResultCloneDoesNotMaskCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -33,6 +42,22 @@ end`)
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Script.Call(canceled during task result clone) error = %v, want context.Canceled", err)
+	}
+}
+
+func TestScriptCallChecksCanceledContextBeforeCapabilityBindError(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  1
+end`)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	_, err := script.Call(ctx, "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{cancelingBindCapability{cancel: cancel}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call(canceled during capability bind) error = %v, want context.Canceled", err)
 	}
 }
 
@@ -137,6 +162,25 @@ end`)
 	_, err := script.Call(ctx, "run", nil, CallOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Script.Call(canceled before return validation) error = %v, want context.Canceled", err)
+	}
+}
+
+func TestBuiltinErrorChecksContextBeforeWrapping(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	engine := MustNewEngine(Config{})
+	engine.builtins["cancel_and_fail"] = NewBuiltin("cancel_and_fail", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		cancel()
+		return NewNil(), errors.New("driver failed")
+	})
+	script := compileScriptWithEngine(t, engine, `def run()
+  cancel_and_fail()
+end`)
+
+	_, err := script.Call(ctx, "run", nil, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call(canceled builtin error) error = %v, want context.Canceled", err)
 	}
 }
 

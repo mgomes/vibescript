@@ -143,6 +143,9 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			if errors.Is(err, errLoopNext) {
 				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
 			}
+			if ctxErr := exec.checkContext(); ctxErr != nil {
+				return NewNil(), ctxErr
+			}
 			return NewNil(), exec.wrapError(err, pos)
 		}
 		if err := exec.checkContext(); err != nil {
@@ -647,6 +650,9 @@ func bindCapabilitiesForCall(exec *Execution, root *Env, rebinder *callFunctionR
 		}
 		globals, err := adapter.Bind(binding)
 		if err != nil {
+			if ctxErr := exec.checkContext(); ctxErr != nil {
+				return ctxErr
+			}
 			return fmt.Errorf("bind capability: %w", err)
 		}
 		if err := exec.checkContext(); err != nil {
@@ -1220,6 +1226,9 @@ func (exec *Execution) evalDirectBuiltinMemberCallExpr(call *CallExpr, receiver 
 		}
 		if errors.Is(err, errLoopNext) {
 			return NewNil(), exec.localJumpErrorAt(call.Pos(), "next cannot cross call boundary")
+		}
+		if ctxErr := exec.checkContext(); ctxErr != nil {
+			return NewNil(), ctxErr
 		}
 		return NewNil(), exec.wrapError(err, call.Pos())
 	}
