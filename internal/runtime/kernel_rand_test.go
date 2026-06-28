@@ -101,6 +101,30 @@ end`)
 	compareArrays(t, got, []Value{NewBool(true), NewBool(true)})
 }
 
+func TestKernelRandPowerOfTwoBoundsAcceptFullSampleSpace(t *testing.T) {
+	t.Parallel()
+
+	reads := 0
+	engine := MustNewEngine(Config{
+		RandomReadFunc: func(_ context.Context, p []byte) (int, error) {
+			reads++
+			for i := range p {
+				p[i] = 0xff
+			}
+			return len(p), nil
+		},
+	})
+	script := compileScriptWithEngine(t, engine, `def run
+  [rand(1), rand(2)]
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewInt(0), NewInt(1)})
+	if reads != 2 {
+		t.Fatalf("entropy reads = %d, want 2", reads)
+	}
+}
+
 func TestKernelRandSeededWideRangesAvoidEntropy(t *testing.T) {
 	t.Parallel()
 

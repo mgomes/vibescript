@@ -205,13 +205,13 @@ func (exec *Execution) randomInt64n(limit uint64) (uint64, error) {
 	if exec.randSource != nil && limit <= uint64(math.MaxInt64) {
 		return uint64(exec.randSource.Int63n(int64(limit))), nil
 	}
-	rejectAt := ^uint64(0) - (^uint64(0) % limit)
+	rejectAbove := ^uint64(0) - ((-limit) % limit)
 	for {
 		raw, err := exec.randomUint64ForRand()
 		if err != nil {
 			return 0, err
 		}
-		if raw < rejectAt {
+		if raw <= rejectAbove {
 			return raw % limit, nil
 		}
 	}
