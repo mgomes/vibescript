@@ -157,6 +157,24 @@ end`,
 			want: "call to JSON.parse has too many arguments",
 		},
 		{
+			name: "regex replace block",
+			source: `def run()
+  Regex.replace("a", "a", "b") do
+    "x"
+  end
+end`,
+			want: "call to Regex.replace does not accept a block",
+		},
+		{
+			name: "regex replace all block",
+			source: `def run()
+  Regex.replace_all("a", "a", "b") do
+    "x"
+  end
+end`,
+			want: "call to Regex.replace_all does not accept a block",
+		},
+		{
 			name: "array builtin arity",
 			source: `def run()
   [1, 2].fetch()
