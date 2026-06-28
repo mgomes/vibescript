@@ -2707,6 +2707,9 @@ func stringScan(exec *Execution, re *regexp.Regexp, pattern, text string, receiv
 	if valueBlock(block) != nil {
 		return stringScanBlock(exec, text, groups, allMatches, receiver, args, kwargs, block)
 	}
+	if err := guardStringScanOutputFootprint(allMatches, groups); err != nil {
+		return NewNil(), err
+	}
 
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 	// The engine's index table stays live the whole time the result is built from
@@ -2929,6 +2932,37 @@ func projectedRegexSubmatchIndexBytes(matchCount, groups int) int {
 	indexBytesPerMatch := saturatingMul(intsPerMatch, estimatedIntBytes)
 	bytesPerMatch := saturatingAdd(indexBytesPerMatch, estimatedSliceBaseBytes)
 	return saturatingMul(matchCount, bytesPerMatch)
+}
+
+func guardStringScanOutputFootprint(allMatches [][]int, groups int) error {
+	outputBytes := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(len(allMatches), estimatedValueBytes))
+	for _, loc := range allMatches {
+		if groups == 0 {
+			outputBytes = saturatingAdd(outputBytes, projectedRegexStringPayloadBytes(loc[0], loc[1]))
+		} else {
+			outputBytes = saturatingAdd(outputBytes, estimatedSliceBaseBytes)
+			outputBytes = saturatingAdd(outputBytes, saturatingMul(groups, estimatedValueBytes))
+			for g := range groups {
+				start := loc[(g+1)*2]
+				end := loc[(g+1)*2+1]
+				if start < 0 || end < 0 {
+					continue
+				}
+				outputBytes = saturatingAdd(outputBytes, projectedRegexStringPayloadBytes(start, end))
+			}
+		}
+		if outputBytes > maxRegexInputBytes {
+			return fmt.Errorf("%w: string.scan output exceeds limit %d bytes", errOutputLimitExceeded, maxRegexInputBytes)
+		}
+	}
+	return nil
+}
+
+func projectedRegexStringPayloadBytes(start, end int) int {
+	if end < start {
+		return estimatedStringHeaderBytes
+	}
+	return saturatingAdd(estimatedStringHeaderBytes, end-start)
 }
 
 // stringScanElement builds the per-match result element for String#scan: the full

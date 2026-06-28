@@ -190,15 +190,17 @@ func TestParenlessBareOptionsForConstructors(t *testing.T) {
       person.name
     end
 
-    def strict_parenthesized_constructor
-      Person.new(name: "Ada")
+    def parenthesized_constructor
+      Person.new(name: "Ada").name
     end
     `)
 
 	if got := callFunc(t, script, "call_constructor", nil); !got.Equal(NewString("Ada")) {
 		t.Fatalf("call_constructor() = %v, want Ada", got)
 	}
-	requireCallErrorContains(t, script, "strict_parenthesized_constructor", nil, CallOptions{}, "missing argument opts")
+	if got := callFunc(t, script, "parenthesized_constructor", nil); !got.Equal(NewString("Ada")) {
+		t.Fatalf("parenthesized_constructor() = %v, want Ada", got)
+	}
 }
 
 func TestParenlessBareOptionsForClonedConstructors(t *testing.T) {
@@ -221,8 +223,13 @@ func TestParenlessBareOptionsForClonedConstructors(t *testing.T) {
     end
     `)
 	consumer := compileScriptWithEngine(t, engine, `
-    def call_constructor(ctor)
+    def call_constructor_parenless(ctor)
       person = ctor name: "Ada"
+      person.name
+    end
+
+    def call_constructor_parenthesized(ctor)
+      person = ctor(name: "Ada")
       person.name
     end
     `)
@@ -241,12 +248,14 @@ func TestParenlessBareOptionsForClonedConstructors(t *testing.T) {
 		t.Fatalf("cloned constructor kind = %s, want builtin", clonedConstructor.Kind())
 	}
 
-	got, err := consumer.Call(context.Background(), "call_constructor", []Value{clonedConstructor}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call_constructor(exported constructor) error = %v", err)
-	}
-	if !got.Equal(NewString("Ada")) {
-		t.Fatalf("call_constructor(exported constructor) = %v, want Ada", got)
+	for _, fn := range []string{"call_constructor_parenless", "call_constructor_parenthesized"} {
+		got, err := consumer.Call(context.Background(), fn, []Value{clonedConstructor}, CallOptions{})
+		if err != nil {
+			t.Fatalf("%s(exported constructor) error = %v", fn, err)
+		}
+		if !got.Equal(NewString("Ada")) {
+			t.Fatalf("%s(exported constructor) = %v, want Ada", fn, got)
+		}
 	}
 }
 

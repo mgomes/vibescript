@@ -95,6 +95,7 @@ var (
 	errLoopNext            = errors.New("loop next")
 	errStepQuotaExceeded   = errors.New("step quota exceeded")
 	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
+	errOutputLimitExceeded = errors.New("output limit exceeded")
 )
 
 type loopBreakError struct {
@@ -168,7 +169,7 @@ func classifyRuntimeErrorType(err error) string {
 	if err == nil {
 		return runtimeErrorTypeBase
 	}
-	if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) {
+	if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) || errors.Is(err, errOutputLimitExceeded) {
 		return runtimeErrorTypeLimit
 	}
 	var assertionErr *assertionFailureError

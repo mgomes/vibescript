@@ -74,6 +74,8 @@ func quickTypeCheck(val Value, ty *TypeExpr) (bool, bool) {
 			return true, val.Kind() == KindHash || val.Kind() == KindObject
 		}
 		return false, false
+	case TypeRange:
+		return true, val.Kind() == KindRange
 	case TypeShape:
 		if len(ty.Shape) == 0 {
 			if val.Kind() != KindHash && val.Kind() != KindObject {
@@ -249,6 +251,8 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 			}
 		}
 		return true, nil
+	case TypeRange:
+		return val.Kind() == KindRange, nil
 	case TypeFunction:
 		return isCallableValue(val), nil
 	case TypeEnum:
@@ -374,15 +378,21 @@ func formatValueTypeExpr(val Value) string {
 		seenArrays: make(map[uintptr]struct{}),
 		seenHashes: make(map[uintptr]struct{}),
 	}
-	return state.format(val)
+	return state.format(val, 0)
 }
+
+const (
+	maxValueTypeFormatDepth        = 16
+	maxValueTypeFormatArraySamples = 16
+	maxValueTypeFormatHashSamples  = 16
+)
 
 type valueTypeFormatState struct {
 	seenArrays map[uintptr]struct{}
 	seenHashes map[uintptr]struct{}
 }
 
-func (s *valueTypeFormatState) format(val Value) string {
+func (s *valueTypeFormatState) format(val Value, depth int) string {
 	switch val.Kind() {
 	case KindNil:
 		return "nil"
@@ -425,17 +435,20 @@ func (s *valueTypeFormatState) format(val Value) string {
 	case KindInstance:
 		return "instance"
 	case KindArray:
-		return s.formatArray(val.Array())
+		return s.formatArray(val.Array(), depth)
 	case KindHash, KindObject:
-		return s.formatHash(val.Hash())
+		return s.formatHash(val.Hash(), depth)
 	default:
 		return val.Kind().String()
 	}
 }
 
-func (s *valueTypeFormatState) formatArray(values []Value) string {
+func (s *valueTypeFormatState) formatArray(values []Value, depth int) string {
 	if len(values) == 0 {
 		return "array<empty>"
+	}
+	if depth >= maxValueTypeFormatDepth {
+		return "array<...>"
 	}
 
 	id := reflect.ValueOf(values).Pointer()
@@ -447,16 +460,20 @@ func (s *valueTypeFormatState) formatArray(values []Value) string {
 		defer delete(s.seenArrays, id)
 	}
 
-	elementTypes := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		elementTypes[s.format(value)] = struct{}{}
+	samples := min(len(values), maxValueTypeFormatArraySamples)
+	elementTypes := make(map[string]struct{}, samples)
+	for _, value := range values[:samples] {
+		elementTypes[s.format(value, depth+1)] = struct{}{}
 	}
-	return "array<" + joinSortedTypes(elementTypes) + ">"
+	return "array<" + joinSortedTypes(elementTypes, len(values) > samples) + ">"
 }
 
-func (s *valueTypeFormatState) formatHash(values map[string]Value) string {
+func (s *valueTypeFormatState) formatHash(values map[string]Value, depth int) string {
 	if len(values) == 0 {
 		return "{}"
+	}
+	if depth >= maxValueTypeFormatDepth {
+		return "hash<string, ...>"
 	}
 
 	id := reflect.ValueOf(values).Pointer()
@@ -476,26 +493,53 @@ func (s *valueTypeFormatState) formatHash(values map[string]Value) string {
 		sort.Strings(fields)
 		parts := make([]string, len(fields))
 		for i, field := range fields {
-			parts[i] = fmt.Sprintf("%s: %s", field, s.format(values[field]))
+			parts[i] = fmt.Sprintf("%s: %s", field, s.format(values[field], depth+1))
 		}
 		return "{ " + strings.Join(parts, ", ") + " }"
 	}
 
-	valueTypes := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		valueTypes[s.format(value)] = struct{}{}
+	samples := min(len(values), maxValueTypeFormatHashSamples)
+	valueTypes := make(map[string]struct{}, samples)
+	for _, field := range boundedSortedHashFields(values, samples) {
+		valueTypes[s.format(values[field], depth+1)] = struct{}{}
 	}
-	return "hash<string, " + joinSortedTypes(valueTypes) + ">"
+	return "hash<string, " + joinSortedTypes(valueTypes, len(values) > samples) + ">"
 }
 
-func joinSortedTypes(typeSet map[string]struct{}) string {
+func boundedSortedHashFields(values map[string]Value, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	fields := make([]string, 0, min(len(values), limit))
+	for field := range values {
+		if len(fields) < limit {
+			fields = append(fields, field)
+			sort.Strings(fields)
+			continue
+		}
+		if field >= fields[len(fields)-1] {
+			continue
+		}
+		fields[len(fields)-1] = field
+		sort.Strings(fields)
+	}
+	return fields
+}
+
+func joinSortedTypes(typeSet map[string]struct{}, truncated bool) string {
 	if len(typeSet) == 0 {
+		if truncated {
+			return "..."
+		}
 		return "empty"
 	}
-	parts := make([]string, 0, len(typeSet))
+	parts := make([]string, 0, len(typeSet)+1)
 	for typeName := range typeSet {
 		parts = append(parts, typeName)
 	}
 	sort.Strings(parts)
+	if truncated {
+		parts = append(parts, "...")
+	}
 	return strings.Join(parts, " | ")
 }

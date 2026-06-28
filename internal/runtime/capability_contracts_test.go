@@ -7,8 +7,9 @@ import (
 )
 
 type contractProbeCapability struct {
-	invokeCount *int
-	result      Value
+	invokeCount              *int
+	result                   Value
+	returnValidatedByBuiltin bool
 }
 
 func (c contractProbeCapability) Bind(binding CapabilityBinding) (map[string]Value, error) {
@@ -37,6 +38,7 @@ func (c contractProbeCapability) CapabilityContracts() map[string]CapabilityMeth
 				}
 				return nil
 			},
+			ReturnValidatedByBuiltin: c.returnValidatedByBuiltin,
 			ValidateReturn: func(result Value) error {
 				if result.Kind() != KindString {
 					return fmt.Errorf("probe.call must return string")
@@ -44,6 +46,31 @@ func (c contractProbeCapability) CapabilityContracts() map[string]CapabilityMeth
 				return nil
 			},
 		},
+	}
+}
+
+func TestCapabilityContractSkipsReturnValidationForBuiltinValidatedReturn(t *testing.T) {
+	t.Parallel()
+	script := compileScriptDefault(t, `def run()
+  probe.call(1)
+end`)
+
+	invocations := 0
+	got, err := script.Call(context.Background(), "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{contractProbeCapability{
+			invokeCount:              &invocations,
+			result:                   NewInt(7),
+			returnValidatedByBuiltin: true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Script.Call(run) error = %v, want nil", err)
+	}
+	if got.Kind() != KindInt || got.Int() != 7 {
+		t.Fatalf("run = %#v, want 7", got)
+	}
+	if invocations != 1 {
+		t.Fatalf("expected capability to execute once, got %d", invocations)
 	}
 }
 

@@ -103,6 +103,7 @@ const (
 	TypeMoney    = ast.TypeMoney
 	TypeArray    = ast.TypeArray
 	TypeHash     = ast.TypeHash
+	TypeRange    = ast.TypeRange
 	TypeFunction = ast.TypeFunction
 	TypeShape    = ast.TypeShape
 	TypeUnion    = ast.TypeUnion

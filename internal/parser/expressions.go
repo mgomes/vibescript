@@ -1725,25 +1725,13 @@ func (p *parser) blockParamUnionContinues() bool {
 		return false
 	}
 
-	savedLexer := *p.l
-	savedLexer.bracketStack = append([]bracketFrame(nil), p.l.bracketStack...)
-	savedLexer.ternaryStack = append([]ternaryFrame(nil), p.l.ternaryStack...)
-	savedCur := p.curToken
-	savedPeek := p.peekToken
-	savedPeekPeek := p.peekPeek
-	savedErrors := len(p.errors)
+	saved := p.snapshot()
+	defer p.restore(saved)
 
 	p.nextToken()
 	p.nextToken()
 	atom := p.parseTypeAtom()
-	ok := atom != nil && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenPipe)
-
-	p.l = &savedLexer
-	p.curToken = savedCur
-	p.peekToken = savedPeek
-	p.peekPeek = savedPeekPeek
-	p.errors = p.errors[:savedErrors]
-	return ok
+	return atom != nil && (p.peekToken.Type == ast.TokenComma || p.peekToken.Type == ast.TokenPipe)
 }
 
 func (p *parser) parseCallExpression(function ast.Expression) ast.Expression {

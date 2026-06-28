@@ -352,9 +352,10 @@ end`)
 	requireRunMemoryQuotaError(t, script, []Value{subject}, CallOptions{})
 }
 
-// TestStringScanCaptureMemoryQuotaUnderAmpleMemory confirms the same large scan
-// completes when the memory quota is generous, proving the incremental bound is
-// not rejecting results the post-call check would accept.
+// TestStringScanCaptureMemoryQuotaUnderAmpleMemory confirms a capture scan whose
+// result fits the fixed output cap completes when the memory quota is generous,
+// proving the incremental bound is not rejecting results the post-call check would
+// accept.
 func TestStringScanCaptureMemoryQuotaUnderAmpleMemory(t *testing.T) {
 	t.Parallel()
 
@@ -362,7 +363,7 @@ func TestStringScanCaptureMemoryQuotaUnderAmpleMemory(t *testing.T) {
   text.scan("(a)").size
 end`)
 
-	const count = 50_000
+	const count = 2_000
 	subject := NewString(strings.Repeat("a", count))
 	got, err := script.Call(context.Background(), "run", []Value{subject}, CallOptions{})
 	if err != nil {
@@ -408,7 +409,7 @@ func TestStringScanManyGroupsUnderAmpleMemory(t *testing.T) {
 	source := `def run(text) text.scan("` + pattern + `").size end`
 	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 64 << 20}, source)
 
-	const count = 5_000
+	const count = 500
 	subject := NewString(strings.Repeat("a", count))
 	got, err := script.Call(context.Background(), "run", []Value{subject}, CallOptions{})
 	if err != nil {
@@ -418,6 +419,22 @@ func TestStringScanManyGroupsUnderAmpleMemory(t *testing.T) {
 	if got.Kind() != KindInt || got.Int() != count+1 {
 		t.Fatalf("many-groups scan size = %v, want int %d", got, count+1)
 	}
+}
+
+func TestStringScanOutputLimit(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 1 << 30, MemoryQuotaBytes: 128 << 20}, `def run(text)
+  text.scan("").size
+end`)
+
+	// Empty-pattern scan yields one match per rune plus the trailing empty match.
+	// Pick a subject whose result array structure exceeds the fixed regex output
+	// cap while staying well below the input-size and match-table caps.
+	perMatchBytes := estimatedValueBytes + estimatedStringHeaderBytes
+	matchCount := maxRegexInputBytes/perMatchBytes + 1
+	subject := NewString(strings.Repeat("a", matchCount))
+	requireCallErrorContains(t, script, "run", []Value{subject}, CallOptions{}, "string.scan output exceeds limit")
 }
 
 // TestStringScanSparseMatchesNotOverRejected guards the worst-case host-cap bound

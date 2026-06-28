@@ -141,7 +141,7 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 			}
 			return NewNil(), exec.wrapError(err, pos)
 		}
-		if hasContract && contract.ValidateReturn != nil {
+		if hasContract && contract.ValidateReturn != nil && !contract.ReturnValidatedByBuiltin {
 			if err := contract.ValidateReturn(result); err != nil {
 				return NewNil(), exec.wrapError(err, pos)
 			}
@@ -184,6 +184,14 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 }
 
 func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
+	return exec.callFunctionWithReturnValidation(fn, receiver, args, kwargs, block, pos, true)
+}
+
+func (exec *Execution) callFunctionIgnoringReturn(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
+	return exec.callFunctionWithReturnValidation(fn, receiver, args, kwargs, block, pos, false)
+}
+
+func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position, validateReturn bool) (Value, error) {
 	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+1)
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
@@ -223,7 +231,7 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	if err != nil {
 		return NewNil(), err
 	}
-	if fn.ReturnTy != nil {
+	if validateReturn && fn.ReturnTy != nil {
 		normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
 			owner:    fn.owner,
 			env:      fn.Env,
@@ -897,11 +905,11 @@ const (
 // positional options hash when the callee has no matching keyword parameter and
 // exposes a positional parameter to receive it. This mirrors Ruby's options-hash
 // binding. Parenless calls collapse for any options-hash target. Parenthesized
-// calls collapse only for plain function calls (a function value, its `call`
-// alias, or a function value held in a member); parenthesized method and
-// constructor calls stay strict. resolution reports how the callee was resolved,
-// which the member paths use to tell genuine methods apart from stored function
-// values that happen to surface as bare function values too.
+// calls collapse for plain function calls (a function value, its `call` alias, or
+// a function value held in a member) and constructors. Parenthesized ordinary
+// methods stay strict. resolution reports how the callee was resolved, which the
+// member paths use to tell genuine methods apart from stored function values that
+// happen to surface as bare function values too.
 func resolveKeywordOptionsHash(call *CallExpr, callee Value, resolution calleeResolution, args []Value, kwargs map[string]Value) ([]Value, map[string]Value) {
 	if !call.KeywordOptionsHash || len(kwargs) == 0 {
 		return args, kwargs
@@ -923,14 +931,18 @@ func resolveKeywordOptionsHash(call *CallExpr, callee Value, resolution calleeRe
 // calleeCollapsesOptionsHash reports whether the resolved callee permits keyword
 // arguments to collapse into a positional options hash for the given call form.
 // The parenless form collapses for any options-hash target. Parenthesized calls
-// keep method and constructor binding strict: a call to a plain function value
-// collapses like a plain function call, whether that value was resolved directly
-// or fetched from a member, and a member call collapses through a function
-// value's direct-call alias as well; a callee surfaced through the direct
-// member-method path stays strict, since that path surfaces methods as bare
-// function values too.
+// keep ordinary method binding strict: a call to a plain function value collapses
+// like a plain function call, whether that value was resolved directly or fetched
+// from a member, constructors collapse through their initialize options target,
+// and a member call collapses through a function value's direct-call alias as
+// well. A callee surfaced through the direct member-method path stays strict,
+// since that path surfaces methods as bare function values too.
 func calleeCollapsesOptionsHash(call *CallExpr, callee Value, resolution calleeResolution) bool {
 	if !call.Parenthesized {
+		return true
+	}
+	builtin := valueBuiltin(callee)
+	if builtin != nil && builtinCollapsesConstructorOptionsHash(builtin) {
 		return true
 	}
 	switch resolution {
@@ -940,11 +952,14 @@ func calleeCollapsesOptionsHash(call *CallExpr, callee Value, resolution calleeR
 		if callee.Kind() == KindFunction {
 			return true
 		}
-		builtin := valueBuiltin(callee)
 		return builtin != nil && builtin.DirectCallAlias
 	default:
 		return callee.Kind() == KindFunction
 	}
+}
+
+func builtinCollapsesConstructorOptionsHash(builtin *Builtin) bool {
+	return builtin.OptionsHashTarget != nil && strings.HasSuffix(builtin.Name, ".new")
 }
 
 func optionsHashTarget(callee Value) *ScriptFunction {

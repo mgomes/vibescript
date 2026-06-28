@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -259,6 +261,10 @@ func TestTypedFunctions(t *testing.T) {
       values
     end
 
+    def range_echo(span: range) -> range
+      span
+    end
+
     def player_payload(payload: { id: string, score: int, active: bool? }) -> { id: string, score: int, active: bool? }
       payload
     end
@@ -290,6 +296,7 @@ func TestTypedFunctions(t *testing.T) {
 		{name: "nil_result", fn: "nil_result", args: nil, want: NewNil()},
 		{name: "kw_only_positional", fn: "kw_only", args: []Value{NewInt(1), NewInt(2)}, want: NewInt(2)},
 		{name: "mixed_sum", fn: "mixed", args: []Value{NewInt(1), NewInt(2)}, want: NewInt(3)},
+		{name: "range_echo", fn: "range_echo", args: []Value{NewRange(Range{Start: 1, End: 3})}, want: NewRange(Range{Start: 1, End: 3})},
 	}
 	for _, tc := range successCases {
 		tc := tc
@@ -342,6 +349,7 @@ func TestTypedFunctions(t *testing.T) {
 		{name: "bad_return_type_mismatch", fn: "bad_return", args: []Value{NewInt(1)}, want: "return value for bad_return expected int, got string"},
 		{name: "union_echo_bool_rejected", fn: "union_echo", args: []Value{NewBool(true)}, want: "argument v expected int | string, got bool"},
 		{name: "union_bad_return", fn: "union_bad_return", args: nil, want: "return value for union_bad_return expected int | string, got bool"},
+		{name: "range_echo_rejects_int", fn: "range_echo", args: []Value{NewInt(1)}, want: "argument span expected range, got int"},
 		{
 			name: "ints_only_with_string",
 			fn:   "ints_only",
@@ -469,6 +477,97 @@ func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testi
 	}
 	requireCallErrorContains(t, script, "typed_kw", nil, CallOptions{Keywords: extraKw}, "unexpected keyword argument extra")
 	requireCallErrorContains(t, script, "untyped_kw", nil, CallOptions{Keywords: extraKw}, "unexpected keyword argument extra")
+}
+
+func TestObjectTypeAliasPreservesDiagnosticSpelling(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def object_passthrough(payload: object) -> object
+      payload
+    end
+
+    def object_scores(payload: object<string, int>) -> object<string, int>
+      payload
+    end
+    `)
+
+	requireCallErrorContains(t, script, "object_passthrough", []Value{NewInt(1)}, CallOptions{}, "argument payload expected object, got int")
+	requireCallErrorContains(t, script, "object_scores", []Value{NewHash(map[string]Value{"score": NewString("high")})}, CallOptions{}, "argument payload expected object<string, int>, got { score: string }")
+}
+
+func TestFormatValueTypeExprBoundsCompositeSamples(t *testing.T) {
+	t.Parallel()
+
+	ints := make([]Value, maxValueTypeFormatArraySamples+4)
+	for i := range ints {
+		ints[i] = NewInt(int64(i))
+	}
+	if got, want := formatValueTypeExpr(NewArray(ints)), "array<int | ...>"; got != want {
+		t.Fatalf("large array type = %q, want %q", got, want)
+	}
+
+	rows := make([]Value, maxValueTypeFormatArraySamples+4)
+	for i := range rows {
+		rows[i] = NewHash(map[string]Value{"id": NewInt(int64(i))})
+	}
+	if got, want := formatValueTypeExpr(NewArray(rows)), "array<{ id: int } | ...>"; got != want {
+		t.Fatalf("large row array type = %q, want %q", got, want)
+	}
+
+	fields := make(map[string]Value, maxValueTypeFormatHashSamples+4)
+	for i := range maxValueTypeFormatHashSamples + 4 {
+		fields[fmt.Sprintf("key_%02d", i)] = NewInt(int64(i))
+	}
+	if got, want := formatValueTypeExpr(NewHash(fields)), "hash<string, int | ...>"; got != want {
+		t.Fatalf("large hash type = %q, want %q", got, want)
+	}
+
+	mixedFields := make(map[string]Value, maxValueTypeFormatHashSamples+4)
+	mixedFields["key_00"] = NewString("first")
+	for i := 1; i < maxValueTypeFormatHashSamples+4; i++ {
+		mixedFields[fmt.Sprintf("key_%02d", i)] = NewInt(int64(i))
+	}
+	if got, want := formatValueTypeExpr(NewHash(mixedFields)), "hash<string, int | string | ...>"; got != want {
+		t.Fatalf("large mixed hash type = %q, want %q", got, want)
+	}
+}
+
+func TestBoundedSortedHashFieldsKeepsSmallestKeys(t *testing.T) {
+	t.Parallel()
+
+	fields := map[string]Value{
+		"z": NewInt(1),
+		"b": NewInt(2),
+		"y": NewInt(3),
+		"a": NewInt(4),
+		"c": NewInt(5),
+	}
+
+	got := boundedSortedHashFields(fields, 3)
+	want := []string{"a", "b", "c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("boundedSortedHashFields() = %v, want %v", got, want)
+	}
+}
+
+func TestTypeMismatchFormattingBoundsLargeCompositeValues(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def ints(values: array<int>)
+      values
+    end
+    `)
+
+	rows := make([]Value, 10_000)
+	for i := range rows {
+		rows[i] = NewHash(map[string]Value{
+			"id":    NewString("row"),
+			"score": NewInt(int64(i)),
+		})
+	}
+	requireCallErrorContains(t, script, "ints", []Value{NewArray(rows)}, CallOptions{}, "argument values expected array<int>, got array<{ id: string, score: int } | ...>")
 }
 
 func TestTypedFunctionsRegressionAnyAndNullableBehavior(t *testing.T) {

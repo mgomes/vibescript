@@ -231,7 +231,7 @@ func (exec *Execution) classMember(obj Value, property string, pos Position, cal
 			inst := &Instance{Class: cl, Ivars: make(map[string]Value)}
 			instVal := NewInstance(inst)
 			if initFn, ok := cl.Methods["initialize"]; ok {
-				if _, err := exec.callFunction(initFn, instVal, args, kwargs, block, pos); err != nil {
+				if _, err := exec.callFunctionIgnoringReturn(initFn, instVal, args, kwargs, block, pos); err != nil {
 					return NewNil(), err
 				}
 			}

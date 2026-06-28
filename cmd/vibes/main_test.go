@@ -467,6 +467,42 @@ end`,
 			wantOut: []string{"(Reporter#instance_path)", "(Reporter.class_path)"},
 			wantErr: "analysis found 2 issue(s)",
 		},
+		{
+			name: "unreachable_statements_in_block_literals",
+			script: `def run()
+  [1].each do |x|
+    raise "boom"
+    x
+  end
+end`,
+			wantOut: []string{"unreachable statement", "(run block at 2:"},
+			wantErr: "analysis found 1 issue(s)",
+		},
+		{
+			name: "unreachable_statements_in_interpolated_symbol_blocks",
+			script: `def run()
+  %I[#{capture { raise "boom"; 1 }}]
+end`,
+			wantOut: []string{"unreachable statement", "(run block at 1:"},
+			wantErr: "analysis found 1 issue(s)",
+		},
+		{
+			name: "unreachable_statements_in_class_bodies",
+			script: `class Reporter
+  raise "boom"
+  1
+
+  def value()
+    2
+  end
+end
+
+def run()
+  Reporter.new.value
+end`,
+			wantOut: []string{"unreachable statement", "(Reporter.<class body>)"},
+			wantErr: "analysis found 1 issue(s)",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
