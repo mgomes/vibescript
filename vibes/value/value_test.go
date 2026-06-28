@@ -1189,6 +1189,88 @@ func TestValueStringByteLenBounded(t *testing.T) {
 	})
 }
 
+func TestValueStringByteLenBoundedUpTo(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matches_exact_count_within_limit", func(t *testing.T) {
+		t.Parallel()
+
+		val := value.NewArray([]value.Value{
+			value.NewString("one"),
+			value.NewArray([]value.Value{value.NewInt(2)}),
+		})
+		want := val.StringByteLen()
+		got, truncated, err := val.StringByteLenBoundedUpTo(want, func() error { return nil })
+		if err != nil {
+			t.Fatalf("StringByteLenBoundedUpTo() error = %v", err)
+		}
+		if truncated {
+			t.Fatalf("StringByteLenBoundedUpTo() truncated, want false")
+		}
+		if got != want {
+			t.Fatalf("StringByteLenBoundedUpTo() = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("stops_after_limit", func(t *testing.T) {
+		t.Parallel()
+
+		val := value.NewArray([]value.Value{value.NewString("one"), value.NewString("two")})
+		got, truncated, err := val.StringByteLenBoundedUpTo(4, func() error { return nil })
+		if err != nil {
+			t.Fatalf("StringByteLenBoundedUpTo() error = %v", err)
+		}
+		if !truncated {
+			t.Fatalf("StringByteLenBoundedUpTo() truncated = false, want true")
+		}
+		if got != 5 {
+			t.Fatalf("StringByteLenBoundedUpTo() = %d, want limit+1", got)
+		}
+	})
+
+	t.Run("shared_exponential_graph_stops_at_cap", func(t *testing.T) {
+		t.Parallel()
+
+		cur := value.NewArray([]value.Value{value.NewInt(0)})
+		for range 25 {
+			cur = value.NewArray([]value.Value{cur, cur})
+		}
+
+		calls := 0
+		got, truncated, err := cur.StringByteLenBoundedUpTo(4, func() error {
+			calls++
+			if calls > 1_000 {
+				return errors.New("walk did not stop at cap")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("StringByteLenBoundedUpTo() error = %v", err)
+		}
+		if !truncated {
+			t.Fatalf("StringByteLenBoundedUpTo() truncated = false, want true")
+		}
+		if got != 5 {
+			t.Fatalf("StringByteLenBoundedUpTo() = %d, want limit+1", got)
+		}
+		if calls > 25 {
+			t.Fatalf("StringByteLenBoundedUpTo() walked %d nodes, want capped walk", calls)
+		}
+	})
+
+	t.Run("propagates_step_error", func(t *testing.T) {
+		t.Parallel()
+
+		sentinel := errors.New("budget exhausted")
+		_, _, err := value.NewArray([]value.Value{value.NewInt(1)}).StringByteLenBoundedUpTo(1024, func() error {
+			return sentinel
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("StringByteLenBoundedUpTo() error = %v, want %v", err, sentinel)
+		}
+	})
+}
+
 func BenchmarkValueStringLargeComposite(b *testing.B) {
 	b.Run("array_100000", func(b *testing.B) {
 		elems := make([]value.Value, 100000)

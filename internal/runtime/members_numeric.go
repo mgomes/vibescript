@@ -520,6 +520,9 @@ func numericClampBound(method string, val Value) (*Value, error) {
 }
 
 func compareNumericValues(left, right Value, method string) (int, error) {
+	if cmp, ok, err := compareNumericSpecialValues(left, right, method); ok || err != nil {
+		return cmp, err
+	}
 	leftRat, err := numericValueRat(left, method)
 	if err != nil {
 		return 0, err
@@ -531,13 +534,66 @@ func compareNumericValues(left, right Value, method string) (int, error) {
 	return leftRat.Cmp(rightRat), nil
 }
 
+func compareNumericSpecialValues(left, right Value, method string) (int, bool, error) {
+	leftFloat, leftIsFloat := numericFloatValue(left)
+	rightFloat, rightIsFloat := numericFloatValue(right)
+	if leftIsFloat && math.IsNaN(leftFloat) {
+		return 0, false, fmt.Errorf("%s values must not be NaN", method)
+	}
+	if rightIsFloat && math.IsNaN(rightFloat) {
+		return 0, false, fmt.Errorf("%s values must not be NaN", method)
+	}
+	leftInf := leftIsFloat && math.IsInf(leftFloat, 0)
+	rightInf := rightIsFloat && math.IsInf(rightFloat, 0)
+	if !leftInf && !rightInf {
+		return 0, false, nil
+	}
+	switch {
+	case leftInf && rightInf:
+		return cmpInt(int(math.Copysign(1, leftFloat)), int(math.Copysign(1, rightFloat))), true, nil
+	case leftInf:
+		if leftFloat > 0 {
+			return 1, true, nil
+		}
+		return -1, true, nil
+	case rightInf:
+		if rightFloat > 0 {
+			return -1, true, nil
+		}
+		return 1, true, nil
+	default:
+		return 0, false, nil
+	}
+}
+
+func numericFloatValue(val Value) (float64, bool) {
+	if val.Kind() != KindFloat {
+		return 0, false
+	}
+	return val.Float(), true
+}
+
+func cmpInt(left, right int) int {
+	switch {
+	case left < right:
+		return -1
+	case left > right:
+		return 1
+	default:
+		return 0
+	}
+}
+
 func numericValueRat(val Value, method string) (*big.Rat, error) {
 	switch val.Kind() {
 	case KindInt:
 		return new(big.Rat).SetInt64(val.Int()), nil
 	case KindFloat:
 		f := val.Float()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
+		if math.IsNaN(f) {
+			return nil, fmt.Errorf("%s values must not be NaN", method)
+		}
+		if math.IsInf(f, 0) {
 			return nil, fmt.Errorf("%s values must be finite", method)
 		}
 		rat := new(big.Rat).SetFloat64(f)

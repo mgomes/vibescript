@@ -305,7 +305,7 @@ func (exec *Execution) formatStringValues(pattern string, values []Value, receiv
 }
 
 func formatStringValuesChecked(exec *Execution, pattern string, values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	prepared, err := prepareFormatString(pattern, values)
+	prepared, err := prepareFormatString(exec, pattern, values)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -340,10 +340,11 @@ func (p preparedFormatString) formatArgs() ([]any, error) {
 	return args, nil
 }
 
-func prepareFormatString(pattern string, values []Value) (preparedFormatString, error) {
+func prepareFormatString(exec *Execution, pattern string, values []Value) (preparedFormatString, error) {
 	prepared := preparedFormatString{
 		args: make([]preparedFormatArgument, 0, len(values)),
 	}
+	projection := formatProjection{exec: exec}
 	var normalized strings.Builder
 	normalized.Grow(len(pattern))
 	total := 0
@@ -446,11 +447,14 @@ func prepareFormatString(pattern string, values []Value) (preparedFormatString, 
 		if argIndex < 0 || argIndex >= len(values) {
 			return preparedFormatString{}, fmt.Errorf("format references missing operand %d", argIndex+1)
 		}
-		arg, err := prepareFormatArgument(values[argIndex], verb, hasPrecision, precision)
+		arg, err := prepareFormatArgument(projection, values[argIndex], verb, hasPrecision, precision)
 		if err != nil {
 			return preparedFormatString{}, err
 		}
-		field := projectedFormatFieldBytes(values[argIndex], verb, hasPrecision, precision, flags)
+		field, err := projectedFormatFieldBytes(projection, values[argIndex], verb, hasPrecision, precision, flags)
+		if err != nil {
+			return preparedFormatString{}, err
+		}
 		if hasWidth && width > field {
 			field = width
 		}
@@ -539,29 +543,80 @@ func (f *formatFlags) record(flag byte) {
 	}
 }
 
-func projectedFormatFieldBytes(val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) int {
-	base := projectedFormatArgumentBytes(val, verb, hasPrecision, precision, flags)
+type formatProjection struct {
+	exec *Execution
+}
+
+func (p formatProjection) stringBytes(val Value) (int, error) {
+	switch val.Kind() {
+	case KindString, KindSymbol:
+		return len(val.String()), nil
+	default:
+		if p.exec != nil {
+			return val.StringByteLenBounded(p.exec.step)
+		}
+		return val.StringByteLen(), nil
+	}
+}
+
+func (p formatProjection) stringBytesUpTo(val Value, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	switch val.Kind() {
+	case KindString, KindSymbol:
+		return min(len(val.String()), limit), nil
+	default:
+		if p.exec != nil {
+			n, truncated, err := val.StringByteLenBoundedUpTo(limit, p.exec.step)
+			if err != nil {
+				return 0, err
+			}
+			if truncated {
+				return limit, nil
+			}
+			return n, nil
+		}
+		return min(val.StringByteLen(), limit), nil
+	}
+}
+
+func projectedFormatFieldBytes(projection formatProjection, val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) (int, error) {
+	if hasPrecision {
+		switch verb {
+		case 's':
+			return projection.stringBytesUpTo(val, saturatingMul(utf8.UTFMax, precision))
+		case 'q':
+			selectedBytes, err := projection.stringBytesUpTo(val, saturatingMul(utf8.UTFMax, precision))
+			if err != nil {
+				return 0, err
+			}
+			return projectedQuotedStringBytes(selectedBytes), nil
+		}
+	}
+	base, err := projectedFormatArgumentBytes(projection, val, verb, hasPrecision, precision, flags)
+	if err != nil {
+		return 0, err
+	}
 	if hasPrecision {
 		switch verb {
 		case 'f', 'F', 'e', 'E', 'g', 'G':
 			base = max(base, saturatingAdd(precision, 16))
-		case 's':
-			selectedBytes := min(formatArgumentStringBytes(val), saturatingMul(utf8.UTFMax, precision))
-			base = min(base, selectedBytes)
-		case 'q':
-			selectedBytes := min(formatArgumentStringBytes(val), saturatingMul(utf8.UTFMax, precision))
-			base = min(base, projectedQuotedStringBytes(selectedBytes))
 		}
 	}
-	return base
+	return base, nil
 }
 
-func projectedFormatArgumentBytes(val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) int {
+func projectedFormatArgumentBytes(projection formatProjection, val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) (int, error) {
 	switch verb {
 	case 's':
-		return formatArgumentStringBytes(val)
+		return projection.stringBytes(val)
 	case 'q':
-		return projectedQuotedStringBytes(formatArgumentStringBytes(val))
+		n, err := projection.stringBytes(val)
+		if err != nil {
+			return 0, err
+		}
+		return projectedQuotedStringBytes(n), nil
 	case 'x', 'X':
 		if val.Kind() == KindString || val.Kind() == KindSymbol {
 			bytesPerInput := 2
@@ -575,39 +630,42 @@ func projectedFormatArgumentBytes(val Value, verb byte, hasPrecision bool, preci
 					field = saturatingAdd(field, saturatingMul(2, len(val.String())))
 				}
 			}
-			return field
+			return field, nil
 		}
-		return 64
+		return 64, nil
 	case 'd', 'b', 'o', 'O', 'U', 'c':
-		return 64
+		return 64, nil
 	case 'f', 'F', 'e', 'E', 'g', 'G':
 		if hasPrecision {
-			return saturatingAdd(precision, 16)
+			return saturatingAdd(precision, 16), nil
 		}
-		return 64
+		return 64, nil
 	case 't':
-		return 5
+		return 5, nil
 	case 'v':
 		if flags.alternate {
-			return projectedQuotedStringBytes(formatArgumentStringBytes(val))
+			n, err := projection.stringBytes(val)
+			if err != nil {
+				return 0, err
+			}
+			return projectedQuotedStringBytes(n), nil
 		}
-		return saturatingAdd(val.StringByteLen(), 32)
+		n, err := projection.stringBytes(val)
+		if err != nil {
+			return 0, err
+		}
+		return saturatingAdd(n, 32), nil
 	default:
-		return saturatingAdd(val.StringByteLen(), 32)
+		n, err := projection.stringBytes(val)
+		if err != nil {
+			return 0, err
+		}
+		return saturatingAdd(n, 32), nil
 	}
 }
 
 func projectedQuotedStringBytes(inputBytes int) int {
 	return saturatingAdd(saturatingMul(4, inputBytes), 2)
-}
-
-func formatArgumentStringBytes(val Value) int {
-	switch val.Kind() {
-	case KindString, KindSymbol:
-		return len(val.String())
-	default:
-		return val.StringByteLen()
-	}
 }
 
 type preparedFormatArgument struct {
@@ -622,11 +680,15 @@ type formatArgumentStringRender struct {
 	allowTruncated bool
 }
 
-func prepareFormatArgument(val Value, verb byte, hasPrecision bool, precision int) (preparedFormatArgument, error) {
+func prepareFormatArgument(projection formatProjection, val Value, verb byte, hasPrecision bool, precision int) (preparedFormatArgument, error) {
 	arg := preparedFormatArgument{value: val, verb: verb}
 	switch verb {
 	case 's', 'q':
-		arg.stringRender = prepareFormatStringRender(val, hasPrecision, precision)
+		render, err := prepareFormatStringRender(projection, val, hasPrecision, precision)
+		if err != nil {
+			return preparedFormatArgument{}, err
+		}
+		arg.stringRender = render
 	case 'x', 'X':
 		switch val.Kind() {
 		case KindString, KindSymbol, KindInt, KindFloat:
@@ -649,27 +711,37 @@ func prepareFormatArgument(val Value, verb byte, hasPrecision bool, precision in
 		}
 	default:
 		if formatArgumentNeedsRenderedString(val) {
-			arg.stringRender = prepareFormatStringRender(val, false, 0)
+			render, err := prepareFormatStringRender(projection, val, false, 0)
+			if err != nil {
+				return preparedFormatArgument{}, err
+			}
+			arg.stringRender = render
 		}
 	}
 	return arg, nil
 }
 
-func prepareFormatStringRender(val Value, hasPrecision bool, precision int) formatArgumentStringRender {
+func prepareFormatStringRender(projection formatProjection, val Value, hasPrecision bool, precision int) (formatArgumentStringRender, error) {
 	if formatArgumentHasDirectString(val) {
-		return formatArgumentStringRender{}
+		return formatArgumentStringRender{}, nil
 	}
-	limit := formatArgumentStringBytes(val)
 	allowTruncated := false
+	var limit int
 	if hasPrecision {
-		limit = min(limit, saturatingMul(utf8.UTFMax, precision))
+		limit = saturatingMul(utf8.UTFMax, precision)
 		allowTruncated = true
+	} else {
+		var err error
+		limit, err = projection.stringBytes(val)
+		if err != nil {
+			return formatArgumentStringRender{}, err
+		}
 	}
 	return formatArgumentStringRender{
 		enabled:        true,
 		limit:          limit,
 		allowTruncated: allowTruncated,
-	}
+	}, nil
 }
 
 func (a preparedFormatArgument) scratchBytes() int {

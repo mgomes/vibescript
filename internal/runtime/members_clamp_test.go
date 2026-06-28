@@ -55,3 +55,30 @@ end`)
 	requireCallErrorContains(t, script, "exclusive_range", nil, CallOptions{}, "cannot clamp with exclusive range")
 	requireCallErrorContains(t, script, "inverted", nil, CallOptions{}, "min must be <= max")
 }
+
+func TestNumericClampHandlesInfinities(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  pos = 1.0 / 0.0
+  neg = -1.0 / 0.0
+  [
+    pos.clamp(0, 10),
+    neg.clamp(0, 10),
+    5.clamp(neg, pos)
+  ]
+end
+
+def nan
+  (0.0 / 0.0).clamp(0, 10)
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewInt(10),
+		NewInt(0),
+		NewInt(5),
+	})
+
+	requireCallErrorContains(t, script, "nan", nil, CallOptions{}, "must not be NaN")
+}

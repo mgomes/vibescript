@@ -191,3 +191,18 @@ func TestRubyStyleStringFormattingBoundsCompositeStringification(t *testing.T) {
 		})
 	}
 }
+
+func TestRubyStyleStringFormattingCapsCompositeProjectionWalk(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{StepQuota: 5_000, MemoryQuotaBytes: 64 << 20}, `def run
+  a = [0]
+  24.times { a = [a, a] }
+  format("%.1s", a)
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if !got.Equal(NewString("[")) {
+		t.Fatalf("run = %#v, want '['", got)
+	}
+}

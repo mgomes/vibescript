@@ -442,6 +442,19 @@ func (v Value) StringByteLenBounded(step func() error) (int, error) {
 	}
 }
 
+// StringByteLenBoundedUpTo reports String's byte length up to limit bytes. It
+// stops as soon as it can prove the rendering would exceed limit, returning
+// truncated as true and limit+1 as the count. Like StringByteLenBounded, it
+// invokes step during aggregate walks so callers can charge sandbox work before
+// materializing any rendering.
+func (v Value) StringByteLenBoundedUpTo(limit int, step func() error) (count int, truncated bool, err error) {
+	if limit < 0 {
+		n, err := v.StringByteLenBounded(step)
+		return n, false, err
+	}
+	return v.stringByteLenBoundedUpToWithState(newValueStringState(), limit, step)
+}
+
 func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func() error) (int, error) {
 	if err := step(); err != nil {
 		return 0, err
@@ -500,6 +513,91 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 	default:
 		return len(v.String()), nil
 	}
+}
+
+func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit int, step func() error) (int, bool, error) {
+	if err := step(); err != nil {
+		return 0, false, err
+	}
+	switch v.kind {
+	case KindArray:
+		elems := v.data.([]Value)
+		id := SliceIdentity{
+			Ptr: reflect.ValueOf(elems).Pointer(),
+			Len: len(elems),
+			Cap: cap(elems),
+		}
+		if id.Ptr != 0 {
+			if _, seen := state.arrays[id]; seen {
+				total, truncated := stringByteLenCappedAdd(0, len(cycleMarker), limit)
+				return total, truncated, nil
+			}
+			state.arrays[id] = struct{}{}
+			defer delete(state.arrays, id)
+		}
+		total, truncated := stringByteLenCappedAdd(0, len(arrayOpen)+len(arrayClose)+separatorBytes(len(elems)), limit)
+		if truncated {
+			return total, true, nil
+		}
+		for _, e := range elems {
+			n, childTruncated, err := e.stringByteLenBoundedUpToWithState(state, limit-total, step)
+			if err != nil {
+				return 0, false, err
+			}
+			var addTruncated bool
+			total, addTruncated = stringByteLenCappedAdd(total, n, limit)
+			if childTruncated || addTruncated {
+				return total, true, nil
+			}
+		}
+		return total, false, nil
+	case KindHash:
+		entries := v.hashEntries()
+		if len(entries) == 0 {
+			total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose), limit)
+			return total, truncated, nil
+		}
+		ptr := reflect.ValueOf(entries).Pointer()
+		if ptr != 0 {
+			if _, seen := state.maps[ptr]; seen {
+				total, truncated := stringByteLenCappedAdd(0, len(cycleMarker), limit)
+				return total, truncated, nil
+			}
+			state.maps[ptr] = struct{}{}
+			defer delete(state.maps, ptr)
+		}
+		total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose)+separatorBytes(len(entries)), limit)
+		if truncated {
+			return total, true, nil
+		}
+		for k, val := range entries {
+			var keyTruncated bool
+			total, keyTruncated = stringByteLenCappedAdd(total, len(k)+len(keyValueSeparator), limit)
+			if keyTruncated {
+				return total, true, nil
+			}
+			n, childTruncated, err := val.stringByteLenBoundedUpToWithState(state, limit-total, step)
+			if err != nil {
+				return 0, false, err
+			}
+			var addTruncated bool
+			total, addTruncated = stringByteLenCappedAdd(total, n, limit)
+			if childTruncated || addTruncated {
+				return total, true, nil
+			}
+		}
+		return total, false, nil
+	default:
+		total, truncated := stringByteLenCappedAdd(0, len(v.String()), limit)
+		return total, truncated, nil
+	}
+}
+
+func stringByteLenCappedAdd(total, n, limit int) (int, bool) {
+	if n > limit-total {
+		return limit + 1, true
+	}
+	return total + n, false
 }
 
 // separatorBytes returns the bytes the ", " separators contribute when joining
