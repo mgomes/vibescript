@@ -491,8 +491,10 @@ func prepareFormatString(exec *Execution, pattern string, values []Value) (prepa
 	if usedCursor < len(values) {
 		return preparedFormatString{}, fmt.Errorf("format has %d unused operand(s)", len(values)-usedCursor)
 	}
+	normalizedScratchBytes := normalized.Cap()
 	prepared.pattern = normalized.String()
 	prepared.projectedBytes = total
+	prepared.scratchBytes = saturatingAdd(prepared.scratchBytes, normalizedScratchBytes)
 	return prepared, nil
 }
 

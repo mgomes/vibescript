@@ -259,6 +259,19 @@ func TestRubyStyleStringFormattingCapsNormalizedPatternGrowth(t *testing.T) {
 	}
 }
 
+func TestRubyStyleStringFormattingAccountsNormalizedPatternScratch(t *testing.T) {
+	t.Parallel()
+
+	pattern := strings.Repeat("x", 600*1024)
+	prepared, err := prepareFormatString(nil, pattern, nil)
+	if err != nil {
+		t.Fatalf("prepareFormatString() error = %v", err)
+	}
+	if prepared.scratchBytes < len(prepared.pattern) {
+		t.Fatalf("scratchBytes = %d, want at least normalized pattern length %d", prepared.scratchBytes, len(prepared.pattern))
+	}
+}
+
 func TestRubyStyleStringFormattingBoundsCompositeStringification(t *testing.T) {
 	large := NewArray([]Value{NewString(strings.Repeat("x", maxFormatOutputBytes+64))})
 
