@@ -112,6 +112,17 @@ end`,
 			want: "call to one has unexpected positional arguments",
 		},
 		{
+			name: "typed rest argument",
+			source: `def collect(*items: array<int>)
+  items
+end
+
+def run()
+  collect(1, "bad")
+end`,
+			want: "call to collect argument items expected array<int>, got array<int | string>",
+		},
+		{
 			name: "method argument type",
 			source: `class Box
   def take(v: int)
@@ -201,6 +212,15 @@ end`,
   end
 end`,
 			want: "return value expected int, got string",
+		},
+		{
+			name: "break value",
+			source: `def run()
+  while true
+    break JSON.parse()
+  end
+end`,
+			want: "call to JSON.parse has too few arguments",
 		},
 	}
 

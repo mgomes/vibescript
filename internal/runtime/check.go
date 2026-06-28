@@ -138,6 +138,8 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 		c.checkExpression(function, typed.Value)
 	case *RaiseStmt:
 		c.checkExpression(function, typed.Value)
+	case *BreakStmt:
+		c.checkExpression(function, typed.Value)
 	case *AssignStmt:
 		c.checkExpression(function, typed.Target)
 		c.checkExpression(function, typed.Value)
@@ -732,8 +734,35 @@ func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallV
 				c.checkArgumentExpression(function, call.kwargs[kwIndex].Value, param.Type, name, param.Name)
 			}
 		case ParamRest:
+			c.checkRestArgumentExpressions(function, call.pos, call.args[argIdx:], param.Type, name, param.Name)
 			argIdx = len(call.args)
 		}
+	}
+}
+
+func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Position, args []Expression, ty *TypeExpr, callName, paramName string) {
+	if ty == nil || !c.checkTypeAnnotation(function, ty) {
+		return
+	}
+	values := make([]Value, 0, len(args))
+	for _, arg := range args {
+		val, ok := staticLiteralValue(arg)
+		if !ok {
+			return
+		}
+		values = append(values, val)
+	}
+	if err := c.checkStaticValueType(NewArray(values), ty); err != nil {
+		warningPos := pos
+		if len(args) > 0 {
+			warningPos = args[0].Pos()
+		}
+		var mismatch *typeMismatchError
+		if errors.As(err, &mismatch) {
+			c.add(function, warningPos, "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)
+			return
+		}
+		c.add(function, warningPos, "call to %s argument %s type check failed: %s", callName, paramName, err)
 	}
 }
 
