@@ -49,7 +49,8 @@ func (p *parser) parseStatement() ast.Statement {
 	default:
 		stmt = p.parseExpressionOrAssignStatement()
 	}
-	return p.parseStatementModifier(stmt)
+	stmt = p.parseStatementModifier(stmt)
+	return p.parseStatementLogical(stmt)
 }
 
 func (p *parser) skipStatementSeparators() {
@@ -107,13 +108,34 @@ func canUseStatementModifier(stmt ast.Statement) bool {
 	}
 }
 
+func (p *parser) parseStatementLogical(left ast.Statement) ast.Statement {
+	if left == nil {
+		return nil
+	}
+	for isStatementLogicalOperator(p.peekToken.Type) && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		op := p.peekToken
+		p.nextToken()
+		p.nextToken()
+		right := p.parseStatement()
+		if right == nil {
+			return left
+		}
+		left = &ast.LogicalStmt{Left: left, Operator: op.Type, Right: right, Position: op.Pos}
+	}
+	return left
+}
+
+func isStatementLogicalOperator(tt ast.TokenType) bool {
+	return tt == ast.TokenWordAnd || tt == ast.TokenWordOr
+}
+
 func (p *parser) parseReturnStatement() ast.Statement {
 	pos := p.curToken.Pos
 	if p.peekEndsStatement(pos) {
 		return &ast.ReturnStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpression(lowestPrec)
+	value := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
 	if value == nil {
 		return nil
 	}
@@ -126,7 +148,7 @@ func (p *parser) parseRaiseStatement() ast.Statement {
 		return &ast.RaiseStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpression(lowestPrec)
+	value := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
 	if value == nil {
 		return nil
 	}
@@ -230,10 +252,11 @@ func (p *parser) consumeConditionalBodySeparator() {
 
 func (p *parser) parseForStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if !p.expectPeek(ast.TokenIdent) {
+	p.nextToken()
+	target := p.parseForTarget()
+	if target == nil {
 		return nil
 	}
-	iterator := p.curToken.Literal
 
 	if !p.expectPeek(ast.TokenIn) {
 		return nil
@@ -246,17 +269,53 @@ func (p *parser) parseForStatement() ast.Statement {
 	}
 
 	p.advanceToLoopBody()
-	// The iterator binds a local in the surrounding scope, so register it
+	// The loop target binds locals in the surrounding scope, so register it
 	// before parsing the body for name-sensitive parsing decisions such as
 	// percent-literal vs modulo disambiguation.
-	p.declareLocal(iterator)
+	p.declareLocalTarget(target)
 	body := p.parseBlock(ast.TokenEnd)
 
 	if p.curToken.Type != ast.TokenEnd {
 		p.errorExpected(p.curToken, "end")
 	}
 
-	return &ast.ForStmt{Iterator: iterator, Iterable: iterable, Body: body, Position: pos}
+	return &ast.ForStmt{Target: target, Iterable: iterable, Body: body, Position: pos}
+}
+
+func (p *parser) parseForTarget() ast.Expression {
+	switch p.curToken.Type {
+	case ast.TokenAsterisk:
+		target := p.parseDestructureTargetList(nil)
+		if target == nil {
+			return nil
+		}
+		if !isBlockParameterTarget(target) {
+			p.addParseError(target.Pos(), "invalid for loop target")
+			return nil
+		}
+		return target
+	default:
+		first := p.parseDestructureSingleTarget()
+		if first == nil {
+			return nil
+		}
+		if p.peekToken.Type == ast.TokenComma {
+			target := p.parseDestructureTargetList(first)
+			if target == nil {
+				return nil
+			}
+			if !isBlockParameterTarget(target) {
+				p.addParseError(target.Pos(), "invalid for loop target")
+				return nil
+			}
+			return target
+		}
+		if !isBlockParameterTarget(first) {
+			p.addParseError(first.Pos(), "invalid for loop target")
+			return nil
+		}
+		return first
+	}
 }
 
 func (p *parser) parseWhileStatement() ast.Statement {
@@ -312,7 +371,7 @@ func (p *parser) parseBreakStatement() ast.Statement {
 		return &ast.BreakStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpression(lowestPrec)
+	value := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
 	if value == nil {
 		return nil
 	}
@@ -1390,10 +1449,22 @@ func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
 	pos := target.Pos()
 	p.nextToken()
 	p.nextToken()
-	value := p.parseExpressionWithBlock()
+	value := p.parseAssignmentExpression()
 	stmt := &ast.AssignStmt{Target: target, Value: value, Operator: compoundAssignmentOperator(operatorToken), Position: pos}
 	p.declareLocalTarget(target)
 	return stmt
+}
+
+func (p *parser) parseAssignmentExpression() ast.Expression {
+	expr := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
+	if expr == nil {
+		return nil
+	}
+	if p.canAttachPeekBlock() {
+		p.nextToken()
+		return p.callWithBlock(expr, p.parseBlockLiteral())
+	}
+	return expr
 }
 
 func (p *parser) recoverAssignmentRemainder() {
@@ -1421,6 +1492,10 @@ func compoundAssignmentOperator(tt ast.TokenType) ast.TokenType {
 		return ast.TokenSlash
 	case ast.TokenPercentAssign:
 		return ast.TokenPercent
+	case ast.TokenAndAssign:
+		return ast.TokenAndAssign
+	case ast.TokenOrAssign:
+		return ast.TokenOrAssign
 	default:
 		return ""
 	}

@@ -41,11 +41,11 @@ end`
 	}
 }
 
-func TestParserWordBooleanNamesAreIdentifiers(t *testing.T) {
+func TestParserWordBooleanOperators(t *testing.T) {
 	t.Parallel()
 
 	source := `def run
-  [and, or, not]
+  not allowed user and fallback or final
 end`
 
 	got, errs := parseSource(t, source)
@@ -55,11 +55,24 @@ end`
 
 	wantBody := []ast.Statement{
 		&ast.ExprStmt{
-			Expr: &ast.ArrayLiteral{Elements: []ast.Expression{
-				&ast.Identifier{Name: "and"},
-				&ast.Identifier{Name: "or"},
-				&ast.Identifier{Name: "not"},
-			}},
+			Expr: &ast.BinaryExpr{
+				Left: &ast.BinaryExpr{
+					Left: &ast.UnaryExpr{
+						Operator: ast.TokenNot,
+						Right: &ast.CallExpr{
+							Callee: &ast.Identifier{Name: "allowed"},
+							Args: []ast.Expression{
+								&ast.Identifier{Name: "user"},
+							},
+							KwArgs: []ast.KeywordArg{},
+						},
+					},
+					Operator: ast.TokenWordAnd,
+					Right:    &ast.Identifier{Name: "fallback"},
+				},
+				Operator: ast.TokenWordOr,
+				Right:    &ast.Identifier{Name: "final"},
+			},
 		},
 	}
 	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {

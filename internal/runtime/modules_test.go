@@ -1224,6 +1224,9 @@ func TestRequireKeepsModuleTopLevelAssignmentsLocal(t *testing.T) {
 	t.Parallel()
 	dir := tempModuleTree(t, moduleFile{path: "settings.vibe", content: `offset = 10
 secret = "module-local"
+[1].each do
+  caller_only = 123
+end
 
 def add(value)
   value + offset
@@ -1232,10 +1235,12 @@ end
 	engine := mustNewEngineWithModuleRoot(t, dir)
 	script := compileScriptWithEngine(t, engine, `def run(value)
   offset = 99
+  caller_only = 77
   settings = require("settings")
   {
     sum: settings.add(value),
-    caller_offset: offset
+    caller_offset: offset,
+    caller_only: caller_only
   }
 end`)
 
@@ -1249,6 +1254,9 @@ end`)
 	}
 	if got := out["caller_offset"]; got.Kind() != KindInt || got.Int() != 99 {
 		t.Fatalf("run(5).caller_offset = %#v, want 99", got)
+	}
+	if got := out["caller_only"]; got.Kind() != KindInt || got.Int() != 77 {
+		t.Fatalf("run(5).caller_only = %#v, want 77", got)
 	}
 
 	leakProbe := compileScriptWithEngine(t, engine, `def run()

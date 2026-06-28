@@ -37,14 +37,25 @@ func (s *RaiseStmt) Pos() Position { return s.Position }
 type AssignStmt struct {
 	Target Expression
 	Value  Expression
-	// Operator is empty for plain assignment and stores the arithmetic
-	// operator for compound assignment.
+	// Operator is empty for plain assignment and stores the compound
+	// assignment operator otherwise.
 	Operator TokenType
 	Position Position
 }
 
 func (s *AssignStmt) stmtNode()     {}
 func (s *AssignStmt) Pos() Position { return s.Position }
+
+// LogicalStmt represents a low-precedence statement-level `and` or `or`.
+type LogicalStmt struct {
+	Left     Statement
+	Operator TokenType
+	Right    Statement
+	Position Position
+}
+
+func (s *LogicalStmt) stmtNode()     {}
+func (s *LogicalStmt) Pos() Position { return s.Position }
 
 // ExprStmt wraps an expression used as a statement.
 type ExprStmt struct {
@@ -69,7 +80,7 @@ func (s *IfStmt) Pos() Position { return s.Position }
 
 // ForStmt represents a for-in loop.
 type ForStmt struct {
-	Iterator string
+	Target   Expression
 	Iterable Expression
 	Body     []Statement
 	Position Position

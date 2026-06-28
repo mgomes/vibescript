@@ -96,12 +96,17 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		lintExpression(function, typed.Target, warnings)
 		lintExpression(function, typed.Value, warnings)
 		return false
+	case *ast.LogicalStmt:
+		leftTerminated := statementTerminates(function, typed.Left, warnings)
+		rightTerminated := statementTerminates(function, typed.Right, warnings)
+		return leftTerminated && rightTerminated
 	case *ast.ExprStmt:
 		lintExpression(function, typed.Expr, warnings)
 		return false
 	case *ast.IfStmt:
 		return ifStatementTerminates(function, typed, warnings)
 	case *ast.ForStmt:
+		lintExpression(function, typed.Target, warnings)
 		lintExpression(function, typed.Iterable, warnings)
 		lintStatements(function, typed.Body, warnings)
 		return false

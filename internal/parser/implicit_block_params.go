@@ -63,7 +63,7 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		}
 		u.visitStatements(s.Alternate)
 	case *ast.ForStmt:
-		u.assigned[s.Iterator] = struct{}{}
+		u.recordAssignedTarget(s.Target)
 		u.visitExpression(s.Iterable, false)
 		u.visitStatements(s.Body)
 	case *ast.WhileStmt:

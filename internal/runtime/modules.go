@@ -208,7 +208,7 @@ func executeModuleEntrypoint(exec *Execution, entry moduleEntry, moduleEnv *Env)
 	}
 	defer exec.popFrame()
 
-	_, _, err := exec.evalStatements(fn.Body, moduleEnv)
+	_, _, err := exec.evalLocalScopeStatements(fn.Body, moduleEnv)
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}

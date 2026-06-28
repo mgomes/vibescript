@@ -963,7 +963,9 @@ end`
 			},
 		},
 		&ast.ForStmt{
-			Iterator: "value",
+			Target: &ast.Identifier{
+				Name: "value",
+			},
 			Iterable: &ast.Identifier{
 				Name: "values",
 			},

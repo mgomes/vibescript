@@ -32,6 +32,7 @@ type Env struct {
 	staticBytes        int32
 	arrayAppendBuffers map[string][]Value
 	assignBoundary     bool
+	rebindOuter        bool
 
 	// frozen marks engine-shared scopes (the builtin proto). Their
 	// bindings are readable through the chain but never written:
@@ -76,11 +77,17 @@ func newEnvWithCapacity(parent *Env, capacity int) *Env {
 	return env
 }
 
-// newAssignmentBoundaryEnv can read parent bindings, but missing-name writes
-// stop in this scope instead of escaping into an outer mutable scope.
+// newAssignmentBoundaryEnv can read parent bindings, but writes stop in this
+// scope instead of escaping into an outer mutable scope.
 func newAssignmentBoundaryEnv(parent *Env) *Env {
 	env := newEnv(parent)
 	env.assignBoundary = true
+	return env
+}
+
+func newBlockAssignmentEnv(parent *Env) *Env {
+	env := newAssignmentBoundaryEnv(parent)
+	env.rebindOuter = true
 	return env
 }
 
@@ -95,6 +102,7 @@ func (e *Env) resetForBlockCall(parent *Env) {
 	e.staticBytes = 0
 	e.arrayAppendBuffers = nil
 	e.assignBoundary = false
+	e.rebindOuter = false
 	e.frozen = false
 	e.callRoot = false
 	e.callBlock = Value{}
@@ -167,6 +175,16 @@ func (e *Env) Define(name string, val Value) {
 	e.dropArrayAppendBuffer(name)
 }
 
+func (e *Env) PredeclareLocal(name string) {
+	if name == "" || e.hasOwnBinding(name) {
+		return
+	}
+	if e.assignBoundary && e.rebindOuter && e.parent != nil && e.parent.hasDynamicInChain(name) {
+		return
+	}
+	e.Define(name, NewNil())
+}
+
 // growStatics pre-sizes the statics map for n upcoming DefineStatic
 // calls so bulk binding (builtins, per-call function clones) does not
 // rehash repeatedly.
@@ -231,6 +249,11 @@ func (e *Env) assignValue(name string, val Value) *Env {
 			return scope
 		}
 		if scope.assignBoundary {
+			if scope.rebindOuter && scope.parent != nil {
+				if target, ok := scope.parent.assignExistingValue(name, val); ok {
+					return target
+				}
+			}
 			scope.setDynamic(name, val)
 			scope.dropStatic(name)
 			scope.dropArrayAppendBuffer(name)
@@ -242,6 +265,38 @@ func (e *Env) assignValue(name string, val Value) *Env {
 	last.dropStatic(name)
 	last.dropArrayAppendBuffer(name)
 	return last
+}
+
+func (e *Env) assignExistingValue(name string, val Value) (*Env, bool) {
+	last := e
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.frozen {
+			inValues := scope.hasDynamic(name)
+			_, inStatics := scope.statics[name]
+			if inValues || inStatics {
+				last.setDynamic(name, val)
+				last.dropStatic(name)
+				last.dropArrayAppendBuffer(name)
+				return last, true
+			}
+			continue
+		}
+		if scope.setExistingDynamic(name, val) {
+			scope.dropArrayAppendBuffer(name)
+			return scope, true
+		}
+		if _, ok := scope.statics[name]; ok {
+			scope.dropStatic(name)
+			scope.setDynamic(name, val)
+			scope.dropArrayAppendBuffer(name)
+			return scope, true
+		}
+		if scope.assignBoundary && !scope.rebindOuter {
+			return nil, false
+		}
+		last = scope
+	}
+	return nil, false
 }
 
 func (e *Env) arrayAppendBuffer(name string) ([]Value, bool) {
@@ -340,6 +395,8 @@ func (e *Env) CloneShallow() *Env {
 	}
 	clone.callBlock = e.callBlock
 	clone.hasCallBlock = e.hasCallBlock
+	clone.assignBoundary = e.assignBoundary
+	clone.rebindOuter = e.rebindOuter
 	return clone
 }
 
@@ -372,6 +429,23 @@ func (e *Env) hasDynamic(name string) bool {
 	}
 	_, ok := e.values[name]
 	return ok
+}
+
+func (e *Env) hasOwnBinding(name string) bool {
+	if e.hasDynamic(name) {
+		return true
+	}
+	_, ok := e.statics[name]
+	return ok
+}
+
+func (e *Env) hasDynamicInChain(name string) bool {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.hasDynamic(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Env) getOwn(name string) (Value, bool) {
