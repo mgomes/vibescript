@@ -310,22 +310,39 @@ func formatStringValuesChecked(exec *Execution, pattern string, values []Value, 
 		return NewNil(), err
 	}
 	if exec != nil {
-		if err := exec.checkProjectedStringBytesWithCallRoots(prepared.projectedBytes, receiver, args, kwargs, block); err != nil {
+		if err := exec.checkProjectedStringBytesAndScratchWithCallRoots(prepared.projectedBytes, prepared.scratchBytes, receiver, args, kwargs, block); err != nil {
 			return NewNil(), err
 		}
 	}
-	return NewString(fmt.Sprintf(prepared.pattern, prepared.args...)), nil
+	formatArgs, err := prepared.formatArgs()
+	if err != nil {
+		return NewNil(), err
+	}
+	return NewString(fmt.Sprintf(prepared.pattern, formatArgs...)), nil
 }
 
 type preparedFormatString struct {
 	pattern        string
-	args           []any
+	args           []preparedFormatArgument
 	projectedBytes int
+	scratchBytes   int
+}
+
+func (p preparedFormatString) formatArgs() ([]any, error) {
+	args := make([]any, 0, len(p.args))
+	for _, arg := range p.args {
+		formatted, err := arg.format()
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, formatted)
+	}
+	return args, nil
 }
 
 func prepareFormatString(pattern string, values []Value) (preparedFormatString, error) {
 	prepared := preparedFormatString{
-		args: make([]any, 0, len(values)),
+		args: make([]preparedFormatArgument, 0, len(values)),
 	}
 	var normalized strings.Builder
 	normalized.Grow(len(pattern))
@@ -429,7 +446,7 @@ func prepareFormatString(pattern string, values []Value) (preparedFormatString, 
 		if argIndex < 0 || argIndex >= len(values) {
 			return preparedFormatString{}, fmt.Errorf("format references missing operand %d", argIndex+1)
 		}
-		arg, err := formatStringArgumentForVerb(values[argIndex], verb)
+		arg, err := prepareFormatArgument(values[argIndex], verb, hasPrecision, precision)
 		if err != nil {
 			return preparedFormatString{}, err
 		}
@@ -449,6 +466,7 @@ func prepareFormatString(pattern string, values []Value) (preparedFormatString, 
 		}
 		normalized.WriteByte(verb)
 		prepared.args = append(prepared.args, arg)
+		prepared.scratchBytes = saturatingAdd(prepared.scratchBytes, arg.scratchBytes())
 	}
 	if usedCursor < len(values) {
 		return preparedFormatString{}, fmt.Errorf("format has %d unused operand(s)", len(values)-usedCursor)
@@ -592,43 +610,143 @@ func formatArgumentStringBytes(val Value) int {
 	}
 }
 
-func formatStringArgumentForVerb(val Value, verb byte) (any, error) {
+type preparedFormatArgument struct {
+	value        Value
+	verb         byte
+	stringRender formatArgumentStringRender
+}
+
+type formatArgumentStringRender struct {
+	enabled        bool
+	limit          int
+	allowTruncated bool
+}
+
+func prepareFormatArgument(val Value, verb byte, hasPrecision bool, precision int) (preparedFormatArgument, error) {
+	arg := preparedFormatArgument{value: val, verb: verb}
 	switch verb {
 	case 's', 'q':
-		return val.String(), nil
+		arg.stringRender = prepareFormatStringRender(val, hasPrecision, precision)
 	case 'x', 'X':
 		switch val.Kind() {
-		case KindString, KindSymbol:
-			return val.String(), nil
-		case KindInt:
-			return val.Int(), nil
-		case KindFloat:
-			return val.Float(), nil
+		case KindString, KindSymbol, KindInt, KindFloat:
 		default:
-			return nil, fmt.Errorf("format %%%c expects string or numeric operand", verb)
+			return preparedFormatArgument{}, fmt.Errorf("format %%%c expects string or numeric operand", verb)
 		}
 	case 'd', 'b', 'o', 'O', 'U', 'c':
-		n, err := valueToInt64(val)
-		if err != nil {
-			return nil, fmt.Errorf("format %%%c expects integer operand", verb)
+		if _, err := valueToInt64(val); err != nil {
+			return preparedFormatArgument{}, fmt.Errorf("format %%%c expects integer operand", verb)
 		}
-		return n, nil
 	case 'f', 'F', 'e', 'E', 'g', 'G':
 		switch val.Kind() {
-		case KindInt:
-			return float64(val.Int()), nil
-		case KindFloat:
-			return val.Float(), nil
+		case KindInt, KindFloat:
 		default:
-			return nil, fmt.Errorf("format %%%c expects numeric operand", verb)
+			return preparedFormatArgument{}, fmt.Errorf("format %%%c expects numeric operand", verb)
 		}
 	case 't':
 		if val.Kind() != KindBool {
-			return nil, fmt.Errorf("format %%t expects bool operand")
+			return preparedFormatArgument{}, fmt.Errorf("format %%t expects bool operand")
 		}
-		return val.Bool(), nil
 	default:
-		return formatStringArgument(val), nil
+		if formatArgumentNeedsRenderedString(val) {
+			arg.stringRender = prepareFormatStringRender(val, false, 0)
+		}
+	}
+	return arg, nil
+}
+
+func prepareFormatStringRender(val Value, hasPrecision bool, precision int) formatArgumentStringRender {
+	if formatArgumentHasDirectString(val) {
+		return formatArgumentStringRender{}
+	}
+	limit := formatArgumentStringBytes(val)
+	allowTruncated := false
+	if hasPrecision {
+		limit = min(limit, saturatingMul(utf8.UTFMax, precision))
+		allowTruncated = true
+	}
+	return formatArgumentStringRender{
+		enabled:        true,
+		limit:          limit,
+		allowTruncated: allowTruncated,
+	}
+}
+
+func (a preparedFormatArgument) scratchBytes() int {
+	if !a.stringRender.enabled {
+		return 0
+	}
+	return a.stringRender.limit
+}
+
+func (a preparedFormatArgument) format() (any, error) {
+	switch a.verb {
+	case 's', 'q':
+		if a.stringRender.enabled {
+			return a.renderString()
+		}
+		return a.value.String(), nil
+	case 'x', 'X':
+		switch a.value.Kind() {
+		case KindString, KindSymbol:
+			return a.value.String(), nil
+		case KindInt:
+			return a.value.Int(), nil
+		case KindFloat:
+			return a.value.Float(), nil
+		}
+	case 'd', 'b', 'o', 'O', 'U', 'c':
+		return valueToInt64(a.value)
+	case 'f', 'F', 'e', 'E', 'g', 'G':
+		switch a.value.Kind() {
+		case KindInt:
+			return float64(a.value.Int()), nil
+		case KindFloat:
+			return a.value.Float(), nil
+		}
+	case 't':
+		return a.value.Bool(), nil
+	default:
+		if a.stringRender.enabled {
+			return a.renderString()
+		}
+		return formatStringArgument(a.value), nil
+	}
+	return nil, fmt.Errorf("format %%%c received incompatible operand", a.verb)
+}
+
+func (a preparedFormatArgument) renderString() (string, error) {
+	if a.stringRender.limit == 0 && a.stringRender.allowTruncated {
+		return "", nil
+	}
+	if a.stringRender.limit <= 0 {
+		return a.value.String(), nil
+	}
+	rendered, err := a.value.StringBounded(a.stringRender.limit)
+	if err == nil {
+		return rendered, nil
+	}
+	if a.stringRender.allowTruncated && errors.Is(err, errStringRenderTruncated) {
+		return rendered, nil
+	}
+	return "", err
+}
+
+func formatArgumentHasDirectString(val Value) bool {
+	switch val.Kind() {
+	case KindString, KindSymbol:
+		return true
+	default:
+		return false
+	}
+}
+
+func formatArgumentNeedsRenderedString(val Value) bool {
+	switch val.Kind() {
+	case KindInt, KindFloat, KindString, KindSymbol, KindBool, KindNil:
+		return false
+	default:
+		return true
 	}
 }
 

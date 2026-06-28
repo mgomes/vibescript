@@ -162,3 +162,32 @@ end`)
 		text,
 	}, CallOptions{}, "format output exceeds limit")
 }
+
+func TestRubyStyleStringFormattingBoundsCompositeStringification(t *testing.T) {
+	large := NewArray([]Value{NewString(strings.Repeat("x", maxFormatOutputBytes+64))})
+
+	for _, tc := range []struct {
+		pattern string
+		want    string
+	}{
+		{pattern: "%.1s", want: "["},
+		{pattern: "%.1q", want: fmt.Sprintf("%.1q", "[")},
+	} {
+		t.Run(tc.pattern, func(t *testing.T) {
+			var got Value
+			var err error
+			alloc := allocBytes(func() {
+				got, err = formatStringValues(tc.pattern, []Value{large})
+			})
+			if err != nil {
+				t.Fatalf("formatStringValues() error = %v", err)
+			}
+			if !got.Equal(NewString(tc.want)) {
+				t.Fatalf("formatStringValues() = %#v, want %q", got, tc.want)
+			}
+			if alloc > 256*1024 {
+				t.Fatalf("formatStringValues() allocated %d bytes, want bounded composite rendering", alloc)
+			}
+		})
+	}
+}
