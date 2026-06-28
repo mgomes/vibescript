@@ -233,7 +233,7 @@ func (exec *Execution) randomUint64() (uint64, error) {
 }
 
 func builtinFormat(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	return formatStringBuiltin("format", args, kwargs, block)
+	return formatStringBuiltin(exec, "format", receiver, args, kwargs, block)
 }
 
 func builtinLoop(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -277,10 +277,10 @@ func builtinLoop(exec *Execution, receiver Value, args []Value, kwargs map[strin
 }
 
 func builtinSprintf(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-	return formatStringBuiltin("sprintf", args, kwargs, block)
+	return formatStringBuiltin(exec, "sprintf", receiver, args, kwargs, block)
 }
 
-func formatStringBuiltin(name string, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+func formatStringBuiltin(exec *Execution, name string, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(kwargs) > 0 {
 		return NewNil(), fmt.Errorf("%s does not take keyword arguments", name)
 	}
@@ -293,15 +293,205 @@ func formatStringBuiltin(name string, args []Value, kwargs map[string]Value, blo
 	if args[0].Kind() != KindString {
 		return NewNil(), fmt.Errorf("%s expects a string format", name)
 	}
-	return formatStringValues(args[0].String(), args[1:])
+	return exec.formatStringValues(args[0].String(), args[1:], receiver, args, kwargs, block)
 }
 
 func formatStringValues(pattern string, values []Value) (Value, error) {
-	args := make([]any, len(values))
-	for i, val := range values {
-		args[i] = formatStringArgument(val)
+	return formatStringValuesChecked(nil, pattern, values, NewNil(), nil, nil, NewNil())
+}
+
+func (exec *Execution) formatStringValues(pattern string, values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	return formatStringValuesChecked(exec, pattern, values, receiver, args, kwargs, block)
+}
+
+func formatStringValuesChecked(exec *Execution, pattern string, values []Value, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	projected, err := projectedFormatStringBytes(pattern, values)
+	if err != nil {
+		return NewNil(), err
 	}
-	return NewString(fmt.Sprintf(pattern, args...)), nil
+	if exec != nil {
+		if err := exec.checkProjectedStringBytesWithCallRoots(projected, receiver, args, kwargs, block); err != nil {
+			return NewNil(), err
+		}
+	}
+	fmtArgs := make([]any, len(values))
+	for i, val := range values {
+		fmtArgs[i] = formatStringArgument(val)
+	}
+	return NewString(fmt.Sprintf(pattern, fmtArgs...)), nil
+}
+
+func projectedFormatStringBytes(pattern string, values []Value) (int, error) {
+	total := 0
+	nextArg := 0
+	for i := 0; i < len(pattern); {
+		if pattern[i] != '%' {
+			total = saturatingAdd(total, 1)
+			i++
+			continue
+		}
+		i++
+		if i >= len(pattern) {
+			total = saturatingAdd(total, 2)
+			break
+		}
+		if pattern[i] == '%' {
+			total = saturatingAdd(total, 1)
+			i++
+			continue
+		}
+
+		var explicitArg int
+		var hasExplicitArg bool
+		if idx, ok, next := parseFormatArgIndex(pattern, i); ok {
+			explicitArg = idx
+			hasExplicitArg = true
+			i = next
+		}
+		for i < len(pattern) && strings.ContainsRune("#+-0 ", rune(pattern[i])) {
+			i++
+		}
+		width, hasWidth, next, err := parseFormatCount(pattern, i, "width")
+		if err != nil {
+			return 0, err
+		}
+		i = next
+
+		precision := 0
+		hasPrecision := false
+		if i < len(pattern) && pattern[i] == '.' {
+			i++
+			precision, hasPrecision, next, err = parseFormatCount(pattern, i, "precision")
+			if err != nil {
+				return 0, err
+			}
+			i = next
+		}
+		if idx, ok, next := parseFormatArgIndex(pattern, i); ok {
+			explicitArg = idx
+			hasExplicitArg = true
+			i = next
+		}
+		if i >= len(pattern) {
+			total = saturatingAdd(total, len(pattern))
+			break
+		}
+		verb := pattern[i]
+		i++
+
+		argIndex := nextArg
+		if hasExplicitArg {
+			argIndex = explicitArg
+		} else {
+			nextArg++
+		}
+		field := projectedFormatFieldBytes(formatValueAt(values, argIndex), verb, hasPrecision, precision)
+		if hasWidth && width > field {
+			field = width
+		}
+		total = saturatingAdd(total, field)
+		if total > maxFormatOutputBytes {
+			return 0, fmt.Errorf("format output exceeds limit %d bytes", maxFormatOutputBytes)
+		}
+	}
+	return total, nil
+}
+
+func parseFormatArgIndex(pattern string, i int) (int, bool, int) {
+	if i >= len(pattern) || pattern[i] != '[' {
+		return 0, false, i
+	}
+	j := i + 1
+	start := j
+	for j < len(pattern) && pattern[j] >= '0' && pattern[j] <= '9' {
+		j++
+	}
+	if start == j || j >= len(pattern) || pattern[j] != ']' {
+		return 0, false, i
+	}
+	n, err := strconv.Atoi(pattern[start:j])
+	if err != nil || n <= 0 {
+		return 0, false, i
+	}
+	return n - 1, true, j + 1
+}
+
+func parseFormatCount(pattern string, i int, label string) (int, bool, int, error) {
+	if idx, ok, next := parseFormatArgIndex(pattern, i); ok {
+		i = next
+		_ = idx
+	}
+	if i < len(pattern) && pattern[i] == '*' {
+		return 0, false, i, fmt.Errorf("format dynamic %s is not supported", label)
+	}
+	start := i
+	for i < len(pattern) && pattern[i] >= '0' && pattern[i] <= '9' {
+		i++
+	}
+	if start == i {
+		return 0, false, i, nil
+	}
+	n, err := strconv.Atoi(pattern[start:i])
+	if err != nil || n > maxFormatOutputBytes {
+		return 0, false, i, fmt.Errorf("format %s exceeds limit %d bytes", label, maxFormatOutputBytes)
+	}
+	return n, true, i, nil
+}
+
+func formatValueAt(values []Value, index int) Value {
+	if index < 0 || index >= len(values) {
+		return NewString("%!MISSING")
+	}
+	return values[index]
+}
+
+func projectedFormatFieldBytes(val Value, verb byte, hasPrecision bool, precision int) int {
+	base := projectedFormatArgumentBytes(val, verb, hasPrecision, precision)
+	if hasPrecision {
+		switch verb {
+		case 'f', 'F', 'e', 'E', 'g', 'G':
+			base = max(base, saturatingAdd(precision, 16))
+		case 's':
+			base = min(base, precision)
+		case 'q':
+			base = min(base, saturatingAdd(saturatingMul(2, precision), 2))
+		}
+	}
+	return base
+}
+
+func projectedFormatArgumentBytes(val Value, verb byte, hasPrecision bool, precision int) int {
+	switch verb {
+	case 's':
+		return formatArgumentStringBytes(val)
+	case 'q':
+		return saturatingAdd(saturatingMul(2, formatArgumentStringBytes(val)), 2)
+	case 'x', 'X':
+		if val.Kind() == KindString || val.Kind() == KindSymbol {
+			return saturatingMul(2, len(val.String()))
+		}
+		return 64
+	case 'd', 'b', 'o', 'O', 'U', 'c':
+		return 64
+	case 'f', 'F', 'e', 'E', 'g', 'G':
+		if hasPrecision {
+			return saturatingAdd(precision, 16)
+		}
+		return 64
+	case 't':
+		return 5
+	default:
+		return saturatingAdd(val.StringByteLen(), 32)
+	}
+}
+
+func formatArgumentStringBytes(val Value) int {
+	switch val.Kind() {
+	case KindString, KindSymbol:
+		return len(val.String())
+	default:
+		return val.StringByteLen()
+	}
 }
 
 func formatStringArgument(val Value) any {

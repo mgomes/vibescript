@@ -940,13 +940,13 @@ func moduloValues(left, right Value) (Value, error) {
 	}
 	if left.Kind() == KindInt && right.Kind() == KindInt {
 		if right.Int() == 0 {
-			return NewNil(), errors.New("modulo by zero")
+			return NewNil(), zeroDivisionErrorf("modulo by zero")
 		}
 		return NewInt(floorModInt(left.Int(), right.Int())), nil
 	}
 	if left.Kind() == KindDuration && right.Kind() == KindDuration {
 		if right.Duration().Seconds() == 0 {
-			return NewNil(), errors.New("modulo by zero")
+			return NewNil(), zeroDivisionErrorf("modulo by zero")
 		}
 		return NewDuration(durationFromSeconds(left.Duration().Seconds() % right.Duration().Seconds())), nil
 	}

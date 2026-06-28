@@ -32,3 +32,23 @@ end`)
 	})
 	requireCallErrorContains(t, script, "bad_format", nil, CallOptions{}, "format expects a format string")
 }
+
+func TestRubyStyleStringFormattingRejectsOversizedOutputBeforeFormatting(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4096}, `def builtin_format
+  format("%1000000s", "")
+end
+
+def operator_format
+  "%1000000s" % ""
+end`)
+
+	requireCallRuntimeErrorType(t, script, "builtin_format", nil, CallOptions{}, runtimeErrorTypeLimit)
+	requireCallRuntimeErrorType(t, script, "operator_format", nil, CallOptions{}, runtimeErrorTypeLimit)
+
+	capped := compileScript(t, `def run
+  format("%1048577s", "")
+end`)
+	requireCallErrorContains(t, capped, "run", nil, CallOptions{}, "format width exceeds limit")
+}

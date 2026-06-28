@@ -1154,7 +1154,8 @@ Global functions and namespaces available in every script. See
 - `loop { ... } -> value` – repeat the block until `break`; a `break value`
   becomes the result and `next` starts the next iteration.
 - `format(pattern, *values) -> string` / `sprintf(pattern, *values) -> string`
-  – format common numeric and string values with percent format strings.
+  – format common numeric and string values with percent format strings. Output
+  is capped at 1 MiB before width or precision padding is materialized.
 - `rand(max = nil) -> number` – random float in `[0.0, 1.0)`, integer below a
   positive integer bound, or integer inside an integer range.
 - `srand(seed = nil) -> int | nil` – seed this script call's `rand` sequence;
@@ -1323,15 +1324,17 @@ scope has exited:
 
 ## Guard Limits
 
-JSON, regex, and ID helpers enforce fixed input-guard limits so hostile
+JSON, regex, format, and ID helpers enforce fixed input-guard limits so hostile
 data cannot exhaust host memory or CPU. The limits are not configurable
-and apply to the `JSON`/`Regex` builtins and the regex-enabled string
-members (`match`, `match?`, `scan`, `sub`, `gsub`, and their `!` variants):
+and apply to the `JSON`/`Regex`/format builtins, `String#%`, and the
+regex-enabled string members (`match`, `match?`, `scan`, `sub`, `gsub`, and
+their `!` variants):
 
 | Guard | Limit |
 | --- | --- |
 | `JSON.parse` input / `JSON.stringify` output | 1 MiB |
 | `JSON.parse` / `JSON.stringify` nesting depth | 10,000 arrays/objects |
+| `format` / `sprintf` / `String#%` output size | 1 MiB |
 | Regex pattern size (`Regex.*`, `match`, `match?`, `scan`, `sub`/`gsub` with `regex: true`) | 16 KiB |
 | Regex text, replacement, and output size | 1 MiB |
 | `scan` match-index table (worst case) | 256 MiB |

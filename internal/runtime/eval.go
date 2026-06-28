@@ -738,7 +738,15 @@ func (exec *Execution) evalBinaryOperator(operator TokenType, left, right Value,
 	case tokenSlash:
 		result, err = divideValues(left, right)
 	case tokenPercent:
-		result, err = moduloValues(left, right)
+		if left.Kind() == KindString {
+			values := []Value{right}
+			if right.Kind() == KindArray {
+				values = right.Array()
+			}
+			result, err = exec.formatStringValues(left.String(), values, left, []Value{right}, nil, NewNil())
+		} else {
+			result, err = moduloValues(left, right)
+		}
 	case tokenShovel:
 		result, err = shovelValues(left, right)
 	case tokenAmpersand:

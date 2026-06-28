@@ -201,6 +201,10 @@ func newTypedRuntimeError(kind string, err error) error {
 	return &typedRuntimeError{kind: kind, err: err}
 }
 
+func zeroDivisionErrorf(format string, args ...any) error {
+	return newTypedRuntimeError(runtimeErrorTypeZeroDiv, fmt.Errorf(format, args...))
+}
+
 func (exec *Execution) step() error {
 	exec.steps++
 	if exec.quota > 0 && exec.steps > exec.quota {

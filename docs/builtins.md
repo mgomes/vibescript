@@ -89,7 +89,8 @@ end
 ### `format(pattern, *values)` / `sprintf(pattern, *values)`
 
 Formats values with Ruby-style percent format strings for common numeric and
-string cases. `String#%` uses the same formatter.
+string cases. `String#%` uses the same formatter. Output is capped at 1 MiB
+before width or precision padding is materialized.
 
 ```vibe
 "%s:%03d" % ["id", 7]  # "id:007"

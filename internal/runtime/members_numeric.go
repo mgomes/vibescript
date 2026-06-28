@@ -578,7 +578,7 @@ func numericFdiv(receiver, divisor Value) (Value, error) {
 func numericDiv(method string, receiver, divisor Value) (Value, error) {
 	if receiver.Kind() == KindInt && divisor.Kind() == KindInt {
 		if divisor.Int() == 0 {
-			return NewNil(), fmt.Errorf("%s by zero", method)
+			return NewNil(), zeroDivisionErrorf("%s by zero", method)
 		}
 		quotient, ok := floorDivIntChecked(receiver.Int(), divisor.Int())
 		if !ok {
@@ -587,7 +587,7 @@ func numericDiv(method string, receiver, divisor Value) (Value, error) {
 		return NewInt(quotient), nil
 	}
 	if divisor.Float() == 0 {
-		return NewNil(), fmt.Errorf("%s by zero", method)
+		return NewNil(), zeroDivisionErrorf("%s by zero", method)
 	}
 	quotient, err := floatToInt64Checked(math.Floor(receiver.Float()/divisor.Float()), method)
 	if err != nil {
@@ -603,7 +603,7 @@ func numericDiv(method string, receiver, divisor Value) (Value, error) {
 func numericDivmod(method string, receiver, divisor Value) (Value, error) {
 	if receiver.Kind() == KindInt && divisor.Kind() == KindInt {
 		if divisor.Int() == 0 {
-			return NewNil(), fmt.Errorf("%s by zero", method)
+			return NewNil(), zeroDivisionErrorf("%s by zero", method)
 		}
 		quotient, ok := floorDivIntChecked(receiver.Int(), divisor.Int())
 		if !ok {
@@ -614,7 +614,7 @@ func numericDivmod(method string, receiver, divisor Value) (Value, error) {
 	}
 	d := divisor.Float()
 	if d == 0 {
-		return NewNil(), fmt.Errorf("%s by zero", method)
+		return NewNil(), zeroDivisionErrorf("%s by zero", method)
 	}
 	r := receiver.Float()
 	// Derive the modulo with the same floored math.Mod path as Numeric#modulo
@@ -647,13 +647,13 @@ func numericDivmod(method string, receiver, divisor Value) (Value, error) {
 func numericRemainder(method string, receiver, divisor Value) (Value, error) {
 	if receiver.Kind() == KindInt && divisor.Kind() == KindInt {
 		if divisor.Int() == 0 {
-			return NewNil(), fmt.Errorf("%s by zero", method)
+			return NewNil(), zeroDivisionErrorf("%s by zero", method)
 		}
 		return NewInt(receiver.Int() % divisor.Int()), nil
 	}
 	d := divisor.Float()
 	if d == 0 {
-		return NewNil(), fmt.Errorf("%s by zero", method)
+		return NewNil(), zeroDivisionErrorf("%s by zero", method)
 	}
 	r := receiver.Float()
 	if math.IsInf(d, 0) && !math.IsInf(r, 0) && !math.IsNaN(r) {
@@ -676,13 +676,13 @@ func numericRemainder(method string, receiver, divisor Value) (Value, error) {
 func numericModulo(method string, receiver, divisor Value) (Value, error) {
 	if receiver.Kind() == KindInt && divisor.Kind() == KindInt {
 		if divisor.Int() == 0 {
-			return NewNil(), fmt.Errorf("%s by zero", method)
+			return NewNil(), zeroDivisionErrorf("%s by zero", method)
 		}
 		return NewInt(floorModInt(receiver.Int(), divisor.Int())), nil
 	}
 	d := divisor.Float()
 	if d == 0 {
-		return NewNil(), fmt.Errorf("%s by zero", method)
+		return NewNil(), zeroDivisionErrorf("%s by zero", method)
 	}
 	return NewFloat(flooredFloatMod(receiver.Float(), d)), nil
 }
