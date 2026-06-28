@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -529,6 +530,24 @@ func TestFormatValueTypeExprBoundsCompositeSamples(t *testing.T) {
 	}
 	if got, want := formatValueTypeExpr(NewHash(mixedFields)), "hash<string, int | string | ...>"; got != want {
 		t.Fatalf("large mixed hash type = %q, want %q", got, want)
+	}
+}
+
+func TestBoundedSortedHashFieldsKeepsSmallestKeys(t *testing.T) {
+	t.Parallel()
+
+	fields := map[string]Value{
+		"z": NewInt(1),
+		"b": NewInt(2),
+		"y": NewInt(3),
+		"a": NewInt(4),
+		"c": NewInt(5),
+	}
+
+	got := boundedSortedHashFields(fields, 3)
+	want := []string{"a", "b", "c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("boundedSortedHashFields() = %v, want %v", got, want)
 	}
 }
 
