@@ -104,6 +104,24 @@ func TestParseInvalidInputDiagnosticsAreBounded(t *testing.T) {
 	}
 }
 
+func TestBlockParamUnionSpeculationRestoresOmittedErrors(t *testing.T) {
+	t.Parallel()
+
+	p := newParser("int | ,")
+	p.errors = make([]error, maxParseErrors)
+	p.omittedErrors = 7
+
+	if p.blockParamUnionContinues() {
+		t.Fatal("blockParamUnionContinues() = true, want false")
+	}
+	if got := len(p.errors); got != maxParseErrors {
+		t.Fatalf("len(errors) = %d, want %d", got, maxParseErrors)
+	}
+	if got := p.omittedErrors; got != 7 {
+		t.Fatalf("omittedErrors = %d, want restored count 7", got)
+	}
+}
+
 // TestLexerStampsSourceAccurateTokenEnds pins that token spans come from
 // the source text, not the normalized literal: strings lose their quotes
 // and escapes, symbols and ivars drop their sigils, and numeric literals
