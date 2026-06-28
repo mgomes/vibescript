@@ -223,8 +223,13 @@ func TestParenlessBareOptionsForClonedConstructors(t *testing.T) {
     end
     `)
 	consumer := compileScriptWithEngine(t, engine, `
-    def call_constructor(ctor)
+    def call_constructor_parenless(ctor)
       person = ctor name: "Ada"
+      person.name
+    end
+
+    def call_constructor_parenthesized(ctor)
+      person = ctor(name: "Ada")
       person.name
     end
     `)
@@ -243,12 +248,14 @@ func TestParenlessBareOptionsForClonedConstructors(t *testing.T) {
 		t.Fatalf("cloned constructor kind = %s, want builtin", clonedConstructor.Kind())
 	}
 
-	got, err := consumer.Call(context.Background(), "call_constructor", []Value{clonedConstructor}, CallOptions{})
-	if err != nil {
-		t.Fatalf("call_constructor(exported constructor) error = %v", err)
-	}
-	if !got.Equal(NewString("Ada")) {
-		t.Fatalf("call_constructor(exported constructor) = %v, want Ada", got)
+	for _, fn := range []string{"call_constructor_parenless", "call_constructor_parenthesized"} {
+		got, err := consumer.Call(context.Background(), fn, []Value{clonedConstructor}, CallOptions{})
+		if err != nil {
+			t.Fatalf("%s(exported constructor) error = %v", fn, err)
+		}
+		if !got.Equal(NewString("Ada")) {
+			t.Fatalf("%s(exported constructor) = %v, want Ada", fn, got)
+		}
 	}
 }
 

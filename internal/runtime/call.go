@@ -941,6 +941,10 @@ func calleeCollapsesOptionsHash(call *CallExpr, callee Value, resolution calleeR
 	if !call.Parenthesized {
 		return true
 	}
+	builtin := valueBuiltin(callee)
+	if builtin != nil && builtinCollapsesConstructorOptionsHash(builtin) {
+		return true
+	}
 	switch resolution {
 	case calleeMemberMethod:
 		return false
@@ -948,8 +952,7 @@ func calleeCollapsesOptionsHash(call *CallExpr, callee Value, resolution calleeR
 		if callee.Kind() == KindFunction {
 			return true
 		}
-		builtin := valueBuiltin(callee)
-		return builtin != nil && (builtin.DirectCallAlias || builtinCollapsesConstructorOptionsHash(builtin))
+		return builtin != nil && builtin.DirectCallAlias
 	default:
 		return callee.Kind() == KindFunction
 	}
