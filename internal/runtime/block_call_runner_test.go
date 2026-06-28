@@ -49,6 +49,18 @@ func TestBlockCanReuseEnvRejectsBlocksThatCreateClosures(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "break value with trailing block",
+			body: []Statement{
+				&BreakStmt{
+					Value: &CallExpr{
+						Callee: &Identifier{Name: "capture"},
+						Block:  &BlockLiteral{},
+					},
+				},
+			},
+			want: false,
+		},
+		{
 			name: "function definition",
 			body: []Statement{
 				&FunctionStmt{Name: "inner"},

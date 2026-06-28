@@ -1745,6 +1745,40 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 	}
 }
 
+func TestBreakValueCapturedBlockKeepsIterationEnv(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	engine.builtins["invoke_block"] = NewBuiltin("invoke_block", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) != 1 {
+			return NewNil(), errors.New("invoke_block expects one block")
+		}
+		runner, err := newBlockCallRunner(exec, args[0], "invoke_block", NewNil(), nil, nil)
+		if err != nil {
+			return NewNil(), err
+		}
+		return runner.call(nil)
+	})
+
+	script := compileScriptWithEngine(t, engine, `
+    def capture(&block)
+      block
+    end
+
+    def run
+      blocks = [1, 2].map do |current|
+        while true
+          break capture { current }
+        end
+      end
+      [invoke_block(blocks[0]), invoke_block(blocks[1])]
+    end
+    `)
+
+	got := callFunc(t, script, "run", nil)
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
+}
+
 func TestLoopControlInsideClassMethods(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

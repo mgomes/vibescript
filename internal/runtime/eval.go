@@ -1119,7 +1119,9 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 		return expressionCapturesCurrentEnv(s.Condition) || statementsCaptureCurrentEnv(s.Body)
 	case *UntilStmt:
 		return expressionCapturesCurrentEnv(s.Condition) || statementsCaptureCurrentEnv(s.Body)
-	case *BreakStmt, *NextStmt, *EnumStmt:
+	case *BreakStmt:
+		return expressionCapturesCurrentEnv(s.Value)
+	case *NextStmt, *EnumStmt:
 		return false
 	case *TryStmt:
 		return statementsCaptureCurrentEnv(s.Body) ||
