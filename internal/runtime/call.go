@@ -184,6 +184,14 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 }
 
 func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
+	return exec.callFunctionWithReturnValidation(fn, receiver, args, kwargs, block, pos, true)
+}
+
+func (exec *Execution) callFunctionIgnoringReturn(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
+	return exec.callFunctionWithReturnValidation(fn, receiver, args, kwargs, block, pos, false)
+}
+
+func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position, validateReturn bool) (Value, error) {
 	callEnv := newEnvWithCapacity(fn.Env, len(fn.Params)+1)
 	if receiver.Kind() != KindNil {
 		callEnv.Define("self", receiver)
@@ -223,7 +231,7 @@ func (exec *Execution) callFunction(fn *ScriptFunction, receiver Value, args []V
 	if err != nil {
 		return NewNil(), err
 	}
-	if fn.ReturnTy != nil {
+	if validateReturn && fn.ReturnTy != nil {
 		normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
 			owner:    fn.owner,
 			env:      fn.Env,
