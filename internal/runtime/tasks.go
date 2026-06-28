@@ -85,7 +85,7 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 
 	handles := make([]*taskHandle, len(items))
 	for i, item := range items {
-		handle, err := group.spawn(exec.Context(), functionName, []Value{item}, nil)
+		handle, err := group.spawn(exec, functionName, []Value{item}, nil)
 		if err != nil {
 			group.cancel()
 			_ = group.closeAndWait()
@@ -226,7 +226,7 @@ func (group *taskGroup) builtinSpawn(exec *Execution, receiver Value, args []Val
 	if err != nil {
 		return NewNil(), err
 	}
-	handle, err := group.spawn(exec.Context(), functionName, args[1:], kwargs)
+	handle, err := group.spawn(exec, functionName, args[1:], kwargs)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -252,13 +252,14 @@ func (group *taskGroup) builtinWait(exec *Execution, receiver Value, args []Valu
 	return NewNil(), nil
 }
 
-func (group *taskGroup) spawn(ctx context.Context, functionName string, args []Value, kwargs map[string]Value) (*taskHandle, error) {
+func (group *taskGroup) spawn(exec *Execution, functionName string, args []Value, kwargs map[string]Value) (*taskHandle, error) {
 	if group.isClosed() {
 		return nil, fmt.Errorf("task manager cannot be used after task scope exits")
 	}
 	if err := group.err(); err != nil {
 		return nil, err
 	}
+	ctx := exec.Context()
 
 	taskArgs, err := cloneTaskArgs("tasks.spawn", args)
 	if err != nil {
@@ -281,8 +282,13 @@ func (group *taskGroup) spawn(ctx context.Context, functionName string, args []V
 		handle:       handle,
 	}
 
-	group.tasks.Add(1)
 	group.retainJobPayload(job)
+	if err := exec.checkMemory(); err != nil {
+		group.releaseJobPayload(job)
+		return nil, err
+	}
+
+	group.tasks.Add(1)
 	select {
 	case group.jobs <- job:
 		return handle, nil
