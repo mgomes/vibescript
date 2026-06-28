@@ -479,6 +479,14 @@ end`,
 			wantErr: "analysis found 1 issue(s)",
 		},
 		{
+			name: "unreachable_statements_in_interpolated_symbol_blocks",
+			script: `def run()
+  %I[#{capture { raise "boom"; 1 }}]
+end`,
+			wantOut: []string{"unreachable statement", "(run block at 1:"},
+			wantErr: "analysis found 1 issue(s)",
+		},
+		{
 			name: "unreachable_statements_in_class_bodies",
 			script: `class Reporter
   raise "boom"

@@ -521,6 +521,15 @@ func TestFormatValueTypeExprBoundsCompositeSamples(t *testing.T) {
 	if got, want := formatValueTypeExpr(NewHash(fields)), "hash<string, int | ...>"; got != want {
 		t.Fatalf("large hash type = %q, want %q", got, want)
 	}
+
+	mixedFields := make(map[string]Value, maxValueTypeFormatHashSamples+4)
+	mixedFields["key_00"] = NewString("first")
+	for i := 1; i < maxValueTypeFormatHashSamples+4; i++ {
+		mixedFields[fmt.Sprintf("key_%02d", i)] = NewInt(int64(i))
+	}
+	if got, want := formatValueTypeExpr(NewHash(mixedFields)), "hash<string, int | string | ...>"; got != want {
+		t.Fatalf("large mixed hash type = %q, want %q", got, want)
+	}
 }
 
 func TestTypeMismatchFormattingBoundsLargeCompositeValues(t *testing.T) {

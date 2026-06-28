@@ -500,15 +500,15 @@ func (s *valueTypeFormatState) formatHash(values map[string]Value, depth int) st
 
 	samples := min(len(values), maxValueTypeFormatHashSamples)
 	valueTypes := make(map[string]struct{}, samples)
-	seen := 0
-	for _, value := range values {
-		if seen >= samples {
-			break
-		}
-		valueTypes[s.format(value, depth+1)] = struct{}{}
-		seen++
+	fields := make([]string, 0, len(values))
+	for field := range values {
+		fields = append(fields, field)
 	}
-	return "hash<string, " + joinSortedTypes(valueTypes, len(values) > seen) + ">"
+	sort.Strings(fields)
+	for _, field := range fields[:samples] {
+		valueTypes[s.format(values[field], depth+1)] = struct{}{}
+	}
+	return "hash<string, " + joinSortedTypes(valueTypes, len(values) > samples) + ">"
 }
 
 func joinSortedTypes(typeSet map[string]struct{}, truncated bool) string {

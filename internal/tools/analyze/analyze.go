@@ -231,10 +231,16 @@ func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 			lintExpression(function, arg, warnings)
 		}
 	case *ast.InterpolatedString:
-		for _, part := range typed.Parts {
-			if exprPart, ok := part.(ast.StringExpr); ok {
-				lintExpression(function, exprPart.Expr, warnings)
-			}
+		lintStringParts(function, typed.Parts, warnings)
+	case *ast.InterpolatedSymbol:
+		lintStringParts(function, typed.Parts, warnings)
+	}
+}
+
+func lintStringParts(function string, parts []ast.StringPart, warnings *[]Warning) {
+	for _, part := range parts {
+		if exprPart, ok := part.(ast.StringExpr); ok {
+			lintExpression(function, exprPart.Expr, warnings)
 		}
 	}
 }
