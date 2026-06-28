@@ -1585,7 +1585,7 @@ func (p *parser) parseAssertStatement() ast.Statement {
 
 func (p *parser) peekEndsStatement(pos ast.Position) bool {
 	switch p.peekToken.Type {
-	case ast.TokenEOF, ast.TokenSemicolon, ast.TokenEnd, ast.TokenElse, ast.TokenElsif, ast.TokenEnsure, ast.TokenRescue:
+	case ast.TokenEOF, ast.TokenSemicolon, ast.TokenEnd, ast.TokenElse, ast.TokenElsif, ast.TokenEnsure, ast.TokenRescue, ast.TokenRBrace:
 		return true
 	default:
 		return p.peekToken.Pos.Line != pos.Line

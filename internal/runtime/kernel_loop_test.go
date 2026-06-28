@@ -48,6 +48,19 @@ end`)
 	requireCallErrorContains(t, script, "blockless", nil, CallOptions{}, "loop requires a block")
 }
 
+func TestKernelLoopBraceBlockBareBreak(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  loop { break }
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	if got.Kind() != KindNil {
+		t.Fatalf("run = %#v, want nil", got)
+	}
+}
+
 func TestKernelLoopStepQuotaAndCancellation(t *testing.T) {
 	t.Parallel()
 
