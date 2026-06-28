@@ -54,6 +54,14 @@ end`,
 			args: func(p string) []string { return []string{"-check", p} },
 		},
 		{
+			name: "check_only_reports_contract_issues",
+			script: `def run(v: int = "bad")
+  v
+end`,
+			args:    func(p string) []string { return []string{"-check", p} },
+			wantErr: "default value for v expected int, got string",
+		},
+		{
 			name: "executes_function_and_prints_result",
 			script: `def greet(name)
   name
@@ -233,6 +241,11 @@ helper`},
 		{
 			name: "check_only_compiles_without_executing",
 			args: []string{"-check", "-e", "1 + 2"},
+		},
+		{
+			name:    "check_only_reports_inline_contract_issues",
+			args:    []string{"-check", "-e", `JSON.parse()`},
+			wantErr: "call to JSON.parse has too few arguments",
 		},
 		{
 			name:    "compile_error_surfaces",
