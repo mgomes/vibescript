@@ -71,6 +71,36 @@ end`)
 	requireCallErrorContains(t, capped, "run", nil, CallOptions{}, "format width exceeds limit")
 }
 
+func TestRubyStyleStringFormattingPreflightsMultibyteWidthPadding(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Repeat("🙂", maxFormatOutputBytes/5)
+	width := maxFormatOutputBytes * 3 / 5
+
+	tests := []struct {
+		name    string
+		pattern string
+		value   Value
+	}{
+		{"direct string %s", fmt.Sprintf("%%%ds", width), NewString(text)},
+		{"direct string %v", fmt.Sprintf("%%%dv", width), NewString(text)},
+		{"composite string %s", fmt.Sprintf("%%%ds", width), NewArray([]Value{NewString(text)})},
+		{"composite string %v", fmt.Sprintf("%%%dv", width), NewArray([]Value{NewString(text)})},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := formatStringValues(tc.pattern, []Value{tc.value})
+			if err == nil {
+				t.Fatal("formatStringValues() succeeded, want output limit error")
+			}
+			if !strings.Contains(err.Error(), "format output exceeds limit") {
+				t.Fatalf("formatStringValues() error = %v, want output limit", err)
+			}
+		})
+	}
+}
+
 func TestRubyStyleStringFormattingPreflightsExplicitIndexCursor(t *testing.T) {
 	t.Parallel()
 
@@ -280,6 +310,7 @@ func TestRubyStyleStringFormattingBoundsCompositeStringification(t *testing.T) {
 		want    string
 	}{
 		{pattern: "%.1s", want: "["},
+		{pattern: "%.1v", want: "["},
 		{pattern: "%.1q", want: fmt.Sprintf("%.1q", "[")},
 	} {
 		t.Run(tc.pattern, func(t *testing.T) {

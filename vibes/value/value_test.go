@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/vibes/value"
 )
@@ -593,6 +594,40 @@ func TestValueStringByteLen(t *testing.T) {
 			t.Parallel()
 			if got, want := tc.val.StringByteLen(), len(tc.val.String()); got != want {
 				t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+			}
+		})
+	}
+}
+
+func TestValueStringRuneLen(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		val  value.Value
+	}{
+		{"string", value.NewString("a🙂")},
+		{"symbol", value.NewSymbol("status")},
+		{
+			"nested_array",
+			value.NewArray([]value.Value{
+				value.NewString("a🙂"),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+		},
+		{
+			"single_hash",
+			value.NewHash(map[string]value.Value{"na🙂me": value.NewString("acme🙂")}),
+		},
+		{"runtime_kind_fallback", value.NewValue(value.KindBlock, fakeBlock{})},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got, want := tc.val.StringRuneLen(), utf8.RuneCountInString(tc.val.String()); got != want {
+				t.Fatalf("StringRuneLen() = %d, want rendered rune count %d", got, want)
 			}
 		})
 	}
@@ -1185,6 +1220,51 @@ func TestValueStringByteLenBounded(t *testing.T) {
 		})
 		if !errors.Is(err, sentinel) {
 			t.Fatalf("StringByteLenBounded() error = %v, want %v (calls=%d)", err, sentinel, calls)
+		}
+	})
+}
+
+func TestValueStringRuneLenBounded(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matches_unbounded_count", func(t *testing.T) {
+		t.Parallel()
+		vals := []value.Value{
+			value.NewInt(-42),
+			value.NewString("a🙂"),
+			value.NewArray([]value.Value{
+				value.NewString("a🙂"),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+			value.NewHash(map[string]value.Value{"na🙂me": value.NewString("acme🙂")}),
+		}
+		for _, v := range vals {
+			got, err := v.StringRuneLenBounded(func() error { return nil })
+			if err != nil {
+				t.Fatalf("StringRuneLenBounded() error = %v", err)
+			}
+			if want := v.StringRuneLen(); got != want {
+				t.Fatalf("StringRuneLenBounded() = %d, want StringRuneLen() = %d", got, want)
+			}
+		}
+	})
+
+	t.Run("propagates_step_error", func(t *testing.T) {
+		t.Parallel()
+		sentinel := errors.New("budget exhausted")
+		arr := value.NewArray([]value.Value{value.NewInt(1), value.NewInt(2)})
+
+		calls := 0
+		_, err := arr.StringRuneLenBounded(func() error {
+			calls++
+			if calls >= 2 {
+				return sentinel
+			}
+			return nil
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("StringRuneLenBounded() error = %v, want %v", err, sentinel)
 		}
 	})
 }

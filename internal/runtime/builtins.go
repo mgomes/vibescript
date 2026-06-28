@@ -471,8 +471,11 @@ func prepareFormatString(exec *Execution, pattern string, values []Value) (prepa
 		if err != nil {
 			return preparedFormatString{}, err
 		}
-		if hasWidth && width > field {
-			field = width
+		if hasWidth {
+			field, err = projectedFormatFieldBytesWithWidth(projection, values[argIndex], verb, hasPrecision, precision, flags, width, field)
+			if err != nil {
+				return preparedFormatString{}, err
+			}
 		}
 		nextTotal, addErr := addProjectedFormatBytes(total, field)
 		if addErr != nil {
@@ -598,6 +601,18 @@ func (p formatProjection) stringBytes(val Value) (int, error) {
 	}
 }
 
+func (p formatProjection) stringRunes(val Value) (int, error) {
+	switch val.Kind() {
+	case KindString, KindSymbol:
+		return utf8.RuneCountInString(val.String()), nil
+	default:
+		if p.exec != nil {
+			return val.StringRuneLenBounded(p.exec.step)
+		}
+		return val.StringRuneLen(), nil
+	}
+}
+
 func (p formatProjection) stringBytesUpTo(val Value, limit int) (int, error) {
 	if limit <= 0 {
 		return 0, nil
@@ -630,6 +645,17 @@ func (p formatProjection) stringPrecisionBytes(val Value, precision int) (int, e
 	default:
 		return p.stringBytesUpTo(val, saturatingMul(utf8.UTFMax, precision))
 	}
+}
+
+func (p formatProjection) stringPrecisionRunes(val Value, precision int) (int, error) {
+	if precision <= 0 {
+		return 0, nil
+	}
+	runes, err := p.stringRunes(val)
+	if err != nil {
+		return 0, err
+	}
+	return min(runes, precision), nil
 }
 
 func formatStringPrecisionBytes(s string, precision int) int {
@@ -670,6 +696,46 @@ func projectedFormatFieldBytes(projection formatProjection, val Value, verb byte
 		}
 	}
 	return base, nil
+}
+
+func projectedFormatFieldBytesWithWidth(projection formatProjection, val Value, verb byte, hasPrecision bool, precision int, flags formatFlags, width, fieldBytes int) (int, error) {
+	runes, ok, err := projectedFormatFieldRunes(projection, val, verb, hasPrecision, precision, flags)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		if width > fieldBytes {
+			return width, nil
+		}
+		return fieldBytes, nil
+	}
+	if width <= runes {
+		return fieldBytes, nil
+	}
+	return saturatingAdd(fieldBytes, width-runes), nil
+}
+
+func projectedFormatFieldRunes(projection formatProjection, val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) (int, bool, error) {
+	switch verb {
+	case 's':
+		runes, err := projection.stringFormatRunes(val, hasPrecision, precision)
+		return runes, true, err
+	case 'v':
+		if flags.alternate || !formatArgumentUsesStringRendering(val) {
+			return 0, false, nil
+		}
+		runes, err := projection.stringFormatRunes(val, hasPrecision, precision)
+		return runes, true, err
+	default:
+		return 0, false, nil
+	}
+}
+
+func (p formatProjection) stringFormatRunes(val Value, hasPrecision bool, precision int) (int, error) {
+	if hasPrecision {
+		return p.stringPrecisionRunes(val, precision)
+	}
+	return p.stringRunes(val)
 }
 
 func projectedFormatArgumentBytes(projection formatProjection, val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) (int, error) {
@@ -725,6 +791,12 @@ func projectedFormatArgumentBytes(projection formatProjection, val Value, verb b
 				return 0, err
 			}
 			return projectedQuotedStringBytes(n), nil
+		}
+		if formatArgumentUsesStringRendering(val) {
+			if hasPrecision {
+				return projection.stringPrecisionBytes(val, precision)
+			}
+			return projection.stringBytes(val)
 		}
 		n, err := projection.stringBytes(val)
 		if err != nil {
@@ -916,6 +988,14 @@ func prepareFormatArgument(projection formatProjection, val Value, verb byte, ha
 		if val.Kind() != KindBool {
 			return preparedFormatArgument{}, fmt.Errorf("format %%t expects bool operand")
 		}
+	case 'v':
+		if formatArgumentNeedsRenderedString(val) {
+			render, err := prepareFormatStringRender(projection, val, hasPrecision, precision)
+			if err != nil {
+				return preparedFormatArgument{}, err
+			}
+			arg.stringRender = render
+		}
 	default:
 		if formatArgumentNeedsRenderedString(val) {
 			render, err := prepareFormatStringRender(projection, val, false, 0)
@@ -1009,6 +1089,10 @@ func (a preparedFormatArgument) renderString() (string, error) {
 		return rendered, nil
 	}
 	return "", err
+}
+
+func formatArgumentUsesStringRendering(val Value) bool {
+	return formatArgumentHasDirectString(val) || formatArgumentNeedsRenderedString(val)
 }
 
 func formatArgumentHasDirectString(val Value) bool {
