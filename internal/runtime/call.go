@@ -235,6 +235,9 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if validateReturn && fn.ReturnTy != nil {
 		normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
 			owner:    fn.owner,
@@ -1301,6 +1304,9 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 		return NewNil(), err
 	}
 	val = callEnv.detachArrayAppendResult(val)
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	if fn.ReturnTy != nil {
 		normalized, err := normalizeValueForType(val, fn.ReturnTy, typeContext{
 			owner:    fn.owner,

@@ -120,6 +120,26 @@ end`)
 	}
 }
 
+func TestScriptCallChecksContextBeforeReturnValidation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	engine := MustNewEngine(Config{})
+	engine.builtins["cancel_now"] = NewBuiltin("cancel_now", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		cancel()
+		return NewNil(), nil
+	})
+	script := compileScriptWithEngine(t, engine, `def run() -> string
+  cancel_now()
+  123
+end`)
+
+	_, err := script.Call(ctx, "run", nil, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call(canceled before return validation) error = %v, want context.Canceled", err)
+	}
+}
+
 func TestCallStopsBeforeCalleeWhenArgumentCancelsContext(t *testing.T) {
 	t.Parallel()
 
