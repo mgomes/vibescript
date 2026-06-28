@@ -374,7 +374,9 @@ func prepareFormatString(pattern string, values []Value) (preparedFormatString, 
 			bodyAfterLeadingIndex = next
 			i = next
 		}
+		flags := formatFlags{}
 		for i < len(pattern) && strings.ContainsRune("#+-0 ", rune(pattern[i])) {
+			flags.record(pattern[i])
 			i++
 		}
 		width, hasWidth, next, err := parseFormatCount(pattern, i, "width")
@@ -431,7 +433,7 @@ func prepareFormatString(pattern string, values []Value) (preparedFormatString, 
 		if err != nil {
 			return preparedFormatString{}, err
 		}
-		field := projectedFormatFieldBytes(values[argIndex], verb, hasPrecision, precision)
+		field := projectedFormatFieldBytes(values[argIndex], verb, hasPrecision, precision, flags)
 		if hasWidth && width > field {
 			field = width
 		}
@@ -505,8 +507,22 @@ func parseFormatCount(pattern string, i int, label string) (int, bool, int, erro
 	return n, true, i, nil
 }
 
-func projectedFormatFieldBytes(val Value, verb byte, hasPrecision bool, precision int) int {
-	base := projectedFormatArgumentBytes(val, verb, hasPrecision, precision)
+type formatFlags struct {
+	alternate bool
+	space     bool
+}
+
+func (f *formatFlags) record(flag byte) {
+	switch flag {
+	case '#':
+		f.alternate = true
+	case ' ':
+		f.space = true
+	}
+}
+
+func projectedFormatFieldBytes(val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) int {
+	base := projectedFormatArgumentBytes(val, verb, hasPrecision, precision, flags)
 	if hasPrecision {
 		switch verb {
 		case 'f', 'F', 'e', 'E', 'g', 'G':
@@ -522,7 +538,7 @@ func projectedFormatFieldBytes(val Value, verb byte, hasPrecision bool, precisio
 	return base
 }
 
-func projectedFormatArgumentBytes(val Value, verb byte, hasPrecision bool, precision int) int {
+func projectedFormatArgumentBytes(val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) int {
 	switch verb {
 	case 's':
 		return formatArgumentStringBytes(val)
@@ -530,7 +546,18 @@ func projectedFormatArgumentBytes(val Value, verb byte, hasPrecision bool, preci
 		return projectedQuotedStringBytes(formatArgumentStringBytes(val))
 	case 'x', 'X':
 		if val.Kind() == KindString || val.Kind() == KindSymbol {
-			return saturatingMul(2, len(val.String()))
+			bytesPerInput := 2
+			if flags.space {
+				bytesPerInput++
+			}
+			field := saturatingMul(bytesPerInput, len(val.String()))
+			if flags.alternate {
+				field = saturatingAdd(field, 2)
+				if flags.space {
+					field = saturatingAdd(field, saturatingMul(2, len(val.String())))
+				}
+			}
+			return field
 		}
 		return 64
 	case 'd', 'b', 'o', 'O', 'U', 'c':
@@ -542,6 +569,11 @@ func projectedFormatArgumentBytes(val Value, verb byte, hasPrecision bool, preci
 		return 64
 	case 't':
 		return 5
+	case 'v':
+		if flags.alternate {
+			return projectedQuotedStringBytes(formatArgumentStringBytes(val))
+		}
+		return saturatingAdd(val.StringByteLen(), 32)
 	default:
 		return saturatingAdd(val.StringByteLen(), 32)
 	}

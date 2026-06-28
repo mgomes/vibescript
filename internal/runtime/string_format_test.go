@@ -91,6 +91,19 @@ end`)
 	}, CallOptions{}, "format output exceeds limit")
 }
 
+func TestRubyStyleStringFormattingPreflightsHexSpacingFlag(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 * maxFormatOutputBytes}, `def run(text)
+  format("% x", text)
+end`)
+	text := strings.Repeat("x", maxFormatOutputBytes/2)
+
+	requireCallErrorContains(t, script, "run", []Value{
+		NewString(text),
+	}, CallOptions{}, "format output exceeds limit")
+}
+
 func TestRubyStyleStringFormattingRejectsUnusedOperandsBeforeFormatting(t *testing.T) {
 	t.Parallel()
 
