@@ -8,7 +8,10 @@ package runtime
 // allocation escapes the post-call memory check. Capping the reservation and
 // letting append and map growth take over keeps the peak proportional to the
 // data actually retained.
-const setOpInitialCap = 4096
+const (
+	setOpInitialCap    = 4096
+	setOpCheckInterval = 64
+)
 
 // boundedSetCap caps a desired capacity at setOpInitialCap so a huge input
 // length never drives an oversized up-front allocation.
@@ -148,14 +151,24 @@ func (s *membershipSet) addSource(values []Value, hint int) {
 }
 
 func uniqueValues(values []Value) []Value {
+	unique, _ := uniqueValuesChecked(values, nil)
+	return unique
+}
+
+func uniqueValuesChecked(values []Value, check func() error) ([]Value, error) {
 	var seen valueSet
 	unique := make([]Value, 0, boundedSetCap(len(values)))
-	for _, item := range values {
+	for i, item := range values {
+		if check != nil && i%setOpCheckInterval == 0 {
+			if err := check(); err != nil {
+				return nil, err
+			}
+		}
 		if seen.add(item, len(values)) {
 			unique = append(unique, item)
 		}
 	}
-	return unique
+	return unique, nil
 }
 
 // unionArrayValues returns the receiver concatenated with every array in others,

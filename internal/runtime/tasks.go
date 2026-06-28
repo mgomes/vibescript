@@ -85,7 +85,7 @@ func builtinTasksMap(exec *Execution, receiver Value, args []Value, kwargs map[s
 
 	handles := make([]*taskHandle, len(items))
 	for i, item := range items {
-		handle, err := group.spawn(exec.Context(), functionName, []Value{item}, nil)
+		handle, err := group.spawn(exec, functionName, []Value{item}, nil)
 		if err != nil {
 			group.cancel()
 			_ = group.closeAndWait()
@@ -131,6 +131,7 @@ type taskGroup struct {
 	firstErr error
 
 	retainedResults map[*taskHandle]Value
+	jobPayloads     map[*taskJob]struct{}
 }
 
 type taskJob struct {
@@ -225,7 +226,7 @@ func (group *taskGroup) builtinSpawn(exec *Execution, receiver Value, args []Val
 	if err != nil {
 		return NewNil(), err
 	}
-	handle, err := group.spawn(exec.Context(), functionName, args[1:], kwargs)
+	handle, err := group.spawn(exec, functionName, args[1:], kwargs)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -251,13 +252,14 @@ func (group *taskGroup) builtinWait(exec *Execution, receiver Value, args []Valu
 	return NewNil(), nil
 }
 
-func (group *taskGroup) spawn(ctx context.Context, functionName string, args []Value, kwargs map[string]Value) (*taskHandle, error) {
+func (group *taskGroup) spawn(exec *Execution, functionName string, args []Value, kwargs map[string]Value) (*taskHandle, error) {
 	if group.isClosed() {
 		return nil, fmt.Errorf("task manager cannot be used after task scope exits")
 	}
 	if err := group.err(); err != nil {
 		return nil, err
 	}
+	ctx := exec.Context()
 
 	taskArgs, err := cloneTaskArgs("tasks.spawn", args)
 	if err != nil {
@@ -280,11 +282,18 @@ func (group *taskGroup) spawn(ctx context.Context, functionName string, args []V
 		handle:       handle,
 	}
 
+	group.retainJobPayload(job)
+	if err := exec.checkMemory(); err != nil {
+		group.releaseJobPayload(job)
+		return nil, err
+	}
+
 	group.tasks.Add(1)
 	select {
 	case group.jobs <- job:
 		return handle, nil
 	case <-group.ctx.Done():
+		group.releaseJobPayload(job)
 		err := group.ctx.Err()
 		if groupErr := group.err(); groupErr != nil {
 			err = groupErr
@@ -293,6 +302,7 @@ func (group *taskGroup) spawn(ctx context.Context, functionName string, args []V
 		group.tasks.Done()
 		return nil, err
 	case <-ctx.Done():
+		group.releaseJobPayload(job)
 		handle.complete(NewNil(), ctx.Err())
 		group.tasks.Done()
 		return nil, ctx.Err()
@@ -307,6 +317,7 @@ func (group *taskGroup) worker() {
 
 func (group *taskGroup) runJob(job *taskJob) {
 	defer group.tasks.Done()
+	defer group.releaseJobPayload(job)
 
 	if err := group.ctx.Err(); err != nil {
 		group.recordErr(err)
@@ -402,6 +413,33 @@ func (group *taskGroup) retainResult(handle *taskHandle, result Value) {
 	}
 	group.retainedResults[handle] = result
 	group.mu.Unlock()
+}
+
+func (group *taskGroup) retainJobPayload(job *taskJob) {
+	group.mu.Lock()
+	if group.jobPayloads == nil {
+		group.jobPayloads = make(map[*taskJob]struct{})
+	}
+	group.jobPayloads[job] = struct{}{}
+	group.mu.Unlock()
+}
+
+func (group *taskGroup) releaseJobPayload(job *taskJob) {
+	group.mu.Lock()
+	delete(group.jobPayloads, job)
+	group.mu.Unlock()
+}
+
+func (group *taskGroup) jobPayloadMemory(est *memoryEstimator) int {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+
+	total := 0
+	for job := range group.jobPayloads {
+		total += est.slice(job.args)
+		total += est.hash(job.kwargs)
+	}
+	return total
 }
 
 func (group *taskGroup) retainedResultMemory(est *memoryEstimator) int {

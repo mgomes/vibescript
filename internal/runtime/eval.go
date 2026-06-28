@@ -1045,8 +1045,15 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 				owner:    blk.owner,
 				env:      blk.Env,
 				fallback: exec.root,
+				exec:     exec,
 			})
 			if err != nil {
+				if isHostControlSignal(err) {
+					return NewNil(), err
+				}
+				if isNormalizationLimitError(err) {
+					return NewNil(), exec.wrapError(err, param.Type.Position)
+				}
 				return NewNil(), exec.errorAt(param.Type.Position, "%s", formatArgumentTypeMismatch(param.Name, err))
 			}
 			val = normalized

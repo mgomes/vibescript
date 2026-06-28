@@ -157,16 +157,16 @@ end`)
 	}
 }
 
-// BenchmarkCapabilityContractDeepNestedReturn exercises the recursive
-// validate and clone walks on depth instead of breadth: db.find returns
-// a hash chain nested 10000 levels deep.
+// BenchmarkCapabilityContractDeepNestedReturn exercises the recursive validate
+// and clone walks on depth instead of breadth, using the deepest hash chain the
+// capability boundary accepts before the traversal guard trips.
 func BenchmarkCapabilityContractDeepNestedReturn(b *testing.B) {
 	script := compileScriptWithEngine(b, capabilityPayloadEngine(), `def run()
   db.find("Tree", "root")[:label]
 end`)
 
 	opts := callOptionsWithCapabilities(
-		MustNewDBCapability("db", payloadDBCapability{result: capabilityBenchNested(10000)}),
+		MustNewDBCapability("db", payloadDBCapability{result: capabilityBenchNested(maxCapabilityDataOnlyDepth)}),
 	)
 	b.ReportAllocs()
 	b.ResetTimer()

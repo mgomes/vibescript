@@ -1,6 +1,7 @@
 package capabilitycontract
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -55,6 +56,25 @@ func cyclicArrayThroughHash() value.Value {
 	arr := value.NewArray(elems)
 	elems[0] = value.NewHash(map[string]value.Value{"back": arr})
 	return arr
+}
+
+func deepCapabilityArray(depth int) value.Value {
+	val := value.NewString("leaf")
+	for range depth {
+		val = value.NewArray([]value.Value{val})
+	}
+	return val
+}
+
+func sharedDeepCapabilityArrayDAG() value.Value {
+	tailDepth := MaxDataOnlyTraversalDepth / 2
+	chainDepth := MaxDataOnlyTraversalDepth - tailDepth
+	tail := deepCapabilityArray(tailDepth)
+	deep := tail
+	for range chainDepth {
+		deep = value.NewArray([]value.Value{deep})
+	}
+	return value.NewArray([]value.Value{tail, deep})
 }
 
 // cyclicHashThroughDefault builds a genuine cycle that runs through a hash's
@@ -378,6 +398,57 @@ func TestCloneDataOnlyValue(t *testing.T) {
 			t.Fatalf("mutating cloned default leaked into original: %v", value.HashDefaultValue(original))
 		}
 	})
+
+	t.Run("deep_traversal_limit", func(t *testing.T) {
+		_, err := CloneDataOnlyValue("payload", deepCapabilityArray(MaxDataOnlyTraversalDepth+1))
+		requireLimitError(t, err)
+		if !strings.Contains(err.Error(), "payload exceeds maximum depth") {
+			t.Fatalf("CloneDataOnlyValue deep traversal err = %v, want maximum depth error", err)
+		}
+	})
+
+	t.Run("shared_dag_deep_traversal_limit", func(t *testing.T) {
+		_, err := CloneDataOnlyValue("payload", sharedDeepCapabilityArrayDAG())
+		requireLimitError(t, err)
+		if !strings.Contains(err.Error(), "payload exceeds maximum depth") {
+			t.Fatalf("CloneDataOnlyValue shared DAG traversal err = %v, want maximum depth error", err)
+		}
+	})
+}
+
+func TestCloneMethodResultRejectsDeepTraversal(t *testing.T) {
+	t.Parallel()
+
+	_, err := CloneMethodResult("events.publish", deepCapabilityArray(MaxDataOnlyTraversalDepth+1))
+	requireLimitError(t, err)
+	if !strings.Contains(err.Error(), "events.publish return value exceeds maximum depth") {
+		t.Fatalf("CloneMethodResult deep traversal err = %v, want return-value depth error", err)
+	}
+}
+
+func TestValidateDataOnlyValueRejectsDeepTraversal(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateDataOnlyValue("payload", deepCapabilityArray(MaxDataOnlyTraversalDepth+1))
+	requireLimitError(t, err)
+}
+
+func TestValidateDataOnlyValueRejectsSharedDAGDeepTraversal(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateDataOnlyValue("payload", sharedDeepCapabilityArrayDAG())
+	requireLimitError(t, err)
+}
+
+func requireLimitError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("err = nil, want limit error")
+	}
+	limit, ok := err.(interface{ LimitError() bool })
+	if !ok || !limit.LimitError() {
+		t.Fatalf("err = %T %v, want LimitError marker", err, err)
+	}
 }
 
 func TestDeepCloneValue(t *testing.T) {

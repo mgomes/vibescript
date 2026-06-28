@@ -186,7 +186,7 @@ func deepTransformKeysWithState(exec *Execution, value, receiver Value, args []V
 		return NewNil(), err
 	}
 	if state.depth >= maxJSONNestingDepth {
-		return NewNil(), fmt.Errorf("hash.deep_transform_keys nesting exceeds limit %d", maxJSONNestingDepth)
+		return NewNil(), guardLimitErrorf("hash.deep_transform_keys nesting exceeds limit %d", maxJSONNestingDepth)
 	}
 	state.depth++
 	defer func() { state.depth-- }()

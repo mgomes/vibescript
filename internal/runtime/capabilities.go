@@ -105,6 +105,8 @@ var (
 	}
 )
 
+const maxCapabilityDataOnlyDepth = 256
+
 func cloneCapabilityKwargs(kwargs map[string]Value) map[string]Value {
 	if len(kwargs) == 0 {
 		return nil
@@ -158,6 +160,9 @@ type capabilityDataCloneScanner struct {
 }
 
 func cloneCapabilityDataOnlyValue(label string, val Value) (Value, error) {
+	if err := validateCapabilityTraversalDepth(label, val); err != nil {
+		return NewNil(), err
+	}
 	scanner := &capabilityDataCloneScanner{
 		label:          label,
 		clonedArrays:   make(map[sliceIdentity]Value),
@@ -342,6 +347,9 @@ func ambientEnvSet(root *Env) map[*Env]struct{} {
 }
 
 func validateCapabilityDataOnlyValue(label string, val Value) error {
+	if err := validateCapabilityTraversalDepth(label, val); err != nil {
+		return err
+	}
 	callableScanner := newCapabilityContractScanner()
 	if callableScanner.containsCallable(val) {
 		return fmt.Errorf("%s must be data-only", label)
@@ -349,6 +357,87 @@ func validateCapabilityDataOnlyValue(label string, val Value) error {
 	cycleScanner := newCapabilityCycleScanner()
 	if cycleScanner.containsCycle(val) {
 		return fmt.Errorf("%s must not contain cyclic references", label)
+	}
+	return nil
+}
+
+type capabilityTraversalDepthScanner struct {
+	visitingArrays map[sliceIdentity]struct{}
+	seenArrays     map[sliceIdentity]int
+	visitingMaps   map[uintptr]struct{}
+	seenMaps       map[uintptr]int
+}
+
+func newCapabilityTraversalDepthScanner() *capabilityTraversalDepthScanner {
+	return &capabilityTraversalDepthScanner{
+		visitingArrays: make(map[sliceIdentity]struct{}),
+		seenArrays:     make(map[sliceIdentity]int),
+		visitingMaps:   make(map[uintptr]struct{}),
+		seenMaps:       make(map[uintptr]int),
+	}
+}
+
+func validateCapabilityTraversalDepth(label string, val Value) error {
+	return newCapabilityTraversalDepthScanner().check(label, val, 0)
+}
+
+func (s *capabilityTraversalDepthScanner) check(label string, val Value, depth int) error {
+	if depth > maxCapabilityDataOnlyDepth {
+		return guardLimitErrorf("%s exceeds maximum depth %d", label, maxCapabilityDataOnlyDepth)
+	}
+	remainingDepth := maxCapabilityDataOnlyDepth - depth
+	switch val.Kind() {
+	case KindArray:
+		values := val.Array()
+		id := sliceIdentity{
+			Ptr: reflect.ValueOf(values).Pointer(),
+			Len: len(values),
+			Cap: cap(values),
+		}
+		if seenRemaining, seen := s.seenArrays[id]; seen && seenRemaining <= remainingDepth {
+			return nil
+		}
+		if _, visiting := s.visitingArrays[id]; visiting {
+			return nil
+		}
+		s.visitingArrays[id] = struct{}{}
+		for _, item := range values {
+			if err := s.check(label, item, depth+1); err != nil {
+				return err
+			}
+		}
+		delete(s.visitingArrays, id)
+		if seenRemaining, seen := s.seenArrays[id]; !seen || remainingDepth < seenRemaining {
+			s.seenArrays[id] = remainingDepth
+		}
+	case KindHash, KindObject:
+		entries := val.Hash()
+		ptr := hashIdentity(val)
+		if ptr == 0 {
+			ptr = reflect.ValueOf(entries).Pointer()
+		}
+		if seenRemaining, seen := s.seenMaps[ptr]; seen && seenRemaining <= remainingDepth {
+			return nil
+		}
+		if _, visiting := s.visitingMaps[ptr]; visiting {
+			return nil
+		}
+		s.visitingMaps[ptr] = struct{}{}
+		for _, item := range entries {
+			if err := s.check(label, item, depth+1); err != nil {
+				return err
+			}
+		}
+		if err := s.check(label, hashDefaultValue(val), depth+1); err != nil {
+			return err
+		}
+		if err := s.check(label, hashDefaultProc(val), depth+1); err != nil {
+			return err
+		}
+		delete(s.visitingMaps, ptr)
+		if seenRemaining, seen := s.seenMaps[ptr]; !seen || remainingDepth < seenRemaining {
+			s.seenMaps[ptr] = remainingDepth
+		}
 	}
 	return nil
 }

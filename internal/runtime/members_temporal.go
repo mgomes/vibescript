@@ -455,7 +455,7 @@ func timeISO8601Precision(method string, args []Value, kwargs map[string]Value) 
 		return 0, fmt.Errorf("%s precision must be non-negative", method)
 	}
 	if ndigits > maxISO8601FractionDigits {
-		return 0, fmt.Errorf("%s precision exceeds maximum %d digits", method, maxISO8601FractionDigits)
+		return 0, guardLimitErrorf("%s precision exceeds maximum %d digits", method, maxISO8601FractionDigits)
 	}
 	return int(ndigits), nil
 }

@@ -14,6 +14,7 @@ type stubPublisher struct {
 	ctxs    []context.Context
 	result  value.Value
 	failure error
+	cancel  context.CancelFunc
 }
 
 var _ Publisher = (*stubPublisher)(nil)
@@ -23,6 +24,9 @@ func (s *stubPublisher) Publish(ctx context.Context, req PublishRequest) (value.
 	s.ctxs = append(s.ctxs, ctx)
 	if s.failure != nil {
 		return value.NewNil(), s.failure
+	}
+	if s.cancel != nil {
+		s.cancel()
 	}
 	return s.result, nil
 }
@@ -105,6 +109,25 @@ func TestCapabilityPublishCallsHostAndClonesResult(t *testing.T) {
 	}
 	if stub.calls[0].Options["trace"].String() != "abc" {
 		t.Fatalf("unexpected options: %#v", stub.calls[0].Options)
+	}
+}
+
+func TestCapabilityPublishStopsAfterHostCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stub := &stubPublisher{
+		cancel: cancel,
+		result: value.NewObject(map[string]value.Value{
+			"fn": value.NewValue(value.KindBlock, struct{}{}),
+		}),
+	}
+	cap := MustNewCapability("events", stub)
+
+	args := []value.Value{value.NewString("topic"), value.NewHash(nil)}
+	_, err := cap.Publish(ctx, args, nil, false)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Publish canceled by host error = %v, want context.Canceled", err)
 	}
 }
 

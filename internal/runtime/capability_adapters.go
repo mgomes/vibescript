@@ -88,6 +88,9 @@ func (c *jobQueueCapability) callEnqueue(exec *Execution, receiver Value, args [
 	if err != nil {
 		return NewNil(), err
 	}
+	if err := exec.checkContext(); err != nil {
+		return NewNil(), err
+	}
 	return cloneCapabilityMethodResult(name+".enqueue", result)
 }
 
@@ -116,6 +119,9 @@ func (c *jobQueueCapability) callRetry(exec *Execution, receiver Value, args []V
 	req := jobqueue.JobQueueRetryRequest{JobID: args[0].String(), Options: options}
 	result, err := c.inner.Retry.Retry(exec.Context(), req)
 	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
 	}
 	return cloneCapabilityMethodResult(name+".retry", result)

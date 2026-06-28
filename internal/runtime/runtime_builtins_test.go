@@ -1364,6 +1364,62 @@ func TestJSONAndRegexSizeGuards(t *testing.T) {
 	}
 }
 
+func TestStdlibGuardLimitsClassifyAsLimitErrors(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 << 20}, `
+    def parse_raw(raw)
+      JSON.parse(raw)
+    end
+
+    def stringify_value(value)
+      JSON.stringify(value)
+    end
+
+    def regex_match_guard(pattern, text)
+      Regex.match(pattern, text)
+    end
+
+    def regex_replace_all_guard(text, pattern, replacement)
+      Regex.replace_all(text, pattern, replacement)
+    end
+
+    def random_id_too_long()
+      random_id(1025)
+    end
+
+    def flatten_deep(value)
+      value.flatten
+    end
+    `)
+
+	largeJSON := `{"data":"` + strings.Repeat("x", maxJSONPayloadBytes) + `"}`
+	largeValue := NewHash(map[string]Value{
+		"data": NewString(strings.Repeat("x", maxJSONPayloadBytes)),
+	})
+	largePattern := strings.Repeat("a", maxRegexPatternSize+1)
+	hugeReplacement := strings.Repeat("x", maxRegexInputBytes/2)
+
+	tests := []struct {
+		name string
+		fn   string
+		args []Value
+	}{
+		{name: "json_parse_input", fn: "parse_raw", args: []Value{NewString(largeJSON)}},
+		{name: "json_stringify_output", fn: "stringify_value", args: []Value{largeValue}},
+		{name: "regex_match_pattern", fn: "regex_match_guard", args: []Value{NewString(largePattern), NewString("aaa")}},
+		{name: "regex_replace_all_output", fn: "regex_replace_all_guard", args: []Value{NewString("abc"), NewString(""), NewString(hugeReplacement)}},
+		{name: "random_id_length", fn: "random_id_too_long"},
+		{name: "array_flatten_depth", fn: "flatten_deep", args: []Value{deepRuntimeCapabilityArray(maxFlattenDepth + 1)}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireCallRuntimeErrorType(t, script, tc.fn, tc.args, CallOptions{}, runtimeErrorTypeLimit)
+		})
+	}
+}
+
 func TestLocaleSensitiveOperationsDeterministic(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

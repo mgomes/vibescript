@@ -912,6 +912,77 @@ func TestTaskRunSnapshotGlobalsCountTowardMemoryQuota(t *testing.T) {
 	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
 }
 
+func TestPendingTaskJobPayloadsCountTowardMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	argsValues := make([]Value, 256)
+	kwargValues := make([]Value, 256)
+	for i := range argsValues {
+		argsValues[i] = NewString("arg-payload")
+		kwargValues[i] = NewString("kwarg-payload")
+	}
+	exec := &Execution{
+		ctx:  context.Background(),
+		root: newEnv(nil),
+	}
+	group := &taskGroup{}
+	exec.pushTaskGroup(group)
+	defer exec.popTaskGroup()
+
+	withoutJob := exec.estimateMemoryUsage()
+	job := &taskJob{
+		functionName: "work",
+		args:         []Value{NewArray(argsValues)},
+		kwargs: map[string]Value{
+			"payload": NewArray(kwargValues),
+		},
+	}
+	group.retainJobPayload(job)
+	defer group.releaseJobPayload(job)
+
+	withJob := exec.estimateMemoryUsage()
+	if withJob <= withoutJob {
+		t.Fatalf("memory with pending job = %d, want greater than %d", withJob, withoutJob)
+	}
+
+	exec.memoryQuota = withJob - 1
+	requireErrorIs(t, exec.checkMemory(), errMemoryQuotaExceeded)
+}
+
+func TestTaskGroupSpawnChecksRetainedPayloadMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	values := make([]Value, 256)
+	for i := range values {
+		values[i] = NewString(strings.Repeat("payload", 16))
+	}
+	exec := &Execution{
+		ctx:  context.Background(),
+		root: newEnv(nil),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	group := &taskGroup{
+		ctx:  ctx,
+		jobs: make(chan *taskJob, 1),
+	}
+	exec.pushTaskGroup(group)
+	defer exec.popTaskGroup()
+
+	exec.memoryQuota = exec.estimateMemoryUsage() + 1
+	_, err := group.spawn(exec, "work", []Value{NewArray(values)}, nil)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	if got := group.jobPayloadMemory(newMemoryEstimator()); got != 0 {
+		t.Fatalf("job payload memory after rejected spawn = %d, want 0", got)
+	}
+	select {
+	case job := <-group.jobs:
+		t.Fatalf("rejected spawn enqueued job %s", job.functionName)
+	default:
+	}
+}
+
 func TestStrictEffectsRejectLazyTaskCallableGlobals(t *testing.T) {
 	t.Parallel()
 	script := compileScriptWithConfig(t, Config{StrictEffects: true}, `def run()

@@ -10,8 +10,10 @@ import (
 type jobQueueStub struct {
 	enqueueCalls []JobQueueJob
 	enqueueCtx   []context.Context
+	enqueueErr   error
 	retryCalls   []JobQueueRetryRequest
 	retryCtx     []context.Context
+	retryErr     error
 }
 
 type (
@@ -32,12 +34,18 @@ var (
 func (s *jobQueueStub) Enqueue(ctx context.Context, job JobQueueJob) (Value, error) {
 	s.enqueueCalls = append(s.enqueueCalls, job)
 	s.enqueueCtx = append(s.enqueueCtx, ctx)
+	if s.enqueueErr != nil {
+		return NewNil(), s.enqueueErr
+	}
 	return NewString("queued"), nil
 }
 
 func (s *jobQueueStub) Retry(ctx context.Context, req JobQueueRetryRequest) (Value, error) {
 	s.retryCalls = append(s.retryCalls, req)
 	s.retryCtx = append(s.retryCtx, ctx)
+	if s.retryErr != nil {
+		return NewNil(), s.retryErr
+	}
 	return NewBool(true), nil
 }
 

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -85,4 +86,51 @@ func TestValueMatchesTypeHashUnknownKeyUnionReturnsError(t *testing.T) {
 	if !strings.Contains(err.Error(), "unknown type typo") {
 		t.Fatalf("expected unknown type error, got %v", err)
 	}
+}
+
+func TestNormalizeValueForTypeChecksCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	exec := &Execution{ctx: ctx, engine: MustNewEngine(Config{}), root: newEnv(nil)}
+
+	_, err := normalizeValueForType(largeIntArray(256), &TypeExpr{
+		Kind:     TypeArray,
+		TypeArgs: []*TypeExpr{{Kind: TypeInt}},
+	}, typeContext{exec: exec})
+	requireErrorIs(t, err, context.Canceled)
+}
+
+func TestNormalizeValueForTypeReservesCompositeOutputMemory(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `enum Status
+  Draft
+  Published
+end`)
+	values := make([]Value, 128)
+	for i := range values {
+		values[i] = NewSymbol("draft")
+	}
+	source := NewArray(values)
+	exec := &Execution{
+		ctx:    context.Background(),
+		engine: script.engine,
+		script: script,
+		root:   newEnv(nil),
+	}
+	est := newMemoryEstimator()
+	rejectQuota := exec.estimateMemoryUsageBase(est) + est.value(source)
+	rejectQuota += estimatedValueBytes + estimatedSliceBaseBytes + len(values)*estimatedValueBytes
+	rejectQuota--
+	exec.memoryQuota = rejectQuota
+
+	_, err := normalizeValueForType(source, &TypeExpr{
+		Kind: TypeArray,
+		TypeArgs: []*TypeExpr{
+			{Name: "Status", Kind: TypeEnum},
+		},
+	}, typeContext{owner: script, exec: exec})
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }

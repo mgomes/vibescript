@@ -41,12 +41,28 @@ type typedRuntimeError struct {
 	err  error
 }
 
+type guardLimitError struct {
+	err error
+}
+
 func (e *typedRuntimeError) Error() string {
 	return e.err.Error()
 }
 
 func (e *typedRuntimeError) Unwrap() error {
 	return e.err
+}
+
+func (e *guardLimitError) Error() string {
+	return e.err.Error()
+}
+
+func (e *guardLimitError) Unwrap() error {
+	return e.err
+}
+
+func (e *guardLimitError) LimitError() bool {
+	return true
 }
 
 // privateMemberError marks a member-resolution failure that occurred because the
@@ -172,6 +188,10 @@ func classifyRuntimeErrorType(err error) string {
 	if errors.Is(err, errStepQuotaExceeded) || errors.Is(err, errMemoryQuotaExceeded) || errors.Is(err, errOutputLimitExceeded) {
 		return runtimeErrorTypeLimit
 	}
+	var limitErr interface{ LimitError() bool }
+	if errors.As(err, &limitErr) && limitErr.LimitError() {
+		return runtimeErrorTypeLimit
+	}
 	var assertionErr *assertionFailureError
 	if errors.As(err, &assertionErr) {
 		return runtimeErrorTypeAssertion
@@ -200,6 +220,10 @@ func newTypedRuntimeError(kind string, err error) error {
 		err = errors.New("")
 	}
 	return &typedRuntimeError{kind: kind, err: err}
+}
+
+func guardLimitErrorf(format string, args ...any) error {
+	return &guardLimitError{err: fmt.Errorf(format, args...)}
 }
 
 func zeroDivisionErrorf(format string, args ...any) error {

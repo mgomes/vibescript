@@ -15,6 +15,49 @@ func (c cancelingBindCapability) Bind(CapabilityBinding) (map[string]Value, erro
 	return nil, errors.New("bind failed")
 }
 
+type recordingBindCapability struct {
+	called *bool
+}
+
+func (c recordingBindCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	*c.called = true
+	return map[string]Value{"cap": NewNil()}, nil
+}
+
+type argumentCancelProbeCapability struct {
+	cancel    context.CancelFunc
+	validated *int
+	called    *int
+}
+
+func (c argumentCancelProbeCapability) Bind(CapabilityBinding) (map[string]Value, error) {
+	return map[string]Value{
+		"cancel": NewObject(map[string]Value{
+			"now": NewBuiltin("cancel.now", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				c.cancel()
+				return NewInt(1), nil
+			}),
+		}),
+		"probe": NewObject(map[string]Value{
+			"call": NewBuiltin("probe.call", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+				(*c.called)++
+				return NewString("ok"), nil
+			}),
+		}),
+	}, nil
+}
+
+func (c argumentCancelProbeCapability) CapabilityContracts() map[string]CapabilityMethodContract {
+	return map[string]CapabilityMethodContract{
+		"probe.call": {
+			ValidateArgs: func(_ []Value, _ map[string]Value, _ Value) error {
+				(*c.validated)++
+				return nil
+			},
+		},
+	}
+}
+
 func TestTaskResultCloneDoesNotMaskCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -58,6 +101,27 @@ end`)
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Script.Call(canceled during capability bind) error = %v, want context.Canceled", err)
+	}
+}
+
+func TestScriptCallChecksCanceledContextBeforeCapabilityBind(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  1
+end`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+
+	_, err := script.Call(ctx, "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{recordingBindCapability{called: &called}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call(canceled before capability bind) error = %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("capability Bind was called after context cancellation")
 	}
 }
 
@@ -256,6 +320,62 @@ end`)
 				t.Fatalf("probe builtin was called after %s argument canceled context", tc.fn)
 			}
 		})
+	}
+}
+
+func TestCapabilityCallStopsBeforeContractValidationWhenArgumentCancelsContext(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptDefault(t, `def run()
+  probe.call(cancel.now())
+end`)
+	ctx, cancel := context.WithCancel(context.Background())
+	validated := 0
+	called := 0
+
+	_, err := script.Call(ctx, "run", nil, CallOptions{
+		Capabilities: []CapabilityAdapter{argumentCancelProbeCapability{
+			cancel:    cancel,
+			validated: &validated,
+			called:    &called,
+		}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Script.Call(canceled during capability argument evaluation) error = %v, want context.Canceled", err)
+	}
+	if validated != 0 {
+		t.Fatalf("capability contract validations = %d, want 0", validated)
+	}
+	if called != 0 {
+		t.Fatalf("capability builtin calls = %d, want 0", called)
+	}
+}
+
+func TestArrayUniqChecksCanceledContextBeforeBlocklessLoop(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	engine := MustNewEngine(Config{MemoryQuotaBytes: 32 << 20})
+	engine.builtins["cancel_now"] = NewBuiltin("cancel_now", func(_ *Execution, _ Value, _ []Value, _ map[string]Value, _ Value) (Value, error) {
+		cancel()
+		return NewNil(), nil
+	})
+	script := compileScriptWithEngine(t, engine, `def run(values)
+  cancel_now()
+  values.uniq
+end`)
+
+	values := make([]Value, 300)
+	for i := range values {
+		values[i] = NewHash(map[string]Value{
+			"id":    NewInt(int64(i)),
+			"group": NewArray([]Value{NewString("alpha"), NewInt(int64(i % 7))}),
+		})
+	}
+
+	_, err := script.Call(ctx, "run", []Value{NewArray(values)}, CallOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Array#uniq after cancellation error = %v, want context.Canceled", err)
 	}
 }
 

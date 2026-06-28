@@ -249,8 +249,15 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 			owner:    fn.owner,
 			env:      fn.Env,
 			fallback: exec.root,
+			exec:     exec,
 		})
 		if err != nil {
+			if isHostControlSignal(err) {
+				return NewNil(), err
+			}
+			if isNormalizationLimitError(err) {
+				return NewNil(), exec.wrapError(err, pos)
+			}
 			return NewNil(), exec.errorAt(pos, "%s", formatReturnTypeMismatch(fn.Name, err))
 		}
 		val = normalized
@@ -744,6 +751,9 @@ func prepareCallEnvForFunction(exec *Execution, root *Env, rebinder *callFunctio
 	callArgs := rebinder.rebindValues(args)
 	callKeywords := rebinder.rebindKeywords(keywords)
 	if err := exec.bindFunctionArgs(fn, callEnv, callArgs, callKeywords, fn.Pos); err != nil {
+		if isHostControlSignal(err) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("bind function args: %w", err)
 	}
 	exec.pushEnv(callEnv)
@@ -1327,8 +1337,15 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 			owner:    fn.owner,
 			env:      fn.Env,
 			fallback: exec.root,
+			exec:     exec,
 		})
 		if err != nil {
+			if isHostControlSignal(err) {
+				return NewNil(), err
+			}
+			if isNormalizationLimitError(err) {
+				return NewNil(), exec.wrapError(err, fn.Pos)
+			}
 			return NewNil(), exec.errorAt(fn.Pos, "%s", formatReturnTypeMismatch(fn.Name, err))
 		}
 		val = normalized
@@ -1490,8 +1507,15 @@ func (exec *Execution) bindFunctionArgs(fn *ScriptFunction, env *Env, args []Val
 				owner:    fn.owner,
 				env:      fn.Env,
 				fallback: exec.root,
+				exec:     exec,
 			})
 			if err != nil {
+				if isHostControlSignal(err) {
+					return err
+				}
+				if isNormalizationLimitError(err) {
+					return exec.wrapError(err, pos)
+				}
 				return exec.errorAt(pos, "%s", formatArgumentTypeMismatch(param.Name, err))
 			}
 			val = normalized
