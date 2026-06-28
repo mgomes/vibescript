@@ -346,7 +346,7 @@ func prepareFormatString(exec *Execution, pattern string, values []Value) (prepa
 	}
 	projection := formatProjection{exec: exec}
 	var normalized strings.Builder
-	normalized.Grow(len(pattern))
+	normalized.Grow(min(len(pattern), maxFormatOutputBytes))
 	total := 0
 	nextArg := 0
 	usedCursor := 0
@@ -581,13 +581,39 @@ func (p formatProjection) stringBytesUpTo(val Value, limit int) (int, error) {
 	}
 }
 
+func (p formatProjection) stringPrecisionBytes(val Value, precision int) (int, error) {
+	if precision <= 0 {
+		return 0, nil
+	}
+	switch val.Kind() {
+	case KindString, KindSymbol:
+		return formatStringPrecisionBytes(val.String(), precision), nil
+	default:
+		return p.stringBytesUpTo(val, saturatingMul(utf8.UTFMax, precision))
+	}
+}
+
+func formatStringPrecisionBytes(s string, precision int) int {
+	if precision <= 0 {
+		return 0
+	}
+	runes := 0
+	for i := range s {
+		if runes == precision {
+			return i
+		}
+		runes++
+	}
+	return len(s)
+}
+
 func projectedFormatFieldBytes(projection formatProjection, val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) (int, error) {
 	if hasPrecision {
 		switch verb {
 		case 's':
-			return projection.stringBytesUpTo(val, saturatingMul(utf8.UTFMax, precision))
+			return projection.stringPrecisionBytes(val, precision)
 		case 'q':
-			selectedBytes, err := projection.stringBytesUpTo(val, saturatingMul(utf8.UTFMax, precision))
+			selectedBytes, err := projection.stringPrecisionBytes(val, precision)
 			if err != nil {
 				return 0, err
 			}

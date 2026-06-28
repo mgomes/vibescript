@@ -163,6 +163,39 @@ end`)
 	}, CallOptions{}, "format output exceeds limit")
 }
 
+func TestRubyStyleStringFormattingProjectsPrecisionByRunes(t *testing.T) {
+	t.Parallel()
+
+	pattern := fmt.Sprintf("%%.%ds", maxFormatOutputBytes)
+	text := strings.Repeat("x", maxFormatOutputBytes+1)
+	got, err := formatStringValues(pattern, []Value{NewString(text)})
+	if err != nil {
+		t.Fatalf("formatStringValues() error = %v", err)
+	}
+	want := NewString(strings.Repeat("x", maxFormatOutputBytes))
+	if !got.Equal(want) {
+		t.Fatalf("formatStringValues() length = %d, want %d", len(got.String()), maxFormatOutputBytes)
+	}
+}
+
+func TestRubyStyleStringFormattingCapsNormalizedPatternGrowth(t *testing.T) {
+	pattern := strings.Repeat("x", 4*maxFormatOutputBytes)
+
+	var err error
+	alloc := allocBytes(func() {
+		_, err = formatStringValues(pattern, nil)
+	})
+	if err == nil {
+		t.Fatal("formatStringValues() succeeded, want output limit error")
+	}
+	if !strings.Contains(err.Error(), "format output exceeds limit") {
+		t.Fatalf("formatStringValues() error = %v, want output limit", err)
+	}
+	if alloc > 2*maxFormatOutputBytes {
+		t.Fatalf("formatStringValues() allocated %d bytes, want capped normalized buffer growth", alloc)
+	}
+}
+
 func TestRubyStyleStringFormattingBoundsCompositeStringification(t *testing.T) {
 	large := NewArray([]Value{NewString(strings.Repeat("x", maxFormatOutputBytes+64))})
 
