@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"math"
 	"testing"
 )
@@ -339,6 +340,32 @@ func TestNumericDivisionZeroErrors(t *testing.T) {
 			t.Parallel()
 			script := compileScript(t, "def run()\n  "+tc.expr+"\nend")
 			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tc.want)
+		})
+	}
+}
+
+func TestNumericZeroDivisionErrorsAreTyped(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"1 % 0",
+		"5.div(0)",
+		"5.divmod(0)",
+		"5.modulo(0)",
+		"5.remainder(0)",
+		"5.0.div(0.0)",
+		"5.0.divmod(0.0)",
+		"5.0.modulo(0.0)",
+		"5.0.remainder(0.0)",
+	}
+	for _, expr := range tests {
+		t.Run(expr, func(t *testing.T) {
+			t.Parallel()
+			script := compileScript(t, "def run\n  begin\n    "+expr+"\n  rescue ZeroDivisionError\n    \"caught\"\n  end\nend")
+			got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+			if !got.Equal(NewString("caught")) {
+				t.Fatalf("%s rescue result = %#v, want caught", expr, got)
+			}
 		})
 	}
 }

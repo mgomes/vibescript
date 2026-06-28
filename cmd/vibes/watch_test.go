@@ -252,7 +252,7 @@ func TestSnapshotWatchTargetsWalksSymlinkedModuleRoot(t *testing.T) {
 		t.Fatalf("snapshot = %v, want helper under resolved root %s", snapshot, resolvedHelper)
 	}
 
-	writeScriptFile(t, helperPath, "def helper()\n  2\nend\n")
+	writeScriptFile(t, helperPath, "def helper()\n  22\nend\n")
 	if !watchKnownSnapshotChanged(snapshot) {
 		t.Fatal("edited file under symlinked module root did not report a known-file change")
 	}

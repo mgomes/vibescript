@@ -307,7 +307,16 @@ func (p *parser) advanceToLoopBody() {
 }
 
 func (p *parser) parseBreakStatement() ast.Statement {
-	return &ast.BreakStmt{Position: p.curToken.Pos}
+	pos := p.curToken.Pos
+	if p.peekEndsStatement(pos) {
+		return &ast.BreakStmt{Position: pos}
+	}
+	p.nextToken()
+	value := p.parseLineExpression(lowestPrec)
+	if value == nil {
+		return nil
+	}
+	return &ast.BreakStmt{Value: value, Position: pos}
 }
 
 func (p *parser) parseNextStatement() ast.Statement {
@@ -1576,7 +1585,7 @@ func (p *parser) parseAssertStatement() ast.Statement {
 
 func (p *parser) peekEndsStatement(pos ast.Position) bool {
 	switch p.peekToken.Type {
-	case ast.TokenEOF, ast.TokenSemicolon, ast.TokenEnd, ast.TokenElse, ast.TokenElsif, ast.TokenEnsure, ast.TokenRescue:
+	case ast.TokenEOF, ast.TokenSemicolon, ast.TokenEnd, ast.TokenElse, ast.TokenElsif, ast.TokenEnsure, ast.TokenRescue, ast.TokenRBrace:
 		return true
 	default:
 		return p.peekToken.Pos.Line != pos.Line

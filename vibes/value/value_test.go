@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mgomes/vibescript/vibes/value"
 )
@@ -593,6 +594,40 @@ func TestValueStringByteLen(t *testing.T) {
 			t.Parallel()
 			if got, want := tc.val.StringByteLen(), len(tc.val.String()); got != want {
 				t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+			}
+		})
+	}
+}
+
+func TestValueStringRuneLen(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		val  value.Value
+	}{
+		{"string", value.NewString("a🙂")},
+		{"symbol", value.NewSymbol("status")},
+		{
+			"nested_array",
+			value.NewArray([]value.Value{
+				value.NewString("a🙂"),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+		},
+		{
+			"single_hash",
+			value.NewHash(map[string]value.Value{"na🙂me": value.NewString("acme🙂")}),
+		},
+		{"runtime_kind_fallback", value.NewValue(value.KindBlock, fakeBlock{})},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got, want := tc.val.StringRuneLen(), utf8.RuneCountInString(tc.val.String()); got != want {
+				t.Fatalf("StringRuneLen() = %d, want rendered rune count %d", got, want)
 			}
 		})
 	}
@@ -1185,6 +1220,133 @@ func TestValueStringByteLenBounded(t *testing.T) {
 		})
 		if !errors.Is(err, sentinel) {
 			t.Fatalf("StringByteLenBounded() error = %v, want %v (calls=%d)", err, sentinel, calls)
+		}
+	})
+}
+
+func TestValueStringRuneLenBounded(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matches_unbounded_count", func(t *testing.T) {
+		t.Parallel()
+		vals := []value.Value{
+			value.NewInt(-42),
+			value.NewString("a🙂"),
+			value.NewArray([]value.Value{
+				value.NewString("a🙂"),
+				value.NewArray([]value.Value{value.NewString("two")}),
+				value.NewNil(),
+			}),
+			value.NewHash(map[string]value.Value{"na🙂me": value.NewString("acme🙂")}),
+		}
+		for _, v := range vals {
+			got, err := v.StringRuneLenBounded(func() error { return nil })
+			if err != nil {
+				t.Fatalf("StringRuneLenBounded() error = %v", err)
+			}
+			if want := v.StringRuneLen(); got != want {
+				t.Fatalf("StringRuneLenBounded() = %d, want StringRuneLen() = %d", got, want)
+			}
+		}
+	})
+
+	t.Run("propagates_step_error", func(t *testing.T) {
+		t.Parallel()
+		sentinel := errors.New("budget exhausted")
+		arr := value.NewArray([]value.Value{value.NewInt(1), value.NewInt(2)})
+
+		calls := 0
+		_, err := arr.StringRuneLenBounded(func() error {
+			calls++
+			if calls >= 2 {
+				return sentinel
+			}
+			return nil
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("StringRuneLenBounded() error = %v, want %v", err, sentinel)
+		}
+	})
+}
+
+func TestValueStringByteLenBoundedUpTo(t *testing.T) {
+	t.Parallel()
+
+	t.Run("matches_exact_count_within_limit", func(t *testing.T) {
+		t.Parallel()
+
+		val := value.NewArray([]value.Value{
+			value.NewString("one"),
+			value.NewArray([]value.Value{value.NewInt(2)}),
+		})
+		want := val.StringByteLen()
+		got, truncated, err := val.StringByteLenBoundedUpTo(want, func() error { return nil })
+		if err != nil {
+			t.Fatalf("StringByteLenBoundedUpTo() error = %v", err)
+		}
+		if truncated {
+			t.Fatalf("StringByteLenBoundedUpTo() truncated, want false")
+		}
+		if got != want {
+			t.Fatalf("StringByteLenBoundedUpTo() = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("stops_after_limit", func(t *testing.T) {
+		t.Parallel()
+
+		val := value.NewArray([]value.Value{value.NewString("one"), value.NewString("two")})
+		got, truncated, err := val.StringByteLenBoundedUpTo(4, func() error { return nil })
+		if err != nil {
+			t.Fatalf("StringByteLenBoundedUpTo() error = %v", err)
+		}
+		if !truncated {
+			t.Fatalf("StringByteLenBoundedUpTo() truncated = false, want true")
+		}
+		if got != 5 {
+			t.Fatalf("StringByteLenBoundedUpTo() = %d, want limit+1", got)
+		}
+	})
+
+	t.Run("shared_exponential_graph_stops_at_cap", func(t *testing.T) {
+		t.Parallel()
+
+		cur := value.NewArray([]value.Value{value.NewInt(0)})
+		for range 25 {
+			cur = value.NewArray([]value.Value{cur, cur})
+		}
+
+		calls := 0
+		got, truncated, err := cur.StringByteLenBoundedUpTo(4, func() error {
+			calls++
+			if calls > 1_000 {
+				return errors.New("walk did not stop at cap")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("StringByteLenBoundedUpTo() error = %v", err)
+		}
+		if !truncated {
+			t.Fatalf("StringByteLenBoundedUpTo() truncated = false, want true")
+		}
+		if got != 5 {
+			t.Fatalf("StringByteLenBoundedUpTo() = %d, want limit+1", got)
+		}
+		if calls > 25 {
+			t.Fatalf("StringByteLenBoundedUpTo() walked %d nodes, want capped walk", calls)
+		}
+	})
+
+	t.Run("propagates_step_error", func(t *testing.T) {
+		t.Parallel()
+
+		sentinel := errors.New("budget exhausted")
+		_, _, err := value.NewArray([]value.Value{value.NewInt(1)}).StringByteLenBoundedUpTo(1024, func() error {
+			return sentinel
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("StringByteLenBoundedUpTo() error = %v, want %v", err, sentinel)
 		}
 	})
 }

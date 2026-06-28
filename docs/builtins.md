@@ -67,6 +67,37 @@ host context is canceled.
 sleep(0.25)
 ```
 
+## Control Flow
+
+### `loop { ... }`
+
+Runs the block until it exits with `break`. A `break value` becomes the return
+value, and `next` skips to the next iteration.
+
+```vibe
+x = 0
+value = loop do
+  x = x + 1
+  if x == 3
+    break :done
+  end
+end
+```
+
+## Formatting
+
+### `format(pattern, *values)` / `sprintf(pattern, *values)`
+
+Formats values with Ruby-style percent format strings for common numeric and
+string cases. `String#%` uses the same formatter. Output is capped at 1 MiB
+before width or precision padding is materialized.
+
+```vibe
+"%s:%03d" % ["id", 7]  # "id:007"
+format("%.2f", 1.234)  # "1.23"
+sprintf("%x", 255)     # "ff"
+```
+
 ## Random IDs
 
 ### `uuid`
@@ -84,6 +115,28 @@ Returns an alphanumeric random identifier string:
 ```vibe
 short = random_id(8)
 token = random_id()
+```
+
+### `rand(max = nil)`
+
+Returns a random float in `[0.0, 1.0)` with no argument, an integer in
+`0...max` for a positive integer bound, or an integer inside an integer range.
+
+```vibe
+rand < 1.0
+rand(10)
+rand(1..3)
+```
+
+### `srand(seed = nil)`
+
+Seeds the current script call's `rand` sequence. Reusing the same integer seed
+inside a call gives the same sequence without leaking seeded state into later
+calls.
+
+```vibe
+srand(1234)
+[rand, rand(10), rand(1..3)]
 ```
 
 ## Numeric Conversion

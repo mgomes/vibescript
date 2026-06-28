@@ -100,6 +100,7 @@ func (s *UntilStmt) Pos() Position { return s.Position }
 
 // BreakStmt represents a break statement that exits a loop.
 type BreakStmt struct {
+	Value    Expression
 	Position Position
 }
 

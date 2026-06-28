@@ -36,6 +36,19 @@ func (e *assertionFailureError) Error() string {
 	return e.message
 }
 
+type typedRuntimeError struct {
+	kind string
+	err  error
+}
+
+func (e *typedRuntimeError) Error() string {
+	return e.err.Error()
+}
+
+func (e *typedRuntimeError) Unwrap() error {
+	return e.err
+}
+
 // privateMemberError marks a member-resolution failure that occurred because the
 // member exists but is private to the receiver. It wraps the formatted runtime
 // error so callers still surface the full "private method" message, while member
@@ -65,9 +78,13 @@ func isPrivateMemberError(err error) bool {
 
 const (
 	runtimeErrorTypeBase      = ast.RuntimeErrorTypeBase
+	runtimeErrorTypeStandard  = ast.RuntimeErrorTypeStandard
 	runtimeErrorTypeAssertion = ast.RuntimeErrorTypeAssertion
 	runtimeErrorTypeLimit     = ast.RuntimeErrorTypeLimit
 	runtimeErrorTypeType      = ast.RuntimeErrorTypeType
+	runtimeErrorTypeZeroDiv   = ast.RuntimeErrorTypeZeroDiv
+	runtimeErrorTypeLocalJump = ast.RuntimeErrorTypeLocalJump
+	runtimeErrorTypeArgument  = ast.RuntimeErrorTypeArgument
 	runtimeErrorFrameHead     = 8
 	runtimeErrorFrameTail     = 8
 	stepSlowPathMask          = 15
@@ -79,6 +96,30 @@ var (
 	errStepQuotaExceeded   = errors.New("step quota exceeded")
 	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
 )
+
+type loopBreakError struct {
+	value Value
+}
+
+func (e *loopBreakError) Error() string {
+	return errLoopBreak.Error()
+}
+
+func (e *loopBreakError) Unwrap() error {
+	return errLoopBreak
+}
+
+func newLoopBreakValue(value Value) error {
+	return &loopBreakError{value: value}
+}
+
+func loopBreakValue(err error) (Value, bool) {
+	var breakErr *loopBreakError
+	if errors.As(err, &breakErr) {
+		return breakErr.value, true
+	}
+	return NewNil(), false
+}
 
 // Error returns the error message with a code frame and formatted stack trace.
 func (re *RuntimeError) Error() string {
@@ -134,6 +175,12 @@ func classifyRuntimeErrorType(err error) string {
 	if errors.As(err, &assertionErr) {
 		return runtimeErrorTypeAssertion
 	}
+	var typedErr *typedRuntimeError
+	if errors.As(err, &typedErr) {
+		if kind, known := ast.CanonicalRuntimeErrorType(typedErr.kind); known {
+			return kind
+		}
+	}
 	var runtimeErr *RuntimeError
 	if errors.As(err, &runtimeErr) {
 		if kind, known := ast.CanonicalRuntimeErrorType(runtimeErr.Type); known {
@@ -145,6 +192,17 @@ func classifyRuntimeErrorType(err error) string {
 
 func newAssertionFailureError(message string) error {
 	return &assertionFailureError{message: message}
+}
+
+func newTypedRuntimeError(kind string, err error) error {
+	if err == nil {
+		err = errors.New("")
+	}
+	return &typedRuntimeError{kind: kind, err: err}
+}
+
+func zeroDivisionErrorf(format string, args ...any) error {
+	return newTypedRuntimeError(runtimeErrorTypeZeroDiv, fmt.Errorf(format, args...))
 }
 
 func (exec *Execution) step() error {
@@ -207,6 +265,14 @@ func (exec *Execution) errorAt(pos Position, format string, args ...any) error {
 
 func (exec *Execution) newRuntimeError(message string, pos Position) error {
 	return exec.newRuntimeErrorWithType(runtimeErrorTypeBase, message, pos)
+}
+
+func (exec *Execution) argumentErrorAt(pos Position, format string, args ...any) error {
+	return exec.newRuntimeErrorWithType(runtimeErrorTypeArgument, fmt.Sprintf(format, args...), pos)
+}
+
+func (exec *Execution) localJumpErrorAt(pos Position, format string, args ...any) error {
+	return exec.newRuntimeErrorWithType(runtimeErrorTypeLocalJump, fmt.Sprintf(format, args...), pos)
 }
 
 func (exec *Execution) newRuntimeErrorWithType(kind, message string, pos Position) error {

@@ -249,11 +249,16 @@ func registerCoreBuiltins(engine *Engine) {
 		autoInvoke bool
 	}{
 		{name: "assert", fn: builtinAssert},
+		{name: "format", fn: builtinFormat},
+		{name: "loop", fn: builtinLoop},
 		{name: "money", fn: builtinMoney},
 		{name: "money_cents", fn: builtinMoneyCents},
 		{name: "require", fn: builtinRequire},
 		{name: "now", fn: builtinNow, autoInvoke: true},
+		{name: "rand", fn: builtinRand, autoInvoke: true},
 		{name: "sleep", fn: builtinSleep},
+		{name: "sprintf", fn: builtinSprintf},
+		{name: "srand", fn: builtinSrand},
 		{name: "uuid", fn: builtinUUID, autoInvoke: true},
 		{name: "random_id", fn: builtinRandomID},
 		{name: "to_int", fn: builtinToInt},

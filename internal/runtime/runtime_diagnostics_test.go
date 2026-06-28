@@ -510,7 +510,7 @@ end`,
 		{
 			name:   "float.clamp with non-numeric bounds",
 			script: `def run() 1.5.clamp("a", 2.0) end`,
-			errMsg: "expects numeric min and max",
+			errMsg: "bounds must be numeric or nil",
 		},
 		{
 			name:   "float.round overflow",

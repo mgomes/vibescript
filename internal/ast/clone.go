@@ -112,6 +112,7 @@ func cloneStatement(stmt Statement) Statement {
 		return &clone
 	case *BreakStmt:
 		clone := *s
+		clone.Value = cloneExpression(s.Value)
 		return &clone
 	case *NextStmt:
 		clone := *s
@@ -410,8 +411,18 @@ func cloneBlockLiteral(block *BlockLiteral) *BlockLiteral {
 	}
 	clone := *block
 	clone.Params = cloneParams(block.Params)
+	clone.ImplicitParams = cloneStringSlice(block.ImplicitParams)
 	clone.Body = cloneStatements(block.Body)
 	return &clone
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
 }
 
 func cloneStringParts(parts []StringPart) []StringPart {

@@ -1026,7 +1026,7 @@ func TestFunctionLevelRescueEnsure(t *testing.T) {
 		t.Fatalf("safe_div success mismatch: %v", got)
 	}
 	compareArrays(t, callFunc(t, script, "safe_div", []Value{NewInt(10), NewInt(0)}), []Value{
-		NewString(runtimeErrorTypeBase),
+		NewString(runtimeErrorTypeZeroDiv),
 		NewString("division by zero"),
 	})
 	if got := callFunc(t, script, "success_else", nil); !got.Equal(NewString("else")) {
@@ -1109,8 +1109,8 @@ func TestBeginRescueTypedMatching(t *testing.T) {
 	if !errors.As(err, &divideErr) {
 		t.Fatalf("expected RuntimeError, got %T", err)
 	}
-	if divideErr.Type != runtimeErrorTypeBase {
-		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeBase, divideErr.Type)
+	if divideErr.Type != runtimeErrorTypeZeroDiv {
+		t.Fatalf("expected runtime error type %s, got %s", runtimeErrorTypeZeroDiv, divideErr.Type)
 	}
 
 	err = callScriptErr(t, context.Background(), script, "assertion_passthrough", nil, CallOptions{})
@@ -1184,6 +1184,81 @@ func TestBeginRescueRubyStyleBinding(t *testing.T) {
 		t.Fatalf("ruby_parenthesized_binding mismatch: %v", got)
 	}
 	requireCallErrorContains(t, script, "ruby_binding_scope", nil, CallOptions{}, "undefined variable err")
+}
+
+func TestRubyStyleExceptionClassesAndBindingMembers(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def standard_error()
+      begin
+        raise("boom")
+      rescue StandardError => err
+        [err.class, err.type, err.message, err.to_s]
+      end
+    end
+
+    def zero_division()
+      begin
+        1 / 0
+      rescue ZeroDivisionError => err
+        [err.class, err.type, err.message]
+      end
+    end
+
+    def needs_block()
+      begin
+        yield
+      rescue LocalJumpError => err
+        [err.class, err.type, err.message]
+      end
+    end
+
+    def required_arg(value)
+      value
+    end
+
+    def wrong_arity()
+      begin
+        required_arg()
+      rescue ArgumentError => err
+        [err.class, err.type, err.message]
+      end
+    end
+
+    def backtrace_shape()
+      begin
+        raise("boom")
+      rescue => err
+        [err.backtrace.length > 0, err.backtrace[0].include?("backtrace_shape")]
+      end
+    end
+    `)
+
+	compareArrays(t, callFunc(t, script, "standard_error", nil), []Value{
+		NewString(runtimeErrorTypeBase),
+		NewString(runtimeErrorTypeBase),
+		NewString("boom"),
+		NewString("boom"),
+	})
+	compareArrays(t, callFunc(t, script, "zero_division", nil), []Value{
+		NewString(runtimeErrorTypeZeroDiv),
+		NewString(runtimeErrorTypeZeroDiv),
+		NewString("division by zero"),
+	})
+	compareArrays(t, callFunc(t, script, "needs_block", nil), []Value{
+		NewString(runtimeErrorTypeLocalJump),
+		NewString(runtimeErrorTypeLocalJump),
+		NewString("no block given"),
+	})
+	compareArrays(t, callFunc(t, script, "wrong_arity", nil), []Value{
+		NewString(runtimeErrorTypeArgument),
+		NewString(runtimeErrorTypeArgument),
+		NewString("missing argument value"),
+	})
+	compareArrays(t, callFunc(t, script, "backtrace_shape", nil), []Value{
+		NewBool(true),
+		NewBool(true),
+	})
 }
 
 func TestBeginRescueDoesNotCatchLoopControlSignals(t *testing.T) {
@@ -1668,6 +1743,40 @@ func TestLoopControlNestedAndBlockBoundaryBehavior(t *testing.T) {
 			requireCallErrorContains(t, script, tc.fn, nil, CallOptions{}, tc.want)
 		})
 	}
+}
+
+func TestBreakValueCapturedBlockKeepsIterationEnv(t *testing.T) {
+	t.Parallel()
+
+	engine := MustNewEngine(Config{})
+	engine.builtins["invoke_block"] = NewBuiltin("invoke_block", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		if len(args) != 1 {
+			return NewNil(), errors.New("invoke_block expects one block")
+		}
+		runner, err := newBlockCallRunner(exec, args[0], "invoke_block", NewNil(), nil, nil)
+		if err != nil {
+			return NewNil(), err
+		}
+		return runner.call(nil)
+	})
+
+	script := compileScriptWithEngine(t, engine, `
+    def capture(&block)
+      block
+    end
+
+    def run
+      blocks = [1, 2].map do |current|
+        while true
+          break capture { current }
+        end
+      end
+      [invoke_block(blocks[0]), invoke_block(blocks[1])]
+    end
+    `)
+
+	got := callFunc(t, script, "run", nil)
+	compareArrays(t, got, []Value{NewInt(1), NewInt(2)})
 }
 
 func TestLoopControlInsideClassMethods(t *testing.T) {

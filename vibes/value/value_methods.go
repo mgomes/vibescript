@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // String returns the human-readable name of the ValueKind.
@@ -366,6 +367,18 @@ func (v Value) StringByteLen() int {
 	}
 }
 
+// StringRuneLen returns the number of runes String would produce for v without
+// materializing the rendered representation. It mirrors StringByteLen but counts
+// display width in the unit fmt uses for string precision and padding.
+func (v Value) StringRuneLen() int {
+	switch v.kind {
+	case KindArray, KindHash:
+		return v.stringRuneLenWithState(newValueStringState())
+	default:
+		return utf8.RuneCountInString(v.String())
+	}
+}
+
 func (v Value) stringByteLenWithState(state *valueStringState) int {
 	switch v.kind {
 	case KindArray:
@@ -415,6 +428,53 @@ func (v Value) stringByteLenWithState(state *valueStringState) int {
 	}
 }
 
+func (v Value) stringRuneLenWithState(state *valueStringState) int {
+	switch v.kind {
+	case KindArray:
+		elems := v.data.([]Value)
+		id := SliceIdentity{
+			Ptr: reflect.ValueOf(elems).Pointer(),
+			Len: len(elems),
+			Cap: cap(elems),
+		}
+		if id.Ptr != 0 {
+			if _, seen := state.arrays[id]; seen {
+				return len(cycleMarker)
+			}
+			state.arrays[id] = struct{}{}
+			defer delete(state.arrays, id)
+		}
+		total := len(arrayOpen) + len(arrayClose)
+		total += separatorBytes(len(elems))
+		for _, e := range elems {
+			total += e.stringRuneLenWithState(state)
+		}
+		return total
+	case KindHash:
+		entries := v.hashEntries()
+		if len(entries) == 0 {
+			return len(hashOpen) + len(hashClose)
+		}
+		ptr := reflect.ValueOf(entries).Pointer()
+		if ptr != 0 {
+			if _, seen := state.maps[ptr]; seen {
+				return len(cycleMarker)
+			}
+			state.maps[ptr] = struct{}{}
+			defer delete(state.maps, ptr)
+		}
+		total := len(hashOpen) + len(hashClose)
+		total += separatorBytes(len(entries))
+		for k, val := range entries {
+			total += utf8.RuneCountInString(k) + len(keyValueSeparator)
+			total += val.stringRuneLenWithState(state)
+		}
+		return total
+	default:
+		return utf8.RuneCountInString(v.String())
+	}
+}
+
 // StringByteLenBounded reports the same byte count as StringByteLen but invokes
 // step once per node visited during the projection walk, so a caller can charge
 // a sandbox step budget against the traversal and abort it when step returns an
@@ -440,6 +500,34 @@ func (v Value) StringByteLenBounded(step func() error) (int, error) {
 		}
 		return len(v.String()), nil
 	}
+}
+
+// StringRuneLenBounded reports the same rune count as StringRuneLen but invokes
+// step once per node visited during the projection walk, matching
+// StringByteLenBounded's sandbox accounting.
+func (v Value) StringRuneLenBounded(step func() error) (int, error) {
+	switch v.kind {
+	case KindArray, KindHash:
+		return v.stringRuneLenBoundedWithState(newValueStringState(), step)
+	default:
+		if err := step(); err != nil {
+			return 0, err
+		}
+		return utf8.RuneCountInString(v.String()), nil
+	}
+}
+
+// StringByteLenBoundedUpTo reports String's byte length up to limit bytes. It
+// stops as soon as it can prove the rendering would exceed limit, returning
+// truncated as true and limit+1 as the count. Like StringByteLenBounded, it
+// invokes step during aggregate walks so callers can charge sandbox work before
+// materializing any rendering.
+func (v Value) StringByteLenBoundedUpTo(limit int, step func() error) (count int, truncated bool, err error) {
+	if limit < 0 {
+		n, err := v.StringByteLenBounded(step)
+		return n, false, err
+	}
+	return v.stringByteLenBoundedUpToWithState(newValueStringState(), limit, step)
 }
 
 func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func() error) (int, error) {
@@ -500,6 +588,149 @@ func (v Value) stringByteLenBoundedWithState(state *valueStringState, step func(
 	default:
 		return len(v.String()), nil
 	}
+}
+
+func (v Value) stringRuneLenBoundedWithState(state *valueStringState, step func() error) (int, error) {
+	if err := step(); err != nil {
+		return 0, err
+	}
+	switch v.kind {
+	case KindArray:
+		elems := v.data.([]Value)
+		id := SliceIdentity{
+			Ptr: reflect.ValueOf(elems).Pointer(),
+			Len: len(elems),
+			Cap: cap(elems),
+		}
+		if id.Ptr != 0 {
+			if _, seen := state.arrays[id]; seen {
+				return len(cycleMarker), nil
+			}
+			state.arrays[id] = struct{}{}
+			defer delete(state.arrays, id)
+		}
+		total := len(arrayOpen) + len(arrayClose)
+		total += separatorBytes(len(elems))
+		for _, e := range elems {
+			n, err := e.stringRuneLenBoundedWithState(state, step)
+			if err != nil {
+				return 0, err
+			}
+			total += n
+		}
+		return total, nil
+	case KindHash:
+		entries := v.hashEntries()
+		if len(entries) == 0 {
+			return len(hashOpen) + len(hashClose), nil
+		}
+		ptr := reflect.ValueOf(entries).Pointer()
+		if ptr != 0 {
+			if _, seen := state.maps[ptr]; seen {
+				return len(cycleMarker), nil
+			}
+			state.maps[ptr] = struct{}{}
+			defer delete(state.maps, ptr)
+		}
+		total := len(hashOpen) + len(hashClose)
+		total += separatorBytes(len(entries))
+		for k, val := range entries {
+			total += utf8.RuneCountInString(k) + len(keyValueSeparator)
+			n, err := val.stringRuneLenBoundedWithState(state, step)
+			if err != nil {
+				return 0, err
+			}
+			total += n
+		}
+		return total, nil
+	default:
+		return utf8.RuneCountInString(v.String()), nil
+	}
+}
+
+func (v Value) stringByteLenBoundedUpToWithState(state *valueStringState, limit int, step func() error) (int, bool, error) {
+	if err := step(); err != nil {
+		return 0, false, err
+	}
+	switch v.kind {
+	case KindArray:
+		elems := v.data.([]Value)
+		id := SliceIdentity{
+			Ptr: reflect.ValueOf(elems).Pointer(),
+			Len: len(elems),
+			Cap: cap(elems),
+		}
+		if id.Ptr != 0 {
+			if _, seen := state.arrays[id]; seen {
+				total, truncated := stringByteLenCappedAdd(0, len(cycleMarker), limit)
+				return total, truncated, nil
+			}
+			state.arrays[id] = struct{}{}
+			defer delete(state.arrays, id)
+		}
+		total, truncated := stringByteLenCappedAdd(0, len(arrayOpen)+len(arrayClose)+separatorBytes(len(elems)), limit)
+		if truncated {
+			return total, true, nil
+		}
+		for _, e := range elems {
+			n, childTruncated, err := e.stringByteLenBoundedUpToWithState(state, limit-total, step)
+			if err != nil {
+				return 0, false, err
+			}
+			var addTruncated bool
+			total, addTruncated = stringByteLenCappedAdd(total, n, limit)
+			if childTruncated || addTruncated {
+				return total, true, nil
+			}
+		}
+		return total, false, nil
+	case KindHash:
+		entries := v.hashEntries()
+		if len(entries) == 0 {
+			total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose), limit)
+			return total, truncated, nil
+		}
+		ptr := reflect.ValueOf(entries).Pointer()
+		if ptr != 0 {
+			if _, seen := state.maps[ptr]; seen {
+				total, truncated := stringByteLenCappedAdd(0, len(cycleMarker), limit)
+				return total, truncated, nil
+			}
+			state.maps[ptr] = struct{}{}
+			defer delete(state.maps, ptr)
+		}
+		total, truncated := stringByteLenCappedAdd(0, len(hashOpen)+len(hashClose)+separatorBytes(len(entries)), limit)
+		if truncated {
+			return total, true, nil
+		}
+		for k, val := range entries {
+			var keyTruncated bool
+			total, keyTruncated = stringByteLenCappedAdd(total, len(k)+len(keyValueSeparator), limit)
+			if keyTruncated {
+				return total, true, nil
+			}
+			n, childTruncated, err := val.stringByteLenBoundedUpToWithState(state, limit-total, step)
+			if err != nil {
+				return 0, false, err
+			}
+			var addTruncated bool
+			total, addTruncated = stringByteLenCappedAdd(total, n, limit)
+			if childTruncated || addTruncated {
+				return total, true, nil
+			}
+		}
+		return total, false, nil
+	default:
+		total, truncated := stringByteLenCappedAdd(0, len(v.String()), limit)
+		return total, truncated, nil
+	}
+}
+
+func stringByteLenCappedAdd(total, n, limit int) (int, bool) {
+	if n > limit-total {
+		return limit + 1, true
+	}
+	return total + n, false
 }
 
 // separatorBytes returns the bytes the ", " separators contribute when joining

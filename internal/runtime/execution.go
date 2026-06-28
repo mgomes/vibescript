@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"math/rand"
 )
 
 // ScriptFunction represents a user-defined function within a Vibescript module.
@@ -74,6 +75,9 @@ type Execution struct {
 	validatedCapabilityArgsArr [4]string
 	loopDepth                  int
 	rescuedErrors              []error
+	randSource                 *rand.Rand
+	randSeed                   int64
+	randSeeded                 bool
 	strictEffects              bool
 	allowRequire               bool
 	callOptions                CallOptions
