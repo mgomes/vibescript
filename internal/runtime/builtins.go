@@ -531,6 +531,7 @@ func parseFormatCount(pattern string, i int, label string) (int, bool, int, erro
 
 type formatFlags struct {
 	alternate bool
+	plus      bool
 	space     bool
 }
 
@@ -538,6 +539,8 @@ func (f *formatFlags) record(flag byte) {
 	switch flag {
 	case '#':
 		f.alternate = true
+	case '+':
+		f.plus = true
 	case ' ':
 		f.space = true
 	}
@@ -658,10 +661,21 @@ func projectedFormatArgumentBytes(projection formatProjection, val Value, verb b
 			}
 			return field, nil
 		}
+		if val.Kind() == KindInt {
+			return projectedIntegerFormatBytes(val, verb, hasPrecision, precision, flags)
+		}
+		if val.Kind() == KindFloat && hasPrecision {
+			return saturatingAdd(precision, 32), nil
+		}
 		return 64, nil
-	case 'd', 'b', 'o', 'O', 'U', 'c':
+	case 'd', 'b', 'o', 'O', 'U':
+		return projectedIntegerFormatBytes(val, verb, hasPrecision, precision, flags)
+	case 'c':
 		return 64, nil
 	case 'f', 'F', 'e', 'E', 'g', 'G':
+		if verb == 'f' || verb == 'F' {
+			return projectedFixedFloatFormatBytes(val, hasPrecision, precision, flags), nil
+		}
 		if hasPrecision {
 			return saturatingAdd(precision, 16), nil
 		}
@@ -687,6 +701,136 @@ func projectedFormatArgumentBytes(projection formatProjection, val Value, verb b
 			return 0, err
 		}
 		return saturatingAdd(n, 32), nil
+	}
+}
+
+func projectedIntegerFormatBytes(val Value, verb byte, hasPrecision bool, precision int, flags formatFlags) (int, error) {
+	n, err := valueToInt64(val)
+	if err != nil {
+		return 0, err
+	}
+	if verb == 'U' {
+		digits := max(4, unsignedIntegerDigitBytes(uint64(n), 16))
+		if hasPrecision {
+			digits = max(digits, precision)
+		}
+		field := saturatingAdd(2, digits)
+		if flags.alternate {
+			field = saturatingAdd(field, 16)
+		}
+		return field, nil
+	}
+
+	base := 10
+	prefix := 0
+	switch verb {
+	case 'b':
+		base = 2
+		if flags.alternate {
+			prefix = 2
+		}
+	case 'o':
+		base = 8
+		if flags.alternate {
+			prefix = 1
+		}
+	case 'O':
+		base = 8
+		if flags.alternate {
+			prefix = 2
+		}
+	case 'x', 'X':
+		base = 16
+		if flags.alternate {
+			prefix = 2
+		}
+	}
+	digits := signedIntegerDigitBytes(n, base)
+	if hasPrecision {
+		digits = max(digits, precision)
+	}
+	return saturatingAdd(saturatingAdd(projectedNumericSignBytes(n < 0, flags), prefix), digits), nil
+}
+
+func projectedFixedFloatFormatBytes(val Value, hasPrecision bool, precision int, flags formatFlags) int {
+	sign := projectedNumericSignBytes(formatFloatIsNegative(val), flags)
+	if val.Kind() == KindFloat && (math.IsInf(val.Float(), 0) || math.IsNaN(val.Float())) {
+		return saturatingAdd(sign, 3)
+	}
+	integerDigits := projectedFixedFloatIntegerDigits(val)
+	fractionDigits := 6
+	if hasPrecision {
+		fractionDigits = precision
+	}
+	decimal := 0
+	if fractionDigits > 0 || flags.alternate {
+		decimal = 1
+	}
+	return saturatingAdd(saturatingAdd(sign, integerDigits), saturatingAdd(decimal, fractionDigits))
+}
+
+func projectedFixedFloatIntegerDigits(val Value) int {
+	switch val.Kind() {
+	case KindInt:
+		return signedIntegerDigitBytes(val.Int(), 10)
+	case KindFloat:
+		f := math.Abs(val.Float())
+		if f < 1 {
+			return 1
+		}
+		formatted := strconv.FormatFloat(f, 'e', -1, 64)
+		exponentStart := strings.LastIndexByte(formatted, 'e')
+		if exponentStart < 0 {
+			return 309
+		}
+		exponent, err := strconv.Atoi(formatted[exponentStart+1:])
+		if err != nil || exponent < 0 {
+			return 309
+		}
+		return exponent + 1
+	default:
+		return 1
+	}
+}
+
+func signedIntegerDigitBytes(n int64, base int) int {
+	return unsignedIntegerDigitBytes(absInt64AsUint64(n), base)
+}
+
+func unsignedIntegerDigitBytes(n uint64, base int) int {
+	if n == 0 {
+		return 1
+	}
+	digits := 0
+	for n > 0 {
+		digits++
+		n /= uint64(base)
+	}
+	return digits
+}
+
+func absInt64AsUint64(n int64) uint64 {
+	if n >= 0 {
+		return uint64(n)
+	}
+	return uint64(-(n + 1)) + 1
+}
+
+func projectedNumericSignBytes(negative bool, flags formatFlags) int {
+	if negative || flags.plus || flags.space {
+		return 1
+	}
+	return 0
+}
+
+func formatFloatIsNegative(val Value) bool {
+	switch val.Kind() {
+	case KindInt:
+		return val.Int() < 0
+	case KindFloat:
+		return math.Signbit(val.Float())
+	default:
+		return false
 	}
 }
 

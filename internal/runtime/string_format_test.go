@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -102,6 +103,44 @@ end`)
 	requireCallErrorContains(t, script, "run", []Value{
 		NewString(text),
 	}, CallOptions{}, "format output exceeds limit")
+}
+
+func TestRubyStyleStringFormattingPreflightsIntegerPrecision(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 * maxFormatOutputBytes}, `def run
+  format("%.1048576d%.1048576d", 1, 1)
+end`)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "format output exceeds limit")
+}
+
+func TestRubyStyleStringFormattingPreflightsHexFloatPrecision(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{MemoryQuotaBytes: 4 * maxFormatOutputBytes}, `def run
+  format("%.1048576x%.1048576x", 1.5, 1.5)
+end`)
+
+	requireCallErrorContains(t, script, "run", nil, CallOptions{}, "format output exceeds limit")
+}
+
+func TestRubyStyleStringFormattingPreflightsFixedPointFloatMagnitude(t *testing.T) {
+	t.Parallel()
+
+	count := maxFormatOutputBytes/300 + 1
+	values := make([]Value, count)
+	for i := range values {
+		values[i] = NewFloat(math.MaxFloat64)
+	}
+
+	_, err := formatStringValues(strings.Repeat("%f", count), values)
+	if err == nil {
+		t.Fatal("formatStringValues() succeeded, want output limit error")
+	}
+	if !strings.Contains(err.Error(), "format output exceeds limit") {
+		t.Fatalf("formatStringValues() error = %v, want output limit", err)
+	}
 }
 
 func TestRubyStyleStringFormattingRejectsUnusedOperandsBeforeFormatting(t *testing.T) {
