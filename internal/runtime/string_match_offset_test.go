@@ -234,6 +234,31 @@ end`)
 	compareArrays(t, values["captures"], []Value{NewString("abc"), NewString("123")})
 }
 
+func TestRegexpUnionEmptyCompilesAndNeverMatches(t *testing.T) {
+	t.Parallel()
+
+	// Ruby's Regexp.union() with no arguments returns a never-matching regexp.
+	// The pattern must compile under Go's RE2 engine (which rejects `(?!)`).
+	script := compileScript(t, `def run()
+  r = Regexp.union()
+  {
+    empty: r.match("").nil?,
+    text: r.match("anything").nil?
+  }
+end`)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("Regexp.union() result kind = %v, want hash", got.Kind())
+	}
+	values := got.Hash()
+	for _, key := range []string{"empty", "text"} {
+		if v := values[key]; !v.Equal(NewBool(true)) {
+			t.Fatalf("Regexp.union() %s = %s, want true (never matches)", key, v.Inspect())
+		}
+	}
+}
+
 func compareMatchDataCaptures(t *testing.T, value Value, want []Value) {
 	t.Helper()
 	if value.Kind() != KindObject {

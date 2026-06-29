@@ -143,7 +143,10 @@ func newRegexpObject(pattern string) (Value, error) {
 
 func regexpUnionPattern(args []Value) (string, error) {
 	if len(args) == 0 {
-		return "(?!)", nil
+		// A never-matching pattern (Ruby returns /(?!)/). Go's RE2 engine rejects
+		// the `(?!)` lookahead, so use the empty character class `[^\s\S]`, which
+		// negates "every character" and therefore matches nothing.
+		return `[^\s\S]`, nil
 	}
 	parts := make([]string, len(args))
 	for i, arg := range args {
