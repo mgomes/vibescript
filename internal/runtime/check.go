@@ -317,11 +317,7 @@ func (c *scriptChecker) checkImplicitReturn(function string, ty *TypeExpr, state
 	if !c.checkTypeAnnotation(function, ty) || typeAllowsNilReturn(ty) {
 		return
 	}
-	if len(statements) == 0 {
-		c.add(function, pos, "typed return %s can implicitly return nil", formatTypeExpr(ty))
-		return
-	}
-	c.checkImplicitFinalStatement(function, ty, statements[len(statements)-1])
+	c.checkImplicitFinalBlock(function, ty, statements, pos)
 }
 
 func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExpr, stmt Statement) {
@@ -345,37 +341,24 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 			return
 		}
-		if len(typed.Consequent) == 0 {
-			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
-		} else {
-			c.checkImplicitFinalStatement(function, ty, typed.Consequent[len(typed.Consequent)-1])
-		}
+		c.checkImplicitFinalBlock(function, ty, typed.Consequent, typed.Pos())
 		for _, elseIf := range typed.ElseIf {
-			if len(elseIf.Consequent) == 0 {
-				c.add(function, elseIf.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
-				continue
-			}
-			c.checkImplicitFinalStatement(function, ty, elseIf.Consequent[len(elseIf.Consequent)-1])
+			c.checkImplicitFinalBlock(function, ty, elseIf.Consequent, elseIf.Pos())
 		}
-		if len(typed.Alternate) > 0 {
-			c.checkImplicitFinalStatement(function, ty, typed.Alternate[len(typed.Alternate)-1])
-		}
+		c.checkImplicitFinalBlock(function, ty, typed.Alternate, typed.Pos())
 	case *ForStmt, *WhileStmt, *UntilStmt:
 		c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 	case *TryStmt:
-		switch {
-		case len(typed.Else) > 0 && !blockAlwaysExits(typed.Body):
+		if len(typed.Else) > 0 && !blockAlwaysExits(typed.Body) {
 			// The else branch only runs when the body completes without an
 			// explicit return or raise (see evalTryStatement: runElse requires
 			// !returned and no error). When it runs, its final statement is the
 			// result.
 			c.checkImplicitFinalBlock(function, ty, typed.Else, typed.Pos())
-		case len(typed.Body) == 0:
-			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
-		default:
-			// Either there is no else, or the body always exits so the else is
-			// unreachable; the body's final statement is the result.
-			c.checkImplicitFinalStatement(function, ty, typed.Body[len(typed.Body)-1])
+		} else {
+			// No reachable else: the body's final statement is the result. When
+			// the body always exits, the else is unreachable dead code.
+			c.checkImplicitFinalBlock(function, ty, typed.Body, typed.Pos())
 		}
 		if len(typed.Rescue) > 0 {
 			c.checkImplicitFinalBlock(function, ty, typed.Rescue, typed.RescuePosition)
@@ -388,7 +371,7 @@ func (c *scriptChecker) checkImplicitFinalBlock(function string, ty *TypeExpr, s
 		c.add(function, pos, "typed return %s can implicitly return nil", formatTypeExpr(ty))
 		return
 	}
-	c.checkImplicitFinalStatement(function, ty, statements[len(statements)-1])
+	c.checkImplicitFinalStatement(function, ty, effectiveFinalStatement(statements))
 }
 
 // statementAlwaysExits reports whether evaluating stmt always performs an
@@ -421,12 +404,25 @@ func statementAlwaysExits(stmt Statement) bool {
 }
 
 // blockAlwaysExits reports whether a block always returns or raises, determined
-// by its final statement.
+// by its last reachable statement.
 func blockAlwaysExits(statements []Statement) bool {
 	if len(statements) == 0 {
 		return false
 	}
-	return statementAlwaysExits(statements[len(statements)-1])
+	return statementAlwaysExits(effectiveFinalStatement(statements))
+}
+
+// effectiveFinalStatement returns the last statement that can actually run in a
+// non-empty block. The first statement that always exits (return/raise) makes
+// every later statement unreachable, so it becomes the terminal statement;
+// otherwise the syntactic last statement is the block's result.
+func effectiveFinalStatement(statements []Statement) Statement {
+	for _, stmt := range statements {
+		if statementAlwaysExits(stmt) {
+			return stmt
+		}
+	}
+	return statements[len(statements)-1]
 }
 
 func expressionCanImplicitlyYieldNil(expr Expression) bool {
