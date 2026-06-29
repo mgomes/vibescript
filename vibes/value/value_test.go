@@ -543,6 +543,81 @@ func TestValueStringCycleDetection(t *testing.T) {
 	})
 }
 
+func TestTypedHashStringPreservesDisplayCollidingEntries(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	if err := hash.HashSet(value.NewSymbol("a"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(:a) error = %v", err)
+	}
+	if err := hash.HashSet(value.NewString("a"), value.NewInt(2)); err != nil {
+		t.Fatalf("HashSet(\"a\") error = %v", err)
+	}
+
+	rendered := hash.String()
+	requireTypedHashCollisionString(t, rendered)
+	if got, want := hash.StringByteLen(), len(rendered); got != want {
+		t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+	}
+	if got, want := hash.StringRuneLen(), utf8.RuneCountInString(rendered); got != want {
+		t.Fatalf("StringRuneLen() = %d, want rendered rune count %d", got, want)
+	}
+
+	bounded, err := hash.StringBounded(1 << 20)
+	if err != nil {
+		t.Fatalf("StringBounded() error = %v, want nil", err)
+	}
+	requireTypedHashCollisionString(t, bounded)
+
+	boundedLen, err := hash.StringByteLenBounded(func() error { return nil })
+	if err != nil {
+		t.Fatalf("StringByteLenBounded() error = %v, want nil", err)
+	}
+	if want := hash.StringByteLen(); boundedLen != want {
+		t.Fatalf("StringByteLenBounded() = %d, want StringByteLen() = %d", boundedLen, want)
+	}
+
+	limit := hash.StringByteLen() - 1
+	got, truncated, err := hash.StringByteLenBoundedUpTo(limit, func() error { return nil })
+	if err != nil {
+		t.Fatalf("StringByteLenBoundedUpTo() error = %v, want nil", err)
+	}
+	if !truncated {
+		t.Fatalf("StringByteLenBoundedUpTo() truncated = false, want true")
+	}
+	if got != limit+1 {
+		t.Fatalf("StringByteLenBoundedUpTo() = %d, want limit+1", got)
+	}
+}
+
+func TestTypedHashStringCycleDetection(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewHash(map[string]value.Value{})
+	if err := hash.HashSet(value.NewSymbol("self"), hash); err != nil {
+		t.Fatalf("HashSet(:self) error = %v", err)
+	}
+	if got := hash.String(); got != "{self: <cycle>}" {
+		t.Fatalf("String() = %q, want typed hash cycle marker", got)
+	}
+	if got, want := hash.StringByteLen(), len(hash.String()); got != want {
+		t.Fatalf("StringByteLen() = %d, want len(String()) = %d", got, want)
+	}
+}
+
+func requireTypedHashCollisionString(t *testing.T, got string) {
+	t.Helper()
+	if !strings.HasPrefix(got, "{") || !strings.HasSuffix(got, "}") {
+		t.Fatalf("typed hash String() = %q, want hash delimiters", got)
+	}
+	if strings.Count(got, "a: ") != 2 {
+		t.Fatalf("typed hash String() = %q, want two display-colliding a entries", got)
+	}
+	if !strings.Contains(got, "a: 1") || !strings.Contains(got, "a: 2") {
+		t.Fatalf("typed hash String() = %q, want both typed entries", got)
+	}
+}
+
 func TestValueStringByteLen(t *testing.T) {
 	t.Parallel()
 
