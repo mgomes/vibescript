@@ -255,10 +255,10 @@ func (v Value) HashSet(key, val Value) error {
 	switch v.kind {
 	case KindHash:
 		hd := v.data.(*hashData)
-		if hd.entries == nil {
-			hd.entries = make(map[string]Value)
-		}
 		if hd.typedEntries == nil {
+			if hd.entries == nil {
+				hd.entries = make(map[string]Value)
+			}
 			hd.typedEntries = make(map[HashLookupKey]HashEntry)
 			for displayKey, value := range hd.entries {
 				entryKey := promotedLegacyHashKey(displayKey, key)
@@ -274,7 +274,9 @@ func (v Value) HashSet(key, val Value) error {
 			return err
 		}
 		hd.typedEntries[canonical] = HashEntry{Key: key, Value: val}
-		hd.entries[HashDisplayKey(key)] = val
+		if hd.entries != nil {
+			hd.entries[HashDisplayKey(key)] = val
+		}
 		return nil
 	case KindObject:
 		if key.kind != KindString && key.kind != KindSymbol {

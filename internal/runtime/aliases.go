@@ -265,6 +265,10 @@ func NewArray(a []Value) Value { return value.NewArray(a) }
 // NewHash returns a hash (map) Value.
 func NewHash(h map[string]Value) Value { return value.NewHash(h) }
 
+// NewTypedHash returns a typed-key hash without eagerly materializing the legacy
+// string-key compatibility map.
+func NewTypedHash(capacity int) Value { return value.NewTypedHash(capacity) }
+
 // NewHashWithDefault returns a hash Value carrying Ruby-style default metadata
 // (a default value and/or a default proc consulted on missing-key lookup).
 func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Value {
@@ -282,6 +286,10 @@ func hashDefaultProc(v Value) Value { return value.HashDefaultProc(v) }
 // default metadata), or 0 when v is not a hash. Scanners that must also visit
 // hash defaults key their seen-set on this rather than the bare entry map.
 func hashIdentity(v Value) uintptr { return value.HashIdentity(v) }
+
+func hashStringMapIfMaterialized(v Value) (map[string]Value, bool) {
+	return v.HashStringMapIfMaterialized()
+}
 
 // NewSymbol returns a symbol Value.
 func NewSymbol(name string) Value { return value.NewSymbol(name) }

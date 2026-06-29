@@ -57,6 +57,26 @@ func TestMemoryEstimatorDeduplicatesAliasedStringPayload(t *testing.T) {
 	}
 }
 
+func TestMemoryEstimatorDoesNotMaterializeTypedHashMirror(t *testing.T) {
+	t.Parallel()
+
+	hash := NewTypedHash(0)
+	if err := hashSet(hash, NewString("score"), NewInt(7)); err != nil {
+		t.Fatalf("hashSet(score) error = %v", err)
+	}
+	if entries, ok := hashStringMapIfMaterialized(hash); ok || entries != nil {
+		t.Fatalf("typed hash legacy map before estimate = %v, %v; want nil, false", entries, ok)
+	}
+
+	estimate := newMemoryEstimator().value(hash)
+	if estimate == 0 {
+		t.Fatal("typed hash estimate = 0, want positive memory charge")
+	}
+	if entries, ok := hashStringMapIfMaterialized(hash); ok || entries != nil {
+		t.Fatalf("typed hash legacy map after estimate = %v, %v; want nil, false", entries, ok)
+	}
+}
+
 func TestMemoryEstimatorResetAllowsReuse(t *testing.T) {
 	t.Parallel()
 	payload := NewHash(map[string]Value{"id": NewInt(1)})

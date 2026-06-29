@@ -53,6 +53,14 @@ func NewHash(h map[string]Value) Value {
 	return Value{kind: KindHash, data: &hashData{entries: h}}
 }
 
+// NewTypedHash returns a hash with typed-key storage and no materialized legacy
+// string-key map. Hash() materializes that map lazily for legacy callers.
+func NewTypedHash(capacity int) Value {
+	return Value{kind: KindHash, data: &hashData{
+		typedEntries: make(map[HashLookupKey]HashEntry, capacity),
+	}}
+}
+
 // NewHashWithDefault returns a hash (map) Value carrying Ruby-style default
 // metadata. A non-nil defaultProc (a KindBlock value) takes precedence over
 // defaultValue on missing-key lookup; pass NewNil() for whichever is unused.

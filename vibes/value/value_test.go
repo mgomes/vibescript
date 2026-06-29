@@ -203,6 +203,39 @@ func TestHashDataRoundTrip(t *testing.T) {
 	})
 }
 
+func TestTypedHashMaterializesLegacyMapLazily(t *testing.T) {
+	t.Parallel()
+
+	hash := value.NewTypedHash(0)
+	if entries, ok := hash.HashStringMapIfMaterialized(); ok || entries != nil {
+		t.Fatalf("new typed hash materialized legacy map = %v, %v; want nil, false", entries, ok)
+	}
+	if err := hash.HashSet(value.NewString("score"), value.NewInt(7)); err != nil {
+		t.Fatalf("HashSet(\"score\") error = %v", err)
+	}
+	if got, ok, err := hash.HashGet(value.NewString("score")); err != nil || !ok || !got.Equal(value.NewInt(7)) {
+		t.Fatalf("HashGet(\"score\") = %s, %v, %v; want 7, true, nil", got.Inspect(), ok, err)
+	}
+	if entries, ok := hash.HashStringMapIfMaterialized(); ok || entries != nil {
+		t.Fatalf("typed hash materialized legacy map before Hash() = %v, %v; want nil, false", entries, ok)
+	}
+
+	entries := hash.Hash()
+	if got := entries["score"]; !got.Equal(value.NewInt(7)) {
+		t.Fatalf("Hash()[\"score\"] = %s, want 7", got.Inspect())
+	}
+	if materialized, ok := hash.HashStringMapIfMaterialized(); !ok || materialized == nil {
+		t.Fatalf("typed hash legacy map materialized = %v, %v; want non-nil, true", materialized, ok)
+	}
+
+	if err := hash.HashSet(value.NewString("active"), value.NewBool(true)); err != nil {
+		t.Fatalf("HashSet(\"active\") error = %v", err)
+	}
+	if got := entries["active"]; !got.Equal(value.NewBool(true)) {
+		t.Fatalf("materialized Hash()[\"active\"] = %s, want true", got.Inspect())
+	}
+}
+
 func TestScalarValueData(t *testing.T) {
 	t.Parallel()
 

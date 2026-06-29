@@ -135,7 +135,7 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 		return NewHash(nil), nil
 	}
 
-	values := NewHash(nil)
+	values := NewTypedHash(0)
 	for {
 		if p.pos >= len(p.raw) {
 			return NewNil(), fmt.Errorf("unexpected end of JSON input")

@@ -1751,8 +1751,10 @@ func (est *memoryEstimator) value(val Value) int {
 		size += est.stringPayloadSize(str)
 	case KindArray:
 		size += est.slice(val.Array())
-	case KindHash, KindObject:
-		size += est.hash(val.Hash())
+	case KindHash:
+		if entries, ok := hashStringMapIfMaterialized(val); ok {
+			size += est.hash(entries)
+		}
 		// A KindHash wraps its entry map in a hashData struct to carry optional
 		// Ruby-style default metadata; that wrapper is a real per-hash heap
 		// allocation outside the entry map, so it counts toward the quota too.
@@ -1767,6 +1769,8 @@ func (est *memoryEstimator) value(val Value) int {
 		// Objects never carry defaults, so these accessors return nil for them.
 		size += est.valuePayload(hashDefaultValue(val))
 		size += est.valuePayload(hashDefaultProc(val))
+	case KindObject:
+		size += est.hash(val.Hash())
 	case KindClass:
 		cl := valueClass(val)
 		if cl == nil {
