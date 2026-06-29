@@ -811,18 +811,23 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 			return clone
 		}
 	}
-	entries := val.Hash()
-	entriesPtr := reflect.ValueOf(entries).Pointer()
 	typedEntries := hashHasTypedEntries(val)
-	// A distinct wrapper that shares this entry map already cloned it; reuse that
-	// cloned map so both cloned wrappers mutate one map in place and the host's
-	// intentional aliasing survives the boundary. The shared map is already fully
-	// populated, so skip the fill loop -- only a fresh wrapper (with this wrapper's
-	// own cloned defaults) is built around it.
-	sharedEntries, sharedSeen := state.hashEntries[entriesPtr]
-	if typedEntries {
-		sharedEntries = nil
-		sharedSeen = false
+	// Only the legacy string-key map participates in shared-entry dedup. A typed
+	// hash clones through HashEntries() below, so avoid materializing its lossy
+	// string-key map here at all.
+	var entries map[string]Value
+	var entriesPtr uintptr
+	var sharedEntries map[string]Value
+	var sharedSeen bool
+	if !typedEntries {
+		entries = val.Hash()
+		entriesPtr = reflect.ValueOf(entries).Pointer()
+		// A distinct wrapper that shares this entry map already cloned it; reuse
+		// that cloned map so both cloned wrappers mutate one map in place and the
+		// host's intentional aliasing survives the boundary. The shared map is
+		// already fully populated, so skip the fill loop -- only a fresh wrapper
+		// (with this wrapper's own cloned defaults) is built around it.
+		sharedEntries, sharedSeen = state.hashEntries[entriesPtr]
 	}
 	clonedEntries := sharedEntries
 	if !sharedSeen {
