@@ -74,6 +74,11 @@ func TestParserInfersImplicitBlockParams(t *testing.T) {
 			source: `def run; [1].map { begin; raise "x"; rescue => it; nil; end; it }; end`,
 			want:   []string{"it"},
 		},
+		{
+			name:   "logical_statement",
+			source: `def run; [1].map { x = _1 and true }; end`,
+			want:   []string{"_1"},
+		},
 	}
 
 	for _, tc := range tests {

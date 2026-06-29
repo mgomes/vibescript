@@ -178,6 +178,21 @@ end
 	})
 }
 
+func TestRubyLogicalStatementPredeclaresShortCircuitedRHSAssignments(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run
+  x = true or y = 1
+  a = false and b = 2
+  [x, y, a, b]
+end
+`)
+
+	got := callFunc(t, script, "run", nil)
+	compareArrays(t, got, []Value{NewBool(true), NewNil(), NewBool(false), NewNil()})
+}
+
 func TestRubyNestedZeroArgDoBlockInsideLoopCondition(t *testing.T) {
 	t.Parallel()
 

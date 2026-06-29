@@ -53,6 +53,9 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 	case *ast.AssignStmt:
 		u.recordAssignedTarget(s.Target)
 		u.visitExpression(s.Value, false)
+	case *ast.LogicalStmt:
+		u.visitStatement(s.Left)
+		u.visitStatement(s.Right)
 	case *ast.ExprStmt:
 		u.visitExpression(s.Expr, false)
 	case *ast.IfStmt:

@@ -2355,7 +2355,8 @@ func collectLocalBindingNames(stmts []Statement, nested bool, names *[]string, s
 				collectTargetBindingNames(s.Target, names, seen)
 			}
 		case *LogicalStmt:
-			collectLocalBindingNames([]Statement{s.Left, s.Right}, nested, names, seen)
+			collectLocalBindingNames([]Statement{s.Left}, nested, names, seen)
+			collectLocalBindingNames([]Statement{s.Right}, true, names, seen)
 		case *IfStmt:
 			collectLocalBindingNames(s.Consequent, true, names, seen)
 			for _, branch := range s.ElseIf {
