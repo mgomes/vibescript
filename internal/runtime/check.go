@@ -577,6 +577,13 @@ func (c *scriptChecker) staticConstructorClass(member *MemberExpr) (string, bool
 	if !ok {
 		return "", false
 	}
+	// A local or parameter that shadows the class name dispatches through the
+	// runtime value, not the static class, so the chained call must not be
+	// validated against the class. This mirrors the direct receiver path in
+	// resolveMemberCallable.
+	if c.identifierShadowed(ident.Name) {
+		return "", false
+	}
 	if _, ok := c.script.classes[ident.Name]; !ok {
 		return "", false
 	}

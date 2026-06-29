@@ -357,6 +357,18 @@ end`,
   JSON.parse()
 end`,
 		},
+		{
+			name: "shadowed class receiver skips chained constructor check",
+			source: `class Box
+  def take()
+    1
+  end
+end
+
+def run(Box)
+  Box.new.take(1, 2, 3)
+end`,
+		},
 	}
 
 	for _, tc := range tests {
