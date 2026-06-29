@@ -251,6 +251,20 @@ func TestCheckWarningsHonorRuntimeContractSemantics(t *testing.T) {
 end`,
 		},
 		{
+			name: "unreachable tail after explicit return",
+			source: `def run() -> int
+  return 1
+  nil
+end`,
+		},
+		{
+			name: "unreachable tail after raise",
+			source: `def run() -> int
+  raise "boom"
+  nil
+end`,
+		},
+		{
 			name: "begin body return skips unreachable else",
 			source: `def run() -> int
   begin
