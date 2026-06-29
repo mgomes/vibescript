@@ -54,10 +54,10 @@ end`
 	}
 
 	wantBody := []ast.Statement{
-		&ast.ExprStmt{
-			Expr: &ast.BinaryExpr{
-				Left: &ast.BinaryExpr{
-					Left: &ast.UnaryExpr{
+		&ast.LogicalStmt{
+			Left: &ast.LogicalStmt{
+				Left: &ast.ExprStmt{
+					Expr: &ast.UnaryExpr{
 						Operator: ast.TokenNot,
 						Right: &ast.CallExpr{
 							Callee: &ast.Identifier{Name: "allowed"},
@@ -67,11 +67,44 @@ end`
 							KwArgs: []ast.KeywordArg{},
 						},
 					},
-					Operator: ast.TokenWordAnd,
-					Right:    &ast.Identifier{Name: "fallback"},
 				},
-				Operator: ast.TokenWordOr,
-				Right:    &ast.Identifier{Name: "final"},
+				Operator: ast.TokenWordAnd,
+				Right:    &ast.ExprStmt{Expr: &ast.Identifier{Name: "fallback"}},
+			},
+			Operator: ast.TokenWordOr,
+			Right:    &ast.ExprStmt{Expr: &ast.Identifier{Name: "final"}},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestParserPlainExpressionGuardFormsSplitAtWordOperators(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  ready or raise "not ready"
+  ready or fallback = 1
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.LogicalStmt{
+			Left:     &ast.ExprStmt{Expr: &ast.Identifier{Name: "ready"}},
+			Operator: ast.TokenWordOr,
+			Right:    &ast.RaiseStmt{Value: &ast.StringLiteral{Value: "not ready"}},
+		},
+		&ast.LogicalStmt{
+			Left:     &ast.ExprStmt{Expr: &ast.Identifier{Name: "ready"}},
+			Operator: ast.TokenWordOr,
+			Right: &ast.AssignStmt{
+				Target: &ast.Identifier{Name: "fallback"},
+				Value:  &ast.IntegerLiteral{Value: 1},
 			},
 		},
 	}

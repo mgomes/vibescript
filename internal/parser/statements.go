@@ -1420,7 +1420,12 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 		return p.parseAssignmentValue(target)
 	}
 
-	expr := p.parseLineExpression(lowestPrec)
+	// Stop the expression at a statement-level `and`/`or` so parseStatementLogical
+	// can split the line (e.g. `ready or raise "not ready"`). Inside brackets the
+	// stop is suppressed, so grouped forms like `(a or b)` still parse the word
+	// operators as ordinary infix expressions. Assignment and return/raise paths
+	// already stop here for the same reason.
+	expr := p.parseLineExpressionUntil(lowestPrec, ast.TokenWordAnd, ast.TokenWordOr)
 	if expr == nil {
 		return nil
 	}
