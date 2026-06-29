@@ -74,6 +74,23 @@ end
 	})
 }
 
+func TestRubyBlockAutosplatsBeforeNestedDestructuring(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run
+  [[1, [2, 3], 4]].map do |a, (b, c), d|
+    [a, b, c, d]
+  end
+end
+`)
+
+	got := callFunc(t, script, "run", nil)
+	compareArrays(t, got, []Value{
+		NewArray([]Value{NewInt(1), NewInt(2), NewInt(3), NewInt(4)}),
+	})
+}
+
 func TestRubyForLoopDestructuresTargets(t *testing.T) {
 	t.Parallel()
 

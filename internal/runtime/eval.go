@@ -1088,13 +1088,20 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 }
 
 func rubyBlockBindArgs(params []Param, args []Value) []Value {
-	if len(args) != 1 || len(params) <= 1 || args[0].Kind() != KindArray {
+	if len(args) != 1 || args[0].Kind() != KindArray {
 		return args
 	}
+	positional := 0
 	for _, param := range params {
-		if param.Kind != ParamNormal || param.Target != nil {
-			return args
+		switch param.Kind {
+		case ParamNormal, ParamRest:
+			positional++
+		case ParamKeyword, ParamKeywordRest, ParamBlock:
+			continue
 		}
+	}
+	if positional <= 1 {
+		return args
 	}
 	return args[0].Array()
 }
