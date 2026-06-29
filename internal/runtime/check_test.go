@@ -369,6 +369,17 @@ def run(Box)
   Box.new.take(1, 2, 3)
 end`,
 		},
+		{
+			name: "reassigned builtin namespace member skips builtin contract",
+			source: `def parse(raw, extra)
+  raw
+end
+
+def run()
+  JSON.parse = parse
+  JSON.parse("{}", "extra")
+end`,
+		},
 	}
 
 	for _, tc := range tests {

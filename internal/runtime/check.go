@@ -537,6 +537,12 @@ func (c *scriptChecker) resolveMemberCallable(member *MemberExpr) (staticCallabl
 			}
 		}
 		if spec, ok := staticBuiltinSpecs[ident.Name+"."+member.Property]; ok {
+			// A script that reassigns the namespace member (e.g. JSON.parse =
+			// parse) dispatches through the assigned value at runtime, so the
+			// builtin contract no longer applies.
+			if c.namespaceMemberMutated(ident.Name, member.Property) {
+				return staticCallable{}, false
+			}
 			return staticCallable{name: ident.Name + "." + member.Property, spec: spec}, true
 		}
 	}
@@ -987,8 +993,20 @@ func (c *scriptChecker) pushScope(scope map[string]struct{}) func() {
 }
 
 func (c *scriptChecker) identifierShadowed(name string) bool {
+	return c.scopeHas(name)
+}
+
+// namespaceMemberMutated reports whether a `namespace.property` member (such as
+// the builtin JSON.parse) is reassigned anywhere in scope. Member writes are
+// recorded under their dotted path, which never collides with a plain
+// identifier binding.
+func (c *scriptChecker) namespaceMemberMutated(namespace, property string) bool {
+	return c.scopeHas(namespace + "." + property)
+}
+
+func (c *scriptChecker) scopeHas(key string) bool {
 	for i := len(c.scopes) - 1; i >= 0; i-- {
-		if _, ok := c.scopes[i][name]; ok {
+		if _, ok := c.scopes[i][key]; ok {
 			return true
 		}
 	}
@@ -1031,6 +1049,14 @@ func collectBindingTarget(target Expression, out map[string]struct{}) {
 	switch typed := target.(type) {
 	case *Identifier:
 		out[typed.Name] = struct{}{}
+	case *MemberExpr:
+		// Record `namespace.member` writes (e.g. JSON.parse = ...) under their
+		// dotted path so builtin contract checks can tell when a namespace member
+		// was reassigned. Only a simple `<ident>.<property>` target names a
+		// builtin namespace member.
+		if obj, ok := typed.Object.(*Identifier); ok {
+			out[obj.Name+"."+typed.Property] = struct{}{}
+		}
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
 			collectBindingTarget(element.Target, out)
