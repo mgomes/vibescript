@@ -9,7 +9,12 @@ import (
 
 func (p *parser) parseStatement() ast.Statement {
 	stmt := p.parseStatementOperand()
-	return p.parseStatementLogical(stmt, lowestPrec)
+	stmt = p.parseStatementLogical(stmt, lowestPrec)
+	// Apply the postfix modifier to the whole statement, after any logical
+	// split. A modifier has lower precedence than word `and`/`or`, so
+	// `ready or fallback if cond` guards the entire `ready or fallback`
+	// statement rather than just the `fallback` operand.
+	return p.parseStatementModifier(stmt)
 }
 
 func (p *parser) parseStatementOperand() ast.Statement {
@@ -54,7 +59,10 @@ func (p *parser) parseStatementOperand() ast.Statement {
 	default:
 		stmt = p.parseExpressionOrAssignStatement()
 	}
-	return p.parseStatementModifier(stmt)
+	// The modifier is applied by parseStatement once the full statement
+	// (including any logical split) is assembled, so a right-hand operand in a
+	// logical statement does not greedily capture it.
+	return stmt
 }
 
 func (p *parser) skipStatementSeparators() {
@@ -105,7 +113,7 @@ func isStatementModifier(tt ast.TokenType) bool {
 
 func canUseStatementModifier(stmt ast.Statement) bool {
 	switch stmt.(type) {
-	case *ast.AssignStmt, *ast.ExprStmt:
+	case *ast.AssignStmt, *ast.ExprStmt, *ast.LogicalStmt:
 		return true
 	default:
 		return false

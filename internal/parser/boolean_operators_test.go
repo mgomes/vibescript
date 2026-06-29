@@ -113,6 +113,35 @@ end`
 	}
 }
 
+func TestParserModifierGuardsWholeLogicalStatement(t *testing.T) {
+	t.Parallel()
+
+	source := `def run(condition)
+  ready or fallback if condition
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.IfStmt{
+			Condition: &ast.Identifier{Name: "condition"},
+			Consequent: []ast.Statement{
+				&ast.LogicalStmt{
+					Left:     &ast.ExprStmt{Expr: &ast.Identifier{Name: "ready"}},
+					Operator: ast.TokenWordOr,
+					Right:    &ast.ExprStmt{Expr: &ast.Identifier{Name: "fallback"}},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserWordBooleanOperatorsInsideLineLimitedNestedExpressions(t *testing.T) {
 	t.Parallel()
 
