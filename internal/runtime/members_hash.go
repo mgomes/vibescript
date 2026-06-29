@@ -1260,6 +1260,53 @@ func mergedKeyCount(exec *Execution, base map[string]Value, args []Value, limit 
 	return count, nil
 }
 
+// typedMergedKeyCount returns the number of distinct keys produced by merging a
+// typed receiver with args. Keys are compared by their canonical hash key, so
+// symbol, string, and other typed keys dedup exactly as the result map will --
+// the loose receiver+sum(arg lens) bound over-counts every overlapping key. It
+// caps its tracking set at limit (the quota's entry budget) so a doomed merge
+// cannot allocate a large set before being rejected, mirroring mergedKeyCount
+// for the legacy string-keyed path.
+func typedMergedKeyCount(exec *Execution, receiver Value, args []Value, limit int) (int, error) {
+	count := receiver.HashLen()
+	if count > limit {
+		return count, nil
+	}
+	seen := make(map[string]struct{}, count)
+	for _, entry := range receiver.HashEntries() {
+		if err := exec.step(); err != nil {
+			return count, err
+		}
+		key, err := canonicalHashKey(entry.Key)
+		if err != nil {
+			return count, err
+		}
+		seen[key] = struct{}{}
+	}
+	for _, arg := range args {
+		for _, entry := range arg.HashEntries() {
+			if err := exec.step(); err != nil {
+				return count, err
+			}
+			key, err := canonicalHashKey(entry.Key)
+			if err != nil {
+				return count, err
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			count++
+			if count > limit {
+				// Already past the quota's entry budget; stop before the tracking
+				// set grows beyond the admissible result size.
+				return count, nil
+			}
+		}
+	}
+	return count, nil
+}
+
 func hashMemberTransforms(property string) (Value, error) {
 	switch property {
 	case "merge", "update", "merge!":
@@ -1297,16 +1344,49 @@ func hashMemberTransforms(property string) (Value, error) {
 			// would not.
 			useBlock := valueBlock(block) != nil && len(args) > 0
 			if hashHasTypedEntries(receiver) || anyTypedHash(args) {
-				projectedEntries := receiver.HashLen()
+				looseEntries := receiver.HashLen()
 				maxArgLen := 0
 				for _, arg := range args {
 					argLen := arg.HashLen()
-					projectedEntries = saturatingAdd(projectedEntries, argLen)
+					looseEntries = saturatingAdd(looseEntries, argLen)
 					if argLen > maxArgLen {
 						maxArgLen = argLen
 					}
 				}
 				scratchBytes := sortedHashEntryBufferBytes(maxArgLen)
+				// looseEntries counts every overlapping key separately. Like the
+				// legacy path, fall back to the exact distinct union when that bound
+				// matters so an overlapping merge (e.g. h.merge(h), or an argument that
+				// only updates existing keys) whose real output fits is not rejected by
+				// phantom slots, and the reserved backing matches the map the build
+				// actually holds.
+				projectedEntries := looseEntries
+				switch {
+				case useBlock && exec.memoryQuota > 0:
+					// The block accumulator reserves projectedEntries below, so the
+					// loose bound's phantom slots would falsely reject a merge whose
+					// true union plus block results fit. Compute the exact union up
+					// front so the projection and the reservation agree.
+					limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
+					projected, err := typedMergedKeyCount(exec, receiver, args, limit)
+					if err != nil {
+						return NewNil(), err
+					}
+					projectedEntries = projected
+				default:
+					// No block reservation lingers, so the loose bound is only an
+					// up-front admission check. Try it first (non-allocating); only
+					// when it exceeds the quota does overlap matter, so compute the
+					// exact union (capped at the entry budget) before rejecting.
+					if exec.checkProjectedHashTransformBytes(looseEntries, scratchBytes, receiver, args, kwargs, block) != nil {
+						limit := exec.maxProjectedHashEntries(scratchBytes, receiver, args, kwargs, block)
+						projected, err := typedMergedKeyCount(exec, receiver, args, limit)
+						if err != nil {
+							return NewNil(), err
+						}
+						projectedEntries = projected
+					}
+				}
 				if err := exec.checkProjectedHashTransformBytes(projectedEntries, scratchBytes, receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}

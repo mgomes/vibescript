@@ -38,6 +38,30 @@ func typedSymbolHash(key string, val Value) Value {
 	return hash
 }
 
+// largeTypedSymbolHash builds a typed (symbol-keyed) hash with count entries so
+// merge tests exercise the typed projection path (hashHasTypedEntries) rather
+// than the legacy string-keyed map.
+func largeTypedSymbolHash(count int) Value {
+	hash := NewTypedHash(0)
+	for i := range count {
+		if err := hashSet(hash, NewSymbol("k"+strconv.Itoa(i)), NewInt(int64(i))); err != nil {
+			panic(fmt.Sprintf("set typed symbol hash key: %v", err))
+		}
+	}
+	return hash
+}
+
+// typedSymbolHashFrom builds a typed (symbol-keyed) hash from name/value pairs.
+func typedSymbolHashFrom(pairs map[string]int) Value {
+	hash := NewTypedHash(0)
+	for k, v := range pairs {
+		if err := hashSet(hash, NewSymbol(k), NewInt(int64(v))); err != nil {
+			panic(fmt.Sprintf("set typed symbol hash key: %v", err))
+		}
+	}
+	return hash
+}
+
 // callHashMember resolves a hash member builtin and invokes it directly so the
 // containment tests can supply a controlled Execution. The builtins are pure
 // functions of (exec, receiver, args, kwargs, block), mirroring how the
@@ -551,6 +575,108 @@ func TestHashMergeMultiArgOverlapStaysWithinQuota(t *testing.T) {
 	}
 	if got.Kind() != KindHash || len(got.Hash()) != count {
 		t.Fatalf("merge produced %v with %d entries, want a hash with %d", got.Kind(), len(got.Hash()), count)
+	}
+}
+
+func TestTypedMergedKeyCount(t *testing.T) {
+	t.Parallel()
+
+	base := typedSymbolHashFrom(map[string]int{"a": 1, "b": 2})
+
+	tests := []struct {
+		name  string
+		args  []Value
+		limit int
+		want  int
+	}{
+		{name: "no args", limit: 100, want: 2},
+		{name: "self overlay", args: []Value{base}, limit: 100, want: 2},
+		{name: "all new keys", args: []Value{typedSymbolHashFrom(map[string]int{"c": 3, "d": 4})}, limit: 100, want: 4},
+		{name: "partial overlap", args: []Value{typedSymbolHashFrom(map[string]int{"b": 9, "c": 3})}, limit: 100, want: 3},
+		{
+			name: "duplicate new key across args",
+			args: []Value{
+				typedSymbolHashFrom(map[string]int{"c": 3}),
+				typedSymbolHashFrom(map[string]int{"c": 4}),
+			},
+			limit: 100,
+			want:  3,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			exec := &Execution{ctx: context.Background()}
+			got, err := typedMergedKeyCount(exec, base, tc.args, tc.limit)
+			if err != nil {
+				t.Fatalf("typedMergedKeyCount(%s) error = %v, want nil", tc.name, err)
+			}
+			if got != tc.want {
+				t.Fatalf("typedMergedKeyCount(%s) = %d, want %d", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTypedMergedKeyCountStopsAtLimit verifies the typed union counter never
+// grows its deduplication set past the quota-derived budget, mirroring the
+// legacy mergedKeyCount cap.
+func TestTypedMergedKeyCountStopsAtLimit(t *testing.T) {
+	t.Parallel()
+
+	base := typedSymbolHashFrom(map[string]int{"a": 1})
+	first := map[string]int{}
+	second := map[string]int{}
+	for i := range 500 {
+		first["f"+strconv.Itoa(i)] = i
+		second["s"+strconv.Itoa(i)] = i
+	}
+	args := []Value{typedSymbolHashFrom(first), typedSymbolHashFrom(second)}
+
+	const limit = 10
+	exec := &Execution{ctx: context.Background()}
+	got, err := typedMergedKeyCount(exec, base, args, limit)
+	if err != nil {
+		t.Fatalf("typedMergedKeyCount error = %v, want nil", err)
+	}
+	if got <= limit {
+		t.Fatalf("typedMergedKeyCount returned %d, want a value greater than the limit %d", got, limit)
+	}
+	if got > limit+1 {
+		t.Fatalf("typedMergedKeyCount returned %d, want it to stop at limit+1 (%d)", got, limit+1)
+	}
+}
+
+func TestTypedHashMergeProjectionCountsUnionNotSum(t *testing.T) {
+	t.Parallel()
+
+	// A typed hash merged with itself collapses to its own keys, so a quota that
+	// fits the live roots, a union-sized output map, and the sorted scratch buffer
+	// must admit it. The pre-fix typed projection summed receiver+arg lengths and
+	// would have rejected this self-overlay even though it stays within the limit.
+	const count = 2_000
+	receiver := largeTypedSymbolHash(count)
+	args := []Value{receiver}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	base := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
+	scratch := sortedHashEntryBufferBytes(count)
+	quota := base + count*estimatedMapEntryStructuralBytes + scratch
+
+	// Sanity: the discarded sum-based projection (2*count entries) would not fit
+	// this quota, confirming the test exercises the typed union fix.
+	if base+2*count*estimatedMapEntryStructuralBytes+scratch <= quota {
+		t.Fatalf("test setup expects the sum-based projection to exceed the quota")
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	got, err := callHashMember(t, exec, receiver, "merge", args, NewNil())
+	if err != nil {
+		t.Fatalf("typed merge(self) under union-sized quota = %v, want success", err)
+	}
+	if got.Kind() != KindHash || got.HashLen() != count {
+		t.Fatalf("typed merge(self) produced %v with %d entries, want a hash with %d", got.Kind(), got.HashLen(), count)
 	}
 }
 
