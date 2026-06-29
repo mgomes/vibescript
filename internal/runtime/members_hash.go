@@ -1692,7 +1692,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkProjectedHashBytes(projected, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			out := newHashPreservingDefault(receiver, make(map[string]Value, projected))
+			out := NewHash(make(map[string]Value, projected))
 			// Copy the receiver entry by entry rather than with maps.Copy so a
 			// store into a large hash charges a step per copied entry and honors
 			// cancellation, matching replace, compact, and slice. The output map
@@ -1754,7 +1754,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.checkProjectedHashBytes(receiver.HashLen(), receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
 				}
-				out := newHashPreservingDefault(receiver, make(map[string]Value, receiver.HashLen()))
+				out := NewHash(make(map[string]Value, receiver.HashLen()))
 				for _, entry := range receiver.HashEntries() {
 					if err := exec.step(); err != nil {
 						return NewNil(), err
@@ -1775,7 +1775,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err := exec.checkProjectedHashBytes(receiver.HashLen()-1, receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
 			}
-			out := newHashPreservingDefault(receiver, make(map[string]Value, receiver.HashLen()-1))
+			out := NewHash(make(map[string]Value, receiver.HashLen()-1))
 			for _, entry := range receiver.HashEntries() {
 				if err := exec.step(); err != nil {
 					return NewNil(), err
