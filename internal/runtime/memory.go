@@ -2017,27 +2017,16 @@ func (est *memoryEstimator) typedHashEntriesBytes(val Value) int {
 		return 0
 	}
 
-	var entryBuf [smallHashKeyBufferSize]HashEntry
-	entries := val.HashEntriesInto(entryBuf[:])
+	var entryBuf [smallHashKeyBufferSize]TypedHashEntry
+	entries := val.TypedHashEntriesInto(entryBuf[:])
 	size := estimatedMapBaseBytes
 	for _, entry := range entries {
 		size = saturatingAdd(size, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
-		size = saturatingAdd(size, hashLookupKeyExtraPayloadBytes(entry.Key))
-		size = saturatingAdd(size, est.valuePayload(entry.Key))
-		size = saturatingAdd(size, est.valuePayload(entry.Value))
+		size = saturatingAdd(size, entry.LookupKey.ExtraPayloadBytes())
+		size = saturatingAdd(size, est.valuePayload(entry.Entry.Key))
+		size = saturatingAdd(size, est.valuePayload(entry.Entry.Value))
 	}
 	return size
-}
-
-func hashLookupKeyExtraPayloadBytes(key Value) int {
-	if key.Kind() != KindArray {
-		return 0
-	}
-	canonical, err := canonicalHashKey(key)
-	if err != nil {
-		return 0
-	}
-	return len(canonical)
 }
 
 func (est *memoryEstimator) hash(values map[string]Value) int {

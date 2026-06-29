@@ -424,6 +424,11 @@ func TestValuePayloadAccessors(t *testing.T) {
 func TestValueTruthy(t *testing.T) {
 	t.Parallel()
 
+	typedHash := value.NewTypedHash(0)
+	if err := typedHash.HashSet(value.NewString("k"), value.NewInt(1)); err != nil {
+		t.Fatalf("HashSet(\"k\") error = %v", err)
+	}
+
 	tests := []struct {
 		name string
 		val  value.Value
@@ -442,6 +447,8 @@ func TestValueTruthy(t *testing.T) {
 		{"nonempty_array", value.NewArray([]value.Value{value.NewNil()}), true},
 		{"empty_hash", value.NewHash(nil), false},
 		{"nonempty_hash", value.NewHash(map[string]value.Value{"k": value.NewNil()}), true},
+		{"empty_typed_hash", value.NewTypedHash(0), false},
+		{"nonempty_typed_hash", typedHash, true},
 		{"zero_money", value.NewMoney(value.Money{}), true},
 		{"symbol", value.NewSymbol("ok"), true},
 		{"range", value.NewRange(value.Range{}), true},

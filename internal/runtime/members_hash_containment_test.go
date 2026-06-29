@@ -1074,7 +1074,11 @@ func TestHashExceptTypedArrayKeyChargesCanonicalExclusionPayload(t *testing.T) {
 	}
 	args := []Value{key}
 
-	extraPayload := hashLookupKeyExtraPayloadBytes(key)
+	lookupKey, err := hashLookupKey(key)
+	if err != nil {
+		t.Fatalf("lookup typed array key: %v", err)
+	}
+	extraPayload := lookupKey.ExtraPayloadBytes()
 	if extraPayload <= 0 {
 		t.Fatalf("expected array lookup key to retain canonical payload, got %d", extraPayload)
 	}
@@ -1085,7 +1089,7 @@ func TestHashExceptTypedArrayKeyChargesCanonicalExclusionPayload(t *testing.T) {
 	projected = saturatingAdd(projected, typedExclusionSetBytes(1))
 
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projected + extraPayload/2}
-	_, err := callHashMember(t, exec, receiver, "except", args, NewNil())
+	_, err = callHashMember(t, exec, receiver, "except", args, NewNil())
 	requireErrorIs(t, err, errMemoryQuotaExceeded)
 
 	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projected + extraPayload + 64*1024}

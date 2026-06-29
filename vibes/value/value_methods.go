@@ -1021,7 +1021,7 @@ func (v Value) Truthy() bool {
 	case KindArray:
 		return len(v.data.([]Value)) > 0
 	case KindHash:
-		return len(v.hashEntries()) > 0
+		return v.HashLen() > 0
 	case KindEnum, KindEnumValue, KindClass, KindInstance:
 		return true
 	default:

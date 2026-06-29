@@ -1896,7 +1896,7 @@ func hashMemberTransforms(property string) (Value, error) {
 						excluded = make(map[HashLookupKey]struct{})
 					}
 					if _, exists := excluded[key]; !exists {
-						delta := exec.reserveLoopScratch(hashLookupKeyExtraPayloadBytes(arg))
+						delta := exec.reserveLoopScratch(key.ExtraPayloadBytes())
 						retainedKeyPayloadDelta = saturatingAdd(retainedKeyPayloadDelta, delta)
 						if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 							return NewNil(), err

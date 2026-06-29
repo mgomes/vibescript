@@ -77,6 +77,48 @@ func TestMemoryEstimatorDoesNotMaterializeTypedHashMirror(t *testing.T) {
 	}
 }
 
+func TestMemoryEstimatorChargesStoredTypedHashArrayLookupKey(t *testing.T) {
+	t.Parallel()
+
+	payload := strings.Repeat("abcdefghij", 512)
+	keyElements := []Value{NewString(payload)}
+	key := NewArray(keyElements)
+	hash := NewTypedHash(0)
+	if err := hashSet(hash, key, NewInt(1)); err != nil {
+		t.Fatalf("hashSet(array key) error = %v", err)
+	}
+	lookupBeforeMutation, err := hashLookupKey(key)
+	if err != nil {
+		t.Fatalf("hashLookupKey(array key) error = %v", err)
+	}
+	wantStoredPayload := lookupBeforeMutation.ExtraPayloadBytes()
+	if wantStoredPayload == 0 {
+		t.Fatal("array lookup key stored payload = 0, want positive canonical key payload")
+	}
+
+	keyElements[0] = NewString("x")
+	lookupAfterMutation, err := hashLookupKey(key)
+	if err != nil {
+		t.Fatalf("hashLookupKey(mutated array key) error = %v", err)
+	}
+	if got := lookupAfterMutation.ExtraPayloadBytes(); got >= wantStoredPayload {
+		t.Fatalf("mutated array lookup payload = %d, want less than original %d", got, wantStoredPayload)
+	}
+
+	var entryBuf [smallHashKeyBufferSize]TypedHashEntry
+	entries := hash.TypedHashEntriesInto(entryBuf[:])
+	if len(entries) != 1 {
+		t.Fatalf("TypedHashEntriesInto returned %d entries, want 1", len(entries))
+	}
+	if got := entries[0].LookupKey.ExtraPayloadBytes(); got != wantStoredPayload {
+		t.Fatalf("stored lookup payload = %d, want original payload %d", got, wantStoredPayload)
+	}
+
+	if got := newMemoryEstimator().typedHashEntriesBytes(hash); got < wantStoredPayload {
+		t.Fatalf("typed hash entry estimate = %d, want at least stored lookup payload %d", got, wantStoredPayload)
+	}
+}
+
 func TestMemoryEstimatorResetAllowsReuse(t *testing.T) {
 	t.Parallel()
 	payload := NewHash(map[string]Value{"id": NewInt(1)})

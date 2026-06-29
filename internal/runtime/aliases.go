@@ -210,13 +210,14 @@ func cloneStringSlice(values []string) []string {
 // re-exports in vibes/value_alias.go and exist purely to keep the
 // runtime sources readable after the move out of package vibes.
 type (
-	Value         = value.Value
-	ValueKind     = value.ValueKind
-	HashEntry     = value.HashEntry
-	HashLookupKey = value.HashLookupKey
-	Money         = value.Money
-	Duration      = value.Duration
-	Range         = value.Range
+	Value          = value.Value
+	ValueKind      = value.ValueKind
+	HashEntry      = value.HashEntry
+	HashLookupKey  = value.HashLookupKey
+	TypedHashEntry = value.TypedHashEntry
+	Money          = value.Money
+	Duration       = value.Duration
+	Range          = value.Range
 )
 
 type sliceIdentity = value.SliceIdentity

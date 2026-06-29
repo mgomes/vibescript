@@ -14,6 +14,12 @@ type HashEntry struct {
 	Value Value
 }
 
+// TypedHashEntry is a typed hash entry paired with its stored lookup key.
+type TypedHashEntry struct {
+	LookupKey HashLookupKey
+	Entry     HashEntry
+}
+
 // HashLookupKey is a comparable hash-key identity used for hash table lookups.
 // It preserves Ruby-style key identity without materializing canonical strings
 // for scalar keys on hot paths.
@@ -66,6 +72,17 @@ func NewHashLookupKey(key Value) (HashLookupKey, error) {
 	default:
 		return HashLookupKey{}, fmt.Errorf("unsupported hash key type %s", key.kind)
 	}
+}
+
+// ExtraPayloadBytes returns heap bytes stored only by this lookup key, excluding
+// the fixed HashLookupKey struct itself. Scalar lookup keys either keep their
+// payload in numeric fields or alias the original key value's string payload;
+// array keys retain a canonical lookup string that is not reachable otherwise.
+func (k HashLookupKey) ExtraPayloadBytes() int {
+	if k.kind != KindArray {
+		return 0
+	}
+	return len(k.text)
 }
 
 // HashKey returns the canonical lookup key for a hash key value.
@@ -217,6 +234,28 @@ func (v Value) HashEntriesInto(buf []HashEntry) []HashEntry {
 	default:
 		return nil
 	}
+}
+
+// TypedHashEntriesInto appends typed hash entries and their stored lookup keys
+// into buf. It returns nil for non-hash values and hashes that still use only
+// the legacy string-key map.
+func (v Value) TypedHashEntriesInto(buf []TypedHashEntry) []TypedHashEntry {
+	if v.kind != KindHash {
+		return nil
+	}
+	hd := v.data.(*hashData)
+	if hd.typedEntries == nil {
+		return nil
+	}
+
+	entries := buf[:0]
+	if cap(entries) < len(hd.typedEntries) {
+		entries = make([]TypedHashEntry, 0, len(hd.typedEntries))
+	}
+	for lookupKey, entry := range hd.typedEntries {
+		entries = append(entries, TypedHashEntry{LookupKey: lookupKey, Entry: entry})
+	}
+	return entries
 }
 
 // HashGet returns the value for key from a hash or object.
