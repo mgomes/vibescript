@@ -256,6 +256,9 @@ Unknown keyword arguments are strict for all function calls, including typed sig
 ## Notes and limitations
 
 - Types are nominal by kind.
-- Hash keys are runtime strings, so `hash<K, V>` key checks run against string keys.
+- Hash keys keep their runtime identity, so `hash<K, V>` validates the actual key
+  values. For example, `hash<int, string>` accepts `{ 1 => "one" }`, while
+  `hash<string, string>` and `hash<symbol, string>` distinguish `"name"` from
+  `:name`.
 - Shape types are strict: keys must match exactly.
 - Type names are case-insensitive (`Int` == `int`).

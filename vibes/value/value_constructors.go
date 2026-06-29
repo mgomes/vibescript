@@ -37,6 +37,7 @@ func NewArray(a []Value) Value { return Value{kind: KindArray, data: a} }
 // objects never carry hash defaults.
 type hashData struct {
 	entries      map[string]Value
+	typedEntries map[HashLookupKey]HashEntry
 	defaultValue Value
 	defaultProc  Value
 }

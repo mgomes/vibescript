@@ -46,6 +46,272 @@ func compareHash(t *testing.T, got, want map[string]Value) {
 	}
 }
 
+func TestHashArbitraryKeys(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  hash = {1 => "one", [1, 2] => "array", "name" => "string", :name => "symbol"}
+  hash[[3, 4]] = "assigned"
+	  stored = hash.store([5], "stored")
+	  copy = hash.dup
+	  mixed = { "name" => "string", :name => "symbol" }
+	  groups = [1, 2, 3].group_by { |n| n % 2 }
+	  tally = [[1], [1], [2]].tally
+	  mixed_groups = ["name", :name, "name"].group_by { |key| key }
+	  mixed_tally = ["name", :name, "name"].tally
+	  pairs = [[1, "pair-int"], [[2], "pair-array"]].to_h
+	  {
+    int: hash[1],
+    array: hash[[1, 2]],
+    string_key: hash["name"],
+    symbol_key: hash[:name],
+	    assigned_array: hash[[3, 4]],
+	    stored_array: stored[[5]],
+	    copied_int: copy[1],
+	    copied_array: copy[[1, 2]],
+	    mixed_size: mixed.size,
+	    mixed_keys: mixed.keys,
+	    mixed_values: mixed.values,
+	    odd_group: groups[1],
+	    even_group: groups[0],
+	    tally_array: tally[[1]],
+	    mixed_group_size: mixed_groups.size,
+	    mixed_group_string: mixed_groups["name"],
+	    mixed_group_symbol: mixed_groups[:name],
+	    mixed_tally_size: mixed_tally.size,
+	    mixed_tally_string: mixed_tally["name"],
+	    mixed_tally_symbol: mixed_tally[:name],
+    pair_int: pairs[1],
+    pair_array: pairs[[2]]
+  }
+end`)
+
+	result := callFunc(t, script, "run", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("Hash arbitrary key summary kind = %v, want hash", result.Kind())
+	}
+	got := result.Hash()
+	checks := map[string]Value{
+		"int":                NewString("one"),
+		"array":              NewString("array"),
+		"string_key":         NewString("string"),
+		"symbol_key":         NewString("symbol"),
+		"assigned_array":     NewString("assigned"),
+		"stored_array":       NewString("stored"),
+		"copied_int":         NewString("one"),
+		"copied_array":       NewString("array"),
+		"mixed_size":         NewInt(2),
+		"tally_array":        NewInt(2),
+		"mixed_group_size":   NewInt(2),
+		"mixed_tally_size":   NewInt(2),
+		"mixed_tally_string": NewInt(2),
+		"mixed_tally_symbol": NewInt(1),
+		"pair_int":           NewString("pair-int"),
+		"pair_array":         NewString("pair-array"),
+	}
+	for key, want := range checks {
+		if got := got[key]; !got.Equal(want) {
+			t.Fatalf("arbitrary hash key %s = %s, want %s", key, got.Inspect(), want.Inspect())
+		}
+	}
+	compareArrays(t, got["mixed_keys"], []Value{NewString("name"), NewSymbol("name")})
+	compareArrays(t, got["mixed_values"], []Value{NewString("string"), NewString("symbol")})
+	compareArrays(t, got["odd_group"], []Value{NewInt(1), NewInt(3)})
+	compareArrays(t, got["even_group"], []Value{NewInt(2)})
+	compareArrays(t, got["mixed_group_string"], []Value{NewString("name"), NewString("name")})
+	compareArrays(t, got["mixed_group_symbol"], []Value{NewSymbol("name")})
+}
+
+func TestTypedHashAnnotationsUseOriginalKeyValues(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def int_key(hash: hash<int, string>)
+  hash[1]
+end
+
+def array_key(hash: hash<array<int>, string>)
+  hash[[1, 2]]
+end
+
+def reject_symbol(hash: hash<int, string>)
+  hash
+end
+
+def build_int_hash()
+  {1 => "one"}
+end
+
+def build_array_hash()
+  {[1, 2] => "array"}
+end
+
+def build_symbol_hash()
+  {a: "symbol"}
+end`)
+
+	intHash := callFunc(t, script, "build_int_hash", nil)
+	intResult, err := script.Call(context.Background(), "int_key", []Value{intHash}, CallOptions{})
+	if err != nil {
+		t.Fatalf("int_key({1 => string}) error = %v, want nil", err)
+	}
+	if !intResult.Equal(NewString("one")) {
+		t.Fatalf("int_key({1 => string}) = %s, want one", intResult.Inspect())
+	}
+	arrayHash := callFunc(t, script, "build_array_hash", nil)
+	arrayResult, err := script.Call(context.Background(), "array_key", []Value{arrayHash}, CallOptions{})
+	if err != nil {
+		t.Fatalf("array_key({[1, 2] => string}) error = %v, want nil", err)
+	}
+	if !arrayResult.Equal(NewString("array")) {
+		t.Fatalf("array_key({[1, 2] => string}) = %s, want array", arrayResult.Inspect())
+	}
+	symbolHash := callFunc(t, script, "build_symbol_hash", nil)
+	_, err = script.Call(context.Background(), "reject_symbol", []Value{symbolHash}, CallOptions{})
+	if err == nil {
+		t.Fatalf("reject_symbol({a: string}) error = nil, want type mismatch")
+	}
+}
+
+func TestTypedHashKeysSurviveHashHelpers(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  hash = { "a" => 1, :a => 2 }
+  merged = hash.merge({ :a => 3 })
+  sliced = hash.slice("a", :a)
+  excepted = hash.except(:a)
+  selected = hash.select { |key, value| key == "a" }
+  rejected = hash.reject { |key, value| key == :a }
+  transformed = hash.transform_values { |value| value + 10 }
+  compacted = { "a" => 1, :a => nil }.compact
+  looped = []
+  for pair in hash
+    looped = looped.push(pair)
+  end
+  {
+    merge_size: merged.size,
+    merge_str: merged["a"],
+    merge_sym: merged[:a],
+    slice_size: sliced.size,
+    slice_str: sliced["a"],
+    slice_sym: sliced[:a],
+    except_size: excepted.size,
+    except_str: excepted["a"],
+    except_sym_nil: excepted[:a] == nil,
+    select_size: selected.size,
+    select_str: selected["a"],
+    select_sym_nil: selected[:a] == nil,
+    reject_size: rejected.size,
+    reject_str: rejected["a"],
+    reject_sym_nil: rejected[:a] == nil,
+    transform_size: transformed.size,
+    transform_str: transformed["a"],
+    transform_sym: transformed[:a],
+    compact_size: compacted.size,
+    compact_str: compacted["a"],
+    compact_sym_nil: compacted[:a] == nil,
+    looped: looped
+  }
+end`)
+
+	result := callFunc(t, script, "run", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("typed hash helper summary kind = %v, want hash", result.Kind())
+	}
+	got := result.Hash()
+	checks := map[string]Value{
+		"merge_size":      NewInt(2),
+		"merge_str":       NewInt(1),
+		"merge_sym":       NewInt(3),
+		"slice_size":      NewInt(2),
+		"slice_str":       NewInt(1),
+		"slice_sym":       NewInt(2),
+		"except_size":     NewInt(1),
+		"except_str":      NewInt(1),
+		"except_sym_nil":  NewBool(true),
+		"select_size":     NewInt(1),
+		"select_str":      NewInt(1),
+		"select_sym_nil":  NewBool(true),
+		"reject_size":     NewInt(1),
+		"reject_str":      NewInt(1),
+		"reject_sym_nil":  NewBool(true),
+		"transform_size":  NewInt(2),
+		"transform_str":   NewInt(11),
+		"transform_sym":   NewInt(12),
+		"compact_size":    NewInt(1),
+		"compact_str":     NewInt(1),
+		"compact_sym_nil": NewBool(true),
+	}
+	for key, want := range checks {
+		if got := got[key]; !got.Equal(want) {
+			t.Fatalf("typed hash helper %s = %s, want %s", key, got.Inspect(), want.Inspect())
+		}
+	}
+	compareArrays(t, got["looped"], []Value{
+		NewArray([]Value{NewString("a"), NewInt(1)}),
+		NewArray([]Value{NewSymbol("a"), NewInt(2)}),
+	})
+}
+
+func TestHostClonePreservesTypedHashKeys(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def build()
+  {1 => "one", [1] => "array", "name" => "string", :name => "symbol"}
+end
+
+def fetch(hash)
+  {
+    int: hash[1],
+    array: hash[[1]],
+    string_key: hash["name"],
+    symbol_key: hash[:name]
+  }
+end`)
+
+	exported := callFunc(t, script, "build", nil)
+	result := callFunc(t, script, "fetch", []Value{exported})
+	if result.Kind() != KindHash {
+		t.Fatalf("fetch summary kind = %v, want hash", result.Kind())
+	}
+	compareHash(t, result.Hash(), map[string]Value{
+		"int":        NewString("one"),
+		"array":      NewString("array"),
+		"string_key": NewString("string"),
+		"symbol_key": NewString("symbol"),
+	})
+}
+
+func TestHostBackedHashTypedWriteReplacesMatchingLegacyKey(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def rewrite(record)
+  record[:array] = []
+  {
+    size: record.size,
+    value: record[:array],
+    keys: record.keys
+  }
+end`)
+
+	record := NewHash(map[string]Value{"array": NewString("old")})
+	result := callFunc(t, script, "rewrite", []Value{record})
+	if result.Kind() != KindHash {
+		t.Fatalf("rewrite summary kind = %v, want hash", result.Kind())
+	}
+	got := result.Hash()
+	if !got["size"].Equal(NewInt(1)) {
+		t.Fatalf("record size = %s, want 1", got["size"].Inspect())
+	}
+	if value := got["value"]; value.Kind() != KindArray || len(value.Array()) != 0 {
+		t.Fatalf("record[:array] = %s, want empty array", value.Inspect())
+	}
+	keys := got["keys"].Array()
+	if len(keys) != 1 || !keys[0].Equal(NewSymbol("array")) {
+		t.Fatalf("record keys = %s, want [:array]", got["keys"].Inspect())
+	}
+}
+
 func TestHashMergeAndKeys(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -146,9 +412,9 @@ func TestHashMergeConflictBlock(t *testing.T) {
 			want: map[string]Value{"a": NewInt(11), "b": NewInt(5)},
 		},
 		{
-			name: "symbol and string keys with the same name collide",
+			name: "symbol and string keys with the same name stay distinct",
 			fn:   "mixed_symbol_string_keys",
-			want: map[string]Value{"a": NewInt(11)},
+			want: map[string]Value{"a": NewInt(10)},
 		},
 		{
 			name: "block with fewer params defaults extra args away",
@@ -547,9 +813,10 @@ func TestQuotedHashLiteralKeys(t *testing.T) {
       }
     end
 
-    def collision()
-      {name: "symbol", "name": "string"}
-    end
+	    def collision()
+	      hash = {name: "symbol", "name": "string"}
+	      { size: hash.size, symbol_name: hash[:name], string_name: hash["name"] }
+	    end
     `)
 
 	payload := callFunc(t, script, "payload", nil)
@@ -567,7 +834,7 @@ func TestQuotedHashLiteralKeys(t *testing.T) {
 		t.Fatalf("lookups() = %s, want hash", lookups.Kind())
 	}
 	compareHash(t, lookups.Hash(), map[string]Value{
-		"symbol_name": NewString("Ada"),
+		"symbol_name": NewNil(),
 		"string_name": NewString("Ada"),
 		"hyphenated":  NewString("Lovelace"),
 	})
@@ -576,7 +843,11 @@ func TestQuotedHashLiteralKeys(t *testing.T) {
 	if collision.Kind() != KindHash {
 		t.Fatalf("collision() = %s, want hash", collision.Kind())
 	}
-	compareHash(t, collision.Hash(), map[string]Value{"name": NewString("string")})
+	compareHash(t, collision.Hash(), map[string]Value{
+		"size":        NewInt(2),
+		"symbol_name": NewString("symbol"),
+		"string_name": NewString("string"),
+	})
 }
 
 func TestMemberAccessAllowsKeywordNamedHashKeys(t *testing.T) {
@@ -740,7 +1011,7 @@ func TestHashExpandedHelpers(t *testing.T) {
 	if !got["empty_true"].Bool() {
 		t.Fatalf("expected empty_true to be true")
 	}
-	if !got["key_symbol"].Bool() || !got["key_string"].Bool() || !got["include_symbol"].Bool() {
+	if !got["key_symbol"].Bool() || got["key_string"].Bool() || !got["include_symbol"].Bool() {
 		t.Fatalf("key/include mismatch: %#v", got)
 	}
 	if got["missing_key"].Bool() {
@@ -772,7 +1043,7 @@ func TestHashExpandedHelpers(t *testing.T) {
 	if slice.Kind() != KindHash {
 		t.Fatalf("slice expected hash, got %v", slice.Kind())
 	}
-	compareHash(t, slice.Hash(), map[string]Value{"a": NewInt(1), "c": NewInt(3)})
+	compareHash(t, slice.Hash(), map[string]Value{"a": NewInt(1)})
 
 	except := got["except"]
 	if except.Kind() != KindHash {
@@ -1116,11 +1387,6 @@ func TestHashFetchValues(t *testing.T) {
 			want:   []Value{},
 		},
 		{
-			name:   "string keys collide with symbol keys",
-			source: `def run() { a: 1 }.fetch_values("a") end`,
-			want:   []Value{NewInt(1)},
-		},
-		{
 			name:   "block supplies values for missing keys",
 			source: `def run() { a: 1 }.fetch_values(:a, :missing) { |key| key } end`,
 			want:   []Value{NewInt(1), NewSymbol("missing")},
@@ -1160,9 +1426,14 @@ func TestHashFetchValuesErrors(t *testing.T) {
 			wantErr: `hash.fetch_values key not found: "missing"`,
 		},
 		{
+			name:    "string key distinct from symbol key raises",
+			source:  `def run() { a: 1 }.fetch_values("a") end`,
+			wantErr: `hash.fetch_values key not found: "a"`,
+		},
+		{
 			name:    "unsupported key type rejected",
-			source:  `def run() { a: 1 }.fetch_values([1]) end`,
-			wantErr: "hash.fetch_values keys must be symbol or string",
+			source:  `def run() { a: 1 }.fetch_values({ bad: 1 }) end`,
+			wantErr: "hash.fetch_values key is unsupported hash key",
 		},
 	}
 
@@ -1187,11 +1458,6 @@ func TestHashFetch(t *testing.T) {
 			name:   "present key returns value",
 			source: `def run() { a: 1, b: 2 }.fetch(:b) end`,
 			want:   NewInt(2),
-		},
-		{
-			name:   "string key collides with symbol key",
-			source: `def run() { a: 1 }.fetch("a") end`,
-			want:   NewInt(1),
 		},
 		{
 			name:   "missing key uses explicit default",
@@ -1252,8 +1518,8 @@ func TestHashFetchErrors(t *testing.T) {
 		},
 		{
 			name:    "unsupported key type rejected",
-			source:  `def run() { a: 1 }.fetch([1]) end`,
-			wantErr: "hash.fetch key must be symbol or string",
+			source:  `def run() { a: 1 }.fetch({ bad: 1 }) end`,
+			wantErr: "hash.fetch key is unsupported hash key",
 		},
 		{
 			name:    "too many positional arguments rejected",
@@ -1305,43 +1571,79 @@ func TestHashHelpersSupportObjectReceiver(t *testing.T) {
 	}
 }
 
-func TestHashLiteralSyntaxRestriction(t *testing.T) {
+func TestHashLiteralHashRockets(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run(key)
+  h = { :name => "symbol", "name" => "string", key => "expr" }
+  [h[:name], h["name"], h[key]]
+end`)
+	got := callFunc(t, script, "run", []Value{NewInt(1)})
+	compareArrays(t, got, []Value{NewString("symbol"), NewString("string"), NewString("expr")})
+}
+
+func TestTypedHashDisplayCollisionsKeepDistinctSemanticEntries(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  left = { :a => 1, "a" => 2 }
+  right = { :a => 9, "a" => 2 }
+  {
+    equal: left == right,
+    json: JSON.stringify(left)
+  }
+end`)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("typed collision summary kind = %v, want hash", got.Kind())
+	}
+	compareHash(t, got.Hash(), map[string]Value{
+		"equal": NewBool(false),
+		"json":  NewString(`{"a":2,"a":1}`),
+	})
+}
+
+func TestFloatHashKeysNormalizeSignedZero(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  h = { 0.0 => "positive", -0.0 => "negative" }
+  {
+    size: h.size,
+    positive: h[0.0],
+    negative: h[-0.0]
+  }
+end`)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("signed zero summary kind = %v, want hash", got.Kind())
+	}
+	compareHash(t, got.Hash(), map[string]Value{
+		"size":     NewInt(1),
+		"positive": NewString("negative"),
+		"negative": NewString("negative"),
+	})
+}
+
+func TestHashRejectsUnsupportedKeyTypes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		source string
+		name string
+		expr string
+		want string
 	}{
-		{
-			name: "symbol rocket key",
-			source: `
-    def broken()
-      { :name => "Ada" }
-    end
-    `,
-		},
-		{
-			name: "string rocket key",
-			source: `
-    def broken()
-      { "name" => "Ada" }
-    end
-    `,
-		},
-		{
-			name: "expression rocket key",
-			source: `
-    def broken(key)
-      { key => "Ada" }
-    end
-    `,
-		},
+		{name: "literal", expr: `{ {a: 1} => 2 }`, want: "unsupported hash key type hash"},
+		{name: "index assignment", expr: `h = {}; h[{a: 1}] = 2`, want: "unsupported hash key type hash"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			requireCompileErrorContainsDefault(t, tt.source, `invalid hash pair: expected key like name: or "name":`)
+			script := compileScript(t, "def run()\n  "+tt.expr+"\nend")
+			requireCallErrorContains(t, script, "run", nil, CallOptions{}, tt.want)
 		})
 	}
 }
@@ -1356,7 +1658,7 @@ func TestHashMembershipPredicatesAcceptAnyCandidateKey(t *testing.T) {
 		want   bool
 	}{
 		{name: "key? present symbol", method: "key?", key: ":a", want: true},
-		{name: "key? present string", method: "key?", key: `"a"`, want: true},
+		{name: "key? string distinct from symbol", method: "key?", key: `"a"`, want: false},
 		{name: "key? absent symbol", method: "key?", key: ":missing", want: false},
 		{name: "key? integer candidate", method: "key?", key: "1", want: false},
 		{name: "key? float candidate", method: "key?", key: "1.5", want: false},
@@ -1407,7 +1709,7 @@ func TestHashMemberAliasMatchesKeyPredicate(t *testing.T) {
 		want bool
 	}{
 		{name: "present symbol", key: ":a", want: true},
-		{name: "present string", key: `"a"`, want: true},
+		{name: "string distinct from symbol", key: `"a"`, want: false},
 		{name: "absent symbol", key: ":missing", want: false},
 		{name: "integer candidate", key: "1", want: false},
 		{name: "array candidate", key: "[:a]", want: false},
@@ -1532,7 +1834,7 @@ func TestHashStoreRejectsMisuse(t *testing.T) {
 		{name: "missing value", source: "def run() { a: 1 }.store(:b) end", wantErr: "hash.store expects a key and a value"},
 		{name: "no arguments", source: "def run() { a: 1 }.store() end", wantErr: "hash.store expects a key and a value"},
 		{name: "too many arguments", source: "def run() { a: 1 }.store(:b, 2, 3) end", wantErr: "hash.store expects a key and a value"},
-		{name: "unsupported key", source: "def run() { a: 1 }.store([1], 2) end", wantErr: "hash.store key must be symbol or string"},
+		{name: "unsupported key", source: "def run() { a: 1 }.store({ bad: 1 }, 2) end", wantErr: "hash.store key is unsupported hash key"},
 		{name: "keyword argument", source: "def run() { a: 1 }.store(b: 2) end", wantErr: "hash.store does not accept keyword arguments"},
 	}
 
@@ -1575,7 +1877,7 @@ func TestHashExceptIgnoresUnsupportedKeys(t *testing.T) {
 		},
 		{
 			name:   "string and symbol keys still excluded alongside unsupported",
-			source: `def run() { a: 1, b: 2, c: 3 }.except("a", 5, :c) end`,
+			source: `def run() { "a": 1, b: 2, c: 3 }.except("a", 5, :c) end`,
 			want:   map[string]Value{"b": NewInt(2)},
 		},
 	}
@@ -1628,7 +1930,7 @@ func TestHashSliceIgnoresUnsupportedKeys(t *testing.T) {
 		},
 		{
 			name:   "string and symbol keys selected alongside unsupported",
-			source: `def run() { a: 1, b: 2, c: 3 }.slice("a", 5, :c) end`,
+			source: `def run() { "a": 1, b: 2, c: 3 }.slice("a", 5, :c) end`,
 			want:   map[string]Value{"a": NewInt(1), "c": NewInt(3)},
 		},
 		{

@@ -57,7 +57,7 @@ func TestArrayToHash(t *testing.T) {
 			want: map[string]Value{"a": NewInt(1), "b": NewInt(2)},
 		},
 		{
-			name: "symbol and string keys share the same key space",
+			name: "symbol and string keys can coexist",
 			fn:   "mixed_keys",
 			want: map[string]Value{"a": NewInt(1), "b": NewInt(2)},
 		},
@@ -120,8 +120,8 @@ func TestArrayToHashRejectsMisuse(t *testing.T) {
 		},
 		{
 			name:    "unsupported key type",
-			source:  "def run() [[1, 2]].to_h end",
-			wantErr: "array.to_h pair key must be symbol or string",
+			source:  "def run() [[{a: 1}, 2]].to_h end",
+			wantErr: "array.to_h pair key is unsupported hash key",
 		},
 		{
 			name:    "block returns a non-pair",
@@ -274,7 +274,7 @@ func TestHashToArrayRejectsMisuse(t *testing.T) {
 }
 
 // TestArrayToHashRoundTrip verifies Hash#to_a and Array#to_h are inverses for a
-// hash with the same symbol/string key model, matching Ruby's round-trip.
+// hash with Ruby-style key identity, matching Ruby's round-trip.
 func TestArrayToHashRoundTrip(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

@@ -953,7 +953,52 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 			}
 		}
 		return true
-	case KindHash, KindObject:
+	case KindHash:
+		left := v.HashEntries()
+		right := other.HashEntries()
+		if len(left) != len(right) {
+			return false
+		}
+		leftPtr := HashIdentity(v)
+		rightPtr := HashIdentity(other)
+		if leftPtr != 0 && leftPtr == rightPtr {
+			return true
+		}
+		pair := valueEqualityPair{
+			kind:     v.kind,
+			leftPtr:  leftPtr,
+			rightPtr: rightPtr,
+			leftLen:  len(left),
+			rightLen: len(right),
+		}
+		if pair.leftPtr != 0 || pair.rightPtr != 0 {
+			if _, ok := seen[pair]; ok {
+				return true
+			}
+			seen[pair] = struct{}{}
+		}
+		if !v.HashHasTypedEntries() || !other.HashHasTypedEntries() {
+			return hashEntriesEqualByDisplayKey(left, right, seen)
+		}
+		rightByKey, ok := hashEntriesByLookupKey(right)
+		if !ok {
+			return false
+		}
+		for _, leftEntry := range left {
+			key, err := NewHashLookupKey(leftEntry.Key)
+			if err != nil {
+				return false
+			}
+			rightEntry, ok := rightByKey[key]
+			if !ok {
+				return false
+			}
+			if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+				return false
+			}
+		}
+		return true
+	case KindObject:
 		left := v.Hash()
 		right := other.Hash()
 		if len(left) != len(right) {
@@ -995,4 +1040,52 @@ func valuesEqual(v, other Value, seen map[valueEqualityPair]struct{}) bool {
 		}
 		return reflect.DeepEqual(v.data, other.data)
 	}
+}
+
+func hashEntriesEqualByDisplayKey(left, right []HashEntry, seen map[valueEqualityPair]struct{}) bool {
+	leftByKey, ok := hashEntriesByDisplayKey(left)
+	if !ok {
+		return false
+	}
+	rightByKey, ok := hashEntriesByDisplayKey(right)
+	if !ok {
+		return false
+	}
+	if len(leftByKey) != len(rightByKey) {
+		return false
+	}
+	for key, leftEntry := range leftByKey {
+		rightEntry, ok := rightByKey[key]
+		if !ok {
+			return false
+		}
+		if !valuesEqual(leftEntry.Value, rightEntry.Value, seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func hashEntriesByDisplayKey(entries []HashEntry) (map[string]HashEntry, bool) {
+	byKey := make(map[string]HashEntry, len(entries))
+	for _, entry := range entries {
+		key := HashDisplayKey(entry.Key)
+		if _, exists := byKey[key]; exists {
+			return nil, false
+		}
+		byKey[key] = entry
+	}
+	return byKey, true
+}
+
+func hashEntriesByLookupKey(entries []HashEntry) (map[HashLookupKey]HashEntry, bool) {
+	byKey := make(map[HashLookupKey]HashEntry, len(entries))
+	for _, entry := range entries {
+		key, err := NewHashLookupKey(entry.Key)
+		if err != nil {
+			return nil, false
+		}
+		byKey[key] = entry
+	}
+	return byKey, true
 }

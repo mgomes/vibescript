@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/mgomes/vibescript/vibes/value"
 )
 
 const (
@@ -17,13 +19,35 @@ const (
 )
 
 func valueToHashKey(val Value) (string, error) {
-	switch val.Kind() {
-	case KindSymbol:
-		return val.String(), nil
-	case KindString:
-		return val.String(), nil
-	default:
-		return "", fmt.Errorf("unsupported hash key type %v", val.Kind())
+	if _, err := value.HashKey(val); err != nil {
+		return "", err
+	}
+	return value.HashDisplayKey(val), nil
+}
+
+func canonicalHashKey(val Value) (string, error) {
+	return value.HashKey(val)
+}
+
+func hashLookupKey(val Value) (HashLookupKey, error) {
+	return value.NewHashLookupKey(val)
+}
+
+func hashGet(container, key Value) (Value, bool, error) {
+	return container.HashGet(key)
+}
+
+func hashSet(container, key, val Value) error {
+	return container.HashSet(key, val)
+}
+
+func hashHasTypedEntries(val Value) bool {
+	return val.HashHasTypedEntries()
+}
+
+func setClonedHashEntry(hash, key, val Value) {
+	if err := hashSet(hash, key, val); err != nil {
+		panic(fmt.Sprintf("clone valid hash entry: %v", err))
 	}
 }
 
@@ -47,10 +71,10 @@ func valueToInt(val Value) (int, error) {
 }
 
 // digPath walks args as a nested lookup path, descending one level per path
-// component. It traverses hashes and objects by symbol/string key and arrays by
-// integer index, returning nil as soon as a key is absent or an index is out of
-// range. This mirrors Ruby's Hash#dig and Array#dig semantics while staying
-// within Vibescript's symbol/string hash-key and non-negative array-index model.
+// component. It traverses hashes by Ruby-style hash key, objects by symbol/string
+// field key, and arrays by integer index, returning nil as soon as a key is
+// absent or an index is out of range. This mirrors Ruby's Hash#dig and Array#dig
+// semantics while staying within Vibescript's non-negative array-index model.
 //
 // Each hash step is a full `[]` access: a missing key consults that hash's
 // Ruby-style default (a default value returned without inserting, or a default
@@ -63,9 +87,7 @@ func valueToInt(val Value) (int, error) {
 //
 //   - Indexing an array with a non-integer path component is a type error, like
 //     Ruby's "no implicit conversion into Integer" TypeError. A hash or object
-//     keyed by a non-symbol/string component instead returns nil, because such a
-//     value can never be a key under Vibescript's hash-key model, so it is simply
-//     absent (Ruby returns nil there too).
+//     miss returns nil (Ruby returns nil there too).
 //   - Continuing a path through a scalar (a non-collection that does not respond
 //     to dig) returns nil rather than raising. Vibescript has always done this
 //     for Hash#dig, and keeping it avoids surprising scripts that probe deeper
@@ -78,11 +100,13 @@ func (exec *Execution) digPath(name string, current Value, args []Value) (Value,
 	for _, arg := range args {
 		switch current.Kind() {
 		case KindHash, KindObject:
-			key, err := valueToHashKey(arg)
+			next, ok, err := hashGet(current, arg)
 			if err != nil {
-				return NewNil(), nil
+				if current.Kind() == KindObject {
+					return NewNil(), nil
+				}
+				return NewNil(), err
 			}
-			next, ok := current.Hash()[key]
 			if !ok {
 				// A missing hash key is a [] access that consults the hash's
 				// default (objects carry none, so they stay nil). The resolved

@@ -210,11 +210,13 @@ func cloneStringSlice(values []string) []string {
 // re-exports in vibes/value_alias.go and exist purely to keep the
 // runtime sources readable after the move out of package vibes.
 type (
-	Value     = value.Value
-	ValueKind = value.ValueKind
-	Money     = value.Money
-	Duration  = value.Duration
-	Range     = value.Range
+	Value         = value.Value
+	ValueKind     = value.ValueKind
+	HashEntry     = value.HashEntry
+	HashLookupKey = value.HashLookupKey
+	Money         = value.Money
+	Duration      = value.Duration
+	Range         = value.Range
 )
 
 type sliceIdentity = value.SliceIdentity
@@ -802,15 +804,20 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 	}
 	entries := val.Hash()
 	entriesPtr := reflect.ValueOf(entries).Pointer()
+	typedEntries := hashHasTypedEntries(val)
 	// A distinct wrapper that shares this entry map already cloned it; reuse that
 	// cloned map so both cloned wrappers mutate one map in place and the host's
 	// intentional aliasing survives the boundary. The shared map is already fully
 	// populated, so skip the fill loop -- only a fresh wrapper (with this wrapper's
 	// own cloned defaults) is built around it.
 	sharedEntries, sharedSeen := state.hashEntries[entriesPtr]
+	if typedEntries {
+		sharedEntries = nil
+		sharedSeen = false
+	}
 	clonedEntries := sharedEntries
 	if !sharedSeen {
-		clonedEntries = make(map[string]Value, len(entries))
+		clonedEntries = make(map[string]Value, val.HashLen())
 	}
 	defaultValue := hashDefaultValue(val)
 	defaultProc := hashDefaultProc(val)
@@ -828,7 +835,7 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 	if id != 0 {
 		state.hashes[id] = cloned
 	}
-	if !sharedSeen && entriesPtr != 0 {
+	if !typedEntries && !sharedSeen && entriesPtr != 0 {
 		state.hashEntries[entriesPtr] = clonedEntries
 	}
 	if hasDefault {
@@ -843,8 +850,16 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 		cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
 	}
 	if !sharedSeen {
-		for key, item := range entries {
-			clonedEntries[key] = cloneValueForHostWithState(item, state)
+		if typedEntries {
+			for _, entry := range val.HashEntries() {
+				clonedKey := cloneValueForHostWithState(entry.Key, state)
+				clonedValue := cloneValueForHostWithState(entry.Value, state)
+				setClonedHashEntry(cloned, clonedKey, clonedValue)
+			}
+		} else {
+			for key, item := range entries {
+				clonedEntries[key] = cloneValueForHostWithState(item, state)
+			}
 		}
 	}
 	return cloned

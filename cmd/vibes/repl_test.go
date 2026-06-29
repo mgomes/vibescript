@@ -165,6 +165,33 @@ func TestEvaluate(t *testing.T) {
 			wantOut:   "undefined variable",
 			errInLast: "runtime error:",
 		},
+		{
+			name:  "puts_writes_to_history",
+			input: `puts "hi"`,
+			check: func(t *testing.T, _ *replModel, output string) {
+				if output != "hi" {
+					t.Fatalf("puts output = %q, want hi", output)
+				}
+			},
+		},
+		{
+			name:  "print_writes_to_history",
+			input: `print "hi"`,
+			check: func(t *testing.T, _ *replModel, output string) {
+				if output != "hi" {
+					t.Fatalf("print output = %q, want hi", output)
+				}
+			},
+		},
+		{
+			name:  "warn_writes_to_history",
+			input: `warn "careful"`,
+			check: func(t *testing.T, _ *replModel, output string) {
+				if output != "careful" {
+					t.Fatalf("warn output = %q, want careful", output)
+				}
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

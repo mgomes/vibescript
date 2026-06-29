@@ -231,6 +231,9 @@ func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 
 	keyType := ty.TypeArgs[0]
 	valueType := ty.TypeArgs[1]
+	if hashHasTypedEntries(val) {
+		return normalizeTypedHashForType(val, ty, keyType, valueType, ctx)
+	}
 	entries := val.Hash()
 	var out map[string]Value
 
@@ -337,6 +340,98 @@ func normalizeHashForType(val Value, ty *TypeExpr, ctx typeContext) (Value, erro
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+func normalizeTypedHashForType(val Value, ty, keyType, valueType *TypeExpr, ctx typeContext) (Value, error) {
+	entries := val.HashEntries()
+
+	defaultProc := hashDefaultProc(val)
+	if !defaultProc.IsNil() {
+		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val) + " with a default proc"}
+	}
+	defaultValue := hashDefaultValue(val)
+	normalizedDefault := defaultValue
+	defaultChanged := false
+	if !defaultValue.IsNil() {
+		converted, err := normalizeValueForType(defaultValue, valueType, ctx)
+		if err != nil {
+			var mismatch *typeMismatchError
+			if errorAsTypeMismatch(err, &mismatch) {
+				return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+			}
+			return NewNil(), err
+		}
+		normalizedDefault = converted
+		defaultChanged = !sameNormalizedValue(normalizedDefault, defaultValue)
+	}
+
+	var out Value
+	outInitialized := false
+	initOut := func(processed int) error {
+		if outInitialized {
+			return nil
+		}
+		if err := ctx.reserveHashEntries(val, len(entries)); err != nil {
+			return err
+		}
+		if defaultValue.IsNil() {
+			out = NewHash(make(map[string]Value, len(entries)))
+		} else {
+			out = NewHashWithDefault(make(map[string]Value, len(entries)), normalizedDefault, NewNil())
+		}
+		for _, entry := range entries[:processed] {
+			if err := hashSet(out, entry.Key, entry.Value); err != nil {
+				return err
+			}
+		}
+		outInitialized = true
+		return nil
+	}
+
+	for i, entry := range entries {
+		if err := ctx.checkSandboxEvery(i); err != nil {
+			return NewNil(), err
+		}
+		normalizedKey, err := normalizeValueForType(entry.Key, keyType, ctx)
+		if err != nil {
+			var mismatch *typeMismatchError
+			if errorAsTypeMismatch(err, &mismatch) {
+				return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+			}
+			return NewNil(), err
+		}
+		normalizedValue, err := normalizeValueForType(entry.Value, valueType, ctx)
+		if err != nil {
+			var mismatch *typeMismatchError
+			if errorAsTypeMismatch(err, &mismatch) {
+				return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+			}
+			return NewNil(), err
+		}
+		if !sameNormalizedValue(normalizedKey, entry.Key) || !sameNormalizedValue(normalizedValue, entry.Value) {
+			if err := initOut(i); err != nil {
+				return NewNil(), err
+			}
+		}
+		if outInitialized {
+			if err := hashSet(out, normalizedKey, normalizedValue); err != nil {
+				return NewNil(), err
+			}
+		}
+	}
+
+	if defaultChanged {
+		if err := initOut(len(entries)); err != nil {
+			return NewNil(), err
+		}
+	}
+	if !outInitialized {
+		return val, nil
+	}
+	if err := ctx.checkSandbox(out); err != nil {
+		return NewNil(), err
+	}
+	return out, nil
 }
 
 func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, error) {

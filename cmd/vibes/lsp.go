@@ -36,6 +36,9 @@ var lspBuiltins = []string{
 	"money",
 	"money_cents",
 	"now",
+	"p",
+	"print",
+	"puts",
 	"rand",
 	"random_id",
 	"require",
@@ -45,6 +48,7 @@ var lspBuiltins = []string{
 	"to_float",
 	"to_int",
 	"uuid",
+	"warn",
 	"Hash",
 	"JSON",
 	"Regex",
@@ -1256,6 +1260,9 @@ var builtinSignatures = map[string]string{
 	"money":       `money("12.34 USD") -> money`,
 	"money_cents": "money_cents(cents, currency) -> money",
 	"now":         "now -> string",
+	"p":           "p(*values) -> value",
+	"print":       "print(*values) -> nil",
+	"puts":        "puts(*values) -> nil",
 	"rand":        "rand(max = nil) -> number",
 	"random_id":   "random_id(length = 16) -> string",
 	"require":     `require(module, as: nil) -> object`,
@@ -1265,6 +1272,7 @@ var builtinSignatures = map[string]string{
 	"to_float":    "to_float(value) -> float",
 	"to_int":      "to_int(value) -> int",
 	"uuid":        "uuid -> string",
+	"warn":        "warn(*values) -> nil",
 }
 
 // signatureHelpAt resolves the innermost call around the cursor and

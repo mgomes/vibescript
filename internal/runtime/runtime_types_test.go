@@ -740,11 +740,11 @@ func TestTypedHashValidatesDefaults(t *testing.T) {
       missing_lookup(Hash.new(42))
     end
 
-    def preserves_default_with_entries(present: int)
-      base = Hash.new(0)
-      base[:present] = present
-      missing_lookup(base)
-    end
+	    def preserves_default_with_entries(present: int)
+	      base = Hash.new(0)
+	      base["present"] = present
+	      missing_lookup(base)
+	    end
     `)
 
 	t.Run("rejects_string_default", func(t *testing.T) {

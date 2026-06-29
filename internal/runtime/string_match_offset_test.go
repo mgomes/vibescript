@@ -182,9 +182,68 @@ func TestStringMatchOffset(t *testing.T) {
 				}
 				return
 			}
-			compareArrays(t, result, tc.want)
+			compareMatchDataCaptures(t, result, tc.want)
 		})
 	}
+}
+
+func TestStringMatchReturnsMatchData(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run()
+  m = "abc123xyz".match("([a-z]+)([0-9]+)")
+  {
+    zero: m[0],
+    one: m[1],
+    two: m[2],
+    last: m[-1],
+    missing: m[3],
+    captures: m.captures,
+    pre: m.pre_match,
+    post: m.post_match,
+    begin_zero: m.begin(0),
+    end_zero: m.end(0),
+    begin_one: m.begin(1),
+    end_two: m.end(2)
+  }
+end`)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindHash {
+		t.Fatalf("String#match result summary kind = %v, want hash", got.Kind())
+	}
+	values := got.Hash()
+	checks := map[string]Value{
+		"zero":       NewString("abc123"),
+		"one":        NewString("abc"),
+		"two":        NewString("123"),
+		"last":       NewString("123"),
+		"missing":    NewNil(),
+		"pre":        NewString(""),
+		"post":       NewString("xyz"),
+		"begin_zero": NewInt(0),
+		"end_zero":   NewInt(6),
+		"begin_one":  NewInt(0),
+		"end_two":    NewInt(6),
+	}
+	for key, want := range checks {
+		if got := values[key]; !got.Equal(want) {
+			t.Fatalf("String#match %s = %s, want %s", key, got.Inspect(), want.Inspect())
+		}
+	}
+	compareArrays(t, values["captures"], []Value{NewString("abc"), NewString("123")})
+}
+
+func compareMatchDataCaptures(t *testing.T, value Value, want []Value) {
+	t.Helper()
+	if value.Kind() != KindObject {
+		t.Fatalf("String#match result kind = %v, want object", value.Kind())
+	}
+	captures, ok := value.Hash()[matchDataValuesKey]
+	if !ok {
+		t.Fatalf("String#match result missing capture storage")
+	}
+	compareArrays(t, captures, want)
 }
 
 func TestStringMatchOffsetErrors(t *testing.T) {

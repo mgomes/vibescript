@@ -255,8 +255,30 @@ func (e *Env) arrayAppendBuffer(name string) ([]Value, bool) {
 
 func (e *Env) clearArrayAppendBuffer(name string) {
 	if scope, ok := e.lookupBindingScope(name); ok {
+		scope.detachArrayAppendBinding(name)
 		scope.dropArrayAppendBuffer(name)
 	}
+}
+
+func (e *Env) detachArrayAppendBinding(name string) {
+	if e.arrayAppendBuffers == nil {
+		return
+	}
+	buffer, ok := e.arrayAppendBuffers[name]
+	if !ok {
+		return
+	}
+	val, ok := e.Get(name)
+	if !ok || val.Kind() != KindArray {
+		return
+	}
+	items := val.Array()
+	if len(items) == 0 || len(items) != len(buffer) || reflect.ValueOf(items).Pointer() != reflect.ValueOf(buffer).Pointer() {
+		return
+	}
+	detached := make([]Value, len(items))
+	copy(detached, items)
+	e.assignValue(name, NewArray(detached))
 }
 
 func (e *Env) lookupBindingScope(name string) (*Env, bool) {

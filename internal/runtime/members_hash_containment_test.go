@@ -30,6 +30,14 @@ func largeHashReceiver(count int) Value {
 	return NewHash(entries)
 }
 
+func typedSymbolHash(key string, val Value) Value {
+	hash := NewHash(make(map[string]Value, 1))
+	if err := hashSet(hash, NewSymbol(key), val); err != nil {
+		panic(fmt.Sprintf("set typed symbol hash key: %v", err))
+	}
+	return hash
+}
+
 // callHashMember resolves a hash member builtin and invokes it directly so the
 // containment tests can supply a controlled Execution. The builtins are pure
 // functions of (exec, receiver, args, kwargs, block), mirroring how the
@@ -1052,6 +1060,44 @@ func TestHashExceptChargesExclusionSet(t *testing.T) {
 	}
 }
 
+func TestHashExceptTypedArrayKeyChargesCanonicalExclusionPayload(t *testing.T) {
+	t.Parallel()
+
+	keyItems := make([]Value, 256)
+	for i := range keyItems {
+		keyItems[i] = NewString("segment-" + strconv.Itoa(i))
+	}
+	key := NewArray(keyItems)
+	receiver := NewHash(map[string]Value{})
+	if err := hashSet(receiver, key, NewInt(1)); err != nil {
+		t.Fatalf("set typed array key: %v", err)
+	}
+	args := []Value{key}
+
+	extraPayload := hashLookupKeyExtraPayloadBytes(key)
+	if extraPayload <= 0 {
+		t.Fatalf("expected array lookup key to retain canonical payload, got %d", extraPayload)
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
+	projected := probe.projectedHashBaseBytes(receiver, args, nil, NewNil())
+	projected = saturatingAdd(projected, estimatedMapEntryStructuralBytes)
+	projected = saturatingAdd(projected, typedExclusionSetBytes(1))
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projected + extraPayload/2}
+	_, err := callHashMember(t, exec, receiver, "except", args, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	roomy := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: projected + extraPayload + 64*1024}
+	out, err := callHashMember(t, roomy, receiver, "except", args, NewNil())
+	if err != nil {
+		t.Fatalf("typed except within an ample quota failed: %v", err)
+	}
+	if got := out.HashLen(); got != 0 {
+		t.Fatalf("typed except kept %d entries, want 0", got)
+	}
+}
+
 // TestHashBuildAccumulatorChargesIncrementally exercises the accumulator that
 // charges block-returned values during a hash build. Feeding values whose
 // cumulative payload crosses the quota must trip on the insertion that crosses
@@ -1497,7 +1543,7 @@ func TestHashMergeManyCollidingOneKeyHashesWithBlockConservativeFootprint(t *tes
 
 	const collisions = 400
 	const payloadBytes = 4 * 1024
-	receiver := NewHash(map[string]Value{"x": NewInt(0)})
+	receiver := typedSymbolHash("x", NewInt(0))
 
 	// The live footprint is the receiver, the colliding argument hashes (each a
 	// one-key map of a small int), and the conservative output charge: one full entry
@@ -1505,7 +1551,7 @@ func TestHashMergeManyCollidingOneKeyHashesWithBlockConservativeFootprint(t *tes
 	probe := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 0}
 	liveArgs := make([]Value, collisions)
 	for i := range liveArgs {
-		liveArgs[i] = NewHash(map[string]Value{"x": NewInt(int64(i + 1))})
+		liveArgs[i] = typedSymbolHash("x", NewInt(int64(i+1)))
 	}
 	liveWithRoots := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, liveArgs, nil, NewNil())
 	entryBytes := estimatedMapEntryBytes + estimatedStringHeaderBytes + estimatedValueBytes
@@ -2092,7 +2138,7 @@ end`,
 		{
 			name: "merge conflict block",
 			source: `def run(values)
-  values.merge({ k0: 99 }) do |key, old_value, new_value|
+  values.merge({ "k0": 99 }) do |key, old_value, new_value|
     cancel_now(new_value)
   end
 end`,

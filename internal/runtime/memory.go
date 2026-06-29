@@ -33,6 +33,11 @@ const (
 // array of Hash.new or empty literals).
 const estimatedHashDataBytes = value.HashDataBytes
 
+const (
+	estimatedHashLookupKeyBytes = int(unsafe.Sizeof(value.HashLookupKey{}))
+	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
+)
+
 // estimatedMapEntryStructuralBytes is the per-entry structural footprint a
 // map[string]Value reserves for one slot regardless of what its key and value
 // point at: the bucket overhead, the key string header, and the value slot. It
@@ -556,6 +561,20 @@ func (exec *Execution) maxCollapsedPairBytes(receiver Value) int {
 }
 
 func maxCollapsedPairBytesWithEstimator(receiver Value, est *memoryEstimator) int {
+	if hashHasTypedEntries(receiver) {
+		if receiver.HashLen() == 0 {
+			return 0
+		}
+		maxBytes := 0
+		var entryBuf [smallHashKeyBufferSize]HashEntry
+		for _, entry := range receiver.HashEntriesInto(entryBuf[:]) {
+			pair := NewArray([]Value{entry.Key, entry.Value})
+			if bytes := est.probe(pair); bytes > maxBytes {
+				maxBytes = bytes
+			}
+		}
+		return maxBytes
+	}
 	entries := receiver.Hash()
 	if len(entries) == 0 {
 		return 0
@@ -1965,17 +1984,16 @@ func sliceBackingIdentity(values []Value) uintptr {
 }
 
 // hashWrapperBytes charges the hashData wrapper a KindHash value allocates
-// around its entry map, deduplicated on the wrapper's identity so two values
-// that share the same wrapper count it once. It returns 0 for KindObject (a
-// bare map with no wrapper) and for any value whose wrapper identity is
-// unavailable, mirroring how est.hash dedups the entry map on its own pointer.
+// around its entry map, plus any typed-key entry map retained by that wrapper.
+// It is deduplicated on the wrapper's identity so aliases count the extra hash
+// state once. It returns 0 for KindObject, which uses a bare map.
 func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 	if val.Kind() != KindHash {
 		return 0
 	}
 	id := hashIdentity(val)
 	if id == 0 {
-		return estimatedHashDataBytes
+		return saturatingAdd(estimatedHashDataBytes, est.typedHashEntriesBytes(val))
 	}
 	if _, seen := est.seenHashData[id]; seen {
 		return 0
@@ -1987,7 +2005,35 @@ func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 	if est.journal != nil {
 		est.journal.hashData = append(est.journal.hashData, id)
 	}
-	return estimatedHashDataBytes
+	return saturatingAdd(estimatedHashDataBytes, est.typedHashEntriesBytes(val))
+}
+
+func (est *memoryEstimator) typedHashEntriesBytes(val Value) int {
+	if !hashHasTypedEntries(val) {
+		return 0
+	}
+
+	var entryBuf [smallHashKeyBufferSize]HashEntry
+	entries := val.HashEntriesInto(entryBuf[:])
+	size := estimatedMapBaseBytes
+	for _, entry := range entries {
+		size = saturatingAdd(size, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
+		size = saturatingAdd(size, hashLookupKeyExtraPayloadBytes(entry.Key))
+		size = saturatingAdd(size, est.valuePayload(entry.Key))
+		size = saturatingAdd(size, est.valuePayload(entry.Value))
+	}
+	return size
+}
+
+func hashLookupKeyExtraPayloadBytes(key Value) int {
+	if key.Kind() != KindArray {
+		return 0
+	}
+	canonical, err := canonicalHashKey(key)
+	if err != nil {
+		return 0
+	}
+	return len(canonical)
 }
 
 func (est *memoryEstimator) hash(values map[string]Value) int {
