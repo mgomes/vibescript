@@ -253,6 +253,40 @@ end`)
 	})
 }
 
+func TestTypedHashMergeDoesNotMaterializeReceiverMirror(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewTypedHash(0)
+	if err := hashSet(receiver, NewString("a"), NewInt(1)); err != nil {
+		t.Fatalf("hashSet(string key) error = %v", err)
+	}
+	if err := hashSet(receiver, NewSymbol("a"), NewInt(2)); err != nil {
+		t.Fatalf("hashSet(symbol key) error = %v", err)
+	}
+	arg := NewTypedHash(0)
+	if err := hashSet(arg, NewSymbol("a"), NewInt(3)); err != nil {
+		t.Fatalf("hashSet(arg symbol key) error = %v", err)
+	}
+	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
+		t.Fatalf("typed receiver materialized before merge = %v, %v; want nil, false", entries, ok)
+	}
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30}
+	merged, err := callHashMember(t, exec, receiver, "merge", []Value{arg}, NewNil())
+	if err != nil {
+		t.Fatalf("typed merge error = %v", err)
+	}
+	if got, ok, err := hashGet(merged, NewString("a")); err != nil || !ok || !got.Equal(NewInt(1)) {
+		t.Fatalf("merged string key = %s, %v, %v; want 1, true, nil", got.Inspect(), ok, err)
+	}
+	if got, ok, err := hashGet(merged, NewSymbol("a")); err != nil || !ok || !got.Equal(NewInt(3)) {
+		t.Fatalf("merged symbol key = %s, %v, %v; want 3, true, nil", got.Inspect(), ok, err)
+	}
+	if entries, ok := hashStringMapIfMaterialized(receiver); ok || entries != nil {
+		t.Fatalf("typed receiver materialized after merge = %v, %v; want nil, false", entries, ok)
+	}
+}
+
 func TestHostClonePreservesTypedHashKeys(t *testing.T) {
 	t.Parallel()
 

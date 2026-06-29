@@ -1205,6 +1205,25 @@ func TestJSONBuiltins(t *testing.T) {
 	requireCallErrorContains(t, script, "stringify_unsupported", nil, CallOptions{}, "JSON.stringify unsupported value type function")
 }
 
+func TestJSONParseObjectDataExposesEntries(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def parse_payload()
+      JSON.parse("{\"name\":\"alex\",\"score\":10}")
+    end
+    `)
+
+	parsed := callFunc(t, script, "parse_payload", nil)
+	data, ok := parsed.Data().(map[string]Value)
+	if !ok {
+		t.Fatalf("JSON object Data() = %T, want map[string]Value", parsed.Data())
+	}
+	if !data["name"].Equal(NewString("alex")) || !data["score"].Equal(NewInt(10)) {
+		t.Fatalf("JSON object Data() = %v, want parsed fields", data)
+	}
+}
+
 func TestJSONStringifyEscaping(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `

@@ -1288,7 +1288,6 @@ func hashMemberTransforms(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("hash.%s argument %d must be a hash", name, i+1)
 				}
 			}
-			base := receiver.Hash()
 			// A block only resolves conflicts, which require at least one argument
 			// hash. With zero arguments the merge short-circuits to a plain copy
 			// below and never runs the block or sorts the base, so the conflict
@@ -1372,6 +1371,7 @@ func hashMemberTransforms(property string) (Value, error) {
 				}
 				return out, nil
 			}
+			base := receiver.Hash()
 			// Preflight the map this merge could materialize before allocating it.
 			// The merge also materializes a sorted key scratch buffer sized to the
 			// largest single argument (reused across arguments). Charge that scratch

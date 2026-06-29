@@ -168,6 +168,25 @@ func TestHashDataRoundTrip(t *testing.T) {
 		}
 	})
 
+	t.Run("typed_hash_data_exposes_entry_map", func(t *testing.T) {
+		t.Parallel()
+		hash := value.NewTypedHash(0)
+		if err := hash.HashSet(value.NewString("k"), value.NewInt(1)); err != nil {
+			t.Fatalf("HashSet(\"k\") error = %v", err)
+		}
+		got, ok := hash.Data().(map[string]value.Value)
+		if !ok {
+			t.Fatalf("typed hash Data() = %T, want map[string]value.Value", hash.Data())
+		}
+		if got["k"].Int() != 1 {
+			t.Fatalf("typed hash Data()[\"k\"] = %v, want 1", got["k"])
+		}
+		materialized, ok := hash.HashStringMapIfMaterialized()
+		if !ok || materialized["k"].Int() != 1 {
+			t.Fatalf("typed hash materialized map = %v, %v; want entry map, true", materialized, ok)
+		}
+	})
+
 	t.Run("round_trips_through_new_value", func(t *testing.T) {
 		t.Parallel()
 		entries := map[string]value.Value{"a": value.NewInt(1), "b": value.NewString("x")}
