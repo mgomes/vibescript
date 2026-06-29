@@ -251,6 +251,34 @@ func TestCheckWarningsHonorRuntimeContractSemantics(t *testing.T) {
 end`,
 		},
 		{
+			name: "begin body return skips unreachable else",
+			source: `def run() -> int
+  begin
+    return 1
+  rescue RuntimeError
+    2
+  else
+    "bad"
+  end
+end`,
+		},
+		{
+			name: "begin body conditional return skips unreachable else",
+			source: `def run(flag) -> int
+  begin
+    if flag
+      return 1
+    else
+      return 2
+    end
+  rescue RuntimeError
+    3
+  else
+    "bad"
+  end
+end`,
+		},
+		{
 			name: "parenless options hash",
 			source: `def configure(opts: { retries: int })
   opts[:retries]

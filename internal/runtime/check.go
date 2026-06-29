@@ -363,13 +363,19 @@ func (c *scriptChecker) checkImplicitFinalStatement(function string, ty *TypeExp
 	case *ForStmt, *WhileStmt, *UntilStmt:
 		c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
 	case *TryStmt:
-		if len(typed.Body) == 0 {
-			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
-		} else if len(typed.Else) == 0 {
-			c.checkImplicitFinalStatement(function, ty, typed.Body[len(typed.Body)-1])
-		}
-		if len(typed.Else) > 0 {
+		switch {
+		case len(typed.Else) > 0 && !blockAlwaysExits(typed.Body):
+			// The else branch only runs when the body completes without an
+			// explicit return or raise (see evalTryStatement: runElse requires
+			// !returned and no error). When it runs, its final statement is the
+			// result.
 			c.checkImplicitFinalBlock(function, ty, typed.Else, typed.Pos())
+		case len(typed.Body) == 0:
+			c.add(function, typed.Pos(), "typed return %s can implicitly return nil", formatTypeExpr(ty))
+		default:
+			// Either there is no else, or the body always exits so the else is
+			// unreachable; the body's final statement is the result.
+			c.checkImplicitFinalStatement(function, ty, typed.Body[len(typed.Body)-1])
 		}
 		if len(typed.Rescue) > 0 {
 			c.checkImplicitFinalBlock(function, ty, typed.Rescue, typed.RescuePosition)
@@ -383,6 +389,44 @@ func (c *scriptChecker) checkImplicitFinalBlock(function string, ty *TypeExpr, s
 		return
 	}
 	c.checkImplicitFinalStatement(function, ty, statements[len(statements)-1])
+}
+
+// statementAlwaysExits reports whether evaluating stmt always performs an
+// explicit return or raise, mirroring the runtime's "returned"/error signals.
+// It lets the implicit-return check tell when a begin/else's else branch is
+// unreachable: evalTryStatement only runs the else branch when the body did not
+// return and did not raise. The analysis is conservative—it returns true only
+// when every path is known to exit—so a false result never suppresses a real
+// warning.
+func statementAlwaysExits(stmt Statement) bool {
+	switch typed := stmt.(type) {
+	case *ReturnStmt, *RaiseStmt:
+		return true
+	case *IfStmt:
+		if len(typed.Alternate) == 0 {
+			return false
+		}
+		if !blockAlwaysExits(typed.Consequent) {
+			return false
+		}
+		for _, elseIf := range typed.ElseIf {
+			if !blockAlwaysExits(elseIf.Consequent) {
+				return false
+			}
+		}
+		return blockAlwaysExits(typed.Alternate)
+	default:
+		return false
+	}
+}
+
+// blockAlwaysExits reports whether a block always returns or raises, determined
+// by its final statement.
+func blockAlwaysExits(statements []Statement) bool {
+	if len(statements) == 0 {
+		return false
+	}
+	return statementAlwaysExits(statements[len(statements)-1])
 }
 
 func expressionCanImplicitlyYieldNil(expr Expression) bool {
