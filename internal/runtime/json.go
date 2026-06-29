@@ -135,7 +135,7 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 		return NewHash(nil), nil
 	}
 
-	values := map[string]Value{}
+	values := NewHash(nil)
 	for {
 		if p.pos >= len(p.raw) {
 			return NewNil(), fmt.Errorf("unexpected end of JSON input")
@@ -161,8 +161,10 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 		if err != nil {
 			return NewNil(), err
 		}
-		values[key] = value
-		if err := p.checkMaterialized(NewHash(values)); err != nil {
+		if err := values.HashSet(NewString(key), value); err != nil {
+			return NewNil(), err
+		}
+		if err := p.checkMaterialized(values); err != nil {
 			return NewNil(), err
 		}
 
@@ -174,7 +176,7 @@ func (p *jsonValueParser) parseObject() (Value, error) {
 				return NewNil(), fmt.Errorf("invalid character '}' looking for beginning of object key string")
 			}
 		case p.consumeByte('}'):
-			return NewHash(values), nil
+			return values, nil
 		default:
 			if p.pos >= len(p.raw) {
 				return NewNil(), fmt.Errorf("unexpected end of JSON input")

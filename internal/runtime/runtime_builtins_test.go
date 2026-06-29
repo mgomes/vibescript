@@ -1145,6 +1145,12 @@ func TestJSONBuiltins(t *testing.T) {
       JSON.stringify(payload)
     end
 
+    def parsed_object_key_identity()
+      payload = JSON.parse("{\"name\":1}")
+      payload[:name] = 2
+      [payload["name"], payload[:name], payload.size]
+    end
+
     def parse_invalid()
       JSON.parse("{bad")
     end
@@ -1181,6 +1187,8 @@ func TestJSONBuiltins(t *testing.T) {
 	if got := stringified.String(); got != `{"name":"alex","ratio":1.5,"score":10,"tags":["x",true,null]}` {
 		t.Fatalf("stringify mismatch: %q", got)
 	}
+
+	compareArrays(t, callFunc(t, script, "parsed_object_key_identity", nil), []Value{NewInt(1), NewInt(2), NewInt(2)})
 
 	requireCallErrorContains(t, script, "parse_invalid", nil, CallOptions{}, "JSON.parse invalid JSON")
 	requireCallErrorContains(t, script, "stringify_unsupported", nil, CallOptions{}, "JSON.stringify unsupported value type function")

@@ -203,6 +203,16 @@ func inspectHashEntryKeyByteLen(key Value, state *valueStringState) int {
 	return key.inspectByteLenWithState(state)
 }
 
+func inspectHashEntryKeyByteLenBounded(key Value, state *valueStringState, step func() error) (int, error) {
+	if key.kind == KindSymbol {
+		if err := step(); err != nil {
+			return 0, err
+		}
+		return inspectHashKeyByteLen(key.String()), nil
+	}
+	return key.inspectByteLenBoundedWithState(state, step)
+}
+
 func (v Value) inspectByteLenWithState(state *valueStringState) int {
 	switch v.kind {
 	case KindString:
@@ -320,12 +330,16 @@ func (v Value) inspectByteLenBoundedWithState(state *valueStringState, step func
 				total := len(hashOpen) + len(hashClose)
 				total += separatorBytes(len(typed))
 				for _, entry := range typed {
-					total += inspectHashEntryKeyByteLen(entry.Key, state) + len(keyValueSeparator)
-					n, err := entry.Value.inspectByteLenBoundedWithState(state, step)
+					n, err := inspectHashEntryKeyByteLenBounded(entry.Key, state, step)
 					if err != nil {
 						return 0, err
 					}
-					total += n
+					total += n + len(keyValueSeparator)
+					valueBytes, err := entry.Value.inspectByteLenBoundedWithState(state, step)
+					if err != nil {
+						return 0, err
+					}
+					total += valueBytes
 				}
 				return total, nil
 			}
