@@ -213,6 +213,13 @@ func isParenlessArgumentStart(tt ast.TokenType) bool {
 	switch tt {
 	case ast.TokenLParen, ast.TokenLBracket, ast.TokenLBrace, ast.TokenMinus, ast.TokenPlus:
 		return false
+	case ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil:
+		// A statement modifier keyword following a complete expression guards the
+		// statement; it never opens a parenless argument. (`if` is otherwise a
+		// prefix-expression starter, so without this `foo if cond` would parse as
+		// `foo(if cond ... end)`. Passing an if/unless expression as an argument
+		// requires explicit parentheses.)
+		return false
 	case ast.TokenAmpersand:
 		return true
 	}
