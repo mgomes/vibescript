@@ -80,6 +80,59 @@ end`
 	}
 }
 
+func TestParserWordBooleanOperatorsInsideLineLimitedNestedExpressions(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  x = (true and false)
+  y = [a or b]
+  z = {ok: c and d}
+  call(e or f)
+end`
+
+	_, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+}
+
+func TestParserStatementWordBooleanPrecedence(t *testing.T) {
+	t.Parallel()
+
+	source := `def run
+  x = false and y = true or z = true
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.LogicalStmt{
+			Left: &ast.LogicalStmt{
+				Left: &ast.AssignStmt{
+					Target: &ast.Identifier{Name: "x"},
+					Value:  &ast.BoolLiteral{Value: false},
+				},
+				Operator: ast.TokenWordAnd,
+				Right: &ast.AssignStmt{
+					Target: &ast.Identifier{Name: "y"},
+					Value:  &ast.BoolLiteral{Value: true},
+				},
+			},
+			Operator: ast.TokenWordOr,
+			Right: &ast.AssignStmt{
+				Target: &ast.Identifier{Name: "z"},
+				Value:  &ast.BoolLiteral{Value: true},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserRejectsSymbolicBooleanLabels(t *testing.T) {
 	t.Parallel()
 

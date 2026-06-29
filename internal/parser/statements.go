@@ -8,6 +8,11 @@ import (
 )
 
 func (p *parser) parseStatement() ast.Statement {
+	stmt := p.parseStatementOperand()
+	return p.parseStatementLogical(stmt, lowestPrec)
+}
+
+func (p *parser) parseStatementOperand() ast.Statement {
 	var stmt ast.Statement
 	switch p.curToken.Type {
 	case ast.TokenDef:
@@ -49,8 +54,7 @@ func (p *parser) parseStatement() ast.Statement {
 	default:
 		stmt = p.parseExpressionOrAssignStatement()
 	}
-	stmt = p.parseStatementModifier(stmt)
-	return p.parseStatementLogical(stmt)
+	return p.parseStatementModifier(stmt)
 }
 
 func (p *parser) skipStatementSeparators() {
@@ -108,18 +112,23 @@ func canUseStatementModifier(stmt ast.Statement) bool {
 	}
 }
 
-func (p *parser) parseStatementLogical(left ast.Statement) ast.Statement {
+func (p *parser) parseStatementLogical(left ast.Statement, precedence int) ast.Statement {
 	if left == nil {
 		return nil
 	}
 	for isStatementLogicalOperator(p.peekToken.Type) && p.peekToken.Pos.Line == p.curToken.Pos.Line {
+		opPrecedence := statementLogicalPrecedence(p.peekToken.Type)
+		if precedence >= opPrecedence {
+			return left
+		}
 		op := p.peekToken
 		p.nextToken()
 		p.nextToken()
-		right := p.parseStatement()
+		right := p.parseStatementOperand()
 		if right == nil {
 			return left
 		}
+		right = p.parseStatementLogical(right, opPrecedence)
 		left = &ast.LogicalStmt{Left: left, Operator: op.Type, Right: right, Position: op.Pos}
 	}
 	return left
@@ -127,6 +136,17 @@ func (p *parser) parseStatementLogical(left ast.Statement) ast.Statement {
 
 func isStatementLogicalOperator(tt ast.TokenType) bool {
 	return tt == ast.TokenWordAnd || tt == ast.TokenWordOr
+}
+
+func statementLogicalPrecedence(tt ast.TokenType) int {
+	switch tt {
+	case ast.TokenWordOr:
+		return precWordOr
+	case ast.TokenWordAnd:
+		return precWordAnd
+	default:
+		return lowestPrec
+	}
 }
 
 func (p *parser) parseReturnStatement() ast.Statement {

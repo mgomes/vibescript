@@ -193,6 +193,22 @@ end
 	compareArrays(t, got, []Value{NewBool(true), NewNil(), NewBool(false), NewNil()})
 }
 
+func TestRubyLogicalStatementMixedPrecedenceAssignsTrailingOr(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run
+  z = false
+  x = false and y = true or z = true
+  z
+end
+`)
+
+	if got := callFunc(t, script, "run", nil); !got.Equal(NewBool(true)) {
+		t.Fatalf("run() = %s, want true", got)
+	}
+}
+
 func TestRubyNestedZeroArgDoBlockInsideLoopCondition(t *testing.T) {
 	t.Parallel()
 
