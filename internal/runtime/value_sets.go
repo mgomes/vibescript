@@ -93,6 +93,14 @@ func (s *valueSet) add(v Value, hint int) bool {
 	return true
 }
 
+func (s *valueSet) contains(v Value) bool {
+	if key, ok := scalarValueKey(v); ok {
+		_, found := s.scalars[key]
+		return found
+	}
+	return containsEqualValue(s.composite, v)
+}
+
 // membershipSet answers contains queries with value equality but, unlike
 // valueSet, never deduplicates on insertion. Scalars are indexed in a map for
 // O(1) membership. Composites are not copied at all: the set retains references
