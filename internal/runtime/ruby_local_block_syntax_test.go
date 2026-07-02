@@ -85,6 +85,37 @@ end
 	}
 }
 
+func TestRubyPredeclaredLocalsShadowGlobalHelpers(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def helper
+  "global"
+end
+
+def function_local
+  if false
+    helper = 1
+  end
+  helper == nil
+end
+
+def block_local
+  [1].each do
+    helper = 1
+  end
+  helper()
+end
+`)
+
+	if got := callFunc(t, script, "function_local", nil); !got.Equal(NewBool(true)) {
+		t.Fatalf("function_local() = %s, want true", got)
+	}
+	if got := callFunc(t, script, "block_local", nil); !got.Equal(NewString("global")) {
+		t.Fatalf("block_local() = %s, want global", got)
+	}
+}
+
 func TestRubyBlockMultiParameterDestructuresSingleYieldedArray(t *testing.T) {
 	t.Parallel()
 

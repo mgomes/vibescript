@@ -179,6 +179,16 @@ func (e *Env) PredeclareLocal(name string) {
 	if name == "" || e.hasOwnBinding(name) {
 		return
 	}
+	if e.parent != nil && e.parent.hasEnclosingLocalBinding(name) {
+		return
+	}
+	e.Define(name, NewNil())
+}
+
+func (e *Env) PredeclareLocalUnlessParentBinding(name string) {
+	if name == "" || e.hasOwnBinding(name) {
+		return
+	}
 	if e.parent != nil && e.parent.hasBindingInChain(name) {
 		return
 	}
@@ -437,6 +447,18 @@ func (e *Env) hasOwnBinding(name string) bool {
 	}
 	_, ok := e.statics[name]
 	return ok
+}
+
+func (e *Env) hasEnclosingLocalBinding(name string) bool {
+	for scope := e; scope != nil; scope = scope.parent {
+		if scope.callRoot || scope.frozen {
+			return false
+		}
+		if scope.hasOwnBinding(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Env) hasBindingInChain(name string) bool {

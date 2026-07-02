@@ -2343,7 +2343,7 @@ func predeclareStatementLocalBindings(stmt Statement, env *Env) {
 	}
 
 	if assign, ok := stmt.(*AssignStmt); ok {
-		predeclareTargetBindingNames(assign.Target, env)
+		predeclareDirectTargetBindingNames(assign.Target, env)
 		return
 	}
 
@@ -2427,6 +2427,21 @@ func predeclareTargetBindingNames(target Expression, env *Env) {
 	case *DestructureTarget:
 		for _, element := range t.Elements {
 			predeclareTargetBindingNames(element.Target, env)
+		}
+	}
+}
+
+func predeclareDirectTargetBindingNames(target Expression, env *Env) {
+	if env.rebindOuter {
+		predeclareTargetBindingNames(target, env)
+		return
+	}
+	switch t := target.(type) {
+	case *Identifier:
+		env.PredeclareLocalUnlessParentBinding(t.Name)
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			predeclareDirectTargetBindingNames(element.Target, env)
 		}
 	}
 }
