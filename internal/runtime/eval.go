@@ -368,13 +368,18 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 			return NewNil(), err
 		}
 	}
-	entries := make(map[string]Value, len(e.Pairs))
+	hash := NewHash(make(map[string]Value, len(e.Pairs)))
+	entries := make(map[string]hashLiteralEntry, len(e.Pairs))
 	for _, pair := range e.Pairs {
 		keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
 		if err != nil {
 			return NewNil(), err
 		}
-		key, err := valueToHashKey(keyVal)
+		key, err := canonicalHashKey(keyVal)
+		if err != nil {
+			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
+		}
+		lookupKey, err := hashLookupKey(keyVal)
 		if err != nil {
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 		}
@@ -385,17 +390,20 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 		if acc != nil {
 			_, replacing := entries[key]
 			if replacing || acc.replacing {
-				err = acc.replaceEntry(key, val, entries)
+				err = acc.replaceEntry(key, lookupKey, keyVal, val, entries)
 			} else {
-				err = acc.addDistinctEntry(key, val)
+				err = acc.addDistinctEntry(lookupKey, keyVal, val)
 			}
 			if err != nil {
 				return NewNil(), err
 			}
 		}
-		entries[key] = val
+		if err := hashSet(hash, keyVal, val); err != nil {
+			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
+		}
+		entries[key] = hashLiteralEntry{key: keyVal, lookupKey: lookupKey, value: val}
 	}
-	return NewHash(entries), nil
+	return hash, nil
 }
 
 func (exec *Execution) evalUnaryExpr(e *UnaryExpr, env *Env) (Value, error) {
@@ -632,11 +640,18 @@ func (exec *Execution) indexHash(e *IndexExpr, obj Value, indices []Value) (Valu
 		return NewNil(), exec.errorAt(e.Position, "%s index expects a single key", obj.Kind())
 	}
 	idx := indices[0]
-	key, err := valueToHashKey(idx)
+	if obj.Kind() == KindObject {
+		if val, handled, err := matchDataIndex(obj, idx); handled || err != nil {
+			if err != nil {
+				return NewNil(), exec.errorAt(e.IndexPos(0), "%s", err.Error())
+			}
+			return val, nil
+		}
+	}
+	val, ok, err := hashGet(obj, idx)
 	if err != nil {
 		return NewNil(), exec.errorAt(e.IndexPos(0), "%s", err.Error())
 	}
-	val, ok := obj.Hash()[key]
 	if ok {
 		return val, nil
 	}
@@ -1425,8 +1440,11 @@ func (exec *Execution) assign(target Expression, value Value, env *Env) error {
 func (exec *Execution) assignToEvaluatedMember(target *MemberExpr, obj, value Value) error {
 	switch obj.Kind() {
 	case KindHash, KindObject:
-		obj.Hash()[target.Property] = value
-		return nil
+		key := NewString(target.Property)
+		if obj.Kind() == KindHash {
+			key = hashMemberAssignmentKey(obj, target.Property)
+		}
+		return hashSet(obj, key, value)
 	case KindInstance, KindClass:
 		return exec.assignToMember(obj, target.Property, value, target.Pos())
 	default:
@@ -1463,11 +1481,9 @@ func (exec *Execution) assignToEvaluatedIndex(target *IndexExpr, obj Value, indi
 		if len(indices) != 1 {
 			return exec.errorAt(target.Position, "%s index assignment expects a single key", obj.Kind())
 		}
-		key, err := valueToHashKey(indices[0])
-		if err != nil {
+		if err := hashSet(obj, indices[0], value); err != nil {
 			return exec.errorAt(target.IndexPos(0), "%s", err.Error())
 		}
-		obj.Hash()[key] = value
 		return nil
 	default:
 		return exec.errorAt(target.Object.Pos(), "cannot index %s", obj.Kind())
@@ -2154,6 +2170,50 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 // largest pair stays reserved so body checks keep accounting for the transient they
 // cannot combine with the invisible receiver.
 func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value) (Value, bool, error) {
+	if hashHasTypedEntries(iterable) {
+		count := iterable.HashLen()
+		reservePair := !exec.valueReachableFromLiveBase(iterable, NewNil())
+		scratch := sortedHashEntryBufferBytes(count)
+		if reservePair {
+			scratch = saturatingAdd(scratch, exec.maxCollapsedPairBytes(iterable))
+		}
+		delta := exec.reserveLoopScratch(scratch)
+		defer exec.releaseLoopScratch(delta)
+		if !reservePair {
+			if err := exec.checkCollapsedPairBytesWithLiveBase(iterable, NewNil()); err != nil {
+				return NewNil(), false, err
+			}
+		}
+		if err := exec.checkProjectedHashWalkBytes(iterable, nil, nil, NewNil()); err != nil {
+			return NewNil(), false, err
+		}
+		var entryBuf [smallHashKeyBufferSize]HashEntry
+		for _, entry := range sortedTypedHashEntriesInto(iterable, entryBuf[:]) {
+			if err := exec.step(); err != nil {
+				return NewNil(), false, exec.wrapError(err, stmt.Pos())
+			}
+			pair := NewArray([]Value{entry.Key, entry.Value})
+			env.Assign(stmt.Iterator, pair)
+			val, returned, err := exec.evalStatements(stmt.Body, env)
+			if err != nil {
+				if errors.Is(err, errLoopBreak) {
+					if breakVal, ok := loopBreakValue(err); ok {
+						return breakVal, false, nil
+					}
+					return last, false, nil
+				}
+				if errors.Is(err, errLoopNext) {
+					continue
+				}
+				return NewNil(), false, err
+			}
+			if returned {
+				return val, true, nil
+			}
+			last = val
+		}
+		return last, false, nil
+	}
 	entries := iterable.Hash()
 	reservePair := !exec.valueReachableFromLiveBase(iterable, NewNil())
 	scratch := sortedKeyBufferBytes(len(entries))

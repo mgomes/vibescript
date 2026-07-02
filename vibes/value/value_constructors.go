@@ -37,6 +37,7 @@ func NewArray(a []Value) Value { return Value{kind: KindArray, data: a} }
 // objects never carry hash defaults.
 type hashData struct {
 	entries      map[string]Value
+	typedEntries map[HashLookupKey]HashEntry
 	defaultValue Value
 	defaultProc  Value
 }
@@ -50,6 +51,14 @@ const HashDataBytes = int(unsafe.Sizeof(hashData{}))
 // NewHash returns a hash (map) Value with no default.
 func NewHash(h map[string]Value) Value {
 	return Value{kind: KindHash, data: &hashData{entries: h}}
+}
+
+// NewTypedHash returns a hash with typed-key storage and no materialized legacy
+// string-key map. Hash() materializes that map lazily for legacy callers.
+func NewTypedHash(capacity int) Value {
+	return Value{kind: KindHash, data: &hashData{
+		typedEntries: make(map[HashLookupKey]HashEntry, capacity),
+	}}
 }
 
 // NewHashWithDefault returns a hash (map) Value carrying Ruby-style default

@@ -134,3 +134,35 @@ func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
 		t.Fatalf("new parent binding after reset = (%#v, %t), want 2", val, ok)
 	}
 }
+
+func TestEnvClearArrayAppendBufferDetachesBinding(t *testing.T) {
+	t.Parallel()
+
+	env := newEnv(nil)
+	buffer := make([]Value, 2, 8)
+	buffer[0] = NewInt(1)
+	buffer[1] = NewInt(2)
+	val := arrayValueFromAppendBuffer(buffer)
+	env.assignArrayAppendBuffer("items", val, buffer)
+
+	env.clearArrayAppendBuffer("items")
+
+	if _, ok := env.arrayAppendBuffer("items"); ok {
+		t.Fatalf("arrayAppendBuffer(items) survived clear")
+	}
+	got, ok := env.Get("items")
+	if !ok {
+		t.Fatalf("Get(items) missing after clear")
+	}
+	items := got.Array()
+	if len(items) != 2 || cap(items) != 2 {
+		t.Fatalf("detached items len/cap = %d/%d, want 2/2", len(items), cap(items))
+	}
+	if len(buffer) != 2 || cap(buffer) != 8 {
+		t.Fatalf("source buffer len/cap = %d/%d, want 2/8", len(buffer), cap(buffer))
+	}
+	items[0] = NewInt(99)
+	if buffer[0].Equal(NewInt(99)) {
+		t.Fatalf("detached binding still aliases the append buffer")
+	}
+}

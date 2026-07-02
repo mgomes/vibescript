@@ -60,6 +60,17 @@ func TestFmtCommandPrintsFormattedOutput(t *testing.T) {
 	}
 }
 
+func TestFormatVibeSourceNormalizesLineEndingsAndWhitespace(t *testing.T) {
+	t.Parallel()
+
+	source := "def run()\r\n  1\t \r  \n\nend\t \n\n"
+	got := formatVibeSource(source)
+	want := "def run()\n  1\n\n\nend\n"
+	if got != want {
+		t.Fatalf("formatVibeSource(%q) = %q, want %q", source, got, want)
+	}
+}
+
 func TestFmtCommandFormatsDirectories(t *testing.T) {
 	t.Parallel()
 	root := newTestCLI(t)

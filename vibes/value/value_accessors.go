@@ -74,11 +74,32 @@ func (v Value) Array() []Value {
 func (v Value) Hash() map[string]Value {
 	switch v.kind {
 	case KindHash:
-		return v.data.(*hashData).entries
+		hd := v.data.(*hashData)
+		if hd.entries == nil && hd.typedEntries != nil {
+			hd.entries = make(map[string]Value, len(hd.typedEntries))
+			for _, entry := range hd.typedEntries {
+				hd.entries[HashDisplayKey(entry.Key)] = entry.Value
+			}
+		}
+		return hd.entries
 	case KindObject:
 		return v.data.(map[string]Value)
 	default:
 		return nil
+	}
+}
+
+// HashStringMapIfMaterialized returns the legacy string-key map when one already
+// exists, without forcing typed hashes to allocate that lossy compatibility view.
+func (v Value) HashStringMapIfMaterialized() (map[string]Value, bool) {
+	switch v.kind {
+	case KindHash:
+		entries := v.data.(*hashData).entries
+		return entries, entries != nil
+	case KindObject:
+		return v.data.(map[string]Value), true
+	default:
+		return nil, false
 	}
 }
 

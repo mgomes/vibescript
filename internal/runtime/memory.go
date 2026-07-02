@@ -33,6 +33,11 @@ const (
 // array of Hash.new or empty literals).
 const estimatedHashDataBytes = value.HashDataBytes
 
+const (
+	estimatedHashLookupKeyBytes = int(unsafe.Sizeof(value.HashLookupKey{}))
+	estimatedHashEntryBytes     = int(unsafe.Sizeof(HashEntry{}))
+)
+
 // estimatedMapEntryStructuralBytes is the per-entry structural footprint a
 // map[string]Value reserves for one slot regardless of what its key and value
 // point at: the bucket overhead, the key string header, and the value slot. It
@@ -556,6 +561,20 @@ func (exec *Execution) maxCollapsedPairBytes(receiver Value) int {
 }
 
 func maxCollapsedPairBytesWithEstimator(receiver Value, est *memoryEstimator) int {
+	if hashHasTypedEntries(receiver) {
+		if receiver.HashLen() == 0 {
+			return 0
+		}
+		maxBytes := 0
+		var entryBuf [smallHashKeyBufferSize]HashEntry
+		for _, entry := range receiver.HashEntriesInto(entryBuf[:]) {
+			pair := NewArray([]Value{entry.Key, entry.Value})
+			if bytes := est.probe(pair); bytes > maxBytes {
+				maxBytes = bytes
+			}
+		}
+		return maxBytes
+	}
 	entries := receiver.Hash()
 	if len(entries) == 0 {
 		return 0
@@ -973,6 +992,13 @@ type hashLiteralBuildAccumulator struct {
 	replacing     bool
 	keyPayloads   map[string]int
 	valuePayloads map[string]int
+	typedEntries  int
+}
+
+type hashLiteralEntry struct {
+	key       Value
+	lookupKey HashLookupKey
+	value     Value
 }
 
 // newHashLiteralBuildAccumulator snapshots the current execution roots for a
@@ -1000,13 +1026,14 @@ func (acc *hashLiteralBuildAccumulator) reserveBacking(capacity int) error {
 	return acc.checkQuota()
 }
 
-func (acc *hashLiteralBuildAccumulator) addDistinctEntry(key string, val Value) error {
+func (acc *hashLiteralBuildAccumulator) addDistinctEntry(lookupKey HashLookupKey, key, val Value) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
 
+	acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
+	acc.retained = saturatingAdd(acc.retained, hashLiteralKeyPayload(acc.est, lookupKey, key))
 	acc.retained = saturatingAdd(acc.retained, acc.est.valuePayload(val))
-	acc.retained = saturatingAdd(acc.retained, acc.est.stringPayloadSize(key))
 	return acc.checkQuota()
 }
 
@@ -1014,7 +1041,13 @@ func (acc *hashLiteralBuildAccumulator) addDistinctEntry(key string, val Value) 
 // Distinct-key literals stay on the seeded-estimator fast path; once a duplicate
 // appears, retained charges must become subtractable so overwritten values stop
 // contributing after the replacement.
-func (acc *hashLiteralBuildAccumulator) replaceEntry(key string, val Value, current map[string]Value) error {
+func (acc *hashLiteralBuildAccumulator) replaceEntry(
+	canonical string,
+	lookupKey HashLookupKey,
+	key Value,
+	val Value,
+	current map[string]hashLiteralEntry,
+) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
@@ -1022,13 +1055,13 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(key string, val Value, curr
 		acc.rebuildRetainedEntries(current)
 	}
 
-	keyPayload, valuePayload := acc.entryPayloads(key, val)
+	keyPayload, valuePayload := acc.entryPayloads(lookupKey, key, val)
 	incoming := saturatingAdd(keyPayload, valuePayload)
 	if used := saturatingAdd(saturatingAdd(acc.base, acc.retained), incoming); used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
 	}
 
-	prior := saturatingAdd(acc.keyPayloads[key], acc.valuePayloads[key])
+	prior := saturatingAdd(acc.keyPayloads[canonical], acc.valuePayloads[canonical])
 	acc.retained -= prior
 	if acc.retained < 0 {
 		acc.retained = 0
@@ -1038,31 +1071,49 @@ func (acc *hashLiteralBuildAccumulator) replaceEntry(key string, val Value, curr
 		acc.keyPayloads = make(map[string]int)
 		acc.valuePayloads = make(map[string]int)
 	}
-	acc.keyPayloads[key] = keyPayload
-	acc.valuePayloads[key] = valuePayload
+	acc.keyPayloads[canonical] = keyPayload
+	acc.valuePayloads[canonical] = valuePayload
 	return acc.checkQuota()
 }
 
-func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[string]Value) {
+func (acc *hashLiteralBuildAccumulator) rebuildRetainedEntries(current map[string]hashLiteralEntry) {
 	acc.retained = 0
 	acc.keyPayloads = make(map[string]int, len(current))
 	acc.valuePayloads = make(map[string]int, len(current))
-	for key, val := range current {
-		keyPayload, valuePayload := acc.entryPayloads(key, val)
-		acc.keyPayloads[key] = keyPayload
-		acc.valuePayloads[key] = valuePayload
+	acc.typedEntries = 0
+	for canonical, entry := range current {
+		acc.retained = saturatingAdd(acc.retained, acc.typedEntryStructuralBytes())
+		keyPayload, valuePayload := acc.entryPayloads(entry.lookupKey, entry.key, entry.value)
+		acc.keyPayloads[canonical] = keyPayload
+		acc.valuePayloads[canonical] = valuePayload
 		acc.retained = saturatingAdd(acc.retained, saturatingAdd(keyPayload, valuePayload))
 	}
 	acc.est = nil
 	acc.replacing = true
 }
 
-func (acc *hashLiteralBuildAccumulator) entryPayloads(key string, val Value) (int, int) {
+func (acc *hashLiteralBuildAccumulator) typedEntryStructuralBytes() int {
+	entryBytes := estimatedMapEntryBytes + estimatedHashLookupKeyBytes + estimatedHashEntryBytes
+	if acc.typedEntries == 0 {
+		entryBytes = saturatingAdd(estimatedMapBaseBytes, entryBytes)
+	}
+	acc.typedEntries++
+	return entryBytes
+}
+
+func (acc *hashLiteralBuildAccumulator) entryPayloads(lookupKey HashLookupKey, key, val Value) (int, int) {
 	est := newMemoryEstimator()
 	acc.exec.estimateMemoryUsageBase(est)
 	valuePayload := est.valuePayload(val)
-	keyPayload := est.stringPayloadSize(key)
+	keyPayload := hashLiteralKeyPayload(est, lookupKey, key)
 	return keyPayload, valuePayload
+}
+
+func hashLiteralKeyPayload(est *memoryEstimator, lookupKey HashLookupKey, key Value) int {
+	keyPayload := est.stringPayloadSize(hashDisplayKey(key))
+	keyPayload = saturatingAdd(keyPayload, lookupKey.ExtraPayloadBytes())
+	keyPayload = saturatingAdd(keyPayload, est.valuePayload(key))
+	return keyPayload
 }
 
 func (acc *hashLiteralBuildAccumulator) checkQuota() error {
@@ -1164,6 +1215,17 @@ func (acc *hashBuildAccumulator) addSynthesizedKey(key string) error {
 	}
 
 	acc.built = saturatingAdd(acc.built, acc.est.stringPayloadSize(key))
+	return acc.checkQuota()
+}
+
+func (acc *hashBuildAccumulator) addTypedSynthesizedKey(key Value, displayKey string, lookupKey HashLookupKey) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	acc.built = saturatingAdd(acc.built, acc.est.valuePayload(key))
+	acc.built = saturatingAdd(acc.built, acc.est.stringPayloadSize(displayKey))
+	acc.built = saturatingAdd(acc.built, lookupKey.ExtraPayloadBytes())
 	return acc.checkQuota()
 }
 
@@ -1732,8 +1794,10 @@ func (est *memoryEstimator) value(val Value) int {
 		size += est.stringPayloadSize(str)
 	case KindArray:
 		size += est.slice(val.Array())
-	case KindHash, KindObject:
-		size += est.hash(val.Hash())
+	case KindHash:
+		if entries, ok := hashStringMapIfMaterialized(val); ok {
+			size += est.hash(entries)
+		}
 		// A KindHash wraps its entry map in a hashData struct to carry optional
 		// Ruby-style default metadata; that wrapper is a real per-hash heap
 		// allocation outside the entry map, so it counts toward the quota too.
@@ -1748,6 +1812,8 @@ func (est *memoryEstimator) value(val Value) int {
 		// Objects never carry defaults, so these accessors return nil for them.
 		size += est.valuePayload(hashDefaultValue(val))
 		size += est.valuePayload(hashDefaultProc(val))
+	case KindObject:
+		size += est.hash(val.Hash())
 	case KindClass:
 		cl := valueClass(val)
 		if cl == nil {
@@ -1965,17 +2031,16 @@ func sliceBackingIdentity(values []Value) uintptr {
 }
 
 // hashWrapperBytes charges the hashData wrapper a KindHash value allocates
-// around its entry map, deduplicated on the wrapper's identity so two values
-// that share the same wrapper count it once. It returns 0 for KindObject (a
-// bare map with no wrapper) and for any value whose wrapper identity is
-// unavailable, mirroring how est.hash dedups the entry map on its own pointer.
+// around its entry map, plus any typed-key entry map retained by that wrapper.
+// It is deduplicated on the wrapper's identity so aliases count the extra hash
+// state once. It returns 0 for KindObject, which uses a bare map.
 func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 	if val.Kind() != KindHash {
 		return 0
 	}
 	id := hashIdentity(val)
 	if id == 0 {
-		return estimatedHashDataBytes
+		return saturatingAdd(estimatedHashDataBytes, est.typedHashEntriesBytes(val))
 	}
 	if _, seen := est.seenHashData[id]; seen {
 		return 0
@@ -1987,7 +2052,24 @@ func (est *memoryEstimator) hashWrapperBytes(val Value) int {
 	if est.journal != nil {
 		est.journal.hashData = append(est.journal.hashData, id)
 	}
-	return estimatedHashDataBytes
+	return saturatingAdd(estimatedHashDataBytes, est.typedHashEntriesBytes(val))
+}
+
+func (est *memoryEstimator) typedHashEntriesBytes(val Value) int {
+	if !hashHasTypedEntries(val) {
+		return 0
+	}
+
+	var entryBuf [smallHashKeyBufferSize]TypedHashEntry
+	entries := val.TypedHashEntriesInto(entryBuf[:])
+	size := estimatedMapBaseBytes
+	for _, entry := range entries {
+		size = saturatingAdd(size, estimatedMapEntryBytes+estimatedHashLookupKeyBytes+estimatedHashEntryBytes)
+		size = saturatingAdd(size, entry.LookupKey.ExtraPayloadBytes())
+		size = saturatingAdd(size, est.valuePayload(entry.Entry.Key))
+		size = saturatingAdd(size, est.valuePayload(entry.Entry.Value))
+	}
+	return size
 }
 
 func (est *memoryEstimator) hash(values map[string]Value) int {

@@ -46,57 +46,73 @@ end`
 	}
 }
 
-func TestParserHashRocketsRejected(t *testing.T) {
+func TestParserHashRockets(t *testing.T) {
 	t.Parallel()
 
-	sources := []string{
-		`def run
-  {:name => "Ada"}
-end`,
-		`def run
-  {"first-name" => "Lovelace"}
-end`,
-		`def run
-  {key => 1}
-end`,
+	source := `def run
+  {:name => "Ada", "first-name" => "Lovelace", 1 => "one", [1, 2] => "array", key => 3}
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
 	}
 
-	for _, source := range sources {
-		_, errs := parseSource(t, source)
-		if len(errs) == 0 {
-			t.Fatalf("parseSource(%q) errors = none, want hash rocket rejection", source)
-		}
-		if got, want := errs[0].Error(), invalidHashPairMessage; !strings.Contains(got, want) {
-			t.Fatalf("parseSource(%q) error = %q, want substring %q", source, got, want)
-		}
+	wantBody := []ast.Statement{
+		&ast.ExprStmt{
+			Expr: &ast.HashLiteral{
+				Pairs: []ast.HashPair{
+					{
+						Key:   &ast.SymbolLiteral{Name: "name"},
+						Value: &ast.StringLiteral{Value: "Ada"},
+					},
+					{
+						Key:   &ast.StringLiteral{Value: "first-name"},
+						Value: &ast.StringLiteral{Value: "Lovelace"},
+					},
+					{
+						Key:   &ast.IntegerLiteral{Value: 1},
+						Value: &ast.StringLiteral{Value: "one"},
+					},
+					{
+						Key: &ast.ArrayLiteral{Elements: []ast.Expression{
+							&ast.IntegerLiteral{Value: 1},
+							&ast.IntegerLiteral{Value: 2},
+						}},
+						Value: &ast.StringLiteral{Value: "array"},
+					},
+					{
+						Key:   &ast.Identifier{Name: "key"},
+						Value: &ast.IntegerLiteral{Value: 3},
+					},
+				},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
 	}
 }
 
-// TestParserHashRocketSingleError verifies that rejecting the removed hash
-// rocket syntax recovers to the next comma or closing brace so a single
-// actionable hash-pair error is reported instead of cascading diagnostics
-// (the parser previously left the cursor on the key and produced several
-// unrelated errors for mixed literals such as `{:name => "Ada", good: 1}`).
-func TestParserHashRocketSingleError(t *testing.T) {
+// TestParserMalformedHashPairSingleError verifies that malformed hash entries
+// recover to the next comma or closing brace so a single actionable hash-pair
+// error is reported instead of cascading diagnostics.
+func TestParserMalformedHashPairSingleError(t *testing.T) {
 	t.Parallel()
 
 	sources := []string{
-		`{:name => "Ada"}`,
-		`{:name => "Ada", good: 1}`,
-		`{good: 1, :name => "Ada"}`,
-		`{1 => 2}`,
-		`{name: 1, 2 => 3}`,
-		`{name: [1, 2] => 3}`,
-		`{a => {b => c}}`,
+		`{:name}`,
+		`{good: 1, :name}`,
+		`{name: [1, 2] =>}`,
 		// Rejected entries whose key candidate itself begins with an opener
 		// delimiter. Recovery must treat the cursor as already inside that
 		// delimiter so its matching closer is not mistaken for the outer hash
 		// boundary, otherwise parsing resumes mid-entry and cascades errors.
-		`{ {a: 1} => v }`,
-		`{ [a, b] => v }`,
-		`{ (a) => v }`,
-		`{ {a: 1} => v, ok: 1 }`,
-		`{ ok: 1, [a, b] => v }`,
+		`{ {a: 1} }`,
+		`{ [a, b] }`,
+		`{ (a) }`,
+		`{ {a: 1}, ok: 1 }`,
+		`{ ok: 1, [a, b] }`,
 	}
 
 	for _, source := range sources {

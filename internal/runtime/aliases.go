@@ -210,11 +210,14 @@ func cloneStringSlice(values []string) []string {
 // re-exports in vibes/value_alias.go and exist purely to keep the
 // runtime sources readable after the move out of package vibes.
 type (
-	Value     = value.Value
-	ValueKind = value.ValueKind
-	Money     = value.Money
-	Duration  = value.Duration
-	Range     = value.Range
+	Value          = value.Value
+	ValueKind      = value.ValueKind
+	HashEntry      = value.HashEntry
+	HashLookupKey  = value.HashLookupKey
+	TypedHashEntry = value.TypedHashEntry
+	Money          = value.Money
+	Duration       = value.Duration
+	Range          = value.Range
 )
 
 type sliceIdentity = value.SliceIdentity
@@ -263,6 +266,10 @@ func NewArray(a []Value) Value { return value.NewArray(a) }
 // NewHash returns a hash (map) Value.
 func NewHash(h map[string]Value) Value { return value.NewHash(h) }
 
+// NewTypedHash returns a typed-key hash without eagerly materializing the legacy
+// string-key compatibility map.
+func NewTypedHash(capacity int) Value { return value.NewTypedHash(capacity) }
+
 // NewHashWithDefault returns a hash Value carrying Ruby-style default metadata
 // (a default value and/or a default proc consulted on missing-key lookup).
 func NewHashWithDefault(h map[string]Value, defaultValue, defaultProc Value) Value {
@@ -280,6 +287,10 @@ func hashDefaultProc(v Value) Value { return value.HashDefaultProc(v) }
 // default metadata), or 0 when v is not a hash. Scanners that must also visit
 // hash defaults key their seen-set on this rather than the bare entry map.
 func hashIdentity(v Value) uintptr { return value.HashIdentity(v) }
+
+func hashStringMapIfMaterialized(v Value) (map[string]Value, bool) {
+	return v.HashStringMapIfMaterialized()
+}
 
 // NewSymbol returns a symbol Value.
 func NewSymbol(name string) Value { return value.NewSymbol(name) }
@@ -800,17 +811,27 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 			return clone
 		}
 	}
-	entries := val.Hash()
-	entriesPtr := reflect.ValueOf(entries).Pointer()
-	// A distinct wrapper that shares this entry map already cloned it; reuse that
-	// cloned map so both cloned wrappers mutate one map in place and the host's
-	// intentional aliasing survives the boundary. The shared map is already fully
-	// populated, so skip the fill loop -- only a fresh wrapper (with this wrapper's
-	// own cloned defaults) is built around it.
-	sharedEntries, sharedSeen := state.hashEntries[entriesPtr]
+	typedEntries := hashHasTypedEntries(val)
+	// Only the legacy string-key map participates in shared-entry dedup. A typed
+	// hash clones through HashEntries() below, so avoid materializing its lossy
+	// string-key map here at all.
+	var entries map[string]Value
+	var entriesPtr uintptr
+	var sharedEntries map[string]Value
+	var sharedSeen bool
+	if !typedEntries {
+		entries = val.Hash()
+		entriesPtr = reflect.ValueOf(entries).Pointer()
+		// A distinct wrapper that shares this entry map already cloned it; reuse
+		// that cloned map so both cloned wrappers mutate one map in place and the
+		// host's intentional aliasing survives the boundary. The shared map is
+		// already fully populated, so skip the fill loop -- only a fresh wrapper
+		// (with this wrapper's own cloned defaults) is built around it.
+		sharedEntries, sharedSeen = state.hashEntries[entriesPtr]
+	}
 	clonedEntries := sharedEntries
 	if !sharedSeen {
-		clonedEntries = make(map[string]Value, len(entries))
+		clonedEntries = make(map[string]Value, val.HashLen())
 	}
 	defaultValue := hashDefaultValue(val)
 	defaultProc := hashDefaultProc(val)
@@ -828,7 +849,7 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 	if id != 0 {
 		state.hashes[id] = cloned
 	}
-	if !sharedSeen && entriesPtr != 0 {
+	if !typedEntries && !sharedSeen && entriesPtr != 0 {
 		state.hashEntries[entriesPtr] = clonedEntries
 	}
 	if hasDefault {
@@ -843,8 +864,16 @@ func cloneHostHashValue(val Value, state hostValueCloneState) Value {
 		cloned.SetHashDefaults(clonedDefaultValue, clonedDefaultProc)
 	}
 	if !sharedSeen {
-		for key, item := range entries {
-			clonedEntries[key] = cloneValueForHostWithState(item, state)
+		if typedEntries {
+			for _, entry := range val.HashEntries() {
+				clonedKey := cloneValueForHostWithState(entry.Key, state)
+				clonedValue := cloneValueForHostWithState(entry.Value, state)
+				setClonedHashEntry(cloned, clonedKey, clonedValue)
+			}
+		} else {
+			for key, item := range entries {
+				clonedEntries[key] = cloneValueForHostWithState(item, state)
+			}
 		}
 	}
 	return cloned

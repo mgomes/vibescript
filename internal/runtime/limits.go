@@ -31,6 +31,12 @@ const (
 	// result size and rejects hostile formats before calling fmt.
 	maxFormatOutputBytes = 1 << 20
 
+	// maxOutputHelperBytes caps a single rendered argument passed to
+	// puts/print/warn/p. The helpers project the rendering under the execution
+	// quotas before materializing it, then this fixed cap prevents unbounded
+	// host-side writes when embedders configure very large memory quotas.
+	maxOutputHelperBytes = 1 << 20
+
 	// maxRegexPatternSize caps regex patterns at 16 KiB. Patterns are
 	// compiled before any quota accounting happens, and pathological
 	// patterns are far smaller than pathological inputs, so the

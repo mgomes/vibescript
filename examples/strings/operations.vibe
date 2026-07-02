@@ -19,6 +19,7 @@ def run
   indexed = "héllo hello"
   immutable = "  hello  "
   ids = "ID-12 ID-34"
+  first_id = ids.match("ID-([0-9]+)")
   {
     normalized: normalize(sample),
     bytesize: "hé".bytesize,
@@ -33,7 +34,7 @@ def run
     gsub: "bananas".gsub("na", "NA"),
     sub_regex: ids.sub("ID-[0-9]+", "X", regex: true),
     gsub_regex: ids.gsub("ID-[0-9]+", "X", regex: true),
-    match: ids.match("ID-([0-9]+)"),
+    match: [first_id[0], first_id[1]],
     scan: ids.scan("ID-[0-9]+"),
     strip_bang: immutable.strip!,
     strip_bang_nochange: "hello".strip!,

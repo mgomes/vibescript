@@ -19,7 +19,7 @@ func TestScriptCallIsolatesBuiltinObjectsFromScriptMutation(t *testing.T) {
 end
 
 def parse_name
-  JSON.parse("{\"name\":\"alex\"}")[:name]
+  JSON.parse("{\"name\":\"alex\"}")["name"]
 end`)
 
 	callScript(t, context.Background(), script, "poison", nil, CallOptions{})
@@ -67,7 +67,7 @@ func TestScriptCallReturnsIsolatedBuiltinObjects(t *testing.T) {
 end
 
 def parse_name
-  JSON.parse("{\"name\":\"alex\"}")[:name]
+  JSON.parse("{\"name\":\"alex\"}")["name"]
 end`)
 
 	leaked := callScript(t, context.Background(), script, "leak", nil, CallOptions{})

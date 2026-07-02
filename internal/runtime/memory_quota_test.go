@@ -463,11 +463,14 @@ func buildLargeHashLiteral(count int, element string, pos Position) *HashLiteral
 // estimateLargeHash returns the byte cost, through the runtime's estimator, of the
 // hash an AST built by buildLargeHashLiteral with the same params evaluates to.
 func estimateLargeHash(count int, element string) int {
-	entries := make(map[string]Value, count)
+	hash := NewHash(make(map[string]Value, count))
 	for i := range count {
-		entries[fmt.Sprintf("k%05d", i)] = NewString(element)
+		key := NewString(fmt.Sprintf("k%05d", i))
+		if err := hash.HashSet(key, NewString(element)); err != nil {
+			panic(fmt.Sprintf("estimate hash key: %v", err))
+		}
 	}
-	return newMemoryEstimator().value(NewHash(entries))
+	return newMemoryEstimator().value(hash)
 }
 
 // TestMemoryQuotaIndexSelectorsChargeLiveReceiver covers the finding that the
@@ -801,6 +804,92 @@ func TestMemoryQuotaHashLiteralDuplicateKeyReleasesDiscardedValue(t *testing.T) 
 	}
 	if len(got.Hash()) != 1 {
 		t.Fatalf("literal retained %d entries, want 1", len(got.Hash()))
+	}
+}
+
+func TestMemoryEstimatorCountsTypedHashDisplayCollisions(t *testing.T) {
+	t.Parallel()
+
+	first := NewString(strings.Repeat("x", 4096))
+	second := NewString(strings.Repeat("y", 4096))
+	typed := NewHash(map[string]Value{})
+	if err := typed.HashSet(NewString("same"), first); err != nil {
+		t.Fatalf("set string key: %v", err)
+	}
+	if err := typed.HashSet(NewSymbol("same"), second); err != nil {
+		t.Fatalf("set symbol key: %v", err)
+	}
+
+	legacyView := NewHash(map[string]Value{"same": second})
+	typedBytes := newMemoryEstimator().value(typed)
+	legacyBytes := newMemoryEstimator().value(legacyView)
+	if typedBytes <= legacyBytes {
+		t.Fatalf("typed collision hash estimate = %d, want greater than legacy view %d", typedBytes, legacyBytes)
+	}
+}
+
+func TestMemoryQuotaHashLiteralChargesTypedEntryStorage(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	const count = 200
+	const element = "abcdefghij"
+
+	base := func() int {
+		exec := &Execution{quota: 10000, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		exec.pushEnv(env)
+		defer exec.popEnv()
+		est := exec.memoryEstimatorForCheck()
+		total := exec.estimateMemoryUsageBase(est)
+		est.reset()
+		return total
+	}()
+
+	legacyLiteralCharge := func() int {
+		exec := &Execution{quota: 10000, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		exec.pushEnv(env)
+		defer exec.popEnv()
+		est := newMemoryEstimator()
+		total := exec.estimateMemoryUsageBase(est)
+		total = saturatingAdd(total, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
+		total = saturatingAdd(total, saturatingMul(count, estimatedMapEntryStructuralBytes))
+		for i := range count {
+			key, err := canonicalHashKey(NewString(fmt.Sprintf("k%05d", i)))
+			if err != nil {
+				t.Fatalf("canonicalHashKey(k%05d) error = %v, want nil", i, err)
+			}
+			total = saturatingAdd(total, est.stringPayloadSize(key))
+			total = saturatingAdd(total, est.valuePayload(NewString(element)))
+		}
+		est.reset()
+		return total
+	}()
+
+	typedLiteralPeak := base + estimateLargeHash(count, element)
+	if typedLiteralPeak <= legacyLiteralCharge {
+		t.Fatalf("typed hash literal peak = %d, want greater than legacy literal charge %d", typedLiteralPeak, legacyLiteralCharge)
+	}
+
+	literal := buildLargeHashLiteral(count, element, pos)
+	run := func(quota int) error {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		exec.pushEnv(env)
+		defer exec.popEnv()
+		_, err := exec.evalExpression(literal, env)
+		return err
+	}
+
+	quota := legacyLiteralCharge + (typedLiteralPeak-legacyLiteralCharge)/2
+	if quota <= legacyLiteralCharge || quota >= typedLiteralPeak {
+		t.Fatalf("quota %d must sit between legacy charge %d and typed peak %d", quota, legacyLiteralCharge, typedLiteralPeak)
+	}
+	if err := run(quota); err == nil {
+		t.Fatalf("expected memory quota error when typed hash literal entries exceed the quota")
+	} else {
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
 	}
 }
 

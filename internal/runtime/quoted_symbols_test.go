@@ -39,8 +39,13 @@ func TestQuotedSymbolValues(t *testing.T) {
 			want:   NewString(""),
 		},
 		{
-			name:   "index_string_keyed_hash",
+			name:   "quoted_symbol_distinct_from_string_key",
 			source: `def run; ({ "foo-bar": 1 })[:"foo-bar"]; end`,
+			want:   NewNil(),
+		},
+		{
+			name:   "index_quoted_symbol_key",
+			source: `def run; ({ :"foo-bar" => 1 })[:"foo-bar"]; end`,
 			want:   NewInt(1),
 		},
 		{
@@ -131,17 +136,17 @@ func TestColonBeforeQuotedStringStaysSeparator(t *testing.T) {
 	}
 }
 
-// TestQuotedSymbolHashKeyIsSymbol verifies that a quoted-string hash key parses
-// to a symbol key, matching Ruby, so it can be read back with a quoted symbol.
-func TestQuotedSymbolHashKeyIsSymbol(t *testing.T) {
+// TestQuotedHashKeyIsString verifies that a quoted-string hash key parses to a
+// string key, while hash rockets can use a quoted symbol key explicitly.
+func TestQuotedHashKeyIsString(t *testing.T) {
 	t.Parallel()
 
 	script := compileScript(t, `def run; ({ "foo-bar": 1 }).keys.first; end`)
 	got := callFunc(t, script, "run", nil)
-	if got.Kind() != KindSymbol {
-		t.Fatalf("hash key kind = %v, want %v", got.Kind(), KindSymbol)
+	if got.Kind() != KindString {
+		t.Fatalf("hash key kind = %v, want %v", got.Kind(), KindString)
 	}
-	want := NewSymbol("foo-bar")
+	want := NewString("foo-bar")
 	if !got.Equal(want) {
 		t.Fatalf("hash key = %s, want %s", got.Inspect(), want.Inspect())
 	}

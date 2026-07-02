@@ -13,6 +13,95 @@ import (
 	"unicode/utf8"
 )
 
+func TestOutputHelpersUseConfiguredWriters(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	script := compileScriptWithConfig(t, Config{
+		OutputWriter: &stdout,
+		ErrorWriter:  &stderr,
+	}, `def run()
+  puts "hello", 7
+  print "x", "y"
+  warn "careful"
+  p({a: 1})
+end`)
+
+	result := callFunc(t, script, "run", nil)
+	if result.Kind() != KindHash {
+		t.Fatalf("p return kind = %v, want hash", result.Kind())
+	}
+	if got, want := stdout.String(), "hello\n7\nxy{a: 1}\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if got, want := stderr.String(), "careful\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}
+
+func TestOutputHelpersRequireConfiguredWriters(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def write_stdout()
+  puts "hello"
+end
+
+def write_stderr()
+  warn "careful"
+end`)
+
+	requireCallErrorContains(t, script, "write_stdout", nil, CallOptions{}, "puts output writer is not configured")
+	requireCallErrorContains(t, script, "write_stderr", nil, CallOptions{}, "warn error writer is not configured")
+}
+
+func TestOutputHelpersEnforceRenderLimit(t *testing.T) {
+	t.Parallel()
+
+	script := compileScriptWithConfig(t, Config{
+		OutputWriter:     io.Discard,
+		ErrorWriter:      io.Discard,
+		MemoryQuotaBytes: 4 << 20,
+	}, `def write_puts(value)
+  puts value
+end
+
+def write_print(value)
+  print value
+end
+
+def write_warn(value)
+  warn value
+end
+
+def write_p(value)
+  p(value)
+end`)
+
+	large := NewString(strings.Repeat("x", maxOutputHelperBytes+1))
+	requireCallErrorContains(t, script, "write_puts", []Value{large}, CallOptions{}, "puts output exceeds limit")
+	requireCallErrorContains(t, script, "write_print", []Value{large}, CallOptions{}, "print output exceeds limit")
+	requireCallErrorContains(t, script, "write_warn", []Value{large}, CallOptions{}, "warn output exceeds limit")
+	requireCallErrorContains(t, script, "write_p", []Value{large}, CallOptions{}, "p output exceeds limit")
+}
+
+func TestOutputHelperPReturnsNilWithNoArguments(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	script := compileScriptWithConfig(t, Config{OutputWriter: &stdout}, `def run()
+  p()
+end`)
+
+	result := callFunc(t, script, "run", nil)
+	if result.Kind() != KindNil {
+		t.Fatalf("p() result kind = %v, want nil", result.Kind())
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("p() stdout = %q, want empty", got)
+	}
+}
+
 func TestDurationMethods(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
@@ -1056,6 +1145,20 @@ func TestJSONBuiltins(t *testing.T) {
       JSON.stringify(payload)
     end
 
+    def parsed_object_key_identity()
+      payload = JSON.parse("{\"name\":1}")
+      payload[:name] = 2
+      [payload["name"], payload[:name], payload.size]
+    end
+
+    def parsed_object_truthiness()
+      if JSON.parse("{\"name\":1}")
+        "truthy"
+      else
+        "falsey"
+      end
+    end
+
     def parse_invalid()
       JSON.parse("{bad")
     end
@@ -1093,8 +1196,32 @@ func TestJSONBuiltins(t *testing.T) {
 		t.Fatalf("stringify mismatch: %q", got)
 	}
 
+	compareArrays(t, callFunc(t, script, "parsed_object_key_identity", nil), []Value{NewInt(1), NewInt(2), NewInt(2)})
+	if got := callFunc(t, script, "parsed_object_truthiness", nil); !got.Equal(NewString("truthy")) {
+		t.Fatalf("parsed_object_truthiness = %s, want truthy", got.Inspect())
+	}
+
 	requireCallErrorContains(t, script, "parse_invalid", nil, CallOptions{}, "JSON.parse invalid JSON")
 	requireCallErrorContains(t, script, "stringify_unsupported", nil, CallOptions{}, "JSON.stringify unsupported value type function")
+}
+
+func TestJSONParseObjectDataExposesEntries(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+    def parse_payload()
+      JSON.parse("{\"name\":\"alex\",\"score\":10}")
+    end
+    `)
+
+	parsed := callFunc(t, script, "parse_payload", nil)
+	data, ok := parsed.Data().(map[string]Value)
+	if !ok {
+		t.Fatalf("JSON object Data() = %T, want map[string]Value", parsed.Data())
+	}
+	if !data["name"].Equal(NewString("alex")) || !data["score"].Equal(NewInt(10)) {
+		t.Fatalf("JSON object Data() = %v, want parsed fields", data)
+	}
 }
 
 func TestJSONStringifyEscaping(t *testing.T) {
@@ -1208,6 +1335,24 @@ func TestJSONRejectsExcessiveNesting(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "exceeded max depth") {
 		t.Fatalf("JSON.stringify(deep array) error = %v, want exceeded max depth", err)
 	}
+}
+
+func TestJSONBuiltinsHonorMemoryQuota(t *testing.T) {
+	t.Parallel()
+
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: 2 * 1024}
+
+	raw := `["` + strings.Repeat("x", 1024) + `","` + strings.Repeat("y", 1024) + `","` + strings.Repeat("z", 1024) + `"]`
+	_, err := builtinJSONParse(exec, NewNil(), []Value{NewString(raw)}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	largeValue := NewArray([]Value{
+		NewString(strings.Repeat("x", 1024)),
+		NewString(strings.Repeat("y", 1024)),
+		NewString(strings.Repeat("z", 1024)),
+	})
+	_, err = builtinJSONStringify(exec, NewNil(), []Value{largeValue}, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
 }
 
 func TestRegexBuiltins(t *testing.T) {
