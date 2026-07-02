@@ -116,12 +116,15 @@ func cloneStatement(stmt Statement) Statement {
 		return &clone
 	case *NextStmt:
 		clone := *s
+		clone.Value = cloneExpression(s.Value)
+		return &clone
+	case *RetryStmt:
+		clone := *s
 		return &clone
 	case *TryStmt:
 		clone := *s
 		clone.Body = cloneStatements(s.Body)
-		clone.RescueTy = cloneTypeExpr(s.RescueTy)
-		clone.Rescue = cloneStatements(s.Rescue)
+		clone.Rescues = cloneRescueClauses(s.Rescues)
 		clone.Else = cloneStatements(s.Else)
 		clone.Ensure = cloneStatements(s.Ensure)
 		return &clone
@@ -283,6 +286,11 @@ func cloneExpression(expr Expression) Expression {
 		clone.Consequent = cloneExpression(e.Consequent)
 		clone.Alternate = cloneExpression(e.Alternate)
 		return &clone
+	case *RescueModifierExpr:
+		clone := *e
+		clone.Body = cloneExpression(e.Body)
+		clone.Fallback = cloneExpression(e.Fallback)
+		return &clone
 	case *IfExpr:
 		clone := *e
 		clone.Condition = cloneExpression(e.Condition)
@@ -315,9 +323,27 @@ func cloneExpression(expr Expression) Expression {
 		clone := *e
 		clone.Parts = cloneStringParts(e.Parts)
 		return &clone
+	case *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+		return cloneStatement(e.(Statement)).(Expression)
 	default:
 		return expr
 	}
+}
+
+func cloneRescueClauses(clauses []RescueClause) []RescueClause {
+	if clauses == nil {
+		return nil
+	}
+	out := make([]RescueClause, len(clauses))
+	for i, clause := range clauses {
+		out[i] = RescueClause{
+			Type:     cloneTypeExpr(clause.Type),
+			Binding:  clause.Binding,
+			Position: clause.Position,
+			Body:     cloneStatements(clause.Body),
+		}
+	}
+	return out
 }
 
 func cloneIfExprBranches(branches []IfExprBranch) []IfExprBranch {

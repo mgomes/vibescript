@@ -340,12 +340,17 @@ const (
 	prefixParserPrefixExpression
 	prefixParserYieldExpression
 	prefixParserIfExpression
+	prefixParserUnlessExpression
 	prefixParserCaseExpression
+	prefixParserBeginExpression
+	prefixParserForExpression
+	prefixParserWhileExpression
+	prefixParserUntilExpression
 )
 
 func prefixParserKind(tt ast.TokenType) prefixParseKind {
 	switch tt {
-	case ast.TokenIdent:
+	case ast.TokenIdent, ast.TokenThen:
 		return prefixParserIdentifier
 	case ast.TokenInt:
 		return prefixParserIntegerLiteral
@@ -387,8 +392,18 @@ func prefixParserKind(tt ast.TokenType) prefixParseKind {
 		return prefixParserYieldExpression
 	case ast.TokenIf:
 		return prefixParserIfExpression
+	case ast.TokenUnless:
+		return prefixParserUnlessExpression
 	case ast.TokenCase:
 		return prefixParserCaseExpression
+	case ast.TokenBegin:
+		return prefixParserBeginExpression
+	case ast.TokenFor:
+		return prefixParserForExpression
+	case ast.TokenWhile:
+		return prefixParserWhileExpression
+	case ast.TokenUntil:
+		return prefixParserUntilExpression
 	default:
 		return prefixParserNone
 	}
@@ -438,8 +453,18 @@ func (p *parser) parsePrefix(kind prefixParseKind) ast.Expression {
 		return p.parseYieldExpression()
 	case prefixParserIfExpression:
 		return p.parseIfExpression()
+	case prefixParserUnlessExpression:
+		return p.parseUnlessExpression()
 	case prefixParserCaseExpression:
 		return p.parseCaseExpression()
+	case prefixParserBeginExpression:
+		return p.parseBeginExpression()
+	case prefixParserForExpression:
+		return p.parseForExpression()
+	case prefixParserWhileExpression:
+		return p.parseWhileExpression()
+	case prefixParserUntilExpression:
+		return p.parseUntilExpression()
 	default:
 		return nil
 	}
@@ -450,6 +475,7 @@ type infixParseKind uint8
 const (
 	infixParserNone infixParseKind = iota
 	infixParserInfixExpression
+	infixParserRescueModifierExpression
 	infixParserConditionalExpression
 	infixParserRangeExpression
 	infixParserCallExpression
@@ -465,6 +491,8 @@ func infixParserKind(tt ast.TokenType) infixParseKind {
 		ast.TokenEQ, ast.TokenCaseEQ, ast.TokenNotEQ, ast.TokenLT, ast.TokenLTE, ast.TokenGT, ast.TokenGTE,
 		ast.TokenSpaceship, ast.TokenAnd, ast.TokenOr, ast.TokenShovel, ast.TokenAmpersand:
 		return infixParserInfixExpression
+	case ast.TokenRescue:
+		return infixParserRescueModifierExpression
 	case ast.TokenQuestion:
 		return infixParserConditionalExpression
 	case ast.TokenRange, ast.TokenRangeExcl:
@@ -488,6 +516,8 @@ func (p *parser) parseInfix(kind infixParseKind, left ast.Expression) ast.Expres
 	switch kind {
 	case infixParserInfixExpression:
 		return p.parseInfixExpression(left)
+	case infixParserRescueModifierExpression:
+		return p.parseRescueModifierExpression(left)
 	case infixParserConditionalExpression:
 		return p.parseConditionalExpression(left)
 	case infixParserRangeExpression:
@@ -2003,7 +2033,7 @@ func isLabelNameToken(tok ast.Token) bool {
 		ast.TokenDef, ast.TokenClass, ast.TokenEnum, ast.TokenExport, ast.TokenSelf, ast.TokenPrivate, ast.TokenProperty, ast.TokenGetter, ast.TokenSetter,
 		ast.TokenBegin, ast.TokenRescue, ast.TokenEnsure, ast.TokenRaise,
 		ast.TokenEnd, ast.TokenReturn, ast.TokenYield, ast.TokenDo, ast.TokenThen, ast.TokenFor, ast.TokenWhile, ast.TokenUntil,
-		ast.TokenBreak, ast.TokenNext, ast.TokenIn, ast.TokenIf, ast.TokenUnless, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
+		ast.TokenBreak, ast.TokenNext, ast.TokenRetry, ast.TokenIn, ast.TokenIf, ast.TokenUnless, ast.TokenCase, ast.TokenWhen, ast.TokenElsif, ast.TokenElse,
 		ast.TokenTrue, ast.TokenFalse, ast.TokenNil:
 		return true
 	default:
@@ -2011,10 +2041,21 @@ func isLabelNameToken(tok ast.Token) bool {
 	}
 }
 
+func (p *parser) parseRescueModifierExpression(body ast.Expression) ast.Expression {
+	pos := body.Pos()
+	precedence := p.curPrecedence()
+	p.nextToken()
+	fallback := p.parseExpression(precedence)
+	if fallback == nil {
+		return nil
+	}
+	return &ast.RescueModifierExpr{Body: body, Fallback: fallback, Position: pos}
+}
+
 func (p *parser) parseIfExpression() ast.Expression {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseLineExpression(lowestPrec)
+	condition := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
 	if condition == nil {
 		return nil
 	}
@@ -2031,7 +2072,7 @@ func (p *parser) parseIfExpression() ast.Expression {
 	var elseifBranches []ast.IfExprBranch
 	for p.curToken.Type == ast.TokenElsif {
 		p.nextToken()
-		cond := p.parseLineExpression(lowestPrec)
+		cond := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
 		if cond == nil {
 			return nil
 		}
@@ -2068,6 +2109,48 @@ func (p *parser) parseIfExpression() ast.Expression {
 		Consequent: consequent,
 		ElseIf:     elseifBranches,
 		Alternate:  alternate,
+		Position:   pos,
+	}
+}
+
+func (p *parser) parseUnlessExpression() ast.Expression {
+	pos := p.curToken.Pos
+	p.nextToken()
+	condition := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
+	if condition == nil {
+		return nil
+	}
+
+	p.nextToken()
+	p.consumeIfExpressionResultSeparator()
+	consequent := p.parseExpressionWithBlock()
+	if consequent == nil {
+		return nil
+	}
+	p.nextToken()
+	p.skipStatementSeparators()
+
+	var alternate ast.Expression
+	if p.curToken.Type == ast.TokenElse {
+		p.nextToken()
+		p.skipStatementSeparators()
+		alternate = p.parseExpressionWithBlock()
+		if alternate == nil {
+			return nil
+		}
+		p.nextToken()
+		p.skipStatementSeparators()
+	}
+
+	if p.curToken.Type != ast.TokenEnd {
+		p.errorExpected(p.curToken, "end")
+		return nil
+	}
+
+	return &ast.IfExpr{
+		Condition:  condition,
+		Consequent: alternate,
+		Alternate:  consequent,
 		Position:   pos,
 	}
 }
@@ -2154,7 +2237,7 @@ func (p *parser) parseCaseWhenValue() *ast.CaseWhenValue {
 		splat = true
 		p.nextToken()
 	}
-	expr := p.parseLineExpression(lowestPrec)
+	expr := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
 	if expr == nil {
 		return nil
 	}
@@ -2166,6 +2249,45 @@ func (p *parser) consumeCaseResultSeparator() {
 		p.nextToken()
 	}
 	p.skipStatementSeparators()
+}
+
+func (p *parser) parseBeginExpression() ast.Expression {
+	pos := p.curToken.Pos
+	p.nextToken()
+	body := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+	stmt := p.parseRescueElseEnsureTail(pos, body, "begin")
+	if stmt == nil {
+		return nil
+	}
+	expr, ok := stmt.(ast.Expression)
+	if !ok {
+		return nil
+	}
+	return expr
+}
+
+func (p *parser) parseForExpression() ast.Expression {
+	stmt := p.parseForStatement()
+	if stmt == nil {
+		return nil
+	}
+	return stmt.(ast.Expression)
+}
+
+func (p *parser) parseWhileExpression() ast.Expression {
+	stmt := p.parseWhileStatement()
+	if stmt == nil {
+		return nil
+	}
+	return stmt.(ast.Expression)
+}
+
+func (p *parser) parseUntilExpression() ast.Expression {
+	stmt := p.parseUntilStatement()
+	if stmt == nil {
+		return nil
+	}
+	return stmt.(ast.Expression)
 }
 
 func (p *parser) parseYieldExpression() ast.Expression {

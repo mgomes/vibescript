@@ -109,12 +109,21 @@ const (
 var (
 	errLoopBreak           = errors.New("loop break")
 	errLoopNext            = errors.New("loop next")
+	errRescueRetry         = errors.New("rescue retry")
 	errStepQuotaExceeded   = errors.New("step quota exceeded")
 	errMemoryQuotaExceeded = errors.New("memory quota exceeded")
 	errOutputLimitExceeded = errors.New("output limit exceeded")
 )
 
 type loopBreakError struct {
+	value Value
+}
+
+type loopNextError struct {
+	value Value
+}
+
+type functionReturnError struct {
 	value Value
 }
 
@@ -134,6 +143,45 @@ func loopBreakValue(err error) (Value, bool) {
 	var breakErr *loopBreakError
 	if errors.As(err, &breakErr) {
 		return breakErr.value, true
+	}
+	return NewNil(), false
+}
+
+func (e *loopNextError) Error() string {
+	return errLoopNext.Error()
+}
+
+func (e *loopNextError) Unwrap() error {
+	return errLoopNext
+}
+
+func newLoopNextValue(value Value) error {
+	return &loopNextError{value: value}
+}
+
+func loopNextValue(err error) (Value, bool) {
+	var nextErr *loopNextError
+	if errors.As(err, &nextErr) {
+		return nextErr.value, true
+	}
+	return NewNil(), false
+}
+
+func (e *functionReturnError) Error() string {
+	return "function return"
+}
+
+func newFunctionReturnValue(value Value) error {
+	return &functionReturnError{value: value}
+}
+
+func functionReturnValue(err error) (Value, bool) {
+	if err == nil {
+		return NewNil(), false
+	}
+	var returnErr *functionReturnError
+	if errors.As(err, &returnErr) {
+		return returnErr.value, true
 	}
 	return NewNil(), false
 }
@@ -345,7 +393,7 @@ func (exec *Execution) wrapError(err error, pos Position) error {
 	if err == nil {
 		return nil
 	}
-	if isHostControlSignal(err) {
+	if isHostControlSignal(err) || isFunctionReturnSignal(err) {
 		return err
 	}
 	var runtimeErr *RuntimeError

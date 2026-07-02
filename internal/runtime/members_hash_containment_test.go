@@ -2742,7 +2742,7 @@ func TestForHashReachablePairBodyFitsWithoutPairReservation(t *testing.T) {
 	loopEnv.Assign("body", body)
 	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
 	exec.pushEnv(loopEnv)
-	_, _, err := exec.evalForHash(stmt, loopEnv, receiver, NewNil())
+	_, _, err := exec.evalForHash(stmt, loopEnv, receiver, NewNil(), loopStatementResult)
 	exec.popEnv()
 	if err != nil {
 		t.Fatalf("for pair in hash with reachable iterable and bound pair at quota %d = %v, want success", quota, err)

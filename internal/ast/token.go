@@ -109,6 +109,7 @@ const (
 	TokenUntil    TokenType = "UNTIL"
 	TokenBreak    TokenType = "BREAK"
 	TokenNext     TokenType = "NEXT"
+	TokenRetry    TokenType = "RETRY"
 	TokenIn       TokenType = "IN"
 	TokenIf       TokenType = "IF"
 	TokenUnless   TokenType = "UNLESS"
@@ -161,6 +162,7 @@ var keywordTokenTypes = map[string]TokenType{
 	"until":    TokenUntil,
 	"break":    TokenBreak,
 	"next":     TokenNext,
+	"retry":    TokenRetry,
 	"in":       TokenIn,
 	"if":       TokenIf,
 	"unless":   TokenUnless,

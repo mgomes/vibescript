@@ -119,9 +119,11 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		if len(typed.Else) > 0 {
 			elseTerminated = lintStatements(function, typed.Else, warnings)
 		}
-		rescueTerminated := false
-		if len(typed.Rescue) > 0 {
-			rescueTerminated = lintStatements(function, typed.Rescue, warnings)
+		rescuesTerminate := len(typed.Rescues) > 0
+		for _, clause := range typed.Rescues {
+			if !lintStatements(function, clause.Body, warnings) {
+				rescuesTerminate = false
+			}
 		}
 		ensureTerminated := false
 		if len(typed.Ensure) > 0 {
@@ -134,10 +136,10 @@ func statementTerminates(function string, stmt ast.Statement, warnings *[]Warnin
 		if len(typed.Else) > 0 {
 			normalTerminated = bodyTerminated || elseTerminated
 		}
-		if len(typed.Rescue) == 0 {
+		if len(typed.Rescues) == 0 {
 			return normalTerminated
 		}
-		return normalTerminated && rescueTerminated
+		return normalTerminated && rescuesTerminate
 	default:
 		return false
 	}
@@ -204,6 +206,9 @@ func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 		lintExpression(function, typed.Condition, warnings)
 		lintExpression(function, typed.Consequent, warnings)
 		lintExpression(function, typed.Alternate, warnings)
+	case *ast.RescueModifierExpr:
+		lintExpression(function, typed.Body, warnings)
+		lintExpression(function, typed.Fallback, warnings)
 	case *ast.IfExpr:
 		lintExpression(function, typed.Condition, warnings)
 		lintExpression(function, typed.Consequent, warnings)
@@ -234,6 +239,8 @@ func lintExpression(function string, expr ast.Expression, warnings *[]Warning) {
 		lintStringParts(function, typed.Parts, warnings)
 	case *ast.InterpolatedSymbol:
 		lintStringParts(function, typed.Parts, warnings)
+	case *ast.ForStmt, *ast.WhileStmt, *ast.UntilStmt, *ast.TryStmt:
+		statementTerminates(function, typed.(ast.Statement), warnings)
 	}
 }
 

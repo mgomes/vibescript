@@ -34,8 +34,12 @@ end`
 			Body: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 1}},
 			},
-			Rescue: []ast.Statement{
-				&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 2}},
+			Rescues: []ast.RescueClause{
+				{
+					Body: []ast.Statement{
+						&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 2}},
+					},
+				},
 			},
 			Else: []ast.Statement{
 				&ast.ExprStmt{Expr: &ast.IntegerLiteral{Value: 3}},
@@ -76,11 +80,15 @@ end`
 	if !ok {
 		t.Fatalf("body[0] = %T, want *ast.TryStmt", body[0])
 	}
-	if stmt.RescueTy == nil || stmt.RescueTy.Name != "RuntimeError" {
-		t.Fatalf("RescueTy = %#v, want RuntimeError", stmt.RescueTy)
+	if len(stmt.Rescues) != 1 {
+		t.Fatalf("Rescues length = %d, want 1", len(stmt.Rescues))
 	}
-	if stmt.RescueBinding != "err" {
-		t.Fatalf("RescueBinding = %q, want err", stmt.RescueBinding)
+	rescue := stmt.Rescues[0]
+	if rescue.Type == nil || rescue.Type.Name != "RuntimeError" {
+		t.Fatalf("rescue.Type = %#v, want RuntimeError", rescue.Type)
+	}
+	if rescue.Binding != "err" {
+		t.Fatalf("rescue.Binding = %q, want err", rescue.Binding)
 	}
 	wantBody := []ast.Statement{
 		&ast.RaiseStmt{Value: &ast.StringLiteral{Value: "boom"}},
@@ -94,7 +102,7 @@ end`
 			Property: "message",
 		}},
 	}
-	if diff := cmp.Diff(wantRescue, stmt.Rescue, astCmpOpts); diff != "" {
+	if diff := cmp.Diff(wantRescue, rescue.Body, astCmpOpts); diff != "" {
 		t.Fatalf("try rescue mismatch (-want +got):\n%s", diff)
 	}
 	wantElse := []ast.Statement{
@@ -153,22 +161,26 @@ end`
 			if !ok {
 				t.Fatalf("body[0] = %T, want *ast.TryStmt", body[0])
 			}
+			if len(stmt.Rescues) != 1 {
+				t.Fatalf("Rescues length = %d, want 1", len(stmt.Rescues))
+			}
+			rescue := stmt.Rescues[0]
 			if tt.wantType == "" {
-				if stmt.RescueTy != nil {
-					t.Fatalf("RescueTy = %#v, want nil", stmt.RescueTy)
+				if rescue.Type != nil {
+					t.Fatalf("rescue.Type = %#v, want nil", rescue.Type)
 				}
-			} else if stmt.RescueTy == nil || stmt.RescueTy.Name != tt.wantType {
-				t.Fatalf("RescueTy = %#v, want %q", stmt.RescueTy, tt.wantType)
+			} else if rescue.Type == nil || rescue.Type.Name != tt.wantType {
+				t.Fatalf("rescue.Type = %#v, want %q", rescue.Type, tt.wantType)
 			}
-			if stmt.RescueBinding != tt.wantBinding {
-				t.Fatalf("RescueBinding = %q, want %q", stmt.RescueBinding, tt.wantBinding)
+			if rescue.Binding != tt.wantBinding {
+				t.Fatalf("rescue.Binding = %q, want %q", rescue.Binding, tt.wantBinding)
 			}
-			if len(stmt.Rescue) != 1 {
-				t.Fatalf("Rescue length = %d, want 1", len(stmt.Rescue))
+			if len(rescue.Body) != 1 {
+				t.Fatalf("rescue.Body length = %d, want 1", len(rescue.Body))
 			}
-			rescueExpr, ok := stmt.Rescue[0].(*ast.ExprStmt)
+			rescueExpr, ok := rescue.Body[0].(*ast.ExprStmt)
 			if !ok {
-				t.Fatalf("Rescue[0] = %T, want *ast.ExprStmt", stmt.Rescue[0])
+				t.Fatalf("rescue.Body[0] = %T, want *ast.ExprStmt", rescue.Body[0])
 			}
 			lit, ok := rescueExpr.Expr.(*ast.StringLiteral)
 			if !ok {

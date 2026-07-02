@@ -74,18 +74,22 @@ func (u *implicitBlockParamUsage) visitStatement(stmt ast.Statement) {
 		u.visitStatements(s.Body)
 	case *ast.TryStmt:
 		u.visitStatements(s.Body)
-		if s.RescueBinding != "" {
-			u.withScopedBinding(s.RescueBinding, func() {
-				u.visitStatements(s.Rescue)
-			})
-		} else {
-			u.visitStatements(s.Rescue)
+		for _, clause := range s.Rescues {
+			if clause.Binding != "" {
+				u.withScopedBinding(clause.Binding, func() {
+					u.visitStatements(clause.Body)
+				})
+			} else {
+				u.visitStatements(clause.Body)
+			}
 		}
 		u.visitStatements(s.Else)
 		u.visitStatements(s.Ensure)
 	case *ast.BreakStmt:
 		u.visitExpression(s.Value, false)
 	case *ast.NextStmt:
+		u.visitExpression(s.Value, false)
+	case *ast.RetryStmt:
 		return
 	}
 }
@@ -136,6 +140,9 @@ func (u *implicitBlockParamUsage) visitExpression(expr ast.Expression, callCalle
 		u.visitExpression(e.Condition, false)
 		u.visitExpression(e.Consequent, false)
 		u.visitExpression(e.Alternate, false)
+	case *ast.RescueModifierExpr:
+		u.visitExpression(e.Body, false)
+		u.visitExpression(e.Fallback, false)
 	case *ast.IfExpr:
 		u.visitExpression(e.Condition, false)
 		u.visitExpression(e.Consequent, false)
@@ -166,6 +173,8 @@ func (u *implicitBlockParamUsage) visitExpression(expr ast.Expression, callCalle
 		u.visitStringParts(e.Parts)
 	case *ast.InterpolatedSymbol:
 		u.visitStringParts(e.Parts)
+	case *ast.ForStmt, *ast.WhileStmt, *ast.UntilStmt, *ast.TryStmt:
+		u.visitStatement(e.(ast.Statement))
 	}
 }
 

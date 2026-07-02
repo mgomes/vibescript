@@ -74,6 +74,8 @@ type Execution struct {
 	envStackArr                [8]*Env
 	validatedCapabilityArgsArr [4]string
 	loopDepth                  int
+	blockDepth                 int
+	rescueDepth                int
 	rescuedErrors              []error
 	randSource                 *rand.Rand
 	randSeed                   int64

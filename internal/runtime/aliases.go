@@ -40,6 +40,8 @@ type (
 	UntilStmt      = ast.UntilStmt
 	BreakStmt      = ast.BreakStmt
 	NextStmt       = ast.NextStmt
+	RetryStmt      = ast.RetryStmt
+	RescueClause   = ast.RescueClause
 	TryStmt        = ast.TryStmt
 	PropertyDecl   = ast.PropertyDecl
 	ClassStmt      = ast.ClassStmt
@@ -68,6 +70,7 @@ type (
 	UnaryExpr          = ast.UnaryExpr
 	BinaryExpr         = ast.BinaryExpr
 	ConditionalExpr    = ast.ConditionalExpr
+	RescueModifierExpr = ast.RescueModifierExpr
 	IfExprBranch       = ast.IfExprBranch
 	IfExpr             = ast.IfExpr
 	RangeExpr          = ast.RangeExpr

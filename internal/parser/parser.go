@@ -257,6 +257,7 @@ const (
 )
 
 var precedences = map[ast.TokenType]int{
+	ast.TokenRescue:    precAssign,
 	ast.TokenQuestion:  precConditional,
 	ast.TokenOr:        precOr,
 	ast.TokenAnd:       precAnd,
