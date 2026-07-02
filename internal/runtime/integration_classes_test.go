@@ -119,3 +119,58 @@ func TestClassErrorCases(t *testing.T) {
 		t.Fatalf("run: writeonly mismatch: %v", h["writeonly"])
 	}
 }
+
+func TestClassPropertyAndNominalTypeAnnotations(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+class User
+  property name: string
+  property friend: User
+
+  def initialize(@name: string)
+  end
+
+  def corrupt_name
+    @name = 1
+    name
+  end
+end
+
+def user_name(user: User) -> string
+  user.name
+end
+
+def set_friend
+  ada = User.new("Ada")
+  lin = User.new("Lin")
+  ada.friend = lin
+  user_name(ada.friend)
+end
+
+def bad_name_setter
+  user = User.new("Ada")
+  user.name = 1
+end
+
+def bad_friend_setter
+  user = User.new("Ada")
+  user.friend = "Lin"
+end
+
+def bad_nominal_arg
+  user_name("Ada")
+end
+
+def bad_getter_return
+  User.new("Ada").corrupt_name
+end
+`)
+
+	if got := callFunc(t, script, "set_friend", nil); !got.Equal(NewString("Lin")) {
+		t.Fatalf("set_friend() = %#v, want Lin", got)
+	}
+	requireCallErrorContains(t, script, "bad_name_setter", nil, CallOptions{}, "argument value expected string, got int")
+	requireCallErrorContains(t, script, "bad_friend_setter", nil, CallOptions{}, "argument value expected User, got string")
+	requireCallErrorContains(t, script, "bad_nominal_arg", nil, CallOptions{}, "argument user expected User, got string")
+	requireCallErrorContains(t, script, "bad_getter_return", nil, CallOptions{}, "return value for name expected string, got int")
+}

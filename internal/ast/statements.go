@@ -134,6 +134,7 @@ func (s *TryStmt) Pos() Position { return s.Position }
 type PropertyDecl struct {
 	Names    []string
 	Kind     string // property/getter/setter
+	Type     *TypeExpr
 	Position Position
 }
 

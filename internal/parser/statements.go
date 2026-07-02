@@ -1390,7 +1390,13 @@ func (p *parser) parsePropertyDecl(kind ast.TokenType) ast.PropertyDecl {
 		}
 		names = append(names, p.curToken.Literal)
 	}
-	return ast.PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), Position: pos}
+	decl := ast.PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), Position: pos}
+	if p.peekToken.Type == ast.TokenColon {
+		p.nextToken()
+		p.nextToken()
+		decl.Type = p.parseTypeExpr()
+	}
+	return decl
 }
 
 func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
