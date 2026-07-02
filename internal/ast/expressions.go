@@ -238,6 +238,16 @@ type ConditionalExpr struct {
 func (e *ConditionalExpr) exprNode()     {}
 func (e *ConditionalExpr) Pos() Position { return e.Position }
 
+// RescueModifierExpr represents an expression-level rescue fallback.
+type RescueModifierExpr struct {
+	Body     Expression
+	Fallback Expression
+	Position Position
+}
+
+func (e *RescueModifierExpr) exprNode()     {}
+func (e *RescueModifierExpr) Pos() Position { return e.Position }
+
 // IfExprBranch represents one elsif branch in an if expression.
 type IfExprBranch struct {
 	Condition Expression

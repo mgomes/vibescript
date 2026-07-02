@@ -31,6 +31,7 @@ func TestKeywords(t *testing.T) {
 		"property",
 		"raise",
 		"rescue",
+		"retry",
 		"return",
 		"self",
 		"setter",

@@ -79,6 +79,8 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalBinaryExpr(e, env)
 	case *ConditionalExpr:
 		return exec.evalConditionalExpr(e, env)
+	case *RescueModifierExpr:
+		return exec.evalRescueModifierExpr(e, env)
 	case *IfExpr:
 		return exec.evalIfExpr(e, env)
 	case *RangeExpr:
@@ -153,6 +155,14 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 		return exec.evalBlockLiteral(e, env)
 	case *YieldExpr:
 		return exec.evalYield(e, env)
+	case *ForStmt:
+		return exec.evalForExpression(e, env)
+	case *WhileStmt:
+		return exec.evalWhileExpression(e, env)
+	case *UntilStmt:
+		return exec.evalUntilExpression(e, env)
+	case *TryStmt:
+		return exec.evalTryExpression(e, env)
 	default:
 		return NewNil(), exec.errorAt(expr.Pos(), "unsupported expression")
 	}
@@ -834,6 +844,24 @@ func (exec *Execution) evalConditionalExpr(expr *ConditionalExpr, env *Env) (Val
 	return result, nil
 }
 
+func (exec *Execution) evalRescueModifierExpr(expr *RescueModifierExpr, env *Env) (Value, error) {
+	result, err := exec.evalExpressionWithAuto(expr.Body, env, true)
+	if err == nil {
+		return result, nil
+	}
+	if isLoopControlSignal(err) || isHostControlSignal(err) || isFunctionReturnSignal(err) || !runtimeErrorMatchesRescueType(err, nil) {
+		return NewNil(), err
+	}
+	fallback, fallbackErr := exec.evalExpressionWithAuto(expr.Fallback, env, true)
+	if fallbackErr != nil {
+		return NewNil(), fallbackErr
+	}
+	if err := exec.checkMemoryWith(fallback); err != nil {
+		return NewNil(), err
+	}
+	return fallback, nil
+}
+
 func (exec *Execution) evalIfExpr(expr *IfExpr, env *Env) (Value, error) {
 	resultExpr, err := exec.matchIfExpressionBranch(expr, env)
 	if err != nil {
@@ -908,10 +936,11 @@ func ensureBlock(block Value, name string) error {
 }
 
 type blockCallRunner struct {
-	exec   *Execution
-	blk    *Block
-	env    *Env
-	charge *blockBindCharge
+	exec          *Execution
+	blk           *Block
+	env           *Env
+	charge        *blockBindCharge
+	nextContinues bool
 }
 
 // newBlockCallRunner builds a runner for repeatedly invoking a block from an
@@ -963,6 +992,12 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 	}
 	val, err := runner.exec.callBlock(runner.blk, args, env, runner.charge, chargedRoots...)
 	if err != nil {
+		if errors.Is(err, errLoopNext) && !runner.nextContinues {
+			if nextVal, ok := loopNextValue(err); ok {
+				return nextVal, nil
+			}
+			return NewNil(), nil
+		}
 		return NewNil(), err
 	}
 	if err := runner.exec.checkContext(); err != nil {
@@ -1033,7 +1068,14 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	// argument it was copied from, letting (args) and (rest) each fit the quota
 	// while the real peak (args + rest) exceeds it.
 	charge := newBlockBindCharge(exec, blk, NewNil(), args, nil, block)
-	return exec.callBlock(blk, args, newEnv(blk.Env), charge)
+	val, err := exec.callBlock(blk, args, newEnv(blk.Env), charge)
+	if err != nil && errors.Is(err, errLoopNext) {
+		if nextVal, ok := loopNextValue(err); ok {
+			return nextVal, nil
+		}
+		return NewNil(), nil
+	}
+	return val, err
 }
 
 func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, chargedRoots ...Value) (Value, error) {
@@ -1089,7 +1131,9 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		}
 		blockEnv.Define(name, val)
 	}
+	exec.blockDepth++
 	val, returned, err := exec.evalStatements(blk.Body, blockEnv)
+	exec.blockDepth--
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1154,13 +1198,22 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 		return expressionCapturesCurrentEnv(s.Condition) || statementsCaptureCurrentEnv(s.Body)
 	case *BreakStmt:
 		return expressionCapturesCurrentEnv(s.Value)
-	case *NextStmt, *EnumStmt:
+	case *NextStmt:
+		return expressionCapturesCurrentEnv(s.Value)
+	case *RetryStmt, *EnumStmt:
 		return false
 	case *TryStmt:
-		return statementsCaptureCurrentEnv(s.Body) ||
-			statementsCaptureCurrentEnv(s.Rescue) ||
+		if statementsCaptureCurrentEnv(s.Body) ||
 			statementsCaptureCurrentEnv(s.Else) ||
-			statementsCaptureCurrentEnv(s.Ensure)
+			statementsCaptureCurrentEnv(s.Ensure) {
+			return true
+		}
+		for _, clause := range s.Rescues {
+			if statementsCaptureCurrentEnv(clause.Body) {
+				return true
+			}
+		}
+		return false
 	default:
 		return true
 	}
@@ -1232,6 +1285,8 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		return expressionCapturesCurrentEnv(e.Condition) ||
 			expressionCapturesCurrentEnv(e.Consequent) ||
 			expressionCapturesCurrentEnv(e.Alternate)
+	case *RescueModifierExpr:
+		return expressionCapturesCurrentEnv(e.Body) || expressionCapturesCurrentEnv(e.Fallback)
 	case *IfExpr:
 		if expressionCapturesCurrentEnv(e.Condition) ||
 			expressionCapturesCurrentEnv(e.Consequent) ||
@@ -1272,6 +1327,8 @@ func expressionCapturesCurrentEnv(expr Expression) bool {
 		return stringPartsCaptureCurrentEnv(e.Parts)
 	case *InterpolatedSymbol:
 		return stringPartsCaptureCurrentEnv(e.Parts)
+	case *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+		return statementCapturesCurrentEnv(e.(Statement))
 	default:
 		return true
 	}
@@ -2040,7 +2097,49 @@ func rangeContainsFloat(rng Range, value float64) bool {
 	return floor >= rng.End
 }
 
+type loopResultMode uint8
+
+const (
+	loopStatementResult loopResultMode = iota
+	loopExpressionResult
+)
+
+func loopNormalResult(mode loopResultMode, expressionValue, last Value) Value {
+	if mode == loopExpressionResult {
+		return expressionValue
+	}
+	return last
+}
+
+func loopBreakResult(err error, mode loopResultMode, last Value) (Value, bool, error) {
+	if breakVal, ok := loopBreakValue(err); ok {
+		return breakVal, false, nil
+	}
+	if mode == loopExpressionResult {
+		return NewNil(), false, nil
+	}
+	return last, false, nil
+}
+
+func expressionValueOrReturn(val Value, returned bool, err error) (Value, error) {
+	if err != nil {
+		return NewNil(), err
+	}
+	if returned {
+		return NewNil(), newFunctionReturnValue(val)
+	}
+	return val, nil
+}
+
 func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, error) {
+	return exec.evalForLoop(stmt, env, loopStatementResult)
+}
+
+func (exec *Execution) evalForExpression(stmt *ForStmt, env *Env) (Value, error) {
+	return expressionValueOrReturn(exec.evalForLoop(stmt, env, loopExpressionResult))
+}
+
+func (exec *Execution) evalForLoop(stmt *ForStmt, env *Env, mode loopResultMode) (Value, bool, error) {
 	exec.loopDepth++
 	defer func() {
 		exec.loopDepth--
@@ -2057,8 +2156,7 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 
 	switch iterable.Kind() {
 	case KindArray:
-		arr := iterable.Array()
-		for _, item := range arr {
+		for _, item := range iterable.Array() {
 			if err := exec.step(); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}
@@ -2066,10 +2164,7 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			val, returned, err := exec.evalStatements(stmt.Body, env)
 			if err != nil {
 				if errors.Is(err, errLoopBreak) {
-					if breakVal, ok := loopBreakValue(err); ok {
-						return breakVal, false, nil
-					}
-					return last, false, nil
+					return loopBreakResult(err, mode, last)
 				}
 				if errors.Is(err, errLoopNext) {
 					continue
@@ -2082,7 +2177,7 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			last = val
 		}
 	case KindHash:
-		val, returned, err := exec.evalForHash(stmt, env, iterable, last)
+		val, returned, err := exec.evalForHash(stmt, env, iterable, last, mode)
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2094,49 +2189,17 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 		r := iterable.Range()
 		if r.Start <= r.End {
 			for i := r.Start; rangeLoopAscendingContinues(i, r); i++ {
-				if err := exec.step(); err != nil {
-					return NewNil(), false, exec.wrapError(err, stmt.Pos())
-				}
-				env.Assign(stmt.Iterator, NewInt(i))
-				val, returned, err := exec.evalStatements(stmt.Body, env)
-				if err != nil {
-					if errors.Is(err, errLoopBreak) {
-						if breakVal, ok := loopBreakValue(err); ok {
-							return breakVal, false, nil
-						}
-						return last, false, nil
-					}
-					if errors.Is(err, errLoopNext) {
-						continue
-					}
-					return NewNil(), false, err
-				}
-				if returned {
-					return val, true, nil
+				val, returned, done, err := exec.evalRangeLoopIteration(stmt, env, NewInt(i), last, mode)
+				if err != nil || returned || done {
+					return val, returned, err
 				}
 				last = val
 			}
 		} else {
 			for i := r.Start; rangeLoopDescendingContinues(i, r); i-- {
-				if err := exec.step(); err != nil {
-					return NewNil(), false, exec.wrapError(err, stmt.Pos())
-				}
-				env.Assign(stmt.Iterator, NewInt(i))
-				val, returned, err := exec.evalStatements(stmt.Body, env)
-				if err != nil {
-					if errors.Is(err, errLoopBreak) {
-						if breakVal, ok := loopBreakValue(err); ok {
-							return breakVal, false, nil
-						}
-						return last, false, nil
-					}
-					if errors.Is(err, errLoopNext) {
-						continue
-					}
-					return NewNil(), false, err
-				}
-				if returned {
-					return val, true, nil
+				val, returned, done, err := exec.evalRangeLoopIteration(stmt, env, NewInt(i), last, mode)
+				if err != nil || returned || done {
+					return val, returned, err
 				}
 				last = val
 			}
@@ -2145,31 +2208,32 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "cannot iterate over %s", iterable.Kind())
 	}
 
-	return last, false, nil
+	return loopNormalResult(mode, iterable, last), false, nil
 }
 
-// evalForHash runs a `for` loop over a hash, mirroring Ruby's `for` over a hash,
-// which iterates `each` and yields a two-element [key, value] pair. The returned
-// bool reports whether the body returned (propagating an explicit `return`), and
-// last seeds the loop's running value so the value of an empty loop matches the
-// enclosing statement's last value.
-//
-// Like hash.each, the loop builds no output map but materializes a sorted key
-// list to walk entries deterministically. The scratch slice is reserved against
-// the memory quota for the loop's entire lifetime via reserveLoopScratch, so it
-// is counted by every memory check inside the body -- not just preflighted once
-// before the loop. Without that reservation a body that allocates near the quota
-// could pass its own checks while the true peak (roots + scratch + body
-// allocation) exceeded the quota by the scratch size. The reservation is released
-// on every exit path through defer.
-//
-// The per-iteration [key, value] pair is handled according to receiver visibility.
-// If the iterable is already reachable from the loop body environment, the bound
-// pair is also visible to body checks, so the loop preflights the largest pair once
-// without reserving it for the whole body. If the iterable is Go-stack-only, the
-// largest pair stays reserved so body checks keep accounting for the transient they
-// cannot combine with the invisible receiver.
-func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value) (Value, bool, error) {
+func (exec *Execution) evalRangeLoopIteration(stmt *ForStmt, env *Env, item, last Value, mode loopResultMode) (Value, bool, bool, error) {
+	if err := exec.step(); err != nil {
+		return NewNil(), false, false, exec.wrapError(err, stmt.Pos())
+	}
+	env.Assign(stmt.Iterator, item)
+	val, returned, err := exec.evalStatements(stmt.Body, env)
+	if err != nil {
+		if errors.Is(err, errLoopBreak) {
+			breakVal, _, breakErr := loopBreakResult(err, mode, last)
+			return breakVal, false, true, breakErr
+		}
+		if errors.Is(err, errLoopNext) {
+			return last, false, false, nil
+		}
+		return NewNil(), false, false, err
+	}
+	if returned {
+		return val, true, true, nil
+	}
+	return val, false, false, nil
+}
+
+func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value, mode loopResultMode) (Value, bool, error) {
 	if hashHasTypedEntries(iterable) {
 		count := iterable.HashLen()
 		reservePair := !exec.valueReachableFromLiveBase(iterable, NewNil())
@@ -2189,31 +2253,16 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 		}
 		var entryBuf [smallHashKeyBufferSize]HashEntry
 		for _, entry := range sortedTypedHashEntriesInto(iterable, entryBuf[:]) {
-			if err := exec.step(); err != nil {
-				return NewNil(), false, exec.wrapError(err, stmt.Pos())
-			}
 			pair := NewArray([]Value{entry.Key, entry.Value})
-			env.Assign(stmt.Iterator, pair)
-			val, returned, err := exec.evalStatements(stmt.Body, env)
-			if err != nil {
-				if errors.Is(err, errLoopBreak) {
-					if breakVal, ok := loopBreakValue(err); ok {
-						return breakVal, false, nil
-					}
-					return last, false, nil
-				}
-				if errors.Is(err, errLoopNext) {
-					continue
-				}
-				return NewNil(), false, err
-			}
-			if returned {
-				return val, true, nil
+			val, returned, done, err := exec.evalHashLoopIteration(stmt, env, pair, last, mode)
+			if err != nil || returned || done {
+				return val, returned, err
 			}
 			last = val
 		}
-		return last, false, nil
+		return loopNormalResult(mode, iterable, last), false, nil
 	}
+
 	entries := iterable.Hash()
 	reservePair := !exec.valueReachableFromLiveBase(iterable, NewNil())
 	scratch := sortedKeyBufferBytes(len(entries))
@@ -2227,42 +2276,41 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 			return NewNil(), false, err
 		}
 	}
-
-	// The scratch, and the reserved pair when needed, are now in the live baseline.
-	// The iterable plays the receiver role here, so an ephemeral hash literal is
-	// counted while a hash already bound to a variable is deduplicated against the
-	// live base.
 	if err := exec.checkProjectedHashWalkBytes(iterable, nil, nil, NewNil()); err != nil {
 		return NewNil(), false, err
 	}
 	var keyBuf [smallHashKeyBufferSize]string
 	for _, key := range sortedHashKeysInto(entries, keyBuf[:]) {
-		if err := exec.step(); err != nil {
-			return NewNil(), false, exec.wrapError(err, stmt.Pos())
-		}
-		// Hash keys round-trip as symbols, the same shape hash.each and hash.keys
-		// expose.
 		pair := NewArray([]Value{NewSymbol(key), entries[key]})
-		env.Assign(stmt.Iterator, pair)
-		val, returned, err := exec.evalStatements(stmt.Body, env)
-		if err != nil {
-			if errors.Is(err, errLoopBreak) {
-				if breakVal, ok := loopBreakValue(err); ok {
-					return breakVal, false, nil
-				}
-				return last, false, nil
-			}
-			if errors.Is(err, errLoopNext) {
-				continue
-			}
-			return NewNil(), false, err
-		}
-		if returned {
-			return val, true, nil
+		val, returned, done, err := exec.evalHashLoopIteration(stmt, env, pair, last, mode)
+		if err != nil || returned || done {
+			return val, returned, err
 		}
 		last = val
 	}
-	return last, false, nil
+	return loopNormalResult(mode, iterable, last), false, nil
+}
+
+func (exec *Execution) evalHashLoopIteration(stmt *ForStmt, env *Env, pair, last Value, mode loopResultMode) (Value, bool, bool, error) {
+	if err := exec.step(); err != nil {
+		return NewNil(), false, false, exec.wrapError(err, stmt.Pos())
+	}
+	env.Assign(stmt.Iterator, pair)
+	val, returned, err := exec.evalStatements(stmt.Body, env)
+	if err != nil {
+		if errors.Is(err, errLoopBreak) {
+			breakVal, _, breakErr := loopBreakResult(err, mode, last)
+			return breakVal, false, true, breakErr
+		}
+		if errors.Is(err, errLoopNext) {
+			return last, false, false, nil
+		}
+		return NewNil(), false, false, err
+	}
+	if returned {
+		return val, true, true, nil
+	}
+	return val, false, false, nil
 }
 
 func rangeLoopAscendingContinues(value int64, rng Range) bool {
@@ -2280,6 +2328,14 @@ func rangeLoopDescendingContinues(value int64, rng Range) bool {
 }
 
 func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, bool, error) {
+	return exec.evalWhileLoop(stmt, env, loopStatementResult)
+}
+
+func (exec *Execution) evalWhileExpression(stmt *WhileStmt, env *Env) (Value, error) {
+	return expressionValueOrReturn(exec.evalWhileLoop(stmt, env, loopExpressionResult))
+}
+
+func (exec *Execution) evalWhileLoop(stmt *WhileStmt, env *Env, mode loopResultMode) (Value, bool, error) {
 	exec.loopDepth++
 	defer func() {
 		exec.loopDepth--
@@ -2298,15 +2354,12 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 			return NewNil(), false, err
 		}
 		if !condition.Truthy() {
-			return last, false, nil
+			return loopNormalResult(mode, NewNil(), last), false, nil
 		}
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
-				if breakVal, ok := loopBreakValue(err); ok {
-					return breakVal, false, nil
-				}
-				return last, false, nil
+				return loopBreakResult(err, mode, last)
 			}
 			if errors.Is(err, errLoopNext) {
 				continue
@@ -2321,6 +2374,14 @@ func (exec *Execution) evalWhileStatement(stmt *WhileStmt, env *Env) (Value, boo
 }
 
 func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, bool, error) {
+	return exec.evalUntilLoop(stmt, env, loopStatementResult)
+}
+
+func (exec *Execution) evalUntilExpression(stmt *UntilStmt, env *Env) (Value, error) {
+	return expressionValueOrReturn(exec.evalUntilLoop(stmt, env, loopExpressionResult))
+}
+
+func (exec *Execution) evalUntilLoop(stmt *UntilStmt, env *Env, mode loopResultMode) (Value, bool, error) {
 	exec.loopDepth++
 	defer func() {
 		exec.loopDepth--
@@ -2339,15 +2400,12 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 			return NewNil(), false, err
 		}
 		if condition.Truthy() {
-			return last, false, nil
+			return loopNormalResult(mode, NewNil(), last), false, nil
 		}
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
-				if breakVal, ok := loopBreakValue(err); ok {
-					return breakVal, false, nil
-				}
-				return last, false, nil
+				return loopBreakResult(err, mode, last)
 			}
 			if errors.Is(err, errLoopNext) {
 				continue
@@ -2494,24 +2552,39 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	switch s := stmt.(type) {
 	case *ExprStmt:
 		val, err := exec.evalExpression(s.Expr, env)
+		if returnVal, ok := functionReturnValue(err); ok {
+			return returnVal, true, nil
+		}
 		return val, false, err
 	case *ReturnStmt:
 		if s.Value == nil {
 			return NewNil(), true, nil
 		}
 		val, err := exec.evalExpression(s.Value, env)
+		if returnVal, ok := functionReturnValue(err); ok {
+			return returnVal, true, nil
+		}
 		return val, true, err
 	case *RaiseStmt:
 		return exec.evalRaiseStatement(s, env)
 	case *AssignStmt:
 		if s.Operator != "" {
 			val, err := exec.evalCompoundAssignment(s, env)
+			if returnVal, ok := functionReturnValue(err); ok {
+				return returnVal, true, nil
+			}
 			return val, false, err
 		}
 		if val, handled, err := exec.evalArrayAppendAssignment(s, env); handled || err != nil {
+			if returnVal, ok := functionReturnValue(err); ok {
+				return returnVal, true, nil
+			}
 			return val, false, err
 		}
 		val, err := exec.evalExpression(s.Value, env)
+		if returnVal, ok := functionReturnValue(err); ok {
+			return returnVal, true, nil
+		}
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2527,6 +2600,9 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		return val, false, nil
 	case *IfStmt:
 		val, err := exec.evalExpression(s.Condition, env)
+		if returnVal, ok := functionReturnValue(err); ok {
+			return returnVal, true, nil
+		}
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2538,6 +2614,9 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		}
 		for _, clause := range s.ElseIf {
 			condVal, err := exec.evalExpression(clause.Condition, env)
+			if returnVal, ok := functionReturnValue(err); ok {
+				return returnVal, true, nil
+			}
 			if err != nil {
 				return NewNil(), false, err
 			}
@@ -2564,6 +2643,9 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		}
 		if s.Value != nil {
 			val, err := exec.evalExpression(s.Value, env)
+			if returnVal, ok := functionReturnValue(err); ok {
+				return returnVal, true, nil
+			}
 			if err != nil {
 				return NewNil(), false, err
 			}
@@ -2574,10 +2656,28 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 		}
 		return NewNil(), false, errLoopBreak
 	case *NextStmt:
-		if exec.loopDepth == 0 {
+		if exec.loopDepth == 0 && exec.blockDepth == 0 {
 			return NewNil(), false, exec.errorAt(s.Pos(), "next used outside of loop")
 		}
+		if s.Value != nil {
+			val, err := exec.evalExpression(s.Value, env)
+			if returnVal, ok := functionReturnValue(err); ok {
+				return returnVal, true, nil
+			}
+			if err != nil {
+				return NewNil(), false, err
+			}
+			if err := exec.checkMemoryWith(val); err != nil {
+				return NewNil(), false, err
+			}
+			return NewNil(), false, newLoopNextValue(val)
+		}
 		return NewNil(), false, errLoopNext
+	case *RetryStmt:
+		if exec.rescueDepth == 0 {
+			return NewNil(), false, exec.errorAt(s.Pos(), "retry used outside of rescue")
+		}
+		return NewNil(), false, errRescueRetry
 	case *TryStmt:
 		return exec.evalTryStatement(s, env)
 	case *ClassStmt:
@@ -2601,6 +2701,9 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {
 	if stmt.Value != nil {
 		val, err := exec.evalExpression(stmt.Value, env)
+		if returnVal, ok := functionReturnValue(err); ok {
+			return returnVal, true, nil
+		}
 		if err != nil {
 			return NewNil(), false, err
 		}
@@ -2621,48 +2724,75 @@ func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, boo
 	return NewNil(), false, err
 }
 
+func (exec *Execution) evalTryExpression(stmt *TryStmt, env *Env) (Value, error) {
+	return expressionValueOrReturn(exec.evalTryStatement(stmt, env))
+}
+
 func (exec *Execution) evalTryStatement(stmt *TryStmt, env *Env) (Value, bool, error) {
-	val, returned, err := exec.evalStatements(stmt.Body, env)
-	runElse := err == nil && !returned
+	for {
+		val, returned, err := exec.evalStatements(stmt.Body, env)
+		runElse := err == nil && !returned
 
-	if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && len(stmt.Rescue) > 0 && runtimeErrorMatchesRescueType(err, stmt.RescueTy) {
-		rescueEnv := env
-		if stmt.RescueBinding != "" {
-			rescueEnv = newEnv(env)
-			rescueEnv.Define(stmt.RescueBinding, rescuedErrorValue(err))
+		if err != nil && !isLoopControlSignal(err) && !isHostControlSignal(err) && !isFunctionReturnSignal(err) {
+			if clause, ok := matchingRescueClause(stmt.Rescues, err); ok {
+				rescueVal, rescueReturned, rescueErr := exec.evalRescueClause(clause, err, env)
+				if errors.Is(rescueErr, errRescueRetry) {
+					continue
+				}
+				if rescueErr != nil {
+					val = NewNil()
+					returned = false
+					err = rescueErr
+				} else {
+					val = rescueVal
+					returned = rescueReturned
+					err = nil
+				}
+			}
 		}
-		exec.pushRescuedError(err)
-		rescueVal, rescueReturned, rescueErr := exec.evalStatements(stmt.Rescue, rescueEnv)
-		exec.popRescuedError()
-		if rescueErr != nil {
-			val = NewNil()
-			returned = false
-			err = rescueErr
-		} else {
-			val = rescueVal
-			returned = rescueReturned
-			err = nil
+
+		if runElse && len(stmt.Else) > 0 {
+			val, returned, err = exec.evalStatements(stmt.Else, env)
+		}
+
+		if len(stmt.Ensure) > 0 {
+			ensureVal, ensureReturned, ensureErr := exec.evalStatements(stmt.Ensure, env)
+			if ensureErr != nil {
+				return NewNil(), false, ensureErr
+			}
+			if ensureReturned {
+				return ensureVal, true, nil
+			}
+		}
+
+		if err != nil {
+			return NewNil(), false, err
+		}
+		return val, returned, nil
+	}
+}
+
+func (exec *Execution) evalRescueClause(clause RescueClause, err error, env *Env) (Value, bool, error) {
+	rescueEnv := env
+	if clause.Binding != "" {
+		rescueEnv = newEnv(env)
+		rescueEnv.Define(clause.Binding, rescuedErrorValue(err))
+	}
+	exec.pushRescuedError(err)
+	exec.rescueDepth++
+	rescueVal, rescueReturned, rescueErr := exec.evalStatements(clause.Body, rescueEnv)
+	exec.rescueDepth--
+	exec.popRescuedError()
+	return rescueVal, rescueReturned, rescueErr
+}
+
+func matchingRescueClause(clauses []RescueClause, err error) (RescueClause, bool) {
+	for _, clause := range clauses {
+		if runtimeErrorMatchesRescueType(err, clause.Type) {
+			return clause, true
 		}
 	}
-
-	if runElse && len(stmt.Else) > 0 {
-		val, returned, err = exec.evalStatements(stmt.Else, env)
-	}
-
-	if len(stmt.Ensure) > 0 {
-		ensureVal, ensureReturned, ensureErr := exec.evalStatements(stmt.Ensure, env)
-		if ensureErr != nil {
-			return NewNil(), false, ensureErr
-		}
-		if ensureReturned {
-			return ensureVal, true, nil
-		}
-	}
-
-	if err != nil {
-		return NewNil(), false, err
-	}
-	return val, returned, nil
+	return RescueClause{}, false
 }
 
 func rescuedErrorValue(err error) Value {
@@ -2722,6 +2852,11 @@ func formatRuntimeBacktraceFrame(frame StackFrame) string {
 
 func isLoopControlSignal(err error) bool {
 	return errors.Is(err, errLoopBreak) || errors.Is(err, errLoopNext)
+}
+
+func isFunctionReturnSignal(err error) bool {
+	_, ok := functionReturnValue(err)
+	return ok
 }
 
 func isHostControlSignal(err error) bool {

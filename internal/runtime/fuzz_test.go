@@ -1003,17 +1003,29 @@ func validateFuzzStatement(context string, stmt Statement) error {
 			return err
 		}
 		return validateFuzzStatements(context+".body", s.Body)
-	case *BreakStmt, *NextStmt:
+	case *BreakStmt:
+		if s.Value == nil {
+			return nil
+		}
+		return validateFuzzExpression(context+".value", s.Value)
+	case *NextStmt:
+		if s.Value == nil {
+			return nil
+		}
+		return validateFuzzExpression(context+".value", s.Value)
+	case *RetryStmt:
 		return nil
 	case *TryStmt:
-		if err := validateFuzzTypeExpr(context+".rescue_type", s.RescueTy); err != nil {
-			return err
-		}
 		if err := validateFuzzStatements(context+".body", s.Body); err != nil {
 			return err
 		}
-		if err := validateFuzzStatements(context+".rescue", s.Rescue); err != nil {
-			return err
+		for i, clause := range s.Rescues {
+			if err := validateFuzzTypeExpr(fmt.Sprintf("%s.rescues[%d].type", context, i), clause.Type); err != nil {
+				return err
+			}
+			if err := validateFuzzStatements(fmt.Sprintf("%s.rescues[%d].body", context, i), clause.Body); err != nil {
+				return err
+			}
 		}
 		if err := validateFuzzStatements(context+".else", s.Else); err != nil {
 			return err

@@ -38,6 +38,8 @@ func (p *parser) parseStatement() ast.Statement {
 		stmt = p.parseBreakStatement()
 	case ast.TokenNext:
 		stmt = p.parseNextStatement()
+	case ast.TokenRetry:
+		stmt = p.parseRetryStatement()
 	case ast.TokenBegin:
 		stmt = p.parseBeginStatement()
 	case ast.TokenIdent:
@@ -68,7 +70,7 @@ func (p *parser) parseStatementModifier(stmt ast.Statement) ast.Statement {
 		p.nextToken()
 		p.nextToken()
 		_ = p.parseLineExpression(lowestPrec)
-		p.addParseError(modifier.Pos, fmt.Sprintf("modifier %s is only supported after expression or assignment statements", strings.ToLower(string(modifier.Type))))
+		p.addParseError(modifier.Pos, fmt.Sprintf("modifier %s is only supported after expression or assignment statements, or leaf control-flow statements", strings.ToLower(string(modifier.Type))))
 		return stmt
 	}
 
@@ -100,7 +102,7 @@ func isStatementModifier(tt ast.TokenType) bool {
 
 func canUseStatementModifier(stmt ast.Statement) bool {
 	switch stmt.(type) {
-	case *ast.AssignStmt, *ast.ExprStmt:
+	case *ast.AssignStmt, *ast.ExprStmt, *ast.ReturnStmt, *ast.RaiseStmt, *ast.BreakStmt, *ast.NextStmt:
 		return true
 	default:
 		return false
@@ -113,7 +115,7 @@ func (p *parser) parseReturnStatement() ast.Statement {
 		return &ast.ReturnStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpression(lowestPrec)
+	value := p.parseStatementValueExpression()
 	if value == nil {
 		return nil
 	}
@@ -126,7 +128,7 @@ func (p *parser) parseRaiseStatement() ast.Statement {
 		return &ast.RaiseStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpression(lowestPrec)
+	value := p.parseStatementValueExpression()
 	if value == nil {
 		return nil
 	}
@@ -160,7 +162,7 @@ func (p *parser) parseBlock(stop ...ast.TokenType) []ast.Statement {
 func (p *parser) parseIfStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseLineExpression(lowestPrec)
+	condition := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
 	if condition == nil {
 		return nil
 	}
@@ -172,7 +174,7 @@ func (p *parser) parseIfStatement() ast.Statement {
 	var elseifClauses []*ast.IfStmt
 	for p.curToken.Type == ast.TokenElsif {
 		p.nextToken()
-		cond := p.parseLineExpression(lowestPrec)
+		cond := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
 		if cond == nil {
 			return nil
 		}
@@ -199,7 +201,7 @@ func (p *parser) parseIfStatement() ast.Statement {
 func (p *parser) parseUnlessStatement() ast.Statement {
 	pos := p.curToken.Pos
 	p.nextToken()
-	condition := p.parseLineExpression(lowestPrec)
+	condition := p.parseLineExpressionUntil(lowestPrec, ast.TokenThen)
 	if condition == nil {
 		return nil
 	}
@@ -308,11 +310,11 @@ func (p *parser) advanceToLoopBody() {
 
 func (p *parser) parseBreakStatement() ast.Statement {
 	pos := p.curToken.Pos
-	if p.peekEndsStatement(pos) {
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
 		return &ast.BreakStmt{Position: pos}
 	}
 	p.nextToken()
-	value := p.parseLineExpression(lowestPrec)
+	value := p.parseStatementValueExpression()
 	if value == nil {
 		return nil
 	}
@@ -320,7 +322,28 @@ func (p *parser) parseBreakStatement() ast.Statement {
 }
 
 func (p *parser) parseNextStatement() ast.Statement {
-	return &ast.NextStmt{Position: p.curToken.Pos}
+	pos := p.curToken.Pos
+	if p.peekEndsStatement(pos) || p.peekStartsSameLineStatementModifier(pos) {
+		return &ast.NextStmt{Position: pos}
+	}
+	p.nextToken()
+	value := p.parseStatementValueExpression()
+	if value == nil {
+		return nil
+	}
+	return &ast.NextStmt{Value: value, Position: pos}
+}
+
+func (p *parser) parseStatementValueExpression() ast.Expression {
+	return p.parseLineExpressionUntil(lowestPrec, ast.TokenIf, ast.TokenUnless, ast.TokenWhile, ast.TokenUntil)
+}
+
+func (p *parser) parseRetryStatement() ast.Statement {
+	return &ast.RetryStmt{Position: p.curToken.Pos}
+}
+
+func (p *parser) peekStartsSameLineStatementModifier(pos ast.Position) bool {
+	return isStatementModifier(p.peekToken.Type) && p.peekToken.Pos.Line == pos.Line
 }
 
 func (p *parser) parseBeginStatement() ast.Statement {
@@ -331,16 +354,11 @@ func (p *parser) parseBeginStatement() ast.Statement {
 }
 
 func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statement, owner string) ast.Statement {
-	var rescueTy *ast.TypeExpr
-	var rescueBinding string
-	var rescuePos ast.Position
-	var rescueBody []ast.Statement
-	rescuePresent := false
-	if p.curToken.Type == ast.TokenRescue {
-		rescuePresent = true
-		rescuePos = p.curToken.Pos
+	var rescues []ast.RescueClause
+	for p.curToken.Type == ast.TokenRescue {
+		rescuePos := p.curToken.Pos
 		var ok bool
-		rescueTy, rescueBinding, ok = p.parseRescueClause(rescuePos)
+		rescueTy, rescueBinding, ok := p.parseRescueClause(rescuePos)
 		if !ok {
 			p.recoverToBlockEnd()
 			return nil
@@ -355,15 +373,21 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 		if rescueBinding != "" {
 			p.declareLocal(rescueBinding)
 		}
-		rescueBody = p.parseBlock(ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
+		rescueBody := p.parseBlock(ast.TokenRescue, ast.TokenElse, ast.TokenEnsure, ast.TokenEnd)
 		if rescueBinding != "" && !bindingWasLocal {
 			p.undeclareLocal(rescueBinding)
 		}
+		rescues = append(rescues, ast.RescueClause{
+			Type:     rescueTy,
+			Binding:  rescueBinding,
+			Position: rescuePos,
+			Body:     rescueBody,
+		})
 	}
 
 	var elseBody []ast.Statement
 	if p.curToken.Type == ast.TokenElse {
-		if !rescuePresent {
+		if len(rescues) == 0 {
 			p.addParseError(p.curToken.Pos, fmt.Sprintf("%s else requires rescue", owner))
 			return nil
 		}
@@ -382,12 +406,12 @@ func (p *parser) parseRescueElseEnsureTail(pos ast.Position, body []ast.Statemen
 		return nil
 	}
 
-	if len(rescueBody) == 0 && len(ensureBody) == 0 {
+	if owner == "function" && len(rescues) == 0 && len(ensureBody) == 0 {
 		p.addParseError(pos, fmt.Sprintf("%s requires rescue and/or ensure", owner))
 		return nil
 	}
 
-	return &ast.TryStmt{Body: body, RescueTy: rescueTy, RescueBinding: rescueBinding, RescuePosition: rescuePos, Rescue: rescueBody, Else: elseBody, Ensure: ensureBody, Position: pos}
+	return &ast.TryStmt{Body: body, Rescues: rescues, Else: elseBody, Ensure: ensureBody, Position: pos}
 }
 
 func (p *parser) parseRescueClause(rescuePos ast.Position) (*ast.TypeExpr, string, bool) {
@@ -1391,9 +1415,28 @@ func (p *parser) parseAssignmentValue(target ast.Expression) ast.Statement {
 	p.nextToken()
 	p.nextToken()
 	value := p.parseExpressionWithBlock()
+	if _, ok := target.(*ast.DestructureTarget); ok && p.peekToken.Type == ast.TokenComma {
+		value = p.parseCommaSeparatedAssignmentValue(value, pos)
+	}
 	stmt := &ast.AssignStmt{Target: target, Value: value, Operator: compoundAssignmentOperator(operatorToken), Position: pos}
 	p.declareLocalTarget(target)
 	return stmt
+}
+
+func (p *parser) parseCommaSeparatedAssignmentValue(first ast.Expression, pos ast.Position) ast.Expression {
+	if first == nil {
+		return nil
+	}
+	values := []ast.Expression{first}
+	for p.peekToken.Type == ast.TokenComma {
+		p.nextToken()
+		if p.peekEndsStatement(p.curToken.Pos) {
+			break
+		}
+		p.nextToken()
+		values = append(values, p.parseExpressionWithBlock())
+	}
+	return &ast.ArrayLiteral{Elements: values, Position: pos}
 }
 
 func (p *parser) recoverAssignmentRemainder() {
