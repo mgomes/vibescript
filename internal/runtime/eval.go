@@ -2341,10 +2341,15 @@ func predeclareStatementLocalBindings(stmt Statement, env *Env) {
 	if !statementCanPredeclareLocalBindings(stmt) {
 		return
 	}
-	var names []string
-	seen := make(map[string]struct{})
-	collectLocalBindingNames([]Statement{stmt}, false, &names, seen)
-	for _, name := range names {
+
+	if assign, ok := stmt.(*AssignStmt); ok {
+		predeclareTargetBindingNames(assign.Target, env)
+		return
+	}
+
+	var collector localBindingCollector
+	collectLocalBindingNames([]Statement{stmt}, &collector)
+	for _, name := range collector.names {
 		env.PredeclareLocal(name)
 	}
 }
@@ -2358,47 +2363,70 @@ func statementCanPredeclareLocalBindings(stmt Statement) bool {
 	}
 }
 
-func collectLocalBindingNames(stmts []Statement, nested bool, names *[]string, seen map[string]struct{}) {
+type localBindingCollector struct {
+	names []string
+	seen  map[string]struct{}
+}
+
+func (c *localBindingCollector) add(name string) {
+	if _, ok := c.seen[name]; ok {
+		return
+	}
+	if c.seen == nil {
+		c.seen = make(map[string]struct{})
+	}
+	c.seen[name] = struct{}{}
+	c.names = append(c.names, name)
+}
+
+func collectLocalBindingNames(stmts []Statement, collector *localBindingCollector) {
 	for _, stmt := range stmts {
 		switch s := stmt.(type) {
 		case *AssignStmt:
-			collectTargetBindingNames(s.Target, names, seen)
+			collectTargetBindingNames(s.Target, collector)
 		case *LogicalStmt:
-			collectLocalBindingNames([]Statement{s.Left}, nested, names, seen)
-			collectLocalBindingNames([]Statement{s.Right}, true, names, seen)
+			collectLocalBindingNames([]Statement{s.Left}, collector)
+			collectLocalBindingNames([]Statement{s.Right}, collector)
 		case *IfStmt:
-			collectLocalBindingNames(s.Consequent, true, names, seen)
+			collectLocalBindingNames(s.Consequent, collector)
 			for _, branch := range s.ElseIf {
-				collectLocalBindingNames(branch.Consequent, true, names, seen)
+				collectLocalBindingNames(branch.Consequent, collector)
 			}
-			collectLocalBindingNames(s.Alternate, true, names, seen)
+			collectLocalBindingNames(s.Alternate, collector)
 		case *ForStmt:
-			collectTargetBindingNames(s.Target, names, seen)
-			collectLocalBindingNames(s.Body, true, names, seen)
+			collectTargetBindingNames(s.Target, collector)
+			collectLocalBindingNames(s.Body, collector)
 		case *WhileStmt:
-			collectLocalBindingNames(s.Body, true, names, seen)
+			collectLocalBindingNames(s.Body, collector)
 		case *UntilStmt:
-			collectLocalBindingNames(s.Body, true, names, seen)
+			collectLocalBindingNames(s.Body, collector)
 		case *TryStmt:
-			collectLocalBindingNames(s.Body, true, names, seen)
-			collectLocalBindingNames(s.Rescue, true, names, seen)
-			collectLocalBindingNames(s.Else, true, names, seen)
-			collectLocalBindingNames(s.Ensure, true, names, seen)
+			collectLocalBindingNames(s.Body, collector)
+			collectLocalBindingNames(s.Rescue, collector)
+			collectLocalBindingNames(s.Else, collector)
+			collectLocalBindingNames(s.Ensure, collector)
 		}
 	}
 }
 
-func collectTargetBindingNames(target Expression, names *[]string, seen map[string]struct{}) {
+func collectTargetBindingNames(target Expression, collector *localBindingCollector) {
 	switch t := target.(type) {
 	case *Identifier:
-		if _, ok := seen[t.Name]; ok {
-			return
-		}
-		seen[t.Name] = struct{}{}
-		*names = append(*names, t.Name)
+		collector.add(t.Name)
 	case *DestructureTarget:
 		for _, element := range t.Elements {
-			collectTargetBindingNames(element.Target, names, seen)
+			collectTargetBindingNames(element.Target, collector)
+		}
+	}
+}
+
+func predeclareTargetBindingNames(target Expression, env *Env) {
+	switch t := target.(type) {
+	case *Identifier:
+		env.PredeclareLocal(t.Name)
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			predeclareTargetBindingNames(element.Target, env)
 		}
 	}
 }
