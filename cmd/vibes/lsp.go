@@ -1210,8 +1210,10 @@ func localNames(statements []ast.Statement) []string {
 			switch st := stmt.(type) {
 			case *ast.AssignStmt:
 				appendAssignmentTargetNames(&names, st.Target)
+			case *ast.LogicalStmt:
+				walkStmts([]ast.Statement{st.Left, st.Right})
 			case *ast.ForStmt:
-				names = append(names, st.Iterator)
+				appendAssignmentTargetNames(&names, st.Target)
 				walkStmts(st.Body)
 			case *ast.IfStmt:
 				walkStmts(st.Consequent)

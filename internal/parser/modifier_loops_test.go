@@ -9,6 +9,33 @@ import (
 	"github.com/mgomes/vibescript/internal/ast"
 )
 
+func TestParserModifierAfterBareIdentifier(t *testing.T) {
+	t.Parallel()
+
+	// A bare identifier is a parenless-call callee, but a following `if` is a
+	// statement modifier, not an `if`-expression argument.
+	source := `def run(condition)
+  ready if condition
+end`
+
+	got, errs := parseSource(t, source)
+	if len(errs) > 0 {
+		t.Fatalf("parseSource(%q) errors = %v, want none", source, errs)
+	}
+
+	wantBody := []ast.Statement{
+		&ast.IfStmt{
+			Condition: &ast.Identifier{Name: "condition"},
+			Consequent: []ast.Statement{
+				&ast.ExprStmt{Expr: &ast.Identifier{Name: "ready"}},
+			},
+		},
+	}
+	if diff := cmp.Diff(wantBody, parsedFunctionBody(t, got), astCmpOpts); diff != "" {
+		t.Fatalf("function body mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestParserModifierWhileLoop(t *testing.T) {
 	t.Parallel()
 

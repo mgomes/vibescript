@@ -96,6 +96,7 @@ func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
 	env.staticBytes = 99
 	env.arrayAppendBuffers = map[string][]Value{"items": {NewInt(6)}}
 	env.assignBoundary = true
+	env.rebindOuter = true
 	env.frozen = true
 
 	env.resetForBlockCall(parent)
@@ -123,6 +124,9 @@ func TestEnvResetForBlockCallClearsPerCallState(t *testing.T) {
 	}
 	if env.assignBoundary {
 		t.Fatalf("assignBoundary after reset = true, want false")
+	}
+	if env.rebindOuter {
+		t.Fatalf("rebindOuter after reset = true, want false")
 	}
 	if env.frozen {
 		t.Fatalf("frozen after reset = true, want false")

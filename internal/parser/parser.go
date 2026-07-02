@@ -21,13 +21,14 @@ type parser struct {
 	omittedErrors int
 	codeFrames    *source.CodeFrameFormatter
 
-	insideClass      bool
-	privateNext      bool
-	lineLimitedExprs int
-	lineLimitedStops []ast.TokenType
-	statementNesting int
-	typeDepth        int
-	localScopes      []localScope
+	insideClass                bool
+	privateNext                bool
+	lineLimitedExprs           int
+	lineLimitedStops           []ast.TokenType
+	lineLimitedStopSuppression int
+	statementNesting           int
+	typeDepth                  int
+	localScopes                []localScope
 
 	// shapeStructurallyInvalid records that the most recent parseTypeShape
 	// rejected a brace group whose field values all parsed as types but whose
@@ -240,7 +241,8 @@ func (p *parser) parseProgram() (*ast.Program, []error) {
 
 const (
 	lowestPrec = iota
-	precAssign
+	precWordOr
+	precWordAnd
 	precConditional
 	precOr
 	precAnd
@@ -258,6 +260,8 @@ const (
 
 var precedences = map[ast.TokenType]int{
 	ast.TokenQuestion:  precConditional,
+	ast.TokenWordOr:    precWordOr,
+	ast.TokenWordAnd:   precWordAnd,
 	ast.TokenOr:        precOr,
 	ast.TokenAnd:       precAnd,
 	ast.TokenEQ:        precEquality,
@@ -482,6 +486,10 @@ func tokenLabel(tt ast.TokenType) string {
 		return "'nil'"
 	case ast.TokenNot:
 		return "'not'"
+	case ast.TokenWordAnd:
+		return "'and'"
+	case ast.TokenWordOr:
+		return "'or'"
 	default:
 		if len(tt) == 1 || strings.HasPrefix(string(tt), "<") || strings.HasPrefix(string(tt), ">") {
 			return fmt.Sprintf("%q", string(tt))

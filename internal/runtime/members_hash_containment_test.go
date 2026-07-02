@@ -2407,7 +2407,7 @@ func TestForHashReachablePairBodyFitsWithoutPairReservation(t *testing.T) {
 
 	pos := Position{Line: 1, Column: 1}
 	stmt := &ForStmt{
-		Iterator: "pair",
+		Target:   &Identifier{Name: "pair", Position: pos},
 		Body:     []Statement{&ExprStmt{Position: pos, Expr: &Identifier{Name: "body", Position: pos}}},
 		Position: pos,
 	}

@@ -231,7 +231,7 @@ func (exec *Execution) callFunctionWithReturnValidation(fn *ScriptFunction, rece
 	}
 	exec.pushModuleContext(ctx)
 	exec.pushReceiver(receiver)
-	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
 	if err != nil && !isLoopControlSignal(err) {
 		err = exec.wrapError(err, pos)
 	}
@@ -576,6 +576,7 @@ func (r *callFunctionRebinder) rebindCapturedEnv(env *Env) *Env {
 	}
 	clone := newEnvWithCapacity(nil, env.dynamicLen())
 	clone.assignBoundary = env.assignBoundary
+	clone.rebindOuter = env.rebindOuter
 	if r.seenEnvs == nil {
 		r.seenEnvs = make(map[*Env]*Env)
 	}
@@ -729,7 +730,7 @@ func (exec *Execution) initializeClassBody(classVal Value, classDef *ClassDef, p
 	env.Define("self", classVal)
 	exec.pushReceiver(classVal)
 	defer exec.popReceiver()
-	_, _, err := exec.evalStatements(classDef.Body, env)
+	_, _, err := exec.evalLocalScopeStatements(classDef.Body, env)
 	if err != nil {
 		return err
 	}
@@ -1320,7 +1321,7 @@ func executeFunctionForCall(exec *Execution, fn *ScriptFunction, callEnv *Env) (
 	if err := exec.pushFrame(fn.Name, fn.Pos, fn.owner, fn.owner); err != nil {
 		return NewNil(), err
 	}
-	val, returned, err := exec.evalStatements(fn.Body, callEnv)
+	val, returned, err := exec.evalLocalScopeStatements(fn.Body, callEnv)
 	if err != nil {
 		err = exec.wrapError(err, fn.Pos)
 	}

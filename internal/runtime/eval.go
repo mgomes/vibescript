@@ -675,7 +675,7 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 		return NewNil(), err
 	}
 	switch expr.Operator {
-	case tokenAnd:
+	case tokenAnd, tokenWordAnd:
 		// Short-circuit and yield the operand value, not a coerced bool
 		// (Ruby semantics): `a && b` is `a ? b : a`. A falsy left operand is
 		// the result; otherwise the right operand is, whatever its value.
@@ -690,7 +690,7 @@ func (exec *Execution) evalBinaryExpr(expr *BinaryExpr, env *Env) (Value, error)
 			return NewNil(), err
 		}
 		return right, nil
-	case tokenOr:
+	case tokenOr, tokenWordOr:
 		// Short-circuit and yield the operand value, not a coerced bool
 		// (Ruby semantics): `a || b` is `a ? a : b`. This is what makes the
 		// `value = optional || default` idiom work; previously it collapsed
@@ -919,7 +919,7 @@ func newBlockCallRunner(exec *Execution, block Value, name string, receiver Valu
 		charge: newBlockBindCharge(exec, blk, receiver, callArgs, kwargs, block),
 	}
 	if blockCanReuseEnv(blk) {
-		runner.env = newEnv(blk.Env)
+		runner.env = newBlockAssignmentEnv(blk.Env)
 	}
 	return runner, nil
 }
@@ -942,9 +942,11 @@ func (runner *blockCallRunner) callWithChargedRoots(args []Value, chargedRoots .
 
 	env := runner.env
 	if env == nil {
-		env = newEnv(runner.blk.Env)
+		env = newBlockAssignmentEnv(runner.blk.Env)
 	} else {
 		env.resetForBlockCall(runner.blk.Env)
+		env.assignBoundary = true
+		env.rebindOuter = true
 	}
 	val, err := runner.exec.callBlock(runner.blk, args, env, runner.charge, chargedRoots...)
 	if err != nil {
@@ -1018,7 +1020,7 @@ func (exec *Execution) CallBlock(block Value, args []Value) (Value, error) {
 	// argument it was copied from, letting (args) and (rest) each fit the quota
 	// while the real peak (args + rest) exceeds it.
 	charge := newBlockBindCharge(exec, blk, NewNil(), args, nil, block)
-	return exec.callBlock(blk, args, newEnv(blk.Env), charge)
+	return exec.callBlock(blk, args, newBlockAssignmentEnv(blk.Env), charge)
 }
 
 func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge *blockBindCharge, chargedRoots ...Value) (Value, error) {
@@ -1033,10 +1035,11 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 	if err := charge.begin(args, chargedRoots...); err != nil {
 		return NewNil(), err
 	}
+	bindArgs := rubyBlockBindArgs(blk.Params, args)
 	for i, param := range blk.Params {
 		var val Value
-		if i < len(args) {
-			val = args[i]
+		if i < len(bindArgs) {
+			val = bindArgs[i]
 		} else {
 			val = NewNil()
 		}
@@ -1074,7 +1077,7 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		}
 		blockEnv.Define(name, val)
 	}
-	val, returned, err := exec.evalStatements(blk.Body, blockEnv)
+	val, returned, err := exec.evalLocalScopeStatements(blk.Body, blockEnv)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1082,6 +1085,25 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 		return blockEnv.detachArrayAppendResult(val), nil
 	}
 	return blockEnv.detachArrayAppendResult(val), nil
+}
+
+func rubyBlockBindArgs(params []Param, args []Value) []Value {
+	if len(args) != 1 || args[0].Kind() != KindArray {
+		return args
+	}
+	positional := 0
+	for _, param := range params {
+		switch param.Kind {
+		case ParamNormal, ParamRest:
+			positional++
+		case ParamKeyword, ParamKeywordRest, ParamBlock:
+			continue
+		}
+	}
+	if positional <= 1 {
+		return args
+	}
+	return args[0].Array()
 }
 
 func implicitBlockParamIndex(name string) int {
@@ -1117,6 +1139,8 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 		return expressionCapturesCurrentEnv(s.Value)
 	case *AssignStmt:
 		return expressionCapturesCurrentEnv(s.Target) || expressionCapturesCurrentEnv(s.Value)
+	case *LogicalStmt:
+		return statementCapturesCurrentEnv(s.Left) || statementCapturesCurrentEnv(s.Right)
 	case *ExprStmt:
 		return expressionCapturesCurrentEnv(s.Expr)
 	case *IfStmt:
@@ -1132,7 +1156,7 @@ func statementCapturesCurrentEnv(stmt Statement) bool {
 		}
 		return false
 	case *ForStmt:
-		return expressionCapturesCurrentEnv(s.Iterable) || statementsCaptureCurrentEnv(s.Body)
+		return expressionCapturesCurrentEnv(s.Target) || expressionCapturesCurrentEnv(s.Iterable) || statementsCaptureCurrentEnv(s.Body)
 	case *WhileStmt:
 		return expressionCapturesCurrentEnv(s.Condition) || statementsCaptureCurrentEnv(s.Body)
 	case *UntilStmt:
@@ -2046,7 +2070,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 			if err := exec.step(); err != nil {
 				return NewNil(), false, exec.wrapError(err, stmt.Pos())
 			}
-			env.Assign(stmt.Iterator, item)
+			if err := exec.assign(stmt.Target, item, env); err != nil {
+				return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
+			}
 			val, returned, err := exec.evalStatements(stmt.Body, env)
 			if err != nil {
 				if errors.Is(err, errLoopBreak) {
@@ -2081,7 +2107,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				if err := exec.step(); err != nil {
 					return NewNil(), false, exec.wrapError(err, stmt.Pos())
 				}
-				env.Assign(stmt.Iterator, NewInt(i))
+				if err := exec.assign(stmt.Target, NewInt(i), env); err != nil {
+					return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
+				}
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
 					if errors.Is(err, errLoopBreak) {
@@ -2105,7 +2133,9 @@ func (exec *Execution) evalForStatement(stmt *ForStmt, env *Env) (Value, bool, e
 				if err := exec.step(); err != nil {
 					return NewNil(), false, exec.wrapError(err, stmt.Pos())
 				}
-				env.Assign(stmt.Iterator, NewInt(i))
+				if err := exec.assign(stmt.Target, NewInt(i), env); err != nil {
+					return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
+				}
 				val, returned, err := exec.evalStatements(stmt.Body, env)
 				if err != nil {
 					if errors.Is(err, errLoopBreak) {
@@ -2183,7 +2213,9 @@ func (exec *Execution) evalForHash(stmt *ForStmt, env *Env, iterable, last Value
 		// Hash keys round-trip as symbols, the same shape hash.each and hash.keys
 		// expose.
 		pair := NewArray([]Value{NewSymbol(key), entries[key]})
-		env.Assign(stmt.Iterator, pair)
+		if err := exec.assign(stmt.Target, pair, env); err != nil {
+			return NewNil(), false, exec.wrapError(err, stmt.Target.Pos())
+		}
 		val, returned, err := exec.evalStatements(stmt.Body, env)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
@@ -2301,6 +2333,119 @@ func (exec *Execution) evalUntilStatement(stmt *UntilStmt, env *Env) (Value, boo
 	}
 }
 
+func (exec *Execution) evalLocalScopeStatements(stmts []Statement, env *Env) (Value, bool, error) {
+	return exec.evalStatements(stmts, env)
+}
+
+func predeclareStatementLocalBindings(stmt Statement, env *Env) {
+	if !statementCanPredeclareLocalBindings(stmt) {
+		return
+	}
+
+	if assign, ok := stmt.(*AssignStmt); ok {
+		predeclareDirectTargetBindingNames(assign.Target, env)
+		return
+	}
+
+	var collector localBindingCollector
+	collectLocalBindingNames([]Statement{stmt}, &collector)
+	for _, name := range collector.names {
+		env.PredeclareLocal(name)
+	}
+}
+
+func statementCanPredeclareLocalBindings(stmt Statement) bool {
+	switch stmt.(type) {
+	case *AssignStmt, *LogicalStmt, *IfStmt, *ForStmt, *WhileStmt, *UntilStmt, *TryStmt:
+		return true
+	default:
+		return false
+	}
+}
+
+type localBindingCollector struct {
+	names []string
+	seen  map[string]struct{}
+}
+
+func (c *localBindingCollector) add(name string) {
+	if _, ok := c.seen[name]; ok {
+		return
+	}
+	if c.seen == nil {
+		c.seen = make(map[string]struct{})
+	}
+	c.seen[name] = struct{}{}
+	c.names = append(c.names, name)
+}
+
+func collectLocalBindingNames(stmts []Statement, collector *localBindingCollector) {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *AssignStmt:
+			collectTargetBindingNames(s.Target, collector)
+		case *LogicalStmt:
+			collectLocalBindingNames([]Statement{s.Left}, collector)
+			collectLocalBindingNames([]Statement{s.Right}, collector)
+		case *IfStmt:
+			collectLocalBindingNames(s.Consequent, collector)
+			for _, branch := range s.ElseIf {
+				collectLocalBindingNames(branch.Consequent, collector)
+			}
+			collectLocalBindingNames(s.Alternate, collector)
+		case *ForStmt:
+			collectTargetBindingNames(s.Target, collector)
+			collectLocalBindingNames(s.Body, collector)
+		case *WhileStmt:
+			collectLocalBindingNames(s.Body, collector)
+		case *UntilStmt:
+			collectLocalBindingNames(s.Body, collector)
+		case *TryStmt:
+			collectLocalBindingNames(s.Body, collector)
+			collectLocalBindingNames(s.Rescue, collector)
+			collectLocalBindingNames(s.Else, collector)
+			collectLocalBindingNames(s.Ensure, collector)
+		}
+	}
+}
+
+func collectTargetBindingNames(target Expression, collector *localBindingCollector) {
+	switch t := target.(type) {
+	case *Identifier:
+		collector.add(t.Name)
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			collectTargetBindingNames(element.Target, collector)
+		}
+	}
+}
+
+func predeclareTargetBindingNames(target Expression, env *Env) {
+	switch t := target.(type) {
+	case *Identifier:
+		env.PredeclareLocal(t.Name)
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			predeclareTargetBindingNames(element.Target, env)
+		}
+	}
+}
+
+func predeclareDirectTargetBindingNames(target Expression, env *Env) {
+	if env.rebindOuter {
+		predeclareTargetBindingNames(target, env)
+		return
+	}
+	switch t := target.(type) {
+	case *Identifier:
+		env.PredeclareLocalUnlessParentBinding(t.Name)
+	case *DestructureTarget:
+		for _, element := range t.Elements {
+			predeclareDirectTargetBindingNames(element.Target, env)
+		}
+	}
+}
+
 func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool, error) {
 	exec.pushEnv(env)
 	defer exec.popEnv()
@@ -2312,6 +2457,7 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 		if err := exec.step(); err != nil {
 			return NewNil(), false, exec.wrapError(err, stmt.Pos())
 		}
+		predeclareStatementLocalBindings(stmt, env)
 		val, returned, err := exec.evalStatement(stmt, env)
 		if err != nil {
 			return NewNil(), false, err
@@ -2337,6 +2483,9 @@ func (exec *Execution) evalStatements(stmts []Statement, env *Env) (Value, bool,
 }
 
 func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value, error) {
+	if stmt.Operator == tokenAndAssign || stmt.Operator == tokenOrAssign {
+		return exec.evalLogicalAssignment(stmt, env)
+	}
 	current, assign, err := exec.prepareCompoundAssignmentTarget(stmt.Target, env)
 	if err != nil {
 		return NewNil(), err
@@ -2364,6 +2513,72 @@ func (exec *Execution) evalCompoundAssignment(stmt *AssignStmt, env *Env) (Value
 		return NewNil(), err
 	}
 	return result, nil
+}
+
+func (exec *Execution) evalLogicalAssignment(stmt *AssignStmt, env *Env) (Value, error) {
+	target, err := exec.prepareLogicalAssignmentTarget(stmt.Target, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(target.current); err != nil {
+		return NewNil(), err
+	}
+	switch stmt.Operator {
+	case tokenOrAssign:
+		if target.current.Truthy() {
+			return target.current, nil
+		}
+	case tokenAndAssign:
+		if !target.current.Truthy() {
+			if target.defineOnShortCircuit {
+				if err := target.assign(target.current); err != nil {
+					return NewNil(), err
+				}
+			}
+			return target.current, nil
+		}
+	default:
+		return NewNil(), exec.errorAt(stmt.Pos(), "unsupported logical assignment operator")
+	}
+
+	right, err := exec.evalExpression(stmt.Value, env)
+	if err != nil {
+		return NewNil(), err
+	}
+	if err := exec.checkMemoryWith(target.current, right); err != nil {
+		return NewNil(), err
+	}
+	if err := target.assign(right); err != nil {
+		return NewNil(), err
+	}
+	return right, nil
+}
+
+type compoundAssignmentTarget struct {
+	current              Value
+	assign               func(Value) error
+	defineOnShortCircuit bool
+}
+
+func (exec *Execution) prepareLogicalAssignmentTarget(target Expression, env *Env) (compoundAssignmentTarget, error) {
+	if ident, ok := target.(*Identifier); ok {
+		if _, exists := env.Get(ident.Name); !exists {
+			return compoundAssignmentTarget{
+				current: NewNil(),
+				assign: func(value Value) error {
+					env.Assign(ident.Name, value)
+					return nil
+				},
+				defineOnShortCircuit: true,
+			}, nil
+		}
+	}
+
+	current, assign, err := exec.prepareCompoundAssignmentTarget(target, env)
+	if err != nil {
+		return compoundAssignmentTarget{}, err
+	}
+	return compoundAssignmentTarget{current: current, assign: assign}, nil
 }
 
 func (exec *Execution) prepareCompoundAssignmentTarget(target Expression, env *Env) (Value, func(Value) error, error) {
@@ -2435,6 +2650,8 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	case *ExprStmt:
 		val, err := exec.evalExpression(s.Expr, env)
 		return val, false, err
+	case *LogicalStmt:
+		return exec.evalLogicalStatement(s, env)
 	case *ReturnStmt:
 		if s.Value == nil {
 			return NewNil(), true, nil
@@ -2536,6 +2753,29 @@ func (exec *Execution) evalStatement(stmt Statement, env *Env) (Value, bool, err
 	default:
 		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement")
 	}
+}
+
+func (exec *Execution) evalLogicalStatement(stmt *LogicalStmt, env *Env) (Value, bool, error) {
+	left, returned, err := exec.evalStatement(stmt.Left, env)
+	if err != nil || returned {
+		return left, returned, err
+	}
+	if err := exec.checkMemoryWith(left); err != nil {
+		return NewNil(), false, exec.wrapError(err, stmt.Left.Pos())
+	}
+	switch stmt.Operator {
+	case tokenWordAnd:
+		if !left.Truthy() {
+			return left, false, nil
+		}
+	case tokenWordOr:
+		if left.Truthy() {
+			return left, false, nil
+		}
+	default:
+		return NewNil(), false, exec.errorAt(stmt.Pos(), "unsupported statement operator")
+	}
+	return exec.evalStatement(stmt.Right, env)
 }
 
 func (exec *Execution) evalRaiseStatement(stmt *RaiseStmt, env *Env) (Value, bool, error) {

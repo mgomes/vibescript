@@ -136,6 +136,17 @@ end`)
 	}
 }
 
+func TestImplicitBlockParamsInLogicalStatements(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  [1, 2, 3].map { x = _1 and true }
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{NewBool(true), NewBool(true), NewBool(true)})
+}
+
 func TestImplicitBlockParamsAreLocalsForPercentModuloParsing(t *testing.T) {
 	t.Parallel()
 

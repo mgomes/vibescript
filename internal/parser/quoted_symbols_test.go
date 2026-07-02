@@ -226,7 +226,7 @@ func TestLexerColonQuoteDisambiguation(t *testing.T) {
 		{
 			name:   "word_boolean_identifier_label_no_space_stays_separator",
 			source: `{and:"x"}`,
-			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenIdent, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
+			want:   []ast.TokenType{ast.TokenLBrace, ast.TokenWordAnd, ast.TokenColon, ast.TokenString, ast.TokenRBrace},
 		},
 		{
 			// Both ternary branches are quoted symbols; the separator colon sits

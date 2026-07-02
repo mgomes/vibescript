@@ -89,6 +89,11 @@ func cloneStatement(stmt Statement) Statement {
 		clone.Target = cloneExpression(s.Target)
 		clone.Value = cloneExpression(s.Value)
 		return &clone
+	case *LogicalStmt:
+		clone := *s
+		clone.Left = cloneStatement(s.Left)
+		clone.Right = cloneStatement(s.Right)
+		return &clone
 	case *ExprStmt:
 		clone := *s
 		clone.Expr = cloneExpression(s.Expr)
@@ -97,6 +102,7 @@ func cloneStatement(stmt Statement) Statement {
 		return cloneIfStmt(s)
 	case *ForStmt:
 		clone := *s
+		clone.Target = cloneExpression(s.Target)
 		clone.Iterable = cloneExpression(s.Iterable)
 		clone.Body = cloneStatements(s.Body)
 		return &clone

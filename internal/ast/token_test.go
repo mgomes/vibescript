@@ -8,6 +8,7 @@ import (
 func TestKeywords(t *testing.T) {
 	t.Parallel()
 	want := []string{
+		"and",
 		"begin",
 		"break",
 		"case",
@@ -27,6 +28,8 @@ func TestKeywords(t *testing.T) {
 		"in",
 		"next",
 		"nil",
+		"not",
+		"or",
 		"private",
 		"property",
 		"raise",

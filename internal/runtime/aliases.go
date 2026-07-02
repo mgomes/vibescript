@@ -33,6 +33,7 @@ type (
 	ReturnStmt     = ast.ReturnStmt
 	RaiseStmt      = ast.RaiseStmt
 	AssignStmt     = ast.AssignStmt
+	LogicalStmt    = ast.LogicalStmt
 	ExprStmt       = ast.ExprStmt
 	IfStmt         = ast.IfStmt
 	ForStmt        = ast.ForStmt
@@ -128,6 +129,8 @@ const (
 	tokenPower     = ast.TokenPower
 	tokenSlash     = ast.TokenSlash
 	tokenPercent   = ast.TokenPercent
+	tokenAndAssign = ast.TokenAndAssign
+	tokenOrAssign  = ast.TokenOrAssign
 	tokenLT        = ast.TokenLT
 	tokenShovel    = ast.TokenShovel
 	tokenGT        = ast.TokenGT
@@ -139,6 +142,8 @@ const (
 	tokenNotEQ     = ast.TokenNotEQ
 	tokenAnd       = ast.TokenAnd
 	tokenOr        = ast.TokenOr
+	tokenWordAnd   = ast.TokenWordAnd
+	tokenWordOr    = ast.TokenWordOr
 	tokenAmpersand = ast.TokenAmpersand
 	tokenQuestion  = ast.TokenQuestion
 	tokenComma     = ast.TokenComma
@@ -767,6 +772,7 @@ func cloneEnvForHost(env *Env, state hostValueCloneState) *Env {
 	}
 	clone := newEnvWithCapacity(nil, env.dynamicLen())
 	clone.assignBoundary = env.assignBoundary
+	clone.rebindOuter = env.rebindOuter
 	clone.callRoot = env.callRoot
 	state.envs[env] = clone
 	clone.parent = cloneEnvForHost(env.parent, state)
