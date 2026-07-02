@@ -28,6 +28,11 @@ func normalizeValueForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 	if ty == nil {
 		return val, nil
 	}
+	if ctx.depth == 0 {
+		if err := validateTypeExprResolved(ty, ctx); err != nil {
+			return NewNil(), err
+		}
+	}
 	if ctx.depth >= maxNormalizeDepth {
 		return NewNil(), guardLimitErrorf("type normalization exceeded maximum depth")
 	}
@@ -457,6 +462,38 @@ func resolveEnumType(ty *TypeExpr, ctx typeContext) (*EnumDef, error) {
 		return enumDef, nil
 	}
 	return nil, fmt.Errorf("unknown type %s", ty.Name)
+}
+
+func validateTypeExprResolved(ty *TypeExpr, ctx typeContext) error {
+	if ty == nil {
+		return nil
+	}
+
+	switch ty.Kind {
+	case TypeUnknown:
+		return fmt.Errorf("unknown type %s", ty.Name)
+	case TypeEnum:
+		if _, err := resolveEnumType(ty, ctx); err != nil {
+			return err
+		}
+	}
+
+	for _, arg := range ty.TypeArgs {
+		if err := validateTypeExprResolved(arg, ctx); err != nil {
+			return err
+		}
+	}
+	for _, option := range ty.Union {
+		if err := validateTypeExprResolved(option, ctx); err != nil {
+			return err
+		}
+	}
+	for _, field := range ty.Shape {
+		if err := validateTypeExprResolved(field, ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func lookupEnumDef(owner *Script, name string) (*EnumDef, bool, error) {

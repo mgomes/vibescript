@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	vibesruntime "github.com/mgomes/vibescript/internal/runtime"
 	"github.com/mgomes/vibescript/vibes"
 	"github.com/mgomes/vibescript/vibes/value"
 )
@@ -51,7 +52,7 @@ func runCommand(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(new(flagErrorSink))
 	function := fs.String("function", "run", "function to invoke after compilation")
-	checkOnly := fs.Bool("check", false, "only compile the script without executing")
+	checkOnly := fs.Bool("check", false, "compile and validate static contracts without executing")
 	snippet := fs.String("e", "", "evaluate an inline snippet instead of a script file")
 	watch := fs.Bool("watch", false, "re-run whenever the script or its modules change")
 	var modulePaths pathList
@@ -127,7 +128,7 @@ func executeScript(ctx context.Context, inv runInvocation, out io.Writer) error 
 		return fmt.Errorf("compile failed: %w", err)
 	}
 	if inv.checkOnly {
-		return nil
+		return checkCompiledScript(script)
 	}
 	function := inv.function
 	if !inv.functionSet && scriptEntrypointHasBody(script) {
@@ -206,13 +207,48 @@ func evalSnippet(ctx context.Context, snippet string, modulePaths []string, chec
 		return fmt.Errorf("compile failed: %w", remapSnippetCompileError(err, snippet, evalSnippetSourceMap))
 	}
 	if checkOnly {
-		return nil
+		return checkCompiledScript(script)
 	}
 	result, err := script.Call(ctx, evalSnippetFunction, nil, vibes.CallOptions{})
 	if err != nil {
 		return fmt.Errorf("execution failed: %w", remapSnippetRuntimeError(err, snippet, evalSnippetSourceMap))
 	}
 	return printResult(out, result)
+}
+
+func checkCompiledScript(script *vibes.Script) error {
+	warnings := script.CheckWarnings()
+	if len(warnings) == 0 {
+		return nil
+	}
+	return formatCheckWarnings(warnings)
+}
+
+func formatCheckWarnings(warnings []vibesruntime.CheckWarning) error {
+	if len(warnings) == 1 {
+		return fmt.Errorf("check failed: %s", formatCheckWarning(warnings[0]))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "check failed with %d issue(s):", len(warnings))
+	for _, warning := range warnings {
+		fmt.Fprintf(&b, "\n  %s", formatCheckWarning(warning))
+	}
+	return errors.New(b.String())
+}
+
+func formatCheckWarning(warning vibesruntime.CheckWarning) string {
+	line := warning.Pos.Line
+	column := warning.Pos.Column
+	if line <= 0 {
+		line = 1
+	}
+	if column <= 0 {
+		column = 1
+	}
+	if warning.Function == "" {
+		return fmt.Sprintf("%d:%d: %s", line, column, warning.Message)
+	}
+	return fmt.Sprintf("%d:%d: %s (%s)", line, column, warning.Message, warning.Function)
 }
 
 func stringArgs(raw []string) []value.Value {
@@ -254,7 +290,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  -function string")
 	fmt.Fprintln(os.Stderr, "    function to invoke after compilation (default \"run\")")
 	fmt.Fprintln(os.Stderr, "  -check")
-	fmt.Fprintln(os.Stderr, "    only compile the script without executing")
+	fmt.Fprintln(os.Stderr, "    compile and validate static contracts without executing")
 	fmt.Fprintln(os.Stderr, "  -e <snippet>")
 	fmt.Fprintln(os.Stderr, "    evaluate an inline snippet instead of a script file")
 	fmt.Fprintln(os.Stderr, "  -watch")
