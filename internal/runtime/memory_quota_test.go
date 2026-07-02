@@ -828,6 +828,71 @@ func TestMemoryEstimatorCountsTypedHashDisplayCollisions(t *testing.T) {
 	}
 }
 
+func TestMemoryQuotaHashLiteralChargesTypedEntryStorage(t *testing.T) {
+	t.Parallel()
+
+	pos := Position{Line: 1, Column: 1}
+	const count = 200
+	const element = "abcdefghij"
+
+	base := func() int {
+		exec := &Execution{quota: 10000, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		exec.pushEnv(env)
+		defer exec.popEnv()
+		est := exec.memoryEstimatorForCheck()
+		total := exec.estimateMemoryUsageBase(est)
+		est.reset()
+		return total
+	}()
+
+	legacyLiteralCharge := func() int {
+		exec := &Execution{quota: 10000, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		exec.pushEnv(env)
+		defer exec.popEnv()
+		est := newMemoryEstimator()
+		total := exec.estimateMemoryUsageBase(est)
+		total = saturatingAdd(total, estimatedValueBytes+estimatedMapBaseBytes+estimatedHashDataBytes)
+		total = saturatingAdd(total, saturatingMul(count, estimatedMapEntryStructuralBytes))
+		for i := range count {
+			key, err := canonicalHashKey(NewString(fmt.Sprintf("k%05d", i)))
+			if err != nil {
+				t.Fatalf("canonicalHashKey(k%05d) error = %v, want nil", i, err)
+			}
+			total = saturatingAdd(total, est.stringPayloadSize(key))
+			total = saturatingAdd(total, est.valuePayload(NewString(element)))
+		}
+		est.reset()
+		return total
+	}()
+
+	typedLiteralPeak := base + estimateLargeHash(count, element)
+	if typedLiteralPeak <= legacyLiteralCharge {
+		t.Fatalf("typed hash literal peak = %d, want greater than legacy literal charge %d", typedLiteralPeak, legacyLiteralCharge)
+	}
+
+	literal := buildLargeHashLiteral(count, element, pos)
+	run := func(quota int) error {
+		exec := &Execution{quota: 10000, memoryQuota: quota, moduleLoading: make(map[string]bool)}
+		env := newEnv(nil)
+		exec.pushEnv(env)
+		defer exec.popEnv()
+		_, err := exec.evalExpression(literal, env)
+		return err
+	}
+
+	quota := legacyLiteralCharge + (typedLiteralPeak-legacyLiteralCharge)/2
+	if quota <= legacyLiteralCharge || quota >= typedLiteralPeak {
+		t.Fatalf("quota %d must sit between legacy charge %d and typed peak %d", quota, legacyLiteralCharge, typedLiteralPeak)
+	}
+	if err := run(quota); err == nil {
+		t.Fatalf("expected memory quota error when typed hash literal entries exceed the quota")
+	} else {
+		requireErrorIs(t, err, errMemoryQuotaExceeded)
+	}
+}
+
 // TestMemoryQuotaBracketSliceHashLiteralChargesStackedCopies mirrors the array
 // literal case for hashes: {a: big[0, n], b: big[0, n]} holds both fresh slice
 // values in the partially built Go-local map the base estimator cannot see.

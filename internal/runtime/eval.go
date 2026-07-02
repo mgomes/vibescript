@@ -369,13 +369,17 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 		}
 	}
 	hash := NewHash(make(map[string]Value, len(e.Pairs)))
-	entries := make(map[string]Value, len(e.Pairs))
+	entries := make(map[string]hashLiteralEntry, len(e.Pairs))
 	for _, pair := range e.Pairs {
 		keyVal, err := exec.evalExpressionWithAuto(pair.Key, env, true)
 		if err != nil {
 			return NewNil(), err
 		}
 		key, err := canonicalHashKey(keyVal)
+		if err != nil {
+			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
+		}
+		lookupKey, err := hashLookupKey(keyVal)
 		if err != nil {
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 		}
@@ -386,9 +390,9 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 		if acc != nil {
 			_, replacing := entries[key]
 			if replacing || acc.replacing {
-				err = acc.replaceEntry(key, val, entries)
+				err = acc.replaceEntry(key, lookupKey, keyVal, val, entries)
 			} else {
-				err = acc.addDistinctEntry(key, val)
+				err = acc.addDistinctEntry(lookupKey, keyVal, val)
 			}
 			if err != nil {
 				return NewNil(), err
@@ -397,7 +401,7 @@ func (exec *Execution) evalHashLiteral(e *HashLiteral, env *Env) (Value, error) 
 		if err := hashSet(hash, keyVal, val); err != nil {
 			return NewNil(), exec.errorAt(pair.Key.Pos(), "%s", err.Error())
 		}
-		entries[key] = val
+		entries[key] = hashLiteralEntry{key: keyVal, lookupKey: lookupKey, value: val}
 	}
 	return hash, nil
 }

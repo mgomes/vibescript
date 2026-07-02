@@ -1605,6 +1605,31 @@ func TestHashHelpersSupportObjectReceiver(t *testing.T) {
 	}
 }
 
+func TestHashRemapKeysTypedMappingRemapsLegacyReceiver(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run(values)
+  values.remap_keys({ old: :new })
+end
+`)
+
+	receiver := NewHash(map[string]Value{"old": NewInt(7)})
+	got := callFunc(t, script, "run", []Value{receiver})
+	renamed, ok, err := hashGet(got, NewSymbol("new"))
+	if err != nil {
+		t.Fatalf("hashGet(:new) error = %v, want nil", err)
+	}
+	if !ok || !renamed.Equal(NewInt(7)) {
+		t.Fatalf("hash.remap_keys legacy receiver mapped :new = %v, %v; want 7, true", renamed, ok)
+	}
+	if old, ok, err := hashGet(got, NewString("old")); err != nil {
+		t.Fatalf("hashGet(\"old\") error = %v, want nil", err)
+	} else if ok {
+		t.Fatalf("hash.remap_keys legacy receiver kept old key = %v, want missing", old)
+	}
+}
+
 func TestHashLiteralHashRockets(t *testing.T) {
 	t.Parallel()
 

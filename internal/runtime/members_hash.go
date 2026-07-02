@@ -2502,7 +2502,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if len(args) != 1 || (args[0].Kind() != KindHash && args[0].Kind() != KindObject) {
 				return NewNil(), fmt.Errorf("hash.remap_keys expects a key mapping hash")
 			}
-			if hashHasTypedEntries(receiver) || hashHasTypedEntries(args[0]) {
+			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
 				if err := exec.checkProjectedHashTransformBytes(count, sortedHashEntryBufferBytes(count), receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
