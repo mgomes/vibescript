@@ -2160,7 +2160,7 @@ func valueSetScratchBytesForNext(seen valueSet, next Value, hint int) int {
 func valueSetScratchBytesForCounts(scalarCount, compositeCap int) int {
 	total := 0
 	if scalarCount > 0 {
-		scalarEntryBytes := estimatedMapEntryBytes + estimatedValueBytes + estimatedStringHeaderBytes + saturatingMul(4, estimatedIntBytes)
+		scalarEntryBytes := estimatedMapEntryBytes + estimatedValueBytes + estimatedStringHeaderBytes + saturatingMul(5, estimatedIntBytes)
 		total = saturatingAdd(total, estimatedMapBaseBytes)
 		total = saturatingAdd(total, saturatingMul(scalarCount, scalarEntryBytes))
 	}

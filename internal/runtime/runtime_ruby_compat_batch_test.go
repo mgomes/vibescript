@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -272,6 +273,28 @@ end
 		NewNil(),
 		rubyBatchArray(NewInt(3), NewInt(2), NewInt(1)),
 	))
+}
+
+func TestRubyBatchArrayUniqBangCollapsesRepeatedNaN(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def run()
+  [0.0 / 0.0, 0.0 / 0.0].uniq!
+end
+`)
+
+	got := callFunc(t, script, "run", nil)
+	if got.Kind() != KindArray {
+		t.Fatalf("run() kind = %v, want array", got.Kind())
+	}
+	items := got.Array()
+	if len(items) != 1 {
+		t.Fatalf("run() length = %d, want 1", len(items))
+	}
+	if items[0].Kind() != KindFloat || !math.IsNaN(items[0].Float()) {
+		t.Fatalf("run()[0] = %v, want NaN float", items[0])
+	}
 }
 
 func TestRubyBatchStringCharSetTransformsPreserveInvalidBytes(t *testing.T) {
