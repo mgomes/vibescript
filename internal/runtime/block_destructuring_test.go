@@ -71,3 +71,40 @@ end`)
 		NewArray([]Value{NewInt(4), NewInt(5), NewInt(6)}),
 	})
 }
+
+func TestBlockParameterDestructuringTypeAnnotations(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `def run
+  rows = [[1, "Ada"], [2, "Lin"]]
+  typed = rows.map do |(id: int, name: string)|
+    name + ":" + id.to_s
+  end
+
+  nested_rows = [[3, [4, 5]]]
+  nested = nested_rows.map do |(head: int, (left: int, right: int))|
+    [head, left, right]
+  end
+
+  rest_rows = [[6, 7, 8]]
+  rest = rest_rows.map do |(head: int, *tail: array<int>)|
+    [head, tail[0], tail[1]]
+  end
+
+  [typed, nested[0], rest[0]]
+end
+
+def bad
+  [["wrong", "Ada"]].map do |(id: int, name: string)|
+    name
+  end
+end`)
+
+	got := callScript(t, context.Background(), script, "run", nil, CallOptions{})
+	compareArrays(t, got, []Value{
+		NewArray([]Value{NewString("Ada:1"), NewString("Lin:2")}),
+		NewArray([]Value{NewInt(3), NewInt(4), NewInt(5)}),
+		NewArray([]Value{NewInt(6), NewInt(7), NewInt(8)}),
+	})
+	requireCallErrorContains(t, script, "bad", nil, CallOptions{}, "argument id expected int, got string")
+}

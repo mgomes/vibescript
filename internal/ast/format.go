@@ -172,6 +172,9 @@ func FormatDestructureTarget(target Expression) string {
 			if element.Rest {
 				parts[i] = "*" + parts[i]
 			}
+			if element.Type != nil {
+				parts[i] += ": " + FormatTypeExpr(element.Type)
+			}
 		}
 		return "(" + strings.Join(parts, ", ") + ")"
 	default:

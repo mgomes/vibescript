@@ -348,6 +348,7 @@ func cloneDestructureElements(elements []DestructureElement) []DestructureElemen
 	for i, element := range elements {
 		out[i] = DestructureElement{
 			Target:   cloneExpression(element.Target),
+			Type:     cloneTypeExpr(element.Type),
 			Rest:     element.Rest,
 			Position: element.Position,
 		}

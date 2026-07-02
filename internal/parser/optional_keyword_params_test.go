@@ -112,6 +112,16 @@ end`,
 			},
 		},
 		{
+			name: "typed_required_keyword",
+			source: `def f(name: string:, retries: int:)
+  name
+end`,
+			want: []ast.Param{
+				{Name: "name", Kind: ast.ParamKeyword, Type: &ast.TypeExpr{Name: "string", Kind: ast.TypeString}},
+				{Name: "retries", Kind: ast.ParamKeyword, Type: &ast.TypeExpr{Name: "int", Kind: ast.TypeInt}},
+			},
+		},
+		{
 			name: "optional_keyword_then_keyword_rest",
 			source: `def f(a: 0, **rest)
   a
