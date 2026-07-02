@@ -2101,6 +2101,8 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		return NewNil(), err
 	}
 	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	keyAcc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	keyScratchReserved := 0
 	out := make([]Value, 0, boundedSetCap(len(arr)))
 	var seen valueSet
 	var blockArg [1]Value
@@ -2113,14 +2115,58 @@ func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]
 		if err != nil {
 			return NewNil(), err
 		}
-		if seen.add(key, len(arr)) {
-			out = append(out, item)
-			if err := acc.add(item, cap(out)); err != nil {
+		if seen.contains(key) {
+			continue
+		}
+		projectedKeyScratch := valueSetScratchBytesForNext(seen, key, len(arr))
+		if projectedKeyScratch > keyScratchReserved {
+			if err := keyAcc.reserveScratch(projectedKeyScratch - keyScratchReserved); err != nil {
 				return NewNil(), err
 			}
+			keyScratchReserved = projectedKeyScratch
+		}
+		if err := keyAcc.addToReservedBacking(key); err != nil {
+			return NewNil(), err
+		}
+		seen.add(key, len(arr))
+		out = append(out, item)
+		if err := acc.add(item, cap(out)); err != nil {
+			return NewNil(), err
 		}
 	}
 	return NewArray(out), nil
+}
+
+func valueSetScratchBytesForNext(seen valueSet, next Value, hint int) int {
+	scalarCount := len(seen.scalars)
+	compositeCap := cap(seen.composite)
+	if _, ok := scalarValueKey(next); ok {
+		scalarCount++
+	} else if len(seen.composite) == compositeCap {
+		if compositeCap == 0 {
+			compositeCap = 1
+		} else {
+			compositeCap *= 2
+		}
+		if maxCap := boundedSetCap(hint); compositeCap > maxCap && len(seen.composite) < maxCap {
+			compositeCap = maxCap
+		}
+	}
+	return valueSetScratchBytesForCounts(scalarCount, compositeCap)
+}
+
+func valueSetScratchBytesForCounts(scalarCount, compositeCap int) int {
+	total := 0
+	if scalarCount > 0 {
+		scalarEntryBytes := estimatedMapEntryBytes + estimatedValueBytes + estimatedStringHeaderBytes + saturatingMul(4, estimatedIntBytes)
+		total = saturatingAdd(total, estimatedMapBaseBytes)
+		total = saturatingAdd(total, saturatingMul(scalarCount, scalarEntryBytes))
+	}
+	if compositeCap > 0 {
+		total = saturatingAdd(total, estimatedSliceBaseBytes)
+		total = saturatingAdd(total, saturatingMul(compositeCap, estimatedValueBytes))
+	}
+	return total
 }
 
 func arrayCompact(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, error) {

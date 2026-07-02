@@ -1928,6 +1928,40 @@ func stringRuneBytes(r rune) int {
 	return len(string(r))
 }
 
+func stringCharSetArgsScratchBytes(args []Value) int {
+	if len(args) == 0 {
+		return 0
+	}
+	specBytes := estimatedValueBytes + estimatedSliceBaseBytes + estimatedIntBytes + estimatedValueBytes
+	spanBytes := saturatingMul(2, estimatedRuneBytes)
+	total := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(len(args), specBytes))
+	for _, arg := range args {
+		if arg.Kind() != KindString {
+			continue
+		}
+		spanCount := utf8.RuneCountInString(arg.String())
+		total = saturatingAdd(total, estimatedSliceBaseBytes)
+		total = saturatingAdd(total, saturatingMul(spanCount, spanBytes))
+	}
+	return total
+}
+
+func reserveStringCharSetScratch(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (func(), error) {
+	scratch := stringCharSetArgsScratchBytes(args)
+	if scratch == 0 {
+		return func() {}, nil
+	}
+	delta := exec.reserveLoopScratch(scratch)
+	release := func() {
+		exec.releaseLoopScratch(delta)
+	}
+	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
 func stringCountChars(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, error) {
 	const method = "string.count"
 	if len(args) == 0 {
@@ -1939,6 +1973,11 @@ func stringCountChars(exec *Execution, receiver Value, args []Value, kwargs map[
 	if valueBlock(block) != nil {
 		return 0, fmt.Errorf("%s does not accept a block", method)
 	}
+	releaseScratch, err := reserveStringCharSetScratch(exec, receiver, args, kwargs, block)
+	if err != nil {
+		return 0, err
+	}
+	defer releaseScratch()
 	specs, err := parseStringCharSetArgs(method, args, true)
 	if err != nil {
 		return 0, err
@@ -1965,6 +2004,11 @@ func stringDeleteChars(exec *Execution, receiver Value, args []Value, kwargs map
 	if valueBlock(block) != nil {
 		return "", fmt.Errorf("%s does not accept a block", method)
 	}
+	releaseScratch, err := reserveStringCharSetScratch(exec, receiver, args, kwargs, block)
+	if err != nil {
+		return "", err
+	}
+	defer releaseScratch()
 	specs, err := parseStringCharSetArgs(method, args, true)
 	if err != nil {
 		return "", err
@@ -2005,6 +2049,11 @@ func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[str
 	if args[0].Kind() != KindString || args[1].Kind() != KindString {
 		return "", fmt.Errorf("%s character sets must be strings", method)
 	}
+	releaseScratch, err := reserveStringCharSetScratch(exec, receiver, args, kwargs, block)
+	if err != nil {
+		return "", err
+	}
+	defer releaseScratch()
 	source, err := parseStringCharSet(method, args[0].String(), true)
 	if err != nil {
 		return "", err
@@ -2053,6 +2102,11 @@ func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs ma
 	if valueBlock(block) != nil {
 		return "", fmt.Errorf("%s does not accept a block", method)
 	}
+	releaseScratch, err := reserveStringCharSetScratch(exec, receiver, args, kwargs, block)
+	if err != nil {
+		return "", err
+	}
+	defer releaseScratch()
 	specs, err := parseStringCharSetArgs(method, args, true)
 	if err != nil {
 		return "", err

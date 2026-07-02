@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +16,31 @@ func requireRubyBatchValue(t *testing.T, got, want Value) {
 	if diff := valueDiff(want, got); diff != "" {
 		t.Fatalf("value mismatch (-want +got):\n%s", diff)
 	}
+}
+
+func rubyBatchDistinctStrings(count int) Value {
+	values := make([]Value, count)
+	for i := range count {
+		values[i] = NewString(fmt.Sprintf("v%04d", i))
+	}
+	return NewArray(values)
+}
+
+func rubyBatchConcatStringBlock(suffix string) Value {
+	pos := Position{Line: 1, Column: 1}
+	target := &Identifier{Name: "item", Position: pos}
+	body := []Statement{
+		&ExprStmt{
+			Expr: &BinaryExpr{
+				Left:     &Identifier{Name: "item", Position: pos},
+				Operator: tokenPlus,
+				Right:    &StringLiteral{Value: suffix, Position: pos},
+				Position: pos,
+			},
+			Position: pos,
+		},
+	}
+	return NewBlock([]Param{{Kind: ParamNormal, Name: "item", Target: target}}, body, newEnv(nil))
 }
 
 func TestRubyBatchDynamicDispatchAndInitializePrivacy(t *testing.T) {
@@ -157,6 +184,31 @@ end
 		"c": NewInt(3),
 	})
 	compareArrays(t, got["uniq_block"], []Value{NewString("a"), NewString("b")})
+}
+
+func TestRubyBatchArrayUniqBlockChargesRetainedKeys(t *testing.T) {
+	t.Parallel()
+
+	const receiverSize = 1024
+	const retainedKeyBytes = 512
+
+	receiver := rubyBatchDistinctStrings(receiverSize)
+	block := rubyBatchConcatStringBlock(strings.Repeat("x", retainedKeyBytes))
+
+	exec := &Execution{
+		ctx:   context.Background(),
+		quota: 1 << 30,
+	}
+	base := exec.estimateMemoryUsageForCallRoots(NewNil(), receiver, nil, nil, block)
+	resultSlots := estimatedValueBytes + estimatedSliceBaseBytes + receiverSize*estimatedValueBytes
+	oneKey := newMemoryEstimator().value(NewString("v0000" + strings.Repeat("x", retainedKeyBytes)))
+	exec.memoryQuota = base + resultSlots + valueSetScratchBytesForCounts(8, 0) + oneKey*8
+
+	_, err := arrayUniq(exec, receiver, nil, nil, block, "array.uniq")
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+	if exec.steps >= receiverSize {
+		t.Fatalf("steps = %d, want retained uniq keys to trip memory quota before traversing %d elements", exec.steps, receiverSize)
+	}
 }
 
 func TestRubyBatchArrayBangTransforms(t *testing.T) {
@@ -395,4 +447,39 @@ end
 		NewNil(),
 		NewNil(),
 	))
+}
+
+func TestRubyBatchStringCharSetParserScratchChargesQuota(t *testing.T) {
+	t.Parallel()
+
+	receiver := NewString("z")
+	args := []Value{NewString(strings.Repeat("a", 4096))}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	base := probe.estimateMemoryUsageForCallRoots(NewNil(), receiver, args, nil, NewNil())
+	scratch := stringCharSetArgsScratchBytes(args)
+	if scratch == 0 {
+		t.Fatal("string character set scratch estimate is zero")
+	}
+
+	reject := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: base + scratch - 1,
+	}
+	_, err := stringCountChars(reject, receiver, args, nil, NewNil())
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	allow := &Execution{
+		ctx:         context.Background(),
+		quota:       1 << 30,
+		memoryQuota: base + scratch + estimatedValueBytes,
+	}
+	count, err := stringCountChars(allow, receiver, args, nil, NewNil())
+	if err != nil {
+		t.Fatalf("string.count with parser scratch headroom failed: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("string.count = %d, want 0", count)
+	}
 }
