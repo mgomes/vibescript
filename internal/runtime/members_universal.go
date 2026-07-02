@@ -172,11 +172,38 @@ func newUniversalSendBuiltin(name string, allowPrivate bool) Value {
 		if err != nil {
 			return NewNil(), err
 		}
+		callArgs, kwargs = resolveKeywordOptionsHash(dynamicSendCallExpr(kwargs), member, dynamicSendCalleeResolution(receiver, method), callArgs, kwargs)
 		if err := exec.checkCallMemoryRootsWithCallee(member, receiver, callArgs, kwargs, block); err != nil {
 			return NewNil(), err
 		}
 		return exec.invokeCallable(member, receiver, callArgs, kwargs, block, Position{})
 	})
+}
+
+func dynamicSendCallExpr(kwargs map[string]Value) *CallExpr {
+	return &CallExpr{
+		KeywordOptionsHash: len(kwargs) > 0,
+		Parenthesized:      true,
+	}
+}
+
+func dynamicSendCalleeResolution(receiver Value, method string) calleeResolution {
+	switch receiver.Kind() {
+	case KindClass:
+		cl := valueClass(receiver)
+		if method == "new" {
+			return calleeMemberMethod
+		}
+		if _, ok := cl.ClassMethods[method]; ok {
+			return calleeMemberMethod
+		}
+	case KindInstance:
+		inst := valueInstance(receiver)
+		if _, ok := inst.Class.Methods[method]; ok {
+			return calleeMemberMethod
+		}
+	}
+	return calleeMemberValue
 }
 
 // newUniversalBlockBuiltin returns the auto-invoked builtin for a universal

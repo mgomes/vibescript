@@ -1798,15 +1798,22 @@ func stringBangResult(original, updated string) Value {
 	return NewString(updated)
 }
 
-type stringCharSetSpan struct {
-	low  rune
-	high rune
-}
-
 type stringCharSetSpec struct {
 	negated bool
-	spans   []stringCharSetSpan
+	entries []stringCharSetEntry
 	length  int
+}
+
+type stringCharSetEntry struct {
+	lowRune, highRune rune
+	lowByte, highByte byte
+	rawBytes          bool
+}
+
+type stringCharSetToken struct {
+	r        rune
+	rawByte  byte
+	rawBytes bool
 }
 
 func parseStringCharSetArgs(method string, args []Value, allowComplement bool) ([]stringCharSetSpec, error) {
@@ -1825,73 +1832,152 @@ func parseStringCharSetArgs(method string, args []Value, allowComplement bool) (
 }
 
 func parseStringCharSet(method, text string, allowComplement bool) (stringCharSetSpec, error) {
-	runes := []rune(text)
+	tokens := tokenizeStringCharSet(text)
 	var spec stringCharSetSpec
 	pos := 0
-	if allowComplement && len(runes) > 1 && runes[0] == '^' {
+	if allowComplement && len(tokens) > 1 && tokens[0].isRune('^') {
 		spec.negated = true
 		pos = 1
 	}
-	for pos < len(runes) {
-		start, next := nextStringCharSetToken(runes, pos)
-		if next < len(runes) && runes[next] == '-' && next+1 < len(runes) {
-			end, after := nextStringCharSetToken(runes, next+1)
-			if start > end {
-				return stringCharSetSpec{}, fmt.Errorf("%s invalid character range %c-%c", method, start, end)
+	for pos < len(tokens) {
+		start, next := nextStringCharSetToken(tokens, pos)
+		if next < len(tokens) && tokens[next].isRune('-') && next+1 < len(tokens) {
+			end, after := nextStringCharSetToken(tokens, next+1)
+			if err := spec.addRange(method, start, end); err != nil {
+				return stringCharSetSpec{}, err
 			}
-			spec.addSpan(start, end)
 			pos = after
 			continue
 		}
-		spec.addSpan(start, start)
+		spec.addToken(start)
 		pos = next
 	}
 	return spec, nil
 }
 
-func nextStringCharSetToken(runes []rune, pos int) (rune, int) {
-	if runes[pos] == '\\' {
-		if pos+1 < len(runes) {
-			return runes[pos+1], pos + 2
+func tokenizeStringCharSet(text string) []stringCharSetToken {
+	tokens := make([]stringCharSetToken, 0, utf8.RuneCountInString(text))
+	for i := 0; i < len(text); {
+		seg := nextStringRuneSegment(text, i)
+		i = seg.end
+		if stringRuneSegmentInvalidByte(seg) {
+			tokens = append(tokens, stringCharSetToken{rawByte: text[seg.start], rawBytes: true})
+			continue
 		}
-		return '\\', pos + 1
+		tokens = append(tokens, stringCharSetToken{r: seg.r})
 	}
-	return runes[pos], pos + 1
+	return tokens
 }
 
-func (s *stringCharSetSpec) addSpan(low, high rune) {
-	s.spans = append(s.spans, stringCharSetSpan{low: low, high: high})
+func nextStringCharSetToken(tokens []stringCharSetToken, pos int) (stringCharSetToken, int) {
+	if tokens[pos].isRune('\\') {
+		if pos+1 < len(tokens) {
+			return tokens[pos+1], pos + 2
+		}
+		return stringCharSetToken{r: '\\'}, pos + 1
+	}
+	return tokens[pos], pos + 1
+}
+
+func (t stringCharSetToken) isRune(r rune) bool {
+	return !t.rawBytes && t.r == r
+}
+
+func (s *stringCharSetSpec) addToken(token stringCharSetToken) {
+	if token.rawBytes {
+		s.addByteSpan(token.rawByte, token.rawByte)
+		return
+	}
+	s.addRuneSpan(token.r, token.r)
+}
+
+func (s *stringCharSetSpec) addRange(method string, start, end stringCharSetToken) error {
+	switch {
+	case start.rawBytes && end.rawBytes:
+		if start.rawByte > end.rawByte {
+			return fmt.Errorf("%s invalid character range %02x-%02x", method, start.rawByte, end.rawByte)
+		}
+		s.addByteSpan(start.rawByte, end.rawByte)
+	case !start.rawBytes && !end.rawBytes:
+		if start.r > end.r {
+			return fmt.Errorf("%s invalid character range %c-%c", method, start.r, end.r)
+		}
+		s.addRuneSpan(start.r, end.r)
+	default:
+		return fmt.Errorf("%s invalid mixed byte/rune character range", method)
+	}
+	return nil
+}
+
+func (s *stringCharSetSpec) addRuneSpan(low, high rune) {
+	s.entries = append(s.entries, stringCharSetEntry{lowRune: low, highRune: high})
 	s.length = saturatingAdd(s.length, int(high-low)+1)
 }
 
-func (s stringCharSetSpec) contains(r rune) bool {
-	for _, span := range s.spans {
-		if r >= span.low && r <= span.high {
+func (s *stringCharSetSpec) addByteSpan(low, high byte) {
+	s.entries = append(s.entries, stringCharSetEntry{lowByte: low, highByte: high, rawBytes: true})
+	s.length = saturatingAdd(s.length, int(high-low)+1)
+}
+
+func (e stringCharSetEntry) length() int {
+	if e.rawBytes {
+		return int(e.highByte-e.lowByte) + 1
+	}
+	return int(e.highRune-e.lowRune) + 1
+}
+
+func (e stringCharSetEntry) containsSegment(text string, seg stringRuneSegment) bool {
+	if e.rawBytes {
+		if !stringRuneSegmentInvalidByte(seg) {
+			return false
+		}
+		b := text[seg.start]
+		return b >= e.lowByte && b <= e.highByte
+	}
+	if stringRuneSegmentInvalidByte(seg) {
+		return false
+	}
+	return seg.r >= e.lowRune && seg.r <= e.highRune
+}
+
+func (e stringCharSetEntry) indexOfSegment(text string, seg stringRuneSegment) (int, bool) {
+	if !e.containsSegment(text, seg) {
+		return 0, false
+	}
+	if e.rawBytes {
+		return int(text[seg.start] - e.lowByte), true
+	}
+	return int(seg.r - e.lowRune), true
+}
+
+func (s stringCharSetSpec) containsSegment(text string, seg stringRuneSegment) bool {
+	for _, entry := range s.entries {
+		if entry.containsSegment(text, seg) {
 			return true
 		}
 	}
 	return false
 }
 
-func (s stringCharSetSpec) matches(r rune) bool {
-	matched := s.contains(r)
+func (s stringCharSetSpec) matchesSegment(text string, seg stringRuneSegment) bool {
+	matched := s.containsSegment(text, seg)
 	if s.negated {
 		return !matched
 	}
 	return matched
 }
 
-func (s stringCharSetSpec) orderedIndex(r rune) (int, bool) {
+func (s stringCharSetSpec) orderedIndexSegment(text string, seg stringRuneSegment) (int, bool) {
 	if s.negated {
-		return math.MaxInt, !s.contains(r)
+		return math.MaxInt, !s.containsSegment(text, seg)
 	}
 	index := 0
 	matchIndex := 0
 	matched := false
-	for _, span := range s.spans {
-		count := int(span.high-span.low) + 1
-		if r >= span.low && r <= span.high {
-			matchIndex = saturatingAdd(index, int(r-span.low))
+	for _, entry := range s.entries {
+		count := entry.length()
+		if offset, ok := entry.indexOfSegment(text, seg); ok {
+			matchIndex = saturatingAdd(index, offset)
 			matched = true
 		}
 		index = saturatingAdd(index, count)
@@ -1902,26 +1988,29 @@ func (s stringCharSetSpec) orderedIndex(r rune) (int, bool) {
 	return 0, false
 }
 
-func (s stringCharSetSpec) runeAt(index int) rune {
+func (s stringCharSetSpec) tokenAt(index int) stringCharSetToken {
 	if index < 0 {
 		index = 0
 	}
 	if index >= s.length {
 		index = s.length - 1
 	}
-	for _, span := range s.spans {
-		count := int(span.high-span.low) + 1
+	for _, entry := range s.entries {
+		count := entry.length()
 		if index < count {
-			return span.low + rune(index)
+			if entry.rawBytes {
+				return stringCharSetToken{rawByte: entry.lowByte + byte(index), rawBytes: true}
+			}
+			return stringCharSetToken{r: entry.lowRune + rune(index)}
 		}
 		index -= count
 	}
-	return 0
+	return stringCharSetToken{}
 }
 
-func stringCharSetsMatch(specs []stringCharSetSpec, r rune) bool {
+func stringCharSetsMatchSegment(specs []stringCharSetSpec, text string, seg stringRuneSegment) bool {
 	for _, spec := range specs {
-		if !spec.matches(r) {
+		if !spec.matchesSegment(text, seg) {
 			return false
 		}
 	}
@@ -1945,6 +2034,10 @@ func nextStringRuneSegment(text string, start int) stringRuneSegment {
 	return stringRuneSegment{r: r, start: start, end: start + size}
 }
 
+func stringRuneSegmentInvalidByte(seg stringRuneSegment) bool {
+	return seg.r == utf8.RuneError && seg.end-seg.start == 1
+}
+
 func stringRuneSegmentsEqual(text string, left, right stringRuneSegment) bool {
 	if left.r != right.r {
 		return false
@@ -1955,12 +2048,27 @@ func stringRuneSegmentsEqual(text string, left, right stringRuneSegment) bool {
 	return text[left.start:left.end] == text[right.start:right.end]
 }
 
+func stringCharSetTokenBytes(token stringCharSetToken) int {
+	if token.rawBytes {
+		return 1
+	}
+	return stringRuneBytes(token.r)
+}
+
+func writeStringCharSetToken(b *strings.Builder, token stringCharSetToken) {
+	if token.rawBytes {
+		b.WriteByte(token.rawByte)
+		return
+	}
+	b.WriteRune(token.r)
+}
+
 func stringCharSetArgsScratchBytes(args []Value) int {
 	if len(args) == 0 {
 		return 0
 	}
 	specBytes := estimatedValueBytes + estimatedSliceBaseBytes + estimatedIntBytes + estimatedValueBytes
-	spanBytes := saturatingMul(2, estimatedRuneBytes)
+	entryBytes := saturatingAdd(saturatingMul(2, estimatedRuneBytes), estimatedValueBytes)
 	total := saturatingAdd(estimatedSliceBaseBytes, saturatingMul(len(args), specBytes))
 	for _, arg := range args {
 		if arg.Kind() != KindString {
@@ -1968,7 +2076,7 @@ func stringCharSetArgsScratchBytes(args []Value) int {
 		}
 		spanCount := utf8.RuneCountInString(arg.String())
 		total = saturatingAdd(total, estimatedSliceBaseBytes)
-		total = saturatingAdd(total, saturatingMul(spanCount, spanBytes))
+		total = saturatingAdd(total, saturatingMul(spanCount, entryBytes))
 	}
 	return total
 }
@@ -2017,7 +2125,7 @@ func stringCountChars(exec *Execution, receiver Value, args []Value, kwargs map[
 		if err := exec.step(); err != nil {
 			return 0, err
 		}
-		if stringCharSetsMatch(specs, seg.r) {
+		if stringCharSetsMatchSegment(specs, text, seg) {
 			count++
 		}
 	}
@@ -2051,7 +2159,7 @@ func stringDeleteChars(exec *Execution, receiver Value, args []Value, kwargs map
 		if err := exec.step(); err != nil {
 			return "", err
 		}
-		if !stringCharSetsMatch(specs, seg.r) {
+		if !stringCharSetsMatchSegment(specs, text, seg) {
 			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 		}
 	}
@@ -2063,7 +2171,7 @@ func stringDeleteChars(exec *Execution, receiver Value, args []Value, kwargs map
 	for i := 0; i < len(text); {
 		seg := nextStringRuneSegment(text, i)
 		i = seg.end
-		if !stringCharSetsMatch(specs, seg.r) {
+		if !stringCharSetsMatchSegment(specs, text, seg) {
 			b.WriteString(text[seg.start:seg.end])
 		}
 	}
@@ -2104,7 +2212,7 @@ func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[str
 		if err := exec.step(); err != nil {
 			return "", err
 		}
-		index, matched := source.orderedIndex(seg.r)
+		index, matched := source.orderedIndexSegment(text, seg)
 		if !matched {
 			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 			continue
@@ -2112,7 +2220,7 @@ func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[str
 		if replacement.length == 0 {
 			continue
 		}
-		projectedBytes = saturatingAdd(projectedBytes, stringRuneBytes(replacement.runeAt(index)))
+		projectedBytes = saturatingAdd(projectedBytes, stringCharSetTokenBytes(replacement.tokenAt(index)))
 	}
 	if err := exec.checkProjectedStringBytesWithCallRoots(projectedBytes, receiver, args, kwargs, block); err != nil {
 		return "", err
@@ -2122,12 +2230,12 @@ func stringTrChars(exec *Execution, receiver Value, args []Value, kwargs map[str
 	for i := 0; i < len(text); {
 		seg := nextStringRuneSegment(text, i)
 		i = seg.end
-		index, matched := source.orderedIndex(seg.r)
+		index, matched := source.orderedIndexSegment(text, seg)
 		switch {
 		case !matched:
 			b.WriteString(text[seg.start:seg.end])
 		case replacement.length > 0:
-			b.WriteRune(replacement.runeAt(index))
+			writeStringCharSetToken(&b, replacement.tokenAt(index))
 		}
 	}
 	return b.String(), nil
@@ -2159,7 +2267,7 @@ func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs ma
 		if err := exec.step(); err != nil {
 			return "", err
 		}
-		squeezed := hasPrevious && stringRuneSegmentsEqual(text, seg, previous) && (len(specs) == 0 || stringCharSetsMatch(specs, seg.r))
+		squeezed := hasPrevious && stringRuneSegmentsEqual(text, seg, previous) && (len(specs) == 0 || stringCharSetsMatchSegment(specs, text, seg))
 		if !squeezed {
 			projectedBytes = saturatingAdd(projectedBytes, seg.end-seg.start)
 		}
@@ -2175,7 +2283,7 @@ func stringSqueezeChars(exec *Execution, receiver Value, args []Value, kwargs ma
 	for i := 0; i < len(text); {
 		seg := nextStringRuneSegment(text, i)
 		i = seg.end
-		squeezed := hasPrevious && stringRuneSegmentsEqual(text, seg, previous) && (len(specs) == 0 || stringCharSetsMatch(specs, seg.r))
+		squeezed := hasPrevious && stringRuneSegmentsEqual(text, seg, previous) && (len(specs) == 0 || stringCharSetsMatchSegment(specs, text, seg))
 		if !squeezed {
 			b.WriteString(text[seg.start:seg.end])
 		}
