@@ -1886,11 +1886,18 @@ func (s stringCharSetSpec) orderedIndex(r rune) (int, bool) {
 		return math.MaxInt, !s.contains(r)
 	}
 	index := 0
+	matchIndex := 0
+	matched := false
 	for _, span := range s.spans {
+		count := int(span.high-span.low) + 1
 		if r >= span.low && r <= span.high {
-			return index + int(r-span.low), true
+			matchIndex = saturatingAdd(index, int(r-span.low))
+			matched = true
 		}
-		index = saturatingAdd(index, int(span.high-span.low)+1)
+		index = saturatingAdd(index, count)
+	}
+	if matched {
+		return matchIndex, true
 	}
 	return 0, false
 }
