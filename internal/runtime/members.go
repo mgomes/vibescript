@@ -189,6 +189,8 @@ func (exec *Execution) resolveTypedMember(obj Value, property string, pos Positi
 		return exec.rangeMember(obj, property, pos)
 	case KindFunction:
 		return exec.functionMember(obj, property, pos)
+	case KindBlock:
+		return exec.blockMember(obj, property, pos)
 	case KindSymbol:
 		return exec.symbolMember(obj, property, pos)
 	case KindNil:
@@ -225,6 +227,8 @@ func hashMemberAssignmentKey(obj Value, property string) Value {
 // suggestions and editor completion.
 var functionMemberNames = []string{"call"}
 
+var blockMemberNames = []string{"call"}
+
 // functionMember resolves member access on a script function value. Only
 // `call` is supported: it returns a builtin that invokes the underlying
 // function with the supplied args, kwargs, and block, mirroring direct
@@ -235,11 +239,25 @@ func (exec *Execution) functionMember(obj Value, property string, pos Position) 
 		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, functionMemberNames))
 	}
 	fn := valueFunction(obj)
-	caller := NewAutoBuiltin("function.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	caller := NewCapturingBuiltin("function.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
-	})
+	}, obj)
 	callerBuiltin := valueBuiltin(caller)
+	callerBuiltin.AutoInvoke = true
 	callerBuiltin.OptionsHashTarget = fn
+	callerBuiltin.DirectCallAlias = true
+	return caller, nil
+}
+
+func (exec *Execution) blockMember(obj Value, property string, pos Position) (Value, error) {
+	if property != "call" {
+		return NewNil(), exec.errorAt(pos, "unknown member %s%s", property, didYouMean(property, blockMemberNames))
+	}
+	caller := NewCapturingBuiltin("block.call", func(exec *Execution, _ Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+		return exec.invokeCallable(obj, NewNil(), args, kwargs, block, pos)
+	}, obj)
+	callerBuiltin := valueBuiltin(caller)
+	callerBuiltin.AutoInvoke = true
 	callerBuiltin.DirectCallAlias = true
 	return caller, nil
 }
@@ -408,6 +426,7 @@ func MemberCompletionNames() map[string][]string {
 		"time":     withUniversalMembers(timeMemberNames),
 		"range":    withUniversalMembers(rangeMemberNames),
 		"function": withUniversalMembers(functionMemberNames),
+		"block":    withUniversalMembers(blockMemberNames),
 		"nil":      withUniversalMembers(nilMemberNames),
 		"bool":     withUniversalMembers(boolMemberNames),
 	}

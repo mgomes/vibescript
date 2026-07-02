@@ -86,7 +86,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *CaseExpr:
 		return exec.evalCaseExpr(e, env)
 	case *MemberExpr:
-		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
+		obj, err := exec.evalExpressionWithAuto(e.Object, env, memberReceiverAutoInvokes(e.Property))
 		if err != nil {
 			return NewNil(), err
 		}

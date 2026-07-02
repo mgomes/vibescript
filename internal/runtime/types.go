@@ -325,7 +325,7 @@ func (s *typeValidationState) matches(val Value, ty *TypeExpr) (bool, error) {
 
 func isCallableValue(val Value) bool {
 	switch val.Kind() {
-	case KindFunction, KindBuiltin:
+	case KindFunction, KindBuiltin, KindBlock:
 		return true
 	default:
 		return false
