@@ -371,6 +371,15 @@ def run()
     [1, 1, 2, 2, 3].chunk do |n|
       n
     end,
+    [1, 2, 3, 4].chunk do |n|
+      n.even? ? :even : nil
+    end,
+    [1, 2, 3, 4].chunk do |n|
+      n.even? ? :even : :_separator
+    end,
+    [1, 2, 3, 4].chunk do |n|
+      n.even? ? :_alone : :odd
+    end,
     [1, 2, 4, 5].slice_when do |left, right|
       right - left > 1
     end,
@@ -388,6 +397,20 @@ end
 			rubyBatchArray(NewInt(1), rubyBatchArray(NewInt(1), NewInt(1))),
 			rubyBatchArray(NewInt(2), rubyBatchArray(NewInt(2), NewInt(2))),
 			rubyBatchArray(NewInt(3), rubyBatchArray(NewInt(3))),
+		),
+		rubyBatchArray(
+			rubyBatchArray(NewSymbol("even"), rubyBatchArray(NewInt(2))),
+			rubyBatchArray(NewSymbol("even"), rubyBatchArray(NewInt(4))),
+		),
+		rubyBatchArray(
+			rubyBatchArray(NewSymbol("even"), rubyBatchArray(NewInt(2))),
+			rubyBatchArray(NewSymbol("even"), rubyBatchArray(NewInt(4))),
+		),
+		rubyBatchArray(
+			rubyBatchArray(NewSymbol("odd"), rubyBatchArray(NewInt(1))),
+			rubyBatchArray(NewSymbol("_alone"), rubyBatchArray(NewInt(2))),
+			rubyBatchArray(NewSymbol("odd"), rubyBatchArray(NewInt(3))),
+			rubyBatchArray(NewSymbol("_alone"), rubyBatchArray(NewInt(4))),
 		),
 		rubyBatchArray(
 			rubyBatchArray(NewInt(1), NewInt(2)),
