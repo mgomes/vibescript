@@ -218,7 +218,7 @@ func objectRespondsTo(receiver Value, method string) bool {
 // when found in a hash or namespace data slot.
 func isInvocable(v Value) bool {
 	switch v.Kind() {
-	case KindFunction, KindBuiltin:
+	case KindFunction, KindBuiltin, KindBlock:
 		return true
 	default:
 		return false

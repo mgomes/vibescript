@@ -106,6 +106,154 @@ func TestFunctionValueCallZeroArityFollowsIssue416(t *testing.T) {
 	}
 }
 
+func TestZeroArityFunctionValuePreservedForFunctionTypedArguments(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def answer
+      42
+    end
+
+    def receive_untyped(value)
+      value
+    end
+
+    def receive_callable(fn: function)
+      fn.call
+    end
+
+    def receive_callable_rest(*fns: array<function>)
+      fns[0].call
+    end
+
+    def feed_block(&block)
+      block.call(answer)
+    end
+
+    def run_untyped
+      receive_untyped(answer)
+    end
+
+    def run_typed
+      receive_callable(answer)
+    end
+
+    def run_call_alias
+      receive_callable.call(answer)
+    end
+
+    def run_rest
+      receive_callable_rest(answer)
+    end
+
+    def run_block_param
+      feed_block do |fn: function|
+        fn.call
+      end
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{name: "untyped still auto invokes", fn: "run_untyped", want: NewInt(42)},
+		{name: "typed positional keeps callable", fn: "run_typed", want: NewInt(42)},
+		{name: "function call alias keeps callable", fn: "run_call_alias", want: NewInt(42)},
+		{name: "typed rest keeps callable element", fn: "run_rest", want: NewInt(42)},
+		{name: "typed block call parameter keeps callable", fn: "run_block_param", want: NewInt(42)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := callFunc(t, script, tt.fn, nil); !got.Equal(tt.want) {
+				t.Fatalf("%s() = %#v, want %#v", tt.fn, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCapturedBlockValuesAreCallable(t *testing.T) {
+	t.Parallel()
+	script := compileScript(t, `
+    def invoke_direct(&block)
+      block(2)
+    end
+
+    def invoke_call(&block)
+      block.call(3)
+    end
+
+    def accept_typed_block(&block: function)
+      yield(4)
+    end
+
+    def forward_typed_block(&block: function)
+      require_callable(block)
+    end
+
+    def require_callable(fn: function)
+      fn.call(5)
+    end
+
+    def run_direct
+      invoke_direct do |value|
+        value + 1
+      end
+    end
+
+    def run_call
+      invoke_call do |value|
+        value * 2
+      end
+    end
+
+    def run_typed_block
+      accept_typed_block do |value|
+        value + 6
+      end
+    end
+
+    def run_forwarded_block
+      forward_typed_block do |value|
+        value + 7
+      end
+    end
+
+    def run_respond_to
+      capture_respond_to do
+        1
+      end
+    end
+
+    def capture_respond_to(&block)
+      block.respond_to?(:call)
+    end
+    `)
+
+	tests := []struct {
+		name string
+		fn   string
+		want Value
+	}{
+		{name: "direct call", fn: "run_direct", want: NewInt(3)},
+		{name: "call member", fn: "run_call", want: NewInt(6)},
+		{name: "typed block parameter", fn: "run_typed_block", want: NewInt(10)},
+		{name: "block value satisfies function type", fn: "run_forwarded_block", want: NewInt(12)},
+		{name: "respond_to call", fn: "run_respond_to", want: NewBool(true)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := callFunc(t, script, tt.fn, nil); !got.Equal(tt.want) {
+				t.Fatalf("%s() = %#v, want %#v", tt.fn, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestFunctionValueCallErrors verifies that misuse of fn.call surfaces the
 // same argument and type errors as direct invocation, anchored at the call
 // site, and that unknown members suggest call.
@@ -207,5 +355,17 @@ func TestFunctionValueCallMemberSuggestion(t *testing.T) {
 	want := append([]string{"call"}, universalMemberNames...)
 	if diff := cmp.Diff(want, names); diff != "" {
 		t.Fatalf("function member completion mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestBlockValueCallMemberSuggestion(t *testing.T) {
+	t.Parallel()
+	names, ok := MemberCompletionNames()["block"]
+	if !ok {
+		t.Fatalf("MemberCompletionNames missing block entry")
+	}
+	want := append([]string{"call"}, universalMemberNames...)
+	if diff := cmp.Diff(want, names); diff != "" {
+		t.Fatalf("block member completion mismatch (-want +got):\n%s", diff)
 	}
 }
