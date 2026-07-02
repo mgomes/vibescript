@@ -438,23 +438,28 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 	if val.Kind() != KindHash && val.Kind() != KindObject {
 		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 	}
-	entries := val.Hash()
+	entries := val.HashEntries()
 	if len(entries) != len(ty.Shape) {
 		return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 	}
 
-	var out map[string]Value
-	i := 0
-	for field, fieldType := range ty.Shape {
+	normalizedEntries := make([]HashEntry, 0, len(entries))
+	seenFields := make(map[string]struct{}, len(entries))
+	changed := false
+	for i, entry := range entries {
 		if err := ctx.checkSandboxEvery(i); err != nil {
 			return NewNil(), err
 		}
-		i++
-		fieldVal, ok := entries[field]
+		field := hashDisplayKey(entry.Key)
+		if _, ok := seenFields[field]; ok {
+			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
+		}
+		seenFields[field] = struct{}{}
+		fieldType, ok := ty.Shape[field]
 		if !ok {
 			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
 		}
-		normalized, err := normalizeValueForType(fieldVal, fieldType, ctx)
+		normalized, err := normalizeValueForType(entry.Value, fieldType, ctx)
 		if err != nil {
 			var mismatch *typeMismatchError
 			if errorAsTypeMismatch(err, &mismatch) {
@@ -462,34 +467,40 @@ func normalizeShapeForType(val Value, ty *TypeExpr, ctx typeContext) (Value, err
 			}
 			return NewNil(), err
 		}
-		if !sameNormalizedValue(normalized, fieldVal) {
-			if out == nil {
-				var err error
-				out, err = ctx.normalizedMap(val, entries)
-				if err != nil {
-					return NewNil(), err
-				}
-			}
+		if !sameNormalizedValue(normalized, entry.Value) {
+			changed = true
 		}
-		if out != nil {
-			out[field] = normalized
-		}
+		normalizedEntries = append(normalizedEntries, HashEntry{Key: entry.Key, Value: normalized})
 	}
-	for field := range entries {
-		if _, ok := ty.Shape[field]; !ok {
-			return NewNil(), &typeMismatchError{Expected: formatTypeExpr(ty), Actual: formatValueTypeExpr(val)}
-		}
-	}
-
-	if out == nil {
+	if !changed {
 		return val, nil
 	}
 	if val.Kind() == KindObject {
+		out := make(map[string]Value, len(normalizedEntries))
+		for _, entry := range normalizedEntries {
+			out[hashDisplayKey(entry.Key)] = entry.Value
+		}
 		result := NewObject(out)
 		if err := ctx.checkSandbox(result); err != nil {
 			return NewNil(), err
 		}
 		return result, nil
+	}
+	if hashHasTypedEntries(val) {
+		result := NewTypedHash(len(normalizedEntries))
+		for _, entry := range normalizedEntries {
+			if err := result.HashSet(entry.Key, entry.Value); err != nil {
+				return NewNil(), err
+			}
+		}
+		if err := ctx.checkSandbox(result); err != nil {
+			return NewNil(), err
+		}
+		return result, nil
+	}
+	out := make(map[string]Value, len(normalizedEntries))
+	for _, entry := range normalizedEntries {
+		out[hashDisplayKey(entry.Key)] = entry.Value
 	}
 	result := NewHash(out)
 	if err := ctx.checkSandbox(result); err != nil {

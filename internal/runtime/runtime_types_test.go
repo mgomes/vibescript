@@ -396,6 +396,68 @@ func TestTypedFunctions(t *testing.T) {
 	}
 }
 
+func TestShapeValidationRejectsTypedHashDisplayCollisions(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+def accept(payload: { name: int }) -> { name: int }
+  payload
+end
+`)
+
+	colliding := NewTypedHash(0)
+	if err := colliding.HashSet(NewSymbol("name"), NewInt(1)); err != nil {
+		t.Fatalf("HashSet(:name) error = %v", err)
+	}
+	if err := colliding.HashSet(NewString("name"), NewInt(2)); err != nil {
+		t.Fatalf("HashSet(\"name\") error = %v", err)
+	}
+	requireCallErrorContains(t, script, "accept", []Value{colliding}, CallOptions{}, "argument payload expected { name: int }")
+
+	stringKeyed := NewTypedHash(0)
+	if err := stringKeyed.HashSet(NewString("name"), NewInt(3)); err != nil {
+		t.Fatalf("HashSet(\"name\") error = %v", err)
+	}
+	if got := callFunc(t, script, "accept", []Value{stringKeyed}); !got.Equal(stringKeyed) {
+		t.Fatalf("accept(string-keyed typed hash) = %s, want original hash", got)
+	}
+}
+
+func TestShapeNormalizationPreservesTypedHashKeys(t *testing.T) {
+	t.Parallel()
+
+	script := compileScript(t, `
+enum Status
+  Draft
+end
+
+def accept(payload: { status: Status }) -> { status: Status }
+  payload
+end
+`)
+
+	payload := NewTypedHash(0)
+	if err := payload.HashSet(NewString("status"), NewSymbol("draft")); err != nil {
+		t.Fatalf("HashSet(\"status\") error = %v", err)
+	}
+	got := callFunc(t, script, "accept", []Value{payload})
+	if got.Kind() != KindHash {
+		t.Fatalf("accept(payload) kind = %s, want hash", got.Kind())
+	}
+	if _, ok, err := got.HashGet(NewSymbol("status")); err != nil {
+		t.Fatalf("HashGet(:status) error = %v", err)
+	} else if ok {
+		t.Fatalf("normalized typed hash should not expose string key through :status")
+	}
+	val, ok, err := got.HashGet(NewString("status"))
+	if err != nil {
+		t.Fatalf("HashGet(\"status\") error = %v", err)
+	}
+	if !ok || val.Kind() != KindEnumValue {
+		t.Fatalf("HashGet(\"status\") = %s (ok=%v), want enum value", val, ok)
+	}
+}
+
 func TestTypeSemanticsContainersNullabilityCoercionAndKeywordStrictness(t *testing.T) {
 	t.Parallel()
 	script := compileScript(t, `
