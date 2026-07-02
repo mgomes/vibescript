@@ -60,21 +60,11 @@ func (p *parser) parseTypeExpr() *ast.TypeExpr {
 
 func (p *parser) parseTypeAtom() *ast.TypeExpr {
 	if p.curToken.Type == ast.TokenLBrace {
-		return p.parseTypeShape()
+		return p.applyNullableSuffix(p.parseTypeShape())
 	}
-	if p.curToken.Type != ast.TokenIdent && p.curToken.Type != ast.TokenNil {
-		p.errorExpected(p.curToken, "type name")
+	ty := p.parseNamedTypeAtom()
+	if ty == nil {
 		return nil
-	}
-	ty := &ast.TypeExpr{Name: p.curToken.Literal, Position: p.curToken.Pos}
-	kind, nullable := resolveType(p.curToken.Literal)
-	ty.Kind = kind
-	ty.Nullable = nullable
-	if ty.Kind == ast.TypeUnknown && p.curToken.Type == ast.TokenIdent {
-		ty.Kind = ast.TypeEnum
-		if nullable {
-			ty.Name = strings.TrimSuffix(ty.Name, "?")
-		}
 	}
 
 	if p.peekToken.Type == ast.TokenLT {
@@ -85,14 +75,12 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 		// A nullable suffix on the container name (e.g. array?<int>) is
 		// misplaced. resolveType strips a trailing "?" and marks the type
 		// nullable, so detect that here and reject the spelling rather than
-		// silently accepting it. A suffix `?` on a generic container (e.g.
-		// array<int>?) is not yet supported, so point users at the union
-		// form (array<int> | nil), which is the documented nullable spelling
-		// for compound types.
+		// silently accepting it. The nullable marker belongs after the complete
+		// compound type: array<int>?, hash<string, int>?, object<string, int>?.
 		if ty.Nullable {
 			base := strings.TrimSuffix(ty.Name, "?")
 			p.addParseError(p.curToken.Pos, fmt.Sprintf(
-				"nullable suffix on %s is misplaced; write the nullable container as a union, e.g. %s<...> | nil, instead of %s?<...>",
+				"nullable suffix on %s is misplaced; write the nullable container after its type arguments, e.g. %s<...>?, instead of %s?<...>",
 				base, base, base))
 			return nil
 		}
@@ -134,6 +122,45 @@ func (p *parser) parseTypeAtom() *ast.TypeExpr {
 		}
 	}
 
+	return p.applyNullableSuffix(ty)
+}
+
+func (p *parser) parseNamedTypeAtom() *ast.TypeExpr {
+	if p.curToken.Type != ast.TokenIdent && p.curToken.Type != ast.TokenNil {
+		p.errorExpected(p.curToken, "type name")
+		return nil
+	}
+	if strings.HasSuffix(strings.TrimSuffix(p.curToken.Literal, "?"), "?") {
+		p.addParseError(p.curToken.Pos, fmt.Sprintf("duplicate nullable suffix on type %s", p.curToken.Literal))
+		return nil
+	}
+	ty := &ast.TypeExpr{Name: p.curToken.Literal, Position: p.curToken.Pos}
+	kind, nullable := resolveType(p.curToken.Literal)
+	ty.Kind = kind
+	ty.Nullable = nullable
+	if ty.Kind == ast.TypeUnknown && p.curToken.Type == ast.TokenIdent {
+		ty.Kind = ast.TypeEnum
+		if nullable {
+			ty.Name = strings.TrimSuffix(ty.Name, "?")
+		}
+	}
+	return ty
+}
+
+func (p *parser) applyNullableSuffix(ty *ast.TypeExpr) *ast.TypeExpr {
+	if ty == nil || p.peekToken.Type != ast.TokenQuestion {
+		return ty
+	}
+	if ty.Nullable {
+		p.addParseError(p.peekToken.Pos, fmt.Sprintf("duplicate nullable suffix on type %s", ast.FormatTypeExpr(ty)))
+		return nil
+	}
+	p.nextToken()
+	ty.Nullable = true
+	if p.peekToken.Type == ast.TokenQuestion {
+		p.addParseError(p.peekToken.Pos, fmt.Sprintf("duplicate nullable suffix on type %s", ast.FormatTypeExpr(ty)))
+		return nil
+	}
 	return ty
 }
 
