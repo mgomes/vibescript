@@ -1,5 +1,7 @@
 package runtime
 
+import "math"
+
 // setOpInitialCap bounds the capacity reserved up front by the array set
 // helpers (union, difference, and uniq). The result and the membership set are
 // at most as large as the inputs, but for heavily overlapping inputs they can
@@ -27,6 +29,7 @@ type scalarValueSetKey struct {
 	boolVal  bool
 	intVal   int64
 	floatVal float64
+	floatNaN bool
 	textVal  string
 	moneyVal Money
 	durVal   Duration
@@ -42,7 +45,11 @@ func scalarValueKey(v Value) (scalarValueSetKey, bool) {
 	case KindInt:
 		key.intVal = v.Int()
 	case KindFloat:
-		key.floatVal = v.Float()
+		if f := v.Float(); math.IsNaN(f) {
+			key.floatNaN = true
+		} else {
+			key.floatVal = f
+		}
 	case KindString, KindSymbol:
 		key.textVal = v.String()
 	case KindMoney:
