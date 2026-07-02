@@ -123,6 +123,17 @@ end`,
 			want: "call to collect argument items expected array<int>, got array<int | string>",
 		},
 		{
+			name: "typed keyword rest argument",
+			source: `def accept(**opts: hash<string, int>)
+  opts
+end
+
+def run()
+  accept(limit: "slow")
+end`,
+			want: "call to accept argument opts expected hash<string, int>, got { limit: string }",
+		},
+		{
 			name: "method argument type",
 			source: `class Box
   def take(v: int)
@@ -335,6 +346,16 @@ end
 
 def run()
   configure(retries: 3)
+end`,
+		},
+		{
+			name: "keyword rest excludes consumed keywords",
+			source: `def configure(mode: string, **opts: hash<string, int>)
+  opts
+end
+
+def run()
+  configure(mode: "fast", retries: 3)
 end`,
 		},
 		{
