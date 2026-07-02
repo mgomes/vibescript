@@ -1983,7 +1983,7 @@ func parseStringCharSet(method, text string, allowComplement bool) (stringCharSe
 	runes := []rune(text)
 	var spec stringCharSetSpec
 	pos := 0
-	if allowComplement && len(runes) > 0 && runes[0] == '^' {
+	if allowComplement && len(runes) > 1 && runes[0] == '^' {
 		spec.negated = true
 		pos = 1
 	}
@@ -2038,7 +2038,7 @@ func (s stringCharSetSpec) matches(r rune) bool {
 
 func (s stringCharSetSpec) orderedIndex(r rune) (int, bool) {
 	if s.negated {
-		return 0, !s.contains(r)
+		return math.MaxInt, !s.contains(r)
 	}
 	index := 0
 	for _, span := range s.spans {
