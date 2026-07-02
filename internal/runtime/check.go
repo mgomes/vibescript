@@ -171,80 +171,102 @@ func (c *scriptChecker) checkStatement(function string, returnType *TypeExpr, st
 }
 
 func (c *scriptChecker) checkExpression(function string, expr Expression) {
+	c.checkExpressionWithAuto(function, expr, true)
+}
+
+func (c *scriptChecker) checkExpressionWithAuto(function string, expr Expression, autoCall bool) {
 	switch typed := expr.(type) {
 	case nil, *Identifier, *IntegerLiteral, *FloatLiteral, *StringLiteral, *BoolLiteral, *NilLiteral, *SymbolLiteral, *IvarExpr, *ClassVarExpr:
 		return
 	case *ArrayLiteral:
 		for _, elem := range typed.Elements {
-			c.checkExpression(function, elem)
+			c.checkExpressionWithAuto(function, elem, true)
 		}
 	case *HashLiteral:
 		for _, pair := range typed.Pairs {
-			c.checkExpression(function, pair.Key)
-			c.checkExpression(function, pair.Value)
+			c.checkExpressionWithAuto(function, pair.Key, true)
+			c.checkExpressionWithAuto(function, pair.Value, true)
 		}
 	case *CallExpr:
 		c.checkCall(function, typed)
-		c.checkExpression(function, typed.Callee)
+		c.checkExpressionWithAuto(function, typed.Callee, false)
 		for _, arg := range typed.Args {
-			c.checkExpression(function, arg)
+			c.checkExpressionWithAuto(function, arg, true)
 		}
 		for _, kwarg := range typed.KwArgs {
-			c.checkExpression(function, kwarg.Value)
+			c.checkExpressionWithAuto(function, kwarg.Value, true)
 		}
 		c.checkBlockLiteral(function, typed.Block)
 	case *MemberExpr:
-		c.checkExpression(function, typed.Object)
+		c.checkExpressionWithAuto(function, typed.Object, true)
+		if autoCall {
+			c.checkMemberAutoCall(function, typed)
+		}
 	case *ScopeExpr:
-		c.checkExpression(function, typed.Object)
+		c.checkExpressionWithAuto(function, typed.Object, true)
 	case *IndexExpr:
-		c.checkExpression(function, typed.Object)
+		c.checkExpressionWithAuto(function, typed.Object, true)
 		for _, index := range typed.Indices {
-			c.checkExpression(function, index)
+			c.checkExpressionWithAuto(function, index, true)
 		}
 	case *DestructureTarget:
 		for _, element := range typed.Elements {
-			c.checkExpression(function, element.Target)
+			c.checkExpressionWithAuto(function, element.Target, true)
 		}
 	case *UnaryExpr:
-		c.checkExpression(function, typed.Right)
+		c.checkExpressionWithAuto(function, typed.Right, true)
 	case *BinaryExpr:
-		c.checkExpression(function, typed.Left)
-		c.checkExpression(function, typed.Right)
+		c.checkExpressionWithAuto(function, typed.Left, true)
+		c.checkExpressionWithAuto(function, typed.Right, true)
 	case *ConditionalExpr:
-		c.checkExpression(function, typed.Condition)
-		c.checkExpression(function, typed.Consequent)
-		c.checkExpression(function, typed.Alternate)
+		c.checkExpressionWithAuto(function, typed.Condition, true)
+		c.checkExpressionWithAuto(function, typed.Consequent, true)
+		c.checkExpressionWithAuto(function, typed.Alternate, true)
 	case *IfExpr:
-		c.checkExpression(function, typed.Condition)
-		c.checkExpression(function, typed.Consequent)
+		c.checkExpressionWithAuto(function, typed.Condition, true)
+		c.checkExpressionWithAuto(function, typed.Consequent, true)
 		for _, branch := range typed.ElseIf {
-			c.checkExpression(function, branch.Condition)
-			c.checkExpression(function, branch.Result)
+			c.checkExpressionWithAuto(function, branch.Condition, true)
+			c.checkExpressionWithAuto(function, branch.Result, true)
 		}
-		c.checkExpression(function, typed.Alternate)
+		c.checkExpressionWithAuto(function, typed.Alternate, true)
 	case *RangeExpr:
-		c.checkExpression(function, typed.Start)
-		c.checkExpression(function, typed.End)
+		c.checkExpressionWithAuto(function, typed.Start, true)
+		c.checkExpressionWithAuto(function, typed.End, true)
 	case *CaseExpr:
-		c.checkExpression(function, typed.Target)
+		c.checkExpressionWithAuto(function, typed.Target, true)
 		for _, clause := range typed.Clauses {
 			for _, value := range clause.Values {
-				c.checkExpression(function, value.Expr)
+				c.checkExpressionWithAuto(function, value.Expr, true)
 			}
-			c.checkExpression(function, clause.Result)
+			c.checkExpressionWithAuto(function, clause.Result, true)
 		}
-		c.checkExpression(function, typed.ElseExpr)
+		c.checkExpressionWithAuto(function, typed.ElseExpr, true)
 	case *BlockLiteral:
 		c.checkBlockLiteral(function, typed)
 	case *YieldExpr:
 		for _, arg := range typed.Args {
-			c.checkExpression(function, arg)
+			c.checkExpressionWithAuto(function, arg, true)
 		}
 	case *InterpolatedString:
 		c.checkStringParts(function, typed.Parts)
 	case *InterpolatedSymbol:
 		c.checkStringParts(function, typed.Parts)
+	}
+}
+
+func (c *scriptChecker) checkMemberAutoCall(function string, member *MemberExpr) {
+	target, ok := c.resolveMemberCallable(member)
+	if !ok {
+		return
+	}
+	view := staticCallView{pos: member.Pos()}
+	if target.fn != nil {
+		c.checkCallShape(function, view, target.name, target.fn)
+		return
+	}
+	if target.spec.autoInvoke {
+		c.checkBuiltinCallShape(function, view, target.name, target.spec)
 	}
 }
 
@@ -479,6 +501,7 @@ type staticCallSpec struct {
 	rejectKeywords  bool
 	allowedKeywords map[string]struct{}
 	rejectBlock     bool
+	autoInvoke      bool
 }
 
 func (c *scriptChecker) checkCall(function string, call *CallExpr) {
@@ -492,7 +515,7 @@ func (c *scriptChecker) checkCall(function string, call *CallExpr) {
 		c.checkCallArgumentTypes(function, view, target.name, target.fn)
 		return
 	}
-	c.checkBuiltinCallShape(function, call, target.name, target.spec)
+	c.checkBuiltinCallShape(function, staticCallViewFor(call, target), target.name, target.spec)
 }
 
 func (c *scriptChecker) resolveCallable(call *CallExpr) (staticCallable, bool) {
@@ -628,10 +651,10 @@ var staticBuiltinSpecs = map[string]staticCallSpec{
 	"Regex.replace":     {minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true},
 	"Regex.replace_all": {minArgs: 3, maxArgs: 3, rejectKeywords: true, rejectBlock: true},
 	"Time.parse":        {minArgs: 1, maxArgs: 2, allowedKeywords: keywordSet("in")},
-	"array.at":          {minArgs: 1, maxArgs: 1, rejectKeywords: true},
-	"array.fetch":       {minArgs: 1, maxArgs: 2},
-	"array.slice":       {minArgs: 1, maxArgs: 2, rejectKeywords: true},
-	"string.slice":      {minArgs: 1, maxArgs: 2},
+	"array.at":          {minArgs: 1, maxArgs: 1, rejectKeywords: true, autoInvoke: true},
+	"array.fetch":       {minArgs: 1, maxArgs: 2, autoInvoke: true},
+	"array.slice":       {minArgs: 1, maxArgs: 2, rejectKeywords: true, autoInvoke: true},
+	"string.slice":      {minArgs: 1, maxArgs: 2, autoInvoke: true},
 }
 
 func keywordSet(names ...string) map[string]struct{} {
@@ -642,25 +665,25 @@ func keywordSet(names ...string) map[string]struct{} {
 	return out
 }
 
-func (c *scriptChecker) checkBuiltinCallShape(function string, call *CallExpr, name string, spec staticCallSpec) {
-	if len(call.Args) < spec.minArgs {
-		c.add(function, call.Pos(), "call to %s has too few arguments: got %d, want at least %d", name, len(call.Args), spec.minArgs)
+func (c *scriptChecker) checkBuiltinCallShape(function string, call staticCallView, name string, spec staticCallSpec) {
+	if len(call.args) < spec.minArgs {
+		c.add(function, call.pos, "call to %s has too few arguments: got %d, want at least %d", name, len(call.args), spec.minArgs)
 	}
-	if spec.maxArgs >= 0 && len(call.Args) > spec.maxArgs {
-		c.add(function, call.Pos(), "call to %s has too many arguments: got %d, want at most %d", name, len(call.Args), spec.maxArgs)
+	if spec.maxArgs >= 0 && len(call.args) > spec.maxArgs {
+		c.add(function, call.pos, "call to %s has too many arguments: got %d, want at most %d", name, len(call.args), spec.maxArgs)
 	}
-	if spec.rejectKeywords && len(call.KwArgs) > 0 {
-		c.add(function, call.Pos(), "call to %s does not accept keyword arguments", name)
+	if spec.rejectKeywords && len(call.kwargs) > 0 {
+		c.add(function, call.pos, "call to %s does not accept keyword arguments", name)
 	}
 	if len(spec.allowedKeywords) > 0 {
-		for _, kwarg := range call.KwArgs {
+		for _, kwarg := range call.kwargs {
 			if _, ok := spec.allowedKeywords[kwarg.Name]; !ok {
 				c.add(function, kwarg.Value.Pos(), "call to %s has unexpected keyword argument %s", name, kwarg.Name)
 			}
 		}
 	}
-	if spec.rejectBlock && call.Block != nil {
-		c.add(function, call.Block.Pos(), "call to %s does not accept a block", name)
+	if spec.rejectBlock && call.block != nil {
+		c.add(function, call.block.Pos(), "call to %s does not accept a block", name)
 	}
 }
 
@@ -668,6 +691,7 @@ type staticCallView struct {
 	pos    Position
 	args   []Expression
 	kwargs []KeywordArg
+	block  *BlockLiteral
 }
 
 func staticCallViewFor(call *CallExpr, target staticCallable) staticCallView {
@@ -675,6 +699,7 @@ func staticCallViewFor(call *CallExpr, target staticCallable) staticCallView {
 		pos:    call.Pos(),
 		args:   call.Args,
 		kwargs: call.KwArgs,
+		block:  call.Block,
 	}
 	if !staticCallCollapsesOptionsHash(call, target, view) {
 		return view
