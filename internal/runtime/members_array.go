@@ -2231,6 +2231,31 @@ func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs ma
 	return result, nil
 }
 
+type arrayChunkControl int
+
+const (
+	arrayChunkNormal arrayChunkControl = iota
+	arrayChunkSeparator
+	arrayChunkAlone
+)
+
+func arrayChunkControlForKey(key Value) arrayChunkControl {
+	if key.Kind() == KindNil {
+		return arrayChunkSeparator
+	}
+	if key.Kind() != KindSymbol {
+		return arrayChunkNormal
+	}
+	switch key.String() {
+	case "_separator":
+		return arrayChunkSeparator
+	case "_alone":
+		return arrayChunkAlone
+	default:
+		return arrayChunkNormal
+	}
+}
+
 func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 	if len(args) > 0 {
 		return NewNil(), fmt.Errorf("array.chunk does not take arguments when a block is supplied")
@@ -2250,11 +2275,12 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 	}
 	var blockArg [1]Value
 	var currentKey Value
+	active := false
 	start := 0
-	flush := func(end int) error {
-		group := make([]Value, end-start)
-		copy(group, arr[start:end])
-		pair := NewArray([]Value{currentKey, NewArray(group)})
+	emit := func(key Value, begin, end int) error {
+		group := make([]Value, end-begin)
+		copy(group, arr[begin:end])
+		pair := NewArray([]Value{key, NewArray(group)})
 		out = append(out, pair)
 		return acc.add(pair, cap(out))
 	}
@@ -2267,20 +2293,47 @@ func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map
 		if err != nil {
 			return NewNil(), err
 		}
-		if i == 0 {
+		switch arrayChunkControlForKey(key) {
+		case arrayChunkSeparator:
+			if active {
+				if err := emit(currentKey, start, i); err != nil {
+					return NewNil(), err
+				}
+				active = false
+			}
+			start = i + 1
+			continue
+		case arrayChunkAlone:
+			if active {
+				if err := emit(currentKey, start, i); err != nil {
+					return NewNil(), err
+				}
+				active = false
+			}
+			if err := emit(key, i, i+1); err != nil {
+				return NewNil(), err
+			}
+			start = i + 1
+			continue
+		}
+		if !active {
 			currentKey = key
+			start = i
+			active = true
 			continue
 		}
 		if !key.Equal(currentKey) {
-			if err := flush(i); err != nil {
+			if err := emit(currentKey, start, i); err != nil {
 				return NewNil(), err
 			}
 			currentKey = key
 			start = i
 		}
 	}
-	if err := flush(len(arr)); err != nil {
-		return NewNil(), err
+	if active {
+		if err := emit(currentKey, start, len(arr)); err != nil {
+			return NewNil(), err
+		}
 	}
 	return NewArray(out), nil
 }
