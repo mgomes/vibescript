@@ -14,10 +14,12 @@ import (
 // listed name resolves.
 var arrayMemberNames = []string{
 	"size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
-	"take_while", "drop_while", "grep", "grep_v",
-	"push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "to_h",
+	"take_while", "drop_while", "grep", "grep_v", "slice_when", "chunk_while",
+	"push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "clear", "delete_if", "keep_if", "uniq", "uniq!", "first", "last", "sum", "compact", "compact!", "flatten", "fill", "chunk", "window", "join", "reverse", "reverse!", "to_h",
 	"take", "drop", "zip", "transpose", "union", "difference",
-	"sort", "sort_by", "partition", "group_by", "group_by_stable", "tally",
+	"sample", "shuffle", "rotate", "product", "combination", "permutation", "repeated_combination", "repeated_permutation",
+	"sort", "sort!", "sort_by", "partition", "group_by", "group_by_stable", "tally",
+	"map!", "select!", "reject!",
 	"min", "max", "minmax", "min_by", "max_by",
 	"inspect",
 }
@@ -34,9 +36,10 @@ func arrayMember(array Value, property string) (Value, error) {
 func arrayMemberBuiltin(property string) (Value, error) {
 	switch property {
 	case "size", "length", "empty?", "each", "each_with_index", "each_slice", "each_cons", "reverse_each", "cycle", "map", "map_with_index", "filter_map", "select", "reject", "find", "find_index", "reduce", "include?", "index", "rindex", "at", "slice", "fetch", "values_at", "dig", "count", "any?", "all?", "none?", "one?",
-		"take_while", "drop_while", "grep", "grep_v":
+		"take_while", "drop_while", "grep", "grep_v", "slice_when", "chunk_while":
 		return arrayMemberQuery(property)
-	case "push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "uniq", "first", "last", "sum", "compact", "flatten", "fill", "chunk", "window", "join", "reverse", "to_h", "take", "drop", "zip", "transpose", "union", "difference":
+	case "push", "append", "prepend", "unshift", "pop", "shift", "delete", "insert", "clear", "delete_if", "keep_if", "uniq", "uniq!", "first", "last", "sum", "compact", "compact!", "flatten", "fill", "chunk", "window", "join", "reverse", "reverse!", "to_h", "take", "drop", "zip", "transpose", "union", "difference",
+		"sample", "shuffle", "rotate", "product", "combination", "permutation", "repeated_combination", "repeated_permutation", "sort!", "map!", "select!", "reject!":
 		return arrayMemberTransforms(property)
 	case "sort", "sort_by", "partition", "group_by", "group_by_stable", "tally":
 		return arrayMemberGrouping(property)
@@ -985,6 +988,14 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "grep", "grep_v":
 		return arrayMemberGrep(property)
+	case "slice_when":
+		return NewAutoBuiltin("array.slice_when", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return arrayAdjacentSlices(exec, receiver, args, kwargs, block, "array.slice_when", true)
+		}), nil
+	case "chunk_while":
+		return NewAutoBuiltin("array.chunk_while", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return arrayAdjacentSlices(exec, receiver, args, kwargs, block, "array.chunk_while", false)
+		}), nil
 	case "find":
 		return NewAutoBuiltin("array.find", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(args) > 1 {
@@ -2070,6 +2081,317 @@ func arrayMemberGrep(property string) (Value, error) {
 	}), nil
 }
 
+func arrayUniq(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, bool, error) {
+	if len(args) > 0 {
+		return NewNil(), false, fmt.Errorf("%s does not take arguments", method)
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), false, fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	arr := receiver.Array()
+	if valueBlock(block) == nil {
+		unique, err := uniqueValuesChecked(arr, exec.checkContext)
+		if err != nil {
+			return NewNil(), false, err
+		}
+		return NewArray(unique), len(unique) != len(arr), nil
+	}
+	runner, err := newBlockCallRunner(exec, block, method, receiver, nil, kwargs)
+	if err != nil {
+		return NewNil(), false, err
+	}
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	keyAcc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	keyScratchReserved := 0
+	out := make([]Value, 0, boundedSetCap(len(arr)))
+	var seen valueSet
+	var blockArg [1]Value
+	changed := false
+	for _, item := range arr {
+		if err := exec.step(); err != nil {
+			return NewNil(), false, err
+		}
+		blockArg[0] = item
+		key, err := runner.call(blockArg[:])
+		if err != nil {
+			return NewNil(), false, err
+		}
+		if seen.contains(key) {
+			changed = true
+			continue
+		}
+		projectedKeyScratch := valueSetScratchBytesForNext(seen, key, len(arr))
+		if projectedKeyScratch > keyScratchReserved {
+			if err := keyAcc.reserveScratch(projectedKeyScratch - keyScratchReserved); err != nil {
+				return NewNil(), false, err
+			}
+			keyScratchReserved = projectedKeyScratch
+		}
+		if err := keyAcc.addToReservedBacking(key); err != nil {
+			return NewNil(), false, err
+		}
+		seen.add(key, len(arr))
+		out = append(out, item)
+		if err := acc.add(item, cap(out)); err != nil {
+			return NewNil(), false, err
+		}
+	}
+	return NewArray(out), changed, nil
+}
+
+func valueSetScratchBytesForNext(seen valueSet, next Value, hint int) int {
+	scalarCount := len(seen.scalars)
+	compositeCap := cap(seen.composite)
+	if _, ok := scalarValueKey(next); ok {
+		scalarCount++
+	} else if len(seen.composite) == compositeCap {
+		if compositeCap == 0 {
+			compositeCap = 1
+		} else {
+			compositeCap *= 2
+		}
+		if maxCap := boundedSetCap(hint); compositeCap > maxCap && len(seen.composite) < maxCap {
+			compositeCap = maxCap
+		}
+	}
+	return valueSetScratchBytesForCounts(scalarCount, compositeCap)
+}
+
+func valueSetScratchBytesForCounts(scalarCount, compositeCap int) int {
+	total := 0
+	if scalarCount > 0 {
+		scalarEntryBytes := estimatedMapEntryBytes + estimatedValueBytes + estimatedStringHeaderBytes + saturatingMul(5, estimatedIntBytes)
+		total = saturatingAdd(total, estimatedMapBaseBytes)
+		total = saturatingAdd(total, saturatingMul(scalarCount, scalarEntryBytes))
+	}
+	if compositeCap > 0 {
+		total = saturatingAdd(total, estimatedSliceBaseBytes)
+		total = saturatingAdd(total, saturatingMul(compositeCap, estimatedValueBytes))
+	}
+	return total
+}
+
+func arrayCompact(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, bool, error) {
+	if len(args) > 0 {
+		return NewNil(), false, fmt.Errorf("%s does not take arguments", method)
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), false, fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	if valueBlock(block) != nil {
+		return NewNil(), false, fmt.Errorf("%s does not accept a block", method)
+	}
+	arr := receiver.Array()
+	out := make([]Value, 0, len(arr))
+	changed := false
+	for _, item := range arr {
+		if item.Kind() != KindNil {
+			out = append(out, item)
+			continue
+		}
+		changed = true
+	}
+	return NewArray(out), changed, nil
+}
+
+func arrayFilterByBlock(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string, keepTruthy, bang bool) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take arguments", method)
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	runner, err := newBlockCallRunner(exec, block, method, receiver, nil, kwargs)
+	if err != nil {
+		return NewNil(), err
+	}
+	arr := receiver.Array()
+	out := make([]Value, 0, boundedFilterCap(len(arr)))
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	changed := false
+	var blockArg [1]Value
+	for _, item := range arr {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArg[0] = item
+		val, err := runner.call(blockArg[:])
+		if err != nil {
+			return NewNil(), err
+		}
+		keep := val.Truthy() == keepTruthy
+		if keep {
+			out = append(out, item)
+			if err := acc.add(item, cap(out)); err != nil {
+				return NewNil(), err
+			}
+			continue
+		}
+		changed = true
+	}
+	result := NewArray(out)
+	if bang && !changed {
+		return NewNil(), nil
+	}
+	return result, nil
+}
+
+type arrayChunkControl int
+
+const (
+	arrayChunkNormal arrayChunkControl = iota
+	arrayChunkSeparator
+	arrayChunkAlone
+)
+
+func arrayChunkControlForKey(key Value) arrayChunkControl {
+	if key.Kind() == KindNil {
+		return arrayChunkSeparator
+	}
+	if key.Kind() != KindSymbol {
+		return arrayChunkNormal
+	}
+	switch key.String() {
+	case "_separator":
+		return arrayChunkSeparator
+	case "_alone":
+		return arrayChunkAlone
+	default:
+		return arrayChunkNormal
+	}
+}
+
+func arrayChunkByBlock(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("array.chunk does not take arguments when a block is supplied")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.chunk does not take keyword arguments")
+	}
+	runner, err := newBlockCallRunner(exec, block, "array.chunk", receiver, nil, kwargs)
+	if err != nil {
+		return NewNil(), err
+	}
+	arr := receiver.Array()
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	out := make([]Value, 0, boundedFilterCap(len(arr)))
+	if len(arr) == 0 {
+		return NewArray(out), nil
+	}
+	var blockArg [1]Value
+	var currentKey Value
+	active := false
+	start := 0
+	emit := func(key Value, begin, end int) error {
+		group := make([]Value, end-begin)
+		copy(group, arr[begin:end])
+		pair := NewArray([]Value{key, NewArray(group)})
+		out = append(out, pair)
+		return acc.add(pair, cap(out))
+	}
+	for i, item := range arr {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArg[0] = item
+		key, err := runner.call(blockArg[:])
+		if err != nil {
+			return NewNil(), err
+		}
+		switch arrayChunkControlForKey(key) {
+		case arrayChunkSeparator:
+			if active {
+				if err := emit(currentKey, start, i); err != nil {
+					return NewNil(), err
+				}
+				active = false
+			}
+			start = i + 1
+			continue
+		case arrayChunkAlone:
+			if active {
+				if err := emit(currentKey, start, i); err != nil {
+					return NewNil(), err
+				}
+				active = false
+			}
+			if err := emit(key, i, i+1); err != nil {
+				return NewNil(), err
+			}
+			start = i + 1
+			continue
+		}
+		if !active {
+			currentKey = key
+			start = i
+			active = true
+			continue
+		}
+		if !key.Equal(currentKey) {
+			if err := emit(currentKey, start, i); err != nil {
+				return NewNil(), err
+			}
+			currentKey = key
+			start = i
+		}
+	}
+	if active {
+		if err := emit(currentKey, start, len(arr)); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewArray(out), nil
+}
+
+func arrayAdjacentSlices(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string, splitOnTruthy bool) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take arguments", method)
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	runner, err := newBlockCallRunner(exec, block, method, receiver, nil, kwargs)
+	if err != nil {
+		return NewNil(), err
+	}
+	arr := receiver.Array()
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	out := make([]Value, 0, boundedFilterCap(len(arr)))
+	if len(arr) == 0 {
+		return NewArray(out), nil
+	}
+	start := 0
+	flush := func(end int) error {
+		part := make([]Value, end-start)
+		copy(part, arr[start:end])
+		out = append(out, NewArray(part))
+		return acc.add(out[len(out)-1], cap(out))
+	}
+	var blockArgs [2]Value
+	for i := 1; i < len(arr); i++ {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArgs[0] = arr[i-1]
+		blockArgs[1] = arr[i]
+		val, err := runner.call(blockArgs[:])
+		if err != nil {
+			return NewNil(), err
+		}
+		split := val.Truthy() == splitOnTruthy
+		if split {
+			if err := flush(i); err != nil {
+				return NewNil(), err
+			}
+			start = i
+		}
+	}
+	if err := flush(len(arr)); err != nil {
+		return NewNil(), err
+	}
+	return NewArray(out), nil
+}
+
 // arrayToHash implements Ruby's Array#to_h, converting an array of two-element
 // [key, value] pairs into a hash. It accepts the bare and block forms:
 //
@@ -2593,17 +2915,40 @@ func arrayMemberTransforms(property string) (Value, error) {
 		return NewAutoBuiltin("array.delete", arrayDelete), nil
 	case "insert":
 		return NewAutoBuiltin("array.insert", arrayInsert), nil
+	case "clear":
+		return NewAutoBuiltin("array.clear", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if len(args) > 0 {
+				return NewNil(), fmt.Errorf("array.clear does not take arguments")
+			}
+			if len(kwargs) > 0 {
+				return NewNil(), fmt.Errorf("array.clear does not take keyword arguments")
+			}
+			if valueBlock(block) != nil {
+				return NewNil(), fmt.Errorf("array.clear does not accept a block")
+			}
+			return NewArray([]Value{}), nil
+		}), nil
+	case "delete_if", "keep_if":
+		name := "array." + property
+		keepTruthy := property == "keep_if"
+		return NewAutoBuiltin(name, func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return arrayFilterByBlock(exec, receiver, args, kwargs, block, name, keepTruthy, false)
+		}), nil
 	case "uniq":
 		return NewAutoBuiltin("array.uniq", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.uniq does not take arguments")
-			}
-			arr := receiver.Array()
-			unique, err := uniqueValuesChecked(arr, exec.checkContext)
+			result, _, err := arrayUniq(exec, receiver, args, kwargs, block, "array.uniq")
+			return result, err
+		}), nil
+	case "uniq!":
+		return NewAutoBuiltin("array.uniq!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			result, changed, err := arrayUniq(exec, receiver, args, kwargs, block, "array.uniq!")
 			if err != nil {
 				return NewNil(), err
 			}
-			return NewArray(unique), nil
+			if !changed {
+				return NewNil(), nil
+			}
+			return result, nil
 		}), nil
 	case "union":
 		return NewAutoBuiltin("array.union", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2621,6 +2966,22 @@ func arrayMemberTransforms(property string) (Value, error) {
 			}
 			return NewArray(differenceArrayValues(receiver.Array(), others)), nil
 		}), nil
+	case "sample":
+		return NewAutoBuiltin("array.sample", arraySample), nil
+	case "shuffle":
+		return NewAutoBuiltin("array.shuffle", arrayShuffle), nil
+	case "rotate":
+		return NewAutoBuiltin("array.rotate", arrayRotate), nil
+	case "product":
+		return NewAutoBuiltin("array.product", arrayProduct), nil
+	case "combination":
+		return NewAutoBuiltin("array.combination", arrayCombination), nil
+	case "permutation":
+		return NewAutoBuiltin("array.permutation", arrayPermutation), nil
+	case "repeated_combination":
+		return NewAutoBuiltin("array.repeated_combination", arrayRepeatedCombination), nil
+	case "repeated_permutation":
+		return NewAutoBuiltin("array.repeated_permutation", arrayRepeatedPermutation), nil
 	case "first":
 		return NewAutoBuiltin("array.first", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			if len(kwargs) > 0 {
@@ -2677,17 +3038,19 @@ func arrayMemberTransforms(property string) (Value, error) {
 		return NewAutoBuiltin("array.sum", arraySum), nil
 	case "compact":
 		return NewAutoBuiltin("array.compact", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.compact does not take arguments")
+			result, _, err := arrayCompact(exec, receiver, args, kwargs, block, "array.compact")
+			return result, err
+		}), nil
+	case "compact!":
+		return NewAutoBuiltin("array.compact!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			result, changed, err := arrayCompact(exec, receiver, args, kwargs, block, "array.compact!")
+			if err != nil {
+				return NewNil(), err
 			}
-			arr := receiver.Array()
-			out := make([]Value, 0, len(arr))
-			for _, item := range arr {
-				if item.Kind() != KindNil {
-					out = append(out, item)
-				}
+			if !changed {
+				return NewNil(), nil
 			}
-			return NewArray(out), nil
+			return result, nil
 		}), nil
 	case "flatten":
 		return NewAutoBuiltin("array.flatten", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2719,6 +3082,9 @@ func arrayMemberTransforms(property string) (Value, error) {
 		return NewAutoBuiltin("array.fill", arrayFill), nil
 	case "chunk":
 		return NewAutoBuiltin("array.chunk", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if valueBlock(block) != nil {
+				return arrayChunkByBlock(exec, receiver, args, kwargs, block)
+			}
 			if len(args) != 1 {
 				return NewNil(), fmt.Errorf("array.chunk expects a chunk size")
 			}
@@ -2799,15 +3165,11 @@ func arrayMemberTransforms(property string) (Value, error) {
 		}), nil
 	case "reverse":
 		return NewAutoBuiltin("array.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
-			if len(args) > 0 {
-				return NewNil(), fmt.Errorf("array.reverse does not take arguments")
-			}
-			arr := receiver.Array()
-			out := make([]Value, len(arr))
-			for i, item := range arr {
-				out[len(arr)-1-i] = item
-			}
-			return NewArray(out), nil
+			return arrayReverseCopy(exec, receiver, args, kwargs, block, "array.reverse")
+		}), nil
+	case "reverse!":
+		return NewAutoBuiltin("array.reverse!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return arrayReverseCopy(exec, receiver, args, kwargs, block, "array.reverse!")
 		}), nil
 	case "take":
 		return NewAutoBuiltin("array.take", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2909,6 +3271,18 @@ func arrayMemberTransforms(property string) (Value, error) {
 				columns[col] = NewArray(transposed)
 			}
 			return NewArray(columns), nil
+		}), nil
+	case "sort!":
+		return NewAutoBuiltin("array.sort!", arraySortBang), nil
+	case "map!":
+		return NewAutoBuiltin("array.map!", arrayMapBang), nil
+	case "select!":
+		return NewAutoBuiltin("array.select!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return arrayFilterByBlock(exec, receiver, args, kwargs, block, "array.select!", true, true)
+		}), nil
+	case "reject!":
+		return NewAutoBuiltin("array.reject!", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return arrayFilterByBlock(exec, receiver, args, kwargs, block, "array.reject!", false, true)
 		}), nil
 	default:
 		return NewNil(), fmt.Errorf("unknown array method %s", property)
@@ -3138,6 +3512,654 @@ func arrayInsertBuildResult(exec *Execution, receiver Value, args []Value, kwarg
 		}
 		out = append(out, valueAt(i))
 		if err := acc.add(out[len(out)-1], cap(out)); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewArray(out), nil
+}
+
+func arraySample(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.sample does not take keyword arguments")
+	}
+	if valueBlock(block) != nil {
+		return NewNil(), fmt.Errorf("array.sample does not accept a block")
+	}
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("array.sample accepts at most one count")
+	}
+	arr := receiver.Array()
+	if len(args) == 0 {
+		if len(arr) == 0 {
+			return NewNil(), nil
+		}
+		idx, err := exec.randomInt64n(uint64(len(arr)))
+		if err != nil {
+			return NewNil(), err
+		}
+		return arr[int(idx)], nil
+	}
+	count, err := valueToCount(args[0])
+	if err != nil {
+		if errors.Is(err, errNegativeCount) {
+			return NewNil(), fmt.Errorf("array.sample count must be non-negative")
+		}
+		return NewNil(), fmt.Errorf("array.sample count must be integer")
+	}
+	if count > len(arr) {
+		count = len(arr)
+	}
+	scratch := sampledIndexMapBytes(count)
+	delta := exec.reserveLoopScratch(scratch)
+	defer exec.releaseLoopScratch(delta)
+	if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
+		return NewNil(), err
+	}
+	if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlots(count); err != nil {
+		return NewNil(), err
+	}
+	swaps := make(map[int]int, boundedSetCap(count))
+	out := make([]Value, 0, count)
+	for i := range count {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		offset, err := exec.randomInt64n(uint64(len(arr) - i))
+		if err != nil {
+			return NewNil(), err
+		}
+		j := i + int(offset)
+		selected := sampledIndexAt(swaps, j)
+		swaps[j] = sampledIndexAt(swaps, i)
+		out = append(out, arr[selected])
+	}
+	return NewArray(out), nil
+}
+
+func sampledIndexAt(swaps map[int]int, index int) int {
+	if swapped, ok := swaps[index]; ok {
+		return swapped
+	}
+	return index
+}
+
+func sampledIndexMapBytes(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedMapBaseBytes, saturatingMul(count, estimatedMapEntryBytes+saturatingMul(2, estimatedIntBytes)))
+}
+
+func arrayIntScratchBytes(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(count, estimatedIntBytes))
+}
+
+func arrayValueScratchBytes(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(count, estimatedValueBytes))
+}
+
+func arrayShuffle(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("array.shuffle does not take arguments")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.shuffle does not take keyword arguments")
+	}
+	if valueBlock(block) != nil {
+		return NewNil(), fmt.Errorf("array.shuffle does not accept a block")
+	}
+	arr := receiver.Array()
+	if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlots(len(arr)); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, len(arr))
+	copy(out, arr)
+	for offset := range len(out) - 1 {
+		i := len(out) - 1 - offset
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		j, err := exec.randomInt64n(uint64(i + 1))
+		if err != nil {
+			return NewNil(), err
+		}
+		out[i], out[int(j)] = out[int(j)], out[i]
+	}
+	return NewArray(out), nil
+}
+
+func arrayRotate(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.rotate does not take keyword arguments")
+	}
+	if valueBlock(block) != nil {
+		return NewNil(), fmt.Errorf("array.rotate does not accept a block")
+	}
+	if len(args) > 1 {
+		return NewNil(), fmt.Errorf("array.rotate accepts at most one count")
+	}
+	offset := 1
+	if len(args) == 1 {
+		var err error
+		offset, err = valueToInt(args[0])
+		if err != nil {
+			return NewNil(), fmt.Errorf("array.rotate count must be integer")
+		}
+	}
+	return arrayRotateCopy(exec, receiver, args, kwargs, block, offset)
+}
+
+func arrayRotateCopy(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, offset int) (Value, error) {
+	arr := receiver.Array()
+	if len(arr) == 0 {
+		return NewArray([]Value{}), nil
+	}
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	if err := acc.reserveSlots(len(arr)); err != nil {
+		return NewNil(), err
+	}
+	shift := offset % len(arr)
+	if shift < 0 {
+		shift += len(arr)
+	}
+	out := make([]Value, len(arr))
+	for i := range len(arr) {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		out[i] = arr[(shift+i)%len(arr)]
+		if err := acc.add(out[i], cap(out)); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewArray(out), nil
+}
+
+func arrayProduct(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.product does not take keyword arguments")
+	}
+	if valueBlock(block) != nil {
+		return NewNil(), fmt.Errorf("array.product does not accept a block")
+	}
+	dims := make([][]Value, 0, len(args)+1)
+	dims = append(dims, receiver.Array())
+	for _, arg := range args {
+		if arg.Kind() != KindArray {
+			return NewNil(), fmt.Errorf("array.product arguments must be arrays")
+		}
+		dims = append(dims, arg.Array())
+	}
+	count := 1
+	for _, dim := range dims {
+		if len(dim) == 0 {
+			return NewArray([]Value{}), nil
+		}
+		var err error
+		count, err = checkedArrayMaterializationMul("array.product", count, len(dim))
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	if err := acc.reserveScratch(arrayIntScratchBytes(len(dims))); err != nil {
+		return NewNil(), err
+	}
+	if err := acc.reserveSlots(count); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, 0, count)
+	indices := make([]int, len(dims))
+	for range count {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		row := make([]Value, len(dims))
+		for i, dim := range dims {
+			row[i] = dim[indices[i]]
+		}
+		out = append(out, NewArray(row))
+		if err := acc.add(out[len(out)-1], cap(out)); err != nil {
+			return NewNil(), err
+		}
+		for offset := range len(indices) {
+			i := len(indices) - 1 - offset
+			indices[i]++
+			if indices[i] < len(dims[i]) {
+				break
+			}
+			indices[i] = 0
+		}
+	}
+	return NewArray(out), nil
+}
+
+func arrayCombination(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	length, ok, err := arrayCombinationLength("array.combination", args, kwargs, block)
+	if err != nil || !ok {
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewArray([]Value{}), nil
+	}
+	arr := receiver.Array()
+	if length > len(arr) {
+		return NewArray([]Value{}), nil
+	}
+	count, err := combinationCount("array.combination", len(arr), length)
+	if err != nil {
+		return NewNil(), err
+	}
+	return arrayBuildCombinations(exec, receiver, args, kwargs, block, count, length, false)
+}
+
+func arrayRepeatedCombination(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	length, ok, err := arrayCombinationLength("array.repeated_combination", args, kwargs, block)
+	if err != nil || !ok {
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewArray([]Value{}), nil
+	}
+	arr := receiver.Array()
+	if len(arr) == 0 && length > 0 {
+		return NewArray([]Value{}), nil
+	}
+	count := 1
+	if length > 0 {
+		total := len(arr) + length - 1
+		if total < len(arr) {
+			return NewNil(), guardLimitErrorf("array.repeated_combination result too large")
+		}
+		count, err = combinationCount("array.repeated_combination", total, length)
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+	return arrayBuildCombinations(exec, receiver, args, kwargs, block, count, length, true)
+}
+
+func arrayPermutation(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	length, ok, err := arrayPermutationLength("array.permutation", receiver, args, kwargs, block)
+	if err != nil || !ok {
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewArray([]Value{}), nil
+	}
+	arr := receiver.Array()
+	if length > len(arr) {
+		return NewArray([]Value{}), nil
+	}
+	count := 1
+	for offset := range length {
+		factor := len(arr) - length + 1 + offset
+		count, err = checkedArrayMaterializationMul("array.permutation", count, factor)
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+	return arrayBuildPermutations(exec, receiver, args, kwargs, block, count, length, false)
+}
+
+func arrayRepeatedPermutation(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	length, ok, err := arrayCombinationLength("array.repeated_permutation", args, kwargs, block)
+	if err != nil || !ok {
+		if err != nil {
+			return NewNil(), err
+		}
+		return NewArray([]Value{}), nil
+	}
+	arr := receiver.Array()
+	if len(arr) == 0 && length > 0 {
+		return NewArray([]Value{}), nil
+	}
+	count := 1
+	for range length {
+		count, err = checkedArrayMaterializationMul("array.repeated_permutation", count, len(arr))
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+	return arrayBuildPermutations(exec, receiver, args, kwargs, block, count, length, true)
+}
+
+func arrayCombinationLength(method string, args []Value, kwargs map[string]Value, block Value) (int, bool, error) {
+	if len(kwargs) > 0 {
+		return 0, false, fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	if valueBlock(block) != nil {
+		return 0, false, fmt.Errorf("%s does not accept a block", method)
+	}
+	if len(args) != 1 {
+		return 0, false, fmt.Errorf("%s expects exactly one length", method)
+	}
+	length, err := valueToInt(args[0])
+	if err != nil {
+		return 0, false, fmt.Errorf("%s length must be integer", method)
+	}
+	if length < 0 {
+		return 0, false, nil
+	}
+	return length, true, nil
+}
+
+func arrayPermutationLength(method string, receiver Value, args []Value, kwargs map[string]Value, block Value) (int, bool, error) {
+	if len(args) == 0 {
+		if len(kwargs) > 0 {
+			return 0, false, fmt.Errorf("%s does not take keyword arguments", method)
+		}
+		if valueBlock(block) != nil {
+			return 0, false, fmt.Errorf("%s does not accept a block", method)
+		}
+		return len(receiver.Array()), true, nil
+	}
+	return arrayCombinationLength(method, args, kwargs, block)
+}
+
+func arrayBuildCombinations(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count, length int, repeated bool) (Value, error) {
+	arr := receiver.Array()
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	if err := acc.reserveScratch(arrayIntScratchBytes(length)); err != nil {
+		return NewNil(), err
+	}
+	if err := acc.reserveSlots(count); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, 0, count)
+	indices := make([]int, length)
+	for i := range length {
+		indices[i] = i
+	}
+	if repeated {
+		for i := range length {
+			indices[i] = 0
+		}
+	}
+	for emitted := range count {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		row := make([]Value, length)
+		for i, idx := range indices {
+			row[i] = arr[idx]
+		}
+		out = append(out, NewArray(row))
+		if err := acc.add(out[len(out)-1], cap(out)); err != nil {
+			return NewNil(), err
+		}
+		if emitted == count-1 || length == 0 {
+			continue
+		}
+		if repeated {
+			advanceRepeatedCombination(indices, len(arr))
+		} else {
+			advanceCombination(indices, len(arr))
+		}
+	}
+	return NewArray(out), nil
+}
+
+func advanceCombination(indices []int, n int) {
+	k := len(indices)
+	for offset := range k {
+		i := k - 1 - offset
+		if indices[i] != i+n-k {
+			indices[i]++
+			for j := i + 1; j < k; j++ {
+				indices[j] = indices[j-1] + 1
+			}
+			return
+		}
+	}
+}
+
+func advanceRepeatedCombination(indices []int, n int) {
+	for offset := range len(indices) {
+		i := len(indices) - 1 - offset
+		if indices[i] < n-1 {
+			next := indices[i] + 1
+			for j := i; j < len(indices); j++ {
+				indices[j] = next
+			}
+			return
+		}
+	}
+}
+
+func arrayBuildPermutations(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, count, length int, repeated bool) (Value, error) {
+	arr := receiver.Array()
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	scratch := arrayIntScratchBytes(length)
+	if !repeated {
+		scratch = saturatingAdd(arrayValueScratchBytes(length), arrayValueScratchBytes(len(arr)))
+	}
+	if err := acc.reserveScratch(scratch); err != nil {
+		return NewNil(), err
+	}
+	if err := acc.reserveSlots(count); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, 0, count)
+	if repeated {
+		indices := make([]int, length)
+		for range count {
+			if err := exec.step(); err != nil {
+				return NewNil(), err
+			}
+			row := make([]Value, length)
+			for i, idx := range indices {
+				row[i] = arr[idx]
+			}
+			out = append(out, NewArray(row))
+			if err := acc.add(out[len(out)-1], cap(out)); err != nil {
+				return NewNil(), err
+			}
+			for offset := range len(indices) {
+				i := len(indices) - 1 - offset
+				indices[i]++
+				if indices[i] < len(arr) {
+					break
+				}
+				indices[i] = 0
+			}
+		}
+		return NewArray(out), nil
+	}
+	used := make([]bool, len(arr))
+	row := make([]Value, length)
+	var visit func(int) error
+	visit = func(depth int) error {
+		if depth == length {
+			if err := exec.step(); err != nil {
+				return err
+			}
+			copyRow := make([]Value, length)
+			copy(copyRow, row)
+			out = append(out, NewArray(copyRow))
+			return acc.add(out[len(out)-1], cap(out))
+		}
+		for i, item := range arr {
+			if used[i] {
+				continue
+			}
+			used[i] = true
+			row[depth] = item
+			if err := visit(depth + 1); err != nil {
+				return err
+			}
+			used[i] = false
+		}
+		return nil
+	}
+	if err := visit(0); err != nil {
+		return NewNil(), err
+	}
+	return NewArray(out), nil
+}
+
+func combinationCount(method string, n, k int) (int, error) {
+	if k < 0 || k > n {
+		return 0, nil
+	}
+	if k > n-k {
+		k = n - k
+	}
+	count := 1
+	for offset := range k {
+		i := offset + 1
+		numerator := n - k + i
+		denominator := i
+		g := gcdInt(numerator, denominator)
+		numerator /= g
+		denominator /= g
+		g = gcdInt(count, denominator)
+		count /= g
+		denominator /= g
+		if denominator != 1 {
+			return 0, guardLimitErrorf("%s result too large", method)
+		}
+		var err error
+		count, err = checkedArrayMaterializationMul(method, count, numerator)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return count, nil
+}
+
+func checkedArrayMaterializationMul(method string, left, right int) (int, error) {
+	if right != 0 && left > math.MaxInt/right {
+		return 0, guardLimitErrorf("%s result too large", method)
+	}
+	return left * right, nil
+}
+
+func gcdInt(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
+}
+
+func arrayReverseCopy(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value, method string) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take arguments", method)
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("%s does not take keyword arguments", method)
+	}
+	if valueBlock(block) != nil {
+		return NewNil(), fmt.Errorf("%s does not accept a block", method)
+	}
+	arr := receiver.Array()
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	if err := acc.reserveSlots(len(arr)); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, len(arr))
+	for i, item := range arr {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		out[len(arr)-1-i] = item
+		if err := acc.add(item, cap(out)); err != nil {
+			return NewNil(), err
+		}
+	}
+	return NewArray(out), nil
+}
+
+func arraySortBang(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("array.sort! does not take arguments")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.sort! does not take keyword arguments")
+	}
+	arr := receiver.Array()
+	if err := newArrayBuildAccumulator(exec, receiver, args, kwargs, block).reserveSlots(len(arr)); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, len(arr))
+	copy(out, arr)
+	var runner *blockCallRunner
+	if valueBlock(block) != nil {
+		var err error
+		runner, err = newBlockCallRunner(exec, block, "array.sort!", receiver, nil, kwargs)
+		if err != nil {
+			return NewNil(), err
+		}
+	}
+	var comparatorArgs [2]Value
+	var sortErr error
+	sort.SliceStable(out, func(i, j int) bool {
+		if sortErr != nil {
+			return false
+		}
+		if runner != nil {
+			comparatorArgs[0] = out[i]
+			comparatorArgs[1] = out[j]
+			cmpValue, err := runner.call(comparatorArgs[:])
+			if err != nil {
+				sortErr = err
+				return false
+			}
+			cmp, err := sortComparisonResult(cmpValue)
+			if err != nil {
+				sortErr = fmt.Errorf("array.sort! block must return numeric comparator")
+				return false
+			}
+			return cmp < 0
+		}
+		cmp, err := arraySortCompareValues(out[i], out[j])
+		if err != nil {
+			sortErr = fmt.Errorf("array.sort! values are not comparable")
+			return false
+		}
+		return cmp < 0
+	})
+	if sortErr != nil {
+		return NewNil(), sortErr
+	}
+	return NewArray(out), nil
+}
+
+func arrayMapBang(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+	if len(args) > 0 {
+		return NewNil(), fmt.Errorf("array.map! does not take arguments")
+	}
+	if len(kwargs) > 0 {
+		return NewNil(), fmt.Errorf("array.map! does not take keyword arguments")
+	}
+	runner, err := newBlockCallRunner(exec, block, "array.map!", receiver, nil, kwargs)
+	if err != nil {
+		return NewNil(), err
+	}
+	arr := receiver.Array()
+	acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+	if err := acc.reserveSlots(len(arr)); err != nil {
+		return NewNil(), err
+	}
+	out := make([]Value, 0, len(arr))
+	var blockArg [1]Value
+	for _, item := range arr {
+		if err := exec.step(); err != nil {
+			return NewNil(), err
+		}
+		blockArg[0] = item
+		val, err := runner.call(blockArg[:])
+		if err != nil {
+			return NewNil(), err
+		}
+		out = append(out, val)
+		if err := acc.addConservative(val, cap(out)); err != nil {
 			return NewNil(), err
 		}
 	}
