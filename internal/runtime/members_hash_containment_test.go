@@ -1580,30 +1580,42 @@ func TestHashTransformReservationsRejectBeforeMapAllocation(t *testing.T) {
 	}
 }
 
-func TestTypedHashTransformKeysReservesTypedOutputMap(t *testing.T) {
+func TestTypedHashTransformsReserveTypedOutputMap(t *testing.T) {
 	t.Parallel()
 
 	const count = 2_000
 	receiver := largeTypedSymbolHash(count)
-	block := keyIdentityBlock()
 	scratch := sortedHashEntryBufferBytes(count)
-	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
-	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
 	legacyBuffers := hashTransformBufferBytes(count, scratch)
 	typedBuffers := typedHashTransformBufferBytes(count, scratch)
 	if legacyBuffers >= typedBuffers {
 		t.Fatalf("test setup expects typed buffers (%d) to exceed legacy buffers (%d)", typedBuffers, legacyBuffers)
 	}
 
-	quota := roots + legacyBuffers
-	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
-	_, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
-	requireErrorIs(t, err, errMemoryQuotaExceeded)
-	if exec.steps != 0 {
-		t.Fatalf("hash.transform_keys ran %d step(s), want typed output backing rejected before iteration", exec.steps)
+	tests := []struct {
+		name  string
+		block Value
+	}{
+		{name: "transform_keys", block: keyIdentityBlock()},
+		{name: "transform_values", block: emptyHashBlock()},
 	}
-	if exec.reservedScratchBytes != 0 {
-		t.Fatalf("hash.transform_keys leaked %d reserved scratch bytes after rejection", exec.reservedScratchBytes)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+			roots := probe.hashCallRootBytes(receiver, nil, nil, tt.block)
+			quota := roots + legacyBuffers
+			exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+			_, err := callHashMember(t, exec, receiver, tt.name, nil, tt.block)
+			requireErrorIs(t, err, errMemoryQuotaExceeded)
+			if exec.steps != 0 {
+				t.Fatalf("hash.%s ran %d step(s), want typed output backing rejected before iteration", tt.name, exec.steps)
+			}
+			if exec.reservedScratchBytes != 0 {
+				t.Fatalf("hash.%s leaked %d reserved scratch bytes after rejection", tt.name, exec.reservedScratchBytes)
+			}
+		})
 	}
 }
 
@@ -2069,6 +2081,75 @@ end`
 	requireCallRuntimeErrorType(t, script, "run", []Value{largeHashReceiver(2_000)}, CallOptions{}, runtimeErrorTypeLimit)
 }
 
+func TestHashTransformKeysChargesRetainedTypedKeyValues(t *testing.T) {
+	t.Parallel()
+
+	const count = 2_000
+	const keyWidth = 16
+	receiver := largeHashReceiver(count)
+	block := freshArrayKeyBlockValue(keyWidth)
+
+	arrayKey := func(key string) Value {
+		elements := make([]Value, 0, keyWidth+1)
+		for i := range keyWidth {
+			elements = append(elements, NewInt(int64(i)))
+		}
+		elements = append(elements, NewSymbol(key))
+		return NewArray(elements)
+	}
+	displayOnlyPayload := 0
+	typedPayload := 0
+	maxTypedKeyCharge := 0
+	for i := range count {
+		key := arrayKey("k" + strconv.Itoa(i))
+		lookupKey, err := hashLookupKey(key)
+		if err != nil {
+			t.Fatalf("hashLookupKey(sample array key %d) error = %v, want nil", i, err)
+		}
+		displayKey := hashDisplayKey(key)
+		displayOnlyPayload = saturatingAdd(displayOnlyPayload, newMemoryEstimator().stringPayloadSize(displayKey))
+		est := newMemoryEstimator()
+		typedKeyCharge := est.valuePayload(key)
+		typedKeyCharge = saturatingAdd(typedKeyCharge, est.stringPayloadSize(displayKey))
+		typedKeyCharge = saturatingAdd(typedKeyCharge, lookupKey.ExtraPayloadBytes())
+		typedPayload = saturatingAdd(typedPayload, typedKeyCharge)
+		if typedKeyCharge > maxTypedKeyCharge {
+			maxTypedKeyCharge = typedKeyCharge
+		}
+	}
+	if typedPayload <= displayOnlyPayload {
+		t.Fatalf("test setup expects typed key payload (%d) to exceed display-only payload (%d)", typedPayload, displayOnlyPayload)
+	}
+
+	probe := &Execution{ctx: context.Background(), quota: 1 << 30}
+	roots := probe.hashCallRootBytes(receiver, nil, nil, block)
+	buffers := typedHashTransformBufferBytes(count, sortedKeyBufferBytes(count))
+	transientKeyPayload := maxTypedKeyCharge
+	payloadHeadroom := displayOnlyPayload
+	if transientKeyPayload > payloadHeadroom {
+		payloadHeadroom = transientKeyPayload
+	}
+	if typedPayload <= payloadHeadroom {
+		t.Fatalf("test setup expects retained typed keys (%d) to exceed payload headroom (%d)", typedPayload, payloadHeadroom)
+	}
+
+	quota := saturatingAdd(saturatingAdd(roots, buffers), payloadHeadroom)
+	exec := &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: quota}
+	_, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
+	requireErrorIs(t, err, errMemoryQuotaExceeded)
+
+	roomy := saturatingAdd(saturatingAdd(roots, buffers), typedPayload)
+	roomy = saturatingAdd(roomy, maxTypedKeyCharge)
+	exec = &Execution{ctx: context.Background(), quota: 1 << 30, memoryQuota: roomy}
+	got, err := callHashMember(t, exec, receiver, "transform_keys", nil, block)
+	if err != nil {
+		t.Fatalf("hash.transform_keys with retained typed array keys under roomy quota error = %v, want nil", err)
+	}
+	if got.HashLen() != count {
+		t.Fatalf("hash.transform_keys with retained typed array keys produced %d entries, want %d", got.HashLen(), count)
+	}
+}
+
 // selfCyclicArray builds an array whose single element points back at the array
 // itself: a = [0]; a[0] = a. NewArray stores the slice header directly, so
 // mutating the backing after construction makes the value reach itself, mirroring
@@ -2207,6 +2288,20 @@ func keyIdentityBlock() Value {
 	return NewBlock(
 		[]Param{{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}}},
 		[]Statement{&ExprStmt{Position: pos, Expr: &Identifier{Name: "k", Position: pos}}},
+		newEnv(nil),
+	)
+}
+
+func freshArrayKeyBlockValue(width int) Value {
+	pos := Position{Line: 1, Column: 1}
+	elements := make([]Expression, 0, width+1)
+	for i := range width {
+		elements = append(elements, &IntegerLiteral{Value: int64(i), Position: pos})
+	}
+	elements = append(elements, &Identifier{Name: "k", Position: pos})
+	return NewBlock(
+		[]Param{{Kind: ParamNormal, Name: "k", Target: &Identifier{Name: "k", Position: pos}}},
+		[]Statement{&ExprStmt{Expr: &ArrayLiteral{Elements: elements, Position: pos}, Position: pos}},
 		newEnv(nil),
 	)
 }

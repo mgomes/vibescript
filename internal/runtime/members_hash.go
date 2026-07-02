@@ -2431,7 +2431,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			// output map and scratch, closing the gap where receiver+out+scratch and
 			// receiver+rest each fit the quota while the real peak exceeds it.
 			scratch := sortedKeyBufferBytes(len(entries))
-			delta := exec.reserveLoopScratch(hashTransformBufferBytes(len(entries), scratch))
+			delta := exec.reserveLoopScratch(typedHashTransformBufferBytes(len(entries), scratch))
 			defer exec.releaseLoopScratch(delta)
 			if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 				return NewNil(), err
@@ -2440,21 +2440,18 @@ func hashMemberTransforms(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), err
 			}
-			// The block can return a fresh key string per entry, and those synthesized
+			// The block can return a fresh typed key per entry, and those synthesized
 			// keys live only in the Go-local out map until the builtin returns, so the
-			// structural reservation above cannot bound them. Charge each synthesized key
-			// incrementally through a build accumulator via addSynthesizedKey: only
-			// the block-returned key is fresh, so only it goes through the results-only
-			// estimator; the value stays a receiver value already counted in the call
-			// roots, so charging it through the estimator would record its backing as
-			// seen and risk dedup'ing a later block result to nothing. Counting is
-			// conservative: a block that collapses several input keys onto one output
-			// key is charged once per write rather than dedup'd to a single entry, an
-			// over-count that keeps the bound sound (the running total only grows). The
-			// output map and scratch are already held against the quota by the
-			// reserveLoopScratch above (which the accumulator's baseline reads through
-			// estimateMemoryUsageBase), so the accumulator charges only the per-entry
-			// payloads beyond those slots.
+			// structural reservation above cannot bound their payloads. Charge each
+			// synthesized key incrementally through the typed-key accumulator: the value
+			// stays a receiver value already counted in the call roots, so charging it
+			// through the estimator would record its backing as seen and risk dedup'ing a
+			// later block result to nothing. Counting is conservative: a block that
+			// collapses several input keys onto one output key is charged once per write
+			// rather than dedup'd to a single entry, an over-count that keeps the bound
+			// sound. The output maps and scratch are already held against the quota by the
+			// reserveLoopScratch above, so the accumulator charges only per-entry payloads
+			// beyond those slots.
 			acc := newHashBuildAccumulator(exec, receiver, args, kwargs, block)
 			out := NewHash(make(map[string]Value, len(entries)))
 			var blockArg [1]Value
@@ -2474,14 +2471,15 @@ func hashMemberTransforms(property string) (Value, error) {
 				if err := exec.checkContext(); err != nil {
 					return NewNil(), err
 				}
-				resolved, err := valueToHashKey(nextKey)
+				lookupKey, err := hashLookupKey(nextKey)
 				if err != nil {
 					return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 				}
+				resolved := hashDisplayKey(nextKey)
 				if err := hashSet(out, nextKey, entries[key]); err != nil {
 					return NewNil(), fmt.Errorf("hash.transform_keys block returned unsupported hash key: %w", err)
 				}
-				if err := acc.addSynthesizedKey(resolved); err != nil {
+				if err := acc.addTypedSynthesizedKey(nextKey, resolved, lookupKey); err != nil {
 					return NewNil(), err
 				}
 			}
@@ -2571,7 +2569,7 @@ func hashMemberTransforms(property string) (Value, error) {
 			if hashHasTypedEntries(receiver) {
 				count := receiver.HashLen()
 				scratch := sortedHashEntryBufferBytes(count)
-				delta := exec.reserveLoopScratch(hashTransformBufferBytes(count, scratch))
+				delta := exec.reserveLoopScratch(typedHashTransformBufferBytes(count, scratch))
 				defer exec.releaseLoopScratch(delta)
 				if err := exec.checkReservedLoopScratch(receiver, args, kwargs, block); err != nil {
 					return NewNil(), err
