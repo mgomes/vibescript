@@ -795,6 +795,10 @@ func (c *scriptChecker) checkCallShape(function string, call staticCallView, nam
 }
 
 func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallView, name string, fn *ScriptFunction) {
+	var usedKw map[string]bool
+	if len(call.kwargs) > 0 {
+		usedKw = make(map[string]bool, len(call.kwargs))
+	}
 	argIdx := 0
 	for _, param := range fn.Params {
 		switch param.Kind {
@@ -806,14 +810,22 @@ func (c *scriptChecker) checkCallArgumentTypes(function string, call staticCallV
 			}
 			if kwIndex := keywordIndex(call, param.Name); kwIndex >= 0 {
 				c.checkArgumentExpression(function, call.kwargs[kwIndex].Value, param.Type, name, param.Name)
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
 			}
 		case ParamKeyword:
 			if kwIndex := keywordIndex(call, param.Name); kwIndex >= 0 {
 				c.checkArgumentExpression(function, call.kwargs[kwIndex].Value, param.Type, name, param.Name)
+				if usedKw != nil {
+					usedKw[param.Name] = true
+				}
 			}
 		case ParamRest:
 			c.checkRestArgumentExpressions(function, call.pos, call.args[argIdx:], param.Type, name, param.Name)
 			argIdx = len(call.args)
+		case ParamKeywordRest:
+			c.checkKeywordRestArgumentExpressions(function, call.pos, call.kwargs, usedKw, param.Type, name, param.Name)
 		}
 	}
 }
@@ -835,6 +847,38 @@ func (c *scriptChecker) checkRestArgumentExpressions(function string, pos Positi
 		if len(args) > 0 {
 			warningPos = args[0].Pos()
 		}
+		var mismatch *typeMismatchError
+		if errors.As(err, &mismatch) {
+			c.add(function, warningPos, "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)
+			return
+		}
+		c.add(function, warningPos, "call to %s argument %s type check failed: %s", callName, paramName, err)
+	}
+}
+
+func (c *scriptChecker) checkKeywordRestArgumentExpressions(function string, pos Position, kwargs []KeywordArg, usedKw map[string]bool, ty *TypeExpr, callName, paramName string) {
+	if ty == nil || !c.checkTypeAnnotation(function, ty) {
+		return
+	}
+	values := make(map[string]Value)
+	var warningPos Position
+	for _, kwarg := range kwargs {
+		if usedKw != nil && usedKw[kwarg.Name] {
+			continue
+		}
+		if warningPos == (Position{}) {
+			warningPos = kwarg.Value.Pos()
+		}
+		val, ok := staticLiteralValue(kwarg.Value)
+		if !ok {
+			return
+		}
+		values[kwarg.Name] = val
+	}
+	if warningPos == (Position{}) {
+		warningPos = pos
+	}
+	if err := c.checkStaticValueType(NewHash(values), ty); err != nil {
 		var mismatch *typeMismatchError
 		if errors.As(err, &mismatch) {
 			c.add(function, warningPos, "call to %s argument %s expected %s, got %s", callName, paramName, mismatch.Expected, mismatch.Actual)
