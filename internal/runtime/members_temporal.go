@@ -15,7 +15,7 @@ var (
 	durationMemberNames = []string{
 		"seconds", "second", "minutes", "minute", "hours", "hour", "days", "day", "weeks", "week",
 		"in_seconds", "in_minutes", "in_hours", "in_days", "in_weeks", "in_months", "in_years",
-		"iso8601", "parts", "to_i", "to_s", "string", "format", "eql?",
+		"iso8601", "parts", "to_i", "to_s", "string", "format", "eql?", "between?",
 		"after", "since", "from_now", "ago", "before", "until",
 	}
 	timeMemberNames = []string{
@@ -23,7 +23,7 @@ var (
 		"wday", "yday", "hash", "utc_offset", "gmt_offset", "gmtoff", "to_f", "to_i", "tv_sec", "to_r", "zone",
 		"utc?", "gmt?", "dst?", "isdst",
 		"sunday?", "monday?", "tuesday?", "wednesday?", "thursday?", "friday?", "saturday?",
-		"<=>", "eql?", "to_s", "string", "to_a", "iso8601", "xmlschema", "rfc3339", "httpdate", "rfc2822", "rfc822", "format", "strftime",
+		"<=>", "eql?", "between?", "to_s", "string", "to_a", "iso8601", "xmlschema", "rfc3339", "httpdate", "rfc2822", "rfc822", "format", "strftime",
 		"getutc", "getgm", "getlocal", "utc", "gmtime", "localtime", "round", "ceil", "floor",
 	}
 )
@@ -84,6 +84,10 @@ func durationMember(d Duration, property string, pos Position) (Value, error) {
 	case "eql?":
 		return NewBuiltin("duration.eql?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return callDurationEql(d, args, kwargs)
+		}), nil
+	case "between?":
+		return NewAutoBuiltin("duration.between?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return comparableBetween("duration.between?", receiver, args, kwargs, block)
 		}), nil
 	case "after", "since", "from_now":
 		return NewBuiltin("duration.after", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -245,6 +249,10 @@ func timeMember(t time.Time, property string) (Value, error) {
 	case "eql?":
 		return NewBuiltin("time.eql?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
 			return callTimeEql(t, args, kwargs)
+		}), nil
+	case "between?":
+		return NewAutoBuiltin("time.between?", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			return comparableBetween("time.between?", receiver, args, kwargs, block)
 		}), nil
 	case "to_s", "string":
 		return newToStringBuiltin("time", property), nil
