@@ -65,6 +65,16 @@ class Account
   end
 end
 
+class OptionAccount
+  def initialize(opts)
+    @name = opts.fetch(:name)
+  end
+
+  def name
+    @name
+  end
+end
+
 def dispatch()
   account = Account.new("Ada")
   [
@@ -75,6 +85,7 @@ def dispatch()
     [1, 2].send(:map) do |n|
       n * 2
     end,
+    OptionAccount.public_send(:new, name: "Grace").name,
     account.respond_to?(:initialize),
     account.respond_to?(:initialize, true)
   ]
@@ -96,6 +107,7 @@ end
 		NewString("Ada"),
 		NewString("in Ada"),
 		rubyBatchArray(NewInt(2), NewInt(4)),
+		NewString("Grace"),
 		NewBool(false),
 		NewBool(true),
 	))
@@ -273,7 +285,11 @@ func TestRubyBatchStringCharSetTransformsPreserveInvalidBytes(t *testing.T) {
 		want     string
 	}{
 		{name: "delete no match", receiver: NewString("\xc3"), method: "delete", args: []Value{NewString("x")}, want: "\xc3"},
+		{name: "delete distinct invalid byte", receiver: NewString("\xff"), method: "delete", args: []Value{NewString("\xc3")}, want: "\xff"},
+		{name: "delete matching invalid byte", receiver: NewString("\xff"), method: "delete", args: []Value{NewString("\xff")}, want: ""},
 		{name: "tr no match", receiver: NewString("\xc3"), method: "tr", args: []Value{NewString("x"), NewString("y")}, want: "\xc3"},
+		{name: "tr distinct invalid byte", receiver: NewString("\xff"), method: "tr", args: []Value{NewString("\xc3"), NewString("x")}, want: "\xff"},
+		{name: "tr matching invalid byte", receiver: NewString("\xff"), method: "tr", args: []Value{NewString("\xff"), NewString("x")}, want: "x"},
 		{name: "squeeze filtered no match", receiver: NewString("\xc3"), method: "squeeze", args: []Value{NewString("x")}, want: "\xc3"},
 		{name: "squeeze repeated invalid byte", receiver: NewString("\xc3\xc3"), method: "squeeze", want: "\xc3"},
 		{name: "squeeze distinct invalid bytes", receiver: NewString("\xff\xfe"), method: "squeeze", want: "\xff\xfe"},
