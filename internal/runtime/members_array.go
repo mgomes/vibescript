@@ -57,8 +57,17 @@ func arrayMemberGrouping(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.sort does not take arguments")
 			}
 			arr := receiver.Array()
-			out := make([]Value, len(arr))
-			copy(out, arr)
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			if err := scratch.reserve(arraySlotBackingBytes(len(arr))); err != nil {
+				return NewNil(), err
+			}
+			if err := exec.checkContext(); err != nil {
+				return NewNil(), err
+			}
 			var runner *blockCallRunner
 			if valueBlock(block) != nil {
 				var err error
@@ -67,10 +76,16 @@ func arrayMemberGrouping(property string) (Value, error) {
 					return NewNil(), err
 				}
 			}
+			out := make([]Value, len(arr))
+			copy(out, arr)
 			var comparatorArgs [2]Value
 			var sortErr error
 			sort.SliceStable(out, func(i, j int) bool {
 				if sortErr != nil {
+					return false
+				}
+				if err := exec.step(); err != nil {
+					sortErr = err
 					return false
 				}
 				if runner != nil {
@@ -105,29 +120,52 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.sort_by does not take arguments")
 			}
+			if err := ensureBlock(block, "array.sort_by"); err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			if err := scratch.reserve(arraySortByDecoratedBufferBytes(len(arr))); err != nil {
+				return NewNil(), err
+			}
+			if err := exec.checkContext(); err != nil {
+				return NewNil(), err
+			}
 			runner, err := newBlockCallRunner(exec, block, "array.sort_by", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
-			type itemWithSortKey struct {
-				item  Value
-				key   Value
-				index int
-			}
-			arr := receiver.Array()
-			withKeys := make([]itemWithSortKey, len(arr))
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			withKeys := make([]arraySortByItem, len(arr))
 			var blockArg [1]Value
 			for i, item := range arr {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = item
 				sortKey, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
-				withKeys[i] = itemWithSortKey{item: item, key: sortKey, index: i}
+				if err := exec.checkContext(); err != nil {
+					return NewNil(), err
+				}
+				withKeys[i] = arraySortByItem{item: item, key: sortKey, index: i}
+				if err := acc.addConservativeToReservedBacking(sortKey); err != nil {
+					return NewNil(), err
+				}
 			}
 			var sortErr error
 			sort.SliceStable(withKeys, func(i, j int) bool {
 				if sortErr != nil {
+					return false
+				}
+				if err := exec.step(); err != nil {
+					sortErr = err
 					return false
 				}
 				cmp, err := arraySortCompareValues(withKeys[i].key, withKeys[j].key)
@@ -143,6 +181,9 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if sortErr != nil {
 				return NewNil(), sortErr
 			}
+			if err := scratch.reserve(arraySlotBackingBytes(len(withKeys))); err != nil {
+				return NewNil(), err
+			}
 			out := make([]Value, len(withKeys))
 			for i, item := range withKeys {
 				out[i] = item.item
@@ -154,26 +195,51 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.partition does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.partition", receiver, nil, kwargs)
-			if err != nil {
+			if err := ensureBlock(block, "array.partition"); err != nil {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
 			initialCapacity := arrayPartitionInitialCapacity(len(arr))
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			if err := scratch.reserve(saturatingMul(2, valueSliceScratchBytes(initialCapacity))); err != nil {
+				return NewNil(), err
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.partition", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
 			left := make([]Value, 0, initialCapacity)
 			right := make([]Value, 0, initialCapacity)
+			leftCap := initialCapacity
+			rightCap := initialCapacity
 			var blockArg [1]Value
 			for _, item := range arr {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = item
 				match, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
 				if match.Truthy() {
+					if err := reserveValueSliceAppendScratch(&scratch, &leftCap, len(left)); err != nil {
+						return NewNil(), err
+					}
 					left = append(left, item)
 				} else {
+					if err := reserveValueSliceAppendScratch(&scratch, &rightCap, len(right)); err != nil {
+						return NewNil(), err
+					}
 					right = append(right, item)
 				}
+			}
+			if err := scratch.reserve(arraySlotBackingBytes(2)); err != nil {
+				return NewNil(), err
 			}
 			return NewArray([]Value{NewArray(left), NewArray(right)}), nil
 		}), nil
@@ -182,14 +248,33 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.group_by does not take arguments")
 			}
+			if err := ensureBlock(block, "array.group_by"); err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			initialCapacity := arrayGroupingInitialCapacity(len(arr))
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			if err := scratch.reserve(saturatingAdd(estimatedMapBaseBytes, saturatingMul(initialCapacity, estimatedMapEntryStructuralBytes))); err != nil {
+				return NewNil(), err
+			}
 			runner, err := newBlockCallRunner(exec, block, "array.group_by", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
-			arr := receiver.Array()
-			groups := make(map[string][]Value, arrayGroupingInitialCapacity(len(arr)))
+			groups := make(map[string][]Value, initialCapacity)
+			groupCaps := make(map[string]int, initialCapacity)
+			distinct := 0
+			chargedEntries := initialCapacity
+			keyPayloadBytes := 0
 			var blockArg [1]Value
 			for _, item := range arr {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = item
 				groupValue, err := runner.call(blockArg[:])
 				if err != nil {
@@ -199,7 +284,22 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.group_by block must return symbol or string")
 				}
-				groups[key] = append(groups[key], item)
+				items, exists := groups[key]
+				if !exists {
+					if err := reserveKeyedMapEntryScratch(&scratch, &distinct, &chargedEntries, key, 1); err != nil {
+						return NewNil(), err
+					}
+					keyPayloadBytes = saturatingAdd(keyPayloadBytes, len(key))
+				}
+				chargedCap := groupCaps[key]
+				if err := reserveValueSliceAppendScratch(&scratch, &chargedCap, len(items)); err != nil {
+					return NewNil(), err
+				}
+				groupCaps[key] = chargedCap
+				groups[key] = append(items, item)
+			}
+			if err := scratch.reserve(keyedHashResultBytes(len(groups), keyPayloadBytes)); err != nil {
+				return NewNil(), err
 			}
 			result := make(map[string]Value, len(groups))
 			for key, items := range groups {
@@ -212,17 +312,41 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.group_by_stable does not take arguments")
 			}
-			runner, err := newBlockCallRunner(exec, block, "array.group_by_stable", receiver, nil, kwargs)
-			if err != nil {
+			if err := ensureBlock(block, "array.group_by_stable"); err != nil {
 				return NewNil(), err
 			}
 			arr := receiver.Array()
 			initialCapacity := arrayGroupingInitialCapacity(len(arr))
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			initialScratch := saturatingMul(2, saturatingAdd(estimatedMapBaseBytes, saturatingMul(initialCapacity, estimatedMapEntryStructuralBytes)))
+			initialScratch = saturatingAdd(initialScratch, stringSliceScratchBytes(initialCapacity))
+			if err := scratch.reserve(initialScratch); err != nil {
+				return NewNil(), err
+			}
+			runner, err := newBlockCallRunner(exec, block, "array.group_by_stable", receiver, nil, kwargs)
+			if err != nil {
+				return NewNil(), err
+			}
 			order := make([]string, 0, initialCapacity)
 			keyValues := make(map[string]Value, initialCapacity)
 			groups := make(map[string][]Value, initialCapacity)
+			groupCaps := make(map[string]int, initialCapacity)
+			distinct := 0
+			chargedEntries := initialCapacity
+			orderCap := initialCapacity
+			var keyValueEst *memoryEstimator
+			if exec.memoryQuota > 0 {
+				keyValueEst = newMemoryEstimator()
+			}
 			var blockArg [1]Value
 			for _, item := range arr {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = item
 				groupValue, err := runner.call(blockArg[:])
 				if err != nil {
@@ -233,10 +357,30 @@ func arrayMemberGrouping(property string) (Value, error) {
 					return NewNil(), fmt.Errorf("array.group_by_stable block must return symbol or string")
 				}
 				if _, exists := groups[key]; !exists {
+					if err := reserveKeyedMapEntryScratch(&scratch, &distinct, &chargedEntries, key, 2); err != nil {
+						return NewNil(), err
+					}
+					if err := reserveStringSliceAppendScratch(&scratch, &orderCap, len(order)); err != nil {
+						return NewNil(), err
+					}
+					if keyValueEst != nil {
+						if err := scratch.reserve(keyValueEst.valuePayload(groupValue)); err != nil {
+							return NewNil(), err
+						}
+					}
 					order = append(order, key)
 					keyValues[key] = groupValue
 				}
-				groups[key] = append(groups[key], item)
+				items := groups[key]
+				chargedCap := groupCaps[key]
+				if err := reserveValueSliceAppendScratch(&scratch, &chargedCap, len(items)); err != nil {
+					return NewNil(), err
+				}
+				groupCaps[key] = chargedCap
+				groups[key] = append(items, item)
+			}
+			if err := scratch.reserve(stableGroupResultBytes(len(order))); err != nil {
+				return NewNil(), err
 			}
 			result := make([]Value, 0, len(order))
 			for _, key := range order {
@@ -258,6 +402,14 @@ func arrayMemberGrouping(property string) (Value, error) {
 			if err != nil {
 				return NewNil(), fmt.Errorf("array.tally values must be symbol or string")
 			}
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			if err := scratch.reserve(saturatingAdd(estimatedMapBaseBytes, saturatingMul(initialCapacity, estimatedMapEntryStructuralBytes))); err != nil {
+				return NewNil(), err
+			}
 			counts := make(map[string]int64, initialCapacity)
 			var runner *blockCallRunner
 			if hasBlock {
@@ -266,8 +418,20 @@ func arrayMemberGrouping(property string) (Value, error) {
 					return NewNil(), err
 				}
 			}
+			distinct := 0
+			chargedEntries := initialCapacity
+			keyPayloadBytes := 0
 			var blockArg [1]Value
-			for _, item := range arr {
+			for i, item := range arr {
+				if hasBlock {
+					if err := exec.step(); err != nil {
+						return NewNil(), err
+					}
+				} else if exec.ctx != nil && (i == 0 || (i&stepSlowPathMask) == 0) {
+					if err := exec.checkContext(); err != nil {
+						return NewNil(), err
+					}
+				}
 				keyValue := item
 				if hasBlock {
 					blockArg[0] = item
@@ -281,7 +445,16 @@ func arrayMemberGrouping(property string) (Value, error) {
 				if err != nil {
 					return NewNil(), fmt.Errorf("array.tally values must be symbol or string")
 				}
+				if _, exists := counts[key]; !exists {
+					if err := reserveKeyedMapEntryScratch(&scratch, &distinct, &chargedEntries, key, 1); err != nil {
+						return NewNil(), err
+					}
+					keyPayloadBytes = saturatingAdd(keyPayloadBytes, len(key))
+				}
 				counts[key]++
+			}
+			if err := scratch.reserve(keyedHashResultBytes(len(counts), keyPayloadBytes)); err != nil {
+				return NewNil(), err
 			}
 			result := make(map[string]Value, len(counts))
 			for key, count := range counts {
@@ -426,6 +599,67 @@ func arrayPartitionInitialCapacity(length int) int {
 		return length
 	}
 	return (length + 1) / 2
+}
+
+func valueSliceScratchBytes(slotCount int) int {
+	if slotCount <= 0 {
+		return 0
+	}
+	return valueSliceBackingBytes(slotCount)
+}
+
+func stringSliceScratchBytes(slotCount int) int {
+	if slotCount <= 0 {
+		return 0
+	}
+	return stringSliceBackingBytes(slotCount)
+}
+
+func reserveValueSliceAppendScratch(reservation *loopScratchReservation, chargedCap *int, length int) error {
+	nextCap := projectedAppendCap(length, *chargedCap)
+	if nextCap <= *chargedCap {
+		return nil
+	}
+	extra := valueSliceScratchBytes(nextCap) - valueSliceScratchBytes(*chargedCap)
+	if err := reservation.reserve(extra); err != nil {
+		return err
+	}
+	*chargedCap = nextCap
+	return nil
+}
+
+func reserveStringSliceAppendScratch(reservation *loopScratchReservation, chargedCap *int, length int) error {
+	nextCap := projectedAppendCap(length, *chargedCap)
+	if nextCap <= *chargedCap {
+		return nil
+	}
+	extra := stringSliceScratchBytes(nextCap) - stringSliceScratchBytes(*chargedCap)
+	if err := reservation.reserve(extra); err != nil {
+		return err
+	}
+	*chargedCap = nextCap
+	return nil
+}
+
+func reserveKeyedMapEntryScratch(reservation *loopScratchReservation, distinct, chargedEntries *int, key string, mapCount int) error {
+	*distinct++
+	scratchBytes := saturatingMul(mapCount, len(key))
+	if *distinct > *chargedEntries {
+		scratchBytes = saturatingAdd(scratchBytes, saturatingMul(mapCount, estimatedMapEntryStructuralBytes))
+		*chargedEntries = *distinct
+	}
+	return reservation.reserve(scratchBytes)
+}
+
+func keyedHashResultBytes(entries, keyPayloadBytes int) int {
+	bytes := estimatedValueBytes + estimatedMapBaseBytes + estimatedHashDataBytes
+	bytes = saturatingAdd(bytes, saturatingMul(entries, estimatedMapEntryStructuralBytes))
+	return saturatingAdd(bytes, keyPayloadBytes)
+}
+
+func stableGroupResultBytes(groups int) int {
+	pairBytes := saturatingMul(groups, arraySlotBackingBytes(2))
+	return saturatingAdd(arraySlotBackingBytes(groups), pairBytes)
 }
 
 // filterMapInitialCap is the modest capacity filter_map reserves up front. The
@@ -730,20 +964,38 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "map":
 		return NewAutoBuiltin("array.map", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if err := ensureBlock(block, "array.map"); err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			if err := scratch.reserve(arraySlotBackingBytes(len(arr))); err != nil {
+				return NewNil(), err
+			}
 			runner, err := newBlockCallRunner(exec, block, "array.map", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
-			arr := receiver.Array()
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
 			result := make([]Value, len(arr))
 			var blockArg [1]Value
 			for i, item := range arr {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = item
 				val, err := runner.call(blockArg[:])
 				if err != nil {
 					return NewNil(), err
 				}
 				result[i] = val
+				if err := acc.addConservativeToReservedBacking(val); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(result), nil
 		}), nil
@@ -874,14 +1126,28 @@ func arrayMemberQuery(property string) (Value, error) {
 		}), nil
 	case "select":
 		return NewAutoBuiltin("array.select", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
+			if err := ensureBlock(block, "array.select"); err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			if err := scratch.reserve(arraySlotBackingBytes(len(arr))); err != nil {
+				return NewNil(), err
+			}
 			runner, err := newBlockCallRunner(exec, block, "array.select", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
-			arr := receiver.Array()
 			out := make([]Value, 0, len(arr))
 			var blockArg [1]Value
 			for _, item := range arr {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = item
 				val, err := runner.call(blockArg[:])
 				if err != nil {
@@ -891,6 +1157,14 @@ func arrayMemberQuery(property string) (Value, error) {
 					out = append(out, item)
 				}
 			}
+			if len(out) < cap(out) {
+				if err := scratch.reserve(valueSliceScratchBytes(len(out))); err != nil {
+					return NewNil(), err
+				}
+				trimmed := make([]Value, len(out))
+				copy(trimmed, out)
+				out = trimmed
+			}
 			return NewArray(out), nil
 		}), nil
 	case "reject":
@@ -898,14 +1172,28 @@ func arrayMemberQuery(property string) (Value, error) {
 			if len(args) > 0 {
 				return NewNil(), fmt.Errorf("array.reject does not take arguments")
 			}
+			if err := ensureBlock(block, "array.reject"); err != nil {
+				return NewNil(), err
+			}
+			arr := receiver.Array()
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			if err := scratch.reserve(arraySlotBackingBytes(len(arr))); err != nil {
+				return NewNil(), err
+			}
 			runner, err := newBlockCallRunner(exec, block, "array.reject", receiver, nil, kwargs)
 			if err != nil {
 				return NewNil(), err
 			}
-			arr := receiver.Array()
 			out := make([]Value, 0, len(arr))
 			var blockArg [1]Value
 			for _, item := range arr {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				blockArg[0] = item
 				val, err := runner.call(blockArg[:])
 				if err != nil {
@@ -918,6 +1206,9 @@ func arrayMemberQuery(property string) (Value, error) {
 			// A sparse result should not retain a backing array sized to the
 			// whole receiver, so right-size the result.
 			if len(out) < cap(out) {
+				if err := scratch.reserve(valueSliceScratchBytes(len(out))); err != nil {
+					return NewNil(), err
+				}
 				trimmed := make([]Value, len(out))
 				copy(trimmed, out)
 				out = trimmed
@@ -2681,11 +2972,27 @@ func arrayMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.compact does not take arguments")
 			}
 			arr := receiver.Array()
+			scratch, err := newLoopScratchReservation(exec, receiver, args, kwargs, block)
+			if err != nil {
+				return NewNil(), err
+			}
+			defer scratch.release()
+			if err := scratch.reserve(arraySlotBackingBytes(len(arr))); err != nil {
+				return NewNil(), err
+			}
 			out := make([]Value, 0, len(arr))
 			for _, item := range arr {
 				if item.Kind() != KindNil {
 					out = append(out, item)
 				}
+			}
+			if len(out) < cap(out) {
+				if err := scratch.reserve(valueSliceScratchBytes(len(out))); err != nil {
+					return NewNil(), err
+				}
+				trimmed := make([]Value, len(out))
+				copy(trimmed, out)
+				out = trimmed
 			}
 			return NewArray(out), nil
 		}), nil
@@ -2736,12 +3043,26 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if len(arr)%size != 0 {
 				chunkCapacity++
 			}
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveSlots(chunkCapacity); err != nil {
+				return NewNil(), err
+			}
 			chunks := make([]Value, 0, chunkCapacity)
 			for i := 0; i < len(arr); i += size {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
 				end := min(i+size, len(arr))
+				if err := acc.checkSlotArrays(cap(chunks), end-i); err != nil {
+					return NewNil(), err
+				}
 				part := make([]Value, end-i)
 				copy(part, arr[i:end])
-				chunks = append(chunks, NewArray(part))
+				chunk := NewArray(part)
+				chunks = append(chunks, chunk)
+				if err := acc.add(chunk, cap(chunks)); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(chunks), nil
 		}), nil
@@ -2760,11 +3081,26 @@ func arrayMemberTransforms(property string) (Value, error) {
 			if size > len(arr) {
 				return NewArray([]Value{}), nil
 			}
-			windows := make([]Value, 0, len(arr)-size+1)
-			for i := range len(arr) - size + 1 {
+			windowCount := len(arr) - size + 1
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveSlots(windowCount); err != nil {
+				return NewNil(), err
+			}
+			windows := make([]Value, 0, windowCount)
+			for i := range windowCount {
+				if err := exec.step(); err != nil {
+					return NewNil(), err
+				}
+				if err := acc.checkSlotArrays(cap(windows), size); err != nil {
+					return NewNil(), err
+				}
 				part := make([]Value, size)
 				copy(part, arr[i:i+size])
-				windows = append(windows, NewArray(part))
+				window := NewArray(part)
+				windows = append(windows, window)
+				if err := acc.add(window, cap(windows)); err != nil {
+					return NewNil(), err
+				}
 			}
 			return NewArray(windows), nil
 		}), nil
@@ -2787,15 +3123,19 @@ func arrayMemberTransforms(property string) (Value, error) {
 			// arrayJoin recursively joins nested arrays with the active separator,
 			// matching Ruby's Array#join, and guards against cyclic or pathologically
 			// deep structures the same way array.flatten does.
+			payload, err := arrayJoinByteLenBounded(arr, sep, exec.step)
+			if err != nil {
+				return NewNil(), err
+			}
 			var b strings.Builder
+			if err := exec.checkProjectedStringBytesWithCallRoots(projectedBuilderCap(&b, payload), receiver, args, kwargs, block); err != nil {
+				return NewNil(), err
+			}
+			b.Grow(payload)
 			if err := arrayJoin(&b, arr, sep); err != nil {
 				return NewNil(), err
 			}
-			result := NewString(b.String())
-			if err := exec.checkMemoryWith(result); err != nil {
-				return NewNil(), err
-			}
-			return result, nil
+			return NewString(b.String()), nil
 		}), nil
 	case "reverse":
 		return NewAutoBuiltin("array.reverse", func(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (Value, error) {
@@ -2803,6 +3143,10 @@ func arrayMemberTransforms(property string) (Value, error) {
 				return NewNil(), fmt.Errorf("array.reverse does not take arguments")
 			}
 			arr := receiver.Array()
+			acc := newArrayBuildAccumulator(exec, receiver, args, kwargs, block)
+			if err := acc.reserveSlots(len(arr)); err != nil {
+				return NewNil(), err
+			}
 			out := make([]Value, len(arr))
 			for i, item := range arr {
 				out[len(arr)-1-i] = item

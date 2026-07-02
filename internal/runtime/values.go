@@ -415,6 +415,65 @@ func arrayJoin(b *strings.Builder, values []Value, sep string) error {
 	})
 }
 
+func arrayJoinByteLenBounded(values []Value, sep string, step func() error) (int, error) {
+	return arrayJoinByteLenBoundedWithState(values, sep, step, &joinState{
+		arrays: make(map[sliceIdentity]struct{}),
+	})
+}
+
+func arrayJoinByteLenBoundedWithState(values []Value, sep string, step func() error, state *joinState) (int, error) {
+	if state.depth >= maxFlattenDepth {
+		return 0, guardLimitErrorf("array.join exceeded maximum depth")
+	}
+
+	id := sliceIdentity{
+		Ptr: reflect.ValueOf(values).Pointer(),
+		Len: len(values),
+		Cap: cap(values),
+	}
+	if id.Ptr != 0 {
+		if _, visiting := state.arrays[id]; visiting {
+			return 0, fmt.Errorf("array.join does not support cyclic structures")
+		}
+		state.arrays[id] = struct{}{}
+		defer delete(state.arrays, id)
+	}
+
+	state.depth++
+	defer func() {
+		state.depth--
+	}()
+
+	total := 0
+	for i, v := range values {
+		if step != nil {
+			if err := step(); err != nil {
+				return 0, err
+			}
+		}
+		if i > 0 {
+			total = saturatingAdd(total, len(sep))
+		}
+		if v.Kind() == KindArray {
+			n, err := arrayJoinByteLenBoundedWithState(v.Array(), sep, step, state)
+			if err != nil {
+				return 0, err
+			}
+			total = saturatingAdd(total, n)
+			continue
+		}
+		if v.Kind() == KindNil {
+			continue
+		}
+		n, err := v.StringByteLenBounded(step)
+		if err != nil {
+			return 0, err
+		}
+		total = saturatingAdd(total, n)
+	}
+	return total, nil
+}
+
 func arrayJoinWithState(b *strings.Builder, values []Value, sep string, state *joinState) error {
 	if state.depth >= maxFlattenDepth {
 		return guardLimitErrorf("array.join exceeded maximum depth")

@@ -637,6 +637,19 @@ type arrayBuildAccumulator struct {
 	block    Value
 }
 
+type arraySortByItem struct {
+	item  Value
+	key   Value
+	index int
+}
+
+func arraySortByDecoratedBufferBytes(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(count, int(unsafe.Sizeof(arraySortByItem{}))))
+}
+
 // newArrayBuildAccumulator snapshots the execution's current live memory —
 // exec's reachable roots plus the builtin's live call roots (receiver, args,
 // kwargs, block) — as the baseline for an incremental array build. It uses its
@@ -759,6 +772,21 @@ func (acc *arrayBuildAccumulator) addConservative(val Value, backingCap int) err
 	return nil
 }
 
+func (acc *arrayBuildAccumulator) addConservativeToReservedBacking(val Value) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
+
+	if acc.result == nil {
+		acc.result = newMemoryEstimator()
+	}
+	acc.payload = saturatingAdd(acc.payload, acc.result.valuePayload(val))
+	if used := saturatingAdd(acc.base, acc.payload); used > acc.exec.memoryQuota {
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
+	}
+	return nil
+}
+
 // checkTransient rejects the build when a freshly allocated value yielded to the
 // block (and live only for that call) would push the peak footprint over the
 // quota. Builders that synthesize a per-iteration argument the result does not
@@ -821,11 +849,17 @@ func (acc *arrayBuildAccumulator) reserveSlotArrays(slotCounts ...int) error {
 	if acc.exec.memoryQuota <= 0 {
 		return nil
 	}
+	return acc.checkSlotArrays(slotCounts...)
+}
+
+func (acc *arrayBuildAccumulator) checkSlotArrays(slotCounts ...int) error {
+	if acc.exec.memoryQuota <= 0 {
+		return nil
+	}
 
 	used := saturatingAdd(acc.base, acc.payload)
 	for _, slotCount := range slotCounts {
-		backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
-		used = saturatingAdd(used, backing)
+		used = saturatingAdd(used, arraySlotBackingBytes(slotCount))
 	}
 	if used > acc.exec.memoryQuota {
 		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, acc.exec.memoryQuota)
@@ -839,8 +873,33 @@ func (acc *arrayBuildAccumulator) reserveSlotArrays(slotCounts ...int) error {
 // reserveSlots share it so the per-append and up-front checks charge the slot array
 // identically.
 func (acc *arrayBuildAccumulator) projected(slotCount int) int {
-	backing := saturatingAdd(estimatedValueBytes+estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
-	return saturatingAdd(saturatingAdd(acc.base, backing), acc.payload)
+	return saturatingAdd(saturatingAdd(acc.base, arraySlotBackingBytes(slotCount)), acc.payload)
+}
+
+func arraySlotBackingBytes(slotCount int) int {
+	return saturatingAdd(estimatedValueBytes, valueSliceBackingBytes(slotCount))
+}
+
+func valueSliceBackingBytes(slotCount int) int {
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedValueBytes))
+}
+
+func stringSliceBackingBytes(slotCount int) int {
+	return saturatingAdd(estimatedSliceBaseBytes, saturatingMul(slotCount, estimatedStringHeaderBytes))
+}
+
+func projectedAppendCap(length, capacity int) int {
+	if length < capacity {
+		return capacity
+	}
+	if capacity == 0 {
+		return 1
+	}
+	next := saturatingMul(capacity, 2)
+	if needed := length + 1; next < needed {
+		return needed
+	}
+	return next
 }
 
 func (acc *arrayBuildAccumulator) retainedPayloadBytes() int {
@@ -1565,6 +1624,47 @@ func (exec *Execution) reserveLoopScratch(scratchBytes int) int {
 // that held them has finished. delta is the value reserveLoopScratch returned.
 func (exec *Execution) releaseLoopScratch(delta int) {
 	exec.reservedScratchBytes -= delta
+}
+
+type loopScratchReservation struct {
+	exec     *Execution
+	baseline int
+	delta    int
+}
+
+func newLoopScratchReservation(exec *Execution, receiver Value, args []Value, kwargs map[string]Value, block Value) (loopScratchReservation, error) {
+	reservation := loopScratchReservation{exec: exec}
+	if exec.memoryQuota <= 0 {
+		return reservation, nil
+	}
+	reservation.baseline = exec.hashCallRootBytes(receiver, args, kwargs, block)
+	if reservation.baseline > exec.memoryQuota {
+		return loopScratchReservation{}, fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, exec.memoryQuota)
+	}
+	return reservation, nil
+}
+
+func (r *loopScratchReservation) reserve(scratchBytes int) error {
+	if r.exec.memoryQuota <= 0 || scratchBytes <= 0 {
+		return nil
+	}
+
+	delta := r.exec.reserveLoopScratch(scratchBytes)
+	nextDelta := saturatingAdd(r.delta, delta)
+	if saturatingAdd(r.baseline, nextDelta) > r.exec.memoryQuota {
+		r.exec.releaseLoopScratch(delta)
+		return fmt.Errorf("%w (%d bytes)", errMemoryQuotaExceeded, r.exec.memoryQuota)
+	}
+	r.delta = nextDelta
+	return nil
+}
+
+func (r *loopScratchReservation) release() {
+	if r == nil || r.delta == 0 {
+		return
+	}
+	r.exec.releaseLoopScratch(r.delta)
+	r.delta = 0
 }
 
 func (exec *Execution) estimateMemoryUsageBase(est *memoryEstimator) int {
