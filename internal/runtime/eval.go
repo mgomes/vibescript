@@ -86,7 +86,7 @@ func (exec *Execution) evalExpressionWithAuto(expr Expression, env *Env, autoCal
 	case *CaseExpr:
 		return exec.evalCaseExpr(e, env)
 	case *MemberExpr:
-		obj, err := exec.evalExpressionWithAuto(e.Object, env, true)
+		obj, err := exec.evalExpressionWithAuto(e.Object, env, memberReceiverAutoInvokes(e.Property))
 		if err != nil {
 			return NewNil(), err
 		}
@@ -1074,7 +1074,7 @@ func (exec *Execution) callBlock(blk *Block, args []Value, blockEnv *Env, charge
 			val = normalized
 		}
 		if param.Target != nil {
-			if err := exec.bindBlockParamTarget(blockEnv, param.Target, val, charge); err != nil {
+			if err := exec.bindBlockParamTarget(blockEnv, param.Target, val, charge, blk); err != nil {
 				return NewNil(), err
 			}
 			continue
@@ -1287,7 +1287,7 @@ func stringPartsCaptureCurrentEnv(parts []StringPart) bool {
 	return false
 }
 
-func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value, charge *blockBindCharge) error {
+func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value Value, charge *blockBindCharge, blk *Block) error {
 	switch t := target.(type) {
 	case *Identifier:
 		env.Define(t.Name, value)
@@ -1307,12 +1307,40 @@ func (exec *Execution) bindBlockParamTarget(env *Env, target Expression, value V
 		// charged its real, dedup-aware footprint against the receiver the standalone
 		// exec.assignDestructure charge cannot see (its liveRoot is only the single
 		// yielded value, not the whole receiver).
-		return assignDestructure(t, value, func(target Expression, value Value) error {
-			return exec.bindBlockParamTarget(env, target, value, charge)
-		}, charge.destructureCharge())
+		return assignDestructureWithNormalizer(t, value, func(target Expression, value Value) error {
+			return exec.bindBlockParamTarget(env, target, value, charge, blk)
+		}, charge.destructureCharge(), func(element DestructureElement, value Value) (Value, error) {
+			return exec.normalizeBlockDestructureElement(blk, element, value)
+		})
 	default:
 		return exec.errorAt(target.Pos(), "invalid block parameter target")
 	}
+}
+
+func (exec *Execution) normalizeBlockDestructureElement(blk *Block, element DestructureElement, value Value) (Value, error) {
+	if element.Type == nil {
+		return value, nil
+	}
+	normalized, err := normalizeValueForType(value, element.Type, typeContext{
+		owner:    blk.owner,
+		env:      blk.Env,
+		fallback: exec.root,
+		exec:     exec,
+	})
+	if err != nil {
+		if isHostControlSignal(err) {
+			return NewNil(), err
+		}
+		if isNormalizationLimitError(err) {
+			return NewNil(), exec.wrapError(err, element.Type.Position)
+		}
+		name := ast.FormatDestructureTarget(element.Target)
+		if name == "" {
+			name = "destructured value"
+		}
+		return NewNil(), exec.errorAt(element.Type.Position, "%s", formatArgumentTypeMismatch(name, err))
+	}
+	return normalized, nil
 }
 
 func (exec *Execution) evalYield(expr *YieldExpr, env *Env) (Value, error) {
@@ -1541,6 +1569,12 @@ func (exec *Execution) assignDestructure(target *DestructureTarget, value Value,
 }
 
 func assignDestructure(target *DestructureTarget, value Value, assign func(Expression, Value) error, charge destructureCharge) error {
+	return assignDestructureWithNormalizer(target, value, assign, charge, nil)
+}
+
+type destructureElementNormalizer func(DestructureElement, Value) (Value, error)
+
+func assignDestructureWithNormalizer(target *DestructureTarget, value Value, assign func(Expression, Value) error, charge destructureCharge, normalize destructureElementNormalizer) error {
 	values := destructureValues(value)
 	// Ruby evaluates the whole right-hand side into an array before performing
 	// any assignment, so every target reads its original value regardless of
@@ -1574,7 +1608,15 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 
 	if restIndex == -1 {
 		for i, element := range target.Elements {
-			if err := assignDestructureValue(element.Target, valueAt(values, i), assign, charge); err != nil {
+			val := valueAt(values, i)
+			var err error
+			if normalize != nil {
+				val, err = normalize(element, val)
+				if err != nil {
+					return err
+				}
+			}
+			if err := assignDestructureValue(element.Target, val, assign, charge, normalize); err != nil {
 				return err
 			}
 		}
@@ -1630,20 +1672,27 @@ func assignDestructure(target *DestructureTarget, value Value, assign func(Expre
 			// Ruby (e.g. a, *, y, z = [1, 2] yields a=1, y=2, z=nil).
 			val = valueAt(values, restEnd+(i-restIndex-1))
 		}
-		if err := assignDestructureValue(element.Target, val, assign, charge); err != nil {
+		var err error
+		if normalize != nil {
+			val, err = normalize(element, val)
+			if err != nil {
+				return err
+			}
+		}
+		if err := assignDestructureValue(element.Target, val, assign, charge, normalize); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func assignDestructureValue(target Expression, value Value, assign func(Expression, Value) error, charge destructureCharge) error {
+func assignDestructureValue(target Expression, value Value, assign func(Expression, Value) error, charge destructureCharge, normalize destructureElementNormalizer) error {
 	if target == nil {
 		// Anonymous rest target ("*"): discard the captured values.
 		return nil
 	}
 	if nested, ok := target.(*DestructureTarget); ok {
-		return assignDestructure(nested, value, assign, charge)
+		return assignDestructureWithNormalizer(nested, value, assign, charge, normalize)
 	}
 	return assign(target, value)
 }

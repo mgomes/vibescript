@@ -63,6 +63,10 @@ func (exec *Execution) autoInvokeIfNeeded(expr Expression, val, receiver Value) 
 	return val, nil
 }
 
+func memberReceiverAutoInvokes(property string) bool {
+	return property != "call"
+}
+
 func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwargs map[string]Value, block Value, pos Position) (Value, error) {
 	if err := exec.checkContext(); err != nil {
 		return NewNil(), err
@@ -71,6 +75,26 @@ func (exec *Execution) invokeCallable(callee, receiver Value, args []Value, kwar
 	switch callee.Kind() {
 	case KindFunction:
 		result, err := exec.callFunction(valueFunction(callee), receiver, args, kwargs, block, pos)
+		if err != nil {
+			if errors.Is(err, errLoopBreak) {
+				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
+			}
+			if errors.Is(err, errLoopNext) {
+				return NewNil(), exec.localJumpErrorAt(pos, "next cannot cross call boundary")
+			}
+			return NewNil(), err
+		}
+		return result, nil
+	case KindBlock:
+		if len(kwargs) > 0 {
+			for name := range kwargs {
+				return NewNil(), exec.errorAt(pos, "unexpected keyword argument %s", name)
+			}
+		}
+		if !block.IsNil() {
+			return NewNil(), exec.errorAt(pos, "block.call does not accept a block")
+		}
+		result, err := exec.CallBlock(callee, args)
 		if err != nil {
 			if errors.Is(err, errLoopBreak) {
 				return NewNil(), exec.localJumpErrorAt(pos, "break cannot cross call boundary")
@@ -812,7 +836,7 @@ func newExecutionForCall(script *Script, ctx context.Context, root *Env, opts Ca
 
 func (exec *Execution) evalCallTarget(call *CallExpr, env *Env) (Value, Value, error) {
 	if member, ok := call.Callee.(*MemberExpr); ok {
-		receiver, err := exec.evalExpression(member.Object, env)
+		receiver, err := exec.evalExpressionWithAuto(member.Object, env, memberReceiverAutoInvokes(member.Property))
 		if err != nil {
 			return NewNil(), NewNil(), err
 		}
@@ -900,9 +924,20 @@ func (exec *Execution) evalDirectPublicMemberMethodCall(receiver Value, property
 }
 
 func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
+	return exec.evalCallArgsForCallee(call, env, NewNil())
+}
+
+func (exec *Execution) evalCallArgsForCallee(call *CallExpr, env *Env, callee Value) ([]Value, error) {
+	params, hasParams := callableParamTypes(callee)
 	args := make([]Value, len(call.Args))
 	for i, arg := range call.Args {
-		val, err := exec.evalExpressionWithAuto(arg, env, true)
+		expectsCallable := false
+		if hasParams {
+			if param, ok := positionalCallableParam(params, i); ok && paramExpectsCallableArgument(param) {
+				expectsCallable = true
+			}
+		}
+		val, err := exec.evalCallArgument(arg, env, expectsCallable)
 		if err != nil {
 			return nil, err
 		}
@@ -915,12 +950,23 @@ func (exec *Execution) evalCallArgs(call *CallExpr, env *Env) ([]Value, error) {
 }
 
 func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Value, error) {
+	return exec.evalCallKwArgsForCallee(call, env, NewNil())
+}
+
+func (exec *Execution) evalCallKwArgsForCallee(call *CallExpr, env *Env, callee Value) (map[string]Value, error) {
 	if len(call.KwArgs) == 0 {
 		return nil, nil
 	}
+	params, hasParams := callableParamTypes(callee)
 	kwargs := make(map[string]Value, len(call.KwArgs))
 	for _, kw := range call.KwArgs {
-		val, err := exec.evalExpressionWithAuto(kw.Value, env, true)
+		expectsCallable := false
+		if hasParams {
+			if param, ok := keywordCallableParam(params, kw.Name); ok && paramExpectsCallableArgument(param) {
+				expectsCallable = true
+			}
+		}
+		val, err := exec.evalCallArgument(kw.Value, env, expectsCallable)
 		if err != nil {
 			return nil, err
 		}
@@ -930,6 +976,143 @@ func (exec *Execution) evalCallKwArgs(call *CallExpr, env *Env) (map[string]Valu
 		kwargs[kw.Name] = val
 	}
 	return kwargs, nil
+}
+
+func (exec *Execution) evalCallArgument(arg Expression, env *Env, expectsCallable bool) (Value, error) {
+	if !expectsCallable {
+		return exec.evalExpressionWithAuto(arg, env, true)
+	}
+	if val, ok, err := exec.evalBareCallableArgument(arg, env); ok || err != nil {
+		return val, err
+	}
+	return exec.evalExpressionWithAuto(arg, env, false)
+}
+
+func (exec *Execution) evalBareCallableArgument(arg Expression, env *Env) (Value, bool, error) {
+	call, ok := arg.(*CallExpr)
+	if !ok || call.Parenthesized || len(call.Args) > 0 || len(call.KwArgs) > 0 || call.Block != nil {
+		return NewNil(), false, nil
+	}
+	if _, ok := call.Callee.(*Identifier); !ok {
+		return NewNil(), false, nil
+	}
+	callee, _, err := exec.evalCallTarget(call, env)
+	if err != nil {
+		return NewNil(), true, err
+	}
+	return callee, true, nil
+}
+
+func callableParamTypes(callee Value) ([]Param, bool) {
+	switch callee.Kind() {
+	case KindFunction:
+		fn := valueFunction(callee)
+		if fn == nil {
+			return nil, false
+		}
+		return fn.Params, true
+	case KindBlock:
+		blk := valueBlock(callee)
+		if blk == nil {
+			return nil, false
+		}
+		return blk.Params, true
+	case KindBuiltin:
+		builtin := valueBuiltin(callee)
+		if builtin == nil {
+			return nil, false
+		}
+		if builtin.OptionsHashTarget != nil {
+			return builtin.OptionsHashTarget.Params, true
+		}
+		if len(builtin.CapturedValues) == 1 && builtin.CapturedValues[0].Kind() == KindBlock {
+			blk := valueBlock(builtin.CapturedValues[0])
+			if blk != nil {
+				return blk.Params, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func positionalCallableParam(params []Param, argIndex int) (Param, bool) {
+	positional := 0
+	for _, param := range params {
+		switch param.Kind {
+		case ParamNormal:
+			if positional == argIndex {
+				return param, true
+			}
+			positional++
+		case ParamRest:
+			if argIndex >= positional {
+				return param, true
+			}
+		}
+	}
+	return Param{}, false
+}
+
+func keywordCallableParam(params []Param, name string) (Param, bool) {
+	for _, param := range params {
+		switch param.Kind {
+		case ParamKeyword, ParamNormal:
+			if param.Name == name {
+				return param, true
+			}
+		case ParamKeywordRest:
+			return param, true
+		}
+	}
+	return Param{}, false
+}
+
+func paramExpectsCallableArgument(param Param) bool {
+	switch param.Kind {
+	case ParamRest:
+		return restParamExpectsCallableElement(param.Type)
+	case ParamKeywordRest:
+		return keywordRestParamExpectsCallableValue(param.Type)
+	default:
+		return typeExprIncludesCallable(param.Type)
+	}
+}
+
+func restParamExpectsCallableElement(ty *TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	if ty.Kind == TypeArray && len(ty.TypeArgs) > 0 {
+		return typeExprIncludesCallable(ty.TypeArgs[0])
+	}
+	return typeExprIncludesCallable(ty)
+}
+
+func keywordRestParamExpectsCallableValue(ty *TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	if ty.Kind == TypeHash && len(ty.TypeArgs) > 1 {
+		return typeExprIncludesCallable(ty.TypeArgs[1])
+	}
+	return typeExprIncludesCallable(ty)
+}
+
+func typeExprIncludesCallable(ty *TypeExpr) bool {
+	if ty == nil {
+		return false
+	}
+	switch ty.Kind {
+	case TypeFunction:
+		return true
+	case TypeUnion:
+		for _, option := range ty.Union {
+			if typeExprIncludesCallable(option) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // calleeResolution records how a call's callee was resolved, which decides
@@ -1121,11 +1304,11 @@ func (exec *Execution) evalCallExpr(call *CallExpr, env *Env) (Value, error) {
 	if err != nil {
 		return NewNil(), err
 	}
-	args, err := exec.evalCallArgs(call, env)
+	args, err := exec.evalCallArgsForCallee(call, env, callee)
 	if err != nil {
 		return NewNil(), err
 	}
-	kwargs, err := exec.evalCallKwArgs(call, env)
+	kwargs, err := exec.evalCallKwArgsForCallee(call, env, callee)
 	if err != nil {
 		return NewNil(), err
 	}
@@ -1196,11 +1379,11 @@ func (exec *Execution) evalMemberCallExpr(call *CallExpr, member *MemberExpr, en
 		}
 	}
 
-	args, err := exec.evalCallArgs(call, env)
+	args, err := exec.evalCallArgsForCallee(call, env, callee)
 	if err != nil {
 		return NewNil(), err
 	}
-	kwargs, err := exec.evalCallKwArgs(call, env)
+	kwargs, err := exec.evalCallKwArgsForCallee(call, env, callee)
 	if err != nil {
 		return NewNil(), err
 	}

@@ -90,7 +90,7 @@ func isUniversalDataSafe(property string) bool {
 // while any other stored value is data and must let the universal helper answer.
 func isCallableMember(val Value) bool {
 	switch val.Kind() {
-	case KindFunction, KindBuiltin:
+	case KindFunction, KindBuiltin, KindBlock:
 		return true
 	default:
 		return false

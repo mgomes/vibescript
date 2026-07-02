@@ -919,6 +919,18 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 		if param.Type == nil {
 			return ast.Param{}, ast.Position{}, false
 		}
+		if err := captureParamTypeError(param); err != "" {
+			p.addParseError(param.Type.Position, err)
+			return ast.Param{}, ast.Position{}, false
+		}
+		if kind == ast.ParamNormal && !param.IsIvar && p.peekToken.Type == ast.TokenColon {
+			p.nextToken()
+			if !p.peekEndsRequiredKeywordParam(options) {
+				p.addParseError(p.curToken.Pos, "typed required keyword parameter must end after trailing ':'")
+				return ast.Param{}, ast.Position{}, false
+			}
+			param.Kind = ast.ParamKeyword
+		}
 	}
 	if p.peekToken.Type == ast.TokenAssign {
 		if kind != ast.ParamNormal {
@@ -934,6 +946,54 @@ func (p *parser) parseParam(options paramParseOptions) (ast.Param, ast.Position,
 		}
 	}
 	return param, pos, true
+}
+
+func captureParamTypeError(param ast.Param) string {
+	switch param.Kind {
+	case ast.ParamRest:
+		if !restCaptureTypeAcceptsArray(param.Type) {
+			return fmt.Sprintf("rest parameter %s captures an array; annotate it as array<...> or any", param.Name)
+		}
+	case ast.ParamKeywordRest:
+		if !keywordRestCaptureTypeAcceptsHash(param.Type) {
+			return fmt.Sprintf("keyword rest parameter %s captures a hash; annotate it as hash<...>, object, a shape type, or any", param.Name)
+		}
+	}
+	return ""
+}
+
+func restCaptureTypeAcceptsArray(ty *ast.TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	switch ty.Kind {
+	case ast.TypeAny, ast.TypeArray:
+		return true
+	case ast.TypeUnion:
+		for _, option := range ty.Union {
+			if restCaptureTypeAcceptsArray(option) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func keywordRestCaptureTypeAcceptsHash(ty *ast.TypeExpr) bool {
+	if ty == nil {
+		return true
+	}
+	switch ty.Kind {
+	case ast.TypeAny, ast.TypeHash, ast.TypeShape:
+		return true
+	case ast.TypeUnion:
+		for _, option := range ty.Union {
+			if keywordRestCaptureTypeAcceptsHash(option) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isFunctionParamStart(tt ast.TokenType) bool {
@@ -1248,10 +1308,11 @@ func (p *parser) typeAnnotationBoundaryFollows(options paramParseOptions) bool {
 // indexing) makes it the head of an expression.
 func (p *parser) identAfterColonStartsExpression(options paramParseOptions) bool {
 	switch p.peekPeek.Type {
-	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign, ast.TokenPipe:
+	case ast.TokenComma, ast.TokenRParen, ast.TokenAssign, ast.TokenPipe, ast.TokenColon:
 		// A boundary (`,` `)`), an `=` introducing a `name: Type = default`
-		// positional default, or a `|` union continuation all keep the
-		// identifier a type name.
+		// positional default, a `|` union continuation, or a trailing `:` for
+		// typed required keywords (`name: Type:`) all keep the identifier a type
+		// name.
 		return false
 	case ast.TokenLT:
 		return p.identLessThanStartsExpression()
@@ -1329,12 +1390,18 @@ func (p *parser) parsePropertyDecl(kind ast.TokenType) ast.PropertyDecl {
 		}
 		names = append(names, p.curToken.Literal)
 	}
-	return ast.PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), Position: pos}
+	decl := ast.PropertyDecl{Names: names, Kind: strings.ToLower(string(kind)), Position: pos}
+	if p.peekToken.Type == ast.TokenColon {
+		p.nextToken()
+		p.nextToken()
+		decl.Type = p.parseTypeExpr()
+	}
+	return decl
 }
 
 func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 	if p.curToken.Type == ast.TokenAsterisk {
-		target := p.parseDestructureTargetList(nil)
+		target := p.parseDestructureTargetList(nil, false)
 		if target == nil {
 			return nil
 		}
@@ -1352,7 +1419,7 @@ func (p *parser) parseExpressionOrAssignStatement() ast.Statement {
 	}
 
 	if p.peekToken.Type == ast.TokenComma {
-		target := p.parseDestructureTargetList(expr)
+		target := p.parseDestructureTargetList(expr, false)
 		if target == nil {
 			return nil
 		}
@@ -1426,7 +1493,7 @@ func compoundAssignmentOperator(tt ast.TokenType) ast.TokenType {
 	}
 }
 
-func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression {
+func (p *parser) parseDestructureTargetList(first ast.Expression, allowElementTypes bool) ast.Expression {
 	var pos ast.Position
 	elements := []ast.DestructureElement{}
 	seenRest := false
@@ -1443,7 +1510,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 		pos = first.Pos()
 		elements = append(elements, ast.DestructureElement{Target: first, Position: first.Pos()})
 	} else {
-		element, ok := p.parseDestructureElement()
+		element, ok := p.parseDestructureElement(allowElementTypes)
 		if !ok {
 			return nil
 		}
@@ -1455,7 +1522,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 	for p.peekToken.Type == ast.TokenComma {
 		p.nextToken()
 		p.nextToken()
-		element, ok := p.parseDestructureElement()
+		element, ok := p.parseDestructureElement(allowElementTypes)
 		if !ok {
 			return nil
 		}
@@ -1472,7 +1539,7 @@ func (p *parser) parseDestructureTargetList(first ast.Expression) ast.Expression
 	return &ast.DestructureTarget{Elements: elements, Position: pos}
 }
 
-func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
+func (p *parser) parseDestructureElement(allowType bool) (ast.DestructureElement, bool) {
 	rest := false
 	if p.curToken.Type == ast.TokenAsterisk {
 		restPos := p.curToken.Pos
@@ -1485,11 +1552,20 @@ func (p *parser) parseDestructureElement() (ast.DestructureElement, bool) {
 		p.nextToken()
 	}
 
-	target := p.parseDestructureSingleTarget()
+	target := p.parseDestructureSingleTarget(allowType)
 	if target == nil {
 		return ast.DestructureElement{}, false
 	}
-	return ast.DestructureElement{Target: target, Rest: rest, Position: target.Pos()}, true
+	element := ast.DestructureElement{Target: target, Rest: rest, Position: target.Pos()}
+	if allowType && p.peekToken.Type == ast.TokenColon {
+		p.nextToken()
+		p.nextToken()
+		element.Type = p.parseTypeExpr()
+		if element.Type == nil {
+			return ast.DestructureElement{}, false
+		}
+	}
+	return element, true
 }
 
 // isAnonymousRestTerminator reports whether tt ends a bare "*" destructuring
@@ -1505,12 +1581,12 @@ func isAnonymousRestTerminator(tt ast.TokenType) bool {
 	}
 }
 
-func (p *parser) parseDestructureSingleTarget() ast.Expression {
+func (p *parser) parseDestructureSingleTarget(allowElementTypes bool) ast.Expression {
 	switch p.curToken.Type {
 	case ast.TokenLParen:
-		return p.parseNestedDestructureTarget(ast.TokenRParen, ")")
+		return p.parseNestedDestructureTarget(ast.TokenRParen, ")", allowElementTypes)
 	case ast.TokenLBracket:
-		return p.parseNestedDestructureTarget(ast.TokenRBracket, "]")
+		return p.parseNestedDestructureTarget(ast.TokenRBracket, "]", allowElementTypes)
 	default:
 		target := p.parseLineExpression(lowestPrec)
 		if target == nil {
@@ -1528,7 +1604,7 @@ func (p *parser) parseDestructureSingleTarget() ast.Expression {
 	}
 }
 
-func (p *parser) parseNestedDestructureTarget(stop ast.TokenType, _ string) ast.Expression {
+func (p *parser) parseNestedDestructureTarget(stop ast.TokenType, _ string, allowElementTypes bool) ast.Expression {
 	pos := p.curToken.Pos
 	if p.peekToken.Type == stop {
 		p.errorExpected(p.peekToken, "destructuring assignment target")
@@ -1536,7 +1612,7 @@ func (p *parser) parseNestedDestructureTarget(stop ast.TokenType, _ string) ast.
 	}
 
 	p.nextToken()
-	target := p.parseDestructureTargetList(nil)
+	target := p.parseDestructureTargetList(nil, allowElementTypes)
 	if target == nil {
 		return nil
 	}

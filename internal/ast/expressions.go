@@ -174,6 +174,7 @@ func (e *IndexExpr) IndexPos(i int) Position {
 // Position records the location of the "*" for diagnostics.
 type DestructureElement struct {
 	Target   Expression
+	Type     *TypeExpr
 	Rest     bool
 	Position Position
 }

@@ -191,9 +191,10 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 		for _, name := range prop.Names {
 			if prop.Kind == "property" || prop.Kind == "getter" {
 				getter := &ScriptFunction{
-					Name: name,
-					Body: []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position}},
-					Pos:  prop.Position,
+					Name:     name,
+					ReturnTy: prop.Type,
+					Body:     []Statement{&ReturnStmt{Value: &IvarExpr{Name: name, Position: prop.Position}, Position: prop.Position}},
+					Pos:      prop.Position,
 				}
 				classDef.Methods[name] = getter
 			}
@@ -202,6 +203,7 @@ func compileClassDef(stmt *ClassStmt) *ClassDef {
 					Name: name + "=",
 					Params: []Param{{
 						Name: "value",
+						Type: prop.Type,
 					}},
 					Body: []Statement{
 						&AssignStmt{

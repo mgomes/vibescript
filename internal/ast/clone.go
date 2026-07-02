@@ -190,6 +190,7 @@ func clonePropertyDecls(properties []PropertyDecl) []PropertyDecl {
 		if property.Names != nil {
 			out[i].Names = append([]string{}, property.Names...)
 		}
+		out[i].Type = cloneTypeExpr(property.Type)
 	}
 	return out
 }
@@ -342,6 +343,7 @@ func cloneDestructureElements(elements []DestructureElement) []DestructureElemen
 	for i, element := range elements {
 		out[i] = DestructureElement{
 			Target:   cloneExpression(element.Target),
+			Type:     cloneTypeExpr(element.Type),
 			Rest:     element.Rest,
 			Position: element.Position,
 		}
